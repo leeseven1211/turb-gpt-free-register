@@ -61,6 +61,17 @@ class PlanCheckoutRequestTests(unittest.TestCase):
         self.assertNotIn('hidden-secret', str(result))
         self.assertEqual(1, probe.call_count)
 
+    def test_checkout_transport_failure_is_internal_and_keeps_successful_offer(self):
+        answer = {**checkout_answer(status='failed'), 'proxy_transport_failure': True}
+        with patch('core.checkout_probe.query_checkout_details', return_value=answer) as probe:
+            result = self.query(self.env(), include_checkout=True, checkout_country='JP')
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['proxy_transport_failure'])
+        self.assertEqual('free_trial', result['plus_promo_kind'])
+        self.assertEqual('failed', result['account_promotions'][1]['checkout_status'])
+        self.assertNotIn('proxy_transport_failure', result['account_promotions'][1])
+        self.assertEqual(1, probe.call_count)
+
     def test_cancellation_before_checkout_is_not_converted_to_plan_failure(self):
         with patch('core.checkout_probe.query_checkout_details', side_effect=OperationCancelled('测试取消')):
             with self.assertRaises(OperationCancelled):
@@ -133,6 +144,8 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
             result = offer_result(country, 100 if country != 'IN' else 0)
             if country != 'IN':
                 result['account_promotions'][1].update(checkout_answer(country, 'success' if country == 'JP' else 'failed'))
+            if country == 'VN':
+                result['proxy_transport_failure'] = True
             return result
         with patch('core.account_proxy.acquire_account_proxy', side_effect=acquire), \
              patch.object(plan_check_service, 'check_account_plan', side_effect=query), \
@@ -154,3 +167,26 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
         self.assertEqual(1, summary['checkout_success_count'])
         self.assertIn('支付预检 1/2 成功', self.context.finish.call_args.kwargs['message'])
         self.assertTrue(all(route.release.call_count == 1 for route in routes))
+        routes[0].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-JP')
+        routes[1].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-VN', fault=True)
+        routes[2].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-IN')
+        self.assertNotIn('proxy_transport_failure', str(account['plan_check_country_results']))
+
+    def test_single_country_checkout_transport_failure_faults_route_and_keeps_offer(self):
+        answer = offer_result('JP', 100)
+        answer['account_promotions'][1].update(checkout_answer(status='failed'))
+        answer['proxy_transport_failure'] = True
+        route = SimpleNamespace(proxy_url='JP', region='JP', release=Mock(),
+            public_dict=lambda: {'proxy_region': 'JP', 'proxy_provider': '1024proxy'})
+        with patch('core.account_proxy.acquire_account_proxy', return_value=route), \
+             patch.object(plan_check_service, '_query_account_plan', return_value=answer):
+            result = plan_check_service._run_plan_check(account_id=self.account_id,
+                email='checkout-integration@example.test', access_token='synthetic-token', trigger='manual',
+                proxy=None, timezone_offset_min='-', operation_context=self.context)
+        account = db.get_account(self.account_id)
+        self.assertTrue(result['ok'])
+        self.assertEqual('free_trial', account['plus_promo_kind'])
+        self.assertEqual('success', account['plan_check_status'])
+        self.assertEqual('partial_success', self.context.finish.call_args.kwargs['status'])
+        route.release.assert_called_once_with(reason=f'plan-check-{self.account_id}', fault=True)
+        self.assertNotIn('proxy_transport_failure', str(account['account_promotions']))

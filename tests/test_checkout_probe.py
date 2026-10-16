@@ -6,6 +6,8 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
+from curl_cffi.requests import exceptions as curl_exceptions
+
 from core import checkout_probe as probe
 from core import sentinel_runner
 from core.operation_runtime import OperationCancelled
@@ -316,6 +318,66 @@ class CheckoutProbeTests(unittest.TestCase):
         self.assertEqual(result["checkout_http_status"], 403)
         self.assertEqual(result["checkout_error"], "结账风控预检失败")
         self.assertNotIn("private", json.dumps(result))
+        self.assertNotIn("proxy_transport_failure", result)
+
+    def _transport_failure_query(self, stage, error):
+        self.env.reset_mock(side_effect=True)
+        self.env.get.return_value = self.response(self.pricing)
+        with ExitStack() as stack:
+            if stage == "pricing":
+                self.env.get.side_effect = error
+            elif stage == "sentinel_request":
+                stack.enter_context(patch.object(probe, "_checkout_risk_headers", side_effect=error))
+            elif stage == "create":
+                self.env.post.side_effect = error
+            elif stage == "oaics_state":
+                self.prepare_oaics({})
+                self.env.get.side_effect = [self.response(self.pricing), error]
+            elif stage == "stripe_init":
+                self.env.post.return_value = self.response({"id": "cs_live_private_session", "publishable_key": "pk_live_demo123456"})
+                stack.enter_context(patch.object(probe, "_stripe_init", side_effect=error))
+            elif stage == "sentinel_token":
+                def token_failure(*args):
+                    args[-1]("sentinel_token")
+                    raise error
+                stack.enter_context(patch.object(probe, "_checkout_risk_headers", side_effect=token_failure))
+            else:
+                self.prepare_oaics({"payment_method_types": ["card"], "total": {"total": 0}})
+                stack.enter_context(patch.object(probe, "_details", side_effect=error))
+            return self.query()
+
+    def test_real_curl_transport_failures_mark_proxy_in_each_http_stage_without_replay(self):
+        for stage in ("pricing", "sentinel_request", "create", "oaics_state", "stripe_init"):
+            for exception in (curl_exceptions.ProxyError, curl_exceptions.ConnectionError,
+                              curl_exceptions.SSLError, curl_exceptions.Timeout):
+                with self.subTest(stage=stage, exception=exception.__name__):
+                    result = self._transport_failure_query(stage, exception("private proxy failure", code=56))
+                    self.assertEqual("failed", result["checkout_status"])
+                    self.assertIs(result.get("proxy_transport_failure"), True)
+                    self.assertNotIn("proxy_transport_failure", probe.public_checkout_details(result))
+                    self.assertNotIn("private", json.dumps(result))
+                    self.assertLessEqual(self.env.post.call_count, 1)
+
+    def test_http_responses_direct_connections_and_non_http_stages_do_not_fault_proxy(self):
+        for stage in ("pricing", "sentinel_request", "create", "oaics_state", "stripe_init"):
+            for status in (403, 429):
+                with self.subTest(stage=stage, http_status=status):
+                    error = curl_exceptions.ProxyError("private upstream response", code=56,
+                                                       response=self.response({}, status=status))
+                    result = self._transport_failure_query(stage, error)
+                    self.assertNotIn("proxy_transport_failure", result)
+            with self.subTest(stage=stage, direct=True):
+                self.env.proxy = None
+                result = self._transport_failure_query(stage, curl_exceptions.Timeout("private timeout", code=28))
+                self.assertNotIn("proxy_transport_failure", result)
+                self.env.proxy = "http://proxy.invalid:8080"
+            with self.subTest(stage=stage, unrelated_exception=True):
+                result = self._transport_failure_query(stage, RuntimeError("private proxy timeout"))
+                self.assertNotIn("proxy_transport_failure", result)
+        for stage in ("sentinel_token", "parse"):
+            with self.subTest(stage=stage):
+                result = self._transport_failure_query(stage, curl_exceptions.Timeout("private timeout", code=28))
+                self.assertNotIn("proxy_transport_failure", result)
 
     def test_missing_campaign_and_unverified_go_plan_skip_without_requests(self):
         for campaign, plan in (("", "plus"), ("go-free", "go")):

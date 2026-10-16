@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from curl_cffi.requests import Session
+from curl_cffi.requests import Session, exceptions as curl_exceptions
 
 from core.operation_runtime import OperationAccountDeactivated, OperationCancelled, check_cancelled
 from core.operations.task_gateway import OperationLeaseLost
@@ -21,6 +21,7 @@ from core.sentinel_runner import generate_sentinel_token
 
 logger = logging.getLogger(__name__)
 _STAGES = frozenset({"pricing", "sentinel_request", "sentinel_token", "create", "oaics_state", "stripe_init", "parse"})
+_HTTP_STAGES = frozenset({"pricing", "sentinel_request", "create", "oaics_state", "stripe_init"})
 _CHATGPT = "https://chatgpt.com"
 _CHECKOUT_PATH = "/backend-api/payments/checkout"
 _ENTITIES = {"openai_llc", "openai_ie"}
@@ -452,4 +453,17 @@ def query_checkout_details(token: str, *, session, country: str, campaign_id: st
         _log_failure(result["checkout_country"], stage, exc)
         result["checkout_http_status"] = None
         result["checkout_error"] = "结账预检失败"
-    return public_checkout_details(result)
+        response_status = getattr(getattr(exc, "response", None), "status_code", None)
+        has_http_response = (isinstance(response_status, int) and not isinstance(response_status, bool)
+                             and 100 <= response_status <= 599)
+        if (stage in _HTTP_STAGES and str(getattr(session, "proxy", None) or "").strip()
+                and not has_http_response and isinstance(exc, (
+                    curl_exceptions.ProxyError, curl_exceptions.ConnectionError,
+                    curl_exceptions.SSLError, curl_exceptions.Timeout,
+                ))):
+            result["proxy_transport_failure"] = True
+    public = public_checkout_details(result)
+    # 仅供本次查询释放线路时使用，持久化优惠仍由公开字段白名单过滤。
+    if result.get("proxy_transport_failure") is True:
+        public["proxy_transport_failure"] = True
+    return public

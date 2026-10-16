@@ -632,6 +632,8 @@ def _query_promotion_checkout(result: dict, token: str, env: BrowserSession, *, 
     except Exception:
         details = {"checkout_status": "failed", "checkout_checked_at": now_iso(),
                    "checkout_country": country, "checkout_error": "结账预检失败"}
+    if details.get("proxy_transport_failure") is True:
+        result["proxy_transport_failure"] = True
     selected.update(public_checkout_details(details))
 
 

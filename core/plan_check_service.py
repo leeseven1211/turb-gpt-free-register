@@ -765,7 +765,7 @@ def _run_plan_check(
         return result
     finally:
         if account_route is not None:
-            if result and not result.get("ok") and result.get("proxy_transport_failure") is True:
+            if result and result.get("proxy_transport_failure") is True:
                 account_route.release(reason=f"plan-check-{account_id}", fault=True)
             else:
                 account_route.release(reason=f"plan-check-{account_id}")
