@@ -16,9 +16,10 @@ class FlaskRouteContractTests(PostgresTestCase):
     # Snapshot history: commit 1006937 had the prior map; f33e523 intentionally
     # added /api/extract-link/types. The release then added /healthz and
     # /readyz，以及经过评审的配置快照、durable operations、proxy-traffic API、
-    # 协议邮箱换绑路由、任务终止入口和任务中心批量动作。保持这些变更显式记录，不从当前路由表推导基线。
-    EXPECTED_ROUTE_COUNT = 127
-    EXPECTED_SHA256 = "94077921e567628f33977d35042d58bf79c0c4fe2ebc30418330bae6e0fc7911"
+    # 协议邮箱换绑路由、任务终止入口、任务中心批量动作和 iCloud HME 账号目录。
+    # 保持这些变更显式记录，不从当前路由表推导基线。
+    EXPECTED_ROUTE_COUNT = 131
+    EXPECTED_SHA256 = "401ec14bc896b570ae7ea1293442ea2c056ad591c1ee95dae69ea293f06eded5"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

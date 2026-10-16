@@ -10,7 +10,7 @@ from tests.support_pg import PostgresTestCase
 
 class ProxyStaticInventoryTests(PostgresTestCase):
     urls = ["http://192.0.2.70:8080"]
-    policy = {"min_ready": 1, "max_size": 2, "wait_timeout": .05, "min_ttl": 300,
+    policy = {"min_ready": 1, "max_size": 2, "wait_timeout": .5, "min_ttl": 300,
               "max_age": 60, "max_idle": 300, "workers": 1}
 
     @contextmanager
@@ -22,6 +22,7 @@ class ProxyStaticInventoryTests(PostgresTestCase):
             patch.object(proxy_pool, "start"),
             patch.object(proxy_pool._stop, "is_set", return_value=False),
             patch.object(cfg, "REGISTRATION_PROXY_MODE", "none"),
+            patch.object(cfg, "PROXY_POOL_SOURCE", "manual", create=True),
             patch.object(cfg, "ACCOUNT_ACTION_PROXY", ""),
             patch.object(cfg, "PROXY_POOL", self.urls),
             patch.object(cfg, "PROXY_POOL_COUNTRIES", countries or []),
@@ -46,7 +47,7 @@ class ProxyStaticInventoryTests(PostgresTestCase):
     def acquire(self, *, region=None, urls=None, shared=False, limit=3):
         return proxy_pool.acquire(provider="proxy_pool", static_urls=urls or self.urls,
                                   region=region, purpose="plan-check" if shared else "live-check",
-                                  allow_reuse=shared, reuse_limit=limit, timeout=.05)
+                                  allow_reuse=shared, reuse_limit=limit, timeout=.5)
 
     def test_country_prewarm_inventory_serves_real_generic_controller(self):
         # 只有一个端点时，JP预热不能饿死不传国家的查活/2FA/密码入口。

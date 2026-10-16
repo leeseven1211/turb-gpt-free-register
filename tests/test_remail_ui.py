@@ -30,7 +30,11 @@ function extract(source, name) {
   if (start < 0 || end < 0) throw new Error(`缺少函数 ${name}`);
   return source.slice(start, end + 2);
 }
-const targets = new Map();
+const mailSourceRoot = {
+  innerHTML: '', value: '', disabled: false, hidden: true, children: [],
+  parentNode: {insertBefore(node) { this.node = node; }},
+};
+const targets = new Map([['#mailSourceCards', mailSourceRoot]]);
 function $(selector) {
   if (!targets.has(selector)) targets.set(selector, {
     innerHTML: '', value: '', disabled: false, hidden: true, children: [],
@@ -40,18 +44,33 @@ function $(selector) {
 }
 const context = vm.createContext({
   assert, fields, $, CONFIG_PENDING_UPDATES: {}, esc: String, attrEsc: String,
+  mailSourceCardsExpanded: false,
   POOL_SOURCE_LABELS: {all: '全部邮箱池', outlook: 'Outlook 邮箱池'},
   REGISTRATION_EMAIL_SOURCES: [], CAPABILITIES: {}, applyFeatureGates() {},
   api: async () => ({sources: [{value: 'remail', label: 'Remail', enabled: true}]}),
   apiCached: async (url) => url === '/api/capabilities'
     ? {email_sources: {remail: {enabled: true}}}
     : {sources: [{value: 'remail', label: 'Remail', enabled: true}]},
-  document: {createElement: () => ({dataset: {}})},
+  document: {
+    getElementById: (id) => id === 'mailSourceVisibilityControls'
+      ? mailSourceRoot.parentNode.node || null
+      : null,
+    createElement: () => ({
+      dataset: {}, innerHTML: '',
+      querySelector: () => ({addEventListener() {}}),
+    }),
+  },
 });
 for (const [file, names] of Object.entries({
   common: ['isPlaceholderEmpty'],
-  config: ['emailConfigSectionForKey', 'configSchemaOptions', 'configDriverChoices', 'configRangeAttrs', 'renderConfigControlMarkupV2'],
-  email: ['renderMailSourceCards'],
+  config: [
+    'emailConfigSectionForKey', 'configSchemaOptions', 'configSchemaField', 'configDriverChoices', 'configRangeAttrs',
+    'configListValuesV2', 'configListOptionValuesV2', 'configListSummaryV2', 'renderConfigMultiSelectV2',
+    'configCountryCodesV2', 'configCountryNameV2', 'configCountryOptionsV2', 'configCountrySummaryV2',
+    'renderConfigCountryChipsV2', 'renderConfigCountryOptionsV2', 'renderConfigCountryControlV2',
+    'renderConfigControlMarkupV2',
+  ],
+  email: ['_mailSourceVisibility', '_ensureMailSourceVisibilityControls', 'renderMailSourceCards'],
   accounts: ['loadEmailChangeSources'],
   jobs: ['loadRegistrationEmailSources'],
 })) for (const name of names) vm.runInContext(extract(read(file), name), context);

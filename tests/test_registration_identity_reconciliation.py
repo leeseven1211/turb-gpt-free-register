@@ -255,6 +255,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
                 "new@example.com",
                 "New User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="icloud_hide",
                 registration_options={
                     "password_enabled": False,
@@ -310,6 +311,7 @@ class RegistrationIdentityContractTests(unittest.TestCase):
                 "dead@example.com",
                 "Dead User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 registration_options={"codex_enabled": False, "plan_check_enabled": False},
                 email_source="icloud_hide",
             )

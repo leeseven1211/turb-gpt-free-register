@@ -1027,17 +1027,36 @@ def _acquire_registration_proxy_from_batch(
             state.loading = True
             state.fetch_count += 1
             fetch_count = state.fetch_count
-            request_count = min(state.remaining_jobs, 64)
+            # 兼容旧批次接口也只能一次领取一条。旧实现按 workers 预取会在
+            # 小池容量下把可用线路全部占满，后续批次调用反而等待自身释放。
+            # 真正的并发由调用方控制，批次状态只负责复用已经领取的线路。
+            request_count = 1
 
         try:
-            leases = acquire_1024_proxy_batch(
-                count=request_count,
-                job_id=batch_key,
-                rotation_index=fetch_count,
-                progress_callback=progress_callback,
-                purpose=purpose,
-            )
-        except Exception:
+            # 兼容批次入口逐条通过统一池领取；这里不直接调用供应商提取器，
+            # 也不把旧 batch 配置固化为新来源。
+            from core.proxy_pool import acquire_proxy
+
+            leases: list[ProxyLease] = []
+            try:
+                for index in range(request_count):
+                    leases.append(acquire_proxy(
+                        job_id=f"{batch_key}:{fetch_count}:{index}",
+                        progress_callback=progress_callback,
+                        account_id=account_id,
+                        purpose=purpose or "registration",
+                        operation_task_id=operation_task_id,
+                        operation_run_id=operation_run_id,
+                        registration_job_id=registration_job_id,
+                        route_attempt_no=route_attempt_no,
+                    ))
+            except BaseException:
+                # 列表推导中途失败时，已领取线路必须归还，否则 loading
+                # 复位后下一批会永久看不到池容量。
+                for lease in leases:
+                    release_proxy(lease, reason="registration_batch_acquire_failed")
+                raise
+        except BaseException:
             with _BATCH_CONDITION:
                 state.loading = False
                 _BATCH_CONDITION.notify_all()
@@ -1088,9 +1107,25 @@ def discard_registration_proxy_batch(batch_id: str | None) -> None:
 
 
 def acquire_1024_proxy(**kwargs) -> ProxyLease:
-    """所有账号任务统一从已校验的独立库存领取。"""
-    from core.proxy_pool import acquire
-    return acquire(provider="1024proxy", **kwargs)
+    """兼容旧名称；新领取统一转发到代理池公共入口。
+
+    旧调用方可能仍传入 ``rotation_index``、``validate``、``api_url`` 等
+    供应商参数。它们不能再参与供应商选择，但也不应让兼容入口因未知关键字
+    直接崩溃；仅保留公共领取契约中的字段。
+    """
+    from core.proxy_pool import acquire_proxy
+
+    public_keys = {
+        "purpose", "country", "region", "timeout", "budget",
+        "progress_callback", "cancel", "account_id", "operation_task_id",
+        "operation_run_id", "registration_job_id", "route_attempt_no",
+        "correlation_id", "job_id", "allow_reuse", "reuse_limit",
+    }
+    forwarded = {key: value for key, value in kwargs.items() if key in public_keys}
+    # rotation_index 仅保留为链路关联信息，绝不作为供应商/线路选择参数。
+    if "correlation_id" not in forwarded and kwargs.get("rotation_index") is not None:
+        forwarded["correlation_id"] = f"legacy-rotation-{kwargs['rotation_index']}"
+    return acquire_proxy(**forwarded)
 
 
 def acquire_registration_proxy(
@@ -1106,50 +1141,28 @@ def acquire_registration_proxy(
     operation_run_id: int | None = None,
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
+    country: str | None = None,
+    region: str | None = None,
     cancel=None,
     timeout: float | None = None,
 ) -> ProxyLease:
-    from config import proxy as cfg
+    from core.proxy_pool import acquire_proxy
 
-    mode = registration_proxy_mode()
-    if mode == "1024":
-        return acquire_1024_proxy(
-            job_id=job_id,
-            progress_callback=progress_callback,
-            account_id=account_id,
-            purpose=purpose,
-            operation_task_id=operation_task_id,
-            operation_run_id=operation_run_id,
-            registration_job_id=registration_job_id,
-            route_attempt_no=route_attempt_no,
-            cancel=cancel,
-            timeout=timeout,
-        )
-    if mode == "none":
-        return ProxyLease(
-            str(uuid.uuid4()),
-            "direct",
-            "",
-            "",
-            datetime.now(),
-            state="leased",
-            metadata=_correlation_metadata(
-                account_id=account_id,
-                purpose=purpose,
-                operation_task_id=operation_task_id,
-                operation_run_id=operation_run_id,
-                registration_job_id=registration_job_id,
-                route_attempt_no=route_attempt_no,
-            ),
-        )
-    if mode != "pool":
-        raise RuntimeError(f"不支持的 REGISTRATION_PROXY_MODE={mode!r}，可选 pool / 1024 / none")
-    from core.proxy_pool import acquire
-    return acquire(provider="proxy_pool", static_urls=list(cfg.PROXY_POOL), job_id=job_id,
-                   account_id=account_id, purpose=purpose, operation_task_id=operation_task_id,
-                   operation_run_id=operation_run_id, registration_job_id=registration_job_id,
-                   route_attempt_no=route_attempt_no, progress_callback=progress_callback,
-                   cancel=cancel, timeout=timeout)
+    # 旧 mode/source 只作为任务快照兼容数据保留；新注册始终向当前统一池
+    # 领取，不能因历史 direct/provider:* 值创建直连或固定旧平台线路。
+    return acquire_proxy(
+        purpose=purpose or "registration",
+        job_id=job_id if job_id is not None else batch_id,
+        progress_callback=progress_callback,
+        account_id=account_id,
+        operation_task_id=operation_task_id,
+        operation_run_id=operation_run_id,
+        registration_job_id=registration_job_id,
+        route_attempt_no=route_attempt_no,
+        country=country or region,
+        cancel=cancel,
+        timeout=timeout,
+    )
 
 
 def release_proxy(

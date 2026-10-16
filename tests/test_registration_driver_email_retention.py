@@ -34,7 +34,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
             patch("core.email_provider.retain_email") as retain,
             patch("core.email_provider.release_email") as release,
         ):
-            result = roxy.run_roxy_registration(self.email, "Test", "2000-01-01", email_source=self.email_source,
+            result = roxy.run_roxy_registration(self.email, "Test", "2000-01-01", proxy="http://pool.example:8080", email_source=self.email_source,
                 registration_options={"password_enabled": False, "twofa_enabled": False, "codex_enabled": False, "plan_check_enabled": False})
         self.assertTrue(result["request_unknown"])
         self.assertEqual(result["remote_account_state"], "request_unknown")
@@ -104,6 +104,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 self.email,
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 registration_options={
                     "password_enabled": False,
                     "twofa_enabled": False,
@@ -143,6 +144,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 self.email,
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 registration_options={
                     "password_enabled": False,
                     "twofa_enabled": False,
@@ -510,6 +512,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 self.email,
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="123456",
                 email_source=self.email_source,
                 registration_options={
@@ -597,6 +600,7 @@ class RegistrationDriverEmailRetentionTests(unittest.TestCase):
                 self.email,
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="123456",
                 email_source=self.email_source,
                 registration_options={

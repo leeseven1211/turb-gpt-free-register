@@ -481,16 +481,14 @@ def _build_cloak_locale_options(proxy_url: str | None = None) -> dict:
 def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, CloakOpenResult]:
     """启动 CloakBrowser 并返回 Selenium 风格 driver。
 
-    proxy=None  时按 config.proxy.PROXY_POOL 随机抽取；
-    proxy=""    时显式禁用代理；
-    proxy="..." 时使用指定代理。
+    这是注册业务的浏览器入口，调用方必须先领取统一池租约。
+    ``CLOAK_USE_PROXY`` 只控制配置层的默认行为，不能让业务注册绕过
+    统一代理池；显式传入的已领取线路始终写入 CloakBrowser。
     """
-    if proxy is None and bool(getattr(_cfg, "CLOAK_USE_PROXY", True)):
-        try:
-            from config.proxy import pick_proxy
-            proxy = pick_proxy()
-        except Exception:
-            proxy = None
+    if not str(proxy or "").strip():
+        raise RuntimeError(
+            "CloakBrowser 必须使用统一代理池已领取线路，禁止直连或隐式随机选择 PROXY_POOL"
+        )
     try:
         from cloakbrowser import launch, launch_persistent_context
     except ImportError as exc:
@@ -501,7 +499,8 @@ def build_cloak_driver(proxy: str | None = None) -> tuple[CloakSeleniumDriver, C
     if seed:
         launch_args.append(f"--fingerprint={seed}")
 
-    proxy_url = _normalize_proxy(proxy) if bool(getattr(_cfg, "CLOAK_USE_PROXY", True)) else None
+    # 显式代理代表同一注册链路已领取的租约，即使配置关闭默认代理也不能丢弃。
+    proxy_url = _normalize_proxy(proxy)
     locale_opts = _build_cloak_locale_options(proxy_url)
     # geoip=True 交给 CloakBrowser 根据当前出口 IP 自动匹配 timezone/locale/WebRTC。
     # 之前只有显式 proxy_url 时才开启；如果用户走系统代理/VPN/透明代理，代码层面

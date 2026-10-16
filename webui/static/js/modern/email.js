@@ -80,18 +80,57 @@ function _poolNoteCell(r) {
   const note = String(r.note || r.disabled_reason || '').trim();
   return note ? `<span class="pool-note" title="${attrEsc(note)}">${esc(note)}</span>` : '<span class="pool-note is-empty">-</span>';
 }
+let mailSourceCardsExpanded = false;
+function _mailSourceVisibility(source) {
+  const onDemand = source.kind === 'on_demand';
+  const enabled = source.enabled === true || source.enabled === 'true';
+  const dependency = source.dependency === true || source.dependency === 'true';
+  const history = source.history_available === true
+    || source.history_available === 'true'
+    || (!onDemand && Number(source.total || 0) > 0);
+  const defaultVisible = source.default_visible === undefined
+    ? enabled || dependency
+    : source.default_visible === true || source.default_visible === 'true';
+  return {onDemand, enabled, dependency, history, defaultVisible};
+}
+function _ensureMailSourceVisibilityControls(root) {
+  let controls = document.getElementById('mailSourceVisibilityControls');
+  if (controls) return controls;
+  controls = document.createElement('div');
+  controls.id = 'mailSourceVisibilityControls';
+  controls.className = 'mail-source-visibility';
+  root.parentNode?.insertBefore(controls, root);
+  return controls;
+}
 function renderMailSourceCards(sources) {
   const root = $('#mailSourceCards');
   if (!root) return;
-  root.innerHTML = (sources || []).map(source => {
-    const onDemand = source.kind === 'on_demand';
+  const allSources = Array.isArray(sources) ? sources : [];
+  const sourceRows = allSources.map(source => ({source, visibility: _mailSourceVisibility(source)}));
+  const hiddenCount = sourceRows.filter(row => !row.visibility.defaultVisible).length;
+  const controls = _ensureMailSourceVisibilityControls(root);
+  if (controls) {
+    controls.innerHTML = hiddenCount
+      ? `<span class="muted">默认显示已启用服务和当前收码依赖</span><button type="button" class="jobs-tb-btn" id="btnShowDisabledMailSources" aria-expanded="${mailSourceCardsExpanded ? 'true' : 'false'}">${mailSourceCardsExpanded ? '隐藏未启用' : `显示未启用（${hiddenCount}）`}</button>`
+      : '<span class="muted">当前没有未启用的邮箱服务</span>';
+    controls.querySelector('#btnShowDisabledMailSources')?.addEventListener('click', () => {
+      mailSourceCardsExpanded = !mailSourceCardsExpanded;
+      renderMailSourceCards(allSources);
+    });
+  }
+  const visibleRows = mailSourceCardsExpanded ? sourceRows : sourceRows.filter(row => row.visibility.defaultVisible);
+  root.innerHTML = visibleRows.map(({source, visibility}) => {
+    const {onDemand, enabled, dependency, history} = visibility;
     const clickable = !onDemand && POOL_SOURCE_LABELS[source.source] && source.source !== 'all';
-    return `<article class="mail-source-card${source.enabled ? ' is-enabled' : ''}${clickable ? ' is-clickable' : ''}"${clickable ? ` data-mail-source="${attrEsc(source.source)}" role="button" tabindex="0"` : ''}>
-      <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${source.enabled ? '已启用' : '未启用'}</span></div>
+    const statusLabel = enabled ? '已启用' : dependency ? '收码依赖' : history ? '历史/已停用' : '未启用';
+    const reason = dependency ? source.dependency_reason : '';
+    return `<article class="mail-source-card${enabled ? ' is-enabled' : ''}${dependency ? ' is-dependency' : ''}${history && !enabled ? ' is-history' : ''}${clickable ? ' is-clickable' : ''}"${clickable ? ` data-mail-source="${attrEsc(source.source)}" role="button" tabindex="0"` : ''}>
+      <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${statusLabel}</span></div>
       <div class="mail-source-card-value">${onDemand ? '按需' : esc(source.available || 0)}</div>
       <div class="mail-source-card-meta">${onDemand ? '运行时领取 / 创建' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)} · 失败 ${esc(source.failed || 0)} · 停用 ${esc(source.disabled || 0)}`}</div>
+      ${reason ? `<small class="mail-source-card-reason">${esc(reason)}</small>` : ''}
     </article>`;
-  }).join('') || '<div class="muted">暂无邮箱平台</div>';
+  }).join('') || '<div class="muted">暂无已启用邮箱服务，可显示未启用的服务。</div>';
 }
 function renderButlerLeases(items) {
   const root = $('#butlerLeaseList');

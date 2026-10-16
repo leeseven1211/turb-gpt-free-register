@@ -95,7 +95,8 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         source, account, attempt = self._facts()
         original = copy.deepcopy(source)
 
-        result, create_call, executor = self._retry(source, account, attempt)
+        with patch("core.proxy_pool.default_country", return_value="US"):
+            result, create_call, executor = self._retry(source, account, attempt)
 
         self.assertTrue(result["ok"])
         self.assertEqual(create_call.kwargs["job_type"], "registration_resume")
@@ -105,6 +106,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             "registration_driver": "roxy",
             "password_enabled": True,
             "twofa_enabled": True,
+            "proxy_country": "US",
         })
         self.assertEqual(source, original)
         executor.submit.assert_called_once()

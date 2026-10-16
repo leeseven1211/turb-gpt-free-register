@@ -58,6 +58,7 @@ def registration_config_snapshot() -> dict[str, object]:
     from config import register as register_cfg
     from config import roxybrowser as roxy_cfg
     from config import twofa as twofa_cfg
+    from core.proxy_pool import default_country
 
     auth_mode = str(getattr(register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
     if auth_mode not in {"otp", "password"}:
@@ -65,6 +66,9 @@ def registration_config_snapshot() -> dict[str, object]:
     registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
     return {
         "registration_driver": registration_driver,
+        # 注册国家在入队时冻结；worker 领取线路时只使用这个快照，避免
+        # 排队期间修改池默认国家改变已经提交的任务。
+        "proxy_country": default_country(),
         "password_enabled": auth_mode == "password",
         "password_mode": auth_mode,
         "twofa_enabled": bool(getattr(twofa_cfg, "ENABLE_2FA", False)),
@@ -78,16 +82,108 @@ def registration_config_snapshot() -> dict[str, object]:
     }
 
 
+def _normalize_registration_country(value: object) -> str:
+    """归一化一个历史任务中可能保存的出口国家。"""
+    country = str(value or "").strip().upper()
+    if not country:
+        return ""
+    try:
+        from config.countries import ISO_3166_ALPHA2
+
+        return country if country in ISO_3166_ALPHA2 else ""
+    except Exception:
+        # 配置/测试兼容入口不应因为国家目录不可用而阻断重跑；两位字母
+        # 仍是旧任务实际出口字段可安全恢复的最小格式。
+        return country if len(country) == 2 and country.isalpha() else ""
+
+
+def _snapshot_registration_country(snapshot: object) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    # proxy_country 是当前快照字段；其余名称只为兼容早期实验快照，不能
+    # 覆盖已经存在的当前字段。
+    for key in ("proxy_country", "registration_proxy_country", "country"):
+        country = _normalize_registration_country(snapshot.get(key))
+        if country:
+            return country
+    return ""
+
+
+def _historical_registration_country(job: dict | None) -> str:
+    """从旧任务记录恢复实际出口国家，不读取当前配置。"""
+    if not isinstance(job, dict):
+        return ""
+    containers: list[dict] = [job]
+    raw_data = job.get("data")
+    if isinstance(raw_data, dict):
+        containers.append(raw_data)
+        for key in ("result", "route", "proxy", "proxy_info", "network"):
+            nested = raw_data.get(key)
+            if isinstance(nested, dict):
+                containers.append(nested)
+    # proxy_region 是当前任务字段；exitcountry 等名称覆盖历史导出/供应商
+    # 结果字段。按实际出口优先于旧配置字段，避免把旧 provider/source 当成
+    # 国家选择。
+    for container in containers:
+        for key in (
+            "proxy_region",
+            "exitcountry",
+            "exit_country",
+            "proxy_exit_country",
+            "proxy_country",
+            "proxy_country_code",
+        ):
+            country = _normalize_registration_country(container.get(key))
+            if country:
+                return country
+    return ""
+
+
+def _registration_proxy_country_for_job(job: dict | None) -> str:
+    """返回注册任务领取代理时应使用的冻结国家。
+
+    新任务由 config_snapshot.proxy_country 固定国家。历史任务没有该字段时
+    先恢复已经记录的实际线路国家，最后才使用代理池当前默认国家。
+    """
+    snapshot = None
+    if isinstance(job, dict):
+        snapshot = job.get("config_snapshot")
+        if not isinstance(snapshot, dict):
+            raw_data = job.get("data")
+            if isinstance(raw_data, dict):
+                snapshot = raw_data.get("config_snapshot")
+    country = _snapshot_registration_country(snapshot)
+    if country:
+        return country
+    country = _historical_registration_country(job)
+    if country:
+        return country
+    from core.proxy_pool import default_country
+
+    return default_country()
+
+
 def registration_options_for_job(job: dict | None) -> dict[str, object]:
     """Read a job snapshot, falling back to current config for old jobs."""
     if isinstance(job, dict):
         snapshot = job.get("config_snapshot")
         if isinstance(snapshot, dict):
-            return dict(snapshot)
+            options = dict(snapshot)
+            # 旧任务的快照可能没有国家，但已有任务行记录实际出口；将该
+            # 事实带入重跑子任务，避免重跑时误跟随新的池默认国家。
+            if not _snapshot_registration_country(options):
+                options["proxy_country"] = _registration_proxy_country_for_job(job)
+            return options
         raw_data = job.get("data")
         if isinstance(raw_data, dict) and isinstance(raw_data.get("config_snapshot"), dict):
-            return dict(raw_data["config_snapshot"])
-    return registration_config_snapshot()
+            options = dict(raw_data["config_snapshot"])
+            if not _snapshot_registration_country(options):
+                options["proxy_country"] = _registration_proxy_country_for_job(job)
+            return options
+    options = registration_config_snapshot()
+    if isinstance(job, dict):
+        options["proxy_country"] = _registration_proxy_country_for_job(job)
+    return options
 
 
 # Workflow B owns these facts.  This adapter only translates the existing job
@@ -1270,6 +1366,7 @@ def _acquire_registration_proxy_with_retries(
     operation_run_id: int | None = None,
     registration_job_id: int | None = None,
     route_attempt_no: int | None = None,
+    country: str | None = None,
     retry_kind: str = "proxy_acquisition",
 ):
     """兼容调用入口；供应商重试由独立池维护，任务只等待一次领取。"""
@@ -1280,11 +1377,15 @@ def _acquire_registration_proxy_with_retries(
         "registration_job_id": registration_job_id if registration_job_id is not None else job_id,
         "route_attempt_no": route_attempt_no,
     }
-    return acquire_proxy(
-        job_id=job_id, progress_callback=progress_callback,
-        cancel=check_stop_requested,
+    acquire_kwargs = {
+        "job_id": job_id,
+        "progress_callback": progress_callback,
+        "cancel": check_stop_requested,
         **{key: value for key, value in correlation.items() if value is not None},
-    )
+    }
+    if country:
+        acquire_kwargs["country"] = country
+    return acquire_proxy(**acquire_kwargs)
 
 
 def _normalize_workers(max_workers: int | None) -> int:
@@ -1469,6 +1570,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         "registration_job_id": job_id,
         "route_attempt_no": initial_route_attempt_no,
     })
+    registration_country = _registration_proxy_country_for_job(
+        db.get_job(job_id) or current
+    )
     _bind_progress_route_context(initial_route_attempt_no)
     _persist_job_progress(job_id, "network", state="running", detail="正在申请或分配网络线路")
     # 代理申请回调可能由供应商适配层的其他线程触发；提前捕获步骤实例，
@@ -1533,6 +1637,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 batch_workers=proxy_batch_workers,
                 progress_callback=_proxy_progress,
                 log_logger=log_logger,
+                country=registration_country,
                 **proxy_correlation,
             )
             _bind_proxy_lease(proxy_lease)
@@ -1782,6 +1887,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     progress_callback=_retry_proxy_progress,
                     log_logger=log_logger,
                     retry_kind="proxy_rotation_acquisition",
+                    country=registration_country,
                     **retry_proxy_correlation,
                 )
                 _bind_proxy_lease(proxy_lease)
@@ -2331,6 +2437,9 @@ def submit_registration(
         executor = get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
         batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        # 同一批任务共享入队瞬间的国家快照；即使配置在提交循环期间热加载，
+        # 也不能让同一批排队任务分裂到不同的默认国家。
+        registration_snapshot = registration_config_snapshot()
         jobs = []
         for index in range(count):
             job = db.create_job(
@@ -2339,7 +2448,7 @@ def submit_registration(
                 batch_index=index + 1,
                 batch_size=count,
                 batch_workers=effective_workers,
-                data={"config_snapshot": registration_config_snapshot()},
+                data={"config_snapshot": dict(registration_snapshot)},
             )
             if debug_enabled:
                 from core.registration_debug import patch_job

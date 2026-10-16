@@ -233,13 +233,16 @@ class PlanProxyReusePolicyTests(unittest.TestCase):
             with (
                 self.subTest(purpose=purpose, override=override),
                 patch("config.proxy.PLAN_CHECK_PROXY_ALLOW_REUSE", True, create=True),
-                patch("core.proxy_pool.acquire", return_value=SimpleNamespace(
+                patch("core.proxy_pool.acquire_proxy", return_value=SimpleNamespace(
                     proxy_url="http://192.0.2.10:8080", provider="1024proxy", region="US",
                 )) as acquire,
+                patch.multiple("config.proxy", PROXY_POOL_SOURCE="1024proxy",
+                               PROXY_1024_API_URL="https://proxy.example.test/api"),
             ):
                 account_proxy.acquire_account_proxy(
                     account_id=7, purpose=purpose, region="US", source="provider:1024proxy",
                     allow_reuse=override,
                 )
-                self.assertEqual("1024proxy", acquire.call_args.kwargs["provider"])
                 self.assertEqual(expected, acquire.call_args.kwargs.get("allow_reuse", False))
+                self.assertEqual("US", acquire.call_args.kwargs["country"])
+                self.assertNotIn("provider", acquire.call_args.kwargs)

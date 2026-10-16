@@ -869,6 +869,10 @@ def run_roxy_registration(
     email_source: str | None = None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
+    if not str(proxy or "").strip():
+        raise RuntimeError(
+            "Roxy 注册必须使用统一代理池已领取线路，禁止无代理 Profile 或直连"
+        )
     from core.registration_service import report_job_otp_evidence, report_job_progress, report_registered_account
 
     selected_email_source = validate_email_source(email_source) if email_source else None

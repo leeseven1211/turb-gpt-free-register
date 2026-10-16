@@ -166,7 +166,7 @@ class CountryPlanCheckTests(PostgresTestCase):
             plan_check_service.proxy_cfg.PLAN_CHECK_COUNTRIES.append("US")
         self.assertEqual(["JP", "VN", "IN"], submitted[0]["data"]["countries"])
         self.assertIs(snapshot, submitted[0]["config_snapshot"])
-        self.assertEqual("provider:1024proxy", submitted[0]["data"]["proxy_source"])
+        self.assertEqual("pool", submitted[0]["data"]["proxy_source"])
         self.assertNotIn("countries", submitted[1]["data"])
         self.assertNotIn("countries", submitted[2]["data"])
 

@@ -829,8 +829,12 @@ def _run_live_check(
             return account_route.proxy_url
 
         def acquire_explicit_route() -> str:
-            """显式代理只申请一次，后续步骤严格复用调用方指定线路。"""
+            """有显式线路时只申请一次；空值改由统一代理池领取线路。"""
             nonlocal account_route, route, network_open
+            if not str(proxy or "").strip():
+                # 空字符串是旧调用方的“未提供线路”表现，不能把它传成
+                # BrowserSession 直连；改走统一池领取并沿用本次查活链路。
+                return acquire_retry_route(1)
             if account_route is None:
                 begin_network_stage()
                 account_route = acquire_account_proxy(
@@ -1199,7 +1203,7 @@ def _run_live_check(
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
         elif result is None:
-            # API 显式传入的代理（包括空字符串直连）尊重调用方选择，不擅自改线。
+            # 有效显式线路继续复用调用方租约；空字符串按未提供线路走统一代理池。
             selected_proxy = acquire_explicit_route()
             _append_log(
                 email,

@@ -21,7 +21,8 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     from config import email as cfg
     from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
 
-    configured = set(parse_email_sources(getattr(cfg, "EMAIL_SOURCE", "outlook")))
+    configured_value = str(getattr(cfg, "EMAIL_SOURCE", "") or "").strip()
+    configured = set(parse_email_sources(configured_value)) if configured_value else set()
     results: dict[str, dict[str, Any]] = {}
 
     def add(source: str, ok: bool, reason: str = "") -> None:
@@ -118,19 +119,13 @@ def _registration_driver_status() -> dict[str, Any]:
 
 
 def _registration_proxy_status() -> dict[str, Any]:
-    from config import proxy as cfg
-    mode = str(getattr(cfg, "REGISTRATION_PROXY_MODE", "pool") or "pool").strip().lower()
-    if mode in {"1024", "1024proxy", "provider"}:
-        ok, reason = _all_present([("1024Proxy 提取 API", getattr(cfg, "PROXY_1024_API_URL", ""))])
-        if ok and not bool(getattr(cfg, "PROXY_1024_VALIDATE", True)):
-            ok, reason = False, "代理平台必须开启使用前出口检测"
-        return _feature(ok, reason) | {"mode": "1024"}
-    if mode == "pool":
-        ok = bool(list(getattr(cfg, "PROXY_POOL", []) or []))
-        return _feature(ok, "代理池为空") | {"mode": mode}
-    if mode in {"none", "direct"}:
-        return _feature(True) | {"mode": "direct"}
-    return _feature(False, f"不支持的注册代理来源 {mode}") | {"mode": mode}
+    from core.account_proxy import proxy_configuration_status
+
+    status = proxy_configuration_status("registration")
+    return _feature(bool(status.get("ok")), str(status.get("reason") or "")) | {
+        "mode": "pool",
+        "pool_source": status.get("pool_source"),
+    }
 
 
 def _codex_retry_status() -> dict[str, Any]:

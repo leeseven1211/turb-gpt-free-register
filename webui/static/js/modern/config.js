@@ -2,33 +2,42 @@
 let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
-let CONFIG_PROXY_ACTIVE_SECTION_V2 = '注册线路';
+let CONFIG_PROXY_ACTIVE_SECTION_V2 = '任务用池';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
+const CONFIG_FIELD_ERRORS_V2 = {};
+const CONFIG_COMPOSITE_MODES_V2 = {};
 const CONFIG_ACTIVE_DOMAIN_V2 = {};
-// 菜单集中定义；schema 的 group 继续表示配置所属领域。
+// 菜单集中定义；schema 的 group 继续表示配置所属领域。六个主分类是
+// 页面导航契约，底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
 const CONFIG_MENU_DOMAINS_V2 = {
-  '注册设置': ['注册主链路', '注册调试'],
-  '账号补全': ['账号补全'],
-  '邮箱 / OTP': ['邮箱 / OTP'],
-  '接码平台': ['接码平台'],
+  '注册与账号': ['注册主链路', '账号补全', '注册与账号'],
   '代理与网络': ['代理与网络'],
-  '浏览器设置': ['RoxyBrowser', '浏览器画像', '人工节奏'],
-  'Codex': ['Codex'],
-  '提链': ['提链'],
-  '系统设置': ['通用配置', 'WebUI 授权', '定时任务', '任务中心'],
+  '邮箱与验证码': ['邮箱 / OTP', '接码平台'],
+  '浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏'],
+  '服务集成': ['Codex', '提链'],
+  '系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试'],
 };
 const CONFIG_DOMAIN_ALIASES_V2 = {
+  '注册设置': '注册主链路',
+  '账号设置': '账号补全',
   '注册与账号': '注册主链路',
   '执行方式': '注册主链路',
+  '邮箱 / OTP': '邮箱 / OTP',
+  '接码平台': '接码平台',
+  '邮箱': '邮箱 / OTP',
+  '浏览器设置': 'RoxyBrowser',
+  'Codex': 'Codex',
+  '提链': '提链',
+  '系统设置': '通用配置',
   '网站配置': 'WebUI 授权',
 };
-const CONFIG_NAV_CATEGORY_ORDER_V2 = ['运行链路', '资源与服务', '系统'];
+const CONFIG_NAV_CATEGORY_ORDER_V2 = ['业务流程', '资源与服务', '系统'];
 const CONFIG_NAV_CATEGORY_RULES_V2 = {
-  '运行链路': new Set(['注册设置', '账号补全', '邮箱 / OTP', '接码平台']),
-  '资源与服务': new Set(['代理与网络', '浏览器设置', 'Codex', '提链']),
-  '系统': new Set(['系统设置']),
+  '业务流程': new Set(['注册与账号', '邮箱与验证码']),
+  '资源与服务': new Set(['代理与网络', '浏览器', '服务集成']),
+  '系统': new Set(['系统与维护']),
 };
 const CONFIG_PROXY_FEATURES_V2 = [
   ['查询套餐', [
@@ -46,8 +55,25 @@ const CONFIG_PROXY_FEATURES_V2 = [
   ['邮箱换绑', ['ACCOUNT_EMAIL_CHANGE_PROXY_MODE']],
   ['Codex OAuth', ['ACCOUNT_CODEX_PROXY_MODE']],
 ];
+const CONFIG_PLAN_BUSINESS_KEYS_V2 = new Set([
+  'PLAN_CHECK_PAYMENT_METHODS_ENABLED', 'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT',
+  'PLAN_CHECK_TIMEOUT', 'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY',
+  'PLAN_CHECK_REGISTRATION_RECHECK_DELAY', 'PLAN_CHECK_MIN_INTERVAL', 'PLAN_CHECK_JITTER',
+]);
+const CONFIG_FIELD_UI_GROUP_OVERRIDES_V2 = new Map([
+  ['REGISTRATION_PROXY_RETRIES', '注册主链路'],
+  ['REGISTRATION_PROXY_RETRY_DELAY', '注册主链路'],
+  ['ACCOUNT_ACTION_PROXY_RETRIES', '账号补全'],
+  ['ACCOUNT_ACTION_PROXY_RETRY_DELAY', '账号补全'],
+]);
+
+function configFieldUiGroupV2(field) {
+  if (CONFIG_PLAN_BUSINESS_KEYS_V2.has(field.key)) return '注册与账号';
+  return CONFIG_FIELD_UI_GROUP_OVERRIDES_V2.get(field.key) || field.group || '其他';
+}
 
 function configMenuGroupV2(name) {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_MENU_DOMAINS_V2, name)) return name;
   const domain = CONFIG_DOMAIN_ALIASES_V2[name] || name || '其他';
   return Object.keys(CONFIG_MENU_DOMAINS_V2).find(menu => CONFIG_MENU_DOMAINS_V2[menu].includes(domain)) || domain;
 }
@@ -68,6 +94,10 @@ function configMenuDomainNamesV2(menu, fields) {
 }
 
 function setConfigDestinationV2(name) {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_MENU_DOMAINS_V2, name)) {
+    CONFIG_ACTIVE_GROUP_V2 = name;
+    return name;
+  }
   const domain = CONFIG_DOMAIN_ALIASES_V2[name] || name;
   const menu = configMenuGroupV2(domain);
   CONFIG_ACTIVE_GROUP_V2 = menu;
@@ -96,9 +126,9 @@ function configValuesEqual(a, b) {
   return String(a ?? '') === String(b ?? '');
 }
 
-function setPendingConfigValue(key, value) {
+function setPendingConfigValue(key, value, options = {}) {
   const field = CONFIG.find(item => item.key === key);
-  if (field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
+  if (!options.force && field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
   else CONFIG_PENDING_UPDATES[key] = value;
 }
 
@@ -125,12 +155,13 @@ function updateConfigSaveUi(mode = 'idle') {
   if (saveBar) saveBar.hidden = count === 0;
   let copy = count ? `${count} 项更改未保存` : '所有更改已保存';
   if (mode === 'saving') copy = `正在保存 ${count} 项更改…`;
+  if (mode === 'validation_error') copy = '请检查标记的配置项';
   if (mode === 'error') copy = '保存失败，请重试';
   document.querySelectorAll('#tab-config [data-config-save-state]').forEach(state => {
     state.classList.toggle('is-saved', mode === 'idle' && count === 0);
     state.classList.toggle('is-dirty', mode === 'idle' && count > 0);
     state.classList.toggle('is-saving', mode === 'saving');
-    state.classList.toggle('is-error', mode === 'error');
+    state.classList.toggle('is-error', mode === 'error' || mode === 'validation_error');
     const copyEl = state.querySelector('[data-config-save-copy]');
     if (copyEl) copyEl.textContent = copy;
   });
@@ -148,11 +179,13 @@ function updateConfigSaveUi(mode = 'idle') {
   if (hint) {
     hint.textContent = mode === 'saving'
       ? '正在将更改写入运行配置…'
-      : mode === 'error'
-        ? '请检查网络或服务状态后重试'
-        : count
-          ? '修改只在点击保存后生效'
-          : '修改后点击保存才会生效';
+      : mode === 'validation_error'
+        ? '请检查标记的配置项后再保存'
+        : mode === 'error'
+          ? '请检查网络或服务状态后重试'
+          : count
+            ? '修改只在点击保存后生效'
+            : '修改后点击保存才会生效';
   }
   document.querySelectorAll('#tab-config [data-reset-config-v2]').forEach(btn => {
     btn.disabled = mode === 'saving' || count === 0;
@@ -171,9 +204,13 @@ function configGroups() {
   CONFIG.forEach(f => {
     if (seen.has(f.key)) return;
     seen.add(f.key);
-    const rawGroup = f.group || '其他';
+    const isPlanBusiness = CONFIG_PLAN_BUSINESS_KEYS_V2.has(f.key);
+    const uiGroup = configFieldUiGroupV2(f);
+    const rawGroup = uiGroup;
     const group = configMenuGroupV2(rawGroup);
-    (groups[group] = groups[group] || []).push(f);
+    // 只给页面投影改 group，原始 CONFIG 元数据和保存键保持不变。
+    const uiField = isPlanBusiness || uiGroup !== f.group ? {...f, group: uiGroup, _configOriginalGroup: f.group} : f;
+    (groups[group] = groups[group] || []).push(uiField);
   });
   return groups;
 }
@@ -213,12 +250,14 @@ function configFieldStatusV2(f) {
     ? {label: f.restart ? '密钥已配置 · 需重启' : '密钥已配置', cls: f.restart ? 'is-restart' : 'is-effective'}
     : {label: '未配置', cls: 'is-muted'};
   if (f.restart) return {label: f.configured_source === 'env' ? '已配置 · 需重启' : '默认值 · 重启后生效', cls: 'is-restart'};
-  if (f.configured_source === 'env') return {label: '已生效 · .env', cls: 'is-effective'};
-  return {label: '已生效 · 默认值', cls: 'is-muted'};
+  // 正常来源收进“详细帮助”，避免每行都被状态文字撑高；只有需要处理
+  // 的状态（待保存、无效、密钥未配置、需重启）占据显眼位置。
+  return {label: '', cls: ''};
 }
 
 function renderConfigFieldStatusV2(f) {
   const status = configFieldStatusV2(f);
+  if (!status.label) return '';
   return `<span class="config-field-status-v2 ${status.cls}" role="status">${esc(status.label)}</span>`;
 }
 
@@ -238,20 +277,69 @@ function emailConfigSectionForKey(key) {
   return ['其他邮箱配置', ''];
 }
 
+function emailSectionEnabledV2(section) {
+  if (section === '通用邮箱 / OTP') return true;
+  const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
+  const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EMAIL_SOURCE')
+    ? CONFIG_PENDING_UPDATES.EMAIL_SOURCE : source?.value;
+  const enabled = new Set(configListValuesV2(value, source || {key: 'EMAIL_SOURCE'}).map(item => item.toLowerCase()));
+  const aliases = {
+    'Email Butler': ['email_butler', 'email-butler'],
+    'iCloud 隐藏邮箱': ['icloud_hide', 'icloud_hme'],
+    'GPTMail': ['gptmail'], 'MailNest': ['mailnest'], 'Remail': ['remail'],
+    'CloudMail': ['cloudmail'], 'Outlook 邮箱池': ['outlook'],
+    'Cloudflare 临时邮箱': ['cloudflare'], 'Cloudflare 域名邮箱': ['cloudflare_domain'],
+  };
+  const expected = aliases[section] || [];
+  if (expected.some(item => enabled.has(item))) return true;
+  if (section === 'Email Butler' && (enabled.has('icloud_hide') || enabled.has('icloud_hme'))) {
+    const inboxField = CONFIG.find(field => field.key === 'ICLOUD_HME_INBOX_MODE');
+    const inboxMode = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'ICLOUD_HME_INBOX_MODE')
+      ? CONFIG_PENDING_UPDATES.ICLOUD_HME_INBOX_MODE : inboxField?.value;
+    return String(inboxMode || '').trim().toLowerCase() === 'forward_butler';
+  }
+  return false;
+}
+
 function proxyConfigSectionForKey(key) {
-  if (key === 'PROXY_POOL' || key.startsWith('PROXY_POOL_')) {
-    return ['独立代理池', '后台统一维护可用代理库存；注册、续跑和套餐查询等任务只领取满足用途、地区与剩余寿命要求的租约。'];
+  if (['REGISTRATION_PROXY_RETRIES', 'REGISTRATION_PROXY_RETRY_DELAY'].includes(key)) {
+    return ['注册主链路', '注册任务重试参数已归入注册主链路；线路本身由统一代理池按国家需求领取。'];
   }
-  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_PAYMENT_METHODS_ENABLED','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE','ACCOUNT_ACTION_PROXY_RETRIES','ACCOUNT_ACTION_PROXY_RETRY_DELAY','PLAN_CHECK_TIMEOUT','PLAN_CHECK_MAX_ATTEMPTS','PLAN_CHECK_RETRY_DELAY','PLAN_CHECK_REGISTRATION_RECHECK_DELAY','PLAN_CHECK_MIN_INTERVAL','PLAN_CHECK_JITTER'].includes(key)) {
-    return ['账号动作线路', '分别设置补密码、补 2FA、查套餐、查活、刷新 AT、邮箱换绑和 Codex OAuth 的代理来源。'];
+  if (['ACCOUNT_ACTION_PROXY_RETRIES', 'ACCOUNT_ACTION_PROXY_RETRY_DELAY'].includes(key)) {
+    return ['账号补全', '账号动作重试参数已归入账号补全；新任务不在这里选择代理供应商。'];
   }
-  if (['REGISTRATION_PROXY_MODE', 'REGISTRATION_PROXY_RETRIES', 'REGISTRATION_PROXY_RETRY_DELAY'].includes(key)) {
-    return ['注册线路', '注册主流程使用的代理来源；这是账号风险最高、最需要保持地区一致的线路。'];
+  if (['PROXY_1024_REGION', 'PROXY_1024_ROTATE_SESSION_TIME', 'PROXY_1024_VALIDATE', 'PROXY_1024_MAX_ATTEMPTS'].includes(key)) {
+    return ['高级兼容', '1024Proxy 的历史区域值仅用于读取旧配置；新任务使用代理池默认国家。'];
+  }
+  if (['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_POOL'].includes(key)) {
+    return ['代理来源', '统一代理池的当前供给来源与默认国家。业务任务只提出国家和用途需求。'];
+  }
+  if (key === 'PROXY_POOL_WAIT_TIMEOUT') {
+    return ['库存策略', '库存不足时持续等待或按配置时限等待，不在业务线程直接调用供应商。'];
+  }
+  if (['PLAN_CHECK_PROXY_ALLOW_REUSE', 'PLAN_CHECK_PROXY_REUSE_LIMIT'].includes(key)) {
+    return ['库存策略', '仅套餐查询用途允许按策略复用已检测出口，其他认证链路仍保持租约隔离。'];
+  }
+  if (key.startsWith('PROXY_POOL_')) {
+    return ['库存策略', '统一代理池的容量、预热、领取和回收策略。'];
+  }
+  const legacyProxyKeys = new Set([
+    'REGISTRATION_PROXY_MODE', 'ACCOUNT_PASSWORD_PROXY_MODE', 'ACCOUNT_2FA_PROXY_MODE',
+    'ACCOUNT_PLAN_CHECK_PROXY_MODE', 'ACCOUNT_LIVE_CHECK_PROXY_MODE', 'ACCOUNT_REFRESH_AT_PROXY_MODE',
+    'ACCOUNT_CODEX_PROXY_MODE', 'ACCOUNT_EMAIL_CHANGE_PROXY_MODE', 'PLAN_CHECK_PROXY_MODE',
+    'PLAN_CHECK_PROXY', 'REGISTRATION_PROXY_PROVIDER', 'REGISTRATION_PROXY_REGION',
+    'ACCOUNT_PLAN_CHECK_PROVIDER', 'ACCOUNT_PLAN_CHECK_REGION',
+  ]);
+  if (legacyProxyKeys.has(key) || key.endsWith('_PROXY_MODE')) {
+    return ['高级兼容', '旧版逐动作来源字段仅用于读取历史快照，不参与新任务的代理池选择。'];
+  }
+  if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_PAYMENT_METHODS_ENABLED','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE','PLAN_CHECK_TIMEOUT','PLAN_CHECK_MAX_ATTEMPTS','PLAN_CHECK_RETRY_DELAY','PLAN_CHECK_REGISTRATION_RECHECK_DELAY','PLAN_CHECK_MIN_INTERVAL','PLAN_CHECK_JITTER'].includes(key)) {
+    return ['高级兼容', '旧版逐动作来源字段仅用于读取历史快照；新任务按账号国家和业务用途从统一代理池领取线路。'];
   }
   if (key.startsWith('PROXY_1024_') || key.startsWith('REGISTRATION_PROXY_')) {
-    return ['代理提供商', '1024Proxy 当前的提取、检测、粘性和换线参数；后续提供商可以继续注册到这里。'];
+    return ['代理来源', '1024Proxy 当前的提取、检测、粘性和换线参数；后续提供商可以继续注册到这里。'];
   }
-  return ['静态代理池', '静态代理列表和旧版套餐查询兼容参数。'];
+  return ['高级兼容', '历史代理配置保留供兼容读取；新任务统一向代理池申请线路。'];
 }
 
 function smsConfigSectionForKey(key) {
@@ -324,25 +412,31 @@ function configGroupSlug(name) {
     .toLowerCase();
 }
 function configGroupDisplayName(name) {
-  return configMenuGroupV2(name);
+  return String(name || '其他');
 }
 function configNavCategoryV2(name) {
   for (const category of CONFIG_NAV_CATEGORY_ORDER_V2) {
     if (CONFIG_NAV_CATEGORY_RULES_V2[category].has(name)) return category;
   }
   const text = String(name || '');
-  if (text.includes('代理') || text.includes('Browser') || text.includes('画像')) return '资源与服务';
+  if (text.includes('代理') || text.includes('Browser') || text.includes('浏览器') || text.includes('画像')) return '资源与服务';
   return '系统';
 }
 function configNavSearchTextV2(name, fields) {
   return [name, ...(fields || []).flatMap(f => [f.group, f.key, f.label, f.help || '', configFieldSubsectionV2(f)])].join(' ');
 }
 function configFieldSubsectionV2(field) {
+  if (CONFIG_PLAN_BUSINESS_KEYS_V2.has(field.key)) return '注册与账号';
+  if (CONFIG_FIELD_UI_GROUP_OVERRIDES_V2.has(field.key)) return configFieldUiGroupV2(field);
   if (field.group === '邮箱 / OTP') return emailConfigSectionForKey(field.key)[0];
   if (field.group === '接码平台') return smsConfigSectionForKey(field.key)[0];
   if (field.group === '代理与网络') return proxyConfigSectionForKey(field.key)[0];
   if (field.group === 'Codex') return codexConfigSectionForKey(field.key)[0];
   return '';
+}
+function configFieldMenuV2(field) {
+  if (CONFIG_PLAN_BUSINESS_KEYS_V2.has(field.key)) return '注册与账号';
+  return configMenuGroupV2(configFieldUiGroupV2(field));
 }
 function configFieldMatchesQueryV2(field, query = CONFIG_NAV_QUERY_V2) {
   const needle = String(query || '').trim().toLowerCase();
@@ -357,13 +451,13 @@ function selectConfigSearchDestinationV2(name = CONFIG_ACTIVE_GROUP_V2) {
   const matches = menu => configNavSearchTextV2(menu, groups[menu]).toLowerCase().includes(query);
   // 完整配置键优先精确匹配，避免 PLAN_CHECK_PROXY 命中较长的账号配置键。
   const exactField = CONFIG.find(field => field.key.toLowerCase() === query);
-  const menu = exactField ? configMenuGroupV2(exactField.group)
+  const menu = exactField ? configFieldMenuV2(exactField)
     : (groups[name] && matches(name) ? name : names.find(matches));
   if (!menu) return;
   CONFIG_ACTIVE_GROUP_V2 = menu;
   const field = exactField || groups[menu].find(item => configFieldMatchesQueryV2(item, query));
   if (!field) return;
-  CONFIG_ACTIVE_DOMAIN_V2[menu] = field.group;
+  CONFIG_ACTIVE_DOMAIN_V2[menu] = configFieldUiGroupV2(field);
   const subsection = configFieldSubsectionV2(field);
   if (field.group === '邮箱 / OTP') CONFIG_EMAIL_ACTIVE_SECTION_V2 = subsection;
   if (field.group === '接码平台') CONFIG_SMS_ACTIVE_SECTION_V2 = subsection;
@@ -427,6 +521,11 @@ function getConfigGroupNames() {
   return Object.keys(configGroups());
 }
 function configSectionIntro(name) {
+  if (name === '注册与账号') return '按业务动作维护注册、账号补全和套餐查询；代理线路由统一代理池领取。';
+  if (name === '邮箱与验证码') return '选择可用邮箱来源并维护验证码与短信接码服务。';
+  if (name === '浏览器') return '维护浏览器连接、账号环境、地区画像、省流量和人工节奏。';
+  if (name === '服务集成') return '维护 CPA、sub2api、提链及其他外部服务连接。';
+  if (name === '系统与维护') return '维护并发、自动任务、诊断日志、任务保留和访问设置。';
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
   if (name === '注册主链路') return '配置注册主流程、密码/验证码模式，以及注册后可选能力。';
@@ -439,7 +538,7 @@ function configSectionIntro(name) {
   if (name === '定时任务') return '后台周期任务的开关与执行间隔。上次执行时间保存在数据库中，重启服务会按剩余时间接续，不会重复执行。';
   if (name === '人工节奏') return '配置流程操作的随机停顿节奏，适用于协议全链路和浏览器操作。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
-  if (name === '代理与网络') return '统一管理注册线路、账号动作线路、代理提供商和静态代理池。';
+  if (name === '代理与网络') return '统一管理代理池来源、默认国家和库存策略；业务任务只提交用途与国家需求。';
   if (name === '提链') return '提链服务地址、CDK 与并发参数。';
   return '';
 }
@@ -469,8 +568,9 @@ function configFeatureIcon(key) {
 }
 function renderConfigSectionHead(name, meta = '') {
   const title = configGroupDisplayName(name);
-  const fields = configGroups()[title] || [];
-  const domains = configMenuDomainNamesV2(title, fields);
+  const menu = configMenuGroupV2(name);
+  const fields = configGroups()[menu] || [];
+  const domains = configMenuDomainNamesV2(menu, fields);
   return `
     <div class="config-section-v2-head">
       <div class="config-section-v2-head-main">
@@ -482,7 +582,7 @@ function renderConfigSectionHead(name, meta = '') {
       </span>
     </div>
     ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
-      ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain)}</button>`).join('')}
+      ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain === '注册与账号' && menu === '注册与账号' ? '查询套餐' : domain)}</button>`).join('')}
     </div>` : ''}
   `;
 }
@@ -502,46 +602,6 @@ function registrationDriverLabel(value) {
   const cur = String(value || '').trim().toLowerCase();
   const hit = registrationDriverChoices().find(c => String(c.value) === cur);
   return hit ? String(hit.label || hit.value) : (cur || '—');
-}
-function closeConfigEpSelects(exceptId) {
-  document.querySelectorAll('.config-ep-select.open').forEach(el => {
-    if (exceptId && el.id === exceptId) return;
-    el.classList.remove('open');
-  });
-}
-function toggleConfigEpSelect(wrapId, e) {
-  if (e) { e.preventDefault(); e.stopPropagation(); }
-  const wrap = document.getElementById(wrapId);
-  if (!wrap) return;
-  const willOpen = !wrap.classList.contains('open');
-  closeConfigEpSelects(wrapId);
-  wrap.classList.toggle('open', willOpen);
-}
-function setRegistrationDriverValue(value) {
-  const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  setPendingConfigValue('REGISTRATION_DRIVER', cur);
-  closeConfigEpSelects();
-  renderRegistrationDriverCard();
-  const sectionMount = document.getElementById('configRegistrationSelectV2');
-  if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
-  bindRoxyWorkspaceToolsV2();
-  bindCloudMailToolsV2();
-  updateConfigSaveUi();
-}
-function renderRegistrationEpSelect(mount, wrapId) {
-  if (!mount) return;
-  const cur = getRegistrationDriverValue();
-  const label = registrationDriverLabel(cur);
-  const items = registrationDriverChoices().map(c => `
-    <button type="button" class="config-ep-select-item${c.value === cur ? ' is-active' : ''}" role="option" data-driver-value="${attrEsc(c.value)}">${esc(c.label)}</button>
-  `).join('');
-  mount.className = 'config-ep-select';
-  mount.id = wrapId;
-  mount.innerHTML = `
-    <button type="button" class="config-ep-select-btn" data-ep-toggle="${attrEsc(wrapId)}">${esc(label)}</button>
-    <div class="config-ep-select-menu" role="listbox">${items}</div>
-    <input type="hidden" data-key="REGISTRATION_DRIVER" value="${attrEsc(cur)}">
-  `;
 }
 function renderRegistrationDriverCard() {
   const cur = getRegistrationDriverValue();
@@ -589,25 +649,8 @@ function renderConfigOverviewCards() {
 function renderFeatureSwitchField(f, opts = {}) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const on = !!fv;
-  const withIcon = opts.withIcon !== false;
-  const icon = withIcon ? configFeatureIcon(f.key) : null;
-  return `
-    <div class="config-switch-v2">
-      ${withIcon ? `
-      <div class="config-switch-v2-top">
-        <span class="config-switch-v2-icon ${icon.cls}" aria-hidden="true">
-          <svg viewBox="0 0 24 24">${icon.svg}</svg>
-        </span>
-        <div class="config-switch-v2-label-wrap">
-          <div class="config-switch-v2-label">${esc(f.label)}</div>
-          <code class="config-field-key-v2">${esc(f.key)}</code>
-        </div>
-      </div>` : `<div class="config-switch-v2-label-wrap"><div class="config-switch-v2-label">${esc(f.label)}</div><code class="config-field-key-v2">${esc(f.key)}</code></div>`}
-      <input class="config-switch-v2-toggle" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">
-      ${opts.extraHtml || ''}
-      <p class="config-switch-v2-help">${esc(f.help || '')}</p>
-    </div>
-  `;
+  const control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
+  return renderConfigSettingRowV2(f, control, {help: opts.help || f.help || ''});
 }
 
 function orderedConfigFieldsV2(fields, keys) {
@@ -758,6 +801,17 @@ function renderRegistrationDebugSectionV2(fields) {
   `;
 }
 
+function renderPlanBusinessSectionV2(fields) {
+  return `
+    <section class="config-section-v2" id="${esc(configGroupSlug('注册与账号'))}" data-config-section="注册与账号">
+      ${renderConfigSectionHead('注册与账号', configSectionIntro('注册与账号'))}
+      <div class="config-section-v2-subhelp">套餐查询只描述业务国家、支付方式和请求节奏；线路由代理池按国家需求统一领取。</div>
+      ${renderConfigSettingGroupV2('查询套餐', fields)}
+      ${renderConfigSaveActions()}
+    </section>
+  `;
+}
+
 function registrationTwofaDriverChoices() {
   return configSchemaOptions(configSchemaField('TWOFA_DRIVER'));
 }
@@ -826,6 +880,134 @@ function configDriverChoices(f) {
   if (f.key === 'ACCOUNT_LIVE_CHECK_DRIVER') return liveCheckDriverChoices();
   const choices = configSchemaOptions(f);
   return choices.length ? choices : null;
+}
+
+const CONFIG_MULTI_VALUE_KEYS_V2 = new Set([
+  'EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES',
+  'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES',
+]);
+
+function configListValuesV2(value, f = {}) {
+  if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean);
+  const separator = f.key === 'EMAIL_SOURCE' || f.key === 'ROXY_RANDOM_OS_CHOICES' ? /[,\n]+/ : /[,\n\s]+/;
+  return String(value ?? '').split(separator).map(item => item.trim()).filter(Boolean);
+}
+
+function configListOptionValuesV2(f) {
+  const schema = configSchemaOptions(f);
+  if (schema.length) return schema;
+  if (Array.isArray(f?.csv_options)) {
+    return f.csv_options.map(value => ({value: String(value), label: String(value)}));
+  }
+  return [];
+}
+
+function configListSummaryV2(f, values, options) {
+  if (!values.length) return f.key === 'EMAIL_SOURCE' ? '未启用邮箱来源' : '未选择';
+  const labels = values.map(value => options.find(option => option.value === value)?.label || `当前值（${value}）`);
+  const shown = labels.slice(0, 2).join('、');
+  return labels.length > 2 ? `${shown} +${labels.length - 2}` : shown;
+}
+
+function renderConfigMultiSelectV2(f, value) {
+  const schemaOptions = configListOptionValuesV2(f);
+  const values = configListValuesV2(value, f);
+  const options = schemaOptions.slice();
+  values.slice().reverse().forEach(item => {
+    if (!options.some(option => option.value === item)) options.unshift({value: item, label: `当前值（${item}）`});
+  });
+  if (!options.length) return '';
+  const selected = new Set(values);
+  const summary = configListSummaryV2(f, values, options);
+  const optionsMarkup = options.map(item => {
+    const checked = selected.has(item.value);
+    return `<button type="button" class="config-multi-option-v2${checked ? ' is-selected' : ''}" role="option" aria-selected="${checked}" data-multi-value="${attrEsc(item.value)}"><span class="config-multi-check-v2" aria-hidden="true">${checked ? '✓' : ''}</span><span>${esc(item.label)}</span></button>`;
+  }).join('');
+  // 保留一个不可见 native select 供旧脚本和无 JS 表单检查读取；实际交互使用
+  // 可搜索、可键盘操作的按钮列表，避免要求用户按 Ctrl/Cmd。
+  const compat = options.map(item => `<option value="${attrEsc(item.value)}"${selected.has(item.value) ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
+  return `
+    <div class="config-multi-select-v2" data-multi-picker="${attrEsc(f.key)}" data-multi-values="${attrEsc(values.join(','))}">
+      <button type="button" class="config-multi-trigger-v2" aria-expanded="false" aria-haspopup="listbox"><span data-multi-summary>${esc(summary)}</span><span aria-hidden="true">⌄</span></button>
+      <div class="config-multi-menu-v2" role="listbox" hidden>
+        <input type="search" class="config-multi-search-v2" placeholder="搜索并勾选" aria-label="搜索${attrEsc(f.label)}" data-multi-search>
+        <div class="config-multi-options-v2" data-multi-options>${optionsMarkup}</div>
+      </div>
+      <input type="hidden" data-key="${attrEsc(f.key)}" value="${attrEsc(values.join(','))}">
+      <select class="config-multi-compat-v2" multiple tabindex="-1" aria-hidden="true" data-config-compat-key="${attrEsc(f.key)}">${compat}</select>
+    </div>
+  `;
+}
+
+function syncConfigMultiSelectV2(picker) {
+  const hidden = picker.querySelector('input[type="hidden"][data-key]');
+  if (!hidden) return;
+  const f = CONFIG.find(item => item.key === hidden.dataset.key) || {key: hidden.dataset.key};
+  const values = configListValuesV2(hidden.value, f);
+  const options = configListOptionValuesV2(f);
+  picker.dataset.multiValues = values.join(',');
+  const selected = new Set(values);
+  picker.querySelectorAll('[data-multi-value]').forEach(option => {
+    const active = selected.has(option.dataset.multiValue);
+    option.classList.toggle('is-selected', active);
+    option.setAttribute('aria-selected', active ? 'true' : 'false');
+    const check = option.querySelector('.config-multi-check-v2');
+    if (check) check.textContent = active ? '✓' : '';
+  });
+  const summary = picker.querySelector('[data-multi-summary]');
+  if (summary) summary.textContent = configListSummaryV2(f, values, options);
+  picker.querySelectorAll('.config-multi-compat-v2 option').forEach(option => { option.selected = selected.has(option.value); });
+}
+
+function toggleConfigMultiSelectV2(picker, open = null) {
+  const menu = picker.querySelector('.config-multi-menu-v2');
+  const trigger = picker.querySelector('.config-multi-trigger-v2');
+  if (!menu || !trigger) return;
+  const next = open === null ? menu.hidden : open;
+  menu.hidden = !next;
+  trigger.setAttribute('aria-expanded', next ? 'true' : 'false');
+  if (next) picker.querySelector('[data-multi-search]')?.focus();
+}
+
+function bindConfigMultiSelectsV2() {
+  document.querySelectorAll('#tab-config [data-multi-picker]').forEach(picker => {
+    if (picker.dataset.bound) return;
+    picker.dataset.bound = '1';
+    picker.addEventListener('click', event => {
+      const trigger = event.target.closest('.config-multi-trigger-v2');
+      if (trigger) {
+        event.preventDefault();
+        toggleConfigMultiSelectV2(picker);
+        return;
+      }
+      const option = event.target.closest('[data-multi-value]');
+      if (!option) return;
+      event.preventDefault();
+      const hidden = picker.querySelector('input[type="hidden"][data-key]');
+      if (!hidden) return;
+      const f = CONFIG.find(item => item.key === hidden.dataset.key) || {key: hidden.dataset.key};
+      const values = configListValuesV2(hidden.value, f);
+      const next = values.includes(option.dataset.multiValue)
+        ? values.filter(value => value !== option.dataset.multiValue)
+        : [...values, option.dataset.multiValue];
+      hidden.value = next.join(',');
+      syncConfigMultiSelectV2(picker);
+      hidden.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+    picker.addEventListener('input', event => {
+      if (!event.target.matches('[data-multi-search]')) return;
+      const query = event.target.value.trim().toLowerCase();
+      picker.querySelectorAll('[data-multi-value]').forEach(option => {
+        option.hidden = !!query && !option.textContent.toLowerCase().includes(query);
+      });
+    });
+    picker.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        toggleConfigMultiSelectV2(picker, false);
+        picker.querySelector('.config-multi-trigger-v2')?.focus();
+      }
+    });
+  });
 }
 
 function configCountryCodesV2(value) {
@@ -949,17 +1131,46 @@ function renderConfigControlMarkupV2(f) {
   const driverChoices = configDriverChoices(f);
   if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
-  } else if (f.key === 'EMAIL_SOURCE') {
-    const selectedValues = String(fv || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
-    const allOptions = configSchemaOptions(f);
-    const orderedOptions = [
-      ...selectedValues.map(value => allOptions.find(item => item.value.toLowerCase() === value)).filter(Boolean),
-      ...allOptions.filter(item => !selectedValues.includes(item.value.toLowerCase())),
-    ];
-    const options = orderedOptions.map(item => `<option value="${attrEsc(item.value)}"${selectedValues.includes(item.value.toLowerCase()) ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
-    control = `<select multiple size="${Math.min(Math.max(configSchemaOptions(f).length, 3), 6)}" data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">${options}</select>`;
+  } else if (f.key === 'PROXY_POOL_DEFAULT_COUNTRY' && Array.isArray(f.country_codes) && f.country_codes.length) {
+    const current = String(fv ?? '').trim().toUpperCase();
+    const countryOptions = configCountryOptionsV2(f);
+    const options = countryOptions.map(item => ({value: item.code, label: `${item.name} · ${item.code}`}));
+    if (current && !options.some(item => item.value === current)) options.unshift({value: current, label: `当前值（${current}），需检查`});
+    control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">${options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
+  } else if (['EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES', 'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES'].includes(f.key)
+    || (f.type === 'list_str_multiline' && configListOptionValuesV2(f).length)) {
+    control = renderConfigMultiSelectV2(f, fv);
   } else if (f.key === 'EXTRACT_LINK_TYPE') {
     control = renderExtractLinkTypeControlV2(fv);
+  } else if (f.key === 'PROXY_POOL_WAIT_TIMEOUT') {
+    const hasPending = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key);
+    const storedSeconds = Number(fv) > 0 ? Number(fv) : 0;
+    const timed = CONFIG_COMPOSITE_MODES_V2[f.key] || (storedSeconds ? 'timed' : 'continuous');
+    const seconds = timed === 'timed' ? (hasPending && fv === null ? '' : storedSeconds || 60) : 0;
+    control = `<div class="config-composite-control-v2" data-config-composite-key="${attrEsc(f.key)}">
+      <select data-key="${attrEsc(f.key)}" data-composite-mode aria-label="领取等待模式">
+        <option value="continuous"${timed === 'continuous' ? ' selected' : ''}>持续等待</option>
+        <option value="timed"${timed === 'timed' ? ' selected' : ''}>限时等待</option>
+      </select>
+      <input type="number" data-wait-seconds-key="${attrEsc(f.key)}" data-composite-seconds min="1" step="1" value="${seconds || ''}" placeholder="秒数" aria-label="限时等待秒数"${timed === 'timed' ? '' : ' hidden'}>
+    </div>`;
+  } else if (f.key === 'SMS_MAX_PRICE') {
+    const price = String(fv ?? '').trim();
+    const hasPending = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key);
+    const limited = CONFIG_COMPOSITE_MODES_V2[f.key] || (price ? 'limited' : 'unlimited');
+    const displayedPrice = limited === 'limited' ? (hasPending && price === '' ? '' : price || '0.1') : '';
+    control = `<div class="config-composite-control-v2" data-config-composite-key="${attrEsc(f.key)}">
+      <select data-key="${attrEsc(f.key)}" data-composite-mode aria-label="价格上限模式">
+        <option value="unlimited"${limited === 'unlimited' ? ' selected' : ''}>不设上限</option>
+        <option value="limited"${limited === 'limited' ? ' selected' : ''}>设上限</option>
+      </select>
+      <input type="number" data-price-key="${attrEsc(f.key)}" data-composite-value min="0" step="0.001" value="${attrEsc(displayedPrice)}" placeholder="小数价格" aria-label="短信价格上限"${limited === 'limited' ? '' : ' hidden'}>
+    </div>`;
+  } else if (f.key === 'ICLOUD_HME_ACCOUNT_ID') {
+    const current = String(fv ?? '').trim();
+    const options = [{value: '', label: '全部 active 账号'}, ...configSchemaOptions(f)];
+    if (current && !options.some(item => item.value === current)) options.splice(1, 0, {value: current, label: `当前值（${current}），需检查`});
+    control = `<select data-key="${attrEsc(f.key)}" id="configICloudHmeAccountSelectV2" aria-label="${attrEsc(f.label)}">${options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (driverChoices) {
     const raw = String(fv == null ? '' : fv).trim();
     const current = driverChoices.find(item => item.value.toLowerCase() === raw.toLowerCase())?.value ?? raw;
@@ -972,54 +1183,55 @@ function renderConfigControlMarkupV2(f) {
     const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
     control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (f.type === 'int') {
-    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}">`;
+    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}" aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'float') {
-    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '0.1')} value="${attrEsc(fv == null ? '' : fv)}">`;
+    control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '0.1')} value="${attrEsc(fv == null ? '' : fv)}" aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'bool') {
     control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${fv ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'list_str_multiline') {
     const placeholder = f.key === 'PLAN_CHECK_COUNTRIES' ? '支持换行、逗号或空格分隔，可留空' : '每行一条，可留空';
-    control = `<textarea data-key="${attrEsc(f.key)}" placeholder="${attrEsc(placeholder)}">${attrEsc((fv || []).join('\n'))}</textarea>`;
+    const textarea = `<textarea data-key="${attrEsc(f.key)}"${f.secret ? ' data-secret-input="true"' : ''} placeholder="${attrEsc(placeholder)}" aria-label="${attrEsc(f.label)}">${attrEsc(configListValuesV2(fv, f).join('\n'))}</textarea>`;
+    control = f.secret
+      ? `<div class="config-secret-control-v2">${textarea}<button type="button" class="config-secret-clear-v2" data-clear-secret="${attrEsc(f.key)}" aria-label="明确清除${attrEsc(f.label)}">清除</button></div>`
+      : textarea;
   } else {
     const shown = isPlaceholderEmpty(fv) ? '' : fv;
     const inputType = f.secret ? 'password' : 'text';
     const ph = f.secret ? '保存在 .env，可留空' : '可留空';
-    control = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false">`;
+    const input = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false" aria-label="${attrEsc(f.label)}"${f.secret ? ' data-secret-input="true"' : ''}>`;
+    control = f.secret
+      ? `<div class="config-secret-control-v2">${input}<button type="button" class="config-secret-clear-v2" data-clear-secret="${attrEsc(f.key)}" aria-label="明确清除${attrEsc(f.label)}">清除</button></div>`
+      : input;
   }
   return control;
 }
 function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
-  const control = controlMarkup || (f.key === 'REGISTRATION_DRIVER'
-    ? `<div class="config-ep-select" id="configRegistrationSelectV2"></div>`
-    : renderConfigControlMarkupV2(f));
+  const control = controlMarkup || renderConfigControlMarkupV2(f);
   const extraClass = options.extraClass ? ` ${options.extraClass}` : '';
   const displayKey = options.displayKey || f.key;
+  const fullHelp = String(options.help || f.help || '').trim();
+  const shortHelp = fullHelp.replace(/\s+/g, ' ').trim();
+  const detail = [
+    fullHelp,
+    f.file ? `来源模块：${f.file}` : '',
+    f.configured_source ? `当前来源：${f.configured_source}` : '',
+    f.restart ? '修改后需要重启服务才能完整生效。' : '',
+  ].filter(Boolean).join(' ');
   return `
     <div class="config-setting-row-v2${extraClass}" data-config-setting="${attrEsc(displayKey)}">
       <div class="config-setting-copy-v2">
         <div class="config-setting-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</div>
-        <code class="config-field-key-v2">${esc(displayKey)}</code>
-        <p class="config-setting-help-v2">${esc(options.help || f.help || '')}</p>
+        ${shortHelp ? `<p class="config-setting-short-help-v2" title="${attrEsc(shortHelp)}">${esc(shortHelp)}</p>` : ''}
+        ${detail ? `<details class="config-field-help-v2"><summary>详细帮助</summary><div>${esc(detail)}<code class="config-field-key-v2">${esc(displayKey)}</code></div></details>` : ''}
       </div>
-      <div class="config-setting-control-v2">${control}</div>
+      <div class="config-setting-control-v2">${control}${CONFIG_FIELD_ERRORS_V2[f.key] ? `<p class="config-field-error-v2" role="alert">${esc(CONFIG_FIELD_ERRORS_V2[f.key])}</p>` : ''}</div>
     </div>
   `;
 }
 function renderConfigPlainFieldV2(f) {
-  // 国家选择器含多个交互控件，不能放进关联单个输入框的 label。
-  const tag = ['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) ? 'div' : 'label';
   const help = f.key === 'PLAN_CHECK_COUNTRIES' ? '按选择顺序查询；不选时沿用账号注册国家，不影响注册查套餐。'
-    : f.key === 'PROXY_POOL_COUNTRIES' ? '选择额外预热国家；不选时按现有线路策略备货。' : f.help || '';
-  return `
-    <${tag} class="fld config-field-v2">
-      <span class="config-field-v2-head">
-        <span class="config-field-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</span>
-        <code class="config-field-key-v2">${esc(f.key)}</code>
-      </span>
-      <span class="hint" title="${attrEsc(f.help || '')}">${esc(help)}</span>
-      ${renderConfigControlMarkupV2(f)}
-    </${tag}>
-  `;
+    : f.key === 'PROXY_POOL_COUNTRIES' ? '选择额外预热国家；不选时按现有线路策略备货。' : null;
+  return renderConfigSettingRowV2(f, null, help ? {help} : {});
 }
 function renderProxyProviderToolsV2() {
   return `
@@ -1057,7 +1269,7 @@ async function testProxy1024V2() {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         api_url: value('PROXY_1024_API_URL'),
-        region: value('PROXY_1024_REGION'),
+        region: configFieldValueV2('PROXY_POOL_DEFAULT_COUNTRY', 'JP'),
         protocol: value('PROXY_1024_PROTOCOL', 'http'),
         session_minutes: value('PROXY_1024_SESSION_MINUTES', 30),
         validate: value('PROXY_1024_VALIDATE', true),
@@ -1112,6 +1324,58 @@ function renderProxyActionFieldsV2(fields) {
     </section>`).join('')}</div>`;
 }
 
+function renderProxyTaskPoolSummaryV2() {
+  const rows = [
+    ['注册与账号认证', '注册入队时的池默认国家；账号认证沿用账号历史国家', '独占租约'],
+    ['查询套餐', '业务国家顺序（逐国申请）', '按池用途策略复用'],
+    ['查活 / 刷新 AT', '账号历史国家；缺失时使用池默认国家', '认证链路保持同一线路'],
+    ['补密码 / 2FA / 换绑 / Codex', '账号历史国家；缺失时使用池默认国家', '独占租约'],
+  ];
+  return `<div class="config-proxy-pool-summary-v2" aria-label="任务用池规则">
+    <p class="config-section-v2-subhelp">业务任务只提交用途、目标国家和时间预算；任务不选择供应商或手动代理。</p>
+    <div class="config-proxy-pool-table-v2"><div class="config-proxy-pool-head-v2"><span>任务</span><span>国家需求</span><span>领取规则</span></div>${rows.map(row => `<div class="config-proxy-pool-row-v2">${row.map(cell => `<span>${esc(cell)}</span>`).join('')}</div>`).join('')}</div>
+    <div class="config-section-v2-subhelp">代理来源、默认国家和库存策略请在相邻小节维护；切换来源不会打断已发放租约。</div>
+  </div>`;
+}
+
+function renderConfigLegacyProxyFieldsV2(fields) {
+  return `<div class="config-legacy-list-v2"><p class="config-section-v2-subhelp">这些值只为读取旧任务快照和兼容迁移保留。新任务不会使用它们选择供应商，也不能在这里编辑。</p>${fields.map(field => `<div class="config-legacy-row-v2"><span>${esc(field.label || field.key)}</span><code>${esc(field.key)}</code><span>兼容保留</span></div>`).join('')}</div>`;
+}
+
+function renderEmailSourceManagerV2() {
+  const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
+  if (!source) return '';
+  const options = configListOptionValuesV2(source);
+  const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, source.key)
+    ? CONFIG_PENDING_UPDATES[source.key] : source.value;
+  const active = new Set(configListValuesV2(value, source).map(item => item.toLowerCase()));
+  const enabledCards = options.filter(option => active.has(option.value.toLowerCase())).map(option => {
+    return `<div class="config-email-source-card-v2 is-enabled" data-email-source-status="${attrEsc(option.value)}"><span><strong>${esc(option.label)}</strong><small>已启用，参与自动领取与收码</small></span><span class="config-email-source-state-v2">已启用</span></div>`;
+  }).join('');
+  const disabledCards = options.filter(option => !active.has(option.value.toLowerCase())).map(option => {
+    return `<div class="config-email-source-card-v2 is-disabled" data-email-source-status="${attrEsc(option.value)}"><span><strong>${esc(option.label)}</strong><small>未启用，配置仍会保留</small></span><span class="config-email-source-state-v2">未启用</span></div>`;
+  }).join('');
+  return `<section class="config-email-source-manager-v2" aria-label="邮箱来源管理">
+    <div class="config-inline-heading-v2"><h4>已启用邮箱来源</h4><span>在上方选择需要使用的来源</span></div>
+    <div class="config-email-source-list-v2">${enabledCards || '<span class="hint">当前没有启用的邮箱来源</span>'}</div>
+    <details class="config-email-source-details-v2"><summary>显示未启用来源与保留的服务配置</summary><p>关闭来源不会清除 API 地址、密钥或已有邮箱；自动模式至少保留一个来源，手动模式可以为空。</p>${disabledCards || '<span class="hint">没有未启用来源</span>'}</details>
+  </section>`;
+}
+
+function proxySourceIsManualV2() {
+  const field = CONFIG.find(item => item.key === 'PROXY_POOL_SOURCE');
+  const value = field && Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, field.key)
+    ? CONFIG_PENDING_UPDATES[field.key] : field?.value;
+  return String(value ?? '').trim().toLowerCase() === 'manual';
+}
+
+function proxySourceFieldVisibleV2(field) {
+  if (CONFIG_NAV_QUERY_V2.trim()) return true;
+  if (field.key === 'PROXY_POOL') return proxySourceIsManualV2();
+  if (String(field.key || '').startsWith('PROXY_1024_')) return !proxySourceIsManualV2();
+  return true;
+}
+
 function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, activeRef, dataAttr) {
   const slug = configGroupSlug(name);
   const bySection = {};
@@ -1120,20 +1384,40 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     if (!bySection[section]) bySection[section] = { help, fields: [] };
     bySection[section].fields.push(f);
   }
-  const sections = preferred.filter(x => bySection[x]).concat(Object.keys(bySection).filter(x => !preferred.includes(x)));
+  let sections = name === '代理与网络'
+    ? preferred.filter(x => x === '任务用池' || bySection[x]).concat(Object.keys(bySection).filter(x => !preferred.includes(x)))
+    : preferred.filter(x => bySection[x]).concat(Object.keys(bySection).filter(x => !preferred.includes(x)));
+  if (name === '邮箱 / OTP' && !CONFIG_NAV_QUERY_V2.trim()) {
+    sections = sections.filter(section => emailSectionEnabledV2(section));
+  }
   let active = activeRef.get();
   if (!sections.includes(active)) {
     active = sections[0] || '';
     activeRef.set(active);
   }
   const current = bySection[active] || { help: '', fields: [] };
-  const switches = current.fields.filter(f => f.type === 'bool');
-  const inputs = current.fields.filter(f => f.type !== 'bool');
-  const body = name === '代理与网络' && active === '账号动作线路'
+  const visibleFields = name === '代理与网络' && active === '代理来源'
+    ? current.fields.filter(proxySourceFieldVisibleV2)
+    : current.fields;
+  const switches = visibleFields.filter(f => f.type === 'bool');
+  const inputs = visibleFields.filter(f => f.type !== 'bool');
+  const sourcePrimaryKeys = new Set(['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_POOL', 'PROXY_1024_API_URL', 'PROXY_1024_PROTOCOL', 'PROXY_1024_SESSION_MINUTES']);
+  const sourcePrimary = visibleFields.filter(f => sourcePrimaryKeys.has(f.key));
+  const sourceAdvanced = visibleFields.filter(f => !sourcePrimaryKeys.has(f.key));
+  const body = name === '代理与网络' && active === '任务用池'
+    ? renderProxyTaskPoolSummaryV2()
+    : name === '代理与网络' && active === '高级兼容'
+    ? renderConfigLegacyProxyFieldsV2(current.fields)
+    : name === '代理与网络' && active === '代理来源'
+    ? `<div class="config-section-v2-body">${sourcePrimary.map(renderConfigPlainFieldV2).join('')}</div>${sourceAdvanced.length ? `<details class="config-source-advanced-v2"${CONFIG_NAV_QUERY_V2.trim() ? ' open' : ''}><summary>高级提取与检测参数</summary><div class="config-section-v2-body">${sourceAdvanced.map(renderConfigPlainFieldV2).join('')}</div></details>` : ''}`
+    : name === '代理与网络' && active === '账号动作线路'
     ? renderProxyActionFieldsV2(current.fields)
     : `${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
        ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`;
   let extra = '';
+  if (name === '邮箱 / OTP' && active === '通用邮箱 / OTP') {
+    extra = renderEmailSourceManagerV2();
+  }
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
   }
@@ -1143,7 +1427,7 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   if (name === '邮箱 / OTP' && active === 'iCloud 隐藏邮箱') {
     extra = renderICloudHMEToolsV2();
   }
-  if (name === '代理与网络' && active === '代理提供商') {
+  if (name === '代理与网络' && active === '代理来源' && !proxySourceIsManualV2()) {
     extra = renderProxyProviderToolsV2();
   }
   return `
@@ -1247,6 +1531,7 @@ function renderICloudHMEToolsV2() {
         <div class="hint">连接本机服务后同步 Apple 隐藏邮箱库存，并确认 sidecar 或 Email Butler PG 收件链路。Apple Cookie 不会保存到 turb。</div>
       </div>
       <div class="action-cell">
+        <button class="btn" type="button" id="btnLoadICloudHMEAccountsV2">加载账号目录</button>
         <button class="btn primary" type="button" id="btnTestICloudHMEV2">连接并同步</button>
       </div>
       <div id="icloudHMEStatusV2" class="muted" style="font-size:12px;">尚未检测</div>
@@ -1254,10 +1539,40 @@ function renderICloudHMEToolsV2() {
   `;
 }
 function bindICloudHMEToolsV2() {
+  const loadBtn = $('#btnLoadICloudHMEAccountsV2');
   const btn = $('#btnTestICloudHMEV2');
+  if (loadBtn && !loadBtn.dataset.bound) {
+    loadBtn.dataset.bound = '1';
+    loadBtn.addEventListener('click', () => loadICloudHMEAccountsV2());
+  }
   if (btn && !btn.dataset.bound) {
     btn.dataset.bound = '1';
     btn.addEventListener('click', () => testICloudHMEV2());
+  }
+}
+async function loadICloudHMEAccountsV2() {
+  const btn = $('#btnLoadICloudHMEAccountsV2');
+  const status = $('#icloudHMEStatusV2');
+  const select = $('#configICloudHmeAccountSelectV2');
+  if (!btn || !status || !select) return;
+  btn.disabled = true;
+  status.textContent = '正在读取已保存的 iCloud active 账号目录...';
+  const current = select.value;
+  try {
+    const response = await api('/api/icloud-hme/accounts');
+    const items = Array.isArray(response.items) ? response.items : [];
+    const options = [{value: '', label: '全部 active 账号'}, ...items.map(item => ({
+      value: String(item.id || '').trim(),
+      label: String(item.label || item.id || '').trim() || '未命名账号',
+    })).filter(item => item.value)];
+    if (current && !options.some(item => item.value === current)) options.splice(1, 0, {value: current, label: `当前值（${current}），需检查`});
+    select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
+    select.value = current;
+    status.textContent = items.length ? `已加载 ${items.length} 个 active 账号；选择后记得保存配置。` : '目录为空，当前选择和草稿值已保留。';
+  } catch (error) {
+    status.textContent = `加载失败：${error.message}。请先保存 iCloud 连接配置。`;
+  } finally {
+    btn.disabled = false;
   }
 }
 async function testICloudHMEV2() {
@@ -1417,6 +1732,7 @@ function renderConfigSectionV2(name, fields) {
 
 function renderConfigDomainSectionV2(name, fields) {
   const slug = configGroupSlug(name);
+  if (name === '注册与账号') return renderPlanBusinessSectionV2(fields);
   if (name === '注册主链路') return renderRegistrationMainSectionV2(fields);
   if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
   if (name === '注册调试') return renderRegistrationDebugSectionV2(fields);
@@ -1460,7 +1776,7 @@ function renderConfigDomainSectionV2(name, fields) {
       name,
       fields,
       proxyConfigSectionForKey,
-      ['注册线路', '账号动作线路', '独立代理池', '代理提供商', '静态代理池'],
+      ['任务用池', '代理来源', '库存策略', '高级兼容'],
       { get: () => CONFIG_PROXY_ACTIVE_SECTION_V2, set: v => { CONFIG_PROXY_ACTIVE_SECTION_V2 = v; } },
       'proxy-section-v2'
     );
@@ -1513,14 +1829,13 @@ function renderConfigLayoutV2() {
   sections.innerHTML = renderConfigSectionV2(CONFIG_ACTIVE_GROUP_V2, groups[CONFIG_ACTIVE_GROUP_V2] || []);
   renderRegistrationDriverCard();
   renderConfigOverviewCards();
-  const sectionMount = document.getElementById('configRegistrationSelectV2');
-  if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindEmailButlerToolsV2();
   bindCloudMailToolsV2();
   bindICloudHMEToolsV2();
   bindProxyProviderToolsV2();
   bindConfigCountryPickersV2();
+  bindConfigMultiSelectsV2();
   updateConfigSaveUi();
 }
 
@@ -1529,9 +1844,15 @@ function resetPendingConfigUpdates() {
   if (!keys.length) return;
   if (!window.confirm(`撤销 ${keys.length} 项未保存更改？`)) return;
   keys.forEach(key => delete CONFIG_PENDING_UPDATES[key]);
+  Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
+  Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
   renderConfigLayoutV2();
   updateConfigSaveUi();
   showToast('已撤销未保存更改');
+}
+function clearConfigFieldErrorsV2() {
+  Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
+  document.querySelectorAll('#tab-config .config-field-error-v2').forEach(error => error.remove());
 }
 function scrollToConfigSection(slug) {
   const el = document.getElementById(slug);
@@ -1588,7 +1909,10 @@ function bindConfigLayoutV2() {
       const domainTab = e.target.closest('[data-config-domain-v2]');
       if (domainTab) {
         e.preventDefault();
-        setConfigDestinationV2(domainTab.dataset.configDomainV2);
+        const domain = domainTab.dataset.configDomainV2;
+        const menu = configMenuGroupV2(domain);
+        setConfigDestinationV2(menu);
+        CONFIG_ACTIVE_DOMAIN_V2[menu] = domain;
         rememberConfigDestinationV2();
         renderConfigLayoutV2();
         return;
@@ -1621,23 +1945,15 @@ function bindConfigLayoutV2() {
         renderConfigLayoutV2();
         return;
       }
-      const toggle = e.target.closest('[data-ep-toggle]');
-      if (toggle) {
-        toggleConfigEpSelect(toggle.dataset.epToggle, e);
-        return;
-      }
-      const item = e.target.closest('[data-driver-value]');
-      if (item) {
-        e.preventDefault();
-        e.stopPropagation();
-        setRegistrationDriverValue(item.dataset.driverValue);
-        return;
-      }
     });
   }
   if (!document.documentElement.dataset.configEpCloseBound) {
     document.documentElement.dataset.configEpCloseBound = '1';
-    document.addEventListener('click', () => closeConfigEpSelects());
+    document.addEventListener('click', event => {
+      document.querySelectorAll('#tab-config [data-multi-picker]').forEach(picker => {
+        if (!picker.contains(event.target)) toggleConfigMultiSelectV2(picker, false);
+      });
+    });
   }
   const sectionRoot = document.getElementById('configSectionsV2');
   if (sectionRoot && 'IntersectionObserver' in window) {
@@ -1731,8 +2047,21 @@ async function saveRoxyWorkspaceSelection() {
 
 function readConfigElementValue(el, f) {
   if (!f) return undefined;
+  if (f.key === 'PROXY_POOL_WAIT_TIMEOUT' || f.key === 'SMS_MAX_PRICE') {
+    const root = el.closest?.('[data-config-composite-key]');
+    const mode = root?.querySelector('[data-composite-mode]')?.value || 'continuous';
+    const raw = String(root?.querySelector('[data-composite-seconds], [data-composite-value]')?.value || '').trim();
+    if (f.key === 'PROXY_POOL_WAIT_TIMEOUT') return mode === 'timed' ? (raw ? Number(raw) : null) : 0;
+    return mode === 'limited' ? raw : '';
+  }
   if (el.dataset.toggleOnValue) return el.checked ? el.dataset.toggleOnValue : el.dataset.toggleOffValue;
   if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
+  if (el.closest?.('[data-multi-picker]')) {
+    const raw = String(el.value ?? '');
+    return f.key === 'EMAIL_SOURCE' || f.key === 'ROXY_RANDOM_OS_CHOICES'
+      ? configListValuesV2(raw, f).join(',')
+      : configListValuesV2(raw, f);
+  }
   if (f.type === 'list_str_multiline') {
     if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key)) return configCountryCodesV2(el.value);
     return el.value.split(/\n/).map(s=>s.trim()).filter(Boolean);
@@ -1745,23 +2074,47 @@ function readConfigElementValue(el, f) {
   if (f.type === 'float') return parseFloat(el.value || '0');
   const value = el.value.trim();
   const option = configSchemaOptions(f).find(item => item.value.toLowerCase() === value.toLowerCase());
+  if (f.key === 'PROXY_POOL_DEFAULT_COUNTRY') return option ? option.value : value;
   return option ? option.value : (isPlaceholderEmpty(value) ? '' : value);
 }
 
 function trackConfigFieldChange(e) {
-  const el = e.target.closest('[data-key]');
+  const el = e.target.closest('[data-key], [data-wait-seconds-key], [data-price-key]');
   if (!el || !el.closest('#tab-config')) return;
-  const f = CONFIG.find(x => x.key === el.dataset.key);
+  clearConfigFieldErrorsV2();
+  const key = el.dataset.key || el.dataset.waitSecondsKey || el.dataset.priceKey;
+  const f = CONFIG.find(x => x.key === key);
   if (!f) return;
+  el.closest('.config-setting-row-v2')?.querySelector('.config-field-error-v2')?.remove();
+  const composite = el.closest('[data-config-composite-key]');
+  if (composite) {
+    if (el.hasAttribute('data-composite-mode')) CONFIG_COMPOSITE_MODES_V2[f.key] = el.value;
+    const number = composite.querySelector('[data-composite-seconds], [data-composite-value]');
+    const mode = composite.querySelector('[data-composite-mode]')?.value || CONFIG_COMPOSITE_MODES_V2[f.key];
+    if (!CONFIG_COMPOSITE_MODES_V2[f.key] && mode) CONFIG_COMPOSITE_MODES_V2[f.key] = mode;
+    const enabled = ['timed', 'limited'].includes(mode);
+    number.hidden = !enabled;
+    if (enabled && !number.value && el.hasAttribute('data-composite-mode')) number.value = f.key === 'PROXY_POOL_WAIT_TIMEOUT' ? '60' : '0.1';
+  }
+  // 密钥输入框留空表示“保留已有值”；只有点击明确的“清除”操作后才
+  // 向后端提交空字符串，避免重绘或误删导致凭据丢失。
+  if (f.secret && el.dataset.secretClear !== 'true' && String(el.value || '').trim() === '') {
+    delete CONFIG_PENDING_UPDATES[f.key];
+    updateConfigSaveUi();
+    return;
+  }
   const value = readConfigElementValue(el, f);
+  const explicitSecretClear = f.secret && el.dataset.secretClear === 'true' && String(el.value || '').trim() === '';
   const syncKeys = String(el.dataset.syncKeys || '').split(',').map(key => key.trim()).filter(Boolean);
   [f.key, ...syncKeys].filter((key, index, all) => all.indexOf(key) === index).forEach(key => {
-    if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value);
+    if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value, {force: explicitSecretClear && key === f.key});
   });
   const status = el.closest('.config-field-v2, .config-setting-row-v2')?.querySelector('.config-field-status-v2');
   if (status) status.outerHTML = renderConfigFieldStatusV2(f);
   renderConfigOverviewCards();
-  if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED') renderConfigLayoutV2();
+  if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'
+    || f.key === 'EMAIL_SOURCE' || f.key === 'ICLOUD_HME_INBOX_MODE'
+    || f.key === 'PROXY_POOL_SOURCE' || f.key === 'PROXY_POOL_DEFAULT_COUNTRY') renderConfigLayoutV2();
   updateConfigSaveUi();
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);
@@ -1775,7 +2128,36 @@ async function saveConfigUpdates(triggerBtn) {
   }
   updateConfigSaveUi('saving');
   try {
+    for (const [key, mode] of Object.entries(CONFIG_COMPOSITE_MODES_V2)) {
+      if (!Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)) continue;
+      const value = CONFIG_PENDING_UPDATES[key];
+      const invalid = key === 'PROXY_POOL_WAIT_TIMEOUT'
+        ? mode === 'timed' && (value === null || !Number.isFinite(Number(value)) || Number(value) <= 0)
+        : mode === 'limited' && String(value ?? '').trim() === '';
+      if (invalid) {
+        const error = new Error('请填写有效数值');
+        error.fields = {[key]: key === 'PROXY_POOL_WAIT_TIMEOUT'
+          ? '请填写限时等待秒数，或切换为持续等待'
+          : '请填写短信价格上限，或切换为不设上限'};
+        throw error;
+      }
+    }
+    // 复合模式的空数值不能被保存成持续等待或无限价格。
+    document.querySelectorAll('#tab-config [data-config-composite-key]').forEach(root => {
+      const mode = root.querySelector('[data-composite-mode]');
+      const number = root.querySelector('[data-composite-seconds], [data-composite-value]');
+      if (['timed', 'limited'].includes(mode.value) && (!number.value || !number.checkValidity())) {
+        const key = root.dataset.configCompositeKey;
+        const error = new Error('请填写有效数值');
+        error.fields = {[key]: key === 'PROXY_POOL_WAIT_TIMEOUT'
+          ? '请填写限时等待秒数，或切换为持续等待'
+          : '请填写短信价格上限，或切换为不设上限'};
+        throw error;
+      }
+    });
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
+    Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
+    Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
     invalidateApiCache('/api/config');
     invalidateApiCache('/api/ui-settings');
     for (const k of Object.keys(updates)) delete CONFIG_PENDING_UPDATES[k];
@@ -1789,11 +2171,35 @@ async function saveConfigUpdates(triggerBtn) {
         ? `配置已热加载；${restartRequired.join('、')}需重启后完整生效`
         : '配置已生效');
   } catch(e) {
-    updateConfigSaveUi('error');
-    showToast('保存失败: ' + e.message);
+    const errors = Object.entries(e.fields || {});
+    if (errors.length) {
+      Object.assign(CONFIG_FIELD_ERRORS_V2, e.fields);
+      const field = CONFIG.find(item => item.key === errors[0][0]);
+      if (field) {
+        CONFIG_NAV_QUERY_V2 = field.key;
+        const search = document.getElementById('configNavSearchV2');
+        if (search) search.value = field.key;
+        selectConfigSearchDestinationV2(configFieldMenuV2(field));
+        renderConfigLayoutV2();
+        document.querySelector(`#tab-config [data-key="${field.key}"]`)?.focus();
+      }
+    }
+    updateConfigSaveUi(errors.length ? 'validation_error' : 'error');
+    showToast('保存失败: ' + (errors.length ? errors.map(([key, reason]) => `${CONFIG.find(item => item.key === key)?.label || key}：${reason}`).join('；') : e.message));
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const clearSecret = e.target.closest('[data-clear-secret]');
+  if (clearSecret) {
+    e.preventDefault();
+    const input = clearSecret.closest('.config-secret-control-v2')?.querySelector('[data-secret-input]');
+    if (input) {
+      input.value = '';
+      input.dataset.secretClear = 'true';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+    return;
+  }
   const resetBtn = e.target.closest('[data-reset-config-v2]');
   if (resetBtn) {
     e.preventDefault();

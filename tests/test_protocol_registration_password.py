@@ -84,6 +84,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="generic_api",
                 registration_options={
                     "password_enabled": True,
@@ -373,6 +374,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="123456",
                 email_source="generic_api",
                 registration_options={
@@ -471,6 +473,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="123456",
                 email_source="generic_api",
                 registration_options={
@@ -580,6 +583,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="123456",
                 email_source="generic_api",
                 registration_options={
@@ -770,6 +774,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="generic_api",
                 existing_password="SavedPassword!123",
                 registration_options={
@@ -859,6 +864,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="generic_api",
                 existing_password="SavedPassword!123",
                 existing_totp_secret="SavedTotpSecret",
@@ -912,6 +918,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="generic_api",
                 registration_options={
                     "password_enabled": True,
@@ -1081,6 +1088,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "user@example.com",
                 "Test User",
                 "2000-01-01",
+                proxy="http://pool.example:8080",
                 email_source="generic_api",
                 registration_options={
                     "password_enabled": True,

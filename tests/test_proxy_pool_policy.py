@@ -148,6 +148,7 @@ def test_equal_demand_profiles_both_receive_maintenance():
         return {"id": len(seen)}
     with patch.object(proxy_pool, "_profiles", {"first": first, "second": second}), \
          patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool, "_current_profile_keys", return_value={"first", "second"}), \
          patch.object(proxy_pool.store, "maintenance", return_value=[]), \
          patch.object(proxy_pool.store, "take_check", side_effect=take_check), \
          patch.object(proxy_pool, "_check"):
@@ -169,6 +170,7 @@ def test_two_workers_reserve_different_waiting_profiles_before_network_work():
         return {"id": key}
     with patch.object(proxy_pool, "_profiles", {"first": first, "second": second}), \
          patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool, "_current_profile_keys", return_value={"first", "second"}), \
          patch.object(proxy_pool.store, "maintenance", return_value=[]), \
          patch.object(proxy_pool.store, "take_check", side_effect=take_check), \
          patch.object(proxy_pool, "_check", side_effect=check), \

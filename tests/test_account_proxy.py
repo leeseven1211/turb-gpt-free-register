@@ -75,9 +75,10 @@ class AccountProxyTests(unittest.TestCase):
         for source in ("provider:1024proxy", "pool"):
             with (
                 self.subTest(source=source),
-                patch("core.proxy_pool.acquire", return_value=lease) as acquire,
+                patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire,
                 patch.multiple("config.proxy", PLAN_CHECK_PROXY_ALLOW_REUSE=True,
                                PLAN_CHECK_PROXY_REUSE_LIMIT=3, ACCOUNT_ACTION_PROXY="http://192.0.2.1:8080",
+                               PROXY_POOL_SOURCE="1024proxy", PROXY_1024_API_URL="https://example.test/proxies",
                                create=True),
             ):
                 route = account_proxy.acquire_account_proxy(
@@ -87,7 +88,7 @@ class AccountProxyTests(unittest.TestCase):
                 self.assertEqual("US", route.region)
                 self.assertEqual(5, acquire.call_args.kwargs.get("reuse_limit"))
 
-    def test_action_proxy_mode_uses_action_specific_config(self):
+    def test_action_proxy_mode_always_uses_unified_pool(self):
         with (
             patch.multiple(
                 "config.account",
@@ -96,26 +97,28 @@ class AccountProxyTests(unittest.TestCase):
                 ACCOUNT_PASSWORD_PROXY_MODE="provider:1024proxy",
             ),
         ):
-            self.assertEqual("direct", account_proxy.account_action_proxy_mode("plan-check"))
+            self.assertEqual("pool", account_proxy.account_action_proxy_mode("plan-check"))
             self.assertEqual("pool", account_proxy.account_action_proxy_mode("live-check"))
-            self.assertEqual("provider:1024proxy", account_proxy.account_action_proxy_mode("password-setup"))
+            self.assertEqual("pool", account_proxy.account_action_proxy_mode("password-setup"))
 
-    def test_direct_action_does_not_acquire_1024_lease(self):
+    def test_direct_action_still_acquires_from_unified_pool(self):
+        lease = ProxyLease("pool-lease", "1024proxy", "http://192.0.2.1:8080", "192.0.2.1:8080",
+                           datetime.now(), exit_ip="198.51.100.1", region="JP")
         with (
             patch.multiple(
                 "config.account",
                 ACCOUNT_PLAN_CHECK_PROXY_MODE="direct",
             ),
-            patch("core.proxy_pool.acquire") as acquire,
+            patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire,
+            patch.multiple("config.proxy", PROXY_POOL_SOURCE="1024proxy", PROXY_1024_API_URL="https://example.test/proxies"),
         ):
             route = account_proxy.acquire_account_proxy(
                 account_id=1,
                 purpose="plan-check",
             )
-        acquire.assert_not_called()
-        self.assertEqual("direct", route.provider)
-        self.assertEqual("", route.proxy_url)
-        self.assertEqual("direct", route.mode)
+        acquire.assert_called_once()
+        self.assertEqual("1024proxy", route.provider)
+        self.assertEqual("pool", route.mode)
 
     def test_legacy_provider_alias_normalizes_to_1024_provider(self):
         self.assertEqual(
@@ -138,8 +141,9 @@ class AccountProxyTests(unittest.TestCase):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),
             patch("core.account_proxy.resolve_account_region", return_value="JP"),
-            patch("core.proxy_pool.acquire", return_value=lease) as acquire,
-            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
+            patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire,
+            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration",
+                           PROXY_POOL_SOURCE="1024proxy", PROXY_1024_API_URL="https://example.test/proxies"),
             patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
         ):
             route = account_proxy.acquire_account_proxy(
@@ -147,11 +151,10 @@ class AccountProxyTests(unittest.TestCase):
                 email="a@example.com",
                 purpose="plan-check",
             )
-        acquire.assert_called_once_with(
-            provider="1024proxy",
-            region="JP", validate=True, job_id="plan-check-7", account_id=7,
-            purpose="plan-check", operation_task_id=None, operation_run_id=None, allow_reuse=True, reuse_limit=3,
-        )
+        self.assertEqual("JP", acquire.call_args.kwargs["country"])
+        self.assertEqual("plan-check", acquire.call_args.kwargs["purpose"])
+        self.assertEqual(7, acquire.call_args.kwargs["account_id"])
+        self.assertNotIn("provider", acquire.call_args.kwargs)
         self.assertEqual(route.provider, "1024proxy")
         self.assertEqual(route.region, "JP")
 
@@ -168,8 +171,9 @@ class AccountProxyTests(unittest.TestCase):
         with (
             patch("core.account_proxy.registration_proxy_mode", return_value="1024"),
             patch("core.account_proxy.resolve_account_region", return_value="JP"),
-            patch("core.proxy_pool.acquire", return_value=lease) as acquire,
-            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration"),
+            patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire,
+            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="registration",
+                           PROXY_POOL_SOURCE="1024proxy", PROXY_1024_API_URL="https://example.test/proxies"),
             patch.multiple("config.account", ACCOUNT_PLAN_CHECK_PROXY_MODE="registration"),
         ):
             account_proxy.acquire_account_proxy(
@@ -178,18 +182,9 @@ class AccountProxyTests(unittest.TestCase):
                 purpose="plan-check",
                 rotation_index=3,
             )
-        acquire.assert_called_once_with(
-            provider="1024proxy",
-            region="JP",
-            validate=True,
-            job_id="plan-check-7-rotation-3",
-            account_id=7,
-            purpose="plan-check",
-            operation_task_id=None,
-            operation_run_id=None,
-            allow_reuse=True,
-            reuse_limit=3,
-        )
+        self.assertEqual("JP", acquire.call_args.kwargs["country"])
+        self.assertEqual("plan-check-7-rotation-3", acquire.call_args.kwargs["correlation_id"])
+        self.assertNotIn("provider", acquire.call_args.kwargs)
 
     def test_pool_mode_uses_dedicated_account_proxy_first(self):
         lease = ProxyLease(
@@ -204,27 +199,22 @@ class AccountProxyTests(unittest.TestCase):
             "config.proxy",
             ACCOUNT_ACTION_PROXY_MODE="pool",
             ACCOUNT_ACTION_PROXY="http://fixed.example:8080",
-        ), patch("core.proxy_pool.acquire", return_value=lease) as acquire:
+            PROXY_POOL_SOURCE="manual", PROXY_POOL=["http://fixed.example:8080"],
+        ), patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire:
             route = account_proxy.acquire_account_proxy(account_id=1, purpose="live-check")
-        acquire.assert_called_once_with(
-            provider="proxy_pool",
-            static_urls=["http://fixed.example:8080"],
-            purpose="live-check",
-            account_id=1,
-            operation_task_id=None,
-            operation_run_id=None,
-            allow_reuse=False,
-        )
+        acquire.assert_called_once()
+        self.assertEqual("live-check", acquire.call_args.kwargs["purpose"])
+        self.assertNotIn("provider", acquire.call_args.kwargs)
         self.assertEqual(route.proxy_url, "http://fixed.example:8080")
         self.assertEqual(route.provider, "proxy_pool")
 
-    def test_1024_refuses_unknown_random_country(self):
+    def test_pool_refuses_random_country(self):
         with (
-            patch("core.account_proxy.resolve_account_region", return_value=""),
-            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="1024"),
+            patch.multiple("config.proxy", ACCOUNT_ACTION_PROXY_MODE="1024",
+                           PROXY_POOL_SOURCE="1024proxy", PROXY_1024_API_URL="https://example.test/proxies"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "无法确定账号注册国家"):
-                account_proxy.acquire_account_proxy(account_id=1, purpose="plan-check")
+            with self.assertRaisesRegex(ValueError, "ISO"):
+                account_proxy.acquire_account_proxy(account_id=1, purpose="plan-check", region="Rand")
 
     def test_explicit_registration_proxy_is_not_released_as_platform_lease(self):
         route = account_proxy.acquire_account_proxy(
@@ -234,6 +224,19 @@ class AccountProxyTests(unittest.TestCase):
         )
         self.assertIsNone(route.lease)
         self.assertEqual(route.mode, "request")
+
+    def test_empty_explicit_proxy_does_not_create_direct_route(self):
+        lease = ProxyLease("pool", "1024proxy", "http://192.0.2.2:8080", "192.0.2.2:8080",
+                           datetime.now(), exit_ip="198.51.100.2", region="JP")
+        with patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire, \
+             patch.multiple("config.proxy", PROXY_POOL_SOURCE="1024proxy",
+                            PROXY_1024_API_URL="https://proxy.example.test/api"):
+            route = account_proxy.acquire_account_proxy(
+                account_id=1, purpose="plan-check", explicit_proxy="", region="JP",
+            )
+        acquire.assert_called_once()
+        self.assertEqual("pool", route.mode)
+        self.assertEqual("1024proxy", route.provider)
 
 
 class LegacyAccountProxyCancellationTests(unittest.TestCase):

@@ -76,6 +76,7 @@ class ProtocolCredentialBoundaryTests(unittest.TestCase):
             stack.enter_context(patch("core.flow_trigger.trigger_flow", return_value={"ok": True}))
             stack.enter_context(patch("core.registration_postprocess.summarize_postprocess", return_value=SimpleNamespace(next_actions=(), account_readiness={})))
             result = protocol.run_protocol_registration("offline@example.test", "离线测试", "2000-01-01",
+                proxy="http://pool.example:8080",
                 otp_code="000000", existing_password=existing_password, existing_totp_secret="offline-secret",
                 registration_options={"password_enabled": True, "twofa_enabled": twofa, "codex_enabled": False, "plan_check_enabled": False})
         return result, events, {"register": register, "send": send, "otp": otp, "create": create, "final": final, "mfa": mfa, "verify": verify, "persist": persist}

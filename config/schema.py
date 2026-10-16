@@ -122,7 +122,7 @@ class ConfigField:
             out["allow_prefix"] = self.allow_prefix
         if self.csv_options:
             out["csv_options"] = list(self.csv_options)
-        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES"}:
+        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY"}:
             from config.countries import ISO_3166_ALPHA2
 
             out["country_codes"] = sorted(ISO_3166_ALPHA2)
@@ -340,6 +340,8 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_1024_RECENT_TTL": 1800,
     "PROXY_1024_ACQUIRE_INTERVAL": 0.6,
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
+    "PROXY_POOL_SOURCE": "1024proxy",
+    "PROXY_POOL_DEFAULT_COUNTRY": "JP",
     "PROXY_POOL_COUNTRIES": [],
     "PROXY_POOL_MIN_READY": 2,
     "PROXY_POOL_MAX_SIZE": 20,
@@ -522,15 +524,15 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_PASSWORD_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "补密码代理来源", "help": "registration=跟随注册线路；direct=直连；pool=静态代理池；provider:<id>=指定代理提供商。密码认证默认跟随注册线路。",
+        "label": "补密码代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_2FA_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "补 2FA 代理来源", "help": "registration=跟随注册线路；direct=直连；pool=静态代理池；provider:<id>=指定代理提供商。",
+        "label": "补 2FA 代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_PLAN_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "查套餐代理来源", "help": "默认 direct。查套餐只读现有 Token，可按需选择 registration、pool 或 provider:<id>。",
+        "label": "查套餐代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "PLAN_CHECK_PROXY_ALLOW_REUSE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
@@ -554,19 +556,19 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "查活代理来源", "help": "默认 direct。普通查活只验证现有 Token，不登录、不发 OTP、不刷新 AT。",
+        "label": "查活代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_REFRESH_AT_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "刷新 AT 代理来源", "help": "默认 registration。刷新 AT 会重新认证并可能读取邮箱验证码，建议使用注册同类线路。",
+        "label": "刷新 AT 代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_CODEX_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "Codex OAuth 代理来源", "help": "默认 registration。可选 direct、pool 或 provider:<id>。",
+        "label": "Codex OAuth 代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE", "file": "account.py", "type": "str", "group": "代理与网络",
-        "label": "邮箱换绑代理来源", "help": "默认 registration。邮箱换绑使用独立用途线路，可选 direct、pool 或 provider:<id>。",
+        "label": "邮箱换绑代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_LIVE_CHECK_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -1101,8 +1103,16 @@ _FIELD_DEFINITIONS = [
 
     # ---- 代理与网络 ----
     {
+        "key": "PROXY_POOL_SOURCE", "file": "proxy.py", "type": "str", "group": "代理与网络",
+        "label": "代理来源", "help": "注册和账号动作统一从代理池领取；在此选择 1024Proxy 或手动地址。切换只影响后续领取，已发放租约保持到本轮结束",
+    },
+    {
+        "key": "PROXY_POOL_DEFAULT_COUNTRY", "file": "proxy.py", "type": "str", "group": "代理与网络",
+        "label": "默认国家", "help": "新注册及缺少历史国家的账号动作使用此国家；有历史国家的账号优先沿用，多国套餐查询按查询国家领取。手动地址也必须通过实际出口国家检测",
+    },
+    {
         "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "注册代理来源", "help": "pool=独立代理池已检测库存；1024=兼容旧供应商配置并由代理池统一补货；none=直连",
+        "label": "注册代理来源", "help": "仅在新来源字段缺席时迁移旧 pool/1024 配置；新任务统一向代理池领取，不支持直连。",
     },
     {
         "key": "PROXY_1024_API_URL", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -1111,7 +1121,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_REGION", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "家宽国家 / 地区", "help": "选择或输入 ISO 两位地区代码；例如 US=美国、JP=日本、GB=英国；Rand=随机。留空沿用提取 API 链接中的 region",
+        "label": "家宽国家 / 地区", "help": "仅在新默认国家缺席时迁移旧有效国家；当前任务使用代理池默认国家，不再使用随机国家。",
     },
     {
         "key": "PROXY_1024_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -1171,7 +1181,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",
-        "label": "代理池(每行一个)", "help": "每行一个静态代理 URL，留空行会被忽略；显式选择 pool 来源但列表为空时申请失败",
+        "label": "手动代理地址", "help": "每行一个完整代理 URL，支持 http、https、socks5、socks5h；地址进入代理池后统一检测国家和健康状态，列表为空时不能发放租约",
         "storage": "env", "secret": True,
     },
     {
@@ -1209,20 +1219,20 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "旧版套餐网络模式", "help": "仅兼容 CLI/旧接口；WebUI 查套餐、查活、Agent、Codex OAuth 使用“账号功能代理来源”",
+        "label": "旧版套餐网络模式", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "PLAN_CHECK_PROXY", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "旧版套餐专用代理", "help": "仅兼容 CLI/旧接口；留空时从代理池选择。可能包含认证信息，仅保存到 .env",
+        "label": "旧版套餐专用代理", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
         "storage": "env", "secret": True,
     },
     {
         "key": "ACCOUNT_ACTION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "账号功能代理来源", "help": "registration=跟随注册代理来源（推荐）；1024=每个账号功能申请新租约；pool=使用静态代理池；direct=直连。适用于查套餐、查活和 Codex OAuth",
+        "label": "账号功能代理来源", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
     },
     {
         "key": "ACCOUNT_ACTION_PROXY", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "账号功能固定代理", "help": "仅账号功能代理来源为 pool 时优先使用；留空则从代理池抽取。可能包含认证信息，仅保存到 .env",
+        "label": "账号功能固定代理", "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
         "storage": "env", "secret": True,
     },
     {
@@ -1391,6 +1401,15 @@ _FIELD_DEFINITIONS = [
 
 
 _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
+    "PROXY_POOL_SOURCE": _options(("1024proxy", "1024Proxy"), ("manual", "手动地址")),
+    "ROXY_RANDOM_OS_CHOICES": _options("Windows", "macOS", "Linux", "IOS", "Android"),
+    "BROWSER_DATA_SAVER_AUTH_FLOWS": _options(
+        ("token_refresh", "刷新 AT"), ("live_check", "账号查活"),
+        ("codex_oauth", "Codex OAuth"), ("account_action", "其他账号动作"),
+    ),
+    "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES": _options(
+        ("image", "图片"), ("media", "音视频"), ("font", "字体"),
+    ),
     "BROWSER_PUBLIC_ASSET_CACHE_MODE": _options(
         ("off", "关闭"), ("observe", "仅观察"), ("enabled", "启用本地复用"),
     ),
@@ -1762,7 +1781,7 @@ def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigFie
             restart=key in _RESTART_KEYS,
             hot_edit=hot_edit,
             allow_prefix="provider:" if key in _PROVIDER_PROXY_KEYS else None,
-            csv_options=tuple(option.value for option in _OPTIONS.get(key, ()) if key == "EMAIL_SOURCE"),
+            csv_options=tuple(option.value for option in _OPTIONS.get(key, ()) if key in {"EMAIL_SOURCE", "ROXY_RANDOM_OS_CHOICES"}),
         ))
     return tuple(fields)
 
@@ -1940,6 +1959,9 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
     if isinstance(value, (dict, list, tuple, set)):
         raise ValueError("必须是字符串")
     text = "" if value is None else str(value).strip()
+    if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
+        # NA 是纳米比亚，不是通用空占位。
+        return text
     # ``none`` 是通用空占位，但也是 CLOUDFLARE_AUTH_MODE 的合法
     # canonical option；选项值必须先于通用空值语义保留。
     option_values = {option.value.casefold() for option in field.options}
@@ -1951,6 +1973,25 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
     result = _coerce(value, field, strict=strict)
+    if field.key == "PROXY_POOL" and strict:
+        from urllib.parse import urlsplit
+
+        for index, address in enumerate(result, 1):
+            try:
+                parsed = urlsplit(address)
+                valid = parsed.scheme in {"http", "https", "socks5", "socks5h"} and bool(parsed.hostname) and bool(parsed.port)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError(f"第 {index} 条代理地址需要完整的协议、主机和有效端口")
+        return list(dict.fromkeys(result))
+    if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
+        from config.countries import ISO_3166_ALPHA2
+
+        result = result.upper()
+        if result not in ISO_3166_ALPHA2:
+            raise ValueError("请选择有效的 ISO 两位国家代码")
+        return result
     if field.key == "PLAN_CHECK_COUNTRIES":
         from config.countries import normalize_plan_check_countries
 
@@ -1959,6 +2000,18 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
         from config.countries import normalize_proxy_pool_countries
 
         return normalize_proxy_pool_countries(result)
+    if field.type == "list_str_multiline" and field.options:
+        allowed = {option.value.casefold(): option.value for option in field.options}
+        normalized = []
+        for item in result:
+            canonical = allowed.get(item.casefold())
+            if canonical is None:
+                if strict:
+                    raise ValueError("包含未支持的选项")
+                canonical = item
+            if canonical not in normalized:
+                normalized.append(canonical)
+        return normalized
     if field.type in {"int", "float"}:
         if field.min_value is not None and result < field.min_value:
             raise ValueError(f"不得小于 {field.min_value}")
@@ -1966,12 +2019,12 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
             raise ValueError(f"不得大于 {field.max_value}")
 
     if field.type == "str":
-        if field.key == "EMAIL_SOURCE":
-            values = [part.strip().casefold() for part in result.split(",") if part.strip()]
-            allowed = {option.value for option in field.options}
-            invalid = [part for part in values if part not in allowed]
+        if field.csv_options:
+            allowed = {option.value.casefold(): option.value for option in field.options}
+            values = list(dict.fromkeys(allowed.get(part.strip().casefold(), part.strip()) for part in result.split(",") if part.strip()))
+            invalid = [part for part in values if part not in allowed.values()]
             if invalid and strict:
-                raise ValueError("包含未支持的邮箱来源")
+                raise ValueError("包含未支持的选项")
             result = ",".join(values)
         elif field.options:
             option_values = {option.value.casefold(): option.value for option in field.options}
@@ -2008,9 +2061,15 @@ def validate_value(key: str, value: Any) -> Any:
         raise ConfigValidationError({key: str(exc)}) from exc
 
 
-def _cross_field_errors(values: Mapping[str, Any]) -> dict[str, str]:
+def _cross_field_errors(
+    values: Mapping[str, Any],
+    *,
+    updated_keys: Iterable[str] | None = None,
+) -> dict[str, str]:
     """返回依赖多个字段的候选配置错误。"""
     errors: dict[str, str] = {}
+    if values.get("USE_EMAIL_SERVICE") and not str(values.get("EMAIL_SOURCE", "")).strip():
+        errors["EMAIL_SOURCE"] = "自动取邮箱模式至少启用一个邮箱来源"
     if (
         values.get("ACCOUNT_LIVE_CHECK_DRIVER") == "browser_roxy"
         and not values.get("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED")
@@ -2028,10 +2087,17 @@ def _cross_field_errors(values: Mapping[str, Any]) -> dict[str, str]:
         # 各字段自身的类型/范围错误已由 _validate_value 报告。
         pass
     try:
-        if int(values.get("PROXY_1024_SESSION_MINUTES")) * 60 <= int(values.get("PROXY_POOL_MIN_TTL")):
+        if values.get("PROXY_POOL_SOURCE") == "1024proxy" and int(values.get("PROXY_1024_SESSION_MINUTES")) * 60 <= int(values.get("PROXY_POOL_MIN_TTL")):
             errors["PROXY_POOL_MIN_TTL"] = "最短剩余寿命必须小于 1024Proxy 会话时长，并为出口检测预留时间"
     except (TypeError, ValueError):
         pass
+    proxy_supply_keys = {"PROXY_POOL_SOURCE", "PROXY_POOL", "PROXY_1024_API_URL"}
+    if updated_keys is not None and proxy_supply_keys.intersection(updated_keys):
+        source = values.get("PROXY_POOL_SOURCE")
+        if source == "manual" and not values.get("PROXY_POOL"):
+            errors["PROXY_POOL"] = "手动来源至少需要一条完整代理地址"
+        elif source == "1024proxy" and not str(values.get("PROXY_1024_API_URL") or "").strip():
+            errors["PROXY_1024_API_URL"] = "1024Proxy 来源需要配置提取 API"
     return errors
 
 
@@ -2056,7 +2122,7 @@ def validate_config_updates(updates: Mapping[str, Any]) -> dict[str, Any]:
     if not errors:
         current = {key: resolution.value for key, resolution in resolve_config().items()}
         current.update(normalized)
-        errors.update(_cross_field_errors(current))
+        errors.update(_cross_field_errors(current, updated_keys=normalized))
 
     if errors:
         raise ConfigValidationError(errors)
@@ -2076,6 +2142,24 @@ def _environment_values() -> dict[str, str]:
 def _raw_for_field(field: ConfigField, values: Mapping[str, str]) -> tuple[str | None, str | None]:
     if field.key in values:
         return values[field.key], field.key
+    # 只在新字段缺席时读取旧配置；显式保存新字段后不再受旧来源影响。
+    legacy_source = str(values.get("REGISTRATION_PROXY_MODE", "")).strip().casefold()
+    if field.key == "PROXY_POOL_SOURCE" and legacy_source in {"pool", "1024"}:
+        return ("manual" if legacy_source == "pool" else "1024proxy"), "REGISTRATION_PROXY_MODE"
+    if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
+        from config.countries import ISO_3166_ALPHA2
+        from urllib.parse import parse_qs, urlsplit
+
+        country = str(values.get("PROXY_1024_REGION", "")).strip().upper()
+        source = "PROXY_1024_REGION"
+        if not country:
+            try:
+                country = parse_qs(urlsplit(values.get("PROXY_1024_API_URL", "")).query).get("region", [""])[0].upper()
+                source = "PROXY_1024_API_URL"
+            except ValueError:
+                country = ""
+        if country in ISO_3166_ALPHA2:
+            return country, source
     for alias in field.aliases:
         if alias in values:
             return values[alias], alias
@@ -2087,11 +2171,7 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
     if raw is None:
         return ConfigResolution(field.clone_default(), "default", configured=False)
     text = str(raw).strip()
-    explicit_empty_list = (
-        field.type == "list_str_multiline"
-        and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES"}
-        and text == ""
-    )
+    explicit_empty_list = text == "" and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE"}
     if not text and not explicit_empty_list:
         return ConfigResolution(field.clone_default(), "default", source_key=source_key, configured=False)
     try:
@@ -2102,7 +2182,8 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
         return ConfigResolution(
             field.clone_default(), "default", source_key=source_key, configured=False, invalid=True
         )
-    return ConfigResolution(value, "env", source_key=source_key, configured=bool(text))
+    configured = bool(value) if field.secret and field.type == "list_str_multiline" else bool(text)
+    return ConfigResolution(value, "env", source_key=source_key, configured=configured)
 
 
 def resolve_config(
@@ -2375,13 +2456,10 @@ def apply_env_namespace(namespace: dict[str, Any], explicit_schema: Mapping[str,
         fields = CONFIG_SCHEMA.fields_for_module(module, namespace)
 
     for field in fields:
-        if os.getenv(field.key) is None:
+        raw, _ = _raw_for_field(field, os.environ)
+        if raw is None:
             continue
-        raw = os.getenv(field.key, "")
-        if not str(raw).strip() and not (
-            field.type == "list_str_multiline"
-            and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES"}
-        ):
+        if not str(raw).strip() and field.key not in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE"}:
             continue
         try:
             # 兼容旧模块的 protocol_direct 等别名：模块常量保留旧值，API 再公共化。

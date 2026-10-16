@@ -14,7 +14,10 @@ from config.schema import schema_default
 import random
 
 
-# 本地代理入口；实际出口地区以代理/分流规则为准。
+# 所有注册及账号动作统一领取代理池租约；平台配置只影响后续领取。
+PROXY_POOL_SOURCE = schema_default("PROXY_POOL_SOURCE")
+PROXY_POOL_DEFAULT_COUNTRY = schema_default("PROXY_POOL_DEFAULT_COUNTRY")
+# 手动来源的完整地址；入池时仍检测真实出口国家和健康状态。
 # 推荐使用 socks5h://（DNS 在代理端解析），避免本地 DNS 与出口 IP 地区错配。
 PROXY_POOL = schema_default("PROXY_POOL")
 # 只决定已启用来源的额外备货国家，不改变注册或套餐查询目标。
@@ -30,18 +33,14 @@ PROXY_POOL_CHECK_INTERVAL = schema_default("PROXY_POOL_CHECK_INTERVAL")
 PROXY_POOL_MAX_IDLE = schema_default("PROXY_POOL_MAX_IDLE")
 PROXY_POOL_WORKERS = schema_default("PROXY_POOL_WORKERS")
 
-# 注册任务代理来源：
-#   pool = 使用独立代理池中的已检测库存
-#   1024 = 兼容旧配置；由代理池按固定供给参数维护库存，再向任务发放租约
-#   none = 注册任务显式直连
+# 旧字段只用于迁移；新业务统一使用 PROXY_POOL_SOURCE，不再允许直连。
 REGISTRATION_PROXY_MODE = schema_default("REGISTRATION_PROXY_MODE")
 
 # 1024Proxy 白名单 API。完整 URL 仅保存到 .env，源码默认留空。
 # 代理池预热/补货使用 URL 与下方固定的 region、time、num 参数；任务只领取库存，不在业务线程内提取。
 # time 是供应商的粘性窗口参数，不承诺每次领取都是新会话或新 IP。
 PROXY_1024_API_URL = schema_default("PROXY_1024_API_URL")
-# 国家/地区代码；留空时沿用 API URL 中原有的 region 参数。
-# 1024Proxy 使用 ISO 3166-1 两位代码，例如 US / JP / GB；Rand 表示随机地区。
+# 兼容旧默认国家；新业务由代理池的目标国家统一控制，禁止随机国家绕过检查。
 PROXY_1024_REGION = schema_default("PROXY_1024_REGION")
 PROXY_1024_PROTOCOL = schema_default("PROXY_1024_PROTOCOL")
 PROXY_1024_SESSION_MINUTES = schema_default("PROXY_1024_SESSION_MINUTES")
@@ -68,14 +67,10 @@ REGISTRATION_PROXY_RETRY_DELAY = schema_default("REGISTRATION_PROXY_RETRY_DELAY"
 ACCOUNT_ACTION_PROXY_RETRIES = schema_default("ACCOUNT_ACTION_PROXY_RETRIES")
 ACCOUNT_ACTION_PROXY_RETRY_DELAY = schema_default("ACCOUNT_ACTION_PROXY_RETRY_DELAY")
 
-# 旧版/CLI 直接调用 check_account_plan() 时使用的兼容网络策略。
-# WebUI 账号功能统一由下方 ACCOUNT_ACTION_PROXY_MODE 管理。
-#   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；本地代理端口未监听时回退直连
-#   proxy  = 强制使用 PLAN_CHECK_PROXY 或代理池，失败直接报错
-#   direct = 始终直连
+# 旧版网络策略仅兼容读取；CLI 与 WebUI 的新领取都经过统一代理池。
 PLAN_CHECK_PROXY_MODE = schema_default("PLAN_CHECK_PROXY_MODE")
 
-# 旧版套餐查询专用代理。留空时 auto/proxy 模式从 PROXY_POOL 选择。
+# 旧版套餐查询专用代理仅保留历史值；新手动地址统一写入 PROXY_POOL。
 # 代理可能包含账号密码，因此 WebUI 会把它保存到 .env。
 PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 
@@ -89,11 +84,7 @@ PLAN_CHECK_PAYMENT_METHODS_ENABLED = schema_default("PLAN_CHECK_PAYMENT_METHODS_
 PLAN_CHECK_COUNTRIES = schema_default("PLAN_CHECK_COUNTRIES")
 PLAN_CHECK_COUNTRY_WAIT_TIMEOUT = schema_default("PLAN_CHECK_COUNTRY_WAIT_TIMEOUT")
 
-# 注册完成后的 OpenAI 账号功能（查套餐、查活、Codex OAuth）代理来源：
-#   registration = 跟随 REGISTRATION_PROXY_MODE（推荐；1024 平台会按账号申请新租约）
-#   1024         = 始终从 1024Proxy 为每个账号/功能申请独立短期租约
-#   pool         = 使用 ACCOUNT_ACTION_PROXY，留空时从 PROXY_POOL 抽取
-#   direct       = 直连
+# 账号动作旧来源和固定地址仅兼容读取，实际来源由 PROXY_POOL_SOURCE 决定。
 # 第三方邮箱、短信、CPA/Sub2、提链服务和本地控制接口不使用这里的代理，避免浪费流量。
 ACCOUNT_ACTION_PROXY_MODE = schema_default("ACCOUNT_ACTION_PROXY_MODE")
 ACCOUNT_ACTION_PROXY = schema_default("ACCOUNT_ACTION_PROXY")

@@ -609,6 +609,10 @@ def run_protocol_registration(
     existing_totp_secret: str | None = None,
 ) -> dict:
     """执行完整的纯协议 ChatGPT 注册流程。"""
+    if not str(proxy or "").strip():
+        raise RuntimeError(
+            "Protocol 注册必须使用统一代理池已领取线路，禁止无代理或直连"
+        )
     from core.registration_service import StopRequested, check_stop_requested, report_job_progress, report_registered_account
 
     def _cancelled() -> bool:
