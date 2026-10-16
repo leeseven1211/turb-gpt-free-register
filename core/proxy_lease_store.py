@@ -52,10 +52,10 @@ def plan_check_exit_ip_count(
     now: str | None = None,
     exclude_lease_id: str | None = None,
 ) -> int:
-    """统计当前事务中某出口 IP 的已交付套餐查询租约。
+    """统计当前事务中某出口 IP 的已交付及领取预留套餐查询租约。
 
     调用方必须先持有 ``proxy-exit-ip:<exit_ip>`` 锁。释放记录在原始过期前仍计数，
-    pending 记录不计数。
+    pending 和确定未交付的记录不计数；旧记录缺少交付字段按已交付。
     """
     timestamp = now or _now()
     clauses = (
@@ -64,6 +64,7 @@ def plan_check_exit_ip_count(
         '"expires_at" IS NOT NULL',
         '"expires_at" > %s',
         '"state" NOT IN (\'pending\', \'shared_pending\')',
+        "COALESCE(data->>'delivery_state', 'delivered') <> 'not_delivered'",
     )
     params: list[Any] = [exit_ip, timestamp]
     if exclude_lease_id is not None:
@@ -125,7 +126,7 @@ def reserve_pending(
             record_store.advisory_xact_lock(conn, f"proxy-endpoint:{endpoint}")
             if not allow_reuse and record_store.count_rows(
                 PROXY_LEASES,
-                where='"endpoint" = %s AND "state" IN (\'shared_pending\', \'shared_leased\', \'pool_leased\') '
+                where='"endpoint" = %s AND "endpoint_owner" = TRUE AND "state" IN (\'shared_pending\', \'shared_leased\', \'pool_leased\') '
                       'AND ("expires_at" IS NULL OR "expires_at" > %s)',
                 params=(endpoint, _now()),
                 conn=conn,

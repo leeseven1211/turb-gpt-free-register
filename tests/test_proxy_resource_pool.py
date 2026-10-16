@@ -93,7 +93,7 @@ class ProxyResourcePoolTests(PostgresTestCase):
         with self.assertRaises(proxy_lease_store.ProxyReuseLimitError):
             self.claim(shared=True, reuse_limit=1)
 
-    def test_exhausted_resource_is_retired_and_does_not_fill_ready_inventory(self):
+    def test_exhausted_resource_waits_for_rotation_and_does_not_fill_ready_inventory(self):
         slot, anchor = self.seed_ready(exit_ip="198.51.100.77")
         first = self.claim(shared=True, reuse_limit=1)
         store.release(first, reason="completed")
@@ -101,9 +101,9 @@ class ProxyResourcePoolTests(PostgresTestCase):
             self.claim(shared=True, reuse_limit=1)
         resource = record_store.get_row_by(store.RESOURCES, "resource_id", slot["resource_id"])
         anchor_row = record_store.get_row_by(store.LEASES, "lease_id", anchor.lease_id)
-        self.assertEqual("retired", resource["state"])
-        self.assertEqual("recent", anchor_row["state"])
-        self.assertEqual({"retired": 1}, store.counts())
+        self.assertEqual("rotation_wait", resource["state"])
+        self.assertEqual("leased", anchor_row["state"])
+        self.assertEqual({"rotation_wait": 1}, store.counts())
 
     def test_expired_released_shared_lease_no_longer_counts(self):
         self.seed_ready(exit_ip="198.51.100.77")
@@ -113,7 +113,10 @@ class ProxyResourcePoolTests(PostgresTestCase):
         record_store.patch_row(store.LEASES, row["id"], {
             "expires_at": store._stamp(-1),
         })
-        self.assertIsNotNone(self.claim(shared=True, reuse_limit=1))
+        with record_store.transaction() as conn:
+            self.assertEqual(0, proxy_lease_store.plan_check_exit_ip_count(conn, "198.51.100.77"))
+        # 额度自然失效不直接复活已耗尽代次，仍须等待后台确认出口。
+        self.assertEqual({"rotation_wait": 1}, store.counts())
 
     def test_released_strict_pool_child_counts_against_shared_limit(self):
         _, same_ip_anchor = self.seed_ready(1, exit_ip="198.51.100.77")
@@ -237,7 +240,7 @@ class ProxyResourcePoolTests(PostgresTestCase):
         self.assertTrue(store.finish_check(checking, success=False))
         resource = record_store.get_row_by(store.RESOURCES, "resource_id", slot["resource_id"])
         anchor_row = record_store.get_row_by(store.LEASES, "lease_id", anchor.lease_id)
-        self.assertEqual("quarantine", resource["state"])
+        self.assertEqual("rotation_wait", resource["state"])
         self.assertEqual("recent", anchor_row["state"])
         self.assertEqual(resource["expires_at"], anchor_row["recent_until"])
 
@@ -288,8 +291,15 @@ class ProxyResourcePoolTests(PostgresTestCase):
         self.assertIsNotNone(store.reserve_slot("default", "1024proxy", max_size=1, timeout=60))
 
     def test_public_inventory_does_not_expose_credentials_or_owner(self):
-        _, lease = self.seed_ready()
+        slot, lease = self.seed_ready()
+        next_probe = store._stamp(60)
+        record_store.patch_row(store.RESOURCES, slot["id"], {
+            "next_probe_at": next_probe, "probe_attempts": 2, "private_note": "内部事实",
+        })
         items = store.public_items()
+        self.assertEqual(next_probe, items[0].get("next_probe_at"))
+        self.assertEqual(2, items[0].get("probe_attempts"))
+        self.assertNotIn("private_note", items[0])
         self.assertNotIn("proxy_url", items[0])
         self.assertNotIn("owner_token", items[0])
         self.assertNotIn(lease.endpoint, str(items))

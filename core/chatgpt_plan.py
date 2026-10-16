@@ -345,11 +345,22 @@ def parse_quota_usage(data: dict) -> dict:
     }
 
 
+def _remaining_request_timeout(timeout: float, deadline_at: float | None) -> float:
+    """每次请求使用同一绝对期限扣除此前事务、解析及请求耗时。"""
+    if deadline_at is None:
+        return timeout
+    remaining = deadline_at - time.time()
+    if remaining <= 0:
+        raise TimeoutError("国家查询总期限已到")
+    return min(timeout, remaining)
+
+
 def _query_account_quota(
     env: BrowserSession,
     token: str,
     claims: dict,
     timeout: float,
+    deadline_at: float | None = None,
 ) -> dict:
     """Fetch quota metadata; quota errors are deliberately non-fatal to plan checks."""
     checked_at = now_iso()
@@ -358,7 +369,7 @@ def _query_account_quota(
             f"https://chatgpt.com{USAGE_PATH}",
             headers=_quota_headers(env, token, claims),
             allow_redirects=False,
-            timeout=timeout,
+            timeout=_remaining_request_timeout(timeout, deadline_at),
         )
         http_status = int(response.status_code)
         if not (200 <= http_status < 300):
@@ -594,6 +605,7 @@ def check_account_plan(
     max_attempts: int | None = None,
     retry_delay: float | None = None,
     context_recorder=None,
+    deadline_at: float | None = None,
 ) -> dict:
     token = normalize_token(token)
     if not token:
@@ -656,7 +668,7 @@ def check_account_plan(
                 url,
                 headers=_common_headers(env, token, claims),
                 allow_redirects=False,
-                timeout=timeout_seconds,
+                timeout=_remaining_request_timeout(timeout_seconds, deadline_at),
             )
             response_text = resp.text or ""
             http_status = int(resp.status_code)
@@ -698,7 +710,9 @@ def check_account_plan(
                     parsed.update(route_meta)
                     # 额度接口失败不应让套餐查询失败；它有独立状态，便于列表
                     # 展示“套餐已查到、额度暂不可用”以及保留上次成功快照。
-                    parsed.update(_query_account_quota(env, token, claims, timeout_seconds))
+                    parsed.update(_query_account_quota(env, token, claims, timeout_seconds, deadline_at))
+                    if deadline_at is not None and time.time() > deadline_at:
+                        raise TimeoutError("国家查询总期限已到")
                     probe_result = parsed
                     return parsed
         except Exception as exc:

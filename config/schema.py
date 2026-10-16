@@ -338,6 +338,7 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_1024_RECENT_TTL": 1800,
     "PROXY_1024_ACQUIRE_INTERVAL": 0.6,
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
+    "PROXY_POOL_COUNTRIES": [],
     "PROXY_POOL_MIN_READY": 2,
     "PROXY_POOL_MAX_SIZE": 20,
     "PROXY_POOL_WAIT_TIMEOUT": 0,
@@ -1175,12 +1176,16 @@ _FIELD_DEFINITIONS = [
         "storage": "env", "secret": True,
     },
     {
+        "key": "PROXY_POOL_COUNTRIES", "file": "proxy.py", "type": "list_str_multiline", "group": "代理与网络",
+        "label": "代理池预热国家", "help": "已启用代理来源按此列表额外备货；支持换行、逗号或空格分隔 ISO 两位国家代码。留空不额外预热，不改变注册国家或独立查套餐国家；各国共享全池容量",
+    },
+    {
         "key": "PROXY_POOL_MIN_READY", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "代理池最小可用库存", "help": "每个活跃来源/地区预留的空闲线路底数；设为 5 时，后台补足等待任务所需线路后仍以 5 条可立即领取的线路为目标。占用、提取中和复检中不计入可用库存；受供应商可用性和全池容量限制",
     },
     {
         "key": "PROXY_POOL_MAX_SIZE", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "代理池最大容量", "help": "全池 fetching、checking、ready、leased、shared 状态的总容量上限；冷却和历史状态不占容量",
+        "label": "代理池最大容量", "help": "全池提取、检测、可用、使用中及等待轮换的总容量上限；容量不足时优先回收无任务占用的等待轮换线路，冷却和历史状态不占容量",
     },
     {
         "key": "PROXY_POOL_WAIT_TIMEOUT", "file": "proxy.py", "type": "int", "group": "代理与网络",
@@ -1192,7 +1197,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL_CHECK_INTERVAL", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "库存复检间隔(秒)", "help": "后台对已登记库存进行出口复检的间隔；复检失败的库存会退役",
+        "label": "库存复检间隔(秒)", "help": "后台对空闲库存及等待轮换线路复检的间隔；新出口国家匹配后换代，连续失败三次或剩余寿命不足时退役",
     },
     {
         "key": "PROXY_POOL_MAX_IDLE", "file": "proxy.py", "type": "int", "group": "代理与网络",
@@ -1200,7 +1205,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL_WORKERS", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "代理池后台 worker 数", "help": "单个进程后台维护代理库存和复检的 worker 数量；热加载后当前维护结束再调整",
+        "label": "代理池后台 worker 数", "help": "单进程后台总预算；补货保留至少一半向上取整，复检最多一半向下取整。一个 worker 时交替处理；热加载后当前维护结束再调整",
         "restart": True,
     },
     {
@@ -1978,6 +1983,10 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
         from config.countries import normalize_plan_check_countries
 
         return normalize_plan_check_countries(result)
+    if field.key == "PROXY_POOL_COUNTRIES":
+        from config.countries import normalize_proxy_pool_countries
+
+        return normalize_proxy_pool_countries(result)
     if field.type in {"int", "float"}:
         if field.min_value is not None and result < field.min_value:
             raise ValueError(f"不得小于 {field.min_value}")
@@ -2108,7 +2117,7 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
     text = str(raw).strip()
     explicit_empty_list = (
         field.type == "list_str_multiline"
-        and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES"}
+        and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES"}
         and text == ""
     )
     if not text and not explicit_empty_list:
@@ -2401,7 +2410,7 @@ def apply_env_namespace(namespace: dict[str, Any], explicit_schema: Mapping[str,
         raw = os.getenv(field.key, "")
         if not str(raw).strip() and not (
             field.type == "list_str_multiline"
-            and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES"}
+            and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES"}
         ):
             continue
         try:

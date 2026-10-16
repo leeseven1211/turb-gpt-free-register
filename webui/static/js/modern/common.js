@@ -361,11 +361,12 @@ function pagerSetSize(id, val) {
 }
 
 // ---------- 统一列表列宽 ----------
+// 账号表各列需保留的最低像素宽度，调宽和恢复历史比例时共用。
+const ACCOUNT_COLUMN_MIN_WIDTHS = [36, 72, 160, 80, 84, 88, 72, 88, 88, 168, 72, 88, 72, 96, 108];
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
-  // Desktop account rows need to scan in one viewport; long values keep
-  // their full text in the cell title and the detail drawer.
-  accounts: [3, 6, 17, 7, 6, 6, 7, 7, 8, 24, 9, 8, 8, 8, 10],
+  // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
+  accounts: [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
@@ -401,7 +402,8 @@ function readSavedTableTotal(key) {
 }
 
 function saveTableWidths(key, widths, total = 0) {
-  localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(4)))));
+  const precision = key === 'accounts' ? 8 : 4;
+  localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(precision)))));
   if (total > 0) localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(Math.round(total)));
 }
 
@@ -412,6 +414,7 @@ function resetResizableTable(key) {
   localStorage.removeItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key);
   table.dataset.autoSized = '0';
   table.style.removeProperty('width');
+  if (key === 'accounts') table.style.setProperty('width', '1396px', 'important');
   applyResizableTableWidths(table, TABLE_DEFAULT_WIDTHS[key]);
   showToast('已恢复默认列宽');
 }
@@ -474,7 +477,19 @@ function initResizableTable(table) {
       if (savedWidths[columnIndex] / savedTotal < ratio) savedWidths[columnIndex] = savedTotal * ratio;
     });
   }
-  applyResizableTableWidths(table, savedWidths || TABLE_DEFAULT_WIDTHS[key]);
+  const effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
+  if (key === 'accounts') {
+    ACCOUNT_COLUMN_MIN_WIDTHS.forEach((minimum, index) => {
+      if (!(Number(effectiveWidths[index]) > 0)) effectiveWidths[index] = minimum;
+    });
+    const widthTotal = effectiveWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0) || 1;
+    const minWidthForColumns = ACCOUNT_COLUMN_MIN_WIDTHS.reduce((requiredWidth, minimum, index) => {
+      const ratio = Math.max(0, Number(effectiveWidths[index]) || 0) / widthTotal;
+      return Math.max(requiredWidth, Math.ceil(minimum / ratio));
+    }, 1396);
+    table.style.setProperty('width', `${Math.max(minWidthForColumns, readSavedTableTotal(key))}px`, 'important');
+  }
+  applyResizableTableWidths(table, effectiveWidths);
 
   headers.forEach((header, index) => {
     if (header.classList.contains('col-check') || index >= headers.length - 1) return;
@@ -491,8 +506,12 @@ function initResizableTable(table) {
       const startX = event.clientX;
       const startWidths = headers.map(item => item.getBoundingClientRect().width);
       const nextIndex = index + 1;
-      const minCurrent = (header.classList.contains('col-id') || header.classList.contains('task-col-id')) ? 72 : 64;
-      const minNext = (headers[nextIndex].classList.contains('col-actions') || headers[nextIndex].classList.contains('task-col-actions')) ? 108 : 64;
+      const minCurrent = key === 'accounts'
+        ? ACCOUNT_COLUMN_MIN_WIDTHS[index]
+        : (header.classList.contains('col-id') || header.classList.contains('task-col-id')) ? 72 : 64;
+      const minNext = key === 'accounts'
+        ? ACCOUNT_COLUMN_MIN_WIDTHS[nextIndex]
+        : (headers[nextIndex].classList.contains('col-actions') || headers[nextIndex].classList.contains('task-col-actions')) ? 108 : 64;
       handle.classList.add('is-dragging');
       document.body.classList.add('is-resizing-table-column');
 

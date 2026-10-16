@@ -75,8 +75,10 @@ def test_snapshot_country_pools_contains_only_safe_aggregates():
          patch.object(proxy_pool.store, "public_items", return_value=[]):
         snapshot = proxy_pool.snapshot()
     assert snapshot["country_pools"] == [
-            {"provider": "1024proxy", "region": "JP", "counts": {"ready": 1}, "waiting_local": 2, "target_ready": 2, "configured": False},
-            {"provider": "1024proxy", "region": "VN", "counts": {"leased": 2}, "waiting_local": 0, "target_ready": 0, "configured": False},
+            {"provider": "1024proxy", "region": "JP", "counts": {"ready": 1}, "waiting_local": 2, "target_ready": 2, "configured": False,
+             "last_supply_error": None, "last_supply_error_class": None, "retry_after_seconds": 0},
+            {"provider": "1024proxy", "region": "VN", "counts": {"leased": 2}, "waiting_local": 0, "target_ready": 0, "configured": False,
+             "last_supply_error": None, "last_supply_error_class": None, "retry_after_seconds": 0},
     ]
     assert "endpoint" not in json.dumps(snapshot["country_pools"])
     assert "url" not in json.dumps(snapshot["country_pools"])
@@ -84,6 +86,7 @@ def test_snapshot_country_pools_contains_only_safe_aggregates():
 
 def test_snapshot_hides_idle_removed_profiles_and_marks_historical_active_profiles():
     current_options = proxy_pool._provider_options(region="JP")
+    current_options["api_url"] = "https://proxy.example.test/api"
     current = proxy_pool.Profile(proxy_pool._profile_key("1024proxy", current_options), "1024proxy", current_options, waiting=0)
     old_same_country = proxy_pool.Profile("old-jp", "1024proxy", {"region": "JP", "api_url": "old"}, waiting=0)
     old_waiter = proxy_pool.Profile("old-vn", "1024proxy", {"region": "VN", "api_url": "old"}, waiting=1)
@@ -103,6 +106,9 @@ def test_snapshot_hides_idle_removed_profiles_and_marks_historical_active_profil
         old_waiter.key: old_waiter, idle_removed.key: idle_removed,
     }), patch.object(proxy_pool, "settings", return_value=policy), \
          patch.object(cfg, "PLAN_CHECK_COUNTRIES", ["JP"]), \
+         patch.object(cfg, "REGISTRATION_PROXY_MODE", "none"), \
+         patch.object(cfg, "PROXY_1024_API_URL", "https://proxy.example.test/api"), \
+         patch.object(account_cfg, "ACCOUNT_PLAN_CHECK_PROXY_MODE", "provider:1024proxy"), \
          patch.object(proxy_pool.store, "counts", side_effect=lambda key=None: counts.get(key, {"ready": 1})), \
          patch.object(proxy_pool.store, "public_items", return_value=[]):
         snapshot = proxy_pool.snapshot()
@@ -135,6 +141,7 @@ def test_snapshot_includes_region_scoped_static_profiles():
     assert rows == [{
         "provider": "proxy_pool", "region": "JP", "counts": {"ready": 1},
         "waiting_local": 1, "target_ready": 3, "configured": True,
+        "last_supply_error": None, "last_supply_error_class": None, "retry_after_seconds": 0,
     }]
     assert urls[0] not in json.dumps(rows)
 

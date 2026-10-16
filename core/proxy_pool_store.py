@@ -9,13 +9,37 @@ from core import proxy_lease_store
 
 RESOURCES = record_store.PROXY_POOL_RESOURCES
 LEASES = record_store.PROXY_LEASES
-LIVE = ("fetching", "checking", "ready", "leased", "shared")
+LIVE = ("fetching", "checking", "ready", "leased", "shared", "rotation_wait")
 TERMINAL = ("failed", "retired", "expired")
 _HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
 def _stamp(seconds: float = 0) -> str:
     return (datetime.now() + timedelta(seconds=seconds)).isoformat(timespec="microseconds")
+
+
+def _inventory_scope(profile_key: str, *, profile_keys: list[str] | None = None,
+                     source_urls: list[str] | None = None, required_region: str | None = None) -> tuple[str, list]:
+    """领取、补货与满池回收共用同源及实际国家条件。"""
+    scope = "r.profile_key = %s"
+    scope_params = [profile_key]
+    if profile_keys is not None:
+        from config.countries import ISO_3166_ALPHA2
+
+        if not source_urls:
+            raise ValueError("跨国家静态库存领取必须指定相同来源")
+        regions = [required_region] if required_region else sorted(ISO_3166_ALPHA2)
+        if required_region and required_region not in ISO_3166_ALPHA2:
+            raise ValueError("静态库存目标国家必须为已知 ISO 3166-1 两位代码")
+        # profile 键限定完整 URL 来源，锚点的 provider、URL 和实际国家再做 SQL 校验。
+        scope = ("r.profile_key = ANY(%s) AND r.provider = 'proxy_pool' "
+                 "AND r.data->>'region' = ANY(%s) AND EXISTS (SELECT 1 FROM "
+                 + postgres_store.qualified(LEASES.name) + " candidate_anchor "
+                 "WHERE candidate_anchor.lease_id = r.anchor_lease_id "
+                 "AND candidate_anchor.provider = 'proxy_pool' AND candidate_anchor.proxy_url = ANY(%s) "
+                 "AND candidate_anchor.region = r.data->>'region')")
+        scope_params = [list(dict.fromkeys([profile_key, *profile_keys])), regions, source_urls]
+    return scope, scope_params
 
 
 def reserve_slot(profile_key: str, provider: str, *, max_size: int, timeout: float, reclaim_idle: bool = False) -> dict | None:
@@ -28,15 +52,21 @@ def reserve_slot(profile_key: str, provider: str, *, max_size: int, timeout: flo
 
 
 def _reserve_slot(conn, profile_key: str, provider: str, *, max_size: int, timeout: float,
-                  reclaim_idle: bool) -> dict | None:
+                  reclaim_idle: bool, protected_scope: tuple[str, list] | None = None) -> dict | None:
     """调用者持有容量事务锁，预留一个补货槽位。"""
     count = record_store.count_rows(RESOURCES, where='state = ANY(%s)', params=(list(LIVE),), conn=conn)
     if count >= max_size:
         # 有真实等待者时允许退役其他配置的空闲库存，避免旧地区占满全池。
+        protected, protected_params = protected_scope or ("FALSE", [])
         with conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
-                        "WHERE state = 'ready' AND profile_key <> %s AND %s "
-                        "ORDER BY last_used_at FOR UPDATE SKIP LOCKED LIMIT 1", (profile_key, reclaim_idle))
+            cur.execute(f"SELECT r.* FROM {postgres_store.qualified(RESOURCES.name)} r "
+                        "WHERE %s AND ((r.state = 'ready' AND r.profile_key <> %s) OR r.state = 'rotation_wait') "
+                        f"AND NOT (r.state = 'ready' AND ({protected})) "
+                        "AND NOT EXISTS (SELECT 1 FROM " + postgres_store.qualified(LEASES.name) + " child "
+                        "WHERE child.data->>'pool_anchor_id' = r.anchor_lease_id "
+                        "AND child.state IN ('shared_leased', 'pool_leased') AND child.expires_at > %s) "
+                        "ORDER BY CASE WHEN r.state = 'rotation_wait' THEN 0 ELSE 1 END, r.last_used_at "
+                        "FOR UPDATE OF r SKIP LOCKED LIMIT 1", (reclaim_idle, profile_key, *protected_params, _stamp()))
             raw = cur.fetchone()
         if not raw or count > max_size:
             return None
@@ -52,54 +82,66 @@ def _reserve_slot(conn, profile_key: str, provider: str, *, max_size: int, timeo
 
 
 def _available_rows(conn, profile_key: str, *, min_ttl: float, max_age: float,
-                    include_stale: bool = False) -> list[dict]:
+                    include_stale: bool = False, profile_keys: list[str] | None = None,
+                    source_urls: list[str] | None = None, required_region: str | None = None) -> list[dict]:
     """与独占领取相同的准入条件；进行中的供给不计入空闲库存。"""
     from psycopg.rows import dict_row
 
     resources = postgres_store.qualified(RESOURCES.name)
     leases = postgres_store.qualified(LEASES.name)
+    scope, scope_params = _inventory_scope(profile_key, profile_keys=profile_keys,
+                                           source_urls=source_urls, required_region=required_region)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"SELECT r.id, r.state FROM {resources} r LEFT JOIN {leases} anchor "
-            "ON anchor.lease_id = r.anchor_lease_id WHERE r.profile_key = %s AND ("
-            "(r.state = 'fetching' AND r.expires_at > %s) OR "
-            "(r.state IN ('ready', 'checking') AND r.expires_at > %s "
-            "AND anchor.state = 'leased' AND anchor.expires_at > %s "
+            "ON anchor.lease_id = r.anchor_lease_id WHERE ("
+            "(r.profile_key = %s AND r.state = 'fetching' AND r.expires_at > %s) OR "
+            f"(({scope}) AND r.state IN ('ready', 'checking') AND r.expires_at > %s "
+            "AND anchor.state = 'leased' AND anchor.endpoint_owner = TRUE AND anchor.expires_at > %s "
+            "AND COALESCE(r.data->>'reuse_exhausted', 'false') <> 'true' "
             "AND NOT EXISTS ("
             f"SELECT 1 FROM {leases} child WHERE child.data->>'pool_anchor_id' = r.anchor_lease_id "
             "AND child.state IN ('pool_leased', 'shared_leased') AND child.expires_at > %s) "
             "AND ((r.state = 'ready' AND (r.checked_at >= %s OR (%s AND r.checked_at IS NOT NULL))) OR "
             "(r.state = 'checking' AND r.data->>'check_deadline' > %s))))",
-            (profile_key, _stamp(), _stamp(min_ttl), _stamp(min_ttl), _stamp(), _stamp(-max_age), include_stale, _stamp()),
+            (profile_key, _stamp(), *scope_params, _stamp(min_ttl), _stamp(min_ttl), _stamp(), _stamp(-max_age), include_stale, _stamp()),
         )
         return cur.fetchall()
 
 
-def availability(profile_key: str, *, min_ttl: float, max_age: float, conn=None) -> dict[str, int]:
+def availability(profile_key: str, *, min_ttl: float, max_age: float, conn=None,
+                 profile_keys: list[str] | None = None, source_urls: list[str] | None = None,
+                 required_region: str | None = None) -> dict[str, int]:
     """ready 只表示能立即独占领取的线路；fetching/checking 仅抵扣重复补货。"""
     if conn is None:
         record_store.init()
         with postgres_store.connect() as connection:
-            return availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=connection)
+            return availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=connection,
+                                profile_keys=profile_keys, source_urls=source_urls, required_region=required_region)
     result = {"ready": 0, "fetching": 0, "checking": 0}
-    for row in _available_rows(conn, profile_key, min_ttl=min_ttl, max_age=max_age):
+    for row in _available_rows(conn, profile_key, min_ttl=min_ttl, max_age=max_age,
+                               profile_keys=profile_keys, source_urls=source_urls, required_region=required_region):
         result[row["state"]] += 1
     return result
 
 
 def reserve_refill_slots(profile_key: str, provider: str, *, target: int, max_size: int,
                          min_ttl: float, max_age: float, limit: int, timeout: float,
-                         reclaim_idle: bool = False) -> list[dict]:
+                         reclaim_idle: bool = False, profile_keys: list[str] | None = None,
+                         source_urls: list[str] | None = None, required_region: str | None = None) -> list[dict]:
     """在同一容量事务内计算缺口并预留，多个 worker 不会重复补同一份库存。"""
     record_store.init()
     with record_store.transaction() as conn:
         record_store.advisory_xact_lock(conn, "proxy-pool-capacity")
-        prepared = availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=conn)
+        prepared = availability(profile_key, min_ttl=min_ttl, max_age=max_age, conn=conn,
+                                profile_keys=profile_keys, source_urls=source_urls, required_region=required_region)
+        protected_scope = _inventory_scope(profile_key, profile_keys=profile_keys,
+                                            source_urls=source_urls, required_region=required_region) if profile_keys is not None else None
         deficit = max(0, min(target, max_size) - sum(prepared.values()))
         slots = []
         for _ in range(min(max(0, limit), deficit)):
             slot = _reserve_slot(conn, profile_key, provider, max_size=max_size, timeout=timeout,
-                                 reclaim_idle=reclaim_idle)
+                                 reclaim_idle=reclaim_idle, protected_scope=protected_scope)
             if slot is None:
                 break
             slots.append(slot)
@@ -141,10 +183,13 @@ def _mark_reuse_exhausted(conn, resource: dict, anchor: dict) -> list[dict]:
     record_store.patch_row(RESOURCES, resource["id"], {
         "reuse_exhausted": True,
         "reuse_exhausted_at": _stamp(),
-        "state": "shared" if children else "retired",
+        "state": "shared" if children else "rotation_wait",
+        "next_probe_at": _stamp(),
     }, conn=conn)
     resource["reuse_exhausted"] = True
-    resource["state"] = "shared" if children else "retired"
+    resource["state"] = "shared" if children else "rotation_wait"
+    record_store.patch_row(LEASES, anchor["id"], {"reuse_exhausted": True,
+                                                "reuse_exhausted_at": _stamp()}, conn=conn)
     return children
 
 
@@ -218,13 +263,17 @@ def _lease_object(row: dict, resource: dict, *, shared: bool):
 
 def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict,
           allow_reuse: bool = False,
-          reuse_limit: int = proxy_lease_store.REUSE_LIMIT_DEFAULT):
+          reuse_limit: int = proxy_lease_store.REUSE_LIMIT_DEFAULT,
+          profile_keys: list[str] | None = None, source_urls: list[str] | None = None,
+          required_region: str | None = None):
     """只领取已检查且寿命足够的库存；此路径不执行任何网络操作。"""
     if allow_reuse and correlation.get("purpose") != "plan-check":
         raise ValueError("只有套餐查询允许共享代理")
-    if allow_reuse:
+    if allow_reuse or correlation.get("purpose") == "plan-check":
         reuse_limit = proxy_lease_store.normalize_reuse_limit(reuse_limit)
     record_store.init()
+    scope, scope_params = _inventory_scope(profile_key, profile_keys=profile_keys,
+                                           source_urls=source_urls, required_region=required_region)
     reuse_limit_error = None
     with record_store.transaction() as conn, conn.cursor() as cur:
         states = ["ready", "shared"] if allow_reuse else ["ready"]
@@ -232,20 +281,25 @@ def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict
         seen_ids = []
         while True:
             # 每次只锁一个候选，其他并发领取仍可取得其余库存。
-            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
-                        "WHERE profile_key = %s AND state = ANY(%s) AND expires_at > %s AND checked_at >= %s "
-                        "AND NOT (id = ANY(%s)) ORDER BY expires_at, id FOR UPDATE SKIP LOCKED LIMIT 1",
-                        (profile_key, states, _stamp(min_ttl), _stamp(-max_age), seen_ids))
+            cur.execute(f"SELECT r.* FROM {postgres_store.qualified(RESOURCES.name)} r "
+                        f"WHERE {scope} AND r.state = ANY(%s) AND r.expires_at > %s AND r.checked_at >= %s "
+                        "AND NOT (r.id = ANY(%s)) ORDER BY r.expires_at, r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1",
+                        (*scope_params, states, _stamp(min_ttl), _stamp(-max_age), seen_ids))
             raw = cur.fetchone()
             if raw is None:
                 break
             resource = record_store.merge_row(RESOURCES, raw)
             seen_ids.append(resource["id"])
             anchor = record_store.get_row_by(LEASES, "lease_id", resource["anchor_lease_id"], conn=conn, for_update=True)
+            if profile_keys is not None and anchor and (
+                    anchor.get("provider") != "proxy_pool" or anchor.get("proxy_url") not in source_urls
+                    or anchor.get("region") != resource.get("region")):
+                continue
             if anchor and anchor["state"] == "recent":
                 record_store.patch_row(RESOURCES, resource["id"], {"state": "retired"}, conn=conn)
                 continue
-            if not anchor or anchor["state"] != "leased" or str(anchor["expires_at"]) <= _stamp(min_ttl):
+            if (not anchor or not anchor.get("endpoint_owner", True) or anchor["state"] != "leased"
+                    or str(anchor["expires_at"]) <= _stamp(min_ttl)):
                 record_store.patch_row(RESOURCES, resource["id"], {"state": "expired"}, conn=conn)
                 _close_anchor(conn, resource, reason="pool_anchor_stale")
                 continue
@@ -255,16 +309,14 @@ def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict
                 # 严格套餐查询也会计入后续共享上限；与共享领取共用同一出口锁，
                 # 确保计数和插入之间不会被另一个进程穿插。
                 record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{anchor['exit_ip']}")
-            if allow_reuse:
-                exit_ip = str(anchor.get("exit_ip") or "").strip()
-                if not exit_ip:
-                    raise ValueError("共享代理租约必须确认实际出口 IP")
-                if proxy_lease_store.plan_check_exit_ip_count(conn, exit_ip) >= reuse_limit:
-                    children = _mark_reuse_exhausted(conn, resource, anchor)
-                    if not children:
-                        _close_anchor(conn, resource, reason="pool_reuse_exhausted")
-                    exhausted_exit_ip = exit_ip
-                    continue
+            exit_ip = str(anchor.get("exit_ip") or "").strip()
+            if allow_reuse and not exit_ip:
+                raise ValueError("共享代理租约必须确认实际出口 IP")
+            if (correlation.get("purpose") == "plan-check" and exit_ip
+                    and proxy_lease_store.plan_check_exit_ip_count(conn, exit_ip) >= reuse_limit):
+                _mark_reuse_exhausted(conn, resource, anchor)
+                exhausted_exit_ip = exit_ip
+                continue
             allowed = {key: value for key, value in correlation.items() if key in {
                 "job_id", "account_id", "purpose", "operation_task_id", "operation_run_id",
                 "registration_job_id", "route_attempt_no"}}
@@ -272,50 +324,95 @@ def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict
             row = {key: anchor.get(key) for key in ("provider", "endpoint", "proxy_url", "exit_ip", "region", "expires_at")}
             row.update(allowed)
             row.update(lease_id=uuid.uuid4().hex, state="shared_leased" if allow_reuse else "pool_leased", acquired_at=_stamp(),
-                       allow_reuse=allow_reuse, pool_resource_id=resource["resource_id"], pool_anchor_id=anchor["lease_id"])
+                       allow_reuse=allow_reuse, pool_resource_id=resource["resource_id"], pool_anchor_id=anchor["lease_id"],
+                       delivery_state="reserved", reuse_limit=reuse_limit, claim_max_age=max_age, claim_min_ttl=min_ttl)
             record_store.insert_row(LEASES, row, conn=conn)
             record_store.patch_row(RESOURCES, resource["id"], {"state": "shared" if allow_reuse else "leased",
-                                                            "last_used_at": _stamp()}, conn=conn)
+                                                            "last_used_at": _stamp(), "reuse_limit": reuse_limit}, conn=conn)
+            if correlation.get("purpose") == "plan-check" and anchor.get("exit_ip"):
+                if proxy_lease_store.plan_check_exit_ip_count(conn, anchor["exit_ip"]) >= reuse_limit:
+                    _mark_reuse_exhausted(conn, resource, anchor)
             return _lease_object(row, resource, shared=allow_reuse)
+        if correlation.get("purpose") == "plan-check" and not exhausted_exit_ip:
+            cur.execute(f"SELECT r.* FROM {postgres_store.qualified(RESOURCES.name)} r "
+                        f"WHERE {scope} AND r.state = 'rotation_wait' AND r.expires_at > %s "
+                        "AND r.data->>'reuse_exhausted' = 'true' LIMIT 1",
+                        (*scope_params, _stamp(min_ttl)))
+            waiting = cur.fetchone()
+            if waiting:
+                exhausted_exit_ip = record_store.merge_row(RESOURCES, waiting).get("exit_ip")
         if exhausted_exit_ip:
-            # 先让事务提交退役标记和锚点收口，再向调用方报告等待原因。
+            # 先提交耗尽标记，再向调用方报告等待其他线路。
             reuse_limit_error = proxy_lease_store.ProxyReuseLimitError(exhausted_exit_ip, reuse_limit)
     if reuse_limit_error:
         raise reuse_limit_error
     return None
 
 
-def release(lease, *, reason: str, fault: bool = False, cooldown: float = 0) -> None:
-    """任务释放只改变本租约；共享任务不会释放其他任务的租约。"""
+def mark_delivered(lease) -> bool:
+    """原子确认任务已收到预留，迟到确认不能复活已取消租约。"""
+    with record_store.transaction() as conn:
+        row = record_store.get_row_by(LEASES, "lease_id", lease.lease_id, conn=conn, for_update=True)
+        if (not row or row["state"] not in {"pool_leased", "shared_leased"}
+                or str(row.get("expires_at") or "") <= _stamp()):
+            return False
+        state = row.get("delivery_state", "delivered")
+        if state == "not_delivered":
+            return False
+        if state == "reserved":
+            return record_store.patch_row(LEASES, row["id"], {"delivery_state": "delivered"}, conn=conn)
+        return state == "delivered"
+
+
+def release(lease, *, reason: str, fault: bool = False, cooldown: float = 0,
+            before_delivery: bool = False) -> None:
+    """任务释放只改变本租约；确定未交付的预留取消才返还额度。"""
     with record_store.transaction() as conn:
         resource = record_store.get_row_by(RESOURCES, "resource_id", lease.metadata["pool_resource_id"], conn=conn, for_update=True)
         row = record_store.get_row_by(LEASES, "lease_id", lease.lease_id, conn=conn, for_update=True)
         if not row or row["state"] not in {"pool_leased", "shared_leased"}:
             return
         shared = row["state"] == "shared_leased"
+        # before_delivery 仅由 acquire 返回前的异常路径明确声明，用于确认事务迟到的补偿。
+        refundable = row.get("delivery_state") == "reserved" or (
+            before_delivery and row.get("delivery_state") == "delivered")
+        refund = refundable and reason in {
+            "allocation_cancelled", "cancelled_before_delivery", "cancelled", "canceled"}
+        current_anchor = None
+        if resource and resource.get("anchor_lease_id") == row.get("pool_anchor_id"):
+            current_anchor = record_store.get_row_by(LEASES, "lease_id", resource["anchor_lease_id"], conn=conn, for_update=True)
+        if row.get("exit_ip") and row.get("purpose") == "plan-check":
+            record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{row['exit_ip']}")
         record_store.patch_row(LEASES, row["id"], {
-            "state": "released", "released_at": _stamp(),
-            "release_reason": reason[:120],
+            "state": "released", "released_at": _stamp(), "release_reason": reason[:120],
+            "delivery_state": "not_delivered" if refund else row.get("delivery_state", "delivered"),
         }, conn=conn)
-        if not resource:
+        # 旧任务的迟到释放只更新自己的历史，不能隔离或发布当前代。
+        if not resource or resource.get("anchor_lease_id") != row.get("pool_anchor_id"):
             return
-        if fault:
+        if refund and resource.get("reuse_exhausted") and row.get("exit_ip"):
+            count = proxy_lease_store.plan_check_exit_ip_count(conn, row["exit_ip"])
+            if count < int(row.get("reuse_limit") or proxy_lease_store.REUSE_LIMIT_DEFAULT):
+                record_store.patch_row(RESOURCES, resource["id"], {"reuse_exhausted": False,
+                    "reuse_exhausted_at": None}, conn=conn)
+                resource["reuse_exhausted"] = False
+                if current_anchor:
+                    record_store.patch_row(LEASES, current_anchor["id"], {"reuse_exhausted": False,
+                        "reuse_exhausted_at": None}, conn=conn)
+        if fault and not refund:
             record_store.patch_row(RESOURCES, resource["id"], {"state": "quarantine", "last_error_code": "transport_failure"}, conn=conn)
-            anchor = record_store.get_row_by(LEASES, "lease_id", resource["anchor_lease_id"], conn=conn, for_update=True)
-            if anchor and anchor["state"] == "leased":
-                record_store.patch_row(LEASES, anchor["id"], {"state": "recent", "recent_until": resource["expires_at"],
-                                                           "release_reason": "pool_fault", "released_at": _stamp()}, conn=conn)
-        elif not shared and resource["state"] == "leased":
-            record_store.patch_row(RESOURCES, resource["id"], {
-                "state": "cooldown" if cooldown else "ready", "cooldown_until": _stamp(cooldown),
-                "last_used_at": _stamp(),
-            }, conn=conn)
-        elif resource["state"] == "shared" and not _children(conn, resource["anchor_lease_id"]):
+            _close_anchor(conn, resource, reason="pool_fault")
+        elif resource["state"] in {"leased", "shared", "rotation_wait"} and not _children(conn, resource["anchor_lease_id"]):
             if resource.get("reuse_exhausted"):
-                record_store.patch_row(RESOURCES, resource["id"], {"state": "retired"}, conn=conn)
-                _close_anchor(conn, resource, reason="pool_reuse_exhausted")
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "rotation_wait", "next_probe_at": _stamp()}, conn=conn)
+            elif refund and (str(resource["expires_at"]) <= _stamp(float(row.get("claim_min_ttl") or 0))
+                             or str(resource.get("checked_at") or "") < _stamp(-float(row.get("claim_max_age") or 60))):
+                record_store.patch_row(RESOURCES, resource["id"], {"state": "rotation_wait", "next_probe_at": _stamp()}, conn=conn)
             else:
-                record_store.patch_row(RESOURCES, resource["id"], {"state": "ready", "last_used_at": _stamp()}, conn=conn)
+                record_store.patch_row(RESOURCES, resource["id"], {
+                    "state": "cooldown" if not shared and cooldown and not refund else "ready",
+                    "cooldown_until": _stamp(cooldown), "last_used_at": _stamp(),
+                }, conn=conn)
 
 
 def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: float = 0,
@@ -361,6 +458,12 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                     record_store.patch_row(RESOURCES, row["id"], {"state": "expired"}, conn=conn)
                     _close_anchor(conn, row, reason="pool_expired")
                     retired.append(row)
+                elif (row["state"] == "quarantine" and row["expires_at"] > _stamp(min_ttl)
+                      and not _children(conn, row.get("anchor_lease_id", ""))):
+                    record_store.patch_row(RESOURCES, row["id"], {
+                        "state": "rotation_wait", "probe_return_state": "quarantine", "next_probe_at": _stamp(),
+                    }, conn=conn)
+                    live_count += 1
                 elif row["state"] == "cooldown" and row.get("cooldown_until", "") <= _stamp():
                     state = "ready" if max_size is None or live_count < max_size else "retired"
                     record_store.patch_row(RESOURCES, row["id"], {"state": state}, conn=conn)
@@ -373,18 +476,17 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
             if row["state"] == "shared" and not _children(conn, row["anchor_lease_id"]) and not expired:
                 # 子租约仅在显式释放后结束；进程失联仍保留至自然到期。
                 if row.get("reuse_exhausted"):
-                    record_store.patch_row(RESOURCES, row["id"], {"state": "retired"}, conn=conn)
-                    _close_anchor(conn, row, reason="pool_reuse_exhausted")
-                    row["state"] = "retired"
+                    record_store.patch_row(RESOURCES, row["id"], {"state": "rotation_wait", "next_probe_at": _stamp()}, conn=conn)
+                    row["state"] = "rotation_wait"
                 else:
                     record_store.patch_row(RESOURCES, row["id"], {"state": "ready"}, conn=conn)
                     row["state"] = "ready"
             if row["state"] == "checking" and str(row.get("check_deadline") or row["expires_at"]) <= _stamp():
-                record_store.patch_row(RESOURCES, row["id"], {"state": "quarantine", "last_error_code": "check_interrupted"}, conn=conn)
-                _close_anchor(conn, row, reason="check_interrupted")
-                retired.append(row)
-                live_count -= 1
-                continue
+                record_store.patch_row(RESOURCES, row["id"], {
+                    "state": "rotation_wait", "owner_token": None, "check_deadline": None,
+                    "next_probe_at": _stamp(), "last_error_code": row.get("last_error_code") or "check_interrupted",
+                }, conn=conn)
+                row["state"] = "rotation_wait"
             idle = row["state"] == "ready" and row["last_used_at"] < _stamp(-max_idle)
             if idle:
                 available = {item["id"] for item in _available_rows(
@@ -399,8 +501,10 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                     ) if item["state"] == "ready"}
                     # 检测过期的底数库存先保留供复检，不让供给故障期间丢掉健康旧线路。
                     idle = row["id"] not in recoverable or len(recoverable) > minimum
-            too_short = row["state"] == "ready" and row["expires_at"] <= _stamp(min_ttl)
-            over_capacity = max_size is not None and live_count > max_size and row["state"] == "ready"
+            too_short = row["state"] in {"ready", "rotation_wait"} and row["expires_at"] <= _stamp(min_ttl)
+            over_capacity = (max_size is not None and live_count > max_size
+                             and row["state"] in {"ready", "rotation_wait"}
+                             and not _children(conn, row.get("anchor_lease_id", "")))
             if expired or idle or too_short or over_capacity:
                 state = "expired" if expired else "retired"
                 record_store.patch_row(RESOURCES, row["id"], {"state": state, "owner_token": None}, conn=conn)
@@ -410,35 +514,122 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
     return retired
 
 
-def take_check(profile_key: str, *, max_age: float, timeout: float) -> dict | None:
+def take_check(profile_key: str, *, max_age: float, timeout: float, min_ttl: float = 0) -> dict | None:
+    """取得健康复检或轮换探测所有权，网络请求由事务外的池执行。"""
+    record_store.init()
     with record_store.transaction() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} WHERE profile_key = %s "
-                    "AND state = 'ready' AND checked_at < %s AND expires_at > %s "
-                    "ORDER BY checked_at FOR UPDATE SKIP LOCKED LIMIT 1", (profile_key, _stamp(-max_age), _stamp()))
-        raw = cur.fetchone()
-        if not raw:
-            return None
-        row = record_store.merge_row(RESOURCES, raw)
-        token = uuid.uuid4().hex
-        record_store.patch_row(RESOURCES, row["id"], {"state": "checking", "owner_token": token, "check_deadline": _stamp(timeout)}, conn=conn)
-        row["owner_token"] = token
-        return row
+        seen = []
+        while True:
+            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} r WHERE profile_key = %s "
+                        "AND ((state = 'ready' AND checked_at < %s) OR "
+                        "(state = 'rotation_wait' AND COALESCE(data->>'next_probe_at', '') <= %s)) "
+                        "AND NOT (id = ANY(%s)) AND NOT EXISTS (SELECT 1 FROM "
+                        f"{postgres_store.qualified(LEASES.name)} child WHERE child.data->>'pool_anchor_id' = r.anchor_lease_id "
+                        "AND child.state IN ('pool_leased', 'shared_leased') AND child.expires_at > %s) "
+                        "ORDER BY COALESCE(data->>'next_probe_at', checked_at), id "
+                        "FOR UPDATE SKIP LOCKED LIMIT 1", (profile_key, _stamp(-max_age), _stamp(), seen, _stamp()))
+            raw = cur.fetchone()
+            if not raw:
+                return None
+            row = record_store.merge_row(RESOURCES, raw)
+            seen.append(row["id"])
+            if row["expires_at"] <= _stamp(min_ttl):
+                record_store.patch_row(RESOURCES, row["id"], {"state": "expired" if row["expires_at"] <= _stamp() else "retired"}, conn=conn)
+                _close_anchor(conn, row, reason="pool_insufficient_ttl")
+                continue
+            token = uuid.uuid4().hex
+            return_state = row.get("probe_return_state") or row["state"]
+            record_store.patch_row(RESOURCES, row["id"], {
+                "state": "checking", "owner_token": token, "check_deadline": _stamp(timeout),
+                "probe_return_state": return_state,
+            }, conn=conn)
+            row["owner_token"] = token
+            row["probe_return_state"] = return_state
+            return row
 
 
-def finish_check(resource: dict, *, success: bool) -> bool:
+def _defer_probe(conn, row: dict, *, code: str | None, check_interval: float,
+                 max_failures: int, failed: bool) -> bool:
+    attempts = int(row.get("probe_attempts") or 0) + 1 if failed else 0
+    retired = failed and attempts >= max(1, max_failures)
+    updated = record_store.patch_row(RESOURCES, row["id"], {
+        "state": "retired" if retired else "rotation_wait", "owner_token": None,
+        "check_deadline": None, "next_probe_at": _stamp(max(0, check_interval)),
+        "probe_attempts": attempts, "last_error_code": code or row.get("last_error_code"),
+    }, conn=conn)
+    if retired:
+        _close_anchor(conn, row, reason=code or "rotation_failed")
+    return updated
+
+
+def finish_check(resource: dict, *, success: bool, exit_ip: str | None = None,
+                 region: str | None = None, min_ttl: float = 0,
+                 check_interval: float = 60, max_failures: int = 3) -> bool:
+    """接受带所有权的检测结果；出口变化时原子保留旧代并发布新代。"""
+    proxy_lease_store._cleanup_expired()
     with record_store.transaction() as conn:
         row = record_store.get_row_by(RESOURCES, "resource_id", resource["resource_id"], conn=conn, for_update=True)
         if (not row or row["state"] != "checking" or row["owner_token"] != resource["owner_token"]
+                or row.get("anchor_lease_id") != resource.get("anchor_lease_id")
                 or row["expires_at"] <= _stamp() or str(row.get("check_deadline") or "") <= _stamp()):
             return False
-        updated = record_store.patch_row(RESOURCES, row["id"], {
-            "state": "ready" if success else "quarantine",
-            "owner_token": None, "checked_at": _stamp(),
-            "last_error_code": None if success else "health_check_failed",
-        }, conn=conn)
-        if updated and not success:
+        anchor = record_store.get_row_by(LEASES, "lease_id", row["anchor_lease_id"], conn=conn, for_update=True)
+        if not anchor or _children(conn, row["anchor_lease_id"]):
+            return False
+        if row["expires_at"] <= _stamp(min_ttl):
+            updated = record_store.patch_row(RESOURCES, row["id"], {"state": "retired", "owner_token": None,
+                "last_error_code": "pool_insufficient_ttl"}, conn=conn)
+            _close_anchor(conn, row, reason="pool_insufficient_ttl")
+            return updated
+        observed_ip = str(exit_ip if exit_ip is not None else anchor.get("exit_ip") or "").strip()
+        expected_region = str(anchor.get("region") or row.get("region") or "").upper()
+        observed_region = str(region if region is not None else expected_region).upper()
+        if not success or (expected_region and observed_region != expected_region) or not observed_ip:
             _close_anchor(conn, row, reason="health_check_failed")
-        return updated
+            code = "health_check_failed" if not success else "region_mismatch" if observed_ip else "exit_ip_missing"
+            return _defer_probe(conn, row, code=code, check_interval=check_interval,
+                                max_failures=max_failures, failed=True)
+        same_ip = observed_ip == str(anchor.get("exit_ip") or "")
+        if same_ip:
+            isolated = row.get("probe_return_state") == "quarantine" or row.get("last_error_code") in {
+                "transport_failure", "health_check_failed", "region_mismatch", "exit_ip_conflict"}
+            if row.get("reuse_exhausted") or isolated:
+                return _defer_probe(conn, row, code=None, check_interval=check_interval,
+                                    max_failures=max_failures, failed=False)
+            return record_store.patch_row(RESOURCES, row["id"], {
+                "state": "ready", "owner_token": None, "checked_at": _stamp(), "last_error_code": None,
+            }, remove_data_keys=("next_probe_at", "probe_attempts", "probe_return_state", "check_deadline"), conn=conn)
+        # 锚点行先锁，随后 endpoint 与按字典序排列的 IP 锁；换代不会等待其他锚点行。
+        record_store.advisory_xact_lock(conn, f"proxy-endpoint:{anchor['endpoint']}")
+        for ip in sorted({str(anchor.get("exit_ip") or ""), observed_ip} - {""}):
+            record_store.advisory_xact_lock(conn, f"proxy-exit-ip:{ip}")
+        conflict = record_store.count_rows(LEASES,
+            where="exit_ip = %s AND id <> %s AND ((state = 'recent' AND recent_until > %s) OR "
+                  "(state IN ('leased', 'shared_leased', 'pool_leased') AND expires_at > %s))",
+            params=(observed_ip, anchor["id"], _stamp(), _stamp()), conn=conn)
+        exhausted = proxy_lease_store.plan_check_exit_ip_count(conn, observed_ip) >= int(
+            row.get("reuse_limit") or proxy_lease_store.REUSE_LIMIT_DEFAULT)
+        if conflict or exhausted:
+            return _defer_probe(conn, row, code="exit_ip_conflict" if conflict else "exit_ip_reuse_exhausted",
+                                check_interval=check_interval, max_failures=max_failures, failed=True)
+        if not anchor.get("endpoint_owner", True) or anchor["state"] not in {"leased", "recent"}:
+            return False
+        record_store.patch_row(LEASES, anchor["id"], {
+            "state": "recent", "endpoint_owner": False, "recent_until": row["expires_at"],
+            "released_at": anchor.get("released_at") or _stamp(), "release_reason": "pool_rotated",
+        }, conn=conn)
+        new_anchor_id = uuid.uuid4().hex
+        new_anchor = {key: anchor.get(key) for key in ("provider", "endpoint", "proxy_url")}
+        new_anchor.update(lease_id=new_anchor_id, state="leased", endpoint_owner=True, purpose="pool-reserve",
+                          acquired_at=_stamp(), expires_at=row["expires_at"], exit_ip=observed_ip,
+                          region=observed_region)
+        record_store.insert_row(LEASES, new_anchor, conn=conn)
+        return record_store.patch_row(RESOURCES, row["id"], {
+            "anchor_lease_id": new_anchor_id, "state": "ready", "owner_token": None,
+            "checked_at": _stamp(), "exit_ip": observed_ip, "region": observed_region,
+            "last_error_code": None,
+        }, remove_data_keys=("reuse_exhausted", "reuse_exhausted_at", "next_probe_at", "probe_attempts",
+                             "probe_return_state", "check_deadline"), conn=conn)
 
 
 def counts(profile_key: str | None = None) -> dict[str, int]:
@@ -456,4 +647,5 @@ def public_items(limit: int = 200) -> list[dict]:
              "region": row.get("region"), "endpoint": mask_endpoint(row.get("endpoint")), "exit_ip": mask_ip(row.get("exit_ip")),
              "checked_at": row.get("checked_at"), "expires_at": row["expires_at"],
              "cooldown_until": row.get("cooldown_until"),
+             "next_probe_at": row.get("next_probe_at"), "probe_attempts": int(row.get("probe_attempts") or 0),
              "last_error_code": row.get("last_error_code")} for row in record_store.list_rows(RESOURCES, limit=min(500, max(1, limit)))]

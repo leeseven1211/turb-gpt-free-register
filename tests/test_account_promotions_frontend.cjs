@@ -5,6 +5,9 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const accountStyles = fs.readFileSync(path.join(__dirname, '../webui/static/css/ui-foundation.css'), 'utf8');
+const modernStyles = fs.readFileSync(path.join(__dirname, '../webui/static/css/modern.css'), 'utf8');
+const commonSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
 const promotionSource = source.slice(source.indexOf('function _plusPromotionKind('), source.indexOf('function _planAction('));
 
 function functionSource(name) {
@@ -26,6 +29,11 @@ const view = {
 vm.createContext(view);
 vm.runInContext([
   promotionSource,
+  functionSource('_quotaWindowLabel'),
+  functionSource('_quotaPercent'),
+  functionSource('_quotaWindowDetail'),
+  functionSource('_quotaCell'),
+  functionSource('_totpCellV2'),
   functionSource('_extractLinkAction'),
   functionSource('_accountDetailState'),
   functionSource('_accountCountryDetailMarkup'),
@@ -276,8 +284,8 @@ test('国家行按免费与折扣格式显示 Plus 支付方式，不借用 Go �
     ]}},
   ]});
   assert.match(html, /class="account-promotion-country">JP：<\/span>/);
-  assert.match(html, /class="account-promotion-country">IN-50%-3：<\/span>/);
-  assert.deepEqual(visiblePromotionLabels(html), ['银行卡 Link', '银行卡 Link UPI', '支付方式待查询']);
+  assert.match(html, /另 2 国/);
+  assert.deepEqual(visiblePromotionLabels(html), ['银行卡 Link']);
   assert.match(promotionTooltip(html), /Go: 免费 1个月/);
   assert.match(promotionTooltip(html), /Plus: 五折 3个月/);
 });
@@ -419,6 +427,40 @@ test('历史徽标与国家代码独立于可裁切优惠文案渲染', () => {
   assert.deepEqual(visiblePromotionLabels(html), ['支付方式待查询']);
 });
 
+test('三国优惠按 Plus 结果优先级保留两轨摘要和完整浮窗', () => {
+  const html = view._promotionCell({
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 20}]}},
+      {country: 'VN', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'free_trial', duration_num_periods: 1, duration_period: 'month'}]}},
+      {country: 'IN', status: 'success', result: {account_promotions: [{plan: 'plus', kind: 'discount', discount_percentage: 50}]}},
+    ],
+  });
+  assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
+  assert.equal((html.match(/class="account-promotion-country">/g) || []).length, 1);
+  assert.match(html, /VN：/);
+  assert.match(html, /另 2 国/);
+  assert.match(promotionTooltip(html), /JP/);
+  assert.match(promotionTooltip(html), /VN/);
+  assert.match(promotionTooltip(html), /IN/);
+});
+
+test('十国摘要的失败与历史计数独立显示且不受支付方式文案影响', () => {
+  const countries = Array.from({length: 10}, (_, index) => ({
+    country: `C${index}`,
+    status: index === 8 ? 'failed' : 'success',
+    error: index === 8 ? 'HTTP 429' : '',
+    last_success_at: index === 8 ? '2026-10-14' : undefined,
+    result: {account_promotions: [{plan: 'plus', kind: 'free_trial', duration_num_periods: 1, duration_period: 'month', payment_method_types: ['card', 'link', 'upi', 'very-long-payment-provider-name']}]},
+  }));
+  const html = view._promotionCell({plan_check_country_results: countries});
+  assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
+  assert.equal((html.match(/class="account-promotion-country">/g) || []).length, 1);
+  assert.match(html, /另 9 国/);
+  assert.match(html, /失败 1/);
+  assert.match(html, /历史 1/);
+  assert.match(promotionTooltip(html), /C8/);
+});
+
 test('明确空国家列表关闭多国时，最新单次查询不被历史国家结果覆盖', () => {
   const account = {
     current_plan_type: 'free', plan_check_status: 'success', plan_check_countries: [],
@@ -433,32 +475,55 @@ test('明确空国家列表关闭多国时，最新单次查询不被历史国�
   assert.doesNotMatch(detail, /JP 优惠/);
 });
 
-function createResizableAccountTable(savedWidths = null) {
+function createResizableAccountTable(savedWidths = null, savedTotal = 0) {
   const template = fs.readFileSync(path.join(__dirname, '../webui/templates/index.html'), 'utf8');
   const tableSource = template.slice(template.indexOf('<table class="accounts-table-v2"'));
   const colgroup = tableSource.slice(tableSource.indexOf('<colgroup>'), tableSource.indexOf('</colgroup>'));
   const columnClasses = [...colgroup.matchAll(/<col class="([^"]+)"/g)].map(match => match[1]);
   const columns = columnClasses.map(() => ({style: {}}));
-  const headers = columnClasses.map(value => ({classList: {contains: name => value.split(' ').includes(name)}, appendChild() {}}));
-  const table = {dataset: {resizableTable: 'accounts'}, querySelectorAll: selector => selector === 'colgroup col' ? columns : headers};
+  const style = {
+    width: '',
+    setProperty(name, value) { this[name] = value; },
+    removeProperty(name) { delete this[name]; },
+  };
+  const table = {dataset: {resizableTable: 'accounts'}, style, querySelectorAll: selector => selector === 'colgroup col' ? columns : headers};
+  table.getBoundingClientRect = () => ({width: Number.parseFloat(table.style.width) || 1396});
+  const headers = columnClasses.map((value, index) => ({
+    classList: {contains: name => value.split(' ').includes(name)},
+    appendChild(handle) { this.handle = handle; },
+    getBoundingClientRect() { return {width: (Number.parseFloat(columns[index].style.width) || 0) * table.getBoundingClientRect().width / 100}; },
+  }));
   const storageKey = 'gpt_console_table_widths_accounts';
-  const storage = new Map(savedWidths ? [[storageKey, JSON.stringify(savedWidths)]] : []);
+  const totalStorageKey = 'gpt_console_table_total_accounts';
+  const storage = new Map([
+    ...(savedWidths ? [[storageKey, JSON.stringify(savedWidths)]] : []),
+    ...(savedTotal ? [[totalStorageKey, String(savedTotal)]] : []),
+  ]);
+  const listeners = new Map();
   const sandbox = {
     localStorage: {getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value)},
-    document: {createElement: () => ({setAttribute() {}, addEventListener() {}})},
+    document: {
+      body: {classList: {add() {}, remove() {}}},
+      createElement: () => ({
+        classList: {add() {}, remove() {}},
+        setAttribute() {},
+        addEventListener(name, callback) { this[`on${name}`] = callback; },
+      }),
+      addEventListener(name, callback) { listeners.set(name, callback); },
+      removeEventListener(name) { listeners.delete(name); },
+    },
   };
-  const common = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
   vm.createContext(sandbox);
-  vm.runInContext(common.slice(common.indexOf('const TABLE_DEFAULT_WIDTHS ='), common.indexOf('function initResizableTables(')), sandbox);
+  vm.runInContext(commonSource.slice(commonSource.indexOf('const ACCOUNT_COLUMN_MIN_WIDTHS ='), commonSource.indexOf('function initResizableTables(')), sandbox);
   sandbox.initResizableTable(table);
-  return {columns, promotionIndex: columnClasses.indexOf('col-trial'), storage, storageKey};
+  return {columns, table, headers, listeners, promotionIndex: columnClasses.indexOf('col-trial'), storage, storageKey};
 }
 
-test('默认列宽按真实 colgroup 应用，1280px 表格给国家与支付方式至少 180px 内容空间', () => {
+test('默认列宽按 1396px 设计宽度应用，给国家与支付方式至少 180px 内容空间', () => {
   const {columns, promotionIndex} = createResizableAccountTable();
   assert.ok(promotionIndex >= 0, '账号表格应包含套餐优惠列');
   assert.ok(columns.every(column => Number.parseFloat(column.style.width) > 0), '默认列宽应覆盖所有真实表格列');
-  const contentWidth = 1280 * Number.parseFloat(columns[promotionIndex].style.width) / 100 - 12;
+  const contentWidth = 1396 * Number.parseFloat(columns[promotionIndex].style.width) / 100 - 12;
   assert.ok(contentWidth >= 180, `套餐优惠内容空间不足: ${contentWidth}px`);
 });
 
@@ -469,4 +534,88 @@ test('扩大默认套餐优惠列不覆盖用户已经保存的列宽', () => {
   const expected = saved[promotionIndex] / saved.reduce((sum, value) => sum + value, 0) * 100;
   assert.equal(Number.parseFloat(columns[promotionIndex].style.width), expected);
   assert.equal(storage.get(storageKey), JSON.stringify(saved));
+});
+
+test('恢复保存的账号表格总宽，必要时只扩表并保留原列宽比例', () => {
+  const saved = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
+  const {columns, table, promotionIndex} = createResizableAccountTable(saved, 1520);
+  assert.equal(table.style.width, '1520px');
+  const total = saved.reduce((sum, value) => sum + value, 0);
+  assert.equal(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / total * 100);
+});
+
+test('优惠列保存比例过窄时扩展表格，且不改写用户保存比例', () => {
+  const saved = [4, 8, 12, 5, 6, 6, 5, 5, 5, 4, 5, 5, 5, 6, 4];
+  const {columns, table, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
+  const savedTotal = saved.reduce((sum, value) => sum + value, 0);
+  const minimumTableWidth = Math.ceil(168 / (saved[promotionIndex] / savedTotal));
+  assert.ok(Number.parseFloat(table.style.width) >= minimumTableWidth);
+  assert.equal(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / savedTotal * 100);
+  assert.equal(storage.get(storageKey), JSON.stringify(saved));
+});
+
+test('历史窄 Token 与操作列扩表保宽，比例和重载后的保存值保持稳定', () => {
+  const saved = [36, 5, 160, 80, 0.1, 88, 72, 88, 88, 1, 72, 88, 72, 96, 0.2];
+  const minimumWidths = [36, 72, 160, 80, 84, 88, 72, 88, 88, 168, 72, 88, 72, 96, 108];
+  const first = createResizableAccountTable(saved, 1396);
+  const storedBefore = first.storage.get(first.storageKey);
+  const actualWidths = first.columns.map(column => Number.parseFloat(column.style.width) * Number.parseFloat(first.table.style.width) / 100);
+  minimumWidths.forEach((minimum, index) => {
+    assert.ok(actualWidths[index] >= minimum, `第 ${index + 1} 列实际宽 ${actualWidths[index]}px，小于 ${minimum}px`);
+  });
+  assert.equal(storedBefore, JSON.stringify(saved));
+
+  const reloaded = createResizableAccountTable(JSON.parse(storedBefore), Number.parseFloat(first.table.style.width));
+  const reloadedWidths = reloaded.columns.map(column => Number.parseFloat(column.style.width) * Number.parseFloat(reloaded.table.style.width) / 100);
+  minimumWidths.forEach((minimum, index) => {
+    assert.ok(reloadedWidths[index] >= minimum, `重载后第 ${index + 1} 列实际宽 ${reloadedWidths[index]}px，小于 ${minimum}px`);
+  });
+  assert.equal(reloaded.storage.get(reloaded.storageKey), storedBefore);
+});
+
+test('额度列优先显示实际 5H 与周窗口，其他窗口仍可从提示查看', () => {
+  const html = view._quotaCell({
+    quota_status: 'success',
+    quota_windows: [
+      {kind: 'monthly', used_percent: 30},
+      {kind: 'weekly', used_percent: 40},
+      {kind: 'five_hour', used_percent: 10},
+      {kind: 'daily', used_percent: 20},
+    ],
+  });
+  assert.deepEqual([...html.matchAll(/<div class="quota-cell-line">([^<]+)<\/div>/g)].map(match => match[1]), ['5H', 'WEEKLY']);
+  assert.match(html, /MONTH · 已用 30%/);
+  assert.match(html, /DAY · 已用 20%/);
+});
+
+test('额度标签使用真实网格轨道，两个窗口不会以内联方式挤在一行', () => {
+  const html = view._quotaCell({quota_status: 'success', quota_windows: [
+    {kind: 'five_hour', used_percent: 10}, {kind: 'weekly', used_percent: 20},
+  ]});
+  assert.equal((html.match(/<div class="quota-cell-line">/g) || []).length, 2);
+  assert.match(accountStyles, /\.quota-cell\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*repeat\(2,/s);
+  assert.match(accountStyles, /\.quota-cell-line\s*\{[^}]*display:\s*block;/s);
+});
+
+test('默认 2FA 窄列保留可完整点击的短验证码复制按钮', () => {
+  const html = view._totpCellV2({id: 7, totp_enabled: true});
+  assert.match(html, /data-account-totp-copy="7"[^>]*>复制<\/button>/);
+  assert.match(html, /class="account-cell-line"><button/);
+  assert.match(modernStyles, /\.status-action-cell button[\s\S]*?min-height:\s*26px;\s*padding:\s*0 10px;/);
+  assert.match(accountStyles, /\.account-cell-line button\s*\{\s*flex:\s*0 0 auto;/);
+});
+
+test('优惠摘要固定徽标在优惠列最小宽度内有足够空间', () => {
+  const saved = [36, 72, 160, 80, 84, 88, 72, 88, 88, 1, 72, 88, 72, 96, 108];
+  const {columns, table, headers, listeners, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
+  const tableWidth = table.getBoundingClientRect().width;
+  headers[promotionIndex - 1].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
+  listeners.get('pointermove')({clientX: 1000});
+  assert.ok(Number.parseFloat(columns[promotionIndex].style.width) * tableWidth / 100 >= 168);
+  listeners.get('pointerup')();
+  const storedWidths = JSON.parse(storage.get(storageKey));
+  assert.ok(storedWidths[promotionIndex] * tableWidth >= 168, `${storedWidths[promotionIndex]} × ${tableWidth}px`);
+  assert.match(accountStyles, /\.account-promotion-country-summary\s*\{[^}]*overflow:\s*visible\s*!important;/s);
+  assert.match(accountStyles, /\.account-promotion-summary-badge\s*\{[^}]*flex:\s*0 0 auto;/s);
+  assert.match(commonSource, /const ACCOUNT_COLUMN_MIN_WIDTHS = \[[^\]]+, 168,/);
 });

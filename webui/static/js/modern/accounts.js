@@ -1252,8 +1252,9 @@ function _codexCellV2(r) {
 }
 function _accountStatusCellV2(r) {
   const reason = String(r.account_status_reason || '').trim();
+  const lines = (status, summary = '') => `<div class="account-cell-lines"><div class="account-cell-line">${status}</div>${summary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(summary)}">${esc(short(summary, 34))}</div>` : ''}</div>`;
   if (accountIsDeactivated(r)) {
-    return `<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`;
+    return lines(`<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`, reason);
   }
   const liveStatus = String(r.live_check_status || '').toLowerCase();
   const liveHttp = _liveCheckHttpStatus(r);
@@ -1262,7 +1263,7 @@ function _accountStatusCellV2(r) {
     const tokenIssue = liveHttp === 401 || liveHttp === 403;
     const label = tokenIssue ? `Token 异常 · HTTP ${liveHttp}` : '查活失败';
     const detail = [liveHttp ? `HTTP ${liveHttp}` : '', liveReason].filter(Boolean).join('；');
-    return `<span class="acc-v2-account-status is-fail"${detail ? ` title="${esc(detail)}"` : ''}>${label}</span>`;
+    return lines(`<span class="acc-v2-account-status is-fail"${detail ? ` title="${esc(detail)}"` : ''}>${label}</span>`, liveReason || (liveHttp ? `HTTP ${liveHttp}` : ''));
   }
   if (liveStatus === 'queued' || liveStatus === 'running') {
     return '<span class="acc-v2-account-status is-mute">查活中</span>';
@@ -1525,7 +1526,11 @@ function _quotaCell(r) {
   const details = windows.map(_quotaWindowDetail);
   if (status === 'failed') details.push(`本次查询失败: ${error || '未知错误'}；显示上次成功快照`);
   if (checked) details.push(`查询于 ${checked}`);
-  return `<div class="quota-cell" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${windows.map(w => `<span class="quota-cell-line">${esc(_quotaWindowLabel(w))}</span>`).join(' ')}</div>`;
+  const priority = {five_hour: 0, weekly: 1};
+  const visible = windows.map((window, index) => ({window, index})).sort((left, right) =>
+    (priority[String(left.window.kind || '').toLowerCase()] ?? 2) - (priority[String(right.window.kind || '').toLowerCase()] ?? 2) || left.index - right.index,
+  ).slice(0, 2);
+  return `<div class="quota-cell" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${visible.map(({window}) => `<div class="quota-cell-line">${esc(_quotaWindowLabel(window))}</div>`).join('')}</div>`;
 }
 function _plusPromotionKind(r) {
   const explicit = String(r.plus_promo_kind || '').trim().toLowerCase();
@@ -1851,9 +1856,17 @@ function _promotionCell(r) {
     if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
       return `<div class="account-promotion-cell"><span class="pill ${allNone ? classes.neutral : classes.warning}" data-accounts-tooltip="${esc(detail)}" tabindex="0"><span class="account-promotion-label">${allNone ? '无优惠' : '待查询'}</span></span></div>`;
     }
-    // 无优惠的国家留在浮窗中；查询失败、待查询和历史结果仍在列表明确标记。
-    const visibleRows = rows.filter(({display, best}) => display.stale || !['none', 'not_applicable'].includes(best.kind));
-    return `<div class="account-promotion-cell account-promotion-cell--countries">${visibleRows.map(({display, best}) => {
+    // 先按 Plus 结果优先级排列，同级仍保留配置国家顺序。
+    const visibleRows = rows
+      .filter(({display, best}) => display.stale || !['none', 'not_applicable'].includes(best.kind))
+      .sort((left, right) => _compareAccountPromotions(left.best, right.best));
+    const failedCount = rows.filter(({display, best}) => ['failed', 'cancelled'].includes(best.kind) || /本次查询(失败|取消)|查询中断/.test(display.context || '')).length;
+    const staleCount = rows.filter(({display}) => display.stale).length;
+    const summaryBadges = [
+      failedCount ? `<span class="account-promotion-summary-badge is-failed">失败 ${failedCount}</span>` : '',
+      staleCount ? `<span class="account-promotion-summary-badge is-stale">历史 ${staleCount}</span>` : '',
+    ].filter(Boolean).join('');
+    const countryMarkup = ({display, best}) => {
       const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
       const methods = _accountPromotionPaymentMethods(best);
       const label = hasOffer ? (methods.join(' ') || '支付方式待查询') : _accountPlusCellLabel(best);
@@ -1861,7 +1874,15 @@ function _promotionCell(r) {
       const countryBadge = `<span class="account-promotion-country">${esc(heading)}${display.stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`;
       const tooltip = hasOffer && !methods.length ? `${display.country} Plus：支付方式待查询\n\n${detail}` : detail;
       return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${display.stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${countryBadge}<span class="account-promotion-label">${esc(label)}</span></span>`;
-    }).join('')}</div>`;
+    };
+    const first = visibleRows[0];
+    const lines = first ? [countryMarkup(first)] : [];
+    if (rows.length > 2) {
+      lines.push(`<span class="account-promotion-country-row account-promotion-country-summary" data-accounts-tooltip="${esc(detail)}" tabindex="0"><span class="account-promotion-country-summary-count">另 ${rows.length - 1} 国</span>${summaryBadges}</span>`);
+    } else {
+      lines.push(...visibleRows.slice(1).map(countryMarkup));
+    }
+    return `<div class="account-promotion-cell account-promotion-cell--countries">${lines.join('')}</div>`;
   }
   const display = _accountPromotionDisplay(r);
   const best = _accountPlusPromotion(display.items);
@@ -1963,7 +1984,10 @@ function _tokenDisplayState(r) {
 function _tokenCellV2(r) {
   const state = _tokenDisplayState(r);
   if (state.key === 'missing') return `<span class="acc-v2-muted">${esc(state.label)}</span>`;
-  return `<button type="button" class="acc-v2-token-state is-${attrEsc(state.key)}" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="${esc(state.title)}">${esc(state.label)}</button>`;
+  const label = state.key === 'invalid' ? '失效' : state.label;
+  const button = `<button type="button" class="acc-v2-token-state is-${attrEsc(state.key)}" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="${esc(state.title)}">${esc(label)}</button>`;
+  const status = state.key === 'invalid' ? _liveCheckHttpStatus(r) : null;
+  return `<div class="account-cell-lines"><div class="account-cell-line">${button}</div>${status ? `<div class="account-cell-line account-cell-line--sub">HTTP ${status}</div>` : ''}</div>`;
 }
 function _passwordCellV2(r) {
   if (!r.has_account_password) return '<span class="acc-v2-muted">未设置</span>';
@@ -1972,9 +1996,9 @@ function _passwordCellV2(r) {
 function _totpCellV2(r) {
   if (!r.totp_enabled) return '<span class="acc-v2-muted">未启用</span>';
   return `
-    <div class="status-action-cell" data-account-totp-cell="${esc(r.id)}">
-      <span class="pill status-success">已启用</span>
-      <button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button>
+    <div class="account-cell-lines status-action-cell" data-account-totp-cell="${esc(r.id)}">
+      <div class="account-cell-line"><span class="pill status-success">已启用</span></div>
+      <div class="account-cell-line"><button type="button" data-account-totp-copy="${esc(r.id)}" title="获取并复制当前 6 位 TOTP 验证码">复制</button></div>
     </div>
   `;
 }
@@ -2008,7 +2032,7 @@ function _deactivationMailCell(r) {
   const button = supported && !['queued','running'].includes(status)
     ? `<button type="button" data-deactivation-mail-check="${esc(r.id)}" title="扫描该账号对应邮箱；不会刷新 AT">复查</button>`
     : '';
-  return `<div class="status-action-cell" title="${esc(title)}">${badge}${button}</div>`;
+  return `<div class="account-cell-lines" title="${esc(title)}"><div class="account-cell-line">${badge}</div>${button ? `<div class="account-cell-line">${button}</div>` : ''}</div>`;
 }
 function _accountsV2MoreMenu(r) {
   const parts = [
@@ -2437,37 +2461,41 @@ function renderAccounts() {
   const openMoreId = getOpenAccountsV2MoreId();
   const total = ACCOUNTS_TOTAL;
   const rows = ACCOUNTS;
-  const rowHtmlV2 = (r) => `
+  const rowHtmlV2 = (r) => {
+    const extractLink = _extractLinkCell(r);
+    const codexSummary = r.codex_error || (['queued', 'running', 'cancelling'].includes(r.codex_execution_status) ? '授权处理中' : '');
+    return `
     <tr>
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
       <td class="col-id">#${esc(r.id)}</td>
       <td class="col-email" title="${esc([r.email || '-', r.user_name || ''].filter(Boolean).join(' · '))}">
-        <button type="button" class="acc-v2-email-link" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
+        <button type="button" class="acc-v2-email-link account-cell-line" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
           <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
         </button>
-        <div class="acc-v2-sub">${esc(r.user_name || '-')}</div>
+        <div class="acc-v2-sub account-cell-line account-cell-line--sub">${esc(r.user_name || '-')}</div>
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
       <td class="col-account-status">${_accountStatusCellV2(r)}</td>
       <td class="col-small">${_passwordCellV2(r)}</td>
-      <td class="col-plan">${_planCell(r)}<div class="acc-v2-sub">${_extractLinkCell(r)}</div></td>
+      <td class="col-plan"><div class="account-cell-lines"><div class="account-cell-line">${_planCell(r)}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
       <td class="col-quota">${_quotaCell(r)}</td>
       <td class="col-trial">${_promotionCell(r)}</td>
       <td class="col-small">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
-      <td class="col-status">${_codexCellV2(r)}</td>
-      <td class="col-time" title="${esc(r.created_at || '-')}">${esc(r.created_at || '-')}</td>
+      <td class="col-status"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
+      <td class="col-time" title="${esc(r.created_at || '-')}"><div class="account-cell-lines"><div class="account-cell-line">${esc((r.created_at || '-').replace('T', ' ').split(/[ ]/)[0])}</div><div class="account-cell-line account-cell-line--sub">${esc((r.created_at || '').replace('T', ' ').split(/[ ]/)[1] || '')}</div></div></td>
       <td class="col-actions">
-        <div class="acc-v2-actions">
-          <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
+        <div class="account-cell-lines acc-v2-actions">
           <div class="acc-v2-more" data-account-more-id="${esc(r.id)}">
             <button type="button" class="acc-v2-more-btn" data-acc-more-toggle aria-haspopup="true" aria-expanded="false">更多</button>
             <div class="acc-v2-more-menu" role="menu">${_accountsV2MoreMenu(r)}</div>
           </div>
+          <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
         </div>
       </td>
     </tr>`;
+  };
 
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {

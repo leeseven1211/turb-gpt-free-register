@@ -32,21 +32,28 @@ def _tokens(value: object) -> list[str]:
     return [str(value).strip()]
 
 
-def normalize_plan_check_countries(value: object) -> list[str]:
-    """返回大写、去重且保持输入顺序的国家代码列表。
-
-    空输入返回空列表，表示沿用账号注册国家的兼容单次查询路径。
-    """
+def _normalize_countries(value: object, label: str) -> list[str]:
+    """规范化国家列表，错误文案标明实际配置用途。"""
     normalized: list[str] = []
     seen: set[str] = set()
     for raw in _tokens(value):
         country = str(raw).strip().upper()
         if country == "RAND" or country not in ISO_3166_ALPHA2:
-            raise ValueError(f"查套餐国家必须是已知 ISO 3166-1 两位代码：{raw}")
+            raise ValueError(f"{label}必须是已知 ISO 3166-1 两位代码：{raw}")
         if country not in seen:
             seen.add(country)
             normalized.append(country)
     return normalized
 
 
-__all__ = ["ISO_3166_ALPHA2", "normalize_plan_check_countries"]
+def normalize_plan_check_countries(value: object) -> list[str]:
+    """空列表沿用账号注册国家，其余返回有序且去重的国家代码。"""
+    return _normalize_countries(value, "查套餐国家")
+
+
+def normalize_proxy_pool_countries(value: object) -> list[str]:
+    """空列表不额外预热国家，业务查询国家由独立配置决定。"""
+    return _normalize_countries(value, "代理池预热国家")
+
+
+__all__ = ["ISO_3166_ALPHA2", "normalize_plan_check_countries", "normalize_proxy_pool_countries"]

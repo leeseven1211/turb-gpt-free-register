@@ -43,6 +43,8 @@ class Profile:
     failures: int = 0
     retry_after: float = 0
     last_served: int = 0
+    last_supply_error: str | None = None
+    last_supply_error_class: str | None = None
 
 
 def settings() -> dict:
@@ -78,6 +80,19 @@ def _provider_options(**kwargs) -> dict:
             "session_minutes": kwargs.get("session_minutes") or cfg.PROXY_1024_SESSION_MINUTES}
 
 
+def _static_claim_scope(options: dict) -> dict:
+    """同一静态来源的国家库存共享端点，不依赖进程内 profile 已恢复。"""
+    from config.countries import ISO_3166_ALPHA2
+
+    urls = list(options["urls"])
+    # 从同一完整来源稳定推导所有国家键，重启或移除预热国家后仍可领取旧库存。
+    keys = [_profile_key("proxy_pool", {"urls": urls})]
+    keys.extend(_profile_key("proxy_pool", {"urls": urls, "region": country})
+                for country in sorted(ISO_3166_ALPHA2))
+    return {"profile_keys": keys, "source_urls": [str(url).strip() for url in urls],
+            "required_region": str(options.get("region") or "").strip().upper() or None}
+
+
 def _plan_check_provider_enabled() -> bool:
     """仅当账号查套餐实际解析为 provider:1024proxy 时允许国家预热。"""
     try:
@@ -98,28 +113,54 @@ def _plan_check_static_pool_enabled() -> bool:
         return False
 
 
-def _prewarm_plan_country_profiles(policy: dict) -> None:
-    """把当前配置的查套餐国家注册为独立 profile。
-
-    profile 的 touched 由每轮配置读取更新；移除国家后不再触碰旧 profile，
-    由空闲回收自然停止预热，已领取租约仍按原生命周期保留。
-    """
-    if not _prewarm or not _plan_check_provider_enabled():
-        return
+def _configured_profile_options() -> list[tuple[str, dict]]:
+    """只为实际启用的来源合并注册、额外预热和套餐查询国家。"""
     from config import proxy as cfg
-    from config.countries import normalize_plan_check_countries
+    from config.countries import normalize_plan_check_countries, normalize_proxy_pool_countries
 
-    if not str(cfg.PROXY_1024_API_URL or "").strip():
-        return
-    options = _provider_options()
     try:
-        _validate_lifetime("1024proxy", options, policy)
-        countries = normalize_plan_check_countries(getattr(cfg, "PLAN_CHECK_COUNTRIES", []))
+        extra = normalize_proxy_pool_countries(getattr(cfg, "PROXY_POOL_COUNTRIES", []))
+        plan = normalize_plan_check_countries(getattr(cfg, "PLAN_CHECK_COUNTRIES", []))
     except (TypeError, ValueError) as exc:
-        logger.warning("查套餐国家预热配置无效，跳过预热：%s", exc)
+        logger.warning("代理池国家配置无效，跳过预热：%s", exc)
+        return []
+    mode = str(cfg.REGISTRATION_PROXY_MODE).lower()
+    plan_provider = _plan_check_provider_enabled()
+    plan_static = _plan_check_static_pool_enabled()
+    profiles: dict[str, tuple[str, dict]] = {}
+
+    def add(provider: str, options: dict) -> None:
+        profiles[_profile_key(provider, options)] = (provider, options)
+
+    if str(cfg.PROXY_1024_API_URL or "").strip() and (mode in {"1024", "1024proxy"} or plan_provider):
+        if mode in {"1024", "1024proxy"}:
+            add("1024proxy", _provider_options())
+        for country in dict.fromkeys(extra + (plan if plan_provider else [])):
+            add("1024proxy", _provider_options(region=country))
+    if mode == "pool" and cfg.PROXY_POOL:
+        urls = list(cfg.PROXY_POOL)
+        add("proxy_pool", {"urls": urls})
+        for country in extra:
+            add("proxy_pool", {"urls": urls, "region": country})
+    if plan_static:
+        selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
+        urls = [selected] if selected else list(cfg.PROXY_POOL or [])
+        if urls:
+            for country in dict.fromkeys(extra + plan):
+                add("proxy_pool", {"urls": urls, "region": country})
+    return list(profiles.values())
+
+
+def _prewarm_plan_country_profiles(policy: dict) -> None:
+    """预热当前来源和国家；移除配置后由原有空闲策略回收。"""
+    if not _prewarm:
         return
-    for country in countries:
-        _profile("1024proxy", _provider_options(region=country))
+    for provider, options in _configured_profile_options():
+        try:
+            _validate_lifetime(provider, options, policy)
+        except ProxyPoolConfigurationError:
+            continue
+        _profile(provider, options)
 
 
 def _validate_lifetime(provider: str, options: dict, policy: dict) -> None:
@@ -186,6 +227,7 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
         raise ValueError("静态代理池为空")
     _validate_lifetime(provider, options, policy)
     profile = _profile(provider, options)
+    claim_scope = _static_claim_scope(options) if provider == "proxy_pool" else {}
     purpose = str(kwargs.get("purpose") or "registration")
     if allow_reuse and purpose != "plan-check":
         raise ValueError("仅套餐查询允许复用代理")
@@ -228,6 +270,7 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
             try:
                 lease = store.claim(profile.key, min_ttl=policy["min_ttl"], max_age=policy["max_age"],
                                     correlation=correlation, allow_reuse=allow_reuse,
+                                    **claim_scope,
                                     **({"reuse_limit": reuse_limit} if allow_reuse else {}))
             except proxy_lease_store.ProxyReuseLimitError as exc:
                 # 次数耗尽后仍等待其他库存；所有轮次共用原来的领取期限。
@@ -237,13 +280,24 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
                 exhausted_message = message
                 lease = None
             if lease:
+                confirming_delivery = False
                 try:
                     checkpoint()
                     if _stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
                         raise ProxyPoolTimeout("代理池领取已超时或停止，晚到线路已归还")
+                    metadata = getattr(lease, "metadata", {})
+                    if isinstance(metadata, dict) and metadata.get("pool_resource_id"):
+                        confirming_delivery = True
+                        if not store.mark_delivered(lease):
+                            raise ProxyPoolTimeout("代理池租约已经结束，未交付线路")
+                        # 确认事务也可能等待锁或提交；返回调用方前再次检查原期限和取消。
+                        checkpoint()
+                        if _stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                            raise ProxyPoolTimeout("代理池领取已超时或停止，晚到线路已归还")
                 except BaseException:
-                    # 只领取但未交给调用方，不进入实际使用后的冷却期。
-                    store.release(lease, reason="allocation_cancelled", cooldown=0)
+                    # 事务确认已提交但尚未返回的线路也可补偿；真实交付后的普通释放不返还次数。
+                    store.release(lease, reason="allocation_cancelled", cooldown=0,
+                                  **({"before_delivery": True} if confirming_delivery else {}))
                     raise
                 _wake.set()
                 return lease
@@ -382,30 +436,26 @@ def _check(resource: dict, policy: dict) -> None:
     from config import proxy as cfg
     anchor = record_store.get_row_by(record_store.PROXY_LEASES, "lease_id", resource["anchor_lease_id"])
     good = False
+    exit_ip = region = None
     try:
         if anchor:
             exit_ip, region = _validate_proxy_with_retries(anchor["proxy_url"], float(cfg.PROXY_1024_API_TIMEOUT), attempts=1)
-            good = exit_ip == anchor.get("exit_ip") and region == anchor.get("region")
+            good = bool(exit_ip) and region == anchor.get("region")
     except Exception:
         good = False
-    accepted = store.finish_check(resource, success=good)
-    if not good or not accepted:
+    accepted = store.finish_check(resource, success=good, exit_ip=exit_ip, region=region,
+                                  min_ttl=policy["min_ttl"], check_interval=policy["max_age"])
+    if not good or not accepted or (anchor and exit_ip != anchor.get("exit_ip")):
         _retire(resource)
 
 
-def maintain_once() -> bool:
+def maintain_once(*, role: str = "all") -> bool:
     """一轮检查一条或补充小窗口，逐条交付，不等待整批。"""
     from config import proxy as cfg
     from core import proxy_provider as provider
     global _maintenance_turn
     policy = settings()
-    if _prewarm:
-        mode = str(cfg.REGISTRATION_PROXY_MODE)
-        if mode in {"1024", "1024proxy"} and str(cfg.PROXY_1024_API_URL or "").strip():
-            _profile("1024proxy", _provider_options())
-        elif mode == "pool" and cfg.PROXY_POOL:
-            _profile("proxy_pool", {"urls": list(cfg.PROXY_POOL)})
-        _prewarm_plan_country_profiles(policy)
+    _prewarm_plan_country_profiles(policy)
     with _lock:
         warm = {item.key for item in _profiles.values() if item.waiting or time.monotonic() - item.touched <= policy["max_idle"]}
     for resource in store.maintenance(max_age=policy["max_age"], max_idle=policy["max_idle"], min_ready=policy["min_ready"],
@@ -434,10 +484,15 @@ def maintain_once() -> bool:
                 logger.warning("代理池供给配置不兼容，暂停补货：%s", exc)
             continue
         # 先复检已有线路，避免新供应失败时健康旧库存一直无法恢复可领取状态。
-        check = store.take_check(profile.key, max_age=policy["max_age"], timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 30)
-        if check:
-            _check(check, policy)
-            return True
+        if role != "supply":
+            check = store.take_check(profile.key, max_age=policy["max_age"],
+                                     timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 30,
+                                     min_ttl=policy["min_ttl"])
+            if check:
+                _check(check, policy)
+                return True
+        if role == "check":
+            continue
         if profile.retry_after > time.monotonic():
             continue
         # 等待任务获得线路后，仍保留配置的空闲底数；占用线路不计入底数。
@@ -450,6 +505,7 @@ def maintain_once() -> bool:
             limit=policy["workers"] if profile.provider == "1024proxy" else 1,
             timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 60,
             reclaim_idle=profile.waiting > 0,
+            **(_static_claim_scope(profile.options) if profile.provider == "proxy_pool" else {}),
         )
         if not slots:
             continue
@@ -480,11 +536,15 @@ def maintain_once() -> bool:
                 raise RuntimeError("本轮没有可用候选")
             profile.failures = 0
             profile.retry_after = 0
+            profile.last_supply_error = None
+            profile.last_supply_error_class = None
             return True
         except Exception as exc:
             if getattr(exc, "code", None) == "supply_candidates_duplicate":
                 failure_code = "supply_candidates_duplicate"
             profile.failures += 1
+            profile.last_supply_error = failure_code
+            profile.last_supply_error_class = type(exc).__name__
             profile.retry_after = time.monotonic() + min(60, 2 ** min(profile.failures, 6))
             logger.warning("代理池补充失败，退避后重试：provider=%s error=%s", profile.provider, type(exc).__name__)
             return bool(delivered)
@@ -495,6 +555,7 @@ def maintain_once() -> bool:
 
 
 def _worker(index: int) -> None:
+    turn = 0
     while not _stop.is_set():
         try:
             workers = settings()["workers"]
@@ -502,7 +563,11 @@ def _worker(index: int) -> None:
                 return
             if index == 0:
                 _ensure_workers(workers)
-            worked = maintain_once()
+            role = "check" if (workers > 1 and index < workers // 2) else "supply"
+            if workers == 1:
+                role = "supply" if turn % 2 == 0 else "check"
+                turn += 1
+            worked = maintain_once(role=role)
         except Exception as exc:
             logger.warning("代理池维护暂不可用：%s", type(exc).__name__)
             worked = False
@@ -513,28 +578,7 @@ def _worker(index: int) -> None:
 
 def snapshot() -> dict:
     policy = settings()
-    from config import proxy as cfg
-    from config.countries import normalize_plan_check_countries
-
-    try:
-        configured_countries = normalize_plan_check_countries(
-            getattr(cfg, "PLAN_CHECK_COUNTRIES", [])
-        )
-    except (TypeError, ValueError):
-        configured_countries = []
-    current_1024_keys = {
-        _profile_key("1024proxy", _provider_options(region=country))
-        for country in configured_countries
-    }
-    current_static_urls = []
-    if _plan_check_static_pool_enabled():
-        selected = str(getattr(cfg, "ACCOUNT_ACTION_PROXY", "") or "").strip()
-        current_static_urls = [selected] if selected else list(getattr(cfg, "PROXY_POOL", []) or [])
-    current_static_keys = {
-        _profile_key("proxy_pool", {"urls": list(current_static_urls), "region": country})
-        for country in configured_countries
-        if current_static_urls
-    }
+    configured_keys = {_profile_key(provider, options) for provider, options in _configured_profile_options()}
     with _lock:
         waiting = sum(profile.waiting for profile in _profiles.values())
         workers = sum(thread.is_alive() for thread in _threads)
@@ -546,8 +590,8 @@ def snapshot() -> dict:
             if not region:
                 continue
             counts = dict(store.counts(profile.key))
-            active = sum(counts.get(state, 0) for state in ("fetching", "checking", "ready", "leased", "shared"))
-            configured = profile.key in (current_1024_keys | current_static_keys)
+            active = sum(counts.get(state, 0) for state in ("fetching", "checking", "ready", "leased", "shared", "rotation_wait"))
+            configured = profile.key in configured_keys
             # 配置移除后保留仍有等待或活跃库存的历史 profile；仅有空闲索引的 profile 不再展示。
             if configured or profile.waiting > 0 or active > 0:
                 country_profiles.append((profile, region, counts, configured))
@@ -561,6 +605,15 @@ def snapshot() -> dict:
             "waiting_local": profile.waiting,
             "target_ready": min(policy["max_size"], profile.waiting + (policy["min_ready"] if configured else 0)),
             "configured": configured,
+            "last_supply_error": profile.last_supply_error,
+            "last_supply_error_class": profile.last_supply_error_class,
+            "retry_after_seconds": max(0, int(profile.retry_after - time.monotonic() + 0.999)),
         })
+    required = len(configured_keys) * policy["min_ready"]
+    warning = f"各国及来源空闲底数合计 {required}，超过全池容量 {policy['max_size']}" if required > policy["max_size"] else None
     return {"policy": policy, "counts": store.counts(), "waiting_local": waiting,
-            "workers_local": workers, "items": store.public_items(), "country_pools": country_pools}
+            "workers_local": workers, "items": store.public_items(), "country_pools": country_pools,
+            "min_ready_total": required, "capacity_warning": warning,
+            "worker_budget_local": {"supply": (policy["workers"] + 1) // 2,
+                                    "check": policy["workers"] // 2,
+                                    "alternating": policy["workers"] == 1}}

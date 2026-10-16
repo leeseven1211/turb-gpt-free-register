@@ -169,7 +169,8 @@ def _checkpoint(context, message: str = "用户手动停止套餐查询") -> Non
         context.checkpoint(message)
 
 
-def _wait_for_rate_slot(config_snapshot: dict | None = None) -> None:
+def _wait_for_rate_slot(config_snapshot: dict | None = None, *, deadline_at: float | None = None,
+                        operation_context=None) -> None:
     """为所有查询线程分配错开的请求启动时间。"""
     global _NEXT_REQUEST_AT
     min_interval = _float_setting(
@@ -189,8 +190,19 @@ def _wait_for_rate_slot(config_snapshot: dict | None = None) -> None:
         scheduled = max(now, _NEXT_REQUEST_AT) + (random.uniform(0.0, jitter) if jitter else 0.0)
         _NEXT_REQUEST_AT = scheduled + min_interval
     wait_seconds = scheduled - now
-    if wait_seconds > 0:
-        time.sleep(wait_seconds)
+    if deadline_at is None:
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        return
+    while True:
+        _checkpoint(operation_context, "套餐限速等待时检查取消状态")
+        remaining = deadline_at - time.time()
+        if remaining <= 0:
+            raise TimeoutError("国家查询总期限已到")
+        wait_seconds = scheduled - time.monotonic()
+        if wait_seconds <= 0:
+            return
+        time.sleep(min(.25, wait_seconds, remaining))
 
 
 def _registration_recheck_delay(config_snapshot: dict | None = None) -> float:
@@ -368,62 +380,131 @@ def _run_country_plan_checks(
     wait_timeout = float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60)))
     rate_budget = (float(_snapshot_value(config_snapshot, "min_interval", .4)) + float(_snapshot_value(config_snapshot, "jitter", .3))) * (configured_workers() + 1)
     budget = len(countries) * (wait_timeout + timeout * (attempts + 1) + 30 * (attempts - 1) + rate_budget + 35)
-    rows = plan_countries.begin_country_checks(account_id, countries, fence=fence, budget_seconds=budget)
-    history = []
-    for country in countries:
-        _checkpoint(operation_context, "逐国查询前检查取消状态")
-        plan_countries.set_country_running(account_id, country, fence=fence)
-        route = None
-        answer = None
-        try:
-            reporter.stage("network", "running", f"正在申请 {country} 套餐查询线路")
-            def report_wait(message, selected=country):
-                plan_countries.set_country_running(account_id, selected, fence=fence)
-                reporter.note(f"{selected} · {message}", stage="network")
-            route = acquire_account_proxy(
-                account_id=account_id, email=email, purpose="plan-check", region=country,
-                explicit_proxy=proxy,
-                source=proxy_source or _snapshot_value(config_snapshot, "route_source") or None,
-                allow_reuse=bool(_snapshot_value(config_snapshot, "proxy_allow_reuse", getattr(proxy_cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True))),
-                reuse_limit=int(_snapshot_value(config_snapshot, "proxy_reuse_limit", getattr(proxy_cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3))),
-                timeout=float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60))),
-                cancel=lambda: _checkpoint(operation_context, "等待国家代理时检查取消状态"),
-                progress_callback=report_wait,
+    rows, progress = plan_countries.initialize_country_checks(
+        account_id, countries, fence=fence, budget_seconds=budget,
+        wait_seconds=wait_timeout, max_attempts=attempts,
+    )
+    countries = list(progress["countries"])
+    attempts = progress["max_attempts"]
+    while any(state["pending"] for state in progress["countries"].values()):
+        made_progress = False
+        for country in countries:
+            state = progress["countries"][country]
+            if not state["pending"]:
+                continue
+            _checkpoint(operation_context, "逐国查询前检查取消状态")
+            now = time.time()
+            expired = progress["deadline_at"] - now < 2
+            exhausted = state["http_attempts"] >= attempts
+            no_supply_budget = state["wait_used"] >= progress["wait_limit"]
+            if expired or exhausted or no_supply_budget:
+                error = "国家查询总期限已到" if expired else "该国家请求次数已耗尽" if exhausted else "该国库存暂缺，累计等待预算已耗尽"
+                rows, progress = plan_countries.update_country_progress(
+                    account_id, country, progress, action="result", fence=fence,
+                    result={"ok": False, "error": error, "checked_at": now_iso()},
+                )
+                made_progress = True
+                continue
+            if state.get("retry_not_before", 0) > now:
+                continue
+            made_progress = True
+            route = None
+            answer = None
+            rows, progress = plan_countries.update_country_progress(
+                account_id, country, progress, action="wait_start", fence=fence, slice_seconds=5,
             )
-            route_info = route.public_dict()
-            actual_country = str(route_info.get("proxy_region") or getattr(route, "region", "") or "").upper()
-            if actual_country != country:
-                raise ValueError(f"请求 {country} 出口，实际检测为 {actual_country or '未知'}，未执行该国查询；请使用支持指定国家的代理来源")
-            reporter.resource("resource.acquired", message=f"已领取 {country} 查询线路", detail={**route_info, "country": country})
-            reporter.stage("network", "success", f"{country} 查询线路已就绪")
-            reporter.stage("plan_check", "running", f"正在查询 {country} 套餐优惠")
-            _checkpoint(operation_context)
-            answer = _query_account_plan(
-                email=email, access_token=access_token, trigger=trigger, proxy=route.proxy_url,
-                timezone_offset_min=timezone_offset_min, config_snapshot=config_snapshot,
+            state = progress["countries"][country]
+            try:
+                reporter.stage("network", "running", f"正在申请 {country} 套餐查询线路")
+                def report_wait(message, selected=country):
+                    _checkpoint(operation_context, "等待国家代理时检查取消状态")
+                    reporter.note(f"{selected} · {message}", stage="network")
+                try:
+                    # 切片持久化与进度上报已消耗的时间不能再次交给线路领取。
+                    slice_timeout = min(state["wait_slice_deadline_at"], progress["deadline_at"]) - time.time()
+                    if slice_timeout <= 0:
+                        raise TimeoutError("国家线路等待切片期限已到")
+                    route = acquire_account_proxy(
+                        account_id=account_id, email=email, purpose="plan-check", region=country,
+                        explicit_proxy=proxy,
+                        source=proxy_source or _snapshot_value(config_snapshot, "route_source") or None,
+                        allow_reuse=bool(_snapshot_value(config_snapshot, "proxy_allow_reuse", getattr(proxy_cfg, "PLAN_CHECK_PROXY_ALLOW_REUSE", True))),
+                        reuse_limit=int(_snapshot_value(config_snapshot, "proxy_reuse_limit", getattr(proxy_cfg, "PLAN_CHECK_PROXY_REUSE_LIMIT", 3))),
+                        timeout=slice_timeout,
+                        cancel=lambda: _checkpoint(operation_context, "等待国家代理时检查取消状态"),
+                        progress_callback=report_wait,
+                    )
+                except TimeoutError:
+                    rows, progress = plan_countries.update_country_progress(
+                        account_id, country, progress, action="wait_timeout", fence=fence,
+                    )
+                    reporter.note(f"{country} 库存暂缺，继续其他国家后补试", stage="network")
+                    continue
+                rows, progress = plan_countries.update_country_progress(
+                    account_id, country, progress, action="wait_end", fence=fence,
+                )
+                route_info = route.public_dict()
+                actual_country = str(route_info.get("proxy_region") or getattr(route, "region", "") or "").upper()
+                if actual_country != country:
+                    raise ValueError(f"请求 {country} 出口，实际检测为 {actual_country or '未知'}，未执行该国查询；请使用支持指定国家的代理来源")
+                reporter.resource("resource.acquired", message=f"已领取 {country} 查询线路", detail={**route_info, "country": country})
+                reporter.stage("network", "success", f"{country} 查询线路已就绪")
+                reporter.stage("plan_check", "running", f"正在查询 {country} 套餐优惠")
+                _checkpoint(operation_context)
+                _wait_for_rate_slot(config_snapshot, deadline_at=progress["deadline_at"],
+                                    operation_context=operation_context)
+                _checkpoint(operation_context)
+                remaining = progress["deadline_at"] - time.time()
+                if remaining < 2:
+                    raise TimeoutError("国家查询总期限已到")
+                rows, progress = plan_countries.update_country_progress(
+                    account_id, country, progress, action="http_start", fence=fence,
+                )
+                remaining = progress["deadline_at"] - time.time()
+                if remaining < 2:
+                    raise TimeoutError("国家查询总期限已到")
+                # 一轮套餐请求仍可能附带一次额度请求，两次共用剩余期限。
+                # 换线也共用 Run 中已冻结的套餐请求总次数。
+                answer = check_account_plan(
+                    access_token, proxy=route.proxy_url, timezone_offset_min=timezone_offset_min,
+                    timeout=min(timeout, remaining / 2), max_attempts=1, retry_delay=0,
+                    deadline_at=progress["deadline_at"],
+                )
+                answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
+            except (account_task_store.OperationLeaseLost, OperationCancelled):
+                raise
+            except Exception as exc:
+                answer = {"ok": False, "checked_at": now_iso(), "error": sanitize_promotion_text(f"{type(exc).__name__}: {exc}")}
+            finally:
+                if route is not None:
+                    route.release(reason=f"plan-check-{account_id}-{country}", **(
+                        {"fault": True} if answer and answer.get("proxy_transport_failure") is True else {}
+                    ))
+            _checkpoint(operation_context, "保存国家查询结果前检查取消状态")
+            state = progress["countries"][country]
+            retry = (not answer.get("ok") and bool(answer.get("retryable"))
+                     and answer.get("http_status") not in {401, 403, 429}
+                     and state["http_attempts"] < attempts)
+            delay = max(0, min(30, float(_snapshot_value(config_snapshot, "plan_check_retry_delay", 1.5)))) * state["http_attempts"] if retry else 0
+            rows, progress = plan_countries.update_country_progress(
+                account_id, country, progress, action="result", fence=fence,
+                result=answer, retry=retry, retry_delay=min(30, delay),
             )
-            answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
-        except (account_task_store.OperationLeaseLost, OperationCancelled):
-            raise
-        except Exception as exc:
-            answer = {"ok": False, "checked_at": now_iso(), "error": sanitize_promotion_text(f"{type(exc).__name__}: {exc}")}
-        finally:
-            if route is not None:
-                route.release(reason=f"plan-check-{account_id}-{country}", **(
-                    {"fault": True} if answer and answer.get("proxy_transport_failure") is True else {}
-                ))
-        _checkpoint(operation_context, "保存国家查询结果前检查取消状态")
-        rows = plan_countries.record_country_result(account_id, country, answer, fence=fence)
-        records = answer.get("promotion_query_history") or [_plan_query_record(answer, phase="initial")]
-        for record in records:
-            record["country"] = country
-        history.extend(records)
-        _record_promotion_queries(reporter, {**answer, "promotion_query_history": records})
-        reporter.note(
-            f"{country} 套餐查询{'成功' if answer.get('ok') else '失败，继续其他国家'}",
-            stage="plan_check", level="INFO" if answer.get("ok") else "WARNING",
-            detail={"country": country, "ok": bool(answer.get("ok")), "error": sanitize_promotion_text(answer.get("error"))},
-        )
+            records = [{**_plan_query_record(answer, phase="initial"), "country": country}]
+            _record_promotion_queries(reporter, {**answer, "promotion_query_history": records})
+            reporter.note(
+                f"{country} 套餐查询{'成功' if answer.get('ok') else '失败，继续其他国家'}",
+                stage="plan_check", level="INFO" if answer.get("ok") else "WARNING",
+                detail={"country": country, "ok": bool(answer.get("ok")), "error": sanitize_promotion_text(answer.get("error"))},
+            )
+        if not made_progress:
+            pending = [state for state in progress["countries"].values() if state["pending"]]
+            if pending:
+                # 领取立即超时也尊重原切片截止，轮转期间保持取消响应且不忙循环。
+                wake_at = min(progress["deadline_at"], *(state["retry_not_before"] for state in pending))
+                _checkpoint(operation_context, "国家补试等待时检查取消状态")
+                time.sleep(max(.01, min(.25, wake_at - time.time())))
+    history = [record for state in progress["countries"].values() for record in state["history"]]
     result = aggregate_country_results(rows)
     result["promotion_query_history"] = history
     plan_countries.save_country_summary(account_id, result, fence=fence)

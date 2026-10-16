@@ -2,6 +2,7 @@
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -211,3 +212,26 @@ def test_late_database_claim_is_returned_without_delivery():
         with pytest.raises(proxy_pool.ProxyPoolTimeout):
             proxy_pool.acquire(api_url="https://example.test/proxies", session_minutes=30, timeout=1)
     release.assert_called_once_with(lease, reason="allocation_cancelled", cooldown=0)
+
+
+@pytest.mark.parametrize("cancel_during_confirmation", [False, True])
+def test_slow_delivery_confirmation_returns_unhanded_lease(cancel_during_confirmation):
+    clock = [0.0]
+    token = CancellationToken(run_id=1, token="test", checker=lambda *_args: False)
+    lease = SimpleNamespace(metadata={"pool_resource_id": "test-resource"})
+
+    def confirm(_lease):
+        clock[0] = 3.0
+        if cancel_during_confirmation:
+            token.request_local()
+        return True
+
+    expected_error = OperationCancelled if cancel_during_confirmation else proxy_pool.ProxyPoolTimeout
+    with operation_context(token), patch.object(proxy_pool, "start"), \
+         patch.object(proxy_pool.time, "monotonic", side_effect=lambda: clock[0]), \
+         patch.object(proxy_pool.store, "claim", return_value=lease), \
+         patch.object(proxy_pool.store, "mark_delivered", side_effect=confirm), \
+         patch.object(proxy_pool.store, "release") as release:
+        with pytest.raises(expected_error):
+            proxy_pool.acquire(api_url="https://example.test/proxies", timeout=1)
+    release.assert_called_once_with(lease, reason="allocation_cancelled", cooldown=0, before_delivery=True)

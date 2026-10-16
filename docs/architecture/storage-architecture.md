@@ -47,7 +47,7 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 | `email_pool_domain` | 域名邮箱池 |
 | `email_pool_icloud_hide` | iCloud Hide My Email 别名池 |
 | `codex_credentials` | Codex OAuth 凭证 |
-| `proxy_leases` | 1024Proxy 端点、出口 IP 和隔离期的跨进程租约 |
+| `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
@@ -55,9 +55,11 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 
 ### 独立代理库存
 
-`proxy_pool_resources` 是独立的 PostgreSQL 库存事实，容量按所有供应商 profile 全局计算。默认策略为：最少可用库存 2、最大容量 20、领取等待 60 秒、领取最低剩余寿命 300 秒、后台复检间隔 60 秒、空闲回收 300 秒、后台 worker 2 个。WebUI 启动时预热；CLI 在第一次领取时懒启动。凡启用代理的注册、账号功能和套餐查询任务只领取已经检测通过的库存，供应商提取、出口检测和补货都在后台执行。数据库不可用时直接失败，不降级为直连；显式配置的 `direct` 路线仍保持直连。worker 数量支持热加载，但 WebUI 展示的 worker 数只代表当前进程，库存容量和租约由 PostgreSQL 跨进程协调。
+`proxy_pool_resources` 是独立的 PostgreSQL 库存事实，容量按所有供应商 profile 全局计算。默认策略为：最少可用库存 2、最大容量 20、领取等待 60 秒、领取最低剩余寿命 300 秒、后台复检间隔 60 秒、空闲回收 300 秒、后台 worker 2 个。预热 profile 取默认注册国家、`PROXY_POOL_COUNTRIES` 额外国家，以及独立查套餐实际使用来源时的 `PLAN_CHECK_COUNTRIES` 并集；额外预热不改变注册国家或套餐业务国家。WebUI 启动时预热；CLI 在第一次领取时懒启动。凡启用代理的注册、账号功能和套餐查询任务只领取已经检测通过的库存，供应商提取、出口检测和补货都在后台执行。数据库不可用时直接失败，不降级为直连；显式配置的 `direct` 路线仍保持直连。worker 数量支持热加载，但 WebUI 展示的 worker 数只代表当前进程，库存容量和租约由 PostgreSQL 跨进程协调。快照按来源/地区返回 `ready`、使用中、`checking`、`rotation_wait`、故障等计数，并提供 `min_ready_total`；合计底数超过全池容量时只给容量提示，不虚构可用库存。
 
-资源状态和任务租约分开保存。注册及认证任务创建独占 `pool_leased` 子租约；套餐查询只有在显式允许复用时才创建 `shared_leased` 子租约。正常释放进入 cooldown，冷却结束后可以重新领取；明确的线路传输故障进入 quarantine，并保留到资源自然到期。容量缩减只退役 `ready` 资源，不驱逐仍在使用的租约；有 profile 等待者时，维护任务可以回收其他 profile 的空闲 `ready` 资源。供应商 `time` 是固定粘性窗口，不代表一定更换会话或出口 IP，系统只把实际检测结果写入租约。
+资源状态和任务租约分开保存。注册及认证任务创建独占 `pool_leased` 子租约；套餐查询只有在显式允许复用时才创建 `shared_leased` 子租约。正常释放进入 cooldown，冷却结束后可以重新领取；明确的线路传输故障在无活跃子租约且寿命足够时进入有界的 `rotation_wait`，由后台复检同一 endpoint，等待出口变化。轮换使用原资源的 `expires_at`，新 IP 通过国家、全局 IP 隔离和次数检查后才发布；复检或换代不会延长寿命。没有变化时继续等待，连续失败达到上限或剩余寿命不足时退役。容量缩减只退役 `ready`/`rotation_wait` 等无活跃子租约资源，不驱逐仍在使用的租约；有 profile 等待者时，维护任务可以回收其他 profile 的空闲资源。供应商 `time` 是固定粘性窗口，不代表一定更换会话或出口 IP，系统只把实际检测结果写入租约。
+
+代理租约的 endpoint 所有权与出口 IP 隔离分别记录。`proxy_leases.endpoint_owner` 默认 `TRUE`，只允许当前出口代次持有 endpoint 唯一所有权；轮换后旧锚点改为 `endpoint_owner=false` 并保留 `recent`、原出口 IP、关联任务和到期时间，新增锚点继承原 endpoint 的 `expires_at`。endpoint 唯一索引使用 `endpoint_owner=true` 条件，出口 IP 的唯一约束、占用统计和复用次数仍跨 endpoint/profile/进程生效；迟到释放或迟到复检必须匹配原 token 与锚点，不能改写新代。旧索引迁移必须幂等执行，不能把改变谓词写进 `CREATE INDEX IF NOT EXISTS` 后就假定已有索引已更新。
 
 代理池的 WebUI 入口是只读快照，返回脱敏状态、统计和生命周期信息，不承载领取/释放操作。完整供应商地址和凭据仍属于环境私密配置。旧 `PROXY_1024_MAX_ATTEMPTS`、`PROXY_1024_ROTATE_SESSION_TIME` 以及 batch/rotate 参数仅为诊断兼容保留，正常库存补货不按任务派生 `time`，也不按注册批次把 `num` 预取后分配。
 
@@ -106,9 +108,14 @@ Plus 优惠属于高频筛选字段，因此 `plus_promo_kind`、折扣比例、
 独立多国家套餐查询在账号 `data` 中保存 `plan_check_countries`、`plan_check_country_results` 和
 `plan_check_partial`，不新增全表迁移。`core/storage/plan_countries.py` 在同一短事务内先锁定并
 校验当前 Run、执行实例和账号租约，再以账号行锁逐国合并检查点，阻止失去租约的旧执行
-覆盖新结果；成功写入该国白名单结果及成功时间，失败保留该国上次成功结果。公开列表和轮询均
-经过同一白名单投影，不返回账号凭据、原始响应或完整代理地址。现有 Plus 优惠筛选字段由
-国家快照汇总更新，各国的本次响应另外保存在任务事件中，后续查询不会覆盖旧 Run 证据。
+覆盖新结果；成功写入该国白名单结果及成功时间，失败保留该国上次成功结果。执行 Run 的
+`data.plan_country_progress` 按国家保存 `wait_used`、等待切片开始/截止时间、`http_attempts`、
+`pending`/`success`/`history`、重试时刻和原 Run 截止时间。首轮领取切片默认为 5 秒，单国累计等待
+沿用入队时冻结的 60 秒预算；换线不重置该国 HTTP 尝试次数。初始化与每次进度更新都在执行
+fence 校验下写回 Run 和账号投影；恢复先结算中断切片，已成功国家不会在同一 Run 内重查。
+旧无 fence 的测试或兼容入口仍可工作，但不能借此访问生产库。公开列表和轮询均经过同一白名单
+投影，不返回账号凭据、原始响应或完整代理地址。现有 Plus 优惠筛选字段由国家快照汇总更新，
+各国的本次响应另外保存在任务事件中，后续查询不会覆盖旧 Run 证据。
 注册查询不清空国家历史；国家列表留空后的独立查询使用原单次路径，页面不把历史国家
 快照当作这次单次结果。多国家任务的 `plan_check_deadline_at` 按国家数和等待、请求预算
 计算，轮询与恢复共用该期限。启动恢复在同一事务收口账号与未完成国家状态，已完成快照

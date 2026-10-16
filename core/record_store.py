@@ -304,6 +304,7 @@ PROXY_LEASES = TableSpec(
         "lease_id": "TEXT NOT NULL",
         "provider": "TEXT NOT NULL",
         "endpoint": "TEXT NOT NULL",
+        "endpoint_owner": "BOOLEAN NOT NULL DEFAULT TRUE",
         "proxy_url": "TEXT",
         "exit_ip": "TEXT",
         "region": "TEXT",
@@ -340,7 +341,7 @@ PROXY_LEASES = TableSpec(
         ("exit_ip", "purpose", "expires_at"),
     ),
     partial_unique=(
-        (("endpoint",), '"state" IN (\'pending\', \'leased\', \'recent\')'),
+        (("endpoint",), '"endpoint_owner" = TRUE AND "state" IN (\'pending\', \'leased\', \'recent\')'),
         (("exit_ip",), '"exit_ip" IS NOT NULL AND "state" IN (\'leased\', \'recent\')'),
     ),
 )
@@ -634,6 +635,13 @@ def init() -> None:
                         idx = postgres_store.quote_identifier(f"idx_{spec.name}_{'_'.join(cols)}")
                         rendered = ", ".join(postgres_store.quote_identifier(c) for c in cols)
                         cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(spec)} ({rendered})")
+                    if spec is PROXY_LEASES:
+                        # 已部署索引不会被 IF NOT EXISTS 更新；只替换旧 endpoint 谓词。
+                        cur.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                                    (postgres_store.schema_name(), "uq_proxy_leases_endpoint_partial"))
+                        endpoint_index = cur.fetchone()
+                        if endpoint_index and "endpoint_owner" not in endpoint_index["indexdef"]:
+                            cur.execute(f"DROP INDEX {postgres_store.qualified('uq_proxy_leases_endpoint_partial')}")
                     for cols, predicate in spec.partial_unique:
                         idx = postgres_store.quote_identifier(
                             f"uq_{spec.name}_{'_'.join(cols)}_partial"
@@ -740,7 +748,7 @@ def _build_set_clause(
             data_expression += " || %s::jsonb"
             args.append(json.dumps(rest, ensure_ascii=False))
         if data_keys_to_remove:
-            data_expression = f"({data_expression}) - %s"
+            data_expression = f"({data_expression}) - %s::text[]"
             args.append(list(data_keys_to_remove))
         sets.append(f"data = {data_expression}")
     if "updated_at" not in promoted:

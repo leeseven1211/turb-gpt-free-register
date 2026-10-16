@@ -178,6 +178,27 @@ test('代理池库存显示按国家的脱敏统计并保留等待与目标库�
   assert.doesNotMatch(html, /proxy_url|username|password/);
 });
 
+test('等待轮换计入容量并展示各国供给原因与容量提示', () => {
+  const {api, elements, nodes} = createView();
+  elements.set('[data-proxy-summary="poolCapacity"]', {textContent: ''});
+  nodes.set('proxyPoolPanelStatus', {textContent: ''});
+  nodes.set('proxyPoolBody', {innerHTML: ''});
+  api.setPool({
+    policy: {max_size: 4, min_ready: 3}, counts: {ready: 1, rotation_wait: 2},
+    capacity_warning: '各国空闲底数合计 6，超过全池容量 4',
+    country_pools: [{provider: '1024proxy', region: 'JP', counts: {ready: 1, rotation_wait: 2, quarantine: 1},
+      last_supply_error: 'supply_candidates_duplicate', retry_after_seconds: 7, target_ready: 3, waiting_local: 2}],
+    items: [{resource_id: 'r1', state: 'rotation_wait', provider: '1024proxy', region: 'JP'}],
+  });
+  api.renderSummary();
+  api.renderPool();
+  assert.equal(elements.get('[data-proxy-summary="poolCapacity"]').textContent, '3 / 4');
+  assert.match(nodes.get('proxyPoolBody').innerHTML, /等待轮换 2/);
+  assert.match(nodes.get('proxyPoolBody').innerHTML, /故障隔离 1/);
+  assert.match(nodes.get('proxyPoolBody').innerHTML, /候选均已占用/);
+  assert.match(nodes.get('proxyPoolPanelStatus').textContent, /空闲底数合计 6/);
+});
+
 test('浏览器详情用独立触发按钮避免单元格内展开裁切', () => {
   const {api} = createView();
   const html = api.renderTraffic({

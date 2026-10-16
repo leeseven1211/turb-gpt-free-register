@@ -3301,3 +3301,140 @@ table[data-resizable-table="codex"] {
 
 .proxy-pool-header { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
 .proxy-pool-header h3 { margin: 0; font-size: 14px; }
+
+/* 账号表使用两条稳定内容轨道，横向滚动留在现有表格容器内。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] {
+  width: 1396px !important;
+  min-width: 1396px !important;
+  max-width: none !important;
+  table-layout: fixed !important;
+}
+
+#accountsPanelV2 > .accounts-table-v2-wrap { overflow-x: auto; }
+
+#accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
+  height: 72px;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  vertical-align: middle !important;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-lines {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 52px;
+  width: 100%;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line:only-child { grid-row: 1 / -1; }
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line--sub {
+  color: #7b8494;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button { flex: 0 0 auto; }
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 40px;
+  line-height: 1.2;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell-line {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-check {
+  padding-left: 8px !important;
+  padding-right: 4px !important;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-source,
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-id,
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-small,
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-time { font-variant-numeric: tabular-nums; }
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-actions .acc-v2-actions {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  justify-items: start;
+  align-items: center;
+  gap: 2px;
+  min-height: 52px;
+  overflow: visible !important;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--countries {
+  display: grid;
+  grid-template-rows: repeat(2, 24px);
+  gap: 2px;
+  align-items: center;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: visible !important;
+  cursor: help;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-summary-count,
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-summary-badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-summary-count {
+  color: #526071;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-summary-badge {
+  padding: 1px 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-summary-badge.is-failed {
+  color: #b42335;
+  background: #fff2f3;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-summary-badge.is-stale {
+  color: #7b8494;
+  background: #f7f8fa;
+}
+
+@media (max-width: 860px) {
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td { height: 80px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-lines,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .col-actions .acc-v2-actions { min-height: 60px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button { min-height: 30px; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row { min-height: 24px; }
+}
