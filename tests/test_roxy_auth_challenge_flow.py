@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 
 from core import roxy_codex_oauth
 from core import roxy_liveness
-from core.auth_challenge import MfaSecretMissingError
+from core.auth_challenge import MfaSecretMissingError, PasswordRejectedError
+from core.registration.browser_submission import BrowserSubmissionReceipt
 from core.registration import roxy as roxy_registration
 from core.registration.auth_context import AuthExecutionContext, current_execution_context, execution_context
+from core.registration.password_auth import _PasswordTransitionTimeout
 from core.registration.state_machine import StageBudget, StageTimeout
 
 
@@ -363,6 +365,52 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         reset_password.assert_called_once()
         self.assertEqual("account@example.com", reset_password.call_args.args[1])
 
+    def test_shared_password_rejection_respects_reset_authorization(self):
+        password_page = {
+            "url": "https://auth.openai.com/log-in/password",
+            "text": "Enter your password",
+            "inputs": [{"type": "password", "name": "password"}],
+            "errors": [],
+        }
+        for allow_reset in (False, True):
+            with self.subTest(allow_reset=allow_reset):
+                driver = MagicMock()
+                rejected = PasswordRejectedError("远端明确拒绝保存密码")
+                submitted_checkpoint = MagicMock()
+                confirmed_checkpoint = MagicMock()
+                with (
+                    patch.object(roxy_codex_oauth, "check_cancelled"),
+                    patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=password_page),
+                    patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=True),
+                    patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+                    patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=rejected) as shared,
+                    patch.object(roxy_codex_oauth, "_reset_password_via_email", return_value=True) as reset,
+                ):
+                    kwargs = {
+                        "otp_provider": MagicMock(), "allow_password_reset": allow_reset,
+                        "on_password_reset_submitted": submitted_checkpoint,
+                        "on_password_confirmed": confirmed_checkpoint,
+                    }
+                    if allow_reset:
+                        self.assertEqual("advanced", roxy_codex_oauth._complete_login_challenge_after_email(
+                            driver, "account@example.com", "saved-password", "saved-totp", **kwargs,
+                        ))
+                    else:
+                        with self.assertRaises(PasswordRejectedError) as caught:
+                            roxy_codex_oauth._complete_login_challenge_after_email(
+                                driver, "account@example.com", "saved-password", "saved-totp", **kwargs,
+                            )
+                        self.assertIs(caught.exception, rejected)
+                    shared.assert_called_once()
+                    if allow_reset:
+                        reset.assert_called_once()
+                        self.assertIs(reset.call_args.kwargs["on_password_submitted"], submitted_checkpoint)
+                        self.assertIs(reset.call_args.kwargs["on_password_confirmed"], confirmed_checkpoint)
+                        self.assertEqual(reset.call_args.kwargs["totp_secret"], "saved-totp")
+                    else:
+                        reset.assert_not_called()
+                    driver.refresh.assert_not_called()
+
     def test_missing_totp_is_a_typed_non_fallback_failure(self):
         with self.assertRaises(MfaSecretMissingError) as caught:
             roxy_codex_oauth._submit_saved_login_totp(
@@ -518,62 +566,130 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         self.assertEqual(["empty_mfa"], refreshes)
         submit.assert_called_once_with(driver, "account@example.com", "totp-secret")
 
-    def test_stuck_password_page_gets_one_bounded_refresh_then_one_resubmit(self):
+    def test_shared_password_timeout_refreshes_and_retries_saved_password_once(self):
         driver = MagicMock()
         driver.step = "password"
-        driver.submit_count = 0
-        refreshes = []
-
-        def refresh():
-            refreshes.append(driver.step)
-            driver.step = "password"
-
-        driver.refresh.side_effect = refresh
-        clock = [100.0]
         password_state = {
             "url": "https://auth.openai.com/log-in/password",
             "inputs": [{"type": "password", "autocomplete": "current-password"}],
             "errors": [],
         }
+        advanced_state = {"url": "https://chatgpt.com/", "inputs": [], "errors": []}
+        first_receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password")
+        first_receipt.transition("unknown", result="unknown")
+        second_receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password")
+        driver._browser_submission_receipt = first_receipt
+        submit_count = [0]
+
+        def submit_password(*_args, **_kwargs):
+            submit_count[0] += 1
+            if submit_count[0] == 1:
+                raise _PasswordTransitionTimeout("request_unknown: 密码提交结果未知")
+            driver.step = "advanced"
+            second_receipt.transition("confirmed", result="success")
+            driver._browser_submission_receipt = second_receipt
+
+        def state(_driver):
+            return password_state if driver.step == "password" else advanced_state
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=state),
+            patch.object(
+                roxy_codex_oauth, "_is_login_password_page",
+                side_effect=lambda _driver: driver.step == "password",
+            ),
+            patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+            patch.object(
+                roxy_codex_oauth, "_is_login_advanced",
+                side_effect=lambda _driver, _state=None: driver.step == "advanced",
+            ),
+            patch.object(
+                roxy_codex_oauth, "_fill_password_page_if_present", side_effect=submit_password,
+            ) as shared,
+            patch.object(roxy_codex_oauth, "_refresh_auth_challenge_after_submit") as refresh,
+            patch.object(roxy_codex_oauth, "_reset_password_via_email") as reset,
+            patch.object(roxy_codex_oauth, "human_delay"),
+        ):
+            result = roxy_codex_oauth._complete_login_challenge_after_email(
+                driver, "account@example.com", "saved-password", "", timeout=30,
+                allow_password_reset=True, otp_provider=MagicMock(),
+            )
+
+        self.assertEqual("advanced", result)
+        self.assertEqual(2, submit_count[0])
+        shared.assert_called()
+        self.assertEqual(2, shared.call_count)
+        refresh.assert_called_once_with(driver, "登录密码")
+        reset.assert_not_called()
+        self.assertEqual("confirmed", first_receipt.phase)
+
+    def test_shared_password_timeout_does_not_retry_twice(self):
+        driver = MagicMock()
+        password_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "password", "autocomplete": "current-password"}],
+            "errors": [],
+        }
+        error = _PasswordTransitionTimeout("request_unknown: 密码提交结果未知")
 
         with (
             patch.object(roxy_codex_oauth, "check_cancelled"),
             patch.object(roxy_codex_oauth, "_login_challenge_state", return_value=password_state),
-            patch.object(
-                roxy_codex_oauth,
-                "_is_login_password_page",
-                side_effect=lambda _driver: driver.step == "password",
-            ),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=True),
             patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
-            patch.object(roxy_codex_oauth, "_is_email_verification_page", return_value=False),
-            patch.object(
-                roxy_codex_oauth,
-                "_is_login_advanced",
-                side_effect=lambda _driver, _state=None: driver.step == "advanced",
-            ),
-            patch.object(
-                roxy_codex_oauth,
-                "_submit_saved_login_password",
-                side_effect=lambda _driver, _email, _password: (
-                    driver.__setattr__("submit_count", driver.submit_count + 1),
-                    driver.__setattr__("step", "advanced" if driver.submit_count >= 2 else "password"),
-                ),
-            ) as submit_password,
-            patch.object(roxy_codex_oauth.time, "time", side_effect=lambda: clock[0]),
-            patch.object(
-                roxy_codex_oauth.time,
-                "sleep",
-                side_effect=lambda seconds: clock.__setitem__(0, clock[0] + max(1.0, seconds)),
-            ),
-            patch.object(roxy_codex_oauth, "human_delay"),
+            patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=error) as shared,
+            patch.object(roxy_codex_oauth, "_refresh_auth_challenge_after_submit") as refresh,
+            patch.object(roxy_codex_oauth, "_reset_password_via_email") as reset,
+        ):
+            with self.assertRaises(_PasswordTransitionTimeout) as caught:
+                roxy_codex_oauth._complete_login_challenge_after_email(
+                    driver, "account@example.com", "saved-password", "", timeout=30,
+                    allow_password_reset=True, otp_provider=MagicMock(),
+                )
+
+        self.assertIs(caught.exception, error)
+        self.assertEqual(2, shared.call_count)
+        refresh.assert_called_once_with(driver, "登录密码")
+        reset.assert_not_called()
+
+    def test_shared_password_timeout_honors_explicit_rejection_after_refresh(self):
+        driver = MagicMock()
+        driver._browser_submission_receipt = BrowserSubmissionReceipt(
+            kind="resume_login", stage="login_password",
+        )
+        driver._browser_submission_receipt.transition("unknown", result="unknown")
+        password_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "password", "autocomplete": "current-password"}],
+            "errors": [],
+        }
+        rejected_state = {
+            **password_state,
+            "errors": ["Incorrect password"],
+        }
+        error = _PasswordTransitionTimeout("request_unknown: 密码提交结果未知")
+        states = iter((password_state, password_state, rejected_state))
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "_login_challenge_state", side_effect=lambda _driver: next(states)),
+            patch.object(roxy_codex_oauth, "_is_login_password_page", return_value=True),
+            patch.object(roxy_codex_oauth, "_is_totp_login_page", return_value=False),
+            patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=error) as shared,
+            patch.object(roxy_codex_oauth, "_refresh_auth_challenge_after_submit") as refresh,
+            patch.object(roxy_codex_oauth, "_reset_password_via_email", return_value=True) as reset,
         ):
             result = roxy_codex_oauth._complete_login_challenge_after_email(
-                driver, "account@example.com", "saved-password", "", timeout=30
+                driver, "account@example.com", "saved-password", "", timeout=30,
+                allow_password_reset=True, otp_provider=MagicMock(),
             )
 
         self.assertEqual("advanced", result)
-        self.assertEqual(2, submit_password.call_count)
-        self.assertEqual(["password"], refreshes)
+        shared.assert_called_once()
+        refresh.assert_called_once_with(driver, "登录密码")
+        reset.assert_called_once()
+        self.assertEqual("rejected", driver._browser_submission_receipt.phase)
 
     def test_liveness_email_shell_can_use_nextauth_fallback_before_typing(self):
         driver = MagicMock()

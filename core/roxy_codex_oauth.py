@@ -34,6 +34,8 @@ from core.registration.auth_context import (
 from core.registration.email_otp import (
     _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown,
 )
+from core.registration.browser_submission import record_browser_submission_fact
+from core.registration.password_auth import _PasswordTransitionTimeout
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
     center_browser_window as _center_browser_window,
@@ -52,8 +54,10 @@ from core.registration.selenium_auth import (
     clear_otp_inputs as _clear_otp_inputs,
     click_resend_email_otp as _click_resend_email_otp,
     email_otp_page_state as _email_otp_page_state,
+    has_access_token as _has_access_token,
     is_email_verification_page as _is_email_verification_page,
     is_login_password_page as _is_login_password_page,
+    fill_password_page_if_present as _fill_password_page_if_present,
     click_passwordless_signup_if_present as _click_passwordless_signup_if_present,
     safe_get as _safe_get,
     human_click as _human_click,
@@ -504,69 +508,19 @@ def _is_explicit_password_rejection_state(state: dict | None) -> bool:
     return any(marker in text for marker in _PASSWORD_REJECTION_MARKERS)
 
 
-def _login_password_targets(driver) -> dict:
-    try:
-        return driver.execute_script(r"""
-        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none'
-          && !el.disabled && !el.readOnly;
-        const input = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[name*="password" i]')]
-          .find(visible);
-        if (!input) return {ok:false, reason:'missing_password_input'};
-        const form = input.closest('form');
-        const buttons = [...(form || document).querySelectorAll('button,input[type="submit"]')]
-          .filter(el => visible(el) && !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true');
-        const submitter = buttons.find(el =>
-          String(el.getAttribute('name') || '').toLowerCase() === 'intent'
-          && String(el.getAttribute('value') || '').toLowerCase() === 'validate')
-          || buttons.find(el => String(el.getAttribute('data-dd-action-name') || '').toLowerCase() === 'continue')
-          || buttons.find(el => String(el.getAttribute('type') || '').toLowerCase() === 'submit');
-        if (!form || !submitter) return {ok:false, reason:'missing_password_form_submitter'};
-        return {ok:true, input, submitter};
-        """) or {}
-    except Exception as exc:
-        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
-
-
-def _is_stale_element_error(exc: BaseException) -> bool:
-    text = f"{type(exc).__name__}: {exc}".lower()
-    return "staleelementreferenceexception" in text or "stale element reference" in text
-
-
 def _submit_saved_login_password(driver, email: str, password: str) -> None:
     if not password:
         raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
-    for attempt in range(2):
-        try:
-            targets = _login_password_targets(driver)
-            password_input = targets.pop("input", None)
-            submitter = targets.pop("submitter", None)
-            if not targets.get("ok") or password_input is None or submitter is None:
-                raise RuntimeError(f"登录密码页控件识别失败：{targets}")
-            _human_type_text(driver, password_input, password, clear=True)
-            human_delay("form", minimum=0.4, maximum=1.2)
-            submitted = bool(driver.execute_script(r"""
-            const input = arguments[0], submitter = arguments[1];
-            const form = input?.closest('form');
-            if (!form || !submitter) return false;
-            if (typeof form.requestSubmit === 'function') form.requestSubmit(submitter);
-            else form.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
-            return true;
-            """, password_input, submitter))
-            if not submitted:
-                password_input.send_keys("\ue007")
-            logger.info(
-                "[Codex][Browser] 已使用本地保存的注册密码提交登录：email=%s method=%s",
-                email,
-                "form_request_submit" if submitted else "password_enter",
-            )
-            return
-        except Exception as exc:
-            if attempt == 0 and _is_stale_element_error(exc):
-                logger.warning("[Codex][Browser] 登录密码控件已被页面重绘，重新获取后重试一次：email=%s", email)
-                time.sleep(random.uniform(0.2, 0.6))
-                continue
-            raise
+    # 共享能力等待表单接管、准确点击提交按钮并观察一次提交的结果；
+    # requestSubmit 会绕过按钮的 onClick，不能替代真实密码按钮流程。
+    _fill_password_page_if_present(
+        driver,
+        email,
+        timeout=60,
+        existing_password=password,
+        login_rejection_detector=_is_explicit_password_rejection_state,
+    )
+    logger.info("[Codex][Browser] 已使用保存密码确认后续登录分支：email=%s", email)
 
 
 def _forgot_password_target(driver):
@@ -1001,13 +955,13 @@ def _complete_login_challenge_after_email(
     """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
     end = time.time() + max(5, int(timeout))
     password_submitted_at = 0.0
+    password_unknown_retry_done = False
+    password_unknown_receipt = None
     totp_submitted_at = 0.0
     passwordless_clicked = False
     passwordless_clicks = 0
     passwordless_wait_started = 0.0
     passwordless_last_result: dict = {}
-    password_refresh_done = False
-    password_resubmit_done = False
     totp_refresh_done = False
     initial_empty_challenge_seen_at = 0.0
     initial_challenge_refresh_done = False
@@ -1020,6 +974,44 @@ def _complete_login_challenge_after_email(
     offered_password_attempted = password_already_submitted
     last_state: dict = {}
     last_url = ""
+
+    def reset_password(*, forced: bool = False) -> bool:
+        if otp_provider is None:
+            raise RuntimeError("强制密码修改缺少邮箱验证码提供器" if forced else "密码重置流程缺少邮箱验证码提供器")
+        checkpoint = {} if forced else {"on_password_submitted": on_password_reset_submitted}
+        return _reset_password_via_email(
+            driver, email, otp_provider,
+            stage_reporter=stage_reporter,
+            on_password_confirmed=on_password_confirmed,
+            totp_secret=totp_secret,
+            **checkpoint,
+        )
+
+    def confirm_unknown_password_receipt() -> None:
+        nonlocal password_unknown_receipt
+        if password_unknown_receipt is not None:
+            record_browser_submission_fact(
+                driver, "confirmed", receipt=password_unknown_receipt, result="success",
+            )
+            password_unknown_receipt = None
+
+    def reject_unknown_password_receipt() -> None:
+        nonlocal password_unknown_receipt
+        if password_unknown_receipt is not None:
+            record_browser_submission_fact(
+                driver, "rejected", receipt=password_unknown_receipt,
+                result="failure", error_type="PasswordRejectedError",
+            )
+            password_unknown_receipt = None
+
+    def password_transition_confirmed(state: dict) -> bool:
+        return (
+            _is_email_verification_page(driver)
+            or _is_totp_login_page(driver, state)
+            or _is_login_advanced(driver, state)
+            or _has_access_token(driver)
+        )
+
     while time.time() < end:
         # 注册的邮箱验证恢复携带原阶段预算，页面转换不能重新延长它。
         _auth_checkpoint()
@@ -1204,35 +1196,13 @@ def _complete_login_challenge_after_email(
         if _is_login_password_page(driver):
             _clear_confirmed_email_submission(driver)
             if force_password_reset:
-                if otp_provider is None:
-                    raise RuntimeError("强制密码修改缺少邮箱验证码提供器")
-                reset_done = _reset_password_via_email(
-                    driver,
-                    email,
-                    otp_provider,
-                    stage_reporter=stage_reporter,
-                    on_password_confirmed=on_password_confirmed,
-                    totp_secret=totp_secret,
-                )
-                if reset_done:
+                if reset_password(forced=True):
                     return "advanced"
                 raise RuntimeError("登录密码页没有找到忘记密码入口")
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
-                    if allow_password_reset:
-                        if otp_provider is None:
-                            raise RuntimeError("密码重置流程缺少邮箱验证码提供器")
-                        reset_done = _reset_password_via_email(
-                            driver,
-                            email,
-                            otp_provider,
-                            stage_reporter=stage_reporter,
-                            on_password_submitted=on_password_reset_submitted,
-                            on_password_confirmed=on_password_confirmed,
-                            totp_secret=totp_secret,
-                        )
-                        if reset_done:
-                            return "advanced"
+                    if allow_password_reset and reset_password():
+                        return "advanced"
                     raise PasswordRejectedError(
                         "远端明确拒绝本地保存的账号密码；已停止重复提交"
                     )
@@ -1240,58 +1210,79 @@ def _complete_login_challenge_after_email(
                     str(item.get("ariaInvalid") or "").lower() == "true" for item in (state.get("inputs") or [])
                 ):
                     raise RuntimeError(f"本地保存的注册密码未通过页面校验：errors={(state.get('errors') or [])[:3]}")
-                submitted_for = time.time() - password_submitted_at
-                if not password_refresh_done and not password_resubmit_done and submitted_for >= 8:
-                    password_refresh_done = True
-                    _refresh_auth_challenge_after_submit(driver, "密码")
-                    # A renderer can keep the old password form after the
-                    # first request was never consumed. After the refresh,
-                    # allow exactly one fresh control lookup and submission;
-                    # this remains bounded and never retries a confirmed
-                    # rejection or repeats an Authenticator code.
-                    password_submitted_at = 0.0
-                    password_resubmit_done = True
-                    logger.warning(
-                        "[Codex][Browser] 刷新后仍在无错误密码页，允许一次控件重挂载后重新提交保存密码"
-                    )
-                    end = max(end, time.time() + 25)
-                    continue
-                if submitted_for > 20:
-                    safe_state = {
-                        "path": _auth_path_for_log(state.get("url")),
-                        "input_count": len(state.get("inputs") or []),
-                        "button_count": len(state.get("buttons") or []),
-                        "error_count": len(state.get("errors") or []),
-                    }
-                    logger.warning("[Codex][Browser] 密码提交未推进页面诊断（不含输入值）：%s", safe_state)
-                    raise RuntimeError(
-                        f"提交本地注册密码后页面 20 秒未继续，已在手机号验证前停止：state={safe_state}"
-                    )
                 time.sleep(0.5)
                 continue
             if password:
-                _submit_saved_login_password(driver, email, password)
+                try:
+                    _submit_saved_login_password(driver, email, password)
+                except PasswordRejectedError:
+                    if allow_password_reset and reset_password():
+                        return "advanced"
+                    raise
+                except _PasswordTransitionTimeout as exc:
+                    if password_unknown_retry_done:
+                        raise
+                    password_unknown_receipt = getattr(driver, "_browser_submission_receipt", None)
+                    retry_state = _login_challenge_state(driver)
+                    if _is_explicit_password_rejection_state(retry_state):
+                        reject_unknown_password_receipt()
+                        if allow_password_reset and reset_password():
+                            return "advanced"
+                        raise PasswordRejectedError(
+                            "远端明确拒绝本地保存的账号密码；已停止重复提交"
+                        ) from exc
+                    has_validation_error = bool(retry_state.get("errors")) or any(
+                        str(item.get("ariaInvalid") or "").lower() == "true"
+                        for item in (retry_state.get("inputs") or [])
+                    )
+                    if has_validation_error:
+                        raise
+                    if not _is_login_password_page(driver):
+                        if not password_transition_confirmed(retry_state):
+                            raise
+                        confirm_unknown_password_receipt()
+                        password_submitted_at = time.time()
+                        end = max(end, password_submitted_at + 25)
+                        continue
+
+                    _refresh_auth_challenge_after_submit(driver, "登录密码")
+                    retry_state = _login_challenge_state(driver)
+                    if _is_explicit_password_rejection_state(retry_state):
+                        reject_unknown_password_receipt()
+                        if allow_password_reset and reset_password():
+                            return "advanced"
+                        raise PasswordRejectedError(
+                            "远端明确拒绝本地保存的账号密码；已停止重复提交"
+                        ) from exc
+                    has_validation_error = bool(retry_state.get("errors")) or any(
+                        str(item.get("ariaInvalid") or "").lower() == "true"
+                        for item in (retry_state.get("inputs") or [])
+                    )
+                    if has_validation_error:
+                        raise
+                    if not _is_login_password_page(driver):
+                        if not password_transition_confirmed(retry_state):
+                            raise
+                        confirm_unknown_password_receipt()
+                        password_submitted_at = time.time()
+                        end = max(end, password_submitted_at + 25)
+                        continue
+
+                    password_unknown_retry_done = True
+                    end = max(end, time.time() + 25)
+                    logger.warning(
+                        "[Codex][Browser] 密码提交结果未知，刷新后仍停留在无错误密码页，允许重试一次"
+                    )
+                    continue
+                confirm_unknown_password_receipt()
                 password_submitted_at = time.time()
-                # Slow OpenAI edges can consume nearly the entire outer budget
-                # before the password page appears. Give this submitted step its
-                # own bounded settle window.
+                # 密码提交和转换已由共享能力确认，保留后续 OTP/TOTP 分支的处理时间。
                 end = max(end, password_submitted_at + 25)
                 human_delay("form")
                 continue
             if not passwordless_clicked and passwordless_clicks < 2:
                 if allow_password_reset:
-                    if otp_provider is None:
-                        raise RuntimeError("密码重置流程缺少邮箱验证码提供器")
-                    reset_done = _reset_password_via_email(
-                        driver,
-                        email,
-                        otp_provider,
-                        stage_reporter=stage_reporter,
-                        on_password_submitted=on_password_reset_submitted,
-                        on_password_confirmed=on_password_confirmed,
-                        totp_secret=totp_secret,
-                    )
-                    if reset_done:
+                    if reset_password():
                         return "advanced"
                 if not passwordless_wait_started:
                     passwordless_wait_started = time.monotonic()
