@@ -12,6 +12,16 @@ from tests.support_pg import PostgresTestCase
 
 
 class ProtocolCredentialBoundaryTests(unittest.TestCase):
+    def test_attempt_projection_derives_password_marker_without_exposing_secret(self):
+        projected = registration._row({
+            "private_context": {"password": "OfflinePassword!123", "password_state": "started"},
+            "data": {"password_state": "started"},
+        })
+
+        self.assertTrue(projected["data"]["has_password"])
+        self.assertNotIn("private_context", projected)
+        self.assertNotIn("OfflinePassword!123", str(projected))
+
     def _run(self, *, response=None, existing_password=None, register_error=None,
              save_error_phase=None, twofa=False, setup=None, warmup_error=None,
              totp_save_error_phase=None, resume_state=None, auth_url=None,

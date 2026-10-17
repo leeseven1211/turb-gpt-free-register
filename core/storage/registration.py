@@ -112,11 +112,17 @@ def _row(row: dict | None) -> dict | None:
     if row is None:
         return None
     result = dict(row)
-    # 私有恢复凭据只能通过专用入口读取，不能进入任务列表或详情投影。
-    result.pop("private_context", None)
     for key in ("data", "detail", "result_summary"):
         if key in result:
             result[key] = _decode(result[key])
+    private_context = _decode(result.get("private_context"))
+    if "private_context" in result and isinstance(result.get("data"), dict):
+        data = dict(result["data"])
+        password = private_context.get("password") if isinstance(private_context, dict) else None
+        data["has_password"] = isinstance(password, str) and bool(password.strip())
+        result["data"] = data
+    # 私有恢复凭据只能通过专用入口读取，不能进入任务列表或详情投影。
+    result.pop("private_context", None)
     for key, value in list(result.items()):
         if isinstance(value, datetime):
             result[key] = value.isoformat()
