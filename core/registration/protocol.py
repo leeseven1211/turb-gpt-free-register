@@ -780,6 +780,7 @@ def run_protocol_registration(
         def _checkpoint_submitted_password(password: str) -> None:
             nonlocal account_id, create_acknowledged, password_register_accepted, password_validated
             if account_id is not None:
+                report_job_progress("credential_prepare", "success", "注册请求已确认，复用已有账号检查点")
                 return
             # 此回调只在 user/register 已返回成功响应后调用；即使本地检查点
             # 写入失败，也不能把远端身份误标为尚未开始。
@@ -797,6 +798,7 @@ def run_protocol_registration(
             )
             account_id = int(saved["account_id"])
             report_registered_account(account_id)
+            report_job_progress("credential_prepare", "success", "注册请求已确认，密码检查点已保存")
 
         def _checkpoint_password(password: str, state: str) -> None:
             nonlocal openai_password, password_request_started

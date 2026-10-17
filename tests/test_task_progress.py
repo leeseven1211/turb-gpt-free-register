@@ -736,6 +736,31 @@ def test_same_route_authenticate_reentry_closes_parent_only_for_current_children
     assert login["state"] == "running"
 
 
+def test_registration_credential_prepare_is_a_labeled_authentication_child():
+    events = [
+        _event("credential-start", "credential_prepare", "running", detail={
+            "route_attempt_no": 1, "step_instance_id": "credential-1",
+            "started_at": "2026-10-13T03:00:00Z",
+        }),
+        _event("credential-done", "credential_prepare", "success", detail={
+            "route_attempt_no": 1, "step_instance_id": "credential-1",
+            "started_at": "2026-10-13T03:00:00Z", "completed_at": "2026-10-13T03:00:10Z",
+        }),
+        _event("otp-done", "email_otp", "success", detail={
+            "route_attempt_no": 1, "step_instance_id": "otp-1",
+            "started_at": "2026-10-13T03:00:10Z", "completed_at": "2026-10-13T03:00:20Z",
+        }),
+    ]
+
+    snapshot = build_progress_snapshot(1, 2, "registration", _run("success", route_attempt_no=1), events)
+    authenticate = _step(snapshot, "authenticate")
+    credential = next(child for child in authenticate["children"] if child["id"] == "credential_prepare")
+
+    assert credential["label"] == "准备注册凭证"
+    assert credential["display_status"] == "success"
+    assert not any(step["id"] == "unknown:credential_prepare" for step in snapshot["main_steps"])
+
+
 def test_legacy_progress_steps_preserve_evidence_without_events():
     run = _run("running")
     run["progress_steps"] = {

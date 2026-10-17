@@ -11,8 +11,10 @@ from typing import Any
 
 FLOW_VERSION = 2
 
-# 注册页面、邮箱、密码和验证码是同一认证主步骤中的独立阶段。
-REGISTRATION_AUTH_STAGES = ("page", "submit_email", "auth_redirect", "login", "login_password", "email_otp")
+# 注册页面、邮箱、凭证准备、密码和验证码是同一认证主步骤中的独立阶段。
+REGISTRATION_AUTH_STAGES = (
+    "page", "submit_email", "auth_redirect", "login", "credential_prepare", "login_password", "email_otp",
+)
 
 
 STEP_STATES = frozenset({"pending", "running", "success", "skipped", "failed"})
@@ -69,6 +71,7 @@ STAGES: dict[str, dict[str, str]] = {
     "page": {"label": "打开页面", "group": "browser"},
     "submit_email": {"label": "提交邮箱", "group": "identity"},
     "auth_redirect": {"label": "进入认证", "group": "identity"},
+    "credential_prepare": {"label": "准备注册凭证", "group": "identity"},
     "login_password": {"label": "账号密码", "group": "identity"},
     "mfa_challenge": {"label": "TOTP MFA", "group": "identity"},
     "email_otp": {"label": "邮箱验证", "group": "identity"},

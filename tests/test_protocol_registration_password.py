@@ -307,6 +307,9 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
 
         def password_stage(_session, email, **_kwargs):
             events.append(("password", email))
+            on_password_submitted = _kwargs.get("on_password_submitted")
+            if callable(on_password_submitted):
+                on_password_submitted("Password!123")
             return {
                 "password": "Password!123",
                 "register_result": {"continue_url": "/api/accounts/email-otp/send"},
@@ -369,7 +372,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
                 "core.registration_postprocess.summarize_postprocess",
                 return_value=SimpleNamespace(next_actions=(), account_readiness={}),
             ))
-            stack.enter_context(patch("core.registration_service.report_job_progress"))
+            report_progress = stack.enter_context(patch("core.registration_service.report_job_progress"))
             result = protocol.run_protocol_registration(
                 "user@example.com",
                 "Test User",
@@ -389,6 +392,12 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         self.assertLess(events.index("authorize"), events.index(("password", "user@example.com")))
         self.assertLess(events.index(("password", "user@example.com")), events.index("otp-validate"))
         self.assertIn("password", result["auth"]["challenge_chain"])
+        credential_states = [
+            call.args[1]
+            for call in report_progress.call_args_list
+            if call.args and call.args[0] == "credential_prepare"
+        ]
+        self.assertEqual(["running", "success"], credential_states)
 
     def test_protocol_plan_check_reuses_registration_session_and_proxy(self):
         session = SimpleNamespace(
