@@ -115,21 +115,41 @@ def test_all_bad_candidates_are_aborted_without_delivery(supply_harness):
     harness.activate.assert_not_called()
 
 
+def test_large_pool_request_falls_back_to_64_after_bad_gateway(supply_harness):
+    """大窗口收到 502 时改用原有 64 条请求边界重试。"""
+    harness = supply_harness
+    from urllib.parse import parse_qs, urlsplit
+    error = requests.HTTPError("离线模拟供应商网关错误")
+    error.response = SimpleNamespace(status_code=502)
+    harness.session.get.side_effect = [error, harness.response]
+
+    leases = list(proxy_supply.fetch_candidates(harness.options, count=1, candidate_count=200))
+
+    assert len(leases) == 1
+    requested_counts = [
+        parse_qs(urlsplit(call.args[0]).query)["num"]
+        for call in harness.session.get.call_args_list
+    ]
+    assert requested_counts == [["200"], ["64"]]
+
+
 def test_pool_window_can_skip_more_than_64_reserved_candidates(supply_harness):
-    """较大库存不能永久困在旧批量客户端的 64 个候选前缀。"""
+    """大窗口请求成功时仍能越过重复候选前缀。"""
     harness = supply_harness
     harness.response.text = "\n".join(f"192.0.2.1:{8000 + n}" for n in range(65))
+
     def reserve(**kwargs):
         if int(kwargs["endpoint"].split(":")[-1]) < 8064:
             raise proxy_lease_store.DuplicateProxyLeaseError("测试重复候选")
+
     harness.reserve.side_effect = reserve
+    from urllib.parse import parse_qs, urlsplit
 
     leases = list(proxy_supply.fetch_candidates(harness.options, count=1, candidate_count=200))
 
     assert [lease.endpoint for lease in leases] == ["192.0.2.1:8064"]
     assert harness.reserve.call_count == 65
     harness.validate.assert_called_once()
-    from urllib.parse import parse_qs, urlsplit
     assert parse_qs(urlsplit(harness.session.get.call_args.args[0]).query)["num"] == ["200"]
 
 

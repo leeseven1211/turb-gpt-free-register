@@ -71,8 +71,7 @@ def fetch_candidates(
     minutes = max(1, min(120, int(options["session_minutes"])))
     protocol = provider._normalize_protocol(options["protocol"])
     region = provider._normalize_region(options["region"])
-    # 池候选窗口跟随容量，不套用旧批量客户端的 64 条限制。
-    # 1000 是本项目的容量上限，不代表供应商保证返回该数量。
+    # 大窗口可绕过重复候选前缀；遇到网关错误时再退回旧客户端的 64 条边界。
     window = min(1000, window)
     url = provider._build_api_url(options["api_url"], minutes, region, count=window, count_limit=1000)
     # time 仅按供应商会话时长使用，不把更改时长当成已保证的新会话接口。
@@ -86,10 +85,36 @@ def fetch_candidates(
         expires = acquired + timedelta(minutes=minutes)
         try:
             with provider._direct_session() as session:
-                response = session.get(url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
-                                       allow_redirects=False, headers={"Accept": "text/plain, application/json"})
-                provider._LAST_ACQUIRE_AT = time.monotonic()
-                response.raise_for_status()
+                try:
+                    response = session.get(
+                        url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
+                        allow_redirects=False, headers={"Accept": "text/plain, application/json"},
+                    )
+                    provider._LAST_ACQUIRE_AT = time.monotonic()
+                    response.raise_for_status()
+                except requests.HTTPError as exc:
+                    provider._LAST_ACQUIRE_AT = time.monotonic()
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    fallback_window = min(64, window)
+                    if status != 502 or window <= fallback_window:
+                        raise
+                    delay = max(
+                        0, float(cfg.PROXY_1024_ACQUIRE_INTERVAL)
+                        - (time.monotonic() - provider._LAST_ACQUIRE_AT),
+                    )
+                    if delay:
+                        time.sleep(min(delay, _remaining(deadline, delay)))
+                    if cancelled():
+                        return
+                    fallback_url = provider._build_api_url(
+                        options["api_url"], minutes, region, count=fallback_window,
+                    )
+                    response = session.get(
+                        fallback_url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
+                        allow_redirects=False, headers={"Accept": "text/plain, application/json"},
+                    )
+                    provider._LAST_ACQUIRE_AT = time.monotonic()
+                    response.raise_for_status()
                 endpoints = provider.parse_proxy_responses(response.text)[:window]
         except requests.RequestException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
