@@ -46,6 +46,32 @@ def _email_flow(clock, driver):
 
 
 class EmailFrontendLoadingTests(unittest.TestCase):
+    def test_slow_frontend_keeps_full_submission_budget_after_extended_wait(self):
+        clock = _Clock()
+        driver = SimpleNamespace(
+            current_url="https://chatgpt.com/auth/login",
+            execute_script=Mock(side_effect=lambda *_args: clock.now >= 179),
+        )
+        submission_window = []
+
+        def submit_form(current_driver, _email):
+            submission_window.append(current_driver._registration_stage_budget.remaining())
+            return {"ok": True}
+
+        with _email_flow(clock, driver) as stack:
+            stack.enter_context(patch.object(email_otp, "_email_ui_submission_state", return_value=None))
+            stack.enter_context(patch.object(email_otp, "_submit_email_form_stable", side_effect=submit_form))
+            stack.enter_context(patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"))
+            stack.enter_context(patch.object(
+                email_otp, "_submit_email_via_browser_nextauth",
+                return_value={"ok": False, "not_dispatched": True},
+            ))
+            result = email_otp._submit_email_and_wait_next(driver, "unit@example.test", attempts=1)
+
+        self.assertEqual(result, "otp")
+        self.assertEqual(len(submission_window), 1)
+        self.assertGreaterEqual(submission_window[0], 59.5)
+
     def test_undispatched_nextauth_fallback_gets_fresh_budget_within_outer_deadline(self):
         clock = _Clock()
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login")

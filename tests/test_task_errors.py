@@ -712,7 +712,7 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
                 "资料阶段进入认证错误页", True,
             ),
             (
-                "registration_failed: RuntimeError: 邮箱提交/认证跳转超过总预算 180 秒",
+                "registration_failed: RuntimeError: 邮箱提交/认证跳转超过总预算 240 秒",
                 "external.openai", "email_transition_timeout", "FLOW-EMAIL-002",
                 "邮箱提交或认证跳转预算耗尽", False,
             ),

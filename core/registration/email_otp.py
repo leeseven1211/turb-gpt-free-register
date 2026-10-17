@@ -48,9 +48,9 @@ time = time_proxy
 
 # 邮箱阶段的三个边界：准备、单次请求、整个阶段。提交后的确认沿用当前请求预算；
 # 只有确认未派发时，唯一认证兜底才获得新的子预算，始终受同一外层截止约束。
-EMAIL_PREPARATION_TIMEOUT = 120
+EMAIL_PREPARATION_TIMEOUT = 180
 EMAIL_SUBMISSION_TIMEOUT = 60
-EMAIL_OUTER_TIMEOUT = 180
+EMAIL_OUTER_TIMEOUT = 240
 
 _EMAIL_INPUT_SELECTORS = [
     "input[type='email']",
@@ -1509,7 +1509,7 @@ def _submit_email_and_wait_next_impl(
     allow_login_password: bool = False,
     on_progress=None,
 ) -> str:
-    """填写并提交邮箱：准备最多 120 秒，提交/落点最多 60 秒，外层最多 180 秒。"""
+    """填写并提交邮箱：准备、单次提交和整个阶段各自受有界预算约束。"""
     last_state = None
     nextauth_fallback_done = False
     submitted_reported = False
@@ -1522,7 +1522,7 @@ def _submit_email_and_wait_next_impl(
             except Exception:
                 logger.exception("%s 上报邮箱观察进度失败", _log_prefix(driver))
     requested_timeout = EMAIL_OUTER_TIMEOUT if total_timeout is None else float(total_timeout)
-    # 180 秒是默认软上限；调用方传入更小预算时必须原样收紧，不能用历史的
+    # 240 秒是默认软上限；调用方传入更小预算时必须原样收紧，不能用历史的
     # “至少 10 秒”兜底把测试/取消预算重新放大。
     outer_budget = StageBudget.start(max(0.0, min(float(EMAIL_OUTER_TIMEOUT), requested_timeout)))
     # 准备和提交各自只有一份子预算。提交预算只在真正进入提交/兜底阶段时
@@ -1646,7 +1646,7 @@ def _submit_email_and_wait_next_impl(
             # the first state check can fail immediately even though the page is still
             # legitimately transitioning (observed with a 91-second proxy response).
             # 进入可能派发窗口后，确认链路获得至多 60 秒；不再重置为一份新的
-            # 外层预算，且继续受 outer_budget 的 180 秒截止约束。
+            # 外层预算，且继续受 outer_budget 的截止时间约束。
             _use_submission_budget()
             _progress("pending", "邮箱提交已进入排队或派发阶段，正在确认认证下一页")
             logger.info("%s 邮箱提交尚待页面确认，等待密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
