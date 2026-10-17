@@ -46,7 +46,7 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             stack.enter_context(patch.object(roxy, "_check_manual_stop"))
             stack.enter_context(patch.object(roxy, "human_delay"))
             stack.enter_context(patch.object(roxy, "_submit_email_and_wait_next", return_value="login_password"))
-            stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
+            fill_password = stack.enter_context(patch.object(roxy, "_fill_password_page_if_present", return_value=None))
             stack.enter_context(patch.object(roxy, "_is_email_verification_page", return_value=False))
             stack.enter_context(
                 patch("core.roxy_codex_oauth.complete_openai_login_challenge", challenge)
@@ -69,16 +69,16 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         challenge.assert_called_once()
-        return challenge.call_args
+        return challenge.call_args, fill_password.call_args
 
     def test_roxy_resume_legacy_call_omits_otp_provider(self):
-        call = self._run_roxy_resume()
+        call, _ = self._run_roxy_resume()
 
         self.assertEqual(call.kwargs, {"timeout": 45})
 
     def test_roxy_resume_binds_otp_provider_to_explicit_source(self):
         with patch.object(roxy, "wait_for_otp", return_value="123456") as wait_for_otp:
-            call = self._run_roxy_resume(email_source=self.email_source)
+            call, _ = self._run_roxy_resume(email_source=self.email_source)
             provider = call.kwargs["otp_provider"]
             self.assertEqual(provider(self.email, after_ts=123.0, max_wait=30), "123456")
 
@@ -88,6 +88,11 @@ class EmailSourceCompatibilityTests(unittest.TestCase):
             max_wait=30,
             email_source=self.email_source,
         )
+
+    def test_roxy_password_page_gets_two_minute_readiness_budget(self):
+        _, password_call = self._run_roxy_resume()
+
+        self.assertEqual(password_call.kwargs["timeout"], 120)
 
     def test_roxy_legacy_initial_otp_omits_email_source_keyword(self):
         client = MagicMock()
