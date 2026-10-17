@@ -115,13 +115,13 @@ def test_all_bad_candidates_are_aborted_without_delivery(supply_harness):
     harness.activate.assert_not_called()
 
 
-def test_large_pool_request_falls_back_to_64_after_bad_gateway(supply_harness):
-    """大窗口收到 502 时改用原有 64 条请求边界重试。"""
+def test_large_pool_request_falls_back_to_single_candidate_after_two_bad_gateways(supply_harness):
+    """大窗口和 64 条请求连续收到 502 时，最终退回单条请求。"""
     harness = supply_harness
     from urllib.parse import parse_qs, urlsplit
     error = requests.HTTPError("离线模拟供应商网关错误")
     error.response = SimpleNamespace(status_code=502)
-    harness.session.get.side_effect = [error, harness.response]
+    harness.session.get.side_effect = [error, error, harness.response]
 
     leases = list(proxy_supply.fetch_candidates(harness.options, count=1, candidate_count=200))
 
@@ -130,7 +130,7 @@ def test_large_pool_request_falls_back_to_64_after_bad_gateway(supply_harness):
         parse_qs(urlsplit(call.args[0]).query)["num"]
         for call in harness.session.get.call_args_list
     ]
-    assert requested_counts == [["200"], ["64"]]
+    assert requested_counts == [["200"], ["64"], ["1"]]
 
 
 def test_pool_window_can_skip_more_than_64_reserved_candidates(supply_harness):
