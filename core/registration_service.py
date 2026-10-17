@@ -3407,7 +3407,10 @@ def attach_registration_resume_retry_info(tasks: list[dict]) -> None:
     for task in tasks:
         if task.get("task_type") not in {"registration", "registration_resume"} or task.get("source_system") != "registration_chains":
             continue
-        if task.get("target_status") not in {"not_created", "email_verification_pending", "request_unknown", "attention_required", "manual_reconcile"}:
+        if task.get("target_status") not in {
+            "not_created", "email_verification_pending", "request_unknown",
+            "attention_required", "manual_reconcile", "account_available",
+        }:
             continue
         task["retryable"] = False
         if task.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}:

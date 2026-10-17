@@ -247,3 +247,19 @@ class ResumeRetryChainTests(unittest.TestCase):
         before = copy.deepcopy(completed)
         svc.attach_registration_resume_retry_info([completed])
         self.assertEqual(completed, before)
+
+    def test_account_available_task_refreshes_stale_followup_actions(self):
+        task = dict(self._task(), target_status='account_available',
+                    next_actions=[{'action': 'twofa_retry', 'source_job_id': 22}])
+        _, child, _, _ = facts()
+        with patch.object(svc, '_retry_jobs_by_ids', return_value={22: child}), \
+             patch.object(svc, 'get_retry_info_bulk', return_value={22: {
+                 'retryable': False,
+                 'retry_reason': '账号配置已齐，无需补跑',
+                 'display_status': 'success',
+             }}) as retry_info:
+            svc.attach_registration_resume_retry_info([task])
+        retry_info.assert_called_once()
+        self.assertEqual([], task['next_actions'])
+        self.assertFalse(task['retryable'])
+        self.assertEqual('账号配置已齐，无需补跑', task['retry_reason'])
