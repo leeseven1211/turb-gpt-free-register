@@ -757,14 +757,34 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
         if str(driver.current_url or "") != "about:blank":
             raise RuntimeError("request_unknown: auth_session_unavailable: 失效页面尚未退出，未重新提交邮箱")
         begin_auth_session(driver)
-        driver.set_page_load_timeout(min(10.0, budget.require("恢复原身份登录")))
-        driver.get("https://chatgpt.com/auth/login")
-    except TimeoutException:
-        current = urlsplit(str(driver.current_url or ""))
-        if (current.scheme != "https" or current.hostname not in {"chatgpt.com", "auth.openai.com"}
-                or current.port not in (None, 443) or current.username or current.password):
-            raise
-        logger.warning("%s 新登录页整体加载超时，继续在原预算内等待邮箱表单", _log_prefix(driver))
+        for navigation_attempt in range(2):
+            driver.set_page_load_timeout(min(10.0, budget.require("恢复原身份登录")))
+            navigation_error = None
+            try:
+                driver.get("https://chatgpt.com/auth/login")
+            except TimeoutException as exc:
+                navigation_error = exc
+                timed_out = True
+            else:
+                timed_out = False
+            current_url = str(driver.current_url or "")
+            current = urlsplit(current_url)
+            confirmed = (
+                current.scheme == "https" and current.hostname in {"chatgpt.com", "auth.openai.com"}
+                and current.port in (None, 443) and not current.username and not current.password
+            )
+            if confirmed:
+                if timed_out:
+                    logger.warning("%s 新登录页整体加载超时，继续在原预算内等待邮箱表单", _log_prefix(driver))
+                break
+            if current_url == "about:blank":
+                if navigation_attempt == 0:
+                    logger.warning("%s 新登录页导航仍停留在空白页，剩余预算内重试一次", _log_prefix(driver))
+                    continue
+                break
+            if timed_out:
+                raise navigation_error
+            raise RuntimeError("request_unknown: auth_session_unavailable: 新登录页面尚未确认，未重新提交邮箱")
     finally:
         if isinstance(old_timeout, (int, float)):
             driver.set_page_load_timeout(old_timeout)

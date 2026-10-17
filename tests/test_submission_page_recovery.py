@@ -448,6 +448,34 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
                 )
         submit.assert_not_called()
 
+    def test_expired_auth_login_navigation_retries_once_from_blank_document(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        login_navigations = 0
+
+        def navigate(target):
+            nonlocal login_navigations
+            if target == "about:blank":
+                driver.current_url = target
+                return
+            login_navigations += 1
+            driver.current_url = (
+                "https://chatgpt.com/auth/login" if login_navigations == 2 else "about:blank"
+            )
+
+        driver.get.side_effect = navigate
+        with (patch.object(password_auth, "time", clock), patch.object(password_auth, "_check_manual_stop"),
+              patch.object(email_otp, "_submit_email_and_wait_next", return_value="otp") as submit):
+            self.assertTrue(password_auth._restart_expired_resume_auth(
+                driver, "unit@example.test", budget=StageBudget(30, clock=clock.time),
+            ))
+
+        self.assertEqual(login_navigations, 2)
+        self.assertEqual([call.args[0] for call in driver.get.call_args_list], [
+            "about:blank", "https://chatgpt.com/auth/login", "https://chatgpt.com/auth/login",
+        ])
+        submit.assert_called_once()
+
     def test_resume_navigation_timeout_continues_when_password_form_is_already_visible(self):
         self._resume_with_offered_password(navigation_timeout=True)
 
