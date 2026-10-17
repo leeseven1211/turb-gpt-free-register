@@ -448,21 +448,28 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
     def test_expired_resume_can_continue_when_new_login_document_load_times_out(self):
         self._resume_with_offered_password(expired_once=True, navigation_timeout=True)
 
-    def test_expired_session_login_is_limited_to_once_and_original_budget(self):
+    def test_expired_session_login_is_limited_to_twice_and_original_budget(self):
         driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
         driver._registration_resume_login = True
         receipt = BrowserSubmissionReceipt(kind="resume_login", stage="email_otp", phase="unknown")
         driver._browser_submission_receipt = receipt
         before = vars(receipt).copy()
         budget = StageBudget(5, clock=clock.time)
+
+        def submit_email(*_args, **_kwargs):
+            driver.current_url = "https://auth.openai.com/email-verification"
+            return "otp"
+
         with (patch.object(password_auth, "time", clock),
               patch.object(password_auth, "_check_manual_stop"),
-              patch.object(email_otp, "_submit_email_and_wait_next", return_value="otp") as email_submit):
+              patch.object(email_otp, "_submit_email_and_wait_next", side_effect=submit_email) as email_submit):
+            self.assertTrue(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
             self.assertTrue(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
             self.assertFalse(password_auth._restart_expired_resume_auth(driver, "unit@example.test", budget=budget))
         self.assertEqual([call.args[0] for call in driver.get.call_args_list],
-                         ["about:blank", "https://chatgpt.com/auth/login"])
-        self.assertEqual(email_submit.call_args.kwargs["total_timeout"], 5)
+                         ["about:blank", "https://chatgpt.com/auth/login"] * 2)
+        self.assertEqual(email_submit.call_count, 2)
+        self.assertTrue(all(call.kwargs["total_timeout"] == 5 for call in email_submit.call_args_list))
         self.assertEqual(vars(receipt), before)
         self.assertEqual(driver._registration_otp_after_ts, 0)
         for allowed, deadline in ((False, 5), (True, 0)):

@@ -46,6 +46,7 @@ from .mfa_auth import (
 
 SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS = 120
 RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 60
+MAX_EXPIRED_RESUME_AUTH_RESTARTS = 2
 
 human_delay = _human_delay
 _CHATGPT_PASSWORD_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
@@ -736,9 +737,10 @@ def _resume_login_password_url(driver) -> str | None:
 
 
 def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> bool:
-    """原身份显式续跑仅恢复一次，不重放失效表单。"""
+    """原身份显式续跑最多重建两次登录会话，不重放失效表单。"""
+    restart_count = int(getattr(driver, "_registration_auth_restart_count", 0) or 0)
     if (not getattr(driver, "_registration_resume_login", False)
-            or getattr(driver, "_registration_auth_restart_done", False) or budget.remaining() < 1):
+            or restart_count >= MAX_EXPIRED_RESUME_AUTH_RESTARTS or budget.remaining() < 1):
         return False
     try:
         location = urlsplit(str(driver.current_url or ""))
@@ -750,7 +752,8 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
         return False
     _check_manual_stop()
     log_submission_diagnostics(driver, "password", "before_expired_session_login")
-    driver._registration_auth_restart_done = True
+    restart_count += 1
+    driver._registration_auth_restart_count = restart_count
     driver._registration_otp_after_ts = time.time()
     old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
     try:
@@ -799,7 +802,10 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
     driver._email_otp_page_refresh_done = False
     driver._email_otp_blank_seen_at = None
     driver._registration_resume_password_attempted = False
-    logger.warning("%s 原身份认证会话失效，在剩余预算内重新登录一次，沿用原邮箱和密码", _log_prefix(driver))
+    logger.warning(
+        "%s 原身份认证会话失效，在剩余预算内重新登录恢复 %d/%d，沿用原邮箱和密码",
+        _log_prefix(driver), restart_count, MAX_EXPIRED_RESUME_AUTH_RESTARTS,
+    )
     from .email_otp import _submit_email_and_wait_next
 
     _submit_email_and_wait_next(driver, email, total_timeout=budget.remaining(), allow_login_password=True)
