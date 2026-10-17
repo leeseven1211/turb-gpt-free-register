@@ -377,6 +377,37 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
     def test_expired_resume_session_restarts_login_once_before_using_original_password(self):
         self._resume_with_offered_password(expired_once=True)
 
+    def test_expired_resume_gets_bounded_budget_for_one_fresh_email_login(self):
+        driver, clock = _driver("https://auth.openai.com/email-verification"), _Clock()
+        driver._registration_resume_login = True
+        ready_states = iter(("session_expired", "ready"))
+
+        def wait_for_page(*_args, **_kwargs):
+            state = next(ready_states)
+            if state == "session_expired":
+                clock.now = 50
+            return state
+
+        def restart_with_recovery_budget(_driver, _email, *, budget):
+            self.assertGreaterEqual(budget.remaining(), 100)
+            clock.now = 150
+            return True
+
+        with (
+            patch.object(password_auth, "time", clock),
+            patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+            patch.object(password_auth, "_is_email_verification_page", return_value=True),
+            patch.object(password_auth, "_wait_email_otp_page_ready", side_effect=wait_for_page),
+            patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart_with_recovery_budget),
+            patch.object(password_auth, "_resume_login_password_url", return_value=None),
+            patch.object(password_auth, "_offered_password_url", return_value=None),
+        ):
+            result = password_auth._fill_password_page_if_present(
+                driver, "unit@example.test", timeout=60, existing_password="SavedPassword123!",
+            )
+
+        self.assertEqual(result, "SavedPassword123!")
+
     def test_resume_uses_original_password_when_server_still_offers_creating_one(self):
         self._resume_with_offered_password(create_password=True)
 

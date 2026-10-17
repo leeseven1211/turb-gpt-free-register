@@ -44,6 +44,8 @@ from .mfa_auth import (
     _visible_new_password_inputs,
 )
 
+RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 120
+
 human_delay = _human_delay
 _CHATGPT_PASSWORD_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
 logger = logging.getLogger(__name__)
@@ -733,7 +735,7 @@ def _resume_login_password_url(driver) -> str | None:
 
 
 def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> bool:
-    """原身份显式续跑在剩余预算内最多重新登录一次，不重放失效表单。"""
+    """原身份显式续跑仅恢复一次，不重放失效表单。"""
     if (not getattr(driver, "_registration_resume_login", False)
             or getattr(driver, "_registration_auth_restart_done", False) or budget.remaining() < 1):
         return False
@@ -832,7 +834,12 @@ def _fill_password_page_if_present(
                         budget=StageBudget(end, clock=time.time),
                     )
                     if ready == "session_expired":
-                        if _restart_expired_resume_auth(driver, email, budget=StageBudget(end, clock=time.time)):
+                        recovery_budget = StageBudget(
+                            end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS,
+                            clock=time.time,
+                        )
+                        if _restart_expired_resume_auth(driver, email, budget=recovery_budget):
+                            end = recovery_budget.deadline
                             continue
                         raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt")
                     target = _resume_login_password_url(driver) if ready == "ready" else None
