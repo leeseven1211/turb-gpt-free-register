@@ -44,7 +44,8 @@ from .mfa_auth import (
     _visible_new_password_inputs,
 )
 
-RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 120
+SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS = 120
+RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 60
 
 human_delay = _human_delay
 _CHATGPT_PASSWORD_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
@@ -820,7 +821,9 @@ def _fill_password_page_if_present(
     首次注册时生成随机密码；如果本地已有 ``email_verification_pending`` 检查点，
     则使用当时保存的密码登录同一个 OpenAI 身份，继续完成邮箱验证。
     """
-    end = time.time() + timeout
+    resume_login = bool(existing_password and getattr(driver, "_registration_resume_login", False))
+    password_timeout = max(timeout, SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS) if resume_login else timeout
+    end = time.time() + password_timeout
     last = {}
     auth_mode = _registration_auth_mode()
     switched_from_otp = False

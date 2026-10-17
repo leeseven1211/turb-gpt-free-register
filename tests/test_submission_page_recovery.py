@@ -408,6 +408,37 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result, "SavedPassword123!")
 
+    def test_saved_password_form_waits_up_to_resume_page_budget_before_failing(self):
+        driver, clock = _driver("https://auth.openai.com/log-in/password"), _Clock()
+        driver._registration_resume_login = True
+        driver.execute_script.side_effect = lambda _script, mode, *_args: (
+            {"ok": False, "reason": "missing_password_input"} if mode == "input" else {}
+        )
+        phases = []
+        with (
+            patch.object(password_auth, "time", SimpleNamespace(time=clock.time, sleep=clock.sleep)),
+            patch.object(password_auth, "_registration_auth_mode", return_value="password"),
+            patch.object(password_auth, "_is_email_verification_page", return_value=False),
+            patch.object(password_auth, "_is_signup_password_page", return_value=False),
+            patch.object(password_auth, "_is_login_password_page", return_value=True),
+            patch.object(password_auth, "_has_access_token", return_value=False),
+            patch.object(password_auth, "_password_page_state", return_value={
+                "url": driver.current_url, "inputs": [], "buttons": [],
+            }),
+            patch.object(password_auth, "_check_manual_stop"),
+            patch.object(password_auth, "log_submission_diagnostics"),
+            patch.object(password_auth, "record_browser_submission_fact",
+                         side_effect=lambda _driver, phase, **_kwargs: phases.append(phase)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing_password_input"):
+                password_auth._fill_password_page_if_present(
+                    driver, "unit@example.test", timeout=60, existing_password="SavedPassword123!",
+                )
+
+        self.assertGreaterEqual(clock.now, 120)
+        self.assertLess(clock.now, 121)
+        self.assertEqual(phases, [])
+
     def test_resume_uses_original_password_when_server_still_offers_creating_one(self):
         self._resume_with_offered_password(create_password=True)
 
