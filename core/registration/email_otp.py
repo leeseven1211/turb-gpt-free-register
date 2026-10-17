@@ -46,8 +46,8 @@ resolve_email_source = _resolve_email_source
 logger = logging.getLogger(__name__)
 time = time_proxy
 
-# 邮箱阶段的三个边界：准备、一次提交链路、整个阶段。提交后的确认不得因为
-# 页面准备消耗时间而重新获得一份 60 秒；三者都由同一 monotonic 时钟约束。
+# 邮箱阶段的三个边界：准备、单次请求、整个阶段。提交后的确认沿用当前请求预算；
+# 只有确认未派发时，唯一认证兜底才获得新的子预算，始终受同一外层截止约束。
 EMAIL_PREPARATION_TIMEOUT = 120
 EMAIL_SUBMISSION_TIMEOUT = 60
 EMAIL_OUTER_TIMEOUT = 180
@@ -1550,9 +1550,9 @@ def _submit_email_and_wait_next_impl(
     def _remaining(limit: int) -> int:
         return max(0.0, min(float(limit), budget.remaining()))
 
-    def _use_submission_budget() -> StageBudget:
+    def _use_submission_budget(*, new_request: bool = False) -> StageBudget:
         nonlocal submission_budget, budget
-        if submission_budget is None:
+        if submission_budget is None or new_request:
             submission_budget = _phase_budget(EMAIL_SUBMISSION_TIMEOUT)
         budget = submission_budget
         try:
@@ -1679,9 +1679,9 @@ def _submit_email_and_wait_next_impl(
                 raise _EmailSubmissionUnknown(
                     "request_unknown: 邮箱提交已进入可能派发窗口，禁止 NextAuth 重复认证导航"
                 )
-            # 前端未接管时没有 UI dispatch；唯一的 NextAuth 兜底在同一外层
-            # 截止内获得唯一提交预算，不能继续沿用已经耗尽的准备预算。
-            _use_submission_budget()
+            # 前置请求明确未派发时，NextAuth 是唯一一次独立认证请求；
+            # 使用新的请求预算，但仍受同一外层截止时间约束。
+            _use_submission_budget(new_request=True)
             budget.require("邮箱认证导航兜底")
             nextauth_fallback_done = True
             submission_started = True

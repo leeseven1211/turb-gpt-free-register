@@ -46,6 +46,35 @@ def _email_flow(clock, driver):
 
 
 class EmailFrontendLoadingTests(unittest.TestCase):
+    def test_undispatched_nextauth_fallback_gets_fresh_budget_within_outer_deadline(self):
+        clock = _Clock()
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login")
+        submit_calls = []
+        fallback_deadlines = []
+
+        def submit_step(current_driver, _email):
+            submit_calls.append(clock.now)
+            current_driver._registration_before_email_dispatch()
+            clock.sleep(61)
+
+        def nextauth_fallback(current_driver, _email):
+            fallback_deadlines.append(current_driver._registration_stage_budget.deadline)
+            return {"ok": True, "state": "otp"}
+
+        with _email_flow(clock, driver) as stack:
+            stack.enter_context(patch.object(email_otp, "_submit_email_step", side_effect=submit_step))
+            stack.enter_context(patch.object(email_otp, "_wait_email_submit_next_state", return_value="email_page"))
+            stack.enter_context(patch.object(email_otp, "_email_ui_submission_state", return_value=None))
+            fallback = stack.enter_context(patch.object(
+                email_otp, "_submit_email_via_browser_nextauth", side_effect=nextauth_fallback,
+            ))
+            result = email_otp._submit_email_and_wait_next(driver, "unit@example.test", attempts=1)
+
+        self.assertEqual(result, "otp")
+        self.assertEqual(submit_calls, [0.0])
+        self.assertEqual(fallback_deadlines, [121.0])
+        fallback.assert_called_once_with(driver, "unit@example.test")
+
     def test_default_wait_uses_current_preparation_budget_for_slow_handler(self):
         clock = _Clock()
         driver = SimpleNamespace(
