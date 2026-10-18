@@ -516,7 +516,7 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
     _fill_password_page_if_present(
         driver,
         email,
-        timeout=60,
+        timeout=120,
         existing_password=password,
         login_rejection_detector=_is_explicit_password_rejection_state,
     )

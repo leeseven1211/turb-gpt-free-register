@@ -48,6 +48,19 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
         submit.assert_called_once()
 
+    def test_saved_login_password_waits_for_slow_password_form_before_submission(self):
+        driver = MagicMock()
+
+        with patch.object(roxy_codex_oauth, "_fill_password_page_if_present") as fill_password:
+            roxy_codex_oauth._submit_saved_login_password(driver, "unit@example.test", "saved-password")
+
+        self.assertEqual(fill_password.call_args.kwargs["timeout"], 120)
+        self.assertEqual(fill_password.call_args.kwargs["existing_password"], "saved-password")
+        self.assertIs(
+            fill_password.call_args.kwargs["login_rejection_detector"],
+            roxy_codex_oauth._is_explicit_password_rejection_state,
+        )
+
     def test_missing_password_or_unoffered_entry_keeps_email_otp_flow(self):
         for kwargs in ({"password": ""}, {"offered": False}):
             with self.subTest(kwargs=kwargs):
