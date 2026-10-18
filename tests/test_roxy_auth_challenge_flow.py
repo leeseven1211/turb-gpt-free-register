@@ -48,18 +48,57 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
         driver.get.assert_called_once_with("https://auth.openai.com/log-in/password")
         submit.assert_called_once()
 
-    def test_saved_login_password_waits_for_slow_password_form_before_submission(self):
+    def test_saved_login_password_refreshes_empty_form_once_after_not_dispatched(self):
         driver = MagicMock()
+        driver.current_url = "https://auth.openai.com/log-in/password"
+        driver.timeouts.page_load = 30
+        receipt = BrowserSubmissionReceipt(
+            kind="resume_login", stage="login_password", endpoint_kind="password_submit",
+            http_method="POST",
+        )
+        receipt.transition("not_dispatched", result="cancelled")
+        driver._browser_submission_receipt = receipt
+        now = [100.0]
+        calls = []
 
-        with patch.object(roxy_codex_oauth, "_fill_password_page_if_present") as fill_password:
+        def fill_password(*_args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                now[0] += 60
+                raise RuntimeError("password_form_not_ready: 密码表单尚未就绪")
+
+        with patch.object(
+            roxy_codex_oauth, "_fill_password_page_if_present", side_effect=fill_password,
+        ), patch.object(roxy_codex_oauth, "time", SimpleNamespace(monotonic=lambda: now[0])):
             roxy_codex_oauth._submit_saved_login_password(driver, "unit@example.test", "saved-password")
 
-        self.assertEqual(fill_password.call_args.kwargs["timeout"], 120)
-        self.assertEqual(fill_password.call_args.kwargs["existing_password"], "saved-password")
-        self.assertIs(
-            fill_password.call_args.kwargs["login_rejection_detector"],
-            roxy_codex_oauth._is_explicit_password_rejection_state,
+        self.assertEqual([call["timeout"] for call in calls], [60, 60])
+        self.assertTrue(all(call["existing_password"] == "saved-password" for call in calls))
+        self.assertTrue(all(
+            call["login_rejection_detector"] is roxy_codex_oauth._is_explicit_password_rejection_state
+            for call in calls
+        ))
+        driver.refresh.assert_called_once_with()
+
+    def test_saved_login_password_does_not_refresh_or_retry_unknown_submission(self):
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        receipt = BrowserSubmissionReceipt(
+            kind="resume_login", stage="login_password", endpoint_kind="password_submit",
+            http_method="POST",
         )
+        receipt.transition("unknown", result="unknown")
+        driver._browser_submission_receipt = receipt
+        error = RuntimeError("request_unknown: 密码提交结果待确认")
+
+        with patch.object(
+            roxy_codex_oauth, "_fill_password_page_if_present", side_effect=error,
+        ) as fill_password:
+            with self.assertRaises(RuntimeError) as caught:
+                roxy_codex_oauth._submit_saved_login_password(driver, "unit@example.test", "saved-password")
+
+        self.assertIs(caught.exception, error)
+        fill_password.assert_called_once()
+        driver.refresh.assert_not_called()
 
     def test_missing_password_or_unoffered_entry_keeps_email_otp_flow(self):
         for kwargs in ({"password": ""}, {"offered": False}):

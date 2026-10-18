@@ -508,18 +508,71 @@ def _is_explicit_password_rejection_state(state: dict | None) -> bool:
     return any(marker in text for marker in _PASSWORD_REJECTION_MARKERS)
 
 
+def _is_saved_login_password_route(driver) -> bool:
+    try:
+        current = urlparse(str(driver.current_url or ""))
+        return (
+            current.scheme == "https"
+            and current.hostname == "auth.openai.com"
+            and current.port in (None, 443)
+            and not current.username
+            and not current.password
+            and current.path.rstrip("/") == "/log-in/password"
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _submit_saved_login_password(driver, email: str, password: str) -> None:
     if not password:
         raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
     # 共享能力等待表单接管、准确点击提交按钮并观察一次提交的结果；
     # requestSubmit 会绕过按钮的 onClick，不能替代真实密码按钮流程。
-    _fill_password_page_if_present(
-        driver,
-        email,
-        timeout=120,
-        existing_password=password,
-        login_rejection_detector=_is_explicit_password_rejection_state,
-    )
+    deadline = time.monotonic() + 120
+    fill_kwargs = {
+        "existing_password": password,
+        "login_rejection_detector": _is_explicit_password_rejection_state,
+    }
+    try:
+        _fill_password_page_if_present(
+            driver, email, timeout=60, **fill_kwargs,
+        )
+    except RuntimeError as exc:
+        receipt = getattr(driver, "_browser_submission_receipt", None)
+        if (
+            "password_form_not_ready" not in str(exc)
+            or getattr(receipt, "phase", "") != "not_dispatched"
+            or not _is_saved_login_password_route(driver)
+        ):
+            raise
+
+        _auth_checkpoint()
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            raise
+        old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+        try:
+            driver.set_page_load_timeout(min(10.0, remaining))
+            try:
+                driver.refresh()
+            except TimeoutException:
+                if not _is_saved_login_password_route(driver):
+                    raise
+                logger.warning("[Codex][Browser] 密码登录页刷新等待超时，仍停留在原登录入口")
+        finally:
+            if isinstance(old_timeout, (int, float)):
+                driver.set_page_load_timeout(old_timeout)
+
+        if not _is_saved_login_password_route(driver):
+            return
+        _auth_checkpoint()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise
+        logger.warning("[Codex][Browser] 密码表单未挂载且确认未派发，已刷新同一登录页并继续剩余预算")
+        _fill_password_page_if_present(
+            driver, email, timeout=max(1, int(remaining)), **fill_kwargs,
+        )
     logger.info("[Codex][Browser] 已使用保存密码确认后续登录分支：email=%s", email)
 
 
