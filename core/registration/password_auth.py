@@ -29,7 +29,7 @@ from .email_otp import (
 from .selenium_dom import (
     _budget_timeout, _button_after_input, _check_manual_stop, _click_any, _click_if_enabled_submit,
     _fill_birthday_or_age,
-    _find_any, _human_click, _human_type_text, _is_login_password_page,
+    _dispatch_trusted_click, _find_any, _human_click, _human_type_text, _is_login_password_page,
     _is_profile_like, _is_signup_password_page, _log_prefix, _maybe_accept,
     _page_snapshot, _page_warmup, _password_page_state, _refresh_chatgpt_settings_shell_if_needed,
     _safe_get, _select_or_type, _settings_page_not_ready, _set_element_value,
@@ -1090,6 +1090,20 @@ def _fill_password_page_if_present(
         };
         Object.defineProperty(receipt, 'stop_observing', {value:stopObserving});
         target.form.addEventListener('submit', observeSubmit, true);
+        if (arguments[5] === true) {
+          const r = target.button.getBoundingClientRect();
+          const x = r.left + r.width / 2, y = r.top + r.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          if (!Number.isFinite(x) || !Number.isFinite(y) || !target.button.contains(hit)) {
+            receipt.phase = 'cancelled';
+            stopObserving();
+            return {ok:false, reason:'password_submit_obscured'};
+          }
+          // 先保留派发事实，再交给浏览器鼠标事件；此分支不再安排 JS 点击。
+          receipt.phase = 'dispatched';
+          receipt.click_called = true;
+          return {ok:true, reason:'password_submit_queued', trusted_click:{x,y}};
+        }
         // 先返回排队回执，避免同步点击的页面跳转阻塞 WebDriver；仅此 timer 可以提交。
         setTimeout(() => {
           if (window.__turbPasswordSubmissionReceipt !== receipt || receipt.phase !== 'queued') {
@@ -1167,7 +1181,10 @@ def _fill_password_page_if_present(
                     result = driver.execute_script(
                         target_script, "queue", password, filled_input, submission_receipt.submission_id,
                         email if saved_form_recoveries else "",
+                        callable(getattr(driver, "execute_cdp_cmd", None)),
                     )
+                    if isinstance(result, dict) and result.get("trusted_click"):
+                        _dispatch_trusted_click(driver, result["trusted_click"])
                 except Exception as exc:
                     # 浏览器可能已经排队或派发；保留原密码后收口，不因桥接异常重复点击。
                     record_browser_submission_fact(
@@ -1188,7 +1205,7 @@ def _fill_password_page_if_present(
                     and result.get("reason") in {
                         "missing_password_input", "missing_password_form", "password_frontend_not_ready",
                         "password_input_replaced", "password_value_changed", "password_form_invalid",
-                        "missing_password_submit", "login_identity_unconfirmed",
+                        "missing_password_submit", "login_identity_unconfirmed", "password_submit_obscured",
                     }
                 ):
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")

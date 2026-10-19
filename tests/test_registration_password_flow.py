@@ -60,7 +60,8 @@ def _password_target_result(**fixture):
       },
       getAttribute:key=>({type:item.type || '', name:item.name || '', value:item.value || '',
         'aria-disabled':item.ariaDisabled ? 'true' : ''}[key] || ''),
-      getBoundingClientRect:()=>({left:0,right:100,top:60 + index*40,bottom:90 + index*40}),
+      getBoundingClientRect:()=>({left:0,right:100,top:60 + index*40,bottom:90 + index*40,width:100,height:30}),
+      contains(el){return el === this;},
       getClientRects:()=>[{}], scrollIntoView(){}, closest:()=>form,
     }));
     const identityInput = {readOnly:true, name:'username', value:fixture.identityEmail || 'saved@example.test'};
@@ -72,9 +73,10 @@ def _password_target_result(**fixture):
       matches:()=>!!fixture.fieldsetDisabled, validity:{valid:fixture.inputValid !== false},
       closest:()=>fixture.hasForm === false ? null : form, getAttribute:()=>'',
       getClientRects:()=>[{}], getBoundingClientRect:()=>({left:0,right:100,top:0,bottom:40})};
-    const document = {querySelectorAll:selector=>selector.includes('password') ? [input] : buttons};
+    const document = {querySelectorAll:selector=>selector.includes('password') ? [input] : buttons,
+      elementFromPoint:()=>fixture.obscured ? {} : buttons[0]};
     const execute = function(){SCRIPT};
-    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input, 'test-submission', fixture.expectedEmail);
+    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input, 'test-submission', fixture.expectedEmail, fixture.trusted === true);
     if (fixture.valueAfterQueue !== undefined) input.value = fixture.valueAfterQueue;
     if (fixture.superseded) window.__turbPasswordSubmissionReceipt = {};
     for (const callback of timers) callback();
@@ -82,6 +84,7 @@ def _password_target_result(**fixture):
     console.log(JSON.stringify({ok:result.ok, reason:result.reason, clicks,
       phase:window.__turbPasswordSubmissionReceipt?.phase || null,
       receipt:window.__turbPasswordSubmissionReceipt || null, listeners:listeners.size, submitEvents,
+      trusted_click:result.trusted_click || null,
       input:result.input?.id || null, button:result.button?.id || null}));
     """.replace("FIXTURE", json.dumps(fixture)).replace("SCRIPT", _password_target_script())
     result = subprocess.run(
@@ -92,6 +95,19 @@ def _password_target_result(**fixture):
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际密码表单脚本")
 class PasswordFormTargetTests(unittest.TestCase):
+    def test_trusted_password_submit_reserves_one_click_without_synthetic_dispatch(self):
+        result = _password_target_result(mode="queue", trusted=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["clicks"], 0)
+        self.assertEqual(result["trusted_click"], {"x": 50, "y": 75})
+        self.assertEqual(result["phase"], "dispatched")
+
+    def test_obscured_password_submit_cannot_reserve_trusted_click(self):
+        result = _password_target_result(mode="queue", trusted=True, obscured=True)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["clicks"], 0)
+        self.assertEqual(result["phase"], "cancelled")
+
     def test_intent_password_submit_is_preferred_to_back(self):
         result = _password_target_result(buttons=[
             {"id": "continue", "type": "submit", "name": "intent", "value": "password_signup", "text": "Continue"},

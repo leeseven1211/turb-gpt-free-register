@@ -33,6 +33,7 @@ from core.registration.auth_context import AuthExecutionContext
 from core.registration.email_otp import _EmailSubmissionUnknown
 from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.registration.submission_recovery import diagnostics_for, log_submission_diagnostics
+from core.registration.selenium_dom import _dispatch_trusted_click
 from core.registration.retained_browser import (
     persist_browser_resume_context, recover_attempt_failed_browser,
     recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
@@ -317,6 +318,15 @@ const button = [...form.querySelectorAll('button[type="submit"],input[type="subm
 );
 if (!button || !inputs.every(el => !!el.value) || !form.checkValidity())
   return result(false, 'otp_form_not_ready');
+if (arguments[0] === true) {
+  button.scrollIntoView({block:'center'});
+  const r = button.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !button.contains(document.elementFromPoint(x, y)))
+    return result(false, 'otp_submit_obscured');
+  guard.clickIssued = true;
+  return {...result(true, 'otp_form_submitted'), trusted_click:{x,y}};
+}
 guard.clickIssued = true;
 button.click();
 return result(true, 'otp_form_submitted');
@@ -343,7 +353,11 @@ def _submit_email_otp_current_form(driver) -> dict:
         "request_observed", "response_observed", "confirmed", "rejected", "unknown",
     }:
         return {"clicked": False, "reason": "request_observed"}
-    result = driver.execute_script(_OTP_SUBMIT_CURRENT_FORM_SCRIPT)
+    result = driver.execute_script(
+        _OTP_SUBMIT_CURRENT_FORM_SCRIPT, callable(getattr(driver, "execute_cdp_cmd", None)),
+    )
+    if isinstance(result, dict) and result.get("trusted_click"):
+        _dispatch_trusted_click(driver, result.pop("trusted_click"))
     if isinstance(result, dict):
         diagnostics = result.get("diagnostics") or {}
         safe_diagnostics = {

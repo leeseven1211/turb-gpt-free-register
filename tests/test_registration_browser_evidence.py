@@ -67,6 +67,9 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
             getClientRects: () => [1], matches: () => button.disabled,
             getAttribute: name => name === 'type' ? 'submit' : name === 'aria-disabled' ? null : '',
             click() { clicks++; dispatchSubmit(true); },
+            scrollIntoView() {},
+            getBoundingClientRect: () => ({left:10, top:20, width:100, height:40}),
+            contains: el => el === button,
           };
           const input = {
             isConnected: true, form, readOnly: false, value: 'test-only-code',
@@ -84,6 +87,7 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
           XMLHttpRequest.prototype.addEventListener = function() {};
           window.XMLHttpRequest = XMLHttpRequest;
           global.document = {
+            elementFromPoint: () => button,
             addEventListener: (_name, callback) => { listener = callback; },
             removeEventListener: (_name, callback) => { if (listener === callback) listener = null; },
           };
@@ -118,7 +122,7 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
           if (scenario === 'disabled') button.disabled = true;
           // 捕获期之后页面才能取消事件，等待生产监听器读取最终状态。
           await new Promise(resolve => setTimeout(resolve, 0));
-          const first = submit();
+          const first = submit(scenario === 'trusted');
           await new Promise(resolve => setTimeout(resolve, 0));
           const second = submit();
           console.log(JSON.stringify({first, second, clicks}));
@@ -144,6 +148,14 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
         self.assertTrue(result["first"]["clicked"])
         self.assertFalse(result["second"]["clicked"])
         self.assertEqual(result["clicks"], 1)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node 验证真实点击预留")
+    def test_trusted_current_form_reserves_only_one_external_click(self):
+        result = self._run_current_otp_form_script("trusted")
+        self.assertTrue(result["first"]["clicked"])
+        self.assertEqual(result["first"]["trusted_click"], {"x": 60, "y": 40})
+        self.assertFalse(result["second"]["clicked"])
+        self.assertEqual(result["clicks"], 0)
 
     @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码请求去重")
     def test_automatic_validate_request_is_not_clicked_again(self):

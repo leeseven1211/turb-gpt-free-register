@@ -116,6 +116,25 @@ def _human_scroll_to(driver, el) -> None:
         except Exception:
             pass
 
+def _dispatch_trusted_click(driver, point: dict) -> None:
+    """派发一次真实鼠标点击；部分派发后不切换方式或重试。"""
+    x, y = point.get("x"), point.get("y")
+    if (type(x) not in (int, float) or type(y) not in (int, float)
+            or not math.isfinite(x) or not math.isfinite(y) or x < 0 or y < 0):
+        raise ValueError("认证提交按钮坐标不可用，未派发鼠标事件")
+    _check_manual_stop()
+    for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
+        params = {"type": kind, "x": float(x), "y": float(y)}
+        if kind != "mouseMoved":
+            params.update(button="left", clickCount=1)
+        try:
+            result = driver.execute_cdp_cmd("Input.dispatchMouseEvent", params)
+        except Exception:
+            raise RuntimeError("认证鼠标事件派发未确认，保留原提交且未追加点击") from None
+        if not isinstance(result, dict) or result.get("error"):
+            raise RuntimeError("认证鼠标事件缺少确认，保留原提交且未追加点击")
+
+
 def _human_click(driver, el, *, label: str = "") -> None:
     """快速人工化点击。
 
