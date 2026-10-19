@@ -1692,9 +1692,33 @@ def _submit_email_and_wait_next_impl(
         last_state = state
         values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
         if not any(v.strip().lower() == email.strip().lower() for v in values):
-            logger.warning("%s 邮箱写入校验失败，准备重试：attempt=%s/%s state=%s", _log_prefix(driver), attempt, attempts, state)
-            time.sleep(0.8)
-            continue
+            active_receipt = getattr(driver, "_browser_submission_receipt", None)
+            if isinstance(getattr(driver, "_email_submission_receipt", None), dict) or (
+                active_receipt is not None
+                and getattr(active_receipt, "endpoint_kind", "") in {"email_submit", "nextauth_signin"}
+                and getattr(active_receipt, "phase", "") in {
+                    "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown",
+                }
+            ):
+                raise _EmailSubmissionUnknown("request_unknown: 邮箱提交仍待确认，未改写当前输入框")
+            # send_keys 返回不代表 React 受控值已保持；提交前用当前 DOM 的
+            # 原生 setter 补齐一次，再跨渲染时序确认，整个过程不点击或发请求。
+            budget.require("邮箱输入恢复")
+            stable = _stabilize_email_input_before_submit(driver, email)
+            budget.require("邮箱输入恢复结果")
+            time.sleep(min(0.2, budget.remaining()))
+            budget.require("邮箱输入稳定校验")
+            state = _email_input_value_state(driver)
+            values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
+            matched = any(v.strip().lower() == email.strip().lower() for v in values)
+            logger.info("%s 邮箱输入恢复：ok=%s matched=%s value_lengths=%s", _log_prefix(driver),
+                        bool(stable.get("ok")), matched, [len(value) for value in values])
+            if not matched:
+                last_state = {"input_count": len(values), "value_lengths": [len(value) for value in values]}
+                logger.warning("%s 邮箱写入校验失败，准备重试：attempt=%s/%s value_lengths=%s",
+                               _log_prefix(driver), attempt, attempts, last_state["value_lengths"])
+                time.sleep(min(0.8, budget.remaining()))
+                continue
         logger.info("%s 已填写邮箱并校验通过", _log_prefix(driver))
         _progress("filled", "邮箱已填写并校验，正在等待表单就绪")
         human_delay("form")
