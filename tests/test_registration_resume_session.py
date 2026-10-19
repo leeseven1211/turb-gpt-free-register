@@ -29,6 +29,16 @@ def session_driver(response=None):
 
 
 class ResumeSessionReadTests(unittest.TestCase):
+    def test_explicit_resume_callback_error_reaches_login_recovery_without_session_probe(self):
+        for explicit_resume in (True, False):
+            with self.subTest(explicit_resume=explicit_resume):
+                driver = session_driver()
+                driver.current_url = "https://chatgpt.com/auth/error?error=OAuthCallback"
+                driver._registration_resume_login = explicit_resume
+                with patch.object(session_auth, "_read_chatgpt_session_once", return_value=None) as read:
+                    self.assertIsNone(roxy._read_registration_resume_session(driver, EMAIL))
+                self.assertEqual(read.call_count, 0 if explicit_resume else 1)
+
     @unittest.skipUnless(shutil.which("node"), "需要 Node 验证空响应体边界")
     def test_browser_empty_body_is_not_a_verified_json_session(self):
         tree = ast.parse(inspect.getsource(session_auth._read_chatgpt_session_once))

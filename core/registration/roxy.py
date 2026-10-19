@@ -174,6 +174,12 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
     current = urlsplit(str(getattr(driver, "current_url", "") or ""))
     if current.scheme != "https" or current.hostname != "chatgpt.com" or current.port not in (None, 443):
         return None
+    if (getattr(driver, "_registration_resume_login", False)
+            and not current.username and not current.password
+            and current.path.rstrip("/") == "/auth/error"):
+        # 已知回调错误页没有可复用的完整会话，交给原身份页面恢复选择
+        # 新登录；不能在前置探测失败后挡住后面的恢复分支。
+        return None
     try:
         timeout = min(30, budget.require("原浏览器会话核验")) if budget is not None else 30
         session = _read_chatgpt_session_once(driver, timeout=timeout, strict_read=True)
