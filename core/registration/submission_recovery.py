@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 from selenium.common.exceptions import TimeoutException
 
+from core.http_response_diagnostics import response_rejection_diagnostic, safe_response_headers
+
 from .auth_context import checkpoint
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .selenium_dom import _check_manual_stop, _log_prefix
@@ -135,17 +137,29 @@ class SubmissionDiagnostics:
         method = record.get("method")
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}:
             return
-        key = hashlib.sha256(f"{record.get('target_id')}:{record.get('request_id')}".encode()).hexdigest()[:12]
+        key = hashlib.sha256(
+            f"{record.get('target_id')}:{record.get('request_id')}:{record.get('redirect_index', 0)}".encode()
+        ).hexdigest()[:12]
         status = _number(record.get("status"), 599)
         failure = re.search(r"(?:net::)?ERR_[A-Z_]+", str(record.get("failure") or ""))
         with self.lock:
             previous = self.network.get(key, {})
+            headers = {**previous.get("response_headers", {}),
+                       **safe_response_headers(record.get("response_headers"))}
+            headers_observed = record.get("response_headers_observed")
+            if headers_observed is None:
+                headers_observed = isinstance(record.get("response_headers"), dict)
+            observed_status = status if status and status >= 100 else previous.get("status")
             self.network[key] = {
                 **location, "request": key, "stage": previous.get("stage", self.stage),
                 "method": method, "phase": phase,
-                "status": status if status and status >= 100 else previous.get("status"),
+                "status": observed_status,
                 "duration_ms": _number(record.get("duration_ms")),
                 "network_error": failure.group(0) if failure else ("网络请求未完成" if record.get("failure") else ""),
+                "response_headers": headers,
+                "response_headers_observed": bool(previous.get("response_headers_observed") or headers_observed),
+                **({"rejection": response_rejection_diagnostic(observed_status, headers)}
+                   if observed_status == 403 else {}),
             }
             while len(self.network) > 40:
                 self.network.popitem(last=False)

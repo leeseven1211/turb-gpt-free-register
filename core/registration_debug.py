@@ -17,7 +17,7 @@ import queue
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from config import registration_debug as _cfg
+from core.http_response_diagnostics import safe_response_headers
 from core.task_stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger(__name__)
@@ -1204,6 +1205,8 @@ class _RoxyTargetCollector:
         self._command_id = 0
         self._pending: dict[int, dict] = {}
         self._requests: dict[str, dict] = {}
+        # 只保留有限条安全头及配对元数据，接住早到或请求结束后迟到的补充头。
+        self._summary_response_records: OrderedDict[str, dict] = OrderedDict()
         self._redirect_seq: defaultdict[str, int] = defaultdict(int)
         self._coverage_ready = threading.Event()
         self._coverage_failed = False
@@ -1283,6 +1286,21 @@ class _RoxyTargetCollector:
     def _request_key(self, request_id: str) -> str:
         return f"{self.target_id}:{request_id}:{self._redirect_seq[request_id]}"
 
+    def _remember_summary_response(self, request_id: str, record: dict) -> None:
+        self._summary_response_records[request_id] = record
+        self._summary_response_records.move_to_end(request_id)
+        while len(self._summary_response_records) > 40:
+            self._summary_response_records.popitem(last=False)
+
+    @staticmethod
+    def _merge_summary_response_headers(record: dict, headers: object) -> None:
+        record["response_headers"] = {
+            **record.get("response_headers", {}), **safe_response_headers(headers),
+        }
+        record["response_headers_observed"] = bool(
+            record.get("response_headers_observed") or isinstance(headers, dict)
+        )
+
     def _handle(self, message: dict) -> None:
         if "id" in message:
             pending = self._pending.pop(int(message.get("id") or 0), None)
@@ -1322,28 +1340,38 @@ class _RoxyTargetCollector:
         params = message.get("params") or {}
         if method == "Network.requestWillBeSent":
             request_id = str(params.get("requestId") or "")
-            if params.get("redirectResponse") and request_id in self._requests:
-                redirect = params.get("redirectResponse") or {}
-                current = self._requests[request_id]
-                current.update({
-                    "status": redirect.get("status"),
-                    "response_headers": _raw_headers(redirect.get("headers") or {}),
-                    "redirect": True,
-                })
-                self._finish_request(request_id, body_unavailable="redirect")
+            if params.get("redirectResponse"):
+                if request_id in self._requests:
+                    redirect = params.get("redirectResponse") or {}
+                    current = self._requests[request_id]
+                    current.update({
+                        "status": redirect.get("status"),
+                        "redirect": True,
+                    })
+                    if getattr(self.session, "summary_only", False):
+                        self._merge_summary_response_headers(current, redirect.get("headers"))
+                    else:
+                        current["response_headers"] = _raw_headers(redirect.get("headers") or {})
+                    self._finish_request(request_id, body_unavailable="redirect")
+                # 采集中途接入时也可能先看到新跳，不能把上一跳补充头配给它。
                 self._redirect_seq[request_id] += 1
+                self._summary_response_records.pop(request_id, None)
             request = params.get("request") or {}
             if getattr(self.session, "summary_only", False):
                 post_data = request.get("postData")
                 self._requests[request_id] = {
                     "request_id": request_id,
                     "target_id": self.target_id,
+                    "redirect_index": self._redirect_seq[request_id],
                     "started_monotonic": params.get("timestamp"),
                     "method": request.get("method"),
                     "request_body_bytes": len(str(post_data).encode("utf-8")) if post_data is not None else 0,
                     "url": _raw_url(request.get("url")),
                     "resource_type": params.get("type"),
                 }
+                pending_headers = self._summary_response_records.pop(request_id, None)
+                if pending_headers and not pending_headers.get("url") and not self._redirect_seq[request_id]:
+                    self._requests[request_id].update(pending_headers)
                 observe_submission = getattr(self.session, "_observe_submission", None)
                 if callable(observe_submission):
                     # 请求与响应复用相同的端点、方法与元数据白名单。
@@ -1400,7 +1428,8 @@ class _RoxyTargetCollector:
             if response.get("fromDiskCache") or response.get("fromPrefetchCache"):
                 record["cache_source"] = "native"
             if getattr(self.session, "summary_only", False):
-                record["status"] = response.get("status")
+                record["status"] = response.get("status", record.get("status"))
+                self._merge_summary_response_headers(record, response.get("headers"))
                 # 响应头已到、响应体仍挂起时也留下观测，不能等 loadingFinished 才记录状态。
                 observe = getattr(self.session, "_observe_auth_diagnostic", None)
                 if callable(observe):
@@ -1424,7 +1453,24 @@ class _RoxyTargetCollector:
                 record["cache_source"] = "native"
         elif method == "Network.responseReceivedExtraInfo":
             request_id = str(params.get("requestId") or "")
-            if request_id in self._requests and not getattr(self.session, "summary_only", False):
+            if getattr(self.session, "summary_only", False):
+                # 重定向复用 requestId，迟到的头无法可靠归到某一跳。
+                # 此时只采用各跳 responseReceived 自带的头，避免错误归因。
+                if self._redirect_seq[request_id]:
+                    return
+                active = self._requests.get(request_id)
+                record = active if active is not None else self._summary_response_records.get(request_id)
+                if record is None:
+                    record = {}
+                self._merge_summary_response_headers(record, params.get("headers"))
+                if record.get("status") is None:
+                    record["status"] = params.get("statusCode")
+                if active is None:
+                    self._remember_summary_response(request_id, record)
+                observe = getattr(self.session, "_observe_auth_diagnostic", None)
+                if record.get("url") and callable(observe):
+                    observe(record, phase="response" if active is not None else "complete")
+            elif request_id in self._requests:
                 self._requests[request_id]["response_headers"] = _raw_headers(params.get("headers") or {})
         elif method == "Network.loadingFinished":
             request_id = str(params.get("requestId") or "")
@@ -1526,6 +1572,13 @@ class _RoxyTargetCollector:
                     record["cache_source"] = source
             except Exception:
                 logger.debug("公共静态缓存来源识别失败", exc_info=True)
+        if getattr(self.session, "summary_only", False):
+            self._remember_summary_response(str(request_id), {
+                key: record[key] for key in (
+                    "request_id", "target_id", "redirect_index", "url", "method", "resource_type", "status",
+                    "response_headers", "response_headers_observed", "duration_ms", "failure",
+                ) if key in record
+            })
         self.session.record_network(record)
 
 
