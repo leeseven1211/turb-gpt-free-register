@@ -37,7 +37,7 @@ from core.registration.email_otp import (
     _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown,
 )
 from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
-from core.registration.state_machine import StageBudget
+from core.registration.state_machine import StageBudget, StageTimeout
 from core.registration.password_auth import _PasswordTransitionTimeout
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
@@ -1787,26 +1787,38 @@ def _fill_email_and_otp(
         driver._browser_submission_receipt = otp_receipt
         record_browser_submission_fact(driver, "prepared", receipt=otp_receipt)
         record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_receipt)
-        _clear_otp_inputs(driver)
-        _type_otp(driver, code, timeout=min(20, otp_budget.require("填写邮箱验证码")),
-                  before_input=lambda inputs: _prepare_email_otp_current_form(
-                      driver, inputs, budget=otp_budget, capture_responses=True,
-                  ))
-        logger.info("[Codex][Browser] 已填写邮箱 OTP")
-        human_delay("otp_input")
-        otp_budget.require("提交邮箱验证码")
         try:
-            clicked = _submit_email_otp_current_form(driver)
-            if clicked.get("clicked") is True:
-                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_receipt)
-                logger.info("[Codex][Browser] 已点击当前邮箱验证码表单，等待原结果")
-            else:
-                logger.info("[Codex][Browser] 未追加验证码点击，继续确认原结果：reason=%s", clicked.get("reason"))
-        except Exception as exc:
-            record_browser_submission_fact(driver, "unknown", receipt=otp_receipt, result="unknown", error_type=type(exc).__name__)
-            logger.info("[Codex][Browser] 验证码点击结果未确认，继续观察原页面")
+            _clear_otp_inputs(driver)
+            _type_otp(driver, code, timeout=min(20, otp_budget.require("填写邮箱验证码")),
+                      before_input=lambda inputs: _prepare_email_otp_current_form(
+                          driver, inputs, budget=otp_budget, capture_responses=True,
+                      ))
+            logger.info("[Codex][Browser] 已填写邮箱 OTP")
+            human_delay("otp_input")
+            otp_budget.require("提交邮箱验证码")
+            try:
+                clicked = _submit_email_otp_current_form(driver)
+                if clicked.get("clicked") is True:
+                    record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_receipt)
+                    logger.info("[Codex][Browser] 已点击当前邮箱验证码表单，等待原结果")
+                else:
+                    logger.info("[Codex][Browser] 未追加验证码点击，继续确认原结果：reason=%s", clicked.get("reason"))
+            except StageTimeout:
+                raise
+            except Exception as exc:
+                record_browser_submission_fact(driver, "unknown", receipt=otp_receipt, result="unknown", error_type=type(exc).__name__)
+                logger.info("[Codex][Browser] 验证码点击结果未确认，继续观察原页面")
 
-        outcome = _wait_after_email_otp_submit(driver, timeout=min(45, otp_budget.require("确认邮箱验证码结果")))
+            outcome = _wait_after_email_otp_submit(driver, timeout=min(45, otp_budget.require("确认邮箱验证码结果")))
+        except StageTimeout as exc:
+            # 填码可能已自动提交；只有明确未派发或已收口的事实可以保留原超时。
+            if otp_receipt.phase in {"not_dispatched", "confirmed", "rejected"}:
+                raise
+            record_browser_submission_fact(driver, "unknown", receipt=otp_receipt,
+                                           result="unknown", error_type=type(exc).__name__)
+            raise _EmailSubmissionUnknown(
+                "request_unknown: otp_request_unconfirmed: 验证码提交预算耗尽，已保留原结果，未重新登录或填码"
+            ) from exc
         logger.info("[Codex][Browser] 邮箱 OTP 提交后状态：%s", outcome)
         if outcome in {"accepted", "totp_required"}:
             record_browser_submission_fact(driver, "confirmed", receipt=otp_receipt, result="success")

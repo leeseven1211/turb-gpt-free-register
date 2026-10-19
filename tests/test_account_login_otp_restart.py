@@ -8,6 +8,8 @@ from core import roxy_codex_oauth as oauth
 from core.registration import email_otp
 from core.registration import roxy as registration_roxy
 from core.registration.auth_context import current_execution_context
+from core.registration.browser_submission import record_browser_submission_fact
+from core.registration.state_machine import StageTimeout
 
 
 class AccountLoginOtpRestartTests(unittest.TestCase):
@@ -108,6 +110,59 @@ class AccountLoginOtpRestartTests(unittest.TestCase):
             self.run_login(driver)
             self.assertEqual(observed, [("dispatch_intent", True)])
             self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+
+    def test_stage_timeout_after_dispatch_intent_preserves_unknown_without_replay(self):
+        for timeout_at in ("typing", "before_submit", "after_submit"):
+            with self.subTest(timeout_at=timeout_at), self.context() as (driver, tick, mocks):
+                if timeout_at == "typing":
+                    mocks["_type_otp"].side_effect = StageTimeout("输入时已可能自动提交")
+                elif timeout_at == "before_submit":
+                    def delay(kind, *_args, **_kwargs):
+                        if kind == "otp_input":
+                            tick[0] = 240
+                    mocks["human_delay"].side_effect = delay
+                else:
+                    def submit(*_args, **_kwargs):
+                        tick[0] = 240
+                        return {"clicked": True}
+                    mocks["form_submit"].side_effect = submit
+
+                with self.assertRaisesRegex(email_otp._EmailSubmissionUnknown, "otp_request_unconfirmed"):
+                    self.run_login(driver)
+
+                self.assertEqual(driver._browser_submission_receipt.phase, "unknown")
+                self.assertEqual(driver._browser_submission_receipt.error_type, "StageTimeout")
+                mocks["email"].assert_called_once()
+                mocks["navigate"].assert_called_once()
+                mocks["_type_otp"].assert_called_once()
+                self.assertEqual(mocks["form_submit"].call_count, int(timeout_at == "after_submit"))
+                mocks["outcome"].assert_not_called()
+
+    def test_explicit_not_dispatched_form_timeout_stays_cancelled(self):
+        with self.context() as (driver, _tick, mocks):
+            def prepare(current, _inputs, **_kwargs):
+                record_browser_submission_fact(current, "not_dispatched", result="cancelled")
+                raise StageTimeout("输入前表单已确认不可提交")
+            mocks["prepare"].side_effect = prepare
+
+            with self.assertRaises(StageTimeout):
+                self.run_login(driver)
+
+            self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+            self.assertEqual(driver._browser_submission_receipt.result, "cancelled")
+            mocks["form_submit"].assert_not_called()
+            mocks["outcome"].assert_not_called()
+
+    def test_timeout_before_otp_dispatch_does_not_create_unknown_receipt(self):
+        with self.context() as (driver, _tick, mocks):
+            mocks["_wait_for_otp_input"].side_effect = StageTimeout("输入框等待预算已耗尽")
+
+            with self.assertRaises(StageTimeout):
+                self.run_login(driver)
+
+            self.assertFalse(hasattr(driver, "_browser_submission_receipt"))
+            mocks["_type_otp"].assert_not_called()
+            mocks["form_submit"].assert_not_called()
 
 
 if __name__ == "__main__":
