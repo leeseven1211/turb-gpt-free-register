@@ -1153,6 +1153,27 @@ class RoxyBrowserClient:
             logger.warning("[Roxy] 关闭环境失败：%s", exc)
             return False
 
+    def get_open_profile_connection(self, profile_id: str) -> dict | None:
+        """以进程接口确认打开状态；列表 openStatus 可能滞后，不能据此撤销连接。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            raise ValueError("待核验的 Roxy Profile 不能为空")
+        payload = self.request("GET", "/browser/connection_info", params={"dirIds": normalized})
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError("Roxy 窗口进程信息结构未能核验")
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get("dirId") or "").strip():
+                raise RuntimeError("Roxy 窗口进程信息结构未能核验")
+            if str(row["dirId"]).strip() != normalized:
+                continue
+            pid = row.get("pid")
+            if (isinstance(pid, bool) or not str(pid).isdigit() or int(pid) <= 0
+                    or not isinstance(row.get("http"), str) or not row["http"].strip()):
+                raise RuntimeError("Roxy 窗口进程连接未能核验")
+            return row
+        return None
+
     def _find_active_profile_by_id(self, profile_id: str) -> dict | None:
         """按 dirId 查询活动 Profile；回收站中的 Profile 不可复用。"""
         normalized = str(profile_id or "").strip()
@@ -1412,9 +1433,8 @@ def restore_kept_profile_relays() -> tuple[int, int]:
                 continue
             seen.add(profile_id)
             try:
-                profile = client._find_active_profile_by_id(profile_id)
-                status = str((profile or {}).get("openStatus", (profile or {}).get("open_status", ""))).lower()
-                if profile is None or status in {"0", "false", "closed", "close", "not_open", "inactive"}:
+                connection = client.get_open_profile_connection(profile_id)
+                if connection is None:
                     close_browser_relay(lease_id=row["lease_id"], profile_id=profile_id, listen_port=metadata["listen_port"])
                     continue
                 if restore_profile_relay(profile_id, binding=row) is not None:

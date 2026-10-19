@@ -59,13 +59,29 @@ class BrowserRelayRecoveryTests(PostgresTestCase):
         self.simulate_exit(original)
         with patch.object(roxybrowser_client, '_load_profile_registry_locked', return_value=[]), patch.object(
             roxybrowser_client._cfg, 'ROXY_KEEP_BROWSER_OPEN', True
-        ), patch.object(roxybrowser_client.RoxyBrowserClient, '_find_active_profile_by_id', return_value={'openStatus': 1}), patch.object(
-            roxybrowser_client.RoxyBrowserClient, 'request'
+        ), patch.object(roxybrowser_client.RoxyBrowserClient, '_find_active_profile_by_id', return_value={'openStatus': 0}), patch.object(
+            roxybrowser_client.RoxyBrowserClient, 'request', return_value={
+                'data': [{'dirId': self.profile_id, 'pid': 123, 'http': '127.0.0.1:9222'}],
+            }
         ) as request:
             result = roxybrowser_client.cleanup_orphaned_profiles()
         self.assertEqual(result['restored_relays'], 1)
         self.assertEqual(roxybrowser_client._profile_relay(self.profile_id).listen_port, original_port)
-        request.assert_not_called()
+        request.assert_called_once_with('GET', '/browser/connection_info', params={'dirIds': self.profile_id})
+
+    def test_startup_unknown_connection_keeps_original_recovery_binding(self):
+        original = self.bind()
+        self.simulate_exit(original)
+        with patch.object(roxybrowser_client.RoxyBrowserClient, 'request', return_value={'data': None}):
+            self.assertEqual(roxybrowser_client.restore_kept_profile_relays(), (0, 1))
+        self.assertEqual(len(proxy_lease_store.private_browser_relays(self.profile_id)), 1)
+
+    def test_startup_confirmed_closed_connection_revokes_recovery_binding(self):
+        original = self.bind()
+        self.simulate_exit(original)
+        with patch.object(roxybrowser_client.RoxyBrowserClient, 'request', return_value={'data': []}):
+            self.assertEqual(roxybrowser_client.restore_kept_profile_relays(), (0, 0))
+        self.assertEqual(proxy_lease_store.private_browser_relays(self.profile_id), [])
 
     def test_same_process_resume_uses_old_route_lease_and_current_task_identifiers(self):
         relay = self.bind()
@@ -127,6 +143,23 @@ class BrowserRelayRecoveryTests(PostgresTestCase):
 
 
 class UnknownRetainedRouteTests(unittest.TestCase):
+    def test_open_connection_requires_matching_profile_process_and_http_address(self):
+        client = roxybrowser_client.RoxyBrowserClient()
+        self.addCleanup(client.http.close)
+        for row in [
+            {'dirId': 'original', 'pid': 0, 'http': '127.0.0.1:9222'},
+            {'dirId': 'original', 'pid': True, 'http': '127.0.0.1:9222'},
+            {'dirId': 'original', 'pid': 123, 'http': ''},
+            None,
+        ]:
+            with self.subTest(row=row), patch.object(client, 'request', return_value={'data': [row]}):
+                with self.assertRaises(RuntimeError):
+                    client.get_open_profile_connection('original')
+        with patch.object(client, 'request', return_value={'data': [
+            {'dirId': 'other', 'pid': 123, 'http': '127.0.0.1:9222'},
+        ]}):
+            self.assertIsNone(client.get_open_profile_connection('original'))
+
     def test_unknown_retained_route_never_claims_current_new_lease(self):
         opened = SimpleNamespace(profile_id='legacy-profile', debugger_address='127.0.0.1:9222',
                                  proxy_relay=None, proxy_route_retained=True)

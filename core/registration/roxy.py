@@ -204,15 +204,25 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
 
 
 def _retained_profile_can_attach(client, opened) -> bool:
-    """只把明确关闭或缺失当成原窗口不可用；查询未知不能新建环境。"""
+    """按已打开进程核验原窗口；列表状态过期或连接未知不能触发新建。"""
     try:
-        row = client._find_active_profile_by_id(opened.profile_id)
+        connection = client.get_open_profile_connection(opened.profile_id)
+        if connection is None:
+            return False
+        ports = []
+        for address in (connection.get("http"), opened.debugger_address):
+            if not isinstance(address, str) or not address.strip():
+                raise ValueError("调试连接地址缺失")
+            address = address.strip()
+            parsed = urlsplit(address if "://" in address else f"//{address}")
+            if parsed.username or parsed.password or not parsed.hostname or not parsed.port:
+                raise ValueError("调试连接端口不可用")
+            ports.append(parsed.port)
+        if ports[0] != ports[1]:
+            raise ValueError("原调试连接端口已变化")
+        return True
     except Exception:
         raise RuntimeError("request_unknown: 原浏览器状态未能核验，已保留原提交") from None
-    if row is None:
-        return False
-    status = str(row.get("openStatus", row.get("open_status", ""))).strip().lower()
-    return status not in {"0", "false", "closed", "close"}
 
 
 _OTP_PREPARE_CURRENT_FORM_SCRIPT = r"""

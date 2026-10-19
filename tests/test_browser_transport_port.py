@@ -65,7 +65,9 @@ class BrowserTransportPortTests(unittest.TestCase):
         roxybrowser_client._remember_profile_relay('bound-profile', old_relay)
         with patch.object(client, '_find_active_profile_by_id', return_value={'openStatus': 0}), patch(
             'core.proxy_chain.open_browser_proxy', return_value=('http://127.0.0.1:1234', relay)
-        ), patch.object(client, 'request', side_effect=RuntimeError('更新失败')):
+        ), patch.object(client, 'close_profile', return_value=True), patch.object(
+            client, 'request', side_effect=RuntimeError('更新失败')
+        ):
             with self.assertRaises(RuntimeError):
                 client.open_profile_for_account(profile_id='bound-profile', proxy_url='http://route.example:8080')
         relay.close.assert_called_once()

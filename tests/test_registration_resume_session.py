@@ -566,6 +566,52 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 mocks["navigate"].assert_called_once()
                 mocks["persist"].assert_not_called()
 
+class RetainedProfileConnectionTests(unittest.TestCase):
+    def client(self, connection):
+        return SimpleNamespace(
+            get_open_profile_connection=Mock(return_value=connection),
+            _find_active_profile_by_id=Mock(return_value={"openStatus": 0}),
+        )
+
+    def test_live_connection_is_attachable_despite_stale_closed_list_status(self):
+        for current, saved in (("127.0.0.1:9222", "127.0.0.1:9222"),
+                               ("http://127.0.0.1:9222", "127.0.0.1:9222")):
+            with self.subTest(current=current, saved=saved):
+                client = self.client({"dirId": "unit-profile", "pid": 123, "http": current})
+                opened = SimpleNamespace(profile_id="unit-profile", debugger_address=saved)
+                self.assertTrue(roxy._retained_profile_can_attach(client, opened))
+                client.get_open_profile_connection.assert_called_once_with("unit-profile")
+                client._find_active_profile_by_id.assert_not_called()
+
+    def test_absent_connection_is_closed_even_if_list_status_says_open(self):
+        client = self.client(None)
+        client._find_active_profile_by_id.return_value = {"openStatus": 1}
+        opened = SimpleNamespace(profile_id="unit-profile", debugger_address="127.0.0.1:9222")
+        self.assertFalse(roxy._retained_profile_can_attach(client, opened))
+
+    def test_connection_lookup_failure_preserves_unknown_without_private_error(self):
+        client = self.client(None)
+        client.get_open_profile_connection.side_effect = TimeoutError("unit-private-error")
+        opened = SimpleNamespace(profile_id="unit-profile", debugger_address="127.0.0.1:9222")
+        with self.assertRaisesRegex(RuntimeError, "request_unknown") as raised:
+            roxy._retained_profile_can_attach(client, opened)
+        self.assertNotIn("unit-private-error", str(raised.exception))
+
+    def test_changed_or_unusable_debugger_port_cannot_reuse_saved_connection(self):
+        cases = (
+            ("127.0.0.1:9223", "127.0.0.1:9222"),
+            ("127.0.0.1", "127.0.0.1:9222"),
+            ("127.0.0.1:9222", ""),
+            ("127.0.0.1:99999", "127.0.0.1:9222"),
+        )
+        for current, saved in cases:
+            with self.subTest(current=current, saved=saved):
+                client = self.client({"dirId": "unit-profile", "pid": 123, "http": current})
+                opened = SimpleNamespace(profile_id="unit-profile", debugger_address=saved)
+                with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                    roxy._retained_profile_can_attach(client, opened)
+
+
 class RetainedWindowFlowTests(unittest.TestCase):
     run_context = ResumeSessionFlowTests.run_context
     run_registration = ResumeSessionFlowTests.run_registration
@@ -624,7 +670,9 @@ class RetainedWindowFlowTests(unittest.TestCase):
             candidate.driver = None
             mocks["take_failed_browser"].return_value = None
             mocks["bound_default"].return_value = candidate
-            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            mocks["client"].return_value.get_open_profile_connection.return_value = {
+                "dirId": "unit-profile", "pid": 123, "http": "http://127.0.0.1:9222",
+            }
             result = self.run_registration()
         self.assertTrue(result["success"], result.get("error"))
         self.assertTrue(driver._registration_retained_identity_required)
@@ -642,7 +690,9 @@ class RetainedWindowFlowTests(unittest.TestCase):
             candidate.opened.account_bound = False
             mocks["take_failed_browser"].return_value = None
             mocks["attempt_default"].return_value = candidate
-            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            mocks["client"].return_value.get_open_profile_connection.return_value = {
+                "dirId": "unit-profile", "pid": 123, "http": "http://127.0.0.1:9222",
+            }
             result = self.run_registration(profile_id=None)
         self.assertTrue(result["success"], result.get("error"))
         self.assertTrue(driver._registration_retained_identity_required)
@@ -666,7 +716,9 @@ class RetainedWindowFlowTests(unittest.TestCase):
             candidate.driver = None
             mocks["take_failed_browser"].return_value = None
             mocks["attempt_default"].return_value = candidate
-            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 1}
+            mocks["client"].return_value.get_open_profile_connection.return_value = {
+                "dirId": "unit-profile", "pid": 123, "http": "http://127.0.0.1:9222",
+            }
             saved_mail_times = []
             mocks["browser_resume_persist"].side_effect = lambda active_driver, *_args, **_kwargs: saved_mail_times.append(
                 getattr(active_driver, "_registration_otp_after_ts", None))
@@ -681,7 +733,7 @@ class RetainedWindowFlowTests(unittest.TestCase):
         with self.retained_context() as (_, mocks):
             candidate = mocks["take_failed_browser"].return_value
             candidate.driver = None
-            mocks["client"].return_value._find_active_profile_by_id.return_value = {"openStatus": 0}
+            mocks["client"].return_value.get_open_profile_connection.return_value = None
             result = self.run_registration()
         self.assertFalse(result["success"])
         mocks["opened"].assert_called_once()
@@ -691,7 +743,7 @@ class RetainedWindowFlowTests(unittest.TestCase):
     def test_uncertain_saved_browser_state_never_opens_another_environment(self):
         with self.retained_context() as (_, mocks):
             mocks["take_failed_browser"].return_value.driver = None
-            mocks["client"].return_value._find_active_profile_by_id.side_effect = TimeoutError("unit lookup failed")
+            mocks["client"].return_value.get_open_profile_connection.side_effect = TimeoutError("unit lookup failed")
             with self.assertRaisesRegex(RuntimeError, "request_unknown"):
                 self.run_registration()
         mocks["opened"].assert_not_called()
