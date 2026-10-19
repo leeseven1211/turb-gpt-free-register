@@ -1087,14 +1087,9 @@ class RoxyBrowserClient:
                         "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
                     )
                     return create_replacement_profile()
-                open_status = active_profile.get("openStatus", active_profile.get("open_status"))
-                status_text = "" if open_status is None else str(open_status).strip().lower()
-                explicitly_closed = open_status is False or open_status == 0 or status_text in {
-                    "0", "false", "closed", "close", "not_open", "not-open", "inactive",
-                }
-                if str(proxy_url or "").strip() and not explicitly_closed:
-                    # /browser/mdf 保存配置后，运行中的窗口可能仍持有旧网络会话。
-                    # 先确认关闭，再写入新租约并重新打开，禁止带旧出口继续执行。
+                if str(proxy_url or "").strip():
+                    # 列表可能把仍可连接的 Chrome 标为关闭；不能据此跳过 close。
+                    # 换线前始终确认关闭，再更新配置并重开，避免旧窗口沿用已停中继。
                     if not self.close_profile(normalized_profile):
                         raise RuntimeError(
                             "Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开"

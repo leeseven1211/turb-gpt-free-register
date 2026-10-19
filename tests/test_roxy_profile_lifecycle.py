@@ -31,7 +31,11 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
 
         self.assertIs(result, opened)
         open_profile.assert_called_once_with(profile_id="profile-1", proxy_url=None)
-        mdf_call = request.call_args_list[1]
+        self.assertEqual([entry.args[:2] for entry in request.call_args_list], [
+            ("GET", "/browser/list_v2"), ("POST", "/browser/close"),
+            ("GET", "/browser/list_v2"), ("POST", "/browser/mdf"),
+        ])
+        mdf_call = request.call_args_list[-1]
         self.assertEqual(mdf_call.args[:2], ("POST", "/browser/mdf"))
         self.assertEqual(
             mdf_call.kwargs["json_body"]["workspaceId"],
@@ -100,6 +104,53 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
         close_profile.assert_called_once_with("profile-1")
         open_profile.assert_called_once_with(profile_id="profile-1", proxy_url=None)
         self.assertEqual(request.call_args_list[1].args[:2], ("POST", "/browser/mdf"))
+
+    def test_closed_status_still_requires_close_before_proxy_update_and_reopen(self):
+        for status in (0, False, "closed", "false", "not_open"):
+            with self.subTest(status=status):
+                client = RoxyBrowserClient(api_base="http://roxy.example")
+                opened = RoxyOpenResult(profile_id="profile-1", raw={})
+                events = Mock()
+                with patch.object(client, "request", return_value={
+                    "code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": status}]},
+                }) as request, patch.object(client, "close_profile", return_value=True) as close_profile, patch.object(
+                    client, "open_profile_with_capacity_wait", return_value=opened
+                ) as open_profile, patch("core.proxy_chain.open_browser_proxy", return_value=(
+                    "http://127.0.0.1:31280", None,
+                )), patch("core.roxybrowser_client._mark_profile_bound"):
+                    events.attach_mock(request, "request")
+                    events.attach_mock(close_profile, "close")
+                    events.attach_mock(open_profile, "open")
+                    result = client.open_profile_for_account(
+                        profile_id="profile-1", proxy_url="http://new-route.example:8080",
+                    )
+
+                self.assertIs(result, opened)
+                self.assertEqual(events.method_calls, [
+                    call.request("GET", "/browser/list_v2", params=ANY),
+                    call.close("profile-1"),
+                    call.request("POST", "/browser/mdf", json_body=ANY),
+                    call.open(profile_id="profile-1", proxy_url=None),
+                ])
+
+    def test_closed_status_with_unconfirmed_close_never_updates_proxy_or_opens(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        with patch.object(client, "request", return_value={
+            "code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": 0}]},
+        }) as request, patch.object(client, "close_profile", return_value=False) as close_profile, patch.object(
+            client, "open_profile_with_capacity_wait"
+        ) as open_profile, patch("core.proxy_chain.open_browser_proxy", return_value=(
+            "http://127.0.0.1:31280", None,
+        )) as relay:
+            with self.assertRaisesRegex(RuntimeError, "关闭未确认"):
+                client.open_profile_for_account(
+                    profile_id="profile-1", proxy_url="http://new-route.example:8080",
+                )
+
+        close_profile.assert_called_once_with("profile-1")
+        self.assertEqual(request.call_args_list, [call("GET", "/browser/list_v2", params=ANY)])
+        relay.assert_not_called()
+        open_profile.assert_not_called()
 
     def test_running_account_profile_close_failure_never_updates_or_reopens(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")
