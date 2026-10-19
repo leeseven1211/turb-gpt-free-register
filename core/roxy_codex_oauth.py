@@ -11,6 +11,7 @@ import re
 import time
 import uuid
 from contextvars import ContextVar
+from dataclasses import replace
 from functools import wraps
 from urllib.parse import urlparse
 from selenium.common.exceptions import TimeoutException
@@ -35,7 +36,8 @@ from core.registration.auth_context import (
 from core.registration.email_otp import (
     _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown,
 )
-from core.registration.browser_submission import record_browser_submission_fact
+from core.registration.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.registration.state_machine import StageBudget
 from core.registration.password_auth import _PasswordTransitionTimeout
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
@@ -1686,49 +1688,60 @@ def _fill_email_and_otp(
     used_codes: set[str] = set()
     max_otp_attempts = 3
     otp_deadline = time.monotonic() + _configured_email_otp_budget()
+    otp_budget = StageBudget(otp_deadline, clock=time.monotonic)
 
     def _restart_email_otp_flow(reason: str) -> str:
-        """Codex Auth 上直接点 resend 可能触发服务端 500；这里改为重新打开授权地址并提交邮箱。"""
+        """沿用原邮箱验证码期限，通过共享邮箱流程建立一次新登录。"""
         nonlocal otp_after_ts
-        logger.info("[Codex][Browser] 重新触发邮箱 OTP：%s", reason)
-        otp_after_ts = time.time()
-        driver.get(auth_url)
-        human_delay("navigate")
-        _maybe_accept(driver)
-        try:
-            _type_email_address(driver, email, timeout=12)
-            human_delay("form")
-            _submit_email_step(driver)
-            logger.info("[Codex][Browser] 已重新提交邮箱，重新识别登录分支")
-            restart_state = complete_openai_login_challenge(
-                driver,
-                email,
-                password,
-                totp_secret,
-                timeout=45,
-                otp_provider=otp_provider,
-                allow_password_reset=allow_password_reset,
-                on_password_reset_submitted=on_password_reset_submitted,
-                on_password_confirmed=on_password_confirmed,
-                force_password_reset=force_password_reset,
-                stage_reporter=stage_reporter,
-            )
-            if restart_state == "advanced":
-                return "advanced"
-        except Exception as exc:
-            # 重进授权地址可能直接复用刚建立好的 session 落到 ChatGPT 首页。
-            # 这时找不到邮箱框是“已经前进”，不是登录失败。
-            restart_page_state = _login_challenge_state(driver)
-            if _is_login_advanced(driver, restart_page_state):
-                logger.info("[Codex][Browser] 重开授权地址后已进入登录态，无需重新提交邮箱")
-                return "advanced"
-            # 如果重进授权地址后已经停在验证码页，就不要再强行提交。
-            if _is_email_verification_page(driver):
-                logger.info("[Codex][Browser] 重开授权后已在邮箱 OTP 页面")
-            else:
+        if otp_budget.expired():
+            raise RuntimeError("邮箱验证码等待预算已用尽，未重新打开登录页")
+        active = current_execution_context()
+        deadline = min(otp_deadline, active.deadline) if active is not None and active.deadline is not None else otp_deadline
+        restart_context = replace(active, deadline=deadline) if active is not None else AuthExecutionContext(deadline=deadline)
+        with execution_context(restart_context):
+            logger.info("[Codex][Browser] 重新触发邮箱 OTP：%s", reason)
+            otp_after_ts = time.time()
+            driver._registration_otp_after_ts = otp_after_ts
+            _safe_get(driver, auth_url, timeout=min(45, otp_budget.require("重新打开邮箱登录")), attempts=1,
+                      accept_hosts=("chatgpt.com", "auth.openai.com", "localhost:1455"))
+            human_delay("navigate")
+            _maybe_accept(driver)
+            try:
+                from core.registration.email_otp import _submit_email_and_wait_next
+
+                _submit_email_and_wait_next(
+                    driver, email, allow_login_password=True,
+                    total_timeout=otp_budget.require("恢复邮箱登录"),
+                    on_progress=lambda phase, message: _report_login_stage(
+                        stage_reporter, "login", message, detail={"email_phase": phase},
+                    ),
+                )
+                logger.info("[Codex][Browser] 已确认重登邮箱的后续认证页面，重新识别登录分支")
+                restart_state = complete_openai_login_challenge(
+                    driver, email, password, totp_secret,
+                    timeout=min(45, otp_budget.require("恢复邮箱登录分支")),
+                    otp_provider=otp_provider, allow_password_reset=allow_password_reset,
+                    on_password_reset_submitted=on_password_reset_submitted,
+                    on_password_confirmed=on_password_confirmed,
+                    force_password_reset=force_password_reset, stage_reporter=stage_reporter,
+                )
+                if restart_state == "advanced":
+                    return "advanced"
+            except OperationCancelled:
                 raise
-        human_delay("api")
-        return "email_otp"
+            except Exception:
+                _auth_checkpoint()
+                restart_page_state = _login_challenge_state(driver)
+                if _is_login_advanced(driver, restart_page_state):
+                    logger.info("[Codex][Browser] 重开授权地址后已进入登录态，无需重新提交邮箱")
+                    return "advanced"
+                if _is_email_verification_page(driver):
+                    logger.info("[Codex][Browser] 重开授权后已在邮箱 OTP 页面")
+                else:
+                    raise
+            human_delay("api")
+            _auth_checkpoint()
+            return "email_otp"
 
     for otp_attempt in range(1, max_otp_attempts + 1):
         check_cancelled()
@@ -1767,26 +1780,41 @@ def _fill_email_and_otp(
             continue
         used_codes.add(str(code))
         logger.info("[Codex][Browser] 邮箱 OTP 已收到")
-        _wait_for_otp_input(driver, timeout=30)
+        _wait_for_otp_input(driver, timeout=min(30, otp_budget.require("等待验证码输入框")))
+        from core.registration.roxy import _prepare_email_otp_current_form, _submit_email_otp_current_form
+
+        otp_receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", http_method="POST")
+        driver._browser_submission_receipt = otp_receipt
+        record_browser_submission_fact(driver, "prepared", receipt=otp_receipt)
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_receipt)
         _clear_otp_inputs(driver)
-        _type_otp(driver, code)
+        _type_otp(driver, code, timeout=min(20, otp_budget.require("填写邮箱验证码")),
+                  before_input=lambda inputs: _prepare_email_otp_current_form(
+                      driver, inputs, budget=otp_budget, capture_responses=True,
+                  ))
         logger.info("[Codex][Browser] 已填写邮箱 OTP")
         human_delay("otp_input")
-        _install_email_otp_validate_hook(driver)
-        clicked = _click_if_present(driver, [
-            "button[type='submit']",
-            "//button[contains(., 'Continue')]",
-            "//button[contains(., '继续')]",
-            "//button[contains(., 'Verify')]",
-            "//button[contains(., '验证')]",
-        ], timeout=8)
-        if clicked:
-            logger.info("[Codex][Browser] 已提交邮箱 OTP，等待后续授权/手机号页面")
-        else:
-            logger.info("[Codex][Browser] 未找到显式提交按钮，继续等待页面状态")
+        otp_budget.require("提交邮箱验证码")
+        try:
+            clicked = _submit_email_otp_current_form(driver)
+            if clicked.get("clicked") is True:
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_receipt)
+                logger.info("[Codex][Browser] 已点击当前邮箱验证码表单，等待原结果")
+            else:
+                logger.info("[Codex][Browser] 未追加验证码点击，继续确认原结果：reason=%s", clicked.get("reason"))
+        except Exception as exc:
+            record_browser_submission_fact(driver, "unknown", receipt=otp_receipt, result="unknown", error_type=type(exc).__name__)
+            logger.info("[Codex][Browser] 验证码点击结果未确认，继续观察原页面")
 
-        outcome = _wait_after_email_otp_submit(driver, timeout=45)
+        outcome = _wait_after_email_otp_submit(driver, timeout=min(45, otp_budget.require("确认邮箱验证码结果")))
         logger.info("[Codex][Browser] 邮箱 OTP 提交后状态：%s", outcome)
+        if outcome in {"accepted", "totp_required"}:
+            record_browser_submission_fact(driver, "confirmed", receipt=otp_receipt, result="success")
+        elif outcome == "invalid" or str(outcome).startswith("deactivated:"):
+            record_browser_submission_fact(driver, "rejected", receipt=otp_receipt, result="failure")
+        else:
+            record_browser_submission_fact(driver, "unknown", receipt=otp_receipt, result="unknown")
+            raise _EmailSubmissionUnknown("request_unknown: otp_request_unconfirmed: 验证码提交未确认，已保留原结果，未重开登录或重新填码")
         if outcome == "totp_required":
             next_state = complete_openai_login_challenge(
                 driver,
@@ -2070,7 +2098,8 @@ def _wait_after_email_otp_submit(driver, timeout: int = 45) -> str:
 
     返回：
       - accepted：已离开邮箱验证码页 / 进入手机号页 / 进入 callback；
-      - invalid：页面明确报错、输入框标红，或长时间停留验证码页。
+      - invalid：页面明确报错或输入框标红；
+      - stuck：等待结束仍未观察到明确结果。
     """
     end = time.time() + timeout
     last_url = ""
@@ -2134,8 +2163,8 @@ def _wait_after_email_otp_submit(driver, timeout: int = 45) -> str:
         except Exception:
             pass
         time.sleep(0.5)
-    logger.warning("[Codex][Browser] 邮箱 OTP 后等待跳转超时，当前 path=%s，按验证码无效/过期处理", _auth_path_for_log(getattr(driver, "current_url", "")))
-    return "invalid"
+    logger.warning("[Codex][Browser] 邮箱 OTP 后等待跳转超时，当前 path=%s，保留未确认结果", _auth_path_for_log(getattr(driver, "current_url", "")))
+    return "stuck"
 
 
 def _phone_page_state(driver) -> dict:

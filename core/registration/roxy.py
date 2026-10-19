@@ -323,13 +323,14 @@ return result(true, 'otp_form_submitted');
 """
 
 
-def _prepare_email_otp_current_form(driver, inputs, *, budget: StageBudget | None = None) -> None:
+def _prepare_email_otp_current_form(driver, inputs, *, budget: StageBudget | None = None,
+                                    capture_responses: bool = False) -> None:
     """输入控件实际挂载后，复用验证码请求观察器并绑定同一表单。"""
     from core.roxy_codex_oauth import _install_email_otp_validate_hook
 
     if budget is not None:
         budget.require("验证码输入准备")
-    _install_email_otp_validate_hook(driver, capture_responses=False)
+    _install_email_otp_validate_hook(driver, capture_responses=capture_responses)
     if driver.execute_script(_OTP_PREPARE_CURRENT_FORM_SCRIPT, inputs) is not True:
         record_browser_submission_fact(driver, "not_dispatched", result="cancelled")
         raise RuntimeError("otp_form_not_ready: 验证码输入前表单未就绪，未填写或提交验证码")
