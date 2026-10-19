@@ -287,7 +287,7 @@ class PublicAssetCache:
     def __init__(self, debugger_address, cache_dir, *, mode="off", max_total_bytes=256 * 1024 * 1024,
                  max_entry_bytes=10 * 1024 * 1024, max_entries=1000, max_age_seconds=86400,
                  proxy_url=None, allow_direct=False, anonymous_fetcher=None, ready_timeout=3.0,
-                 request_budget=0.10, target_id=None):
+                 request_budget=0.10, metadata_timeout=0.25, target_id=None):
         self.debugger_address = str(debugger_address or "")
         self.mode = mode if mode in {"off", "observe", "enabled"} else "off"
         self.cache_dir = cache_dir
@@ -300,6 +300,7 @@ class PublicAssetCache:
         self._anonymous_fetcher = anonymous_fetcher
         self._ready_timeout = max(.1, min(float(ready_timeout), 10))
         self._request_budget = max(.01, min(float(request_budget), .5))
+        self._metadata_timeout = max(.01, min(float(metadata_timeout), 2.0))
         self.target_id = target_id
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -451,6 +452,7 @@ class PublicAssetCache:
                 self._drain_results()
                 self._expire_paused()
                 self._expire_commands()
+                self._expire_metadata_waits()
                 try:
                     raw = self._ws.recv()
                 except websocket.WebSocketTimeoutException:
@@ -527,13 +529,14 @@ class PublicAssetCache:
             r = p.get("request") or {}
             rec.update(url=r.get("url", ""), method=r.get("method"), resource_type=p.get("type"))
             rec["bypass"] = bool(rec.get("bypass") or _request_bypasses_cache(r.get("headers") or {}))
+            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(r.get("headers") or {}))
             rec["redirected"] = bool(rec.get("redirected") or p.get("redirectResponse"))
         elif method == "Network.requestWillBeSentExtraInfo":
             h = _headers(p.get("headers") or {})
             cookies = p.get("associatedCookies") or []
             rec["request_extra"] = True
             rec["bypass"] = bool(rec.get("bypass") or _request_bypasses_cache(h))
-            rec["credentialed"] = any(k in h for k in ("cookie", "authorization", "proxy-authorization")) or any(not x.get("blockedReasons") for x in cookies)
+            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(h) or any(not x.get("blockedReasons") for x in cookies))
         elif method == "Network.responseReceivedExtraInfo":
             h = _headers(p.get("headers") or {})
             rec["response_extra"] = True
@@ -580,17 +583,38 @@ class PublicAssetCache:
         if self.request_source(rid) == "local" or self._store.knows(url):
             rec["done"] = True
             return
-        if self.request_source(rid) == "network" and rec.get("method") == "GET" and rec.get("request_extra") and rec.get("response_extra") and not rec.get("credentialed"):
+        if rec.get("credentialed"):
+            # 同类带凭据请求不会本地回放，再匿名下载一份也无法减少后续流量。
+            rec.pop("metadata_deadline", None)
             rec["done"] = True
+            self._count("credentialed_skipped")
+            return
+        metadata_complete = rec.get("request_extra") and rec.get("response_extra")
+        if not metadata_complete:
+            # ExtraInfo 可能晚于 loadingFinished；只等待元数据，绝不暂停业务请求。
+            deadline = rec.setdefault("metadata_deadline", time.monotonic() + self._metadata_timeout)
+            if time.monotonic() < deadline:
+                return
+            self._count("metadata_timeouts")
+        rec.pop("metadata_deadline", None)
+        rec["done"] = True
+        if self.request_source(rid) == "network" and metadata_complete:
             self._send("Network.getResponseBody", {"requestId": rid}, ("body", url, headers, rec.get("upstream_bytes", 0)))
         elif self._anonymous_fetcher or self._proxy_url or self._allow_direct:
             # 不带身份的独立校验下载只在浏览器完成资源后排队，绝不延长 paused 请求。
-            rec["done"] = True
             if url not in self._fill_seen:
                 self._fill_seen.add(url)
                 if len(self._fill_seen) > 2048:
                     self._fill_seen.pop()
                 self._queue_background(("anonymous", url, rec.get("upstream_bytes", 0)))
+
+    def _expire_metadata_waits(self):
+        """用 CDP 事件循环收口已完成资源的元数据等待，不增加后台下载线程。"""
+        now = time.monotonic()
+        for rid, rec in list(self._requests.items()):
+            deadline = rec.get("metadata_deadline")
+            if not rec.get("done") and deadline is not None and now >= deadline:
+                self._maybe_store(rid, rec)
 
     def _reply(self, tag, msg):
         kind = tag[0]

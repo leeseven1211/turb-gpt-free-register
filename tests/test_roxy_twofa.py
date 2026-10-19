@@ -785,6 +785,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
     def test_protocol_twofa_success_does_not_open_browser_settings(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         saved = []
+        before_browser = Mock()
         with patch.object(
             roxy_registration,
             "setup_2fa_protocol",
@@ -796,16 +797,23 @@ class RoxyTwoFactorTests(unittest.TestCase):
                 object(),
                 "access-token",
                 on_secret=saved.append,
+                before_browser=before_browser,
             )
 
         self.assertEqual(result, secret)
         self.assertFalse(fallback_used)
         self.assertEqual(saved, [secret])
         browser_setup.assert_not_called()
+        before_browser.assert_not_called()
 
     def test_protocol_twofa_failure_falls_back_to_browser_with_checkpoint_secret(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         saved = []
+        preparation = []
+
+        def browser_ready(*_args, **_kwargs):
+            self.assertEqual(preparation, ["已恢复浏览器资源"])
+            return secret
 
         def fail_after_enroll(_session, _token, *, on_secret):
             on_secret(secret)
@@ -814,7 +822,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
         with patch.object(
             roxy_registration, "setup_2fa_protocol", side_effect=fail_after_enroll
         ), patch.object(
-            roxy_registration, "setup_roxy_2fa", return_value=secret
+            roxy_registration, "setup_roxy_2fa", side_effect=browser_ready
         ) as browser_setup:
             result, fallback_used = roxy_registration.setup_protocol_2fa_with_browser_fallback(
                 object(),
@@ -822,6 +830,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
                 object(),
                 "access-token",
                 on_secret=saved.append,
+                before_browser=lambda: preparation.append("已恢复浏览器资源"),
             )
 
         self.assertEqual(result, secret)

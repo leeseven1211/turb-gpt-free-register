@@ -141,6 +141,7 @@ CLOUD_PROXY_ORG_KEYWORDS = [
 ]
 
 # ---------- Roxy/Cloak 本地浏览器省流量模式 ----------
+# Roxy 注册在完整会话保存后收口到轻量同源页面；浏览器 2FA 按需恢复资源。
 BROWSER_DATA_SAVER_MODE = schema_default("BROWSER_DATA_SAVER_MODE")
 BROWSER_DATA_SAVER_AUTH_FLOWS = schema_default("BROWSER_DATA_SAVER_AUTH_FLOWS")
 BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES = schema_default("BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES")

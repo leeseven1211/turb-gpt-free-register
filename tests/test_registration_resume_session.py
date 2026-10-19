@@ -198,6 +198,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
             mock("cache_stop", "core.browser_asset_policy.stop_registration_asset_cache")
             mock("observer", "core.registration.password_auth._install_auth_initialization_observer")
             mock("saver", "core.browser_data_saver.BrowserDataSaver")
+            mocks["saver"].return_value.enabled = False
             mock("plan_install", "core.registration_plan_capture.install_selenium")
             mock("plan_read", "core.registration_plan_capture.read_or_fetch_selenium",
                  return_value={"ok": True, "quota_status": "success"})
@@ -380,6 +381,63 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 self.assertTrue(result["success"], result.get("error"))
                 self.assertTrue(result["core_persisted"])
                 self.assertEqual(mocks["saver"].return_value.activate_post_auth.call_count, int(ready))
+
+    def test_data_saver_preserves_natural_plan_before_parking_saved_session(self):
+        captured = {"ok": True, "quota_status": "success", "source": "browser_response"}
+        with self.run_context() as (_, mocks):
+            mocks["saver"].return_value.enabled = True
+            mocks["plan_cached"].return_value = captured
+
+            def park(*_args, **_kwargs):
+                mocks["persist"].assert_called_once()
+                mocks["plan_cached"].assert_called_once()
+                mocks["saver"].return_value.activate_post_auth.assert_called_once()
+                return True
+
+            with patch.object(session_auth, "_park_verified_registration_page", side_effect=park) as parked, patch.object(
+                roxy, "_wait_registration_homepage",
+            ) as homepage:
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": False,
+                    "codex_enabled": False, "plan_check_enabled": True,
+                })
+        self.assertTrue(result["postprocess_success"], result)
+        parked.assert_called_once()
+        homepage.assert_not_called()
+        mocks["plan_read"].assert_not_called()
+        mocks["_install_registration_postprocess_data_saver"].assert_not_called()
+
+    def test_data_saver_protocol_twofa_success_does_not_restore_homepage_resources(self):
+        with self.run_context() as (_, mocks):
+            mocks["saver"].return_value.enabled = True
+            mocks["twofa_driver"].return_value = "protocol"
+            with patch.object(session_auth, "_park_verified_registration_page", return_value=True), patch.object(
+                roxy, "setup_protocol_2fa_with_browser_fallback", return_value=("unit-totp", False),
+            ) as protocol, patch.object(roxy, "BrowserSession"), patch.object(roxy, "_wait_registration_homepage") as homepage:
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": True,
+                    "codex_enabled": False, "plan_check_enabled": False,
+                })
+        self.assertTrue(result["postprocess_success"], result)
+        protocol.assert_called_once()
+        self.assertTrue(callable(protocol.call_args.kwargs["before_browser"]))
+        homepage.assert_not_called()
+        mocks["_install_registration_postprocess_data_saver"].assert_not_called()
+        mocks["twofa"].assert_not_called()
+
+    def test_data_saver_restores_resources_immediately_before_browser_twofa(self):
+        with self.run_context() as (_, mocks):
+            mocks["saver"].return_value.enabled = True
+            events = []
+            mocks["_install_registration_postprocess_data_saver"].side_effect = lambda *_a: events.append("restore")
+            mocks["twofa"].side_effect = lambda *_a, **_k: events.append("browser_twofa") or "unit-totp"
+            with patch.object(session_auth, "_park_verified_registration_page", side_effect=lambda *_a, **_k: events.append("park") or True):
+                result = self.run_registration(registration_options={
+                    "password_enabled": True, "twofa_enabled": True,
+                    "codex_enabled": False, "plan_check_enabled": False,
+                })
+        self.assertTrue(result["postprocess_success"], result)
+        self.assertEqual(events, ["park", "restore", "browser_twofa", "park"])
 
     def test_new_registration_keeps_profile_and_callback_resources_until_homepage_ready(self):
         with self.run_context(action="registration") as (_, mocks):

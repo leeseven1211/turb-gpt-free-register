@@ -1163,7 +1163,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "BROWSER_DATA_SAVER_MODE", "file": "browser.py", "type": "bool", "group": "浏览器画像",
-        "label": "Roxy 本地浏览器省流量模式", "help": "仅 Roxy 本地浏览器流程生效；注册流程按现有规则，认证流程仅拦截图片、媒体和固定遥测 URL，不拦截脚本、认证接口或 WebSocket",
+        "label": "Roxy 本地浏览器省流量模式", "help": "注册核验并保存会话后使用轻量页面，跳过完整首页；需要浏览器设置 2FA 时恢复页面资源。登录认证期间只拦截可选资源和遥测，保留脚本、认证接口及 WebSocket",
     },
     {
         "key": "BROWSER_DATA_SAVER_AUTH_FLOWS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",

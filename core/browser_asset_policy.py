@@ -9,10 +9,28 @@ from config import browser as _cfg
 logger = logging.getLogger(__name__)
 
 
-def start_registration_asset_cache(opened, *, proxy_url: str | None = None):
+def start_registration_asset_cache(opened, driver=None, *, proxy_url: str | None = None):
     """注册匿名填充只能沿本次新建环境的已知线路。"""
+    mode = str(getattr(_cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "off") or "off")
+    if mode not in {"observe", "enabled"}:
+        return None
+    target_id = _current_page_target(driver, flow="注册") if driver is not None else None
+    if driver is not None and target_id is None:
+        return None
     fill_proxy = proxy_url if getattr(opened, "created_by_run", False) else None
-    return _start_asset_cache(opened, flow="registration", proxy_url=fill_proxy)
+    return _start_asset_cache(opened, flow="registration", proxy_url=fill_proxy, target_id=target_id)
+
+
+def _current_page_target(driver, *, flow: str):
+    """只绑定调用方正在操作的页面，不能猜测多窗口中的第一个页面。"""
+    try:
+        info = driver.execute_cdp_cmd("Target.getTargetInfo", {}).get("targetInfo", {})
+        target_id = info.get("targetId")
+        if isinstance(target_id, str) and target_id and info.get("type") == "page":
+            return target_id
+    except Exception as exc:
+        logger.warning("[公共资源缓存] 无法确认当前%s页面，继续正常加载：%s", flow, type(exc).__name__)
+    return None
 
 
 def start_auth_asset_cache(opened, driver, *, flow: str):
@@ -25,13 +43,8 @@ def start_auth_asset_cache(opened, driver, *, flow: str):
     capture = getattr(opened, "traffic_capture", None)
     if getattr(capture, "public_asset_cache", None) is not None:
         return None
-    try:
-        info = driver.execute_cdp_cmd("Target.getTargetInfo", {}).get("targetInfo", {})
-        target_id = info.get("targetId")
-        if not isinstance(target_id, str) or not target_id or info.get("type") != "page":
-            return None
-    except Exception as exc:
-        logger.warning("[公共资源缓存] 无法确认当前认证页面，继续正常加载：%s", type(exc).__name__)
+    target_id = _current_page_target(driver, flow="认证")
+    if target_id is None:
         return None
     return _start_asset_cache(opened, flow=flow, target_id=target_id)
 

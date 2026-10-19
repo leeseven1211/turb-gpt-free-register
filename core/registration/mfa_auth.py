@@ -782,6 +782,7 @@ def setup_protocol_2fa_with_browser_fallback(
     on_secret=None,
     existing_secret: str | None = None,
     otp_provider=None,
+    before_browser=None,
 ) -> tuple[str, bool]:
     """优先协议开通 2FA，失败时复用当前登录态改走安全设置页。
 
@@ -849,6 +850,8 @@ def setup_protocol_2fa_with_browser_fallback(
             )
             if otp_provider is not None:
                 fallback_kwargs["otp_provider"] = otp_provider
+            if before_browser is not None:
+                before_browser()
             secret = setup_roxy_2fa(
                 driver,
                 email,

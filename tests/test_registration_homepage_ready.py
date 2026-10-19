@@ -1,4 +1,4 @@
-"""注册资源收紧必须晚于账号保存和正常首页就绪。"""
+"""普通注册观察首页；省流量注册在会话保存后停止应用壳下载。"""
 import ast
 import inspect
 import json
@@ -150,3 +150,93 @@ class HomepageReadyTests(unittest.TestCase):
         result = subprocess.run([shutil.which("node"), "-e", source], capture_output=True,
                                 text=True, check=True, timeout=10)
         self.assertEqual(json.loads(result.stdout), [True, False, False, False, False, False, False, False, True])
+
+
+class LightweightRegistrationPageTests(unittest.TestCase):
+    def driver(self, url="https://chatgpt.com/"):
+        driver = SimpleNamespace(
+            current_url=url, timeouts=SimpleNamespace(page_load=90),
+            execute_script=Mock(), set_page_load_timeout=Mock(),
+        )
+        driver.get = Mock(side_effect=lambda value: setattr(driver, "current_url", value))
+        return driver
+
+    def park(self, driver, *, budget=None):
+        with patch.object(session_auth, "_check_manual_stop"):
+            return session_auth._park_verified_registration_page(
+                driver, budget=budget or StageBudget.start(3),
+            )
+
+    def test_verified_homepage_stops_loading_and_keeps_same_origin_for_plan_fetch(self):
+        driver = self.driver()
+        calls = Mock()
+        calls.attach_mock(driver.execute_script, "stop")
+        calls.attach_mock(driver.get, "navigate")
+        budget = StageBudget(3, clock=lambda: 0)
+        self.assertTrue(self.park(driver, budget=budget))
+        self.assertEqual([c[0] for c in calls.mock_calls], ["stop", "navigate"])
+        driver.execute_script.assert_called_once_with("window.stop();")
+        driver.get.assert_called_once_with("https://chatgpt.com/api/auth/session")
+        self.assertEqual([c.args[0] for c in driver.set_page_load_timeout.call_args_list], [3, 90])
+
+    def test_session_document_does_not_reload_or_repeat_session_request(self):
+        driver = self.driver("https://chatgpt.com/api/auth/session")
+        self.assertTrue(self.park(driver))
+        driver.get.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_foreign_or_credentialed_origin_is_not_stopped_or_navigated(self):
+        for url in ("https://auth.openai.com/about-you", "https://chatgpt.com.evil.test/",
+                    "http://chatgpt.com/", "https://chatgpt.com:8443/", "https://user@chatgpt.com/"):
+            with self.subTest(url=url):
+                driver = self.driver(url)
+                self.assertFalse(self.park(driver))
+                driver.get.assert_not_called()
+                driver.execute_script.assert_not_called()
+
+    def test_failed_stop_script_still_attempts_lightweight_navigation(self):
+        driver = self.driver()
+        driver.execute_script.side_effect = RuntimeError("脚本连接暂时不可用")
+        self.assertTrue(self.park(driver))
+        driver.get.assert_called_once()
+
+    def test_navigation_failure_restores_timeout_without_exposing_private_error(self):
+        driver = self.driver()
+        driver.get.side_effect = RuntimeError("private@example.test private-token")
+        with self.assertLogs(session_auth.logger, "WARNING") as logged:
+            self.assertFalse(self.park(driver))
+        self.assertEqual(driver.set_page_load_timeout.call_args.args, (90,))
+        self.assertNotIn("private", str(logged.output))
+
+    def test_redirect_does_not_claim_lightweight_page_ready(self):
+        driver = self.driver()
+        driver.get.side_effect = lambda _value: setattr(driver, "current_url", "https://chatgpt.com/auth/login")
+        self.assertFalse(self.park(driver))
+
+    def test_spent_budget_stops_heavy_page_without_starting_new_request(self):
+        driver = self.driver()
+        self.assertFalse(self.park(driver, budget=StageBudget(0, clock=lambda: 0)))
+        driver.execute_script.assert_called_once_with("window.stop();")
+        driver.get.assert_not_called()
+
+    def test_cancellation_propagates_before_any_page_mutation(self):
+        driver = self.driver()
+        with self.assertRaises(CancellationRequested):
+            self.park(driver, budget=StageBudget.start(10, clock=lambda: 0, cancel=lambda: True))
+        driver.get.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_stop_during_navigation_propagates_after_restoring_timeout(self):
+        from core.registration_service import StopRequested
+
+        driver = self.driver()
+        stopped = [False]
+
+        def navigate(value):
+            driver.current_url = value
+            stopped[0] = True
+
+        driver.get.side_effect = navigate
+        with patch("core.registration_service.is_stop_requested", side_effect=lambda: stopped[0]), self.assertRaises(StopRequested):
+            session_auth._park_verified_registration_page(driver, budget=StageBudget.start(3), check_stop=roxy._check_manual_stop)
+        self.assertEqual(driver.set_page_load_timeout.call_args.args, (90,))

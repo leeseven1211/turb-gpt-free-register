@@ -66,6 +66,39 @@ class BrowserAssetPolicyTests(TestCase):
         self.assertFalse(cls.call_args.kwargs["allow_direct"])
         capture.set_public_asset_cache.assert_called_once_with(result)
 
+    def test_registration_cache_binds_current_driver_page(self):
+        opened = SimpleNamespace(debugger_address="127.0.0.1:9222", created_by_run=True, traffic_capture=None)
+        driver = Mock()
+        driver.execute_cdp_cmd.return_value = {"targetInfo": {"targetId": "registration-page", "type": "page"}}
+        with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+            "core.public_asset_cache.PublicAssetCache"
+        ) as cls:
+            result = browser_asset_policy.start_registration_asset_cache(opened, driver, proxy_url="http://127.0.0.1:7897")
+        self.assertIs(result, cls.return_value)
+        driver.execute_cdp_cmd.assert_called_once_with("Target.getTargetInfo", {})
+        self.assertEqual(cls.call_args.kwargs["target_id"], "registration-page")
+        self.assertEqual(cls.call_args.kwargs["proxy_url"], "http://127.0.0.1:7897")
+
+    def test_registration_cache_does_not_guess_page_when_driver_target_is_unknown(self):
+        for target in ({}, {"targetInfo": {"targetId": "worker", "type": "service_worker"}}):
+            with self.subTest(target=target):
+                driver = Mock()
+                driver.execute_cdp_cmd.return_value = target
+                with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+                    "core.public_asset_cache.PublicAssetCache"
+                ) as cls:
+                    self.assertIsNone(browser_asset_policy.start_registration_asset_cache(SimpleNamespace(), driver))
+                cls.assert_not_called()
+
+    def test_registration_cache_driver_failure_keeps_normal_network(self):
+        driver = Mock()
+        driver.execute_cdp_cmd.side_effect = OSError("测试页面已关闭")
+        with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+            "core.public_asset_cache.PublicAssetCache"
+        ) as cls:
+            self.assertIsNone(browser_asset_policy.start_registration_asset_cache(SimpleNamespace(), driver))
+        cls.assert_not_called()
+
     def test_existing_profile_never_guesses_its_proxy_for_anonymous_fill(self):
         opened = SimpleNamespace(debugger_address="127.0.0.1:9222", created_by_run=False, traffic_capture=None)
         with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(

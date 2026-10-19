@@ -23,6 +23,46 @@ _CHATGPT_SESSION_URL = "https://chatgpt.com/api/auth/session"
 _CHATGPT_HOME_URL = "https://chatgpt.com/"
 
 
+def _park_verified_registration_page(driver, *, budget: StageBudget, check_stop=None) -> bool:
+    """完整会话已核验并落库后，停止首页加载并保留套餐查询所需的同源页面。"""
+    def checkpoint():
+        budget.check_cancelled()
+        (check_stop or _check_manual_stop)()
+
+    checkpoint()
+    try:
+        current = urlsplit(str(driver.current_url or ""))
+        if (current.scheme != "https" or current.hostname != "chatgpt.com"
+                or current.port not in (None, 443) or current.username or current.password):
+            return False
+        if current.path == "/api/auth/session":
+            return True
+        # 账号已经保存；先中止应用壳下载，导航异常也不会继续拉取大包。
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            # 脚本连接可能暂时不可用；导航仍有机会停止旧文档下载。
+            checkpoint()
+        checkpoint()
+        if budget.expired():
+            return False
+        old_timeout = driver.timeouts.page_load
+        try:
+            driver.set_page_load_timeout(max(0.1, min(10, budget.remaining())))
+            driver.get(_CHATGPT_SESSION_URL)
+        finally:
+            driver.set_page_load_timeout(old_timeout)
+        checkpoint()
+        current = urlsplit(str(driver.current_url or ""))
+        return (current.scheme == "https" and current.hostname == "chatgpt.com"
+                and current.port in (None, 443) and not current.username and not current.password
+                and current.path == "/api/auth/session")
+    except Exception as exc:
+        checkpoint()
+        logger.warning("%s 省流量页面收口未完成：%s；已保存的账号继续后处理", _log_prefix(driver), type(exc).__name__)
+        return False
+
+
 def _wait_registration_homepage(driver, *, timeout: float = 30, budget: StageBudget | None = None) -> dict:
     """只观察正常首页就绪；失败时保留已取得的会话和完整资源，不重新认证。"""
     wait = budget.child(timeout) if budget is not None else StageBudget.start(timeout)

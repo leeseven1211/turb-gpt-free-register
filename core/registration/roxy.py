@@ -1100,7 +1100,7 @@ def run_roxy_registration(
         from .password_auth import _install_auth_initialization_observer
         _install_auth_initialization_observer(driver)
         from core.browser_asset_policy import start_registration_asset_cache
-        public_asset_cache = start_registration_asset_cache(opened, proxy_url=proxy)
+        public_asset_cache = start_registration_asset_cache(opened, driver=driver, proxy_url=proxy)
         from core.browser_data_saver import BrowserDataSaver
         data_saver = BrowserDataSaver(label="Roxy注册")
         data_saver.install_selenium(driver)
@@ -1702,8 +1702,9 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 等待 ChatGPT 跳转并写入 session/accessToken")
         _check_manual_stop()
         token_budget = StageBudget.start(120)
+        lightweight_post_auth = bool(data_saver is not None and data_saver.enabled)
         session_info = verified_resume_session or _fetch_chatgpt_session(
-            driver, timeout=120, budget=token_budget, prefer_homepage=True,
+            driver, timeout=120, budget=token_budget, prefer_homepage=not lightweight_post_auth,
         )
         _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
@@ -1739,25 +1740,35 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
 
         _check_manual_stop()
-        report_job_progress("token", "running", "登录会话已保存，正在确认正常首页就绪")
-        try:
-            homepage = _wait_registration_homepage(driver, budget=token_budget)
-        except StageTimeout:
-            # 会话已经保存；可选首页观察不能把阶段预算耗尽变成再次注册的理由。
-            homepage = {"ready": False, "reason": "timeout"}
-        if homepage["ready"]:
-            if data_saver is not None:
-                data_saver.activate_post_auth()
-            report_job_progress("token", "success", "已获取 accessToken，正常首页已就绪")
-        else:
-            logger.warning("[Roxy注册] 首页未确认就绪，保持核心资源加载：reason=%s", homepage["reason"])
-            report_job_progress("token", "success", "已获取 accessToken；首页未确认就绪，保持核心资源加载")
-
         # 先保留首页自然返回的权益快照，避免后续安全设置导航清空页面内缓存。
         # 此处不等待、不主动请求；需要补查时统一计入最后的套餐阶段。
         captured_plan_result = None
-        if plan_check_enabled:
+        if plan_check_enabled and lightweight_post_auth:
             captured_plan_result = registration_plan_capture.read_selenium(driver, access_token, wait_seconds=0)
+
+        if lightweight_post_auth:
+            from .session_auth import _park_verified_registration_page
+
+            data_saver.activate_post_auth()
+            parked = _park_verified_registration_page(driver, budget=token_budget, check_stop=_check_manual_stop)
+            logger.info("[Roxy注册] 省流量后处理：轻量同源页面=%s，跳过完整首页加载", parked)
+            report_job_progress("token", "success", "已保存完整登录会话，省流量模式跳过完整首页加载")
+        else:
+            report_job_progress("token", "running", "登录会话已保存，正在确认正常首页就绪")
+            try:
+                homepage = _wait_registration_homepage(driver, budget=token_budget)
+            except StageTimeout:
+                # 会话已保存；可选首页观察不能成为再次注册的理由。
+                homepage = {"ready": False, "reason": "timeout"}
+            if homepage["ready"]:
+                if data_saver is not None:
+                    data_saver.activate_post_auth()
+                report_job_progress("token", "success", "已获取 accessToken，正常首页已就绪")
+            else:
+                logger.warning("[Roxy注册] 首页未确认就绪，保持核心资源加载：reason=%s", homepage["reason"])
+                report_job_progress("token", "success", "已获取 accessToken；首页未确认就绪，保持核心资源加载")
+            if plan_check_enabled:
+                captured_plan_result = registration_plan_capture.read_selenium(driver, access_token, wait_seconds=0)
 
         codex_result = {
             "status": "skipped",
@@ -1802,12 +1813,6 @@ def run_roxy_registration(
                 )
             else:
                 logger.info("[Roxy注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
-                # Codex 未启用时，后续可能仍在同一窗口执行 2FA；切到
-                # account_action 规则并把统计留到注册 finally 统一收口。
-                postprocess_data_saver = _install_registration_postprocess_data_saver(
-                    opened,
-                    driver,
-                )
                 report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
         except AccountUnusableError:
             raise
@@ -1815,9 +1820,12 @@ def run_roxy_registration(
             codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
             report_job_progress("codex", "failed", codex_result["message"])
 
-        if codex_enabled and twofa_enabled:
-            # OAuth 自己会停止其 saver，但 2FA 仍需继续使用认证安全规则；
-            # 这里新建 account_action saver，统计延后到注册 finally 收口。
+        browser_twofa_prepared = False
+
+        def _prepare_browser_twofa():
+            nonlocal postprocess_data_saver, browser_twofa_prepared
+            # 只有实际进入浏览器设置时才恢复核心资源，协议成功不启动首页。
+            browser_twofa_prepared = True
             postprocess_data_saver = _install_registration_postprocess_data_saver(
                 opened,
                 driver,
@@ -1885,6 +1893,7 @@ def run_roxy_registration(
                         email,
                         protocol_session,
                         access_token,
+                        before_browser=_prepare_browser_twofa,
                         **twofa_kwargs,
                     )
                     twofa_result = {
@@ -1898,6 +1907,7 @@ def run_roxy_registration(
                         "driver": "browser_fallback" if fallback_used else "protocol",
                     }
                 else:
+                    _prepare_browser_twofa()
                     totp_secret = setup_roxy_2fa(driver, email, **twofa_kwargs)
                     twofa_result = {
                         "status": "success",
@@ -1929,6 +1939,10 @@ def run_roxy_registration(
             registration_driver=registration_driver,
         )
         report_registered_account(account_id)
+
+        if lightweight_post_auth and browser_twofa_prepared and twofa_result.get("ok"):
+            # 设置已确认并保存；保留窗口也不继续加载设置页的后台资源。
+            _park_verified_registration_page(driver, budget=StageBudget.start(10), check_stop=_check_manual_stop)
 
         # Final account metadata is updated by the existing checkpoint helper.
         # Plan lookup is independent work and is queued after the core account

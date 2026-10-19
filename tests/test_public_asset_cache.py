@@ -201,15 +201,78 @@ class PublicAssetEventTests(_TempFiles):
         self.complete(c, actual_headers=False)
         self.assertFalse(c._ws.commands)
 
-    def test_credentialed_resource_only_schedules_anonymous_copy_when_route_is_explicit(self):
+    def test_credentialed_resources_never_add_anonymous_downloads(self):
+        for headers in ({"Cookie": "private=hidden"}, {"Authorization": "Bearer hidden"}, {"Proxy-Authorization": "Basic hidden"}):
+            with self.subTest(headers=headers):
+                c = self.client(proxy_url="http://127.0.0.1:55555")
+                self.complete(c, request_headers=headers)
+                self.assertFalse(c._ws.commands)
+                self.assertTrue(c._background_queue.empty())
+                self.assertEqual(c.snapshot()["credentialed_skipped"], 1)
+
+    def test_initial_credential_headers_cannot_be_erased_by_late_extra_info(self):
         c = self.client(proxy_url="http://127.0.0.1:55555")
-        self.complete(c, request_headers={"Cookie": "private=hidden"})
+        self.event(c, "Network.requestWillBeSent", requestId="net-1", type="Script", request={"url": URL, "method": "GET", "headers": {"Cookie": "private=hidden"}})
+        self.event(c, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+        self.event(c, "Network.responseReceived", requestId="net-1", type="Script", response={"url": URL, "status": 200, "headers": PUBLIC})
+        self.event(c, "Network.loadingFinished", requestId="net-1", encodedDataLength=321)
         self.assertFalse(c._ws.commands)
-        item = c._background_queue.get_nowait()
-        self.assertEqual(item, ("anonymous", URL, 321))
-        c = self.client()
-        self.complete(c, request_headers={"Cookie": "private=hidden"})
         self.assertTrue(c._background_queue.empty())
+        self.assertEqual(c.snapshot()["credentialed_skipped"], 1)
+
+    def test_late_extra_info_reuses_completed_body_without_anonymous_copy(self):
+        for order in (("request", "response"), ("response", "request")):
+            with self.subTest(order=order):
+                c = self.client(proxy_url="http://127.0.0.1:55555")
+                self.complete(c, actual_headers=False)
+                self.assertFalse(c._ws.commands)
+                self.assertTrue(c._background_queue.empty())
+                for event in order:
+                    if event == "request":
+                        self.event(c, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+                    else:
+                        self.event(c, "Network.responseReceivedExtraInfo", requestId="net-1", headers=PUBLIC, statusCode=200)
+                self.assertEqual([command["method"] for command in c._ws.commands], ["Network.getResponseBody"])
+                self.assertTrue(c._background_queue.empty())
+                self.assertNotIn("metadata_deadline", c._requests["net-1"])
+
+    def test_late_cookie_info_cancels_metadata_wait_without_anonymous_copy(self):
+        c = self.client(proxy_url="http://127.0.0.1:55555")
+        self.complete(c, actual_headers=False)
+        self.event(c, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={"Cookie": "private=hidden"}, associatedCookies=[])
+        c._expire_metadata_waits()
+        self.assertTrue(c._requests["net-1"]["done"])
+        self.assertNotIn("metadata_deadline", c._requests["net-1"])
+        self.assertFalse(c._ws.commands)
+        self.assertTrue(c._background_queue.empty())
+
+    def test_missing_extra_info_times_out_once_and_keeps_anonymous_fallback(self):
+        c = self.client(proxy_url="http://127.0.0.1:55555")
+        self.complete(c, actual_headers=False)
+        deadline = c._requests["net-1"]["metadata_deadline"]
+        with patch.object(cache_module.time, "monotonic", return_value=deadline - .001):
+            c._expire_metadata_waits()
+        self.assertTrue(c._background_queue.empty())
+        with patch.object(cache_module.time, "monotonic", return_value=deadline + .001):
+            c._expire_metadata_waits()
+            c._expire_metadata_waits()
+        self.assertEqual(c._background_queue.get_nowait(), ("anonymous", URL, 321))
+        self.assertTrue(c._background_queue.empty())
+        self.assertEqual(c.snapshot()["metadata_timeouts"], 1)
+        self.event(c, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+        self.event(c, "Network.responseReceivedExtraInfo", requestId="net-1", headers=PUBLIC, statusCode=200)
+        self.assertFalse(c._ws.commands)
+
+    def test_missing_extra_info_without_fill_route_finishes_without_network(self):
+        c = self.client()
+        self.complete(c, actual_headers=False)
+        deadline = c._requests["net-1"]["metadata_deadline"]
+        with patch.object(cache_module.time, "monotonic", return_value=deadline + .001):
+            c._expire_metadata_waits()
+        self.assertTrue(c._requests["net-1"]["done"])
+        self.assertNotIn("metadata_deadline", c._requests["net-1"])
+        self.assertTrue(c._background_queue.empty())
+        self.assertFalse(c._ws.commands)
 
     def test_set_cookie_and_partial_or_non_get_responses_never_fill(self):
         for method, request_headers, response_headers in (
@@ -298,6 +361,29 @@ class PublicAssetEventTests(_TempFiles):
                 self.assertFalse(c.snapshot()["replay_accounting_complete"])
                 c._event({"id": command["id"], "result": {}})
                 self.assertEqual(c.request_source("net-1"), "unknown")
+
+class PublicAssetTargetTests(_TempFiles):
+    def test_explicit_target_selects_current_page_in_multi_page_profile(self):
+        client = PublicAssetCache("127.0.0.1:9222", self.directory, target_id="current-page")
+        pages = [
+            {"id": "other-page", "type": "page", "url": "https://example.org/", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/other-page"},
+            {"id": "current-page", "type": "page", "url": "https://chatgpt.com/", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/current-page"},
+        ]
+        with patch.object(cache_module.requests, "Session") as session, patch.object(cache_module.websocket, "create_connection") as connect:
+            session.return_value.__enter__.return_value.get.return_value.json.return_value = pages
+            client._connect()
+        self.assertEqual(client.target_id, "current-page")
+        self.assertEqual(connect.call_args.args[0], pages[1]["webSocketDebuggerUrl"])
+
+    def test_missing_explicit_target_never_falls_back_to_another_page(self):
+        client = PublicAssetCache("127.0.0.1:9222", self.directory, target_id="closed-page")
+        pages = [{"id": "other-page", "type": "page", "url": "https://example.org/", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/other-page"}]
+        with patch.object(cache_module.requests, "Session") as session, patch.object(cache_module.websocket, "create_connection") as connect:
+            session.return_value.__enter__.return_value.get.return_value.json.return_value = pages
+            with self.assertRaises(StopIteration):
+                client._connect()
+        connect.assert_not_called()
+
 
 class _Raw:
     def __init__(self, body, fail_after=None):
