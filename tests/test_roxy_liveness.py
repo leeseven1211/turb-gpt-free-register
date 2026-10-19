@@ -7,6 +7,16 @@ from core import browser_flow_policy, roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_open_source_roxy_keeps_browser_refresh_available_when_configured(self):
+        with patch.multiple(
+            roxy_liveness.cfg,
+            REGISTRATION_DRIVER="roxy_oss",
+            ROXY_API_BASE="http://127.0.0.1:50000",
+            ROXY_API_TOKEN="test-token",
+            ROXY_WORKSPACE_ID="test-workspace",
+        ):
+            self.assertTrue(roxy_liveness.available())
+
     def test_auth_cache_and_traffic_finish_before_cleanup_including_kept_browser(self):
         from core import browser_asset_policy
         for keep_open in (False, True):

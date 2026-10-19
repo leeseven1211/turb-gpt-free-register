@@ -9,7 +9,8 @@ function registrationDriverLabel(value) {
   return driver?.label || ({
     protocol: '本地优化 Protocol',
     protocol_oss: '开源 Protocol',
-    roxy: 'RoxyBrowser',
+    roxy: '本地 Roxy',
+    roxy_oss: '开源 Roxy',
   }[String(value || '')] || '未知');
 }
 async function loadRegistrationEmailSources() {

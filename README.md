@@ -1,10 +1,11 @@
 # Turb GPT 注册与账号管理工具
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册批次可分别选择本地优化 Protocol、固定上游快照适配的开源 Protocol 或 RoxyBrowser：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动支持本地优化 Protocol、开源 Protocol、本地 Roxy 和开源 Roxy：
 
 - **protocol**：本项目持续优化的纯协议注册链路，包含本地恢复、检查点、错误分类与阶段预算。
 - **protocol_oss**：隔离接入上游开源注册协议，保留独立协议流程；邮箱、代理、任务状态、PostgreSQL 和注册后处理继续使用本项目能力。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
+- **roxy_oss**：使用固定上游 Roxy 页面识别和表单辅助，复用本地浏览器生命周期、认证提交、任务恢复和账号后处理。
 
 项目提供 **CLI** 和 **本地 WebUI** 两种使用方式，日常推荐使用 WebUI。本项目由我们自行维护，主仓库为
 [leeseven1211/turb-gpt-free-register](https://github.com/leeseven1211/turb-gpt-free-register)。
@@ -29,7 +30,8 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册批次�
   - `REGISTRATION_DRIVER = "protocol"`
   - `REGISTRATION_DRIVER = "protocol_oss"`
   - `REGISTRATION_DRIVER = "roxy"`
-- 注册页可按批次选择协议；每个任务都会冻结所选 driver，任务列表和账号高级搜索可区分两种协议。
+  - `REGISTRATION_DRIVER = "roxy_oss"`
+- 注册批次使用全局默认注册方式；每个任务都会冻结所用 driver，任务列表和账号高级搜索可区分本地与开源方式。
 - 支持 RoxyBrowser 一号一环境：账号首次需要时创建 Profile，后续注册续跑、Codex、账号配置、查活和 AT 刷新优先复用同一 Profile。
 - 支持 Roxy 无头启动：`ROXY_OPEN_HEADLESS=True`。
 - Roxy 浏览器注册已兼容：
@@ -409,12 +411,12 @@ Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池�
 
 ### 2. 配置注册驱动
 
-WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 调用也使用该默认值。全局默认可在 WebUI「配置 → 注册设置 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器设置 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
+WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 调用也使用该默认值。全局默认可在 WebUI「配置 → 注册与账号 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
 
 #### 使用 RoxyBrowser 注册
 
 ```python
-REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / roxy
+REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / roxy / roxy_oss
 ROXY_API_BASE = "http://127.0.0.1:50100"
 ROXY_API_TOKEN = "你的Roxy API Key"
 ROXY_WORKSPACE_ID = "你的workspaceId"
@@ -434,6 +436,18 @@ ROXY_OPEN_HEADLESS = True
 Codex OAuth 使用独立的 `ROXY_CODEX_OPEN_HEADLESS` 开关，默认显示窗口；注册流程可以继续使用
 `ROXY_OPEN_HEADLESS = True`。如果确认当前 Roxy 版本和 OAuth consent 页面支持无头模式，再单独将
 `ROXY_CODEX_OPEN_HEADLESS` 设为 `True`。
+
+#### 使用开源 Roxy 注册
+
+在 WebUI「配置 → 注册与账号 → 注册主链路」中选择「开源 Roxy」，或设置：
+
+```python
+REGISTRATION_DRIVER = "roxy_oss"
+```
+
+来源为 [myfanhua/turb-gpt-free-register](https://github.com/myfanhua/turb-gpt-free-register)，固定提交 `9a0c55baa9b7d2f9c09ba6eea8cdec200a44eb5e`，许可证为 MIT。源码基线、实际使用的页面辅助及适配说明位于 [`core/registration/roxy_oss/upstream/`](core/registration/roxy_oss/upstream/UPSTREAM.md)。开源方式使用上游邮箱入口定位、资料字段识别与填写能力；密码、验证码和资料的提交确认、会话邮箱核验、原 Attempt 续跑、代理租约、Profile 生命周期、核心账号落库和后处理继续使用本地实现。上游单体注册入口不直接运行。
+
+两种 Roxy 共用 Roxy API 和环境配置，均需配置可用的 RoxyBrowser 与统一代理池。注册批次冻结 `roxy_oss`，重跑保留原选择；`CODEX_OAUTH_DRIVER=same_as_registration` 对应本地 Roxy OAuth。账号高级搜索可用 `roxy_oss` 或「开源Roxy」区分来源。
 
 
 #### 使用本地优化 Protocol 注册

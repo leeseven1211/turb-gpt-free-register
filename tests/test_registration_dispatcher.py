@@ -67,6 +67,31 @@ class RegistrationDispatcherTests(unittest.TestCase):
         )
         run_protocol.assert_not_called()
 
+    def test_open_source_roxy_driver_preserves_resume_contract_and_independent_attempt(self):
+        expected = {"success": True, "email": self.args["email"]}
+        snapshot = {"registration_driver": "roxy_oss", "password_enabled": True}
+        kwargs = {
+            **self.args,
+            "existing_password": "unit-original-password",
+            "existing_totp_secret": "unit-original-totp",
+            "profile_id": "unit-original-profile",
+            "registration_options": snapshot,
+            "email_source": "icloud_hide",
+        }
+        with (
+            patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "protocol"),
+            patch("core.registration.roxy_oss.run_roxy_oss_registration", return_value=expected) as run_oss,
+            patch("core.registration.roxy.run_roxy_registration") as run_roxy,
+            patch("core.registration.standalone.run_registration_in_context", return_value=expected) as run_in_context,
+        ):
+            result = dispatcher.run_registration(**kwargs)
+
+        self.assertIs(expected, result)
+        run_in_context.assert_called_once_with(
+            run_oss, kwargs, entrypoint="roxy_cli", driver_name="roxy_oss",
+        )
+        run_roxy.assert_not_called()
+
     def test_protocol_driver_forwards_selected_email_source(self):
         expected = {"success": True, "email": self.args["email"]}
         with (

@@ -112,6 +112,48 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
         self.assertNotIn("NESTED_UNRELATED", result)
         self.assertNotIn("config_snapshot_version", result)
 
+    def test_open_source_registration_drivers_resolve_to_supported_codex_snapshot_drivers(self):
+        from core import codex_operation_service
+
+        for registration_driver, oauth_driver in (("roxy_oss", "roxy"), ("protocol_oss", "protocol")):
+            with self.subTest(driver=registration_driver):
+                result = codex_operation_service._project_config_snapshot({
+                    "CODEX_OAUTH_DRIVER": "same_as_registration",
+                    "REGISTRATION_DRIVER": registration_driver,
+                }, 17)
+                self.assertEqual(oauth_driver, result["oauth_driver"])
+                explicit = codex_operation_service._project_config_snapshot({
+                    "CODEX_OAUTH_DRIVER": "protocol",
+                    "REGISTRATION_DRIVER": registration_driver,
+                }, 17)
+                self.assertEqual("protocol", explicit["oauth_driver"])
+
+    def test_legacy_codex_snapshot_resolves_open_source_roxy_without_persisting_unsupported_driver(self):
+        from core import codex_operation_service
+
+        with patch("config.codex.CODEX_OAUTH_DRIVER", "same_as_registration"), patch(
+            "config.roxybrowser.REGISTRATION_DRIVER", "roxy_oss"
+        ):
+            result = codex_operation_service._legacy_config_snapshot()
+
+        self.assertEqual("roxy", result["oauth_driver"])
+
+    def test_codex_following_open_source_roxy_dispatches_browser_oauth(self):
+        from core import codex_oauth
+
+        expected = {"ok": True, "status": "success"}
+        with (
+            patch("config.codex.CODEX_OAUTH_DRIVER", "same_as_registration"),
+            patch("config.roxybrowser.REGISTRATION_DRIVER", "roxy_oss"),
+            patch("core.roxy_codex_oauth.run_roxy_codex_oauth", return_value=expected) as roxy,
+            patch.object(codex_oauth, "BrowserSession") as protocol_session,
+        ):
+            result = codex_oauth.run_codex_oauth("test@example.test", proxy="", force=True)
+
+        self.assertEqual(result, expected)
+        self.assertEqual(roxy.call_args.args, ("test@example.test",))
+        protocol_session.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

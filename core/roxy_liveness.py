@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 def available() -> bool:
     driver = str(getattr(cfg, "REGISTRATION_DRIVER", "") or "").strip().lower()
     return (
-        driver in {"roxy", "roxybrowser", "fingerprint", "browser"}
+        driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}
         and bool(str(getattr(cfg, "ROXY_API_BASE", "") or "").strip())
         and bool(str(getattr(cfg, "ROXY_API_TOKEN", "") or "").strip())
         and bool(str(getattr(cfg, "ROXY_WORKSPACE_ID", "") or "").strip())

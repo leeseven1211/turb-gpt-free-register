@@ -467,7 +467,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
-        "label": "注册主流程驱动", "help": "选择注册所用的自动化方式：roxy=RoxyBrowser 主流程，protocol=新纯协议注册链路；默认推荐 roxy",
+        "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，roxy_oss=开源 Roxy，protocol=本地优化 Protocol，protocol_oss=开源 Protocol；默认推荐 roxy",
     },
     {
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册主链路",
@@ -1420,7 +1420,8 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "REGISTRATION_DRIVER": _options(
         ("protocol", "本地优化 Protocol"),
         ("protocol_oss", "开源 Protocol"),
-        ("roxy", "RoxyBrowser"),
+        ("roxy", "本地 Roxy"),
+        ("roxy_oss", "开源 Roxy"),
     ),
     "REGISTRATION_AUTH_MODE": _options(
         ("otp", "不设置密码（邮箱验证码）"), ("password", "设置账号密码")

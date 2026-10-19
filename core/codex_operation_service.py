@@ -167,6 +167,7 @@ def _legacy_config_snapshot(driver_override: str | None = None) -> dict:
     ).strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        driver = {"protocol_oss": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
     return {
         "oauth_driver": driver,
         "auth_source": str(getattr(cfg, "CODEX_AUTH_URL_SOURCE", "cpa") or "cpa").strip().lower(),
@@ -290,6 +291,7 @@ def _project_config_snapshot(
     )
     if driver == "same_as_registration":
         driver = _registration_driver_for_snapshot(values)
+        driver = {"protocol_oss": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
 
     action_proxy = _snapshot_value(
         values,

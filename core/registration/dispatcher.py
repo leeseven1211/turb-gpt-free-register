@@ -28,9 +28,12 @@ def run_registration(
         snapshot_driver or getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol"
     ).strip().lower()
 
-    # Roxy 是唯一的浏览器注册驱动；旧别名保留用于兼容历史任务配置。
-    if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
-        from core.registration.roxy import run_roxy_registration
+    # 开源 Roxy 使用独立页面辅助；旧别名仍指向本地 Roxy。
+    if driver_mode in ("roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"):
+        if driver_mode == "roxy_oss":
+            from core.registration.roxy_oss import run_roxy_oss_registration as run_browser_registration
+        else:
+            from core.registration.roxy import run_roxy_registration as run_browser_registration
         from core.registration.standalone import run_registration_in_context
 
         kwargs = dict(
@@ -48,10 +51,10 @@ def run_registration(
             kwargs["email_source"] = email_source
         kwargs["profile_id"] = profile_id
         return run_registration_in_context(
-            run_roxy_registration,
+            run_browser_registration,
             kwargs,
             entrypoint="roxy_cli",
-            driver_name="roxy",
+            driver_name="roxy_oss" if driver_mode == "roxy_oss" else "roxy",
         )
 
     if existing_password and driver_mode not in ("protocol", "protocol_oss", "api", "http"):
@@ -83,7 +86,7 @@ def run_registration(
 
     if driver_mode not in ("protocol", "api", "http"):
         raise RuntimeError(
-            f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，当前仅支持 protocol / protocol_oss / roxy"
+            f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，当前仅支持 protocol / protocol_oss / roxy / roxy_oss"
         )
 
     from core.registration.protocol import run_protocol_registration

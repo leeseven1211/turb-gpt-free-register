@@ -12,8 +12,10 @@ class AccountSearchError(ValueError):
 REGISTRATION_DRIVERS = {
     "protocol": frozenset({"protocol", "api", "http"}),
     "protocol_oss": frozenset({"protocol_oss"}),
+    "roxy": frozenset({"roxy", "roxybrowser", "fingerprint", "browser"}),
+    "roxy_oss": frozenset({"roxy_oss"}),
     "browser": frozenset({
-        "roxy", "roxybrowser", "browser", "browser_use", "skyvern",
+        "roxy", "roxy_oss", "roxybrowser", "browser", "browser_use", "skyvern",
         "fingerprint", "cloak", "cloakbrowser",
     }),
 }
@@ -22,8 +24,11 @@ _METHOD_ALIASES = {
     **dict.fromkeys(("优化协议", "本地优化协议"), "protocol"),
     **dict.fromkeys(("开源协议", "开源协议注册", "protocol_oss"), "protocol_oss"),
     **dict.fromkeys((
-        "浏览器", "浏览器注册", "roxy", "roxy注册", "roxybrowser",
-        "roxybrowser注册", "browser", "browser_use", "skyvern", "fingerprint",
+        "roxy", "roxy注册", "本地roxy", "本地roxy注册", "本地浏览器", "roxybrowser", "roxybrowser注册", "fingerprint",
+    ), "roxy"),
+    **dict.fromkeys(("roxy_oss", "开源roxy", "开源roxy注册", "开源浏览器"), "roxy_oss"),
+    **dict.fromkeys((
+        "浏览器", "浏览器注册", "browser", "browser_use", "skyvern",
         "cloak", "cloakbrowser",
     ), "browser"),
 }
@@ -76,6 +81,8 @@ class AccountSearchTerm:
             value = {
                 "protocol": "本地优化协议",
                 "protocol_oss": "开源协议",
+                "roxy": "本地 Roxy",
+                "roxy_oss": "开源 Roxy",
                 "browser": "浏览器",
             }[value]
         elif self.field == "region" and value in _COUNTRY_LABELS:
@@ -159,7 +166,7 @@ def parse_account_search(query: str) -> list[AccountSearchTerm]:
         if field == "method":
             value = _METHOD_ALIASES.get(value.lower())
             if value is None:
-                raise AccountSearchError("注册方式不支持该值，请输入「方式:本地优化协议」「方式:开源协议」或「方式:浏览器」。")
+                raise AccountSearchError("注册方式不支持该值，请输入本地优化协议、开源协议、本地Roxy、开源Roxy或浏览器。")
         elif field == "region":
             value = _country(value)
             if value is None:

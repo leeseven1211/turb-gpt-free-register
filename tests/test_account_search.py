@@ -21,6 +21,18 @@ class AccountSearchTests(unittest.TestCase):
         self.assertEqual(parse_account_search("优化协议")[0].value, "protocol")
         self.assertEqual(parse_account_search("协议")[0].value, "protocol")
 
+    def test_roxy_sources_have_distinct_search_aliases_and_display_labels(self):
+        for query in ("roxy", "方式:roxy", "本地Roxy"):
+            with self.subTest(query=query):
+                terms = parse_account_search(query)
+                self.assertEqual(terms[0].value, "roxy")
+                self.assertEqual(account_search_filters(terms)[0]["display_value"], "本地 Roxy")
+        for query in ("roxy_oss", "方式:roxy_oss", "开源Roxy"):
+            with self.subTest(query=query):
+                terms = parse_account_search(query)
+                self.assertEqual(terms[0].value, "roxy_oss")
+                self.assertEqual(account_search_filters(terms)[0]["display_value"], "开源 Roxy")
+
     def test_quoted_keywords_are_literal_and_keep_spaces_and_slashes(self):
         terms = parse_account_search('"协议" "jp" 备注:"a/b 待整理" 姓名:"Alice Smith"')
         self.assertEqual([(term.field, term.value) for term in terms], [

@@ -25,6 +25,15 @@ from webui import config_editor
 
 
 class ConfigSchemaTests(unittest.TestCase):
+    def test_open_source_roxy_is_an_editable_registration_choice(self):
+        self.assertEqual(validate_config_updates({"REGISTRATION_DRIVER": "roxy_oss"}), {
+            "REGISTRATION_DRIVER": "roxy_oss",
+        })
+        field = CONFIG_SCHEMA["REGISTRATION_DRIVER"]
+        options = {item.value: item.label for item in field.options}
+        self.assertEqual(options["roxy_oss"], "开源 Roxy")
+        self.assertEqual(options["roxy"], "本地 Roxy")
+
     def test_schema_owns_unique_fields_and_editor_consumes_it(self):
         fields = CONFIG_SCHEMA.fields
         self.assertEqual(len(fields), len({field.key for field in fields}))

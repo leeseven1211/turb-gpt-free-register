@@ -372,6 +372,8 @@ def _shared_compat_overrides() -> dict[str, object]:
 def _call_shared_capability(name: str, *args, **kwargs):
     """调用共享能力；兼容覆盖是单次、显式且线程隔离的。"""
     overrides = _shared_compat_overrides()
+    # 开源驱动仅在指定阶段注入页面辅助，不能重绑共享模块或影响其他注册任务。
+    overrides.update(kwargs.pop("_helper_overrides", None) or {})
     if kwargs.get("context") is None:
         try:
             from core.registration_service import StopRequested, is_stop_requested
@@ -694,6 +696,7 @@ def _save_roxy_account_checkpoint(
     totp_secret: str | None = None,
     codex_result: dict | None = None,
     twofa_result: dict | None = None,
+    registration_driver: str = "roxy",
 ) -> int:
     """只落库、不做套餐查询的注册检查点。"""
     from core.db import insert_account
@@ -714,6 +717,7 @@ def _save_roxy_account_checkpoint(
         },
         "account_password": openai_password,
         "registration_checkpoint": "registered",
+        "registration_driver": registration_driver,
         "codex": codex_result,
         "twofa": twofa_result,
     }
@@ -867,8 +871,19 @@ def run_roxy_registration(
     profile_id: str | None = None,
     registration_options: dict | None = None,
     email_source: str | None = None,
+    *,
+    _browser_helpers=None,
 ) -> dict:
     """Roxy 指纹浏览器自动化注册入口。"""
+    registration_driver = _browser_helpers.driver_name if _browser_helpers is not None else "roxy"
+    submit_email = (
+        _browser_helpers.submit_email_and_wait_next if _browser_helpers is not None
+        else _submit_email_and_wait_next
+    )
+    complete_profile = (
+        _browser_helpers.complete_profile_page if _browser_helpers is not None
+        else _complete_profile_page
+    )
     if not str(proxy or "").strip():
         raise RuntimeError(
             "Roxy 注册必须使用统一代理池已领取线路，禁止无代理 Profile 或直连"
@@ -1154,7 +1169,7 @@ def run_roxy_registration(
             report_job_progress("auth_redirect", "skipped", "从原窗口当前认证步骤继续")
         else:
             report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
-            next_state = _submit_email_and_wait_next(
+            next_state = submit_email(
                 driver,
                 email,
                 attempts=3,
@@ -1637,7 +1652,7 @@ def run_roxy_registration(
         if not verified_resume_session:
             report_job_progress("profile", "running", "正在填写账号资料")
             logger.info("[Roxy注册] 开始等待资料页/登录态")
-            profile_submitted = _complete_profile_page(
+            profile_submitted = complete_profile(
                 driver,
                 name,
                 birthday,
@@ -1689,6 +1704,7 @@ def run_roxy_registration(
                 },
                 "account_password": openai_password,
                 "registration_checkpoint": "core_persisted",
+                "registration_driver": registration_driver,
             },
         )
         core_persisted = True
@@ -1792,6 +1808,7 @@ def run_roxy_registration(
             proxy=proxy,
             email_source=selected_email_source,
             codex_result=codex_result,
+            registration_driver=registration_driver,
         )
         report_registered_account(account_id)
 
@@ -1816,6 +1833,7 @@ def run_roxy_registration(
                         email_source=selected_email_source,
                         totp_secret=totp_secret,
                         codex_result=codex_result,
+                        registration_driver=registration_driver,
                         twofa_result={
                             "status": "running",
                             "ok": False,
@@ -1882,6 +1900,7 @@ def run_roxy_registration(
             totp_secret=totp_secret,
             codex_result=codex_result,
             twofa_result=twofa_result,
+            registration_driver=registration_driver,
         )
         report_registered_account(account_id)
 
@@ -1989,7 +2008,7 @@ def run_roxy_registration(
             "registration_intent": "reconcile" if remote_identity == "existing" else "new",
             "auth": auth_result_for_registration(
                 {"success": True},
-                auth_method="roxy",
+                auth_method=registration_driver,
                 remote_identity=remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),
@@ -2124,7 +2143,7 @@ def run_roxy_registration(
             ),
             "auth": auth_result_for_registration(
                 {"success": False, "error_code": auth_error_code},
-                auth_method="roxy",
+                auth_method=registration_driver,
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),

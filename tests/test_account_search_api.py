@@ -71,6 +71,41 @@ class AccountSearchApiTests(PostgresTestCase):
                     self.assertEqual(payload["code"], "account_search_invalid")
                     self.assertTrue(payload["error"])
 
+    def test_roxy_source_search_is_exact_and_browser_category_includes_both_sources(self):
+        account_ids = {}
+        for driver in ("roxy", "roxy_oss"):
+            email = f"{driver}-search@example.test"
+            account_id = rs.insert_row(rs.ACCOUNTS, {"email": email})
+            account_ids[driver] = account_id
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"search-api-{driver}",
+                "email": email,
+                "account_id": account_id,
+                "job_type": "registration",
+                "data": {"config_snapshot": {"registration_driver": driver}},
+            })
+
+        for endpoint in ("/api/accounts", "/api/accounts/plan-check-status"):
+            for query, driver in (("roxy", "roxy"), ("方式:roxy", "roxy"), ("本地Roxy", "roxy"),
+                                  ("开源Roxy", "roxy_oss"), ("方式:roxy_oss", "roxy_oss")):
+                with self.subTest(endpoint=endpoint, query=query):
+                    response = self.client.get(
+                        endpoint, query_string={"paged": "1", "q": query}, headers=self.headers,
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    payload = response.get_json()
+                    self.assertEqual(payload["total"], 1)
+                    self.assertEqual(payload["items"][0]["id"], account_ids[driver])
+            for query in ("browser", "浏览器"):
+                with self.subTest(endpoint=endpoint, query=query):
+                    response = self.client.get(
+                        endpoint, query_string={"paged": "1", "q": query}, headers=self.headers,
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    payload = response.get_json()
+                    self.assertEqual(payload["total"], 2)
+                    self.assertEqual({row["id"] for row in payload["items"]}, set(account_ids.values()))
+
     def test_legacy_unpaged_list_still_returns_an_array(self):
         response = self.client.get("/api/accounts", query_string={"q": "协议/jp"}, headers=self.headers)
         self.assertEqual(response.status_code, 200)

@@ -16,6 +16,35 @@ class FeatureAvailabilityTests(PostgresTestCase):
         self.assertEqual(result["driver"], "protocol_oss")
         self.assertEqual(result["reason"], "")
 
+    def test_open_source_roxy_requires_the_same_browser_configuration(self):
+        for configured in (False, True):
+            with self.subTest(configured=configured), patch.multiple(
+                "config.roxybrowser",
+                REGISTRATION_DRIVER="roxy_oss",
+                ROXY_API_BASE="http://127.0.0.1:50000" if configured else "",
+                ROXY_API_TOKEN="test-token" if configured else "",
+                ROXY_WORKSPACE_ID="test-workspace" if configured else "",
+            ):
+                result = feature_availability._registration_driver_status()
+
+            self.assertEqual(result["enabled"], configured)
+            self.assertEqual(result["driver"], "roxy_oss")
+            if not configured:
+                self.assertIn("ROXY_API_BASE", result["reason"])
+
+    def test_codex_following_open_source_roxy_requires_browser_configuration(self):
+        with patch.multiple(
+            "config.roxybrowser",
+            REGISTRATION_DRIVER="roxy_oss",
+            ROXY_API_BASE="",
+            ROXY_API_TOKEN="",
+            ROXY_WORKSPACE_ID="",
+        ), patch("config.codex.CODEX_OAUTH_DRIVER", "same_as_registration"):
+            result = feature_availability._codex_retry_status()
+
+        self.assertFalse(result["enabled"])
+        self.assertIn("ROXY_API_BASE", result["reason"])
+
     def test_icloud_hide_allows_dynamic_account_discovery_without_account_id(self):
         with (
             patch.multiple(

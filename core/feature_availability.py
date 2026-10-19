@@ -108,7 +108,7 @@ def _registration_driver_status() -> dict[str, Any]:
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
     if driver in {"protocol", "protocol_oss", "api", "http"}:
         return _feature(True) | {"driver": driver}
-    if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
+    if driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
             ("ROXY_API_TOKEN", getattr(roxy, "ROXY_API_TOKEN", "")),
@@ -134,6 +134,7 @@ def _codex_retry_status() -> dict[str, Any]:
     driver = str(getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+        driver = {"protocol_oss": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
     if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),

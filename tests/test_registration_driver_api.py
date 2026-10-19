@@ -33,8 +33,13 @@ class RegistrationDriverApiTests(unittest.TestCase):
                 },
                 {
                     "value": "roxy",
-                    "label": "RoxyBrowser",
+                    "label": "本地 Roxy",
                     "description": "使用本地 RoxyBrowser 注册与账号后处理流程。",
+                },
+                {
+                    "value": "roxy_oss",
+                    "label": "开源 Roxy",
+                    "description": "使用固定上游页面识别与表单辅助，认证提交、任务恢复和账号后处理沿用本地服务。",
                 },
             ],
         )
@@ -68,6 +73,19 @@ class RegistrationDriverApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("registration_driver", response.get_json()["error"])
         submit.assert_not_called()
+
+    def test_open_source_roxy_debug_registration_reaches_service(self):
+        with patch("config.email.USE_EMAIL_SERVICE", False), patch(
+            "config.register.REGISTER_EMAIL", "manual@example.test"
+        ), patch("webui.routes.jobs.svc.submit_registration", return_value=[{"id": 9}]) as submit:
+            response = self.client.post(
+                "/api/jobs",
+                json={"count": 1, "workers": 1, "registration_driver": "roxy_oss", "debug_enabled": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["registration_driver"], "roxy_oss")
+        submit.assert_called_once_with(count=1, workers=1, registration_driver="roxy_oss", debug_enabled=True)
 
 
 if __name__ == "__main__":

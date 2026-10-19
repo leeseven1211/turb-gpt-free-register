@@ -70,3 +70,11 @@ test('注册请求使用配置中的 driver 并在结果提示中显示协议名
   assert.match(warning.innerHTML, /开源 Protocol/);
   assert.equal(batchId, 'batch-fixture');
 });
+
+test('注册任务可在选项尚未加载时区分开源和本地 Roxy', () => {
+  const context = {REGISTRATION_DRIVERS: []};
+  vm.createContext(context);
+  vm.runInContext(functionSource('registrationDriverLabel'), context);
+  assert.equal(context.registrationDriverLabel('roxy_oss'), '开源 Roxy');
+  assert.equal(context.registrationDriverLabel('roxy'), '本地 Roxy');
+});
