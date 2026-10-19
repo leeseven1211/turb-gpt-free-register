@@ -107,7 +107,8 @@ def create_dashboard_blueprint(context: WebUIContext):
         """平台总览：仅返回聚合、配置状态与脱敏的运行中租约。"""
         from config import email as email_cfg
         from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
-        from core.proxy_provider import active_proxy_leases, registration_proxy_mode
+        from core.proxy_pool import pool_source
+        from core.proxy_provider import active_proxy_leases
         aggregates = admin_repository.dashboard_aggregates()
         account_counts = aggregates["accounts"]
         job_counts = dict(aggregates["jobs"]["counts"])
@@ -190,7 +191,7 @@ def create_dashboard_blueprint(context: WebUIContext):
                 "enabled_count": len(enabled_sources),
             },
             "proxy": {
-                "platform": registration_proxy_mode(),
+                "platform": pool_source(),
                 "active_leases": len(active_leases),
                 "leases": active_leases,
             },

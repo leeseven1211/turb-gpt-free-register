@@ -59,6 +59,17 @@ PROXY_1024_ACQUIRE_INTERVAL = schema_default("PROXY_1024_ACQUIRE_INTERVAL")
 # 旧提取器兼容项；独立代理池始终通过 PostgreSQL 协调库存和租约。
 PROXY_1024_PERSIST_LEASES = True
 
+# 711Proxy 动态住宅按流量提取 API。完整 URL 含密钥，只保存在 .env。
+# 代理池按目标国家使用粘性会话，并关闭供应商提前换 IP。
+PROXY_711_API_URL = schema_default("PROXY_711_API_URL")
+PROXY_711_PROTOCOL = schema_default("PROXY_711_PROTOCOL")
+PROXY_711_SESSION_MINUTES = schema_default("PROXY_711_SESSION_MINUTES")
+PROXY_711_API_TIMEOUT = schema_default("PROXY_711_API_TIMEOUT")
+PROXY_711_ACQUIRE_TIMEOUT = schema_default("PROXY_711_ACQUIRE_TIMEOUT")
+PROXY_711_VALIDATE_ATTEMPTS = schema_default("PROXY_711_VALIDATE_ATTEMPTS")
+PROXY_711_RECENT_TTL = schema_default("PROXY_711_RECENT_TTL")
+PROXY_711_ACQUIRE_INTERVAL = schema_default("PROXY_711_ACQUIRE_INTERVAL")
+
 # 注册浏览器遇到明确的代理瞬时错误时，释放当前租约并换一条线路重试。
 # 这里只控制额外重试次数，不改变注册线程池并发数。
 REGISTRATION_PROXY_RETRIES = schema_default("REGISTRATION_PROXY_RETRIES")

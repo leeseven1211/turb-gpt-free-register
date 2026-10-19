@@ -17,6 +17,32 @@ class DashboardUiScriptTests(unittest.TestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
     MODERN_CODEX_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/codex.js"
 
+    def test_dashboard_proxy_platform_labels_follow_current_source_and_keep_legacy_aliases(self):
+        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
+        function_source = source[:source.index("function renderDashboard")]
+        harness = f"""
+const assert = require('node:assert/strict');
+function esc(value) {{ return String(value ?? ''); }}
+function attrEsc(value) {{ return String(value ?? ''); }}
+{function_source}
+for (const [platform, label, available] of [
+  ['1024proxy', '1024Proxy', true], ['711proxy', '711Proxy', true],
+  ['manual', '手动代理池', true], ['1024', '1024Proxy', true],
+  ['pool', '静态代理池', true], ['none', '直连', false], ['direct', '直连', false],
+]) {{
+  const data = {{proxy: {{platform, active_leases: 0, leases: []}}}};
+  assert.equal(overviewProxyPlatformLabel(platform), label);
+  assert.equal(overviewRegistryCard('panel-proxy').available(data), available);
+  assert.ok(overviewRegistryCard('panel-proxy').render(data).includes(label));
+  assert.ok(overviewRegistryCard('metric-proxy').render(data).includes(label));
+}}
+assert.equal(overviewProxyPlatformLabel(' 711PROXY '), '711Proxy');
+console.log('ok');
+"""
+        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok")
+
     def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
         source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
         start = 0
@@ -469,7 +495,7 @@ console.log('ok');
                 self.assertNotIn("/static/js/legacy/", html)
                 self.assertNotIn("ui_mode=", " ".join(response.headers.getlist("Set-Cookie")))
 
-    @patch("core.proxy_provider.registration_proxy_mode", return_value="1024")
+    @patch("core.proxy_pool.pool_source", return_value="1024proxy")
     @patch("core.proxy_provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
     @patch("webui.app.admin_repository.dashboard_aggregates", return_value={
         "accounts": {"total": 3, "active": 2, "archived": 1, "codex_ready": 1,
@@ -488,18 +514,22 @@ console.log('ok');
         "codex": {"total": 2, "exported": 1, "pending": 1},
     })
     def test_dashboard_returns_aggregates_without_account_secrets(self, *_mocks):
-        response = self.client.get("/api/dashboard", headers=self.headers)
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertEqual(payload["accounts"]["total"], 3)
-        self.assertEqual(payload["accounts"]["active"], 2)
-        self.assertEqual(payload["accounts"]["plans"], {"free": 1, "free_trial_eligible": 1})
-        self.assertEqual(payload["email"]["local_available"], 11)
-        self.assertEqual(payload["jobs"]["today_counts"], {"success": 1, "partial_success": 1, "failed": 0})
-        self.assertEqual(payload["proxy"]["active_leases"], 1)
-        self.assertEqual(payload["proxy"]["platform"], "1024")
-        self.assertNotIn("access_token", str(payload))
-        self.assertNotIn("api_key", str(payload).lower())
+        for source in ("1024proxy", "711proxy", "manual"):
+            with self.subTest(source=source):
+                # 切换来源后旧租约仍可存续，总览平台必须使用当前池来源。
+                _mocks[-1].return_value = source
+                response = self.client.get("/api/dashboard", headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertEqual(payload["accounts"]["total"], 3)
+                self.assertEqual(payload["accounts"]["active"], 2)
+                self.assertEqual(payload["accounts"]["plans"], {"free": 1, "free_trial_eligible": 1})
+                self.assertEqual(payload["email"]["local_available"], 11)
+                self.assertEqual(payload["jobs"]["today_counts"], {"success": 1, "partial_success": 1, "failed": 0})
+                self.assertEqual(payload["proxy"]["active_leases"], 1)
+                self.assertEqual(payload["proxy"]["platform"], source)
+                self.assertNotIn("access_token", str(payload))
+                self.assertNotIn("api_key", str(payload).lower())
 
     @patch("webui.routes.dashboard.admin_repository.dashboard_aggregates", return_value={
         "accounts": {"total": 0, "active": 0, "archived": 0, "codex_ready": 0, "plans": {}},
@@ -511,7 +541,7 @@ console.log('ok');
         "codex": {},
     })
     @patch("core.proxy_provider.active_proxy_leases", return_value=[])
-    @patch("core.proxy_provider.registration_proxy_mode", return_value="none")
+    @patch("core.proxy_pool.pool_source", return_value="manual")
     def test_dashboard_email_sources_include_visibility_and_forward_butler_dependency(
         self, *_mocks
     ):
@@ -541,7 +571,7 @@ console.log('ok');
         "codex": {},
     })
     @patch("core.proxy_provider.active_proxy_leases", return_value=[])
-    @patch("core.proxy_provider.registration_proxy_mode", return_value="none")
+    @patch("core.proxy_pool.pool_source", return_value="manual")
     def test_dashboard_manual_mode_with_explicit_empty_source_has_no_enabled_source(
         self, *_mocks
     ):

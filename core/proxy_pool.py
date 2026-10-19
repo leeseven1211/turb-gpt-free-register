@@ -12,6 +12,7 @@ import time
 import uuid
 
 from core import proxy_pool_store as store, proxy_lease_store, record_store
+from core.proxy_sources import get_source, is_supply_source
 
 logger = logging.getLogger(__name__)
 _lock = threading.RLock()
@@ -84,19 +85,14 @@ def _profile_key(provider: str, options: dict) -> str:
     return hashlib.sha256(json.dumps([provider, options], sort_keys=True).encode()).hexdigest()
 
 
-def _provider_options(**kwargs) -> dict:
-    from config import proxy as cfg
-    return {"api_url": kwargs.get("api_url") if kwargs.get("api_url") is not None else cfg.PROXY_1024_API_URL,
-            "protocol": kwargs.get("protocol") or cfg.PROXY_1024_PROTOCOL,
-            "region": kwargs.get("region") if kwargs.get("region") is not None else cfg.PROXY_1024_REGION,
-            "session_minutes": kwargs.get("session_minutes") or cfg.PROXY_1024_SESSION_MINUTES}
+def _provider_options(source: str = "1024proxy", **kwargs) -> dict:
+    return get_source(source).options(**kwargs)
 
 
 def _normalize_pool_source(value: str | None) -> str:
     """将池来源配置归一为当前池内适配器名称。
 
-    业务调用方不应选择供应商。这里保留 ``1024proxy`` 和 ``manual`` 两个
-    池内来源，旧配置值只用于迁移，不会把新领取路由回 direct 或固定旧平台。
+    业务调用方不应选择供应商；旧配置值只用于迁移，不会让新领取绕过统一池。
     """
     raw = str(value or "").strip().lower()
     aliases = {
@@ -104,6 +100,8 @@ def _normalize_pool_source(value: str | None) -> str:
         "1024proxy": "1024proxy",
         "provider": "1024proxy",
         "provider:1024proxy": "1024proxy",
+        "711": "711proxy",
+        "711proxy": "711proxy",
         "pool": "manual",
         "static_pool": "manual",
         "proxy_pool": "manual",
@@ -133,7 +131,7 @@ def pool_source() -> str:
             # 旧 direct/none 只代表历史快照，不应偷偷回退静态池或直连；
             # 统一池的默认来源仍是 1024Proxy，缺配置时明确报错。
             source = "1024proxy"
-    if source not in {"1024proxy", "manual"}:
+    if source != "manual" and not is_supply_source(source):
         raise ValueError(f"不支持的代理池来源: {source!r}")
     return source
 
@@ -143,7 +141,7 @@ def default_country() -> str:
     from config import proxy as cfg
 
     raw = getattr(cfg, "PROXY_POOL_DEFAULT_COUNTRY", None)
-    if not str(raw or "").strip():
+    if not str(raw or "").strip() and pool_source() == "1024proxy":
         raw = getattr(cfg, "PROXY_1024_REGION", "")
     return _normalize_country(raw)
 
@@ -187,10 +185,12 @@ def _configured_profile_options() -> list[tuple[str, dict]]:
     def add(provider: str, options: dict) -> None:
         profiles[_profile_key(provider, options)] = (provider, options)
 
-    if source == "1024proxy" and str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
-        add("1024proxy", _provider_options(region=default_country() or None))
-        for country in countries:
-            add("1024proxy", _provider_options(region=country))
+    if is_supply_source(source):
+        options = _provider_options(source, region=default_country() or None)
+        if str(options["api_url"] or "").strip():
+            add(source, options)
+            for country in countries:
+                add(source, _provider_options(source, region=country))
     if source == "manual" and list(getattr(cfg, "PROXY_POOL", []) or []):
         urls = list(getattr(cfg, "PROXY_POOL", []) or [])
         add("proxy_pool", {"urls": urls})
@@ -205,11 +205,11 @@ def _public_source_profile(country: str | None) -> tuple[str, dict, dict]:
 
     source = pool_source()
     selected = _normalize_country(country)
-    if source == "1024proxy":
-        options = _provider_options(region=selected or None)
+    if is_supply_source(source):
+        options = _provider_options(source, region=selected or None)
         if not str(options["api_url"] or "").strip():
-            raise ValueError("代理池缺少 1024Proxy 提取配置")
-        return "1024proxy", options, {}
+            raise ValueError(f"代理池缺少 {get_source(source).label} 提取配置")
+        return source, options, {}
     urls = list(getattr(cfg, "PROXY_POOL", []) or [])
     if not urls:
         raise ValueError("统一代理池未配置手动代理地址")
@@ -248,10 +248,12 @@ def _profile_is_current(profile: Profile, configured_keys: set[str] | None = Non
         from config import proxy as cfg
 
         source = pool_source()
-        if source == "1024proxy":
-            if profile.provider != "1024proxy" or not str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
+        if is_supply_source(source):
+            if profile.provider != source:
                 return False
-            options = _provider_options(region=None)
+            options = _provider_options(source, region=None)
+            if not str(options["api_url"] or "").strip():
+                return False
             if any(profile.options.get(key) != options.get(key)
                    for key in ("api_url", "protocol", "session_minutes")):
                 return False
@@ -271,10 +273,11 @@ def _profile_is_current(profile: Profile, configured_keys: set[str] | None = Non
 
 
 def _validate_lifetime(provider: str, options: dict, policy: dict) -> None:
-    if provider == "1024proxy":
-        lifetime = max(1, min(120, int(options["session_minutes"]))) * 60
+    if is_supply_source(provider):
+        source = get_source(provider)
+        lifetime = max(1, min(source.max_session_minutes, int(options["session_minutes"]))) * 60
         if lifetime <= policy["min_ttl"]:
-            raise ProxyPoolConfigurationError("1024Proxy 会话时长必须大于代理池最短剩余寿命，并为出口检测预留时间")
+            raise ProxyPoolConfigurationError(f"{source.label} 会话时长必须大于代理池最短剩余寿命，并为出口检测预留时间")
 
 
 def start(*, prewarm: bool = False) -> None:
@@ -377,8 +380,8 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
     policy = settings()
     if _source_resolver is not None:
         provider, options, claim_scope = _source_resolver()
-    elif provider == "1024proxy":
-        options = _provider_options(**kwargs)
+    elif is_supply_source(provider):
+        options = _provider_options(provider, **kwargs)
         claim_scope = {}
     else:
         options = {"urls": list(static_urls or [])}
@@ -388,8 +391,8 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
         if selected_region:
             options["region"] = selected_region
         claim_scope = _claim_scope or _static_claim_scope(options)
-    if provider == "1024proxy" and not str(options["api_url"] or "").strip():
-        raise ValueError("代理池缺少 1024Proxy 提取配置")
+    if is_supply_source(provider) and not str(options["api_url"] or "").strip():
+        raise ValueError(f"代理池缺少 {get_source(provider).label} 提取配置")
     if provider == "proxy_pool" and not options["urls"]:
         raise ValueError("静态代理池为空")
     _validate_lifetime(provider, options, policy)
@@ -530,8 +533,7 @@ def _forget_anchor(lease_id: str) -> None:
 
 
 def release(lease, *, reason: str, fault: bool = False) -> None:
-    from config import proxy as cfg
-    cooldown = max(0, float(cfg.PROXY_1024_RECENT_TTL)) if lease.provider == "1024proxy" else 0
+    cooldown = max(0, get_source(lease.provider).settings()["recent_ttl"]) if is_supply_source(lease.provider) else 0
     store.release(lease, reason=reason, fault=fault, cooldown=cooldown)
     lease.state = "released"
     if not lease.metadata.get("allow_reuse") or fault:
@@ -638,7 +640,9 @@ def _check(resource: dict, policy: dict) -> None:
     exit_ip = region = None
     try:
         if anchor:
-            exit_ip, region = _validate_proxy_with_retries(anchor["proxy_url"], float(cfg.PROXY_1024_API_TIMEOUT), attempts=1)
+            timeout = (get_source(resource["provider"]).settings()["api_timeout"]
+                       if is_supply_source(resource["provider"]) else float(cfg.PROXY_1024_API_TIMEOUT))
+            exit_ip, region = _validate_proxy_with_retries(anchor["proxy_url"], timeout, attempts=1)
             good = bool(exit_ip) and region == anchor.get("region")
     except Exception:
         good = False
@@ -679,6 +683,8 @@ def maintain_once(*, role: str = "all") -> bool:
             with _lock:
                 _maintenance_turn += 1
                 profile.last_served = _maintenance_turn
+        acquire_timeout = (get_source(profile.provider).settings()["acquire_timeout"]
+                           if is_supply_source(profile.provider) else float(cfg.PROXY_1024_ACQUIRE_TIMEOUT))
         try:
             _validate_lifetime(profile.provider, profile.options, policy)
         except ProxyPoolConfigurationError as exc:
@@ -689,7 +695,7 @@ def maintain_once(*, role: str = "all") -> bool:
         # 先复检已有线路，避免新供应失败时健康旧库存一直无法恢复可领取状态。
         if role != "supply":
             check = store.take_check(profile.key, max_age=policy["max_age"],
-                                     timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 30,
+                                     timeout=acquire_timeout + 30,
                                      min_ttl=policy["min_ttl"])
             if check:
                 _check(check, policy)
@@ -705,8 +711,8 @@ def maintain_once(*, role: str = "all") -> bool:
         slots = store.reserve_refill_slots(
             profile.key, profile.provider, target=target, max_size=policy["max_size"],
             min_ttl=policy["min_ttl"], max_age=policy["max_age"],
-            limit=policy["workers"] if profile.provider == "1024proxy" else 1,
-            timeout=float(cfg.PROXY_1024_ACQUIRE_TIMEOUT) + 60,
+            limit=policy["workers"] if is_supply_source(profile.provider) else 1,
+            timeout=acquire_timeout + 60,
             reclaim_idle=profile.waiting > 0,
             **(_static_claim_scope(profile.options) if profile.provider == "proxy_pool" else {}),
         )
@@ -715,12 +721,14 @@ def maintain_once(*, role: str = "all") -> bool:
         delivered = 0
         failure_code = "supply_unavailable"
         try:
-            if profile.provider == "1024proxy":
+            if is_supply_source(profile.provider):
                 from core.proxy_supply import fetch_candidates
                 # 白名单粘性窗口可能重复返回相同前缀；请求一份有界候选列表，
                 # 适配器跳过已占用线路，只检测并交付预留槽位所需的数量。
+                source_options = {} if profile.provider == "1024proxy" else {"source": profile.provider}
                 candidates = fetch_candidates(profile.options, count=len(slots),
-                                              candidate_count=policy["max_size"], cancelled=_stop.is_set)
+                                              candidate_count=policy["max_size"], cancelled=_stop.is_set,
+                                              **source_options)
             else:
                 candidates = iter([_fetch_static(profile, slots[0], policy)])
             for lease in candidates:
@@ -787,7 +795,7 @@ def snapshot() -> dict:
         workers = sum(thread.is_alive() for thread in _threads)
         country_profiles = []
         for profile in _profiles.values():
-            if profile.provider not in {"1024proxy", "proxy_pool"}:
+            if profile.provider != "proxy_pool" and not is_supply_source(profile.provider):
                 continue
             region = str(profile.options.get("region") or "").strip().upper()
             if not region:

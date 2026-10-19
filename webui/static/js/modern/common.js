@@ -1116,7 +1116,7 @@ const FEATURE_SELECTORS = {
   codex_retry: '#btnRetrySelectedCodexV2,#btnRetrySelectedCodex,#btnCodexReauthorizeBulkV2,[data-codex-retry],[data-codex-reauthorize]',
   cpa_download: '#btnDownloadSelectedCpaV2,#btnDownloadSelectedCpa,#btnCodexDownloadBulkCpaV2,#btnCodexDownloadBulkCpa,[data-codex-download-cpa]',
   deactivation_mail: '#btnCheckSelectedDeactivationMailV2,#btnCheckSelectedDeactivationMail,[data-account-deactivation-mail]',
-  proxy_provider_test: '#btnTestProxy1024V2,#btnTestProxy1024',
+  proxy_provider_test: '#btnTestProxyProviderV2,#btnTestProxy1024V2,#btnTestProxy1024',
   roxy_workspaces: '#btnLoadRoxyWorkspacesV2,#btnLoadRoxyWorkspaces',
   cloudmail_token: '#btnGenCloudMailTokenV2,#btnGenCloudMailToken',
   cloudmail_domains: '#btnLoadCloudMailDomainsV2,#btnLoadCloudMailDomains',

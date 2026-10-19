@@ -250,7 +250,8 @@ const OVERVIEW_CARD_REGISTRY = [
 ];
 
 function overviewProxyPlatformLabel(platform) {
-  return ({'1024':'1024Proxy',pool:'静态代理池',none:'直连',direct:'直连'})[platform] || platform || '未配置';
+  const value = String(platform || '').trim();
+  return ({'1024proxy':'1024Proxy','711proxy':'711Proxy',manual:'手动代理池','1024':'1024Proxy',pool:'静态代理池',none:'直连',direct:'直连'})[value.toLowerCase()] || value || '未配置';
 }
 
 function overviewRegistryCard(id) {

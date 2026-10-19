@@ -80,33 +80,39 @@ def create_integrations_blueprint(context: WebUIContext):
 
     @bp.post("/api/proxy-provider/test")
     def api_proxy_provider_test():
-        """实际提取并检测一个 1024Proxy IP，供配置页本地联调。"""
+        """通过同一供给适配器提取、检测并释放一条测试线路。"""
         data = request.get_json(silent=True) or {}
         lease = None
         try:
-            from core.proxy_provider import fetch_1024_proxy, release_proxy
+            from contextlib import closing
+            from core.proxy_provider import release_proxy
+            from core.proxy_sources import get_source
+            from core.proxy_supply import fetch_candidates
 
-            lease = fetch_1024_proxy(
+            source = get_source(str(data.get("provider") or "1024proxy"))
+            options = source.options(
                 api_url=str(data.get("api_url") or "").strip() or None,
                 protocol=str(data.get("protocol") or "").strip() or None,
-                # 空字符串有明确语义：本次测试沿用 API URL 里的 region，
-                # 不能回退到进程中已经保存的 PROXY_1024_REGION。
+                # 空字符串沿用提取 URL 的 region，不回退历史供应商国家。
                 region=str(data.get("region") or "").strip(),
                 session_minutes=data.get("session_minutes"),
-                validate=bool(data.get("validate", True)),
-                job_id="webui-test",
             )
+            with closing(fetch_candidates(options, count=1, source=source.name)) as candidates:
+                lease = next(candidates, None)
+            if lease is None:
+                raise RuntimeError("本轮没有通过出口检测的代理线路")
             result = lease.public_dict()
             release_proxy(lease, reason="webui_test")
             lease = None
             return jsonify({
                 "ok": True,
                 "lease": result,
-                "message": "已成功提取并检测 1 个 1024Proxy IP；测试租约已在本地释放",
+                "message": f"已成功提取并检测 1 个 {source.label} IP；测试租约已在本地释放",
             })
         except Exception as exc:
-            logger.warning("1024Proxy 本地测试失败：%s", type(exc).__name__)
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+            logger.warning("代理供应商本地测试失败：%s", type(exc).__name__)
+            # 网络异常可能携带提取 URL、白名单 IP 或凭据，不向浏览器回传正文。
+            return jsonify({"ok": False, "error": f"代理测试失败（{type(exc).__name__}），请检查当前来源的提取 API、白名单、额度和目标国家"}), 400
         finally:
             if lease is not None:
                 try:

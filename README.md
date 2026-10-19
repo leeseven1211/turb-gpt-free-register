@@ -670,7 +670,25 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 每个注册任务领取独立租约，实际出口国家写入任务和账号。注册结束后的账号动作仍从统一代理池领取，优先沿用账号注册国家。
 - 注册完成后立即查套餐时，优先复用仍有效的注册代理并在释放前同步落库，从而保证套餐/Plus 资格查询与注册出口一致；历史账号或手动操作再按账号已保存地区领取线路。
 - 住宅代理只用于访问 OpenAI/ChatGPT 的账号功能。邮箱、短信、CPA、sub2api、提链服务、Roxy 控制 API 和其他本地接口保持直连，不得套用住宅代理，也不得把系统 `HTTP_PROXY/HTTPS_PROXY` 意外注入这些客户端。
-- UI 中选择的地区、1024Proxy API URL 的 `region` 参数、Roxy Profile 的代理字段、任务日志与账号记录必须保持一致。完整代理 URL、用户名和密码只允许保存在 `.env`，日志和 UI 只能显示脱敏信息。
+- UI 中选择的地区、供应商 API URL 的 `region` 参数、Roxy Profile 的代理字段、任务日志与账号记录必须保持一致。完整代理 URL、用户名和密码只允许保存在 `.env`，日志和 UI 只能显示脱敏信息。
+
+#### 711Proxy 与统一代理供给
+
+「配置 → 代理与网络 → 代理来源」支持 `1024proxy`、`711proxy` 和 `manual`。供应商的 URL 参数、数量上限和会话寿命由 `core/proxy_sources.py` 管理；`core/proxy_supply.py` 共用提取、候选去重、出口检测和失败回收，业务任务仍只从统一库存领取。切换来源只影响后续领取；旧来源停止补货，已发放租约保持到释放。
+
+711 当前接入[动态住宅代理 GB 的白名单 API](https://docs.711proxy.com/proxies/residential-proxies-gb/markdown)：先在 711 面板将调用 API 的公网 IPv4 加入白名单，选择对应套餐、代理主机并生成完整 URL，然后填入 `.env` 或配置页。API 提取绕过系统代理，请核对白名单对应的是服务进程直连出口。
+
+```dotenv
+PROXY_POOL_SOURCE=711proxy
+PROXY_POOL_DEFAULT_COUNTRY=JP
+PROXY_711_API_URL=请替换为面板生成的完整提取_URL
+PROXY_711_PROTOCOL=http
+PROXY_711_SESSION_MINUTES=30
+```
+
+711 适配器保留 URL 的主机、端口、`zone`、`ptype` 及其他授权参数，按目标国家覆盖 `region`，使用 `count`（最多 900）、`proto`、换行 TXT 输出和 `sessType=sticky` / `sessTime`（1–180 分钟），并关闭 `sessAuto` 提前换 IP。`socks5h` 以 `proto=socks5` 提取，在客户端保持代理端 DNS 解析。供应商返回的是网关地址，实际出口 IP 和国家仍须检测后才能入池；粘性时长须大于代理池最短剩余寿命。
+
+`PROXY_711_API_TIMEOUT`、`PROXY_711_ACQUIRE_TIMEOUT`、`PROXY_711_VALIDATE_ATTEMPTS`、`PROXY_711_RECENT_TTL` 和 `PROXY_711_ACQUIRE_INTERVAL` 分别控制请求/检测超时、补货总预算、检测次数、释放隔离期和提取间隔。「提取并测试 1 个 IP」使用当前供应商及页面草稿参数，测试完成后释放本地测试租约，会消耗少量流量。该入口不修改白名单；711 用户名密码生成方式尚未作为自动供给来源接入，手动地址仍使用 `manual`。
 
 #### Roxy 环境与登录态
 

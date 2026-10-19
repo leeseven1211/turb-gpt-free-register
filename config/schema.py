@@ -339,6 +339,14 @@ _DEFAULTS: dict[str, Any] = {
     "PROXY_1024_VALIDATE_ATTEMPTS": 2,
     "PROXY_1024_RECENT_TTL": 1800,
     "PROXY_1024_ACQUIRE_INTERVAL": 0.6,
+    "PROXY_711_API_URL": "",
+    "PROXY_711_PROTOCOL": "http",
+    "PROXY_711_SESSION_MINUTES": 30,
+    "PROXY_711_API_TIMEOUT": 12.0,
+    "PROXY_711_ACQUIRE_TIMEOUT": 60.0,
+    "PROXY_711_VALIDATE_ATTEMPTS": 2,
+    "PROXY_711_RECENT_TTL": 1800,
+    "PROXY_711_ACQUIRE_INTERVAL": 0.6,
     "PROXY_POOL": ["socks5://127.0.0.1:7897"],
     "PROXY_POOL_SOURCE": "1024proxy",
     "PROXY_POOL_DEFAULT_COUNTRY": "JP",
@@ -536,11 +544,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PLAN_CHECK_PROXY_ALLOW_REUSE", "file": "proxy.py", "type": "bool", "group": "代理与网络",
-        "label": "查询套餐允许复用 IP", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；开启后允许复用 IP，1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。关闭后查套餐恢复严格独占和冷却，注册及认证任务继续使用独占租约。",
+        "label": "查询套餐允许复用 IP", "help": "仅影响使用代理池的查套餐；开启后允许复用已检测 IP，各供应商及手动地址仍验证出口国家和健康状态。关闭后查套餐恢复严格独占和冷却，注册及认证任务继续使用独占租约。",
     },
     {
         "key": "PLAN_CHECK_PROXY_REUSE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐（1024Proxy/静态代理池）；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；1024Proxy 仍验证出口国家，静态代理池仍使用健康校验。仅在允许复用 IP 开启时生效。",
+        "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；各供应商及手动地址仍验证出口国家和健康状态。仅在允许复用 IP 开启时生效。",
     },
     {
         "key": "PLAN_CHECK_PAYMENT_METHODS_ENABLED", "file": "proxy.py", "type": "bool", "group": "代理与网络",
@@ -751,7 +759,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ROXY_CREATE_USE_PROXY_POOL", "file": "roxybrowser.py", "type": "bool", "group": "RoxyBrowser",
-        "label": "创建环境使用代理池", "help": "仅用于静态「代理池」模式；选择 1024Proxy 时会自动把每个任务的独立家宽租约写入 Roxy proxyInfo，且优先于此开关",
+        "label": "创建环境使用代理池", "help": "仅用于手动代理地址来源；选择 API 供应商时会自动把每个任务的独立租约写入 Roxy proxyInfo，且优先于此开关",
     },
     {
         "key": "ROXY_PROXY_CHECK_CHANNEL", "file": "roxybrowser.py", "type": "str", "group": "RoxyBrowser",
@@ -1104,7 +1112,7 @@ _FIELD_DEFINITIONS = [
     # ---- 代理与网络 ----
     {
         "key": "PROXY_POOL_SOURCE", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "代理来源", "help": "注册和账号动作统一从代理池领取；在此选择 1024Proxy 或手动地址。切换只影响后续领取，已发放租约保持到本轮结束",
+        "label": "代理来源", "help": "注册和账号动作统一从代理池领取；在此选择 1024Proxy、711Proxy 或手动地址。切换只影响后续领取，已发放租约保持到本轮结束",
     },
     {
         "key": "PROXY_POOL_DEFAULT_COUNTRY", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -1177,6 +1185,39 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
+        "label": "提取最小间隔(秒)", "help": "单个进程后台调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
+    },
+    {
+        "key": "PROXY_711_API_URL", "file": "proxy.py", "type": "str", "group": "代理与网络",
+        "label": "711Proxy 供给 API", "help": "粘贴动态住宅按流量套餐的提取 API 完整 URL；代理池固定使用粘性会话并关闭提前换 IP，按目标国家提取并检测；仅保存到 .env",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "PROXY_711_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理与网络",
+        "label": "返回代理协议", "help": "支持 http、socks5、socks5h；http 支持 HTTPS 目标访问，必须与 711Proxy 生成提取 API 时选择的协议一致",
+    },
+    {
+        "key": "PROXY_711_SESSION_MINUTES", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "粘性时长(分钟)", "help": "默认 30，允许 1~180；代理池固定使用粘性会话并关闭提前换 IP，实际可用期仍由供应商决定",
+    },
+    {
+        "key": "PROXY_711_API_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
+        "label": "API/检测超时(秒)", "help": "提取 API 和出口 IP 检测的单次超时，建议 10~20 秒",
+    },
+    {
+        "key": "PROXY_711_ACQUIRE_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理与网络",
+        "label": "后台补货预算(秒)", "help": "锁等待、节流、提取和出口检测共享的预算；在途网络请求受底层超时约束，任务领取等待另行设置",
+    },
+    {
+        "key": "PROXY_711_VALIDATE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "同端点检测次数", "help": "出口检测遇到超时、连接或 SSL 瞬时错误时，先重试同一代理；建议 2",
+    },
+    {
+        "key": "PROXY_711_RECENT_TTL", "file": "proxy.py", "type": "int", "group": "代理与网络",
+        "label": "最近 IP 隔离(秒)", "help": "任务释放后多久内拒绝重复分配同一 IP；默认 1800，与 30 分钟粘性时间一致",
+    },
+    {
+        "key": "PROXY_711_ACQUIRE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理与网络",
         "label": "提取最小间隔(秒)", "help": "单个进程后台调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
     },
     {
@@ -1401,7 +1442,7 @@ _FIELD_DEFINITIONS = [
 
 
 _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
-    "PROXY_POOL_SOURCE": _options(("1024proxy", "1024Proxy"), ("manual", "手动地址")),
+    "PROXY_POOL_SOURCE": _options(("1024proxy", "1024Proxy"), ("711proxy", "711Proxy"), ("manual", "手动地址")),
     "ROXY_RANDOM_OS_CHOICES": _options("Windows", "macOS", "Linux", "IOS", "Android"),
     "BROWSER_DATA_SAVER_AUTH_FLOWS": _options(
         ("token_refresh", "刷新 AT"), ("live_check", "账号查活"),
@@ -1503,6 +1544,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("pool", "静态代理池"), ("1024", "1024Proxy 平台 API"), ("none", "直连")
     ),
     "PROXY_1024_PROTOCOL": _options("http", "https", "socks5", "socks5h"),
+    "PROXY_711_PROTOCOL": _options("http", "socks5", "socks5h"),
     "PLAN_CHECK_PROXY_MODE": _options("auto", "proxy", "direct"),
     "ACCOUNT_ACTION_PROXY_MODE": _options(
         ("registration", "跟随注册线路"),
@@ -1613,6 +1655,12 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PROXY_1024_VALIDATE_ATTEMPTS": (1, 100),
     "PROXY_1024_RECENT_TTL": (0, 604800),
     "PROXY_1024_ACQUIRE_INTERVAL": (0, 300.0),
+    "PROXY_711_SESSION_MINUTES": (1, 180),
+    "PROXY_711_API_TIMEOUT": (0.1, 300.0),
+    "PROXY_711_ACQUIRE_TIMEOUT": (0.1, 3600.0),
+    "PROXY_711_VALIDATE_ATTEMPTS": (1, 100),
+    "PROXY_711_RECENT_TTL": (0, 604800),
+    "PROXY_711_ACQUIRE_INTERVAL": (0, 300.0),
     "PROXY_POOL_MIN_READY": (0, 1000),
     "PROXY_POOL_MAX_SIZE": (1, 1000),
     "PROXY_POOL_WAIT_TIMEOUT": (0, 86400),
@@ -1724,7 +1772,7 @@ _SECRET_KEYS = frozenset({
     "CLOUDFLARE_SIGNAL_API_KEY", "CLOUDFLARE_CUSTOM_AUTH", "QQ_IMAP_PASSWORD",
     "MAIL_NEST_API_KEY", "REMAIL_API_KEY", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_AUTH_TOKEN",
     "ICLOUD_HME_API_TOKEN", "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
-    "PROXY_1024_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY",
+    "PROXY_1024_API_URL", "PROXY_711_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY",
     "EXTRACT_LINK_CDK", "SUB2API_API_KEY", "CPA_MANAGEMENT_KEY", "SMS_API_KEY",
     "H_ADMIN_AUTH_CODE", "L_ADMIN_AUTH_CODE", "PROXY_POOL",
 })
@@ -2091,18 +2139,28 @@ def _cross_field_errors(
     except (TypeError, ValueError):
         # 各字段自身的类型/范围错误已由 _validate_value 报告。
         pass
+    proxy_api_sources = {
+        "1024proxy": ("PROXY_1024", "1024Proxy"),
+        "711proxy": ("PROXY_711", "711Proxy"),
+    }
+    source = values.get("PROXY_POOL_SOURCE")
+    source_config = proxy_api_sources.get(source)
     try:
-        if values.get("PROXY_POOL_SOURCE") == "1024proxy" and int(values.get("PROXY_1024_SESSION_MINUTES")) * 60 <= int(values.get("PROXY_POOL_MIN_TTL")):
-            errors["PROXY_POOL_MIN_TTL"] = "最短剩余寿命必须小于 1024Proxy 会话时长，并为出口检测预留时间"
+        if source_config:
+            prefix, label = source_config
+            if int(values.get(f"{prefix}_SESSION_MINUTES")) * 60 <= int(values.get("PROXY_POOL_MIN_TTL")):
+                errors["PROXY_POOL_MIN_TTL"] = f"最短剩余寿命必须小于 {label} 会话时长，并为出口检测预留时间"
     except (TypeError, ValueError):
         pass
-    proxy_supply_keys = {"PROXY_POOL_SOURCE", "PROXY_POOL", "PROXY_1024_API_URL"}
+    proxy_supply_keys = {"PROXY_POOL_SOURCE", "PROXY_POOL", *(f"{prefix}_API_URL" for prefix, _ in proxy_api_sources.values())}
     if updated_keys is not None and proxy_supply_keys.intersection(updated_keys):
-        source = values.get("PROXY_POOL_SOURCE")
         if source == "manual" and not values.get("PROXY_POOL"):
             errors["PROXY_POOL"] = "手动来源至少需要一条完整代理地址"
-        elif source == "1024proxy" and not str(values.get("PROXY_1024_API_URL") or "").strip():
-            errors["PROXY_1024_API_URL"] = "1024Proxy 来源需要配置提取 API"
+        elif source_config:
+            prefix, label = source_config
+            api_key = f"{prefix}_API_URL"
+            if not str(values.get(api_key) or "").strip():
+                errors[api_key] = f"{label} 来源需要配置提取 API"
     return errors
 
 

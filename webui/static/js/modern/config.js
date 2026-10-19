@@ -335,8 +335,8 @@ function proxyConfigSectionForKey(key) {
   if (['ACCOUNT_PASSWORD_PROXY_MODE','ACCOUNT_2FA_PROXY_MODE','ACCOUNT_PLAN_CHECK_PROXY_MODE','PLAN_CHECK_PROXY_ALLOW_REUSE','PLAN_CHECK_PROXY_REUSE_LIMIT','PLAN_CHECK_PAYMENT_METHODS_ENABLED','PLAN_CHECK_COUNTRIES','PLAN_CHECK_COUNTRY_WAIT_TIMEOUT','ACCOUNT_LIVE_CHECK_PROXY_MODE','ACCOUNT_REFRESH_AT_PROXY_MODE','ACCOUNT_CODEX_PROXY_MODE','ACCOUNT_EMAIL_CHANGE_PROXY_MODE','PLAN_CHECK_TIMEOUT','PLAN_CHECK_MAX_ATTEMPTS','PLAN_CHECK_RETRY_DELAY','PLAN_CHECK_REGISTRATION_RECHECK_DELAY','PLAN_CHECK_MIN_INTERVAL','PLAN_CHECK_JITTER'].includes(key)) {
     return ['高级兼容', '旧版逐动作来源字段仅用于读取历史快照；新任务按账号国家和业务用途从统一代理池领取线路。'];
   }
-  if (key.startsWith('PROXY_1024_') || key.startsWith('REGISTRATION_PROXY_')) {
-    return ['代理来源', '1024Proxy 当前的提取、检测、粘性和换线参数；后续提供商可以继续注册到这里。'];
+  if (Object.values(PROXY_PROVIDER_CONFIG_V2).some(provider => key.startsWith(provider.prefix)) || key.startsWith('REGISTRATION_PROXY_')) {
+    return ['代理来源', '当前供应商的提取、检测和粘性参数；切换来源会保留各供应商配置。'];
   }
   return ['高级兼容', '历史代理配置保留供兼容读取；新任务统一向代理池申请线路。'];
 }
@@ -1229,55 +1229,66 @@ function renderConfigPlainFieldV2(f) {
     : f.key === 'PROXY_POOL_COUNTRIES' ? '选择额外预热国家；不选时按现有线路策略备货。' : null;
   return renderConfigSettingRowV2(f, null, help ? {help} : {});
 }
+const PROXY_PROVIDER_CONFIG_V2 = Object.freeze({
+  '1024proxy': {label: '1024Proxy', prefix: 'PROXY_1024_'},
+  '711proxy': {label: '711Proxy', prefix: 'PROXY_711_'},
+});
+
 function renderProxyProviderToolsV2() {
+  const provider = PROXY_PROVIDER_CONFIG_V2[proxySourceV2()];
+  if (!provider) return '';
   return `
     <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
-        <b>1024Proxy 本地联调</b>
+        <b>${esc(provider.label)} 本地联调</b>
         <div class="hint">会实际提取并检测 1 个 IP，可能产生少量流量或配额消耗。API 请求会绕过系统代理。</div>
       </div>
       <div class="row">
-        <div class="action-cell"><button class="btn" type="button" id="btnTestProxy1024V2">提取并测试 1 个 IP</button></div>
+        <div class="action-cell"><button class="btn" type="button" id="btnTestProxyProviderV2">提取并测试 1 个 IP</button></div>
       </div>
-      <div id="proxy1024TestStatusV2" class="muted" style="font-size:12px;">尚未测试</div>
+      <div id="proxyProviderTestStatusV2" class="muted" role="status" aria-live="polite" style="font-size:12px;">尚未测试</div>
     </div>
   `;
 }
 
 function bindProxyProviderToolsV2() {
-  const btn = $('#btnTestProxy1024V2');
+  const btn = $('#btnTestProxyProviderV2');
   if (!btn || btn.dataset.bound) return;
   btn.dataset.bound = '1';
-  btn.addEventListener('click', testProxy1024V2);
+  btn.addEventListener('click', testProxyProviderV2);
 }
 
-async function testProxy1024V2() {
-  const btn = $('#btnTestProxy1024V2');
-  const status = $('#proxy1024TestStatusV2');
+async function testProxyProviderV2() {
+  const btn = $('#btnTestProxyProviderV2');
+  const status = $('#proxyProviderTestStatusV2');
+  const source = proxySourceV2();
+  const provider = PROXY_PROVIDER_CONFIG_V2[source];
+  if (!provider) return;
   const value = (key, fallback = '') => {
     const el = document.querySelector(`#configSectionsV2 [data-key="${key}"]`);
-    return el ? readConfigElementValue(el, CONFIG.find(x => x.key === key)) : fallback;
+    return el ? readConfigElementValue(el, CONFIG.find(x => x.key === key)) : configFieldValueV2(key, fallback);
   };
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.textContent = '正在测试...'; }
   if (status) status.textContent = '正在提取并检测代理...';
   try {
     const r = await api('/api/proxy-provider/test', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
-        api_url: value('PROXY_1024_API_URL'),
+        provider: source,
+        api_url: value(`${provider.prefix}API_URL`),
         region: configFieldValueV2('PROXY_POOL_DEFAULT_COUNTRY', 'JP'),
-        protocol: value('PROXY_1024_PROTOCOL', 'http'),
-        session_minutes: value('PROXY_1024_SESSION_MINUTES', 30),
-        validate: value('PROXY_1024_VALIDATE', true),
+        protocol: value(`${provider.prefix}PROTOCOL`, 'http'),
+        session_minutes: value(`${provider.prefix}SESSION_MINUTES`, 30),
+        ...(source === '1024proxy' ? {validate: value('PROXY_1024_VALIDATE', true)} : {}),
       }),
     });
     const l = r.lease || {};
-    if (status) status.innerHTML = `✅ ${esc(l.provider || '1024Proxy')} · ${esc(l.endpoint || '-')} · 出口 ${esc(l.exit_ip || '-')} · ${esc(l.region || '-')} · 有效至 ${esc(l.expires_at || '-')}`;
+    if (status) status.innerHTML = `测试成功 · ${esc(l.provider || provider.label)} · ${esc(l.endpoint || '-')} · 出口 ${esc(l.exit_ip || '-')} · ${esc(l.region || '-')} · 有效至 ${esc(l.expires_at || '-')}`;
     showToast(r.message || '代理测试成功');
   } catch(e) {
     if (status) status.innerHTML = `<span style="color:var(--red);">测试失败：${esc(e.message)}</span>`;
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = '提取并测试 1 个 IP'; }
   }
 }
 function renderMixedConfigSectionV2(name, fields, intro) {
@@ -1358,17 +1369,19 @@ function renderEmailSourceManagerV2() {
   </section>`;
 }
 
+function proxySourceV2() {
+  return String(configFieldValueV2('PROXY_POOL_SOURCE', '1024proxy')).trim().toLowerCase();
+}
+
 function proxySourceIsManualV2() {
-  const field = CONFIG.find(item => item.key === 'PROXY_POOL_SOURCE');
-  const value = field && Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, field.key)
-    ? CONFIG_PENDING_UPDATES[field.key] : field?.value;
-  return String(value ?? '').trim().toLowerCase() === 'manual';
+  return proxySourceV2() === 'manual';
 }
 
 function proxySourceFieldVisibleV2(field) {
   if (CONFIG_NAV_QUERY_V2.trim()) return true;
   if (field.key === 'PROXY_POOL') return proxySourceIsManualV2();
-  if (String(field.key || '').startsWith('PROXY_1024_')) return !proxySourceIsManualV2();
+  const source = Object.entries(PROXY_PROVIDER_CONFIG_V2).find(([, provider]) => String(field.key || '').startsWith(provider.prefix));
+  if (source) return proxySourceV2() === source[0];
   return true;
 }
 
@@ -1397,7 +1410,7 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     : current.fields;
   const switches = visibleFields.filter(f => f.type === 'bool');
   const inputs = visibleFields.filter(f => f.type !== 'bool');
-  const sourcePrimaryKeys = new Set(['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_POOL', 'PROXY_1024_API_URL', 'PROXY_1024_PROTOCOL', 'PROXY_1024_SESSION_MINUTES']);
+  const sourcePrimaryKeys = new Set(['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_POOL', ...Object.values(PROXY_PROVIDER_CONFIG_V2).flatMap(provider => ['API_URL', 'PROTOCOL', 'SESSION_MINUTES'].map(key => `${provider.prefix}${key}`))]);
   const sourcePrimary = visibleFields.filter(f => sourcePrimaryKeys.has(f.key));
   const sourceAdvanced = visibleFields.filter(f => !sourcePrimaryKeys.has(f.key));
   const body = name === '代理与网络' && active === '任务用池'

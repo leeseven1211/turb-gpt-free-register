@@ -55,7 +55,7 @@ class WebUiAuthTests(PostgresTestCase):
             r.close()
 
     @patch("core.proxy_provider.release_proxy")
-    @patch("core.proxy_provider.fetch_1024_proxy")
+    @patch("core.proxy_supply.fetch_candidates")
     def test_proxy_provider_test_endpoint(self, acquire, release):
         lease = SimpleNamespace(public_dict=lambda: {
             "provider": "1024proxy",
@@ -64,7 +64,9 @@ class WebUiAuthTests(PostgresTestCase):
             "region": "US",
             "state": "leased",
         })
-        acquire.return_value = lease
+        def candidates(*_args, **_kwargs):
+            yield lease
+        acquire.side_effect = candidates
         r = self.client.post(
             "/api/proxy-provider/test",
             json={
@@ -79,6 +81,47 @@ class WebUiAuthTests(PostgresTestCase):
         self.assertTrue(r.get_json()["ok"])
         acquire.assert_called_once()
         release.assert_called_once_with(lease, reason="webui_test")
+
+    @patch("core.proxy_provider.release_proxy")
+    @patch("core.proxy_supply.fetch_candidates")
+    def test_proxy_provider_test_uses_711_and_releases_test_lease(self, acquire, release):
+        lease = SimpleNamespace(public_dict=lambda: {"provider": "711proxy", "region": "JP"})
+        closed = []
+
+        def candidates(*_args, **_kwargs):
+            try:
+                yield lease
+            finally:
+                closed.append(True)
+
+        acquire.side_effect = candidates
+        response = self.client.post(
+            "/api/proxy-provider/test",
+            json={"provider": "711proxy", "api_url": "http://example.test:8089/gen?zone=custom&ptype=1",
+                  "protocol": "socks5h", "session_minutes": 60, "region": "JP"},
+            headers={"X-Auth-Code": "test-auth"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["lease"]["provider"], "711proxy")
+        self.assertEqual(acquire.call_args.kwargs, {"count": 1, "source": "711proxy"})
+        self.assertEqual(acquire.call_args.args[0]["region"], "JP")
+        self.assertEqual(acquire.call_args.args[0]["protocol"], "socks5h")
+        self.assertEqual(closed, [True])
+        release.assert_called_once_with(lease, reason="webui_test")
+
+    @patch("core.proxy_supply.fetch_candidates", side_effect=RuntimeError("https://private.test?key=private-token"))
+    def test_proxy_provider_failure_does_not_expose_request_details(self, acquire):
+        response = self.client.post("/api/proxy-provider/test", json={"provider": "711proxy"},
+                                    headers={"X-Auth-Code": "test-auth"})
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("private", response.get_data(as_text=True))
+
+    @patch("core.proxy_supply.fetch_candidates")
+    def test_proxy_provider_test_rejects_unknown_supplier_before_network(self, acquire):
+        response = self.client.post("/api/proxy-provider/test", json={"provider": "unsupported"},
+                                    headers={"X-Auth-Code": "test-auth"})
+        self.assertEqual(response.status_code, 400)
+        acquire.assert_not_called()
 
     @patch("core.icloud_hme_client.test_connection")
     def test_icloud_hme_test_endpoint(self, test_connection):

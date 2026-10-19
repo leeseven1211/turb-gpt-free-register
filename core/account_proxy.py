@@ -233,8 +233,11 @@ def proxy_configuration_status(purpose: str | None = None) -> dict[str, Any]:
         source = pool_source()
     except Exception as exc:
         return {"ok": False, "mode": mode, "reason": str(exc)}
-    if source == "1024proxy" and not str(getattr(cfg, "PROXY_1024_API_URL", "") or "").strip():
-        return {"ok": False, "mode": mode, "reason": "统一代理池未配置 1024Proxy 提取 API"}
+    from core.proxy_sources import get_source, is_supply_source
+    if is_supply_source(source):
+        supplier = get_source(source)
+        if not str(supplier.options()["api_url"] or "").strip():
+            return {"ok": False, "mode": mode, "reason": f"统一代理池未配置 {supplier.label} 提取 API"}
     if source == "manual" and not list(getattr(cfg, "PROXY_POOL", []) or []):
         return {"ok": False, "mode": mode, "reason": "统一代理池未配置手动代理地址"}
     return {"ok": True, "mode": mode, "pool_source": source, "reason": None}

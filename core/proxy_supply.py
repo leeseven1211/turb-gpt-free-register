@@ -1,8 +1,9 @@
-"""代理池的 1024Proxy 补充适配器；不接收任务或注册批次。"""
+"""代理池的通用供应商补充流程；不接收任务或注册批次。"""
 from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import json
 import logging
 import time
 import uuid
@@ -11,6 +12,7 @@ import requests
 
 from core import proxy_lease_store
 from core import proxy_provider as provider
+from core.proxy_sources import get_source
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,22 @@ def _log_candidate_failure(endpoint: str, exc: requests.RequestException) -> Non
     )
 
 
+def _parse_candidates(text: str, *, source: str, label: str) -> list[str]:
+    """供应商错误正文可能包含密钥，公开异常只保留固定描述。"""
+    if source == "711proxy":
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and "code" in payload:
+            if str(payload["code"]).strip() != "200":
+                raise RuntimeError(f"{label} API 返回业务错误，请检查供应商配置或额度")
+    try:
+        return provider.parse_proxy_responses(text)
+    except (RuntimeError, ValueError, TypeError):
+        raise RuntimeError(f"{label} API 未返回可用代理地址") from None
+
+
 @contextmanager
 def _request_lock(deadline: float):
     if not provider._ACQUIRE_LOCK.acquire(timeout=_remaining(deadline, 3600)):
@@ -56,10 +74,12 @@ def fetch_candidates(
     count: int,
     candidate_count: int | None = None,
     cancelled=lambda: False,
+    source: str = "1024proxy",
 ):
     """请求有界候选窗口，先做数据库去重，再只验证需要交付的候选。"""
-    from config import proxy as cfg
-    deadline = time.monotonic() + float(cfg.PROXY_1024_ACQUIRE_TIMEOUT)
+    adapter = get_source(source)
+    settings = adapter.settings()
+    deadline = time.monotonic() + float(settings["acquire_timeout"])
     try:
         wanted = max(1, int(count))
     except (TypeError, ValueError) as exc:
@@ -68,12 +88,13 @@ def fetch_candidates(
         window = wanted if candidate_count is None else max(wanted, int(candidate_count))
     except (TypeError, ValueError) as exc:
         raise ValueError("代理供应候选窗口必须是正整数") from exc
-    minutes = max(1, min(120, int(options["session_minutes"])))
-    protocol = provider._normalize_protocol(options["protocol"])
+    minutes = max(1, min(adapter.max_session_minutes, int(options["session_minutes"])))
+    protocol = adapter.normalize_protocol(options["protocol"])
     region = provider._normalize_region(options["region"])
     # 大窗口可绕过重复候选前缀；502 时逐级退回旧的 64 条和单条请求。
-    window = min(1000, window)
-    url = provider._build_api_url(options["api_url"], minutes, region, count=window, count_limit=1000)
+    window = min(adapter.max_candidates, window)
+    effective_options = {**options, "session_minutes": minutes, "protocol": protocol, "region": region}
+    url = adapter.build_url(effective_options, window)
     request_counts = [window]
     if window > 64:
         request_counts.append(64)
@@ -81,7 +102,7 @@ def fetch_candidates(
         request_counts.append(1)
     # time 仅按供应商会话时长使用，不把更改时长当成已保证的新会话接口。
     with _request_lock(deadline):
-        delay = max(0, float(cfg.PROXY_1024_ACQUIRE_INTERVAL) - (time.monotonic() - provider._LAST_ACQUIRE_AT))
+        delay = max(0, float(settings["acquire_interval"]) - (time.monotonic() - provider._LAST_ACQUIRE_AT))
         if delay:
             time.sleep(min(delay, _remaining(deadline, delay)))
         if cancelled():
@@ -91,12 +112,12 @@ def fetch_candidates(
         try:
             with provider._direct_session() as session:
                 for index, request_count in enumerate(request_counts):
-                    request_url = url if request_count == window else provider._build_api_url(
-                        options["api_url"], minutes, region, count=request_count,
+                    request_url = url if request_count == window else adapter.build_url(
+                        effective_options, request_count,
                     )
                     try:
                         response = session.get(
-                            request_url, timeout=_remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
+                            request_url, timeout=_remaining(deadline, float(settings["api_timeout"])),
                             allow_redirects=False, headers={"Accept": "text/plain, application/json"},
                         )
                         provider._LAST_ACQUIRE_AT = time.monotonic()
@@ -107,7 +128,7 @@ def fetch_candidates(
                         if status != 502 or index == len(request_counts) - 1:
                             raise
                         delay = max(
-                            0, float(cfg.PROXY_1024_ACQUIRE_INTERVAL)
+                            0, float(settings["acquire_interval"])
                             - (time.monotonic() - provider._LAST_ACQUIRE_AT),
                         )
                         if delay:
@@ -116,7 +137,7 @@ def fetch_candidates(
                             return
                         continue
                     break
-                endpoints = provider.parse_proxy_responses(response.text)[:window]
+                endpoints = _parse_candidates(response.text, source=adapter.name, label=adapter.label)[:window]
         except requests.RequestException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             logger.warning(
@@ -139,7 +160,7 @@ def fetch_candidates(
             _remaining(deadline)
             try:
                 proxy_lease_store.reserve_pending(
-                    lease_id=lease_id, provider="1024proxy", endpoint=endpoint,
+                    lease_id=lease_id, provider=adapter.name, endpoint=endpoint,
                     proxy_url=proxy_url, acquired_at=acquired.isoformat(),
                     expires_at=expires.isoformat(), purpose="pool-reserve",
                 )
@@ -150,8 +171,8 @@ def fetch_candidates(
             reserved = True
             try:
                 exit_ip, actual_region = provider._validate_proxy_with_retries(
-                    proxy_url, _remaining(deadline, float(cfg.PROXY_1024_API_TIMEOUT)),
-                    attempts=int(cfg.PROXY_1024_VALIDATE_ATTEMPTS), deadline=deadline,
+                    proxy_url, _remaining(deadline, float(settings["api_timeout"])),
+                    attempts=int(settings["validate_attempts"]), deadline=deadline,
                 )
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
                 # 网络故障只淘汰当前候选；共同预算和取消仍约束整轮补货。
@@ -167,9 +188,9 @@ def fetch_candidates(
                 return
             proxy_lease_store.activate(lease_id=lease_id, exit_ip=exit_ip, region=actual_region,
                                        expires_at=expires.isoformat())
-            lease = provider.ProxyLease(lease_id, "1024proxy", proxy_url, endpoint, acquired,
+            lease = provider.ProxyLease(lease_id, adapter.name, proxy_url, endpoint, acquired,
                                         expires_at=expires, exit_ip=exit_ip, region=actual_region,
-                                        metadata={"persistent_lease": True, "recent_ttl": int(cfg.PROXY_1024_RECENT_TTL),
+                                        metadata={"persistent_lease": True, "recent_ttl": int(settings["recent_ttl"]),
                                                   "expiry_source": "configured_session"})
             reserved = False
             delivered += 1
