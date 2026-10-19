@@ -1513,10 +1513,22 @@ def run_twofa_worker(
                 if force_password_reset:
                     action_kwargs["on_password_confirmed"] = _confirm_password_reset
                     action_kwargs["force_password_reset"] = True
-                run_roxy_chatgpt_account_action(
-                    email,
-                    **action_kwargs,
-                )
+                from core.protocol_traffic import correlation_context
+
+                lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
+                operation_context = task_run_log.current_context()
+                native_operation = operation_context.get("identifier_namespace") == "operation"
+                # 每次换线后显式绑定当前账号租约，不让外层注册线路污染浏览器恢复资料。
+                with correlation_context(
+                    inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
+                    account_id=account.get("id"), purpose=setup_proxy_purpose,
+                    operation_task_id=operation_context.get("task_id") if native_operation else None,
+                    operation_run_id=operation_context.get("run_id") if native_operation else None,
+                ):
+                    run_roxy_chatgpt_account_action(
+                        email,
+                        **action_kwargs,
+                    )
                 break
             except (CodexRetryStopped, AccountUnusableError):
                 raise

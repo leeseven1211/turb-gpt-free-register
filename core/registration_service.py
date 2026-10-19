@@ -2443,13 +2443,22 @@ def _run_twofa_retry_job(
             _persist_job_progress(job_id, stage, state="skipped", detail="账号配置重试任务")
     _persist_job_progress(job_id, "twofa", state="running", detail="正在补齐账号密码、套餐和 Authenticator 2FA")
     try:
-        result = codex_retry_service.run_twofa_worker(
-            email,
-            clear_log=False,
-            target_log_path=log_file,
-            task_id=account_task_id,
-            task_trigger="registration_job_retry",
-        )
+        from core.protocol_traffic import correlation_context
+
+        proxy_correlation = _registration_proxy_correlation(job_id, db.get_job(job_id) or current)
+        # 账号动作领取的租约必须归属真实 operation Run；结束后恢复父注册日志上下文。
+        # 不继承注册阶段的旧 lease_id，避免新中继绑定到另一条供应商线路。
+        with task_run_log.stage_context(
+            "account_setup", task_id=proxy_correlation.get("operation_task_id"),
+            run_id=proxy_correlation.get("operation_run_id"), identifier_namespace="operation", inherit=False,
+        ), correlation_context(inherit=False, **proxy_correlation):
+            result = codex_retry_service.run_twofa_worker(
+                email,
+                clear_log=False,
+                target_log_path=log_file,
+                task_id=account_task_id,
+                task_trigger="registration_job_retry",
+            )
         now_iso = _now_iso()
         proxy_fields = {}
         if result.get("proxy_provider"):
