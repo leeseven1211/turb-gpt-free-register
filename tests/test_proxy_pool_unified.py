@@ -61,6 +61,18 @@ def test_registration_wrapper_forwards_frozen_country_to_public_pool():
     assert "provider" not in acquire.call_args.kwargs
 
 
+def test_cli_registration_wrapper_requests_business_country_without_vendor_parameters():
+    lease = _lease("711proxy", "GB")
+    with patch("core.proxy_pool.acquire_proxy", return_value=lease) as acquire, \
+         patch("config.register.REGISTRATION_COUNTRY", "GB"), \
+         patch("config.proxy.PROXY_POOL_DEFAULT_COUNTRY", "JP"):
+        received = acquire_registration_proxy(job_id="cli-1")
+
+    assert received is lease
+    assert acquire.call_args.kwargs["country"] == "GB"
+    assert not {"provider", "source", "api_url"}.intersection(acquire.call_args.kwargs)
+
+
 def test_pool_source_uses_new_source_and_default_country_before_legacy_values():
     with patch.multiple(
         "config.proxy", PROXY_POOL_SOURCE="1024proxy", PROXY_POOL_DEFAULT_COUNTRY="VN",

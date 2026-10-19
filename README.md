@@ -509,7 +509,9 @@ OSS 版本的 Codex OAuth 仍调用本项目的 Codex 实现；`CODEX_OAUTH_DRIV
 
 ### 3. 配置代理
 
-在 WebUI「配置 → 代理与网络」设置唯一的默认代理池。注册、查套餐、查活、刷新 AT、补密码、补 2FA、邮箱换绑和 Codex OAuth 都向池领取租约；业务页面不再选择代理平台或直连。池内的 `PROXY_POOL_SOURCE` 可选 `1024proxy`（1024Proxy）或 `manual`（手动地址），`PROXY_POOL_DEFAULT_COUNTRY` 决定新注册及缺少历史国家账号的默认国家。保存来源或供给字段时，当前选择为 `1024proxy` 必须已有提取 API，选择 `manual` 必须至少有一条完整代理地址；尚未配置代理不会阻止保存其他分组。
+在 WebUI「配置 → 代理与网络」设置唯一的默认代理池。注册、查套餐、查活、刷新 AT、补密码、补 2FA、邮箱换绑和 Codex OAuth 都向池领取租约；业务页面不再选择代理平台或直连。池内的 `PROXY_POOL_SOURCE` 可选 `1024proxy`（1024Proxy）、`711proxy`（711Proxy）或 `manual`（手动地址），`PROXY_POOL_DEFAULT_COUNTRY` 只为没有指定国家的池请求及缺少历史国家的账号动作提供默认值。保存来源或供给字段时，当前 API 来源必须已有对应提取配置，手动来源必须至少有一条完整代理地址；尚未配置代理不会阻止保存其他分组。
+
+新注册的国家在「配置 → 注册与账号 → 注册主链路 → 注册国家」设置，对应 `REGISTRATION_COUNTRY`（默认 `JP`）。WebUI/API 批量注册在提交入队时将它冻结为任务的 `config_snapshot.proxy_country`，运行和重跑沿用原快照；CLI 未提供任务国家时也读取注册国家。业务只向代理池申请对应国家，不读取池默认国家或供应商国家字段。缺少国家库存时由池按需求补货，不回退其他国家。新字段尚未配置时兼容读取原有效池默认国家、旧 1024Proxy 国家或 API 的 `region`；保存注册国家后与这些旧字段独立。已有任务优先保留原快照或实际出口国家，均缺失时才使用当前注册国家。
 
 手动地址示例（只写入 `.env`，不要把真实凭据写入源码）：
 
@@ -525,7 +527,7 @@ PROXY_POOL="socks5h://user:password@proxy.example.test:1080"
 
 代理池 worker 数量支持热加载；WebUI worker 统计仅代表当前进程，库存容量和租约由 PostgreSQL 在多个进程间统一协调。将来新增平台只需扩展池的供应商适配与配置，不需要在每种业务里再接一次。
 
-代理池预热 profile 取默认注册国家、`PROXY_POOL_COUNTRIES` 额外国家，以及 `PLAN_CHECK_COUNTRIES` 的并集；同一来源、配置和国家只建立一份 profile。`PROXY_POOL_COUNTRIES` 只增加预热库存，不替代注册国家，也不改变 `PLAN_CHECK_COUNTRIES` 的业务国家和顺序。国家代码支持换行、逗号或空格分隔，保存时自动大写、去重并校验 ISO 两位代码。WebUI 的“代理池预热国家”和“独立查套餐国家列表”统一使用单行多选入口，可按中文名称或代码搜索、选择和移除国家；国家目录只表示可填写的 ISO 国家和地区范围，不代表供应商在所有地区都有可用库存。静态池同一完整 URL 来源的普通与国家 profile 可领取同一份已检测库存，指定国家时仍校验实际出口；预热不会复制 endpoint 或放宽独占、冷却与 IP 次数限制。
+代理池预热 profile 取池默认国家、`PROXY_POOL_COUNTRIES` 额外国家，以及 `PLAN_CHECK_COUNTRIES` 的并集；同一来源、配置和国家只建立一份 profile。`PROXY_POOL_COUNTRIES` 只增加预热库存，不替代注册国家，也不改变 `PLAN_CHECK_COUNTRIES` 的业务国家和顺序。国家代码支持换行、逗号或空格分隔，保存时自动大写、去重并校验 ISO 两位代码。WebUI 的“代理池预热国家”和“独立查套餐国家列表”统一使用单行多选入口，可按中文名称或代码搜索、选择和移除国家；国家目录只表示可填写的 ISO 国家和地区范围，不代表供应商在所有地区都有可用库存。静态池同一完整 URL 来源的普通与国家 profile 可领取同一份已检测库存，指定国家时仍校验实际出口；预热不会复制 endpoint 或放宽独占、冷却与 IP 次数限制。
 
 代理池的默认策略是全局最大容量 20、每个活动 profile 最少保持 2 条可用库存，代理不足时持续等待补货或线路释放，领取时要求剩余寿命至少 300 秒，后台每 60 秒复检，空闲回收阈值 300 秒，worker 数 2。`PROXY_POOL_WAIT_TIMEOUT=0` 表示持续等待，可手动停止任务；设为正数时才限制领取总等待时间并在到期后失败，调用方显式指定的 `timeout` 仍按指定期限执行。等待进度每 30 秒记录一次，供应商提取和出口检测仍使用各自的有界预算并退避重试；缺少配置或不可能满足的寿命策略仍立即报错。`PROXY_POOL_MAX_SIZE` 是所有配置共同使用的全局上限；容量缩减只退役 `ready` 库存，不踢出正在使用的线路。有其他配置的任务等待时，池可以回收其他配置的空闲 `ready` 库存来满足等待者。
 
@@ -545,6 +547,7 @@ WebUI「代理与流量」中的“代理池库存”只显示脱敏库存快照
 PROXY_POOL_SOURCE=1024proxy
 PROXY_1024_API_URL=https://white.1024proxy.com/white/api?region=US&num=1&time=30&format=1&type=txt
 PROXY_POOL_DEFAULT_COUNTRY=US
+REGISTRATION_COUNTRY=US
 PROXY_1024_PROTOCOL=http
 PROXY_1024_SESSION_MINUTES=30
 PROXY_1024_API_TIMEOUT=12

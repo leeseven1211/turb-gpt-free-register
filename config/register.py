@@ -11,6 +11,9 @@ from config.schema import schema_default
 # 注册邮箱（留空 + USE_EMAIL_SERVICE=True 时从 Outlook 池领取）
 REGISTER_EMAIL = schema_default("REGISTER_EMAIL")
 
+# 注册任务按此国家向统一代理池申请，独立于代理池默认国家。
+REGISTRATION_COUNTRY = schema_default("REGISTRATION_COUNTRY")
+
 # 注册认证流程：otp=优先一次性验证码；password=遇到注册密码页时设置密码。
 # 即使选择 password，OpenAI 仍可能在后续要求邮箱验证码。
 REGISTRATION_AUTH_MODE = schema_default("REGISTRATION_AUTH_MODE")

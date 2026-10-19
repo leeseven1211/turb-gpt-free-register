@@ -95,7 +95,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         source, account, attempt = self._facts()
         original = copy.deepcopy(source)
 
-        with patch("core.proxy_pool.default_country", return_value="US"):
+        with patch("config.register.REGISTRATION_COUNTRY", "US"):
             result, create_call, executor = self._retry(source, account, attempt)
 
         self.assertTrue(result["ok"])

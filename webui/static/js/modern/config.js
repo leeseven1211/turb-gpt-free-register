@@ -311,7 +311,7 @@ function proxyConfigSectionForKey(key) {
     return ['账号补全', '账号动作重试参数已归入账号补全；新任务不在这里选择代理供应商。'];
   }
   if (['PROXY_1024_REGION', 'PROXY_1024_ROTATE_SESSION_TIME', 'PROXY_1024_VALIDATE', 'PROXY_1024_MAX_ATTEMPTS'].includes(key)) {
-    return ['高级兼容', '1024Proxy 的历史区域值仅用于读取旧配置；新任务使用代理池默认国家。'];
+    return ['高级兼容', '1024Proxy 的历史区域值仅用于读取旧配置；新任务按各自业务国家向代理池申请。'];
   }
   if (['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_POOL'].includes(key)) {
     return ['代理来源', '统一代理池的当前供给来源与默认国家。业务任务只提出国家和用途需求。'];
@@ -530,7 +530,7 @@ function configSectionIntro(name) {
   if (name === '系统与维护') return '维护并发、自动任务、诊断日志、任务保留和访问设置。';
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
-  if (name === '注册主链路') return '配置注册主流程、密码/验证码模式，以及注册后可选能力。';
+  if (name === '注册主链路') return '配置注册主流程、注册国家、密码/验证码模式，以及注册后可选能力。';
   if (name === '账号补全') return '配置“补全账号”处理哪些缺失能力，以及账号操作使用的执行策略。';
   if (name === '注册调试') return '配置注册失败诊断、现场保留和抓包存储，不改变正常注册流程。';
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
@@ -696,6 +696,7 @@ function renderAccountCompletionRowV2(f) {
 function renderRegistrationMainSectionV2(fields) {
   const primaryKeys = [
     'REGISTRATION_DRIVER',
+    'REGISTRATION_COUNTRY',
     'REGISTRATION_AUTH_MODE',
     'REGISTER_NAME',
     'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS',
@@ -1137,7 +1138,7 @@ function renderConfigControlMarkupV2(f) {
   const driverChoices = configDriverChoices(f);
   if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
-  } else if (f.key === 'PROXY_POOL_DEFAULT_COUNTRY' && Array.isArray(f.country_codes) && f.country_codes.length) {
+  } else if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     const current = String(fv ?? '').trim().toUpperCase();
     const countryOptions = configCountryOptionsV2(f);
     const options = countryOptions.map(item => ({value: item.code, label: `${item.name} · ${item.code}`}));
@@ -1336,7 +1337,7 @@ function renderProxyActionFieldsV2(fields) {
 
 function renderProxyTaskPoolSummaryV2() {
   const rows = [
-    ['注册与账号认证', '注册入队时的池默认国家；账号认证沿用账号历史国家', '独占租约'],
+    ['注册与账号认证', '注册主链路的注册国家；账号认证沿用账号历史国家', '独占租约'],
     ['查询套餐', '业务国家顺序（逐国申请）', '按池用途策略复用'],
     ['查活 / 刷新 AT', '账号历史国家；缺失时使用池默认国家', '认证链路保持同一线路'],
     ['补密码 / 2FA / 换绑 / Codex', '账号历史国家；缺失时使用池默认国家', '独占租约'],
@@ -2106,7 +2107,7 @@ function readConfigElementValue(el, f) {
   if (f.type === 'float') return parseFloat(el.value || '0');
   const value = el.value.trim();
   const option = configSchemaOptions(f).find(item => item.value.toLowerCase() === value.toLowerCase());
-  if (f.key === 'PROXY_POOL_DEFAULT_COUNTRY') return option ? option.value : value;
+  if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY'].includes(f.key)) return option ? option.value : value;
   return option ? option.value : (isPlaceholderEmpty(value) ? '' : value);
 }
 

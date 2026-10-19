@@ -1148,6 +1148,15 @@ def acquire_registration_proxy(
 ) -> ProxyLease:
     from core.proxy_pool import acquire_proxy
 
+    selected_country = country or region
+    if not selected_country and (purpose or "registration") == "registration":
+        from config import register as register_cfg
+
+        # CLI 等未提供任务快照的注册入口也使用业务国家，不借用池默认国家。
+        selected_country = str(register_cfg.REGISTRATION_COUNTRY or "").strip().upper()
+        if not selected_country:
+            raise ValueError("请在注册主链路选择有效的注册国家")
+
     # 旧 mode/source 只作为任务快照兼容数据保留；新注册始终向当前统一池
     # 领取，不能因历史 direct/provider:* 值创建直连或固定旧平台线路。
     return acquire_proxy(
@@ -1159,7 +1168,7 @@ def acquire_registration_proxy(
         operation_run_id=operation_run_id,
         registration_job_id=registration_job_id,
         route_attempt_no=route_attempt_no,
-        country=country or region,
+        country=selected_country,
         cancel=cancel,
         timeout=timeout,
     )

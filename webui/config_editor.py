@@ -41,6 +41,7 @@ from config.schema import (
     config_revision,
     effective_config_metadata,
     non_sensitive_snapshot,
+    resolve_field,
     validate_config_updates,
 )
 
@@ -334,6 +335,9 @@ def _format_env_value(value, vtype: str) -> str:
 
 
 _CONFIG_WRITE_LOCK = threading.RLock()
+_REGISTRATION_COUNTRY_MIGRATION_KEYS = frozenset({
+    "PROXY_POOL_DEFAULT_COUNTRY", "PROXY_1024_REGION", "PROXY_1024_API_URL",
+})
 
 
 def update_config(updates: dict) -> dict:
@@ -353,12 +357,6 @@ def update_config(updates: dict) -> dict:
             "config_revision": config_revision(),
         }
 
-    normalized = validate_config_updates(updates)
-    env_updates = {
-        key: _format_env_value(value, _FIELD_BY_KEY[key]["type"])
-        for key, value in normalized.items()
-    }
-
     from config.env_loader import env_path, load_env, restore_environment, write_env_values
     import config as config_package
 
@@ -376,6 +374,16 @@ def update_config(updates: dict) -> dict:
             # load_env 遵守 PYTHON_DOTENV_DISABLED，隔离测试不会被工作区 dotenv 污染。
             load_env(override=True)
             environment_expected = dict(os.environ)
+            normalized = validate_config_updates(updates)
+            if "REGISTRATION_COUNTRY" not in normalized and _REGISTRATION_COUNTRY_MIGRATION_KEYS.intersection(normalized):
+                current_country = resolve_field(CONFIG_SCHEMA["REGISTRATION_COUNTRY"], os.environ)
+                if current_country.source_key != "REGISTRATION_COUNTRY":
+                    # 首次修改旧国家来源时固化更新前的注册国家，避免升级后联动改国。
+                    normalized["REGISTRATION_COUNTRY"] = current_country.value
+            env_updates = {
+                key: _format_env_value(value, _FIELD_BY_KEY[key]["type"])
+                for key, value in normalized.items()
+            }
             candidate_environment = dict(os.environ)
             candidate_environment.update(env_updates)
             build_non_sensitive_snapshot(candidate_environment, strict=True)

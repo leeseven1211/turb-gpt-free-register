@@ -112,7 +112,7 @@ def test_global_open_source_driver_freezes_its_password_auth_mode():
     with (
         patch("config.roxybrowser.REGISTRATION_DRIVER", "protocol_oss"),
         patch("config.register.REGISTRATION_AUTH_MODE", "otp"),
-        patch("core.proxy_pool.default_country", return_value="US"),
+        patch("config.register.REGISTRATION_COUNTRY", "US"),
     ):
         snapshot = service.registration_config_snapshot()
 
@@ -126,7 +126,7 @@ def test_open_source_roxy_snapshot_keeps_selected_auth_mode(mode):
     with (
         patch("config.roxybrowser.REGISTRATION_DRIVER", "roxy_oss"),
         patch("config.register.REGISTRATION_AUTH_MODE", mode),
-        patch("core.proxy_pool.default_country", return_value="JP"),
+        patch("config.register.REGISTRATION_COUNTRY", "JP"),
     ):
         snapshot = service.registration_config_snapshot()
 
@@ -136,7 +136,7 @@ def test_open_source_roxy_snapshot_keeps_selected_auth_mode(mode):
     assert snapshot["proxy_country"] == "JP"
 
 
-def test_registration_retry_keeps_frozen_country_after_default_changes():
+def test_registration_retry_keeps_frozen_country_after_registration_country_changes():
     source = {
         "config_snapshot": {
             "registration_driver": "protocol",
@@ -144,7 +144,8 @@ def test_registration_retry_keeps_frozen_country_after_default_changes():
         },
     }
 
-    with patch("core.proxy_pool.default_country", return_value="US"):
+    with patch("config.register.REGISTRATION_COUNTRY", "US"), \
+            patch("core.proxy_pool.default_country", side_effect=AssertionError("注册不读取池默认国家")):
         options = service.registration_options_for_job(source)
         country = service._registration_proxy_country_for_job(source)
 
@@ -152,13 +153,26 @@ def test_registration_retry_keeps_frozen_country_after_default_changes():
     assert country == "VN"
 
 
-def test_old_registration_job_prefers_recorded_country_then_pool_default():
-    with patch("core.proxy_pool.default_country", return_value="US"):
+def test_old_registration_job_prefers_recorded_country_then_registration_country():
+    with patch("config.register.REGISTRATION_COUNTRY", "US"), \
+            patch("core.proxy_pool.default_country", side_effect=AssertionError("注册不读取池默认国家")):
         assert service._registration_proxy_country_for_job({"proxy_region": "JP"}) == "JP"
         assert service._registration_proxy_country_for_job({"data": {"exitcountry": "GB"}}) == "GB"
         assert service._registration_proxy_country_for_job({"data": {}}) == "US"
         assert service.registration_options_for_job({"proxy_region": "JP"})["proxy_country"] == "JP"
         assert service.registration_options_for_job({"config_snapshot": {}})["proxy_country"] == "US"
+
+
+def test_registration_snapshot_uses_business_country_independently_of_pool_defaults():
+    with patch("config.register.REGISTRATION_COUNTRY", "GB"), \
+            patch("core.proxy_pool.default_country", side_effect=AssertionError("注册不读取池默认国家")):
+        assert service.registration_config_snapshot()["proxy_country"] == "GB"
+
+
+def test_registration_country_rejects_invalid_configuration_before_pool_acquisition():
+    with patch("config.register.REGISTRATION_COUNTRY", "Rand"):
+        with pytest.raises(ValueError, match="注册国家"):
+            service.registration_config_snapshot()
 
 
 def test_registration_proxy_acquisition_passes_country_to_pool():

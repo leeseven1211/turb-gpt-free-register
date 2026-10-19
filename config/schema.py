@@ -122,7 +122,7 @@ class ConfigField:
             out["allow_prefix"] = self.allow_prefix
         if self.csv_options:
             out["csv_options"] = list(self.csv_options)
-        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY"}:
+        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
             from config.countries import ISO_3166_ALPHA2
 
             out["country_codes"] = sorted(ISO_3166_ALPHA2)
@@ -169,6 +169,7 @@ _DEFAULTS: dict[str, Any] = {
     "OPENAI_PROTOCOL_VERSION": "v1",
     "REGISTRATION_DRIVER": "roxy",
     "REGISTRATION_AUTH_MODE": "otp",
+    "REGISTRATION_COUNTRY": "JP",
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": 60,
     "REGISTRATION_PLAN_CHECK_ENABLED": True,
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED": True,
@@ -494,6 +495,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
         "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，roxy_oss=开源 Roxy，protocol=本地优化 Protocol，protocol_oss=开源 Protocol；默认推荐 roxy",
+    },
+    {
+        "key": "REGISTRATION_COUNTRY", "file": "register.py", "type": "str", "group": "注册主链路",
+        "label": "注册国家", "help": "新注册按此国家向统一代理池申请线路，与代理池默认国家独立；任务入队后固定本次国家，缺少此配置时兼容迁移原有效默认国家",
     },
     {
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册主链路",
@@ -1208,7 +1213,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_POOL_DEFAULT_COUNTRY", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "默认国家", "help": "新注册及缺少历史国家的账号动作使用此国家；有历史国家的账号优先沿用，多国套餐查询按查询国家领取。手动地址也必须通过实际出口国家检测",
+        "label": "默认国家", "help": "未指定国家的代理池请求及缺少历史国家的账号动作使用此国家；有历史国家的账号优先沿用，多国套餐查询按查询国家领取。新注册使用注册主链路的注册国家，手动地址也必须通过实际出口国家检测",
     },
     {
         "key": "REGISTRATION_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -1221,7 +1226,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "PROXY_1024_REGION", "file": "proxy.py", "type": "str", "group": "代理与网络",
-        "label": "家宽国家 / 地区", "help": "仅在新默认国家缺席时迁移旧有效国家；当前任务使用代理池默认国家，不再使用随机国家。",
+        "label": "家宽国家 / 地区", "help": "仅在新国家字段缺席时迁移旧有效国家；新任务按各自业务国家向代理池申请，不再使用随机国家。",
     },
     {
         "key": "PROXY_1024_PROTOCOL", "file": "proxy.py", "type": "str", "group": "代理与网络",
@@ -2114,7 +2119,7 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
     if isinstance(value, (dict, list, tuple, set)):
         raise ValueError("必须是字符串")
     text = "" if value is None else str(value).strip()
-    if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
+    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
         # NA 是纳米比亚，不是通用空占位。
         return text
     # ``none`` 是通用空占位，但也是 CLOUDFLARE_AUTH_MODE 的合法
@@ -2149,7 +2154,7 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
             if not valid:
                 raise ValueError(f"第 {index} 条代理地址需要完整的协议、主机和有效端口")
         return list(dict.fromkeys(result))
-    if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
+    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
         from config.countries import ISO_3166_ALPHA2
 
         result = result.upper()
@@ -2320,6 +2325,12 @@ def _raw_for_field(field: ConfigField, values: Mapping[str, str]) -> tuple[str |
     legacy_source = str(values.get("REGISTRATION_PROXY_MODE", "")).strip().casefold()
     if field.key == "PROXY_POOL_SOURCE" and legacy_source in {"pool", "1024"}:
         return ("manual" if legacy_source == "pool" else "1024proxy"), "REGISTRATION_PROXY_MODE"
+    if field.key == "REGISTRATION_COUNTRY":
+        # 复用旧池默认国家的完整解析语义，坏旧配置仍沿用当时实际生效的 JP。
+        # 显式设置新字段后已由上方直接返回，不再受旧字段影响。
+        legacy_country = resolve_field(CONFIG_SCHEMA["PROXY_POOL_DEFAULT_COUNTRY"], values)
+        if legacy_country.source == "env":
+            return legacy_country.value, legacy_country.source_key
     if field.key == "PROXY_POOL_DEFAULT_COUNTRY":
         from config.countries import ISO_3166_ALPHA2
         from urllib.parse import parse_qs, urlsplit

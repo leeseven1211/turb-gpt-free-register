@@ -144,7 +144,6 @@ def registration_config_snapshot() -> dict[str, object]:
     from config import register as register_cfg
     from config import roxybrowser as roxy_cfg
     from config import twofa as twofa_cfg
-    from core.proxy_pool import default_country
 
     auth_mode = str(getattr(register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
     if auth_mode not in {"otp", "password"}:
@@ -152,9 +151,9 @@ def registration_config_snapshot() -> dict[str, object]:
     registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
     snapshot = {
         "registration_driver": registration_driver,
-        # 注册国家在入队时冻结；worker 领取线路时只使用这个快照，避免
-        # 排队期间修改池默认国家改变已经提交的任务。
-        "proxy_country": default_country(),
+        # 注册国家在入队时冻结；worker 只按业务国家向统一池领取，
+        # 不受代理池默认国家或排队期间配置修改的影响。
+        "proxy_country": _registration_proxy_country_for_job(None),
         "password_enabled": auth_mode == "password",
         "password_mode": auth_mode,
         "twofa_enabled": bool(getattr(twofa_cfg, "ENABLE_2FA", False)),
@@ -230,7 +229,7 @@ def _registration_proxy_country_for_job(job: dict | None) -> str:
     """返回注册任务领取代理时应使用的冻结国家。
 
     新任务由 config_snapshot.proxy_country 固定国家。历史任务没有该字段时
-    先恢复已经记录的实际线路国家，最后才使用代理池当前默认国家。
+    先恢复已经记录的实际线路国家，最后才使用当前注册国家。
     """
     snapshot = None
     if isinstance(job, dict):
@@ -245,9 +244,12 @@ def _registration_proxy_country_for_job(job: dict | None) -> str:
     country = _historical_registration_country(job)
     if country:
         return country
-    from core.proxy_pool import default_country
+    from config import register as register_cfg
 
-    return default_country()
+    country = _normalize_registration_country(register_cfg.REGISTRATION_COUNTRY)
+    if not country:
+        raise ValueError("请在注册主链路选择有效的注册国家")
+    return country
 
 
 def registration_options_for_job(job: dict | None) -> dict[str, object]:
