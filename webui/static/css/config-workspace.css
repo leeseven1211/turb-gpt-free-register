@@ -13,16 +13,16 @@
 #tab-config .config-section-v2-body {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-  padding: 8px 16px 12px;
+  padding: 6px 12px 8px;
 }
 
 #tab-config .config-section-v2-body > .config-setting-row-v2 {
   grid-template-columns: minmax(0, 1fr) minmax(220px, .85fr);
   grid-template-rows: auto;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
-  padding: 8px 12px;
+  padding: 6px 10px;
 }
 
 #tab-config .config-section-v2-body > .config-setting-row-v2:has(textarea) {
@@ -41,30 +41,31 @@
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 1fr auto;
   align-items: start;
-  gap: 8px;
-  min-height: 60px;
-  padding: 10px 14px;
+  gap: 6px;
+  min-height: 0;
+  padding: 8px 12px;
 }
 
 #tab-config .config-setting-list-v2 > .config-setting-row-v2 {
   grid-template-columns: minmax(0, 1fr) minmax(180px, .9fr);
   grid-template-rows: auto;
   align-items: center;
-  gap: 18px;
+  gap: 12px;
+  padding: 6px 10px;
 }
 
 #tab-config .config-switches-v2 {
-  gap: 8px;
-  padding: 8px 16px 10px;
+  gap: 6px;
+  padding: 6px 12px 8px;
 }
 
 #tab-config .config-switches-v2 > .config-setting-row-v2 {
   grid-template-columns: minmax(0, 1fr) 44px;
   grid-template-rows: auto;
   align-items: center;
-  gap: 12px;
-  min-height: 60px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-height: 0;
+  padding: 6px 8px;
 }
 
 #tab-config .config-switches-v2 > .config-setting-row-v2 .config-setting-control-v2 {
@@ -79,59 +80,35 @@
 
 #tab-config .config-setting-copy-v2 {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
-  align-items: center;
-  gap: 5px 8px;
+  align-items: start;
+  gap: 2px;
   min-width: 0;
 }
 
 #tab-config .config-setting-label-v2 {
-  min-height: 28px;
+  min-height: 22px;
   line-height: 22px;
 }
 
 #tab-config .config-setting-short-help-v2 {
-  display: none;
+  display: block;
+  min-width: 0;
   margin: 0;
   color: var(--ui-color-text-muted, #667085);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-#tab-config .config-field-help-v2 {
-  color: var(--ui-color-text-muted, #667085);
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-#tab-config .config-field-help-v2 summary {
-  width: fit-content;
-  color: var(--ui-color-primary, #315efb);
-  cursor: pointer;
-  font-size: 11px;
-  list-style-position: inside;
-  white-space: nowrap;
-}
-
-#tab-config .config-field-help-v2[open] { grid-column: 1 / -1; }
-
-#tab-config .config-field-help-v2 summary:focus-visible,
 #tab-config .config-multi-trigger-v2:focus-visible,
 #tab-config .config-multi-option-v2:focus-visible,
 #tab-config .config-multi-search-v2:focus-visible {
   outline: 2px solid var(--ui-color-primary, #315efb);
   outline-offset: 2px;
-}
-
-#tab-config .config-field-help-v2 > div {
-  max-width: 68ch;
-  margin-top: 5px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 #tab-config .config-setting-control-v2 {
@@ -529,21 +506,21 @@
 
 @media (max-width: 760px) {
   #tab-config .config-section-v2-body {
-    padding: 8px 12px 12px;
+    padding: 6px 10px 8px;
   }
 
   #tab-config .config-switches-v2 {
-    padding: 8px 12px;
+    padding: 6px 10px 8px;
   }
 
   #tab-config .config-setting-row-v2,
   #tab-config .config-setting-list-v2 > .config-setting-row-v2,
   #tab-config .config-section-v2-body > .config-setting-row-v2 {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 1fr auto;
-    gap: 10px;
+    grid-template-rows: auto auto;
+    gap: 6px;
     min-height: 0;
-    padding: 11px 12px;
+    padding: 8px 10px;
   }
 
   #tab-config .config-setting-control-v2 {
@@ -555,6 +532,14 @@
   #tab-config .config-setting-control-v2 > textarea,
   #tab-config .config-setting-control-v2 .config-multi-trigger-v2 {
     min-height: 44px;
+  }
+
+  #tab-config .config-setting-short-help-v2 {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   #tab-config .config-composite-control-v2 > select,

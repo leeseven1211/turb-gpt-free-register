@@ -250,8 +250,7 @@ function configFieldStatusV2(f) {
     ? {label: f.restart ? '密钥已配置 · 需重启' : '密钥已配置', cls: f.restart ? 'is-restart' : 'is-effective'}
     : {label: '未配置', cls: 'is-muted'};
   if (f.restart) return {label: f.configured_source === 'env' ? '已配置 · 需重启' : '默认值 · 重启后生效', cls: 'is-restart'};
-  // 正常来源收进“详细帮助”，避免每行都被状态文字撑高；只有需要处理
-  // 的状态（待保存、无效、密钥未配置、需重启）占据显眼位置。
+  // 常规状态不占用显眼位置；只突出待保存、无效、密钥未配置和需重启状态。
   return {label: '', cls: ''};
 }
 
@@ -650,7 +649,11 @@ function renderFeatureSwitchField(f, opts = {}) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   const on = !!fv;
   const control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
-  return renderConfigSettingRowV2(f, control, {help: opts.help || f.help || ''});
+  const compactHelp = {
+    ROXY_ONE_PROFILE_PER_ACCOUNT: '每个账号最多绑定一个 Roxy 环境。',
+    ROXY_RANDOM_PROFILE_NAME_ON_CREATE: '每次创建环境时自动生成不同名称。',
+  }[f.key];
+  return renderConfigSettingRowV2(f, control, {help: opts.help || compactHelp || f.help || ''});
 }
 
 function orderedConfigFieldsV2(fields, keys) {
@@ -1211,18 +1214,11 @@ function renderConfigSettingRowV2(f, controlMarkup = null, options = {}) {
   const displayKey = options.displayKey || f.key;
   const fullHelp = String(options.help || f.help || '').trim();
   const shortHelp = fullHelp.replace(/\s+/g, ' ').trim();
-  const detail = [
-    fullHelp,
-    f.file ? `来源模块：${f.file}` : '',
-    f.configured_source ? `当前来源：${f.configured_source}` : '',
-    f.restart ? '修改后需要重启服务才能完整生效。' : '',
-  ].filter(Boolean).join(' ');
   return `
     <div class="config-setting-row-v2${extraClass}" data-config-setting="${attrEsc(displayKey)}">
       <div class="config-setting-copy-v2">
         <div class="config-setting-label-v2">${esc(f.label)} ${renderConfigFieldStatusV2(f)}</div>
-        ${shortHelp ? `<p class="config-setting-short-help-v2" title="${attrEsc(shortHelp)}">${esc(shortHelp)}</p>` : ''}
-        ${detail ? `<details class="config-field-help-v2"><summary>详细帮助</summary><div>${esc(detail)}<code class="config-field-key-v2">${esc(displayKey)}</code></div></details>` : ''}
+        ${shortHelp ? `<p class="config-setting-short-help-v2">${esc(shortHelp)}</p>` : ''}
       </div>
       <div class="config-setting-control-v2">${control}${CONFIG_FIELD_ERRORS_V2[f.key] ? `<p class="config-field-error-v2" role="alert">${esc(CONFIG_FIELD_ERRORS_V2[f.key])}</p>` : ''}</div>
     </div>

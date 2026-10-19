@@ -11,6 +11,7 @@ TEMPLATE = (ROOT / "webui/templates/index.html").read_text(encoding="utf-8")
 CONFIG_JS = (ROOT / "webui/static/js/modern/config.js").read_text(encoding="utf-8")
 COMMON_JS = (ROOT / "webui/static/js/modern/common.js").read_text(encoding="utf-8")
 FOUNDATION_CSS = (ROOT / "webui/static/css/ui-foundation.css").read_text(encoding="utf-8")
+CONFIG_WORKSPACE_CSS = (ROOT / "webui/static/css/config-workspace.css").read_text(encoding="utf-8")
 
 
 class ModernConfigUiContractTests(unittest.TestCase):
@@ -212,9 +213,15 @@ for (const field of [
         self.assertIn("data-config-dirty", CONFIG_JS)
         self.assertIn("config-nav-v2-group", CONFIG_JS)
 
-    def test_config_fields_keep_data_keys_and_show_the_key_as_secondary_context(self):
-        self.assertIn('class="config-field-key-v2"', CONFIG_JS)
+    def test_config_fields_show_compact_help_without_detail_disclosures(self):
+        self.assertIn('class="config-setting-short-help-v2"', CONFIG_JS)
+        self.assertNotIn('config-field-help-v2', CONFIG_JS)
+        self.assertNotIn('详细帮助', CONFIG_JS)
         self.assertIn('data-key="${attrEsc(f.key)}"', CONFIG_JS)
+        self.assertIn('ROXY_ONE_PROFILE_PER_ACCOUNT:', CONFIG_JS)
+        self.assertIn('ROXY_RANDOM_PROFILE_NAME_ON_CREATE:', CONFIG_JS)
+        self.assertIn('display: block;', CONFIG_WORKSPACE_CSS)
+        self.assertIn('padding: 6px 8px;', CONFIG_WORKSPACE_CSS)
 
     def test_unsaved_config_is_protected_and_reset_only_discards_pending_values(self):
         self.assertIn("beforeunload", CONFIG_JS)
