@@ -344,7 +344,7 @@ def _account_login_password(row: dict) -> str:
     return _account_password(row)
 
 
-def _compact_job_for_list(row: dict) -> dict:
+def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize_routes: bool = False) -> dict:
     """注册任务列表轻量对象：只返回表格展示和按钮判断需要的字段。"""
     out = {
         "id": row.get("id"),
@@ -379,6 +379,8 @@ def _compact_job_for_list(row: dict) -> dict:
         "failure_diagnostics_state", "failure_diagnostics_category",
         "failure_diagnostics_failure_reason", "failure_diagnostics_summary",
     ):
+        if not include_progress and key in {"progress", "progress_steps", "route_attempts"}:
+            continue
         value = row.get(key)
         if value is not None and value != "" and value is not False:
             out[key] = value
@@ -407,13 +409,24 @@ def _compact_job_for_list(row: dict) -> dict:
         out.pop("error_message", None)
         out.pop("error_info", None)
     # 旧来源尚未映射到 operation Run 时，也使用同一个证据投影器。
-    if not out.get("progress"):
+    if include_progress and not out.get("progress"):
         from core.task_progress import build_progress_snapshot
 
         out["progress"] = build_progress_snapshot(
             0, int(row.get("id") or 0), str(row.get("job_type") or "registration"),
             {**row, "error_message": err}, [],
         )
+    if summarize_routes and isinstance(out.get("progress"), dict):
+        # 已有统一主步骤时不再重复发送旧步骤；旧来源的 fallback 仍保留原始证据。
+        source_progress = row.get("progress")
+        if isinstance(source_progress, dict) and source_progress.get("main_steps"):
+            out.pop("progress_steps", None)
+        progress = out["progress"]
+        out["progress"] = {
+            **progress,
+            "routes": [{key: value for key, value in route.items() if key != "steps"}
+                       for route in progress.get("routes") or []],
+        }
     return out
 
 
@@ -426,8 +439,8 @@ def _job_status_counts(rows: list[dict]) -> dict:
     return counts
 
 
-def _latest_progress_batch(rows: list[dict]) -> dict | None:
-    """构造批次 TaskSlot 进度；人工重试不重复增加批次任务数。"""
+def _progress_batch_slots(rows: list[dict]) -> tuple[str, dict[int, dict], dict[int, list[dict]]]:
+    """按根任务归并重试，并确定实际展示的尝试；查询快照和渲染共用同一规则。"""
     roots = {
         int(row.get("id") or 0): row
         for row in rows
@@ -442,29 +455,45 @@ def _latest_progress_batch(rows: list[dict]) -> dict | None:
 
     latest = next((row for row in rows if effective_batch_id(row)), None)
     if latest is None:
-        return None
+        return "", roots, {}
     batch_id = effective_batch_id(latest)
     batch_rows = [row for row in rows if effective_batch_id(row) == batch_id]
-    if not batch_rows:
-        return None
 
     slot_rows: dict[int, list[dict]] = {}
     for row in batch_rows:
         root_id = int(row.get("root_job_id") or row.get("id") or 0)
         slot_rows.setdefault(root_id, []).append(row)
+    for attempts in slot_rows.values():
+        attempts.sort(key=lambda row: (int(row.get("retry_attempt") or 0), int(row.get("id") or 0)))
+    return batch_id, roots, slot_rows
 
+
+def _current_slot_attempt(attempts: list[dict]) -> dict:
+    active = [row for row in attempts if str(row.get("status") or "") in {"pending", "running", "stopping"}]
+    return active[-1] if active else attempts[-1]
+
+
+def _current_progress_jobs(rows: list[dict]) -> list[dict]:
+    return [_current_slot_attempt(attempts) for attempts in _progress_batch_slots(rows)[2].values()]
+
+
+def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False) -> dict | None:
+    """构造批次 TaskSlot 进度；人工重试不重复增加批次任务数。"""
+    batch_id, roots, slot_rows = _progress_batch_slots(rows)
+    if not batch_id:
+        return None
+    batch_rows = [row for attempts in slot_rows.values() for row in attempts]
+    latest = batch_rows[0]
     selected_rows: list[dict] = []
     items: list[dict] = []
     for root_id, attempts in slot_rows.items():
-        attempts.sort(key=lambda row: (int(row.get("retry_attempt") or 0), int(row.get("id") or 0)))
-        active = [row for row in attempts if str(row.get("status") or "") in {"pending", "running", "stopping"}]
-        current = active[-1] if active else attempts[-1]
+        current = _current_slot_attempt(attempts)
         root = roots.get(root_id) or attempts[0]
         selected_rows.append(current)
-        compact = _compact_job_for_list(current)
+        compact = _compact_job_for_list(current, summarize_routes=summarize_routes)
         attempt_items = []
         for row in attempts:
-            attempt_compact = _compact_job_for_list(row)
+            attempt_compact = _compact_job_for_list(row, include_progress=False)
             attempt_items.append({
                 "id": int(row.get("id") or 0),
                 "retry_attempt": int(row.get("retry_attempt") or 0),

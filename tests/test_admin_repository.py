@@ -11,6 +11,7 @@ from tests.support_pg import PostgresTestCase
 class _QueryCounter:
     def __init__(self):
         self.count = 0
+        self.queries = []
 
     def __enter__(self):
         import psycopg
@@ -19,6 +20,7 @@ class _QueryCounter:
 
         def execute(cursor, query, params=None, **kwargs):
             counter.count += 1
+            counter.queries.append(str(query))
             return counter._original(cursor, query, params, **kwargs)
 
         psycopg.Cursor.execute = execute
@@ -353,6 +355,59 @@ class AdminRepositoryTests(PostgresTestCase):
         older = next(batch for batch in result["progress_batches"] if batch["batch_id"] == "older-batch")
         self.assertEqual(older["total"], 40)
         self.assertEqual(older["kind"], "registration")
+
+    def test_job_batch_view_skips_table_and_facets_but_counts_global_active_jobs(self):
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "active-other-batch", "status": "running", "batch_id": "other-batch",
+        })
+        with _QueryCounter() as counter:
+            result = repo.list_jobs(
+                repo.PageRequest(filters={"status": "success"}),
+                progress_batch_id="older-batch", view="batch",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertEqual({}, result["facets"])
+        self.assertEqual(1, result["status_counts"]["active"])
+        self.assertEqual(40, len(result["progress_rows"]))
+        self.assertTrue(all(row["batch_id"] == "older-batch" for row in result["progress_rows"]))
+        self.assertFalse(any("AS facet" in query or "OFFSET" in query for query in counter.queries))
+        self.assertTrue(all("items" not in batch and "progress" not in batch for batch in result["progress_batches"]))
+
+    def test_job_table_view_skips_batch_queries(self):
+        with _QueryCounter() as counter:
+            result = repo.list_jobs(repo.PageRequest(page_size=7), view="table")
+
+        self.assertEqual(45, result["total"])
+        self.assertEqual(7, len(result["items"]))
+        self.assertEqual([], result["progress_rows"])
+        self.assertEqual([], result["progress_batches"])
+        self.assertFalse(any("effective_batch_id" in query for query in counter.queries))
+
+    def test_job_batch_summary_uses_active_slot_and_keeps_latest_retry_metadata(self):
+        root_id = rs.insert_row(rs.JOBS, {
+            "job_uuid": "active-slot-root", "batch_id": "active-slot", "status": "running",
+        })
+        retry_id = rs.insert_row(rs.JOBS, {
+            "job_uuid": "active-slot-retry", "batch_id": "legacy-retry", "status": "failed",
+            "parent_job_id": root_id, "root_job_id": root_id, "retry_attempt": 1,
+        })
+        result = repo.list_jobs(repo.PageRequest(), progress_batch_id="active-slot", view="batch")
+        batch = next(batch for batch in result["progress_batches"] if batch["batch_id"] == "active-slot")
+
+        self.assertEqual(1, batch["total"])
+        self.assertEqual(1, batch["status_counts"]["active"])
+        self.assertEqual(0, batch["status_counts"]["failed"])
+        self.assertEqual(retry_id, batch["latest_job_id"])
+        self.assertTrue(batch["has_retries"])
+
+    def test_job_batch_view_returns_empty_for_missing_or_empty_batch(self):
+        missing = repo.list_jobs(repo.PageRequest(), progress_batch_id="missing", view="batch")
+        self.assertEqual([], missing["progress_rows"])
+        rs.delete_rows(rs.JOBS, [row["id"] for row in rs.list_rows(rs.JOBS)])
+        empty = repo.list_jobs(repo.PageRequest(), view="batch")
+        self.assertEqual([], empty["progress_rows"])
+        self.assertEqual([], empty["progress_batches"])
 
     def test_email_pool_is_unified_and_does_not_return_secrets(self):
         result = repo.list_email_pool(repo.PageRequest(page=1, page_size=20, filters={"source": "all"}))

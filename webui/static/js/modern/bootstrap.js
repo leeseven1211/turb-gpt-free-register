@@ -14,7 +14,7 @@ restoreModuleViewState();
 activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false);
 initializeNavigationHistory(localStorage.getItem('gpt_console_active_tab') || 'overview');
 jobsTimer = setInterval(() => {
-  if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs();
+  if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs({automatic: true});
 }, 5000);
 setInterval(() => { if (!document.hidden) loadSummary(); }, 10000);
 setInterval(() => {

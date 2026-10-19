@@ -40,7 +40,7 @@ from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
-from webui.route_helpers import _compact_job_for_list, _latest_progress_batch
+from webui.route_helpers import _compact_job_for_list, _current_progress_jobs, _latest_progress_batch
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,9 @@ def create_jobs_blueprint(context: WebUIContext):
 
     @bp.get("/api/jobs")
     def api_jobs():
+        view = str(request.args.get("view", default="") or "").strip().lower()
+        if view not in {"", "batch", "table"}:
+            return jsonify({"ok": False, "error": "view 仅支持 batch 或 table"}), 400
         limit = request.args.get("limit", default=100, type=int)
         status_filter = str(request.args.get("status", default="") or "").strip().lower()
         query = str(request.args.get("q", default="") or "").strip()
@@ -154,25 +157,32 @@ def create_jobs_blueprint(context: WebUIContext):
                 },
             ),
             progress_batch_id=progress_batch_id,
+            **({"view": view} if view else {}),
         )
         rows = result.get("items") or []
         progress_rows = result.pop("progress_rows", [])
-        try:
-            snapshots = operation_task_store.get_registration_progress(
-                row["id"] for row in [*rows, *progress_rows] if row.get("id")
-            )
-        except Exception:
-            logger.exception("读取注册任务统一进度失败")
-            snapshots = {}
-        for row in [*rows, *progress_rows]:
-            row.update(snapshots.get(int(row.get("id") or 0), {}))
+        if view != "table":
+            # 完整事件只服务当前卡片；历史尝试保留元数据，详情仍由原接口提供。
+            snapshot_rows = _current_progress_jobs(progress_rows) if view == "batch" else [*rows, *progress_rows]
+            try:
+                snapshots = operation_task_store.get_registration_progress(
+                    row["id"] for row in snapshot_rows if row.get("id")
+                )
+            except Exception:
+                logger.exception("读取注册任务统一进度失败")
+                snapshots = {}
+            for row in snapshot_rows:
+                row.update(snapshots.get(int(row.get("id") or 0), {}))
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
-        result["items"] = [_compact_job_for_list(row) for row in rows]
-        result["progress_batch"] = _latest_progress_batch(progress_rows)
-        result = _attach_projection_status(result)
+        result["items"] = [_compact_job_for_list(row, include_progress=view != "table") for row in rows]
+        if view != "table":
+            result["progress_batch"] = _latest_progress_batch(progress_rows, summarize_routes=view == "batch")
+            result = _attach_projection_status(result)
+        else:
+            result.pop("progress_batches", None)
         result["compact"] = True
-        if not (paged or page_arg is not None or page_size_arg is not None):
+        if not (view or paged or page_arg is not None or page_size_arg is not None):
             return jsonify(result["items"])
         return jsonify(result)
 

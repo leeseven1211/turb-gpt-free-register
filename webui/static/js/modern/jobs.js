@@ -367,7 +367,13 @@ function refreshBatchProgressDurations() {
 }
 
 function setJobProgressBatch(batchId) {
-  JOB_PROGRESS_BATCH_ID = String(batchId || '').trim();
+  const nextId = String(batchId || '').trim();
+  if (nextId !== JOB_PROGRESS_BATCH_ID) {
+    JOB_PROGRESS_BATCH = null;
+    batchProgressRenderSignature = '';
+    jobsBatchError = '';
+  }
+  JOB_PROGRESS_BATCH_ID = nextId;
   if (JOB_PROGRESS_BATCH_ID) localStorage.setItem('gpt_console_registration_batch_id', JOB_PROGRESS_BATCH_ID);
   else localStorage.removeItem('gpt_console_registration_batch_id');
 }
@@ -404,6 +410,9 @@ function renderRegistrationBatchSelector() {
     const label = `${time} · ${kind} · ${Number(batch.total || 0)} 个 · ${state}`;
     return `<option value="${attrEsc(batch.batch_id)}">${esc(label)}</option>`;
   }).join('');
+  if (JOB_PROGRESS_BATCH_ID && !batches.some(batch => batch.batch_id === JOB_PROGRESS_BATCH_ID)) {
+    select.innerHTML += `<option value="${attrEsc(JOB_PROGRESS_BATCH_ID)}">所选批次 · 加载中…</option>`;
+  }
   select.value = JOB_PROGRESS_BATCH_ID;
   select.disabled = batches.length < 2;
 }
@@ -413,6 +422,23 @@ function renderBatchProgress() {
   if (!panel) return;
   renderRegistrationBatchSelector();
   const batch = JOB_PROGRESS_BATCH;
+  if ((!batch || batch.batch_id !== JOB_PROGRESS_BATCH_ID) && (jobsLoading || jobsBatchError)) {
+    panel.classList.remove('hidden');
+    panel.setAttribute('aria-busy', String(jobsLoading));
+    batchProgressRenderSignature = '';
+    const state = $('#batchProgressStateV2');
+    if (state) { state.textContent = jobsBatchError ? '加载失败' : '加载中…'; state.className = 'batch-progress-v2-state is-waiting'; }
+    const summary = $('#batchProgressSummaryV2');
+    if (summary) summary.textContent = jobsBatchError || '正在读取所选批次的完整步骤…';
+    for (const id of ['batchProgressStagesV2', 'batchProgressTimeV2', 'batchProgressListV2']) {
+      const el = document.getElementById(id); if (el) el.textContent = '';
+    }
+    for (const id of ['btnBatchStopV2', 'btnBatchCancelV2', 'btnBatchRetryV2']) {
+      const el = document.getElementById(id); if (el) el.disabled = true;
+    }
+    return;
+  }
+  panel.setAttribute('aria-busy', 'false');
   const items = batch && Array.isArray(batch.items) ? batch.items : [];
   const stages = batch && Array.isArray(batch.stages) ? batch.stages : [];
   const hasUnifiedSteps = items.some(job => Array.isArray(jobProgressSnapshot(job)?.main_steps));
@@ -695,55 +721,88 @@ $('#btnResetJobFiltersV2')?.addEventListener('click', () => {
   refreshJobs();
 });
 
-async function refreshJobs() {
-  if (jobsLoading) { jobsReloadQueued = true; return; }
+function jobsViewMode() {
+  return $('#tab-register')?.dataset.moduleView === 'tasks' ? 'table' : 'batch';
+}
+
+function shouldPollJobs() {
+  if (document.hidden || !$('#tab-register') || $('#tab-register').classList.contains('hidden')) return false;
+  if (jobsViewMode() === 'table') return true;
+  const batch = JOB_PROGRESS_BATCH;
+  if (!batch || batch.batch_id !== JOB_PROGRESS_BATCH_ID || batch.projection_delayed) return true;
+  const counts = batch.status_counts || {};
+  return ['pending', 'running', 'stopping'].some(status => Number(counts[status] || 0) > 0)
+    || currentBatchJobs().some(job => ['pending', 'running', 'stopping'].includes(job.status));
+}
+
+async function refreshJobs({automatic = false, coalesce = false} = {}) {
+  if (automatic && !shouldPollJobs()) return;
+  const p = PAGERS.jobs;
+  const view = jobsViewMode();
+  const requestSignature = `/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}&progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}&view=${view}`;
+  if ((automatic || coalesce) && jobsLoading && jobsRequestSignature === requestSignature) return jobsRequestPromise;
+  // 显式操作必须读取操作后的状态，不能复用同批次操作前的 GET。
+  const requestGeneration = automatic ? jobsRequestGeneration : ++jobsRequestGeneration;
+  const requestUrl = `${requestSignature}&refresh_generation=${requestGeneration}`;
+  // 参数变化立即读取；序列号隔离旧响应，避免切批次被慢请求挡住。
+  const requestSequence = ++jobsRequestSequence;
+  jobsRequestSignature = requestSignature;
   jobsLoading = true;
+  jobsBatchError = '';
   setListBusy('jobsPanelV2', true);
-  try {
-    const p = PAGERS.jobs;
-    const res = await api(`/api/jobs?paged=1&page=${encodeURIComponent(p.page)}&page_size=${encodeURIComponent(p.size)}&status=${encodeURIComponent(JOB_STATUS_FILTER)}&id=${encodeURIComponent(JOB_ID_FILTER)}&email=${encodeURIComponent(JOB_EMAIL_FILTER)}&email_source=${encodeURIComponent(JOB_EMAIL_SOURCE_FILTER)}&proxy=${encodeURIComponent(JOB_PROXY_FILTER)}&error=${encodeURIComponent(JOB_ERROR_FILTER)}&date_from=${encodeURIComponent(JOB_DATE_FROM)}&date_to=${encodeURIComponent(JOB_DATE_TO)}&progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}`);
-    const nextJobs = res.items || [];
-    JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
-    JOB_STATUS_COUNTS = res.status_counts || {};
-    updateJobStatusFilters(res.facets || {});
-    JOB_PROGRESS_BATCHES = res.progress_batches || [];
-    JOB_PROGRESS_BATCH = res.progress_batch || null;
-    if (JOB_PROGRESS_BATCH_ID && !JOB_PROGRESS_BATCH) {
-      setJobProgressBatch(JOB_PROGRESS_BATCHES[0]?.batch_id || '');
-      if (JOB_PROGRESS_BATCH_ID) {
-        jobsLoading = false;
-        return refreshJobs();
+  if (view === 'batch' && !JOB_PROGRESS_BATCH) renderBatchProgress();
+  jobsRequestPromise = (async () => {
+    try {
+      const res = await api(requestUrl);
+      if (requestSequence !== jobsRequestSequence) return;
+      JOB_STATUS_COUNTS = res.status_counts || {};
+      if (view === 'batch') {
+        JOB_PROGRESS_BATCHES = res.progress_batches || [];
+        const batch = res.progress_batch || null;
+        if (!batch && JOB_PROGRESS_BATCH_ID) {
+          const fallbackId = JOB_PROGRESS_BATCHES[0]?.batch_id || '';
+          if (fallbackId !== JOB_PROGRESS_BATCH_ID) {
+            setJobProgressBatch(fallbackId);
+            if (fallbackId) return refreshJobs();
+          }
+        }
+        if (!JOB_PROGRESS_BATCH_ID && batch?.batch_id) setJobProgressBatch(batch.batch_id);
+        JOB_PROGRESS_BATCH = batch;
+      } else {
+        const nextJobs = res.items || [];
+        JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
+        updateJobStatusFilters(res.facets || {});
+        const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
+        if (p.page > totalPages) {
+          p.page = totalPages;
+          return refreshJobs();
+        }
+        const nextSignature = `${res.revision || ''}|${requestSignature}`;
+        JOBS = nextJobs;
+        if (nextSignature !== jobsRenderSignature) {
+          jobsRenderSignature = nextSignature;
+          renderJobs();
+        }
       }
-    } else if (!JOB_PROGRESS_BATCH_ID && JOB_PROGRESS_BATCH?.batch_id) {
-      setJobProgressBatch(JOB_PROGRESS_BATCH.batch_id);
+      markViewReady('register');
+    } catch(e) {
+      if (requestSequence !== jobsRequestSequence) return;
+      if (view === 'batch') {
+        jobsBatchError = '批次加载失败，请重新选择批次或刷新页面重试。';
+      } else if (!JOBS.length && $('#jobsBodyV2')) {
+        $('#jobsBodyV2').innerHTML = renderTableStateRow(11, '任务加载失败', '服务暂时不可用，系统会自动重试。', 'error');
+      }
+    } finally {
+      // 只有当前请求能够解除当前视图的加载状态。
+      if (requestSequence === jobsRequestSequence) {
+        jobsLoading = false;
+        jobsRequestPromise = null;
+        setListBusy('jobsPanelV2', false);
+        if (view === 'batch') renderBatchProgress();
+      }
     }
-    const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
-    if (p.page > totalPages) {
-      p.page = totalPages;
-      jobsLoading = false;
-      return refreshJobs();
-    }
-    const nextSignature = `${res.revision || ''}|${p.page}|${p.size}|${JSON.stringify(JOB_PROGRESS_BATCH || {})}|${JSON.stringify(JOB_PROGRESS_BATCHES)}`;
-    JOBS = nextJobs;
-    if (nextSignature !== jobsRenderSignature) {
-      jobsRenderSignature = nextSignature;
-      renderJobs();
-    } else {
-      // 数据不变时也刷新耗时文本。
-      renderBatchProgress();
-    }
-    markViewReady('register');
-  } catch(e) {
-    if (!JOBS.length) $('#jobsBodyV2').innerHTML = renderTableStateRow(10, '任务加载失败', '服务暂时不可用，系统会自动重试。', 'error');
-  }
-  finally {
-    jobsLoading = false;
-    setListBusy('jobsPanelV2', false);
-    if (jobsReloadQueued) {
-      jobsReloadQueued = false;
-      queueMicrotask(refreshJobs);
-    }
-  }
+  })();
+  return jobsRequestPromise;
 }
 async function refreshJobsManual(btn) {
   const old = btn.textContent;

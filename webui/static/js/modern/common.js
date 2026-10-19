@@ -19,7 +19,8 @@ let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
 let JOB_PROGRESS_BATCH = null;
 let JOB_PROGRESS_BATCHES = [];
-let JOB_PROGRESS_BATCH_ID = localStorage.getItem('gpt_console_registration_batch_id') || '';
+// 首次进入读取最新批次；本次会话内明确选择的批次由内存保留。
+let JOB_PROGRESS_BATCH_ID = '';
 let JOB_STATUS_FILTER = '';
 let JOB_ID_FILTER = '';
 let JOB_EMAIL_FILTER = '';
@@ -36,7 +37,11 @@ let activeLogJob = null, logTimer = null, jobsTimer = null;
 let summaryLoading = false;
 let dashboardLoading = false;
 let jobsLoading = false;
-let jobsReloadQueued = false;
+let jobsRequestSequence = 0;
+let jobsRequestGeneration = 0;
+let jobsRequestSignature = '';
+let jobsRequestPromise = null;
+let jobsBatchError = '';
 let accountTasksLoading = false;
 
 // GET requests are shared while in flight so startup and navigation cannot
@@ -1354,7 +1359,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   }
   if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
-  if (tab === 'register') ensureViewLoaded('register', refreshJobs);
+  if (tab === 'register') refreshJobs({coalesce: true});
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
@@ -1390,7 +1395,7 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
-  if (module === 'register') ensureViewLoaded('register', refreshJobs);
+  if (module === 'register') refreshJobs({coalesce: true});
   if (module === 'codex') ensureViewLoaded('codex', loadCodex);
   if (module === 'outlook') view === 'overview'
     ? ensureViewLoaded('outlook:overview', loadMailResources)

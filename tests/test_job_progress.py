@@ -1019,6 +1019,117 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list_jobs.call_args.kwargs["progress_batch_id"], "older-batch")
 
+    def test_jobs_batch_view_loads_only_current_active_slot_steps(self):
+        app = create_app(auth_code="test-auth")
+        rows = [
+            {"id": 11, "status": "failed", "batch_id": "chosen", "batch_index": 1},
+            {"id": 12, "root_job_id": 11, "retry_attempt": 1, "status": "running", "batch_id": "chosen",
+             "progress_steps": {"email_otp": {"state": "running", "transitions": [{"state": "running"}]}}},
+            {"id": 13, "root_job_id": 11, "retry_attempt": 2, "status": "failed", "batch_id": "chosen"},
+            {"id": 14, "status": "success", "batch_id": "chosen", "batch_index": 2},
+        ]
+        loaded = []
+
+        def load_progress(job_ids):
+            loaded.extend(job_ids)
+            return {
+                job_id: {"operation_task_id": 100 + job_id, "operation_run_id": 200 + job_id, "progress": {
+                    "main_steps": [{"id": "register", "children": [{"id": "email_otp", "duration_ms": 1700}]}],
+                    "failure": {"step_id": "email_otp", "label": "邮箱验证"},
+                    "routes": [{"route_attempt_no": 1, "steps": [{"id": "register"}], "status": "failed"}],
+                }} for job_id in loaded
+            }
+
+        payload = {"items": [], "progress_rows": rows, "progress_batches": [], "status_counts": {"active": 7}}
+        with patch("webui.routes.jobs.admin_repository.list_jobs", return_value=payload), patch(
+            "webui.routes.jobs.operation_task_store.get_registration_progress", side_effect=load_progress,
+        ), patch("webui.routes.jobs.operation_task_store.list_batches", return_value=[]):
+            response = app.test_client().get("/api/jobs?view=batch", headers={"X-Auth-Code": "test-auth"})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([12, 14], loaded)
+        result = response.get_json()
+        self.assertEqual([], result["items"])
+        slot = result["progress_batch"]["items"][0]
+        self.assertEqual(12, slot["id"])
+        self.assertEqual([11, 12, 13], [attempt["id"] for attempt in slot["attempts"]])
+        self.assertEqual(1700, slot["progress"]["main_steps"][0]["children"][0]["duration_ms"])
+        self.assertEqual("email_otp", slot["progress"]["failure"]["step_id"])
+        self.assertEqual("failed", slot["progress"]["routes"][0]["status"])
+        self.assertNotIn("steps", slot["progress"]["routes"][0])
+        self.assertNotIn("progress_steps", slot)
+        self.assertEqual(7, result["status_counts"]["active"])
+
+    def test_jobs_batch_fallback_keeps_legacy_steps_and_complete_main_children(self):
+        batch = _latest_progress_batch([{
+            "id": 11, "status": "failed", "batch_id": "legacy",
+            "progress_steps": {"email_otp": {"state": "failed", "detail": "邮箱验证码超时"}},
+        }], summarize_routes=True)
+
+        slot = batch["items"][0]
+        self.assertEqual("邮箱验证码超时", slot["progress_steps"]["email_otp"]["detail"])
+        auth = next(step for step in slot["progress"]["main_steps"] if step["id"] == "authenticate")
+        otp = next(step for step in auth["children"] if step["id"] == "email_otp")
+        self.assertEqual("failed", otp["state"])
+        compatible = _compact_job_for_list({
+            "id": 12, "status": "failed", "progress": {"main_steps": [{"id": "authenticate"}]},
+            "progress_steps": {"email_otp": {"state": "failed"}},
+        })
+        self.assertEqual("failed", compatible["progress_steps"]["email_otp"]["state"])
+
+    def test_jobs_table_view_has_log_binding_without_building_progress(self):
+        app = create_app(auth_code="test-auth")
+        job = db.create_job("icloud_hide")
+        from core.storage import operation
+        from tests.test_admin_repository import _QueryCounter
+
+        operation.sync_registration_job(job["id"])
+        with _QueryCounter() as counter, patch(
+            "core.task_progress.build_progress_snapshot", side_effect=AssertionError("不应构建步骤"),
+        ):
+            response = app.test_client().get("/api/jobs?view=table", headers={"X-Auth-Code": "test-auth"})
+
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        item = result["items"][0]
+        self.assertEqual(job["id"], item["id"])
+        self.assertGreater(item["operation_task_id"], 0)
+        self.assertGreater(item["operation_run_id"], 0)
+        self.assertNotIn("progress", item)
+        self.assertNotIn("progress_steps", item)
+        self.assertNotIn("progress_batch", result)
+        self.assertNotIn("progress_batches", result)
+        self.assertFalse(any("operation_events" in query or "operation_batches" in query for query in counter.queries))
+
+    def test_jobs_batch_view_preserves_real_stage_evidence_and_duration(self):
+        app = create_app(auth_code="test-auth")
+        job = db.create_job("icloud_hide", batch_id="chosen")
+        db.update_job(job["id"], status="running")
+        with patch.object(db, "_registration_now", return_value="2026-10-19T08:00:01"):
+            db.update_job_progress(job["id"], "email_otp", "running", "等待邮箱验证码")
+        with patch.object(db, "_registration_now", return_value="2026-10-19T08:00:04"):
+            db.update_job_progress(job["id"], "email_otp", "failed", "邮箱验证码超时")
+        db.update_job(job["id"], status="failed", error="邮箱验证码超时")
+        self._project_job_progress(job["id"])
+        db.create_job("icloud_hide", batch_id="other")
+
+        response = app.test_client().get(
+            "/api/jobs?view=batch&progress_batch_id=chosen", headers={"X-Auth-Code": "test-auth"},
+        )
+
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        self.assertEqual("chosen", result["progress_batch"]["batch_id"])
+        self.assertEqual([job["id"]], [item["id"] for item in result["progress_batch"]["items"]])
+        progress = result["progress_batch"]["items"][0]["progress"]
+        auth = next(step for step in progress["main_steps"] if step["id"] == "authenticate")
+        otp = next(step for step in auth["children"] if step["id"] == "email_otp")
+        self.assertEqual("failed", otp["state"])
+        self.assertEqual(3000, otp["duration_ms"])
+        self.assertEqual("2026-10-19T08:00:01", otp["started_at"])
+        self.assertTrue(otp["attempts"])
+        self.assertEqual("authenticate", progress["failure"]["step_id"])
+
     def test_jobs_api_passes_per_batch_debug_flag_to_service(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()

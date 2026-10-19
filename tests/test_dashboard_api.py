@@ -790,7 +790,7 @@ console.log('ok');
         html = self._modern_page_source(response)
         self.assertIn("if (summaryLoading) return;", html)
         self.assertIn("if (dashboardLoading) return;", html)
-        self.assertIn("if (jobsLoading) { jobsReloadQueued = true; return; }", html)
+        # 注册批次的请求去重与旧响应隔离由 Node 行为回归覆盖，切换批次允许立即发起新请求。
         self.assertIn("if (outlookLoading) { outlookReloadQueued = true; return; }", html)
         self.assertIn("if (codexLoading) { codexReloadQueued = true; return; }", html)
         self.assertIn("if (accountTasksLoading) {", html)

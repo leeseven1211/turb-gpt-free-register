@@ -512,7 +512,7 @@ def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
     return where, params
 
 
-def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
+def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "") -> dict:
     from core import registration_service as service
 
     jobs = _q(record_store.JOBS)
@@ -520,114 +520,134 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
     where, params = _job_where(request.filters)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     from_sql = f" FROM {jobs} j LEFT JOIN {accounts} a ON a.id = j.account_id"
+    raw_page = []
+    facets = {}
+    progress_rows = []
+    progress_batches = []
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest{from_sql}{clause}", params)
-        aggregate = cur.fetchone()
-        cur.execute(
-            f"SELECT j.*, ({_JOB_DISPLAY_STATUS}) AS projected_display_status{from_sql}{clause} "
-            "ORDER BY j.id DESC LIMIT %s OFFSET %s",
-            (*params, request.limit, request.offset),
-        )
-        raw_page = cur.fetchall()
-        facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
-        facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
-        cur.execute(
-            f"""
-            SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
-              {from_sql}{facet_clause} GROUP BY 2
-            UNION ALL
-            SELECT 'email_source', LOWER(COALESCE(j.data->>'email_source', '')), COUNT(*)
-              {from_sql}{facet_clause} GROUP BY 2
-            """,
-            facet_params * 2,
-        )
-        facets = _facet_dict(cur.fetchall())
-        selected_batch_id = _text(progress_batch_id)
-        if selected_batch_id:
+        if view == "batch":
+            # 新建批次确认使用全局未完成数，不受表格筛选或所选批次影响。
             cur.execute(
-                f"""
-                SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
-                  FROM {jobs} j
-                  LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
-                 WHERE COALESCE(root.batch_id, j.batch_id) = %s
-                 ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
-                """,
-                (selected_batch_id,),
+                f"SELECT COUNT(*) AS total, MAX(updated_at) AS latest, "
+                f"COUNT(*) FILTER (WHERE status IN ('pending','running','stopping')) AS active FROM {jobs}"
             )
+            aggregate = cur.fetchone()
         else:
+            cur.execute(f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest{from_sql}{clause}", params)
+            aggregate = cur.fetchone()
+            cur.execute(
+                f"SELECT j.*, ({_JOB_DISPLAY_STATUS}) AS projected_display_status{from_sql}{clause} "
+                "ORDER BY j.id DESC LIMIT %s OFFSET %s",
+                (*params, request.limit, request.offset),
+            )
+            raw_page = cur.fetchall()
+            facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
+            facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
             cur.execute(
                 f"""
-                WITH mapped AS (
+                SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
+                  {from_sql}{facet_clause} GROUP BY 2
+                UNION ALL
+                SELECT 'email_source', LOWER(COALESCE(j.data->>'email_source', '')), COUNT(*)
+                  {from_sql}{facet_clause} GROUP BY 2
+                """,
+                facet_params * 2,
+            )
+            facets = _facet_dict(cur.fetchall())
+        if view != "table":
+            selected_batch_id = _text(progress_batch_id)
+            if selected_batch_id:
+                cur.execute(
+                    f"""
                     SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
                       FROM {jobs} j
                       LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
-                ), latest AS (
-                    SELECT effective_batch_id FROM mapped
-                     WHERE NULLIF(effective_batch_id, '') IS NOT NULL
-                     ORDER BY id DESC LIMIT 1
+                     WHERE COALESCE(root.batch_id, j.batch_id) = %s
+                     ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                    """,
+                    (selected_batch_id,),
                 )
-                SELECT mapped.* FROM mapped JOIN latest l USING (effective_batch_id)
-                 ORDER BY COALESCE((mapped.data->>'batch_index')::int, 0), mapped.id
+            else:
+                cur.execute(
+                    f"""
+                    SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                     WHERE COALESCE(root.batch_id, j.batch_id) = (
+                        SELECT COALESCE(latest_root.batch_id, latest.batch_id)
+                          FROM {jobs} latest
+                          LEFT JOIN {jobs} latest_root ON latest_root.id = COALESCE(latest.root_job_id, latest.id)
+                         WHERE NULLIF(COALESCE(latest_root.batch_id, latest.batch_id), '') IS NOT NULL
+                         ORDER BY latest.id DESC LIMIT 1
+                     )
+                     ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                    """
+                )
+            progress_rows = []
+            for raw_progress in cur.fetchall():
+                merged_progress = record_store.merge_row(record_store.JOBS, raw_progress)
+                if raw_progress.get("effective_batch_id"):
+                    merged_progress["effective_batch_id"] = str(raw_progress.get("effective_batch_id"))
+                progress_rows.append(merged_progress)
+            cur.execute(
+                f"""
+                WITH mapped AS (
+                    SELECT j.id, j.status,
+                           COALESCE((j.data->>'retry_attempt')::int, 0) AS retry_attempt,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
+                           MAX(j.id) OVER (PARTITION BY COALESCE(root.batch_id, j.batch_id)) AS batch_latest_job_id,
+                           BOOL_OR(j.parent_job_id IS NOT NULL) OVER (
+                               PARTITION BY COALESCE(root.batch_id, j.batch_id)
+                           ) AS batch_has_retries,
+                           COALESCE(j.root_job_id, j.id) AS slot_root_id,
+                           COALESCE(root.created_at, j.created_at) AS slot_created_at
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                ), current_slot AS (
+                    SELECT DISTINCT ON (effective_batch_id, slot_root_id) *
+                      FROM mapped
+                     WHERE NULLIF(effective_batch_id, '') IS NOT NULL
+                     ORDER BY effective_batch_id, slot_root_id,
+                              CASE WHEN status IN ('pending','running','stopping') THEN 0 ELSE 1 END,
+                              retry_attempt DESC, id DESC
+                )
+                SELECT effective_batch_id AS batch_id,
+                       MAX(batch_latest_job_id) AS latest_job_id,
+                       MIN(slot_created_at) AS created_at,
+                       COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE status = 'success') AS success,
+                       COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                       COUNT(*) FILTER (WHERE status = 'partial_success') AS partial_success,
+                       COUNT(*) FILTER (WHERE status = 'request_unknown') AS request_unknown,
+                       COUNT(*) FILTER (WHERE status = 'manual_reconcile') AS manual_reconcile,
+                       COUNT(*) FILTER (WHERE status = 'stopped') AS stopped,
+                       COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                       COUNT(*) FILTER (WHERE status = 'running') AS running,
+                       COUNT(*) FILTER (WHERE status = 'stopping') AS stopping,
+                       COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                       BOOL_OR(batch_has_retries) AS is_retry
+                  FROM current_slot
+                 GROUP BY effective_batch_id
+                 ORDER BY MAX(batch_latest_job_id) DESC
+                 LIMIT 30
                 """
             )
-        progress_rows = []
-        for raw_progress in cur.fetchall():
-            merged_progress = record_store.merge_row(record_store.JOBS, raw_progress)
-            if raw_progress.get("effective_batch_id"):
-                merged_progress["effective_batch_id"] = str(raw_progress.get("effective_batch_id"))
-            progress_rows.append(merged_progress)
-        cur.execute(
-            f"""
-            WITH mapped AS (
-                SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
-                       COALESCE(j.root_job_id, j.id) AS slot_root_id,
-                       COALESCE(root.created_at, j.created_at) AS slot_created_at
-                  FROM {jobs} j
-                  LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
-            ), current_slot AS (
-                SELECT DISTINCT ON (effective_batch_id, slot_root_id) *
-                  FROM mapped
-                 WHERE NULLIF(effective_batch_id, '') IS NOT NULL
-                 ORDER BY effective_batch_id, slot_root_id,
-                          COALESCE((data->>'retry_attempt')::int, 0) DESC, id DESC
-            )
-            SELECT effective_batch_id AS batch_id,
-                   MAX(id) AS latest_job_id,
-                   MIN(slot_created_at) AS created_at,
-                   COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE status = 'success') AS success,
-                   COUNT(*) FILTER (WHERE status = 'failed') AS failed,
-                   COUNT(*) FILTER (WHERE status = 'partial_success') AS partial_success,
-                   COUNT(*) FILTER (WHERE status = 'request_unknown') AS request_unknown,
-                   COUNT(*) FILTER (WHERE status = 'manual_reconcile') AS manual_reconcile,
-                   COUNT(*) FILTER (WHERE status = 'stopped') AS stopped,
-                   COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-                   COUNT(*) FILTER (WHERE status = 'running') AS running,
-                   COUNT(*) FILTER (WHERE status = 'stopping') AS stopping,
-                   COUNT(*) FILTER (WHERE status = 'pending') AS pending,
-                   BOOL_OR(parent_job_id IS NOT NULL) AS is_retry
-              FROM current_slot
-             GROUP BY effective_batch_id
-             ORDER BY MAX(id) DESC
-             LIMIT 30
-            """
-        )
-        progress_batches = []
-        for batch in cur.fetchall():
-            counts = {
-                key: int(batch.get(key) or 0)
-                for key in ("success", "failed", "partial_success", "request_unknown", "manual_reconcile", "stopped", "cancelled", "running", "stopping", "pending")
-            }
-            counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
-            progress_batches.append({
-                "batch_id": str(batch.get("batch_id") or ""),
-                "latest_job_id": int(batch.get("latest_job_id") or 0),
-                "created_at": str(batch.get("created_at") or ""),
-                "total": int(batch.get("total") or 0),
-                "kind": "registration",
-                "has_retries": bool(batch.get("is_retry")),
-                "status_counts": counts,
-            })
+            progress_batches = []
+            for batch in cur.fetchall():
+                counts = {
+                    key: int(batch.get(key) or 0)
+                    for key in ("success", "failed", "partial_success", "request_unknown", "manual_reconcile", "stopped", "cancelled", "running", "stopping", "pending")
+                }
+                counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
+                progress_batches.append({
+                    "batch_id": str(batch.get("batch_id") or ""),
+                    "latest_job_id": int(batch.get("latest_job_id") or 0),
+                    "created_at": str(batch.get("created_at") or ""),
+                    "total": int(batch.get("total") or 0),
+                    "kind": "registration",
+                    "has_retries": bool(batch.get("is_retry")),
+                    "status_counts": counts,
+                })
     page_rows = [record_store.merge_row(record_store.JOBS, row) for row in raw_page]
     projected = {int(raw["id"]): str(raw.get("projected_display_status") or "") for raw in raw_page}
     retry_rows = {int(row.get("id") or 0): row for row in [*page_rows, *progress_rows]}
@@ -640,7 +660,14 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
             row["display_status"] = projected.get(int(row.get("id") or 0), row.get("status"))
     total = int(aggregate["total"] or 0)
     status_counts = {item["value"]: int(item["count"]) for item in facets.get("status", [])}
-    status_counts["active"] = sum(status_counts.get(key, 0) for key in ("pending", "running", "stopping"))
+    status_counts["active"] = (
+        int(aggregate["active"] or 0) if view == "batch"
+        else sum(status_counts.get(key, 0) for key in ("pending", "running", "stopping"))
+    )
+    if view == "table":
+        bindings = registration_log_bindings([row["id"] for row in page_rows])
+        for row in page_rows:
+            row.update(bindings.get(int(row["id"]), {}))
     return {
         "ok": True,
         "items": page_rows,
@@ -655,6 +682,33 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "") -> dict:
         "progress_rows": progress_rows,
         "progress_batches": progress_batches,
     }
+
+
+def registration_log_bindings(job_ids: list[int]) -> dict[int, dict]:
+    """只读分页任务的日志入口绑定；不初始化投影，也不读取事件或 Run 数据。"""
+    from core import operation_task_store
+
+    ids = sorted({str(int(job_id)) for job_id in job_ids if int(job_id) > 0})
+    if not ids:
+        return {}
+    runs = operation_task_store._table("operation_runs")
+    tasks = operation_task_store._table("operation_tasks")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) AS relation", (runs,))
+        if not cur.fetchone()["relation"]:
+            return {}
+        cur.execute(
+            f"SELECT DISTINCT ON (r.source_id) r.source_id, r.task_id, r.id FROM {runs} r "
+            f"JOIN {tasks} t ON t.id = r.task_id "
+            "WHERE r.source_system = 'registration_jobs' AND r.source_id = ANY(%s) "
+            "AND COALESCE(t.data->>'deleted_by_user', 'false') <> 'true' "
+            "ORDER BY r.source_id, r.id DESC",
+            (ids,),
+        )
+        return {
+            int(row["source_id"]): {"operation_task_id": int(row["task_id"]), "operation_run_id": int(row["id"])}
+            for row in cur.fetchall()
+        }
 
 
 _POOL_SPECS = {
