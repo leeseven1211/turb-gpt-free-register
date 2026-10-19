@@ -203,6 +203,13 @@ def persist_summary(
         route_attempt_no=route_attempt_no,
     ))
     payload.update({key: _int_value(summary.get(key)) for key in _CACHE_COUNTER_KEYS})
+    if isinstance(summary.get("proxy_transport"), Mapping):
+        payload["proxy_transport"] = _safe_proxy_transport(summary["proxy_transport"])
+    for key in ("resource_details", "js_coverage"):
+        if key in summary:
+            # 诊断对象由有界采集器构造；只保留其固定元数据投影。
+            from core.browser_traffic_diagnostics import sanitize_diagnostics
+            payload.update(sanitize_diagnostics({key: summary[key]}))
     if payload["source"] == "protocol_http":
         # 协议统计只接受固定数值/枚举；原始诊断字段不能进入普通汇总。
         payload.update({key: _int_value(summary.get(key)) for key in (
@@ -219,6 +226,49 @@ def persist_summary(
             identifier = summary.get(field)
             payload[field] = int(identifier) if identifier is not None else None
     return record_store.upsert_row_by(TRAFFIC_SUMMARIES, "summary_key", payload)
+
+
+def _safe_proxy_transport(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    fields = ("upload_bytes", "download_bytes", "connection_count", "failed_connection_count",
+              "blocked_connection_count", "connect_retry_count", "recovered_connection_count")
+    result = {key: _int_value(snapshot.get(key)) for key in fields}
+    result.update(available=bool(snapshot.get("available")),
+                  total_bytes=result["upload_bytes"] + result["download_bytes"],
+                  attribution="proxy_connection_destination",
+                  byte_semantics="tunnel_payload_including_tls_without_tcp_ip",
+                  note="隧道传输含 TLS、浏览器启动和后台请求；与页面字节重叠，不相加；不含代理握手、TCP/IP 开销、缓存匿名填充或代理商账单")
+    destinations = []
+    for item in list(snapshot.get("destinations") or [])[:10000]:
+        if not isinstance(item, Mapping):
+            continue
+        host = str(item.get("host") or "").lower().rstrip(".")
+        if not re.fullmatch(r"[a-z0-9_.:\[\]-]{1,253}", host):
+            continue
+        row = {key: _int_value(item.get(key)) for key in fields}
+        row.update(host=host, port=min(65535, _int_value(item.get("port"))),
+                   total_bytes=row["upload_bytes"] + row["download_bytes"])
+        destinations.append(row)
+    result["destinations"] = destinations
+    for key in fields[2:]:
+        result[key] = sum(row[key] for row in destinations)
+    return result
+
+
+def _transport_window(snapshot, baseline):
+    """保留窗口再次使用时仅计新窗口，避免重复累计历史隧道字节。"""
+    fields = ("upload_bytes", "download_bytes", "connection_count", "failed_connection_count",
+              "blocked_connection_count", "connect_retry_count", "recovered_connection_count")
+    result = dict(snapshot)
+    for key in fields:
+        result[key] = max(0, _int_value(snapshot.get(key)) - _int_value(baseline.get(key)))
+    prior = {(row.get("host"), row.get("port")): row for row in baseline.get("destinations", [])}
+    result["destinations"] = []
+    for row in snapshot.get("destinations", []):
+        before = prior.get((row.get("host"), row.get("port")), {})
+        delta = {key: max(0, _int_value(row.get(key)) - _int_value(before.get(key))) for key in fields}
+        if any(delta.values()):
+            result["destinations"].append(dict(delta, host=row.get("host"), port=row.get("port")))
+    return _safe_proxy_transport(result)
 
 
 def record_unavailable(
@@ -515,6 +565,9 @@ class _SummaryOnlyCDPSession:
     summary_only = True
 
     def __init__(self, profile_id: str) -> None:
+        from core.browser_traffic_diagnostics import BrowserTrafficDiagnostics
+        self.diagnostics = BrowserTrafficDiagnostics()
+        self.js_coverage_enabled = self.diagnostics.coverage_enabled
         self.job_id = f"traffic-{str(profile_id or 'roxy')[:32]}"
         self.current_stage = "browser"
         self.websocket_frame_count = 0
@@ -608,6 +661,7 @@ class _SummaryOnlyCDPSession:
         resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
         self.resource_type_requests[resource_type] += 1
         self.resource_type_bytes[resource_type] += upload_bytes + download_bytes
+        self.diagnostics.record_resource(item, upload_bytes, download_bytes)
         status = _int_value(item.get("status"))
         if not blocked_by_data_saver and (item.get("failure") or status >= 400):
             self.failed_count += 1
@@ -651,7 +705,11 @@ class _SummaryOnlyCDPSession:
             "cache_local_request_count": self.cache_local_request_count,
             "cache_native_request_count": self.cache_native_request_count,
             "cache_local_served_bytes": self.cache_local_served_bytes,
+            **self.diagnostics.snapshot(),
         }
+
+    def record_js_coverage(self, payload, *, supported=True):
+        self.diagnostics.record_coverage(payload, supported=supported)
 
 
 def _new_roxy_collector(session: _SummaryOnlyCDPSession, debugger_address: str):
@@ -670,6 +728,12 @@ class RoxyTrafficCapture:
 
     def __init__(self, opened, correlation: Mapping[str, Any] | None = None) -> None:
         self.summary_key = f"roxy:{uuid.uuid4().hex}"
+        self.proxy_relay = getattr(opened, "proxy_relay", None)
+        # 新端口从浏览器启动前计量；保留窗口重用时从本轮开始计量，排除任务间闲置流量。
+        self.transport_baseline = (
+            self.proxy_relay.traffic_snapshot()
+            if self.proxy_relay is not None and hasattr(self.proxy_relay, "_traffic_capture_baseline") else {}
+        )
         self.session = _SummaryOnlyCDPSession(getattr(opened, "profile_id", ""))
         self.data_saver = None
         self.public_asset_cache = None
@@ -730,7 +794,7 @@ class RoxyTrafficCapture:
                 self.session.unknown_count += 1
                 logger.warning("[浏览器流量] Roxy CDP 采集停止异常：%s", type(exc).__name__)
         try:
-            if self.unavailable_reason:
+            if self.unavailable_reason and self.proxy_relay is None:
                 record_unavailable(
                     summary_key=self.summary_key,
                     source="roxy_cdp",
@@ -740,6 +804,14 @@ class RoxyTrafficCapture:
                 )
             else:
                 summary = self.session.summary()
+                if self.unavailable_reason:
+                    summary.update(availability="unavailable", unavailable_reason=self.unavailable_reason)
+                if self.proxy_relay is not None:
+                    snapshot = self.proxy_relay.traffic_snapshot()
+                    summary["proxy_transport"] = _transport_window(snapshot, self.transport_baseline)
+                    self.proxy_relay._traffic_capture_baseline = snapshot
+                    logger.info("[浏览器流量] 隧道传输=%s 字节，页面可观测=%s 字节；两者重叠不相加，不等于代理商账单",
+                                summary["proxy_transport"]["total_bytes"], summary["total_bytes"])
                 if self.public_asset_cache is not None:
                     try:
                         stats = self.public_asset_cache.snapshot()
@@ -768,6 +840,7 @@ class RoxyTrafficCapture:
                     summary.get("resource_type_bytes") or {},
                     summary.get("resource_type_requests") or {},
                 )
+                self.session.diagnostics.log()
                 persist_summary(
                     summary_key=self.summary_key,
                     summary=summary,
@@ -786,6 +859,16 @@ class RoxyTrafficCapture:
 def start_roxy_capture(opened, **correlation: Any) -> RoxyTrafficCapture:
     # 普通流量归属独立于原始认证上下文开关；只继承同一 native 执行边界。
     from core.task_run_log import current_context
+    from core.protocol_traffic import current_correlation
+
+    inherited = current_correlation()
+    correlation = {**{key: value for key, value in inherited.items() if key in RoxyTrafficCapture._CORRELATION_KEYS},
+                   **correlation}
+    relay = getattr(opened, "proxy_relay", None)
+    if relay is not None or getattr(opened, "proxy_route_retained", False) is True:
+        # 原窗口仍沿用原线路；本轮刚领取的租约不能冒充实际出口。
+        origin = getattr(relay, "origin_lease_id", None)
+        correlation["proxy_lease_id"] = origin if isinstance(origin, str) and origin else None
 
     context = current_context()
     task_id, run_id = context.get("task_id"), context.get("run_id")

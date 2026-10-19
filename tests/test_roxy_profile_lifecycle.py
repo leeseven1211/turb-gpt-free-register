@@ -40,8 +40,11 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
         self.assertEqual(mdf_call.kwargs["json_body"]["dirId"], "profile-1")
         self.assertEqual(
             mdf_call.kwargs["json_body"]["proxyInfo"]["host"],
-            "new-route.example",
+            "127.0.0.1",
         )
+        relay = roxybrowser_client._profile_relay("profile-1")
+        self.assertEqual(relay.target.host, "new-route.example")
+        roxybrowser_client._close_profile_relay("profile-1")
         self.assertNotIn("cookie", mdf_call.kwargs["json_body"])
         self.assertNotIn("fingerInfo", mdf_call.kwargs["json_body"])
         self.assertNotIn("clearCookie", mdf_call.kwargs["json_body"])

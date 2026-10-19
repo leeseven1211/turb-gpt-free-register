@@ -528,7 +528,12 @@ def _refresh_with_password(
     identity=None,
     context_recorder=None,
     on_remote_request_started: Callable[[], None] | None = None,
+    on_authenticated=None,
 ) -> dict:
+    def completed(*args, **kwargs):
+        result = _success(*args, **kwargs)
+        return on_authenticated(result, args[2]) if callable(on_authenticated) else result
+
     session = None
     fallback_session = None
     checked_at = _now()
@@ -543,6 +548,7 @@ def _refresh_with_password(
             clear_log=False,
             proxy_supplier=proxy_supplier,
             on_remote_request_started=on_remote_request_started,
+            **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
         )
         result.setdefault("auth_method", "legacy_email_otp")
         result.setdefault("live_check_driver", "protocol_v2")
@@ -608,7 +614,7 @@ def _refresh_with_password(
                 auth_method = "email_otp_mfa"
             else:
                 session_info = email_result
-            return _success(
+            return completed(
                 checked_at,
                 session_info,
                 session,
@@ -630,7 +636,7 @@ def _refresh_with_password(
             if not factor_id:
                 raise ProtocolV2AuthError("mfa_factor_missing", category="response", roxy_fallback_allowed=False)
             session_info, _ = _complete_mfa(session, {"continue_url": str(final_url)}, str(final_url), totp_secret)
-            return _success(
+            return completed(
                 checked_at,
                 session_info,
                 session,
@@ -691,7 +697,7 @@ def _refresh_with_password(
                     )
                 else:
                     session_info = email_result
-                return _success(
+                return completed(
                     checked_at,
                     session_info,
                     fallback_session,
@@ -773,7 +779,7 @@ def _refresh_with_password(
             password_auth_status = "verified"
         else:
             raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=True)
-        return _success(
+        return completed(
             checked_at,
             session_info,
             session,
@@ -870,6 +876,7 @@ def refresh_access_token(
     identity=None,
     context_recorder=None,
     on_remote_request_started: Callable[[], None] | None = None,
+    on_authenticated=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -891,6 +898,7 @@ def refresh_access_token(
             identity=identity,
             context_recorder=context_recorder,
             on_remote_request_started=mark_remote_request_started,
+            **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
         )
         result.setdefault("remote_request_started", remote_request_started)
         result.setdefault(

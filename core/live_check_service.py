@@ -710,7 +710,12 @@ def _run_live_check(
     finish_operation: bool = True,
     config_snapshot: dict | None = None,
     proxy_source: str | None = None,
+    on_authenticated=None,
+    result_writer=None,
 ) -> dict:
+    def save_result(account_id, result):
+        return result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
+
     account_route = None
     result = None
     route: dict = {}
@@ -1187,6 +1192,7 @@ def _run_live_check(
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
+                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
                 )
@@ -1199,6 +1205,7 @@ def _run_live_check(
                         clear_log=False,
                         proxy_supplier=acquire_retry_route,
                         **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
+                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
@@ -1223,6 +1230,7 @@ def _run_live_check(
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
+                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
                 )
@@ -1234,6 +1242,7 @@ def _run_live_check(
                         proxy=selected_proxy,
                         clear_log=False,
                         **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
+                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
@@ -1363,7 +1372,7 @@ def _run_live_check(
             "proxy_used": route.get("proxy_used"),
         })
         try:
-            writeback_ok = bool(db.update_account_liveness(account_id, result))
+            writeback_ok = bool(save_result(account_id, result))
         except Exception:
             if refresh_boundary and refresh_boundary.get("pending_confirmation"):
                 _record_refresh_receipt(
@@ -1388,7 +1397,7 @@ def _run_live_check(
             )
             if not refresh_confirmed:
                 try:
-                    db.update_account_liveness(account_id, result)
+                    save_result(account_id, result)
                 except Exception:
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
@@ -1490,7 +1499,7 @@ def _run_live_check(
                 "next_action": "manual_reconcile",
             })
         try:
-            db.update_account_liveness(account_id, result)
+            save_result(account_id, result)
         except Exception:
             logger.exception("[查活] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
@@ -1549,7 +1558,7 @@ def _run_live_check(
             auth_method=result["auth_method"],
         )
         try:
-            db.update_account_liveness(account_id, result)
+            save_result(account_id, result)
         except Exception:
             logger.exception("[查活] 写入异常状态失败: account_id=%s", account_id)
         logger.exception("[查活] 后台异常: %s", email)
@@ -1716,7 +1725,10 @@ def register_maintenance_operation_handlers() -> bool:
     """
     from core import deactivation_mail_service, email_change_service, extract_link_service, plan_check_service
 
+    from core import account_inspection_service
+
     registered = (
+        account_inspection_service.register_operation_handlers(),
         register_operation_handlers(),
         plan_check_service.register_operation_handlers(),
         deactivation_mail_service.register_operation_handlers(),
@@ -1781,6 +1793,9 @@ def run_account_live_check_inline(
     driver: str | None = None,
     operation_context=None,
     config_snapshot: dict | None = None,
+    on_authenticated=None,
+    result_writer=None,
+    allow_missing_token: bool = False,
 ) -> dict:
     """Synchronously run the preflight inside its parent durable operation.
 
@@ -1814,7 +1829,7 @@ def run_account_live_check_inline(
             "accepted": False, "busy": False, "deactivated": True,
             "error": "账号已标记为封号，停止查活/刷新 AT",
         }
-    if force_refresh and not str(account.get("access_token") or "").strip():
+    if force_refresh and not allow_missing_token and not str(account.get("access_token") or "").strip():
         return {
             "accepted": False, "busy": False, "not_registered": True,
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
@@ -1851,6 +1866,8 @@ def run_account_live_check_inline(
             operation_context=operation_context,
             finish_operation=not native_inline,
             config_snapshot=config_snapshot,
+            **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+            **({"result_writer": result_writer} if callable(result_writer) else {}),
         )
     except account_task_store.OperationLeaseLost:
         # An extract parent must let the gateway fence the whole operation;
@@ -1863,7 +1880,7 @@ def run_account_live_check_inline(
             "error": f"查活内联执行异常: {type(exc).__name__}: {str(exc)[:300]}",
         }
         try:
-            db.update_account_liveness(account_id, result)
+            result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
         except Exception:
             logger.exception("[查活] 内联异常状态写回失败: account_id=%s", account_id)
         if not native_inline and task_id:

@@ -65,6 +65,14 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     except RemailError as exc:
         ok, reason = False, str(exc)
     add("remail", ok, reason)
+    for source in ("mailcode", "xigua"):
+        module = __import__(f"core.{source}_client", fromlist=["validate_configuration"])
+        try:
+            module.validate_configuration()
+            ok, reason = True, ""
+        except RuntimeError as exc:
+            ok, reason = False, str(exc)
+        add(source, ok, reason)
     ok, reason = _all_present([
         ("MAIL_NEST_API_KEY", getattr(cfg, "MAIL_NEST_API_KEY", "")),
         ("MAIL_NEST_PROJECT_CODE", getattr(cfg, "MAIL_NEST_PROJECT_CODE", "")),

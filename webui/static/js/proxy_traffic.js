@@ -705,6 +705,29 @@ function proxyTrafficOpenDetail(view, id) {
   ];
   title.textContent = view === 'history' ? '线路历史详情' : '请求流量详情';
   body.innerHTML = items.filter((item) => item[1] != null && item[1] !== '').map((item) => proxyTrafficField(item[0], item[1])).join('');
+  if (view !== 'history' && row.proxy_transport?.available) {
+    const transport = row.proxy_transport;
+    body.innerHTML += proxyTrafficField('代理隧道传输', proxyTrafficBytes(Number(transport.total_bytes)))
+      + proxyTrafficField('隧道口径', '含 TLS、启动和后台请求；与页面字节重叠，不相加；不含 TCP/IP 开销、缓存匿名填充和代理商账单')
+      + proxyTrafficField('连接前已拦截', `${Number(transport.blocked_connection_count || 0)} 次；没有估算节省字节`);
+    for (const target of (transport.destinations || []).slice(0, 50)) {
+      body.innerHTML += proxyTrafficField(`目标 ${target.host}:${target.port}`,
+        `${proxyTrafficBytes(Number(target.total_bytes))} · 连接 ${target.connection_count} · 失败 ${target.failed_connection_count} · 拦截 ${target.blocked_connection_count} · 重试 ${target.connect_retry_count} · 恢复 ${target.recovered_connection_count}`);
+    }
+  }
+  if (view !== 'history' && row.resource_details?.length) {
+    body.innerHTML += proxyTrafficField('资源明细', `页面可观测口径；以下显示前 ${Math.min(50, row.resource_details.length)} 项，完整有界明细见任务日志`);
+    for (const resource of row.resource_details.slice(0, 50)) {
+      body.innerHTML += proxyTrafficField(resource.url, `${resource.resource_type} · ${proxyTrafficBytes(Number(resource.total_bytes))}`);
+    }
+  }
+  if (view !== 'history' && row.js_coverage?.enabled) {
+    const coverage = row.js_coverage;
+    body.innerHTML += proxyTrafficField('JS 覆盖率', `target ${coverage.target_count} · 已采集 ${coverage.collected_target_count} · 不支持/失败 ${coverage.unsupported_target_count}；未观察到执行不能证明资源可安全拦截`);
+    for (const script of (coverage.scripts || []).slice(0, 50)) {
+      body.innerHTML += proxyTrafficField(script.url, `函数 ${script.function_count} · 观察到执行 ${script.executed_function_count}`);
+    }
+  }
   dialog.showModal();
 }
 

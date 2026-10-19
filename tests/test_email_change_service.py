@@ -1622,7 +1622,8 @@ class EmailChangeProjectionTests(unittest.TestCase):
         )
         self.assertIn("result", [step["id"] for step in snapshot["main_steps"]])
         error = classify_task_error("request_unknown: remote response pending", task_type="email_change")
-        self.assertEqual("request_unknown", error["error_code"])
+        # 已按任务类型细分缺失回执，保留原有人工核验动作。
+        self.assertEqual("email_change_receipt_missing", error["error_code"])
         self.assertEqual("manual_reconcile", error["next_action"])
 
 

@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -46,12 +47,18 @@ class TwofaProtocolHTTPError(RuntimeError):
         error_code: str = "",
         error_type: str = "",
         detail: str = "",
+        challenge: bool = False,
+        business_error: bool = False,
+        retry_after: str = "",
     ) -> None:
         self.operation = str(operation or "mfa")
         self.status_code = int(status_code or 0)
         self.error_code = str(error_code or "")[:120]
         self.error_type = str(error_type or "")[:120]
         self.detail = str(detail or "")[:240]
+        self.challenge = bool(challenge)
+        self.business_error = bool(business_error or error_code or error_type)
+        self.retry_after = str(retry_after or "").strip()
         fields = [f"{self.operation} HTTP {self.status_code}"]
         if self.error_code:
             fields.append(f"code={self.error_code}")
@@ -131,12 +138,32 @@ def _twofa_error_fields(response) -> tuple[str, str, str]:
 
 def _twofa_http_error(operation: str, response) -> TwofaProtocolHTTPError:
     code, error_type, detail = _twofa_error_fields(response)
+    raw_headers = getattr(response, "headers", None)
+    headers = {str(key).lower(): str(value) for key, value in raw_headers.items()} if isinstance(raw_headers, Mapping) else {}
+    raw_body = getattr(response, "text", "")
+    body = raw_body[:8192].lower() if isinstance(raw_body, str) else ""
+    challenge = headers.get("cf-mitigated", "").lower() == "challenge" or any(
+        marker in body for marker in ("cf-chl-", "challenge-platform", "captcha")
+    )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    business_error = bool(code or error_type or (payload.get("error") if isinstance(payload, dict) else False))
+    if operation == "reauth_otp_validate":
+        # OTP 响应可能回显验证码或凭据，只保留短错误标识和固定中文诊断。
+        code = code if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.-]{0,79}", code) else ""
+        error_type = error_type if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.-]{0,79}", error_type) else ""
+        detail = "需要交互验证" if challenge else "服务端明确拒绝验证" if business_error else "验证码请求临时失败"
     return TwofaProtocolHTTPError(
         operation,
         int(getattr(response, "status_code", 0) or 0),
         error_code=code,
         error_type=error_type,
         detail=detail,
+        challenge=challenge,
+        business_error=business_error,
+        retry_after=headers.get("retry-after", ""),
     )
 
 
@@ -489,13 +516,32 @@ def _validate_reauth_otp(session: BrowserSession, code: str) -> str:
 
 
 def _validate_reauth_otp_with_retry(session: BrowserSession, code: str) -> str:
-    """OTP 业务 4xx 直接返回；仅对传输、限流和服务端失败有限重试。"""
-    return str(_run_reauth_step_with_retry(
-        "重认证 OTP 校验",
-        session,
-        lambda: _validate_reauth_otp(session, code),
-        retry_forbidden=False,
-    ))
+    """对没有业务拒绝或挑战的 403/429 复用原会话、原验证码有限重试。"""
+    max_attempts, base_delay = _reauth_retry_settings()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return str(_validate_reauth_otp(session, code))
+        except TwofaProtocolHTTPError as exc:
+            if (exc.status_code not in (403, 429) or exc.challenge or exc.business_error
+                    or attempt >= max_attempts):
+                raise
+            retry_after = exc.retry_after
+            if retry_after and (not retry_after.isascii() or not retry_after.isdigit()
+                                or len(retry_after) > 3 or int(retry_after) > 120):
+                raise
+            delay = max(min(120.0, base_delay * 2 ** (attempt - 1)), int(retry_after or 0))
+            logger.warning(
+                "[2FA] OTP 临时拒绝 HTTP %s，%.1fs 后复用原会话重试（%s/%s），不重新发码",
+                exc.status_code, delay, attempt, max_attempts,
+            )
+            if delay:
+                time.sleep(delay)
+            _clear_twofa_session_circuit(session, source="OTP 临时拒绝")
+        except Exception as exc:
+            # 传输异常无法确认远端是否已验证，不在当前调用里自动重放 POST。
+            error_class = TwofaProtocolTransportError if _is_retryable_twofa_transport_error(exc) else TwofaProtocolStepError
+            raise error_class("重认证 OTP 校验", type(exc).__name__) from None
+    raise RuntimeError("2FA OTP 重试耗尽")
 
 
 def _exchange_new_token(session: BrowserSession, continue_url: str) -> str:
@@ -800,13 +846,14 @@ def save_account_data(
     access_token: str,
     totp_secret: str | None = None,
     extra: dict | None = None,
-    chatgpt_session: dict | None = None,
     output_path: Path | None = None,  # 兼容老接口；不再写文件
     email_source: str | None = None,
     proxy_used: str | None = None,
     plan_check_proxy: str | None = None,
     captured_plan_result: dict | None = None,
     plan_check_session: BrowserSession | None = None,
+    *,
+    chatgpt_session: dict | None = None,
 ) -> int:
     """
     将账号信息保存到 PostgreSQL。

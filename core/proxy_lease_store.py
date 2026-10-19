@@ -210,6 +210,66 @@ def correlate(
         return cur.rowcount > 0
 
 
+def bind_browser_relay(*, proxy_url: str, profile_id: str, listen_port: int,
+                       blocked_hosts: list[str], lease_id: str | None = None,
+                       operation_task_id: int | None = None) -> str | None:
+    """把中继恢复元数据附在已有私有租约中，不改变租约状态或复制代理凭据。"""
+    if not lease_id and operation_task_id is None:
+        return None
+    if not profile_id or isinstance(listen_port, bool) or not 1 <= int(listen_port) <= 65535:
+        raise ValueError("浏览器中继恢复资料无效")
+    clauses, params = ['"proxy_url" = %s'], [str(proxy_url)]
+    if lease_id:
+        clauses.append('"lease_id" = %s')
+        params.append(str(lease_id))
+    else:
+        clauses.append('"operation_task_id" = %s')
+        params.append(int(operation_task_id))
+    record_store.init()
+    with record_store.transaction() as conn:
+        rows = record_store.list_rows(PROXY_LEASES, where=" AND ".join(clauses), params=params,
+                                      order_by="id DESC", limit=1, conn=conn)
+        if not rows:
+            return None
+        row = rows[0]
+        # 同一 Profile 只有最后一次绑定可恢复；旧租约保留历史、退出恢复清单。
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified(PROXY_LEASES.name)} "
+                "SET data=jsonb_set(data, '{browser_relay,open}', 'false'::jsonb) "
+                "WHERE data->'browser_relay'->>'profile_id'=%s AND id<>%s",
+                (str(profile_id), row["id"]),
+            )
+        record_store.patch_row(PROXY_LEASES, row["id"], {"browser_relay": {
+            "profile_id": str(profile_id), "listen_port": int(listen_port),
+            "blocked_hosts": list(blocked_hosts), "open": True,
+        }}, conn=conn)
+        return str(row["lease_id"])
+
+
+def close_browser_relay(*, lease_id: str, profile_id: str, listen_port: int) -> None:
+    """确认窗口关闭后撤销对应端口恢复资格，不覆盖后续 Profile 新绑定。"""
+    record_store.init()
+    with postgres_store.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {postgres_store.qualified(PROXY_LEASES.name)} "
+            "SET data=jsonb_set(data, '{browser_relay,open}', 'false'::jsonb) "
+            "WHERE lease_id=%s AND data->'browser_relay'->>'profile_id'=%s "
+            "AND data->'browser_relay'->>'listen_port'=%s",
+            (str(lease_id), str(profile_id), str(listen_port)),
+        )
+
+
+def private_browser_relays(profile_id: str | None = None) -> list[dict[str, Any]]:
+    """仅供本机窗口恢复读取；普通租约列表不选择此 JSONB 或 proxy_url。"""
+    where = "data->'browser_relay'->>'open' = 'true'"
+    params = []
+    if profile_id is not None:
+        where += " AND data->'browser_relay'->>'profile_id' = %s"
+        params.append(str(profile_id))
+    return record_store.list_rows(PROXY_LEASES, where=where, params=params, order_by="id DESC", limit=10000)
+
+
 def activate(
     *,
     lease_id: str,

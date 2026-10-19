@@ -69,7 +69,7 @@ def prepare_registration_inputs(*, email_source: str | None = None,
             if not selected_cli_source:
                 from core.email_provider import parse_email_sources
                 selected_cli_source = parse_email_sources(getattr(_email_cfg, "EMAIL_SOURCE", ""))[0]
-            if selected_cli_source != "remail":
+            if selected_cli_source not in {"remail", "mailcode", "xigua"}:
                 email = acquire_email(email_source) if email_source is not None else acquire_email()
             else:
                 email = acquire_email(
@@ -131,9 +131,9 @@ def main():
     parser.add_argument("--continue-on-fail", action="store_true", help="单个账号失败后继续注册下一个")
     parser.add_argument("--email-source", default=None, help="本批明确使用的邮箱来源，例如 remail")
     parser.add_argument(
-        "--remail-acquisition-id",
+        "--remail-acquisition-id", "--mail-acquisition-id",
         default=None,
-        help="继续原 Remail 领取意图的稳定 ID 前缀；首次运行可省略，未知订单重跑时必须复用原值",
+        help="继续原付费邮箱领取意图的稳定 ID 前缀；首次运行可省略，原订单重跑时复用原值",
     )
     parser.add_argument("--verbose", action="store_true", help="显示详细步骤日志和错误堆栈")
     args = parser.parse_args()

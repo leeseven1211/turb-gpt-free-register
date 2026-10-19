@@ -13,6 +13,7 @@ import uuid
 from contextvars import ContextVar
 from functools import wraps
 from urllib.parse import urlparse
+from selenium.common.exceptions import TimeoutException
 
 from config import roxybrowser as _roxy_cfg
 from core.email_provider import wait_for_otp

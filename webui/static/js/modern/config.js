@@ -268,6 +268,8 @@ function emailConfigSectionForKey(key) {
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', '按项目领取邮箱、选择服务模式和库存策略，并自动收取验证码'];
+  if (key.startsWith('MAILCODE_')) return ['域名邮箱 MailCode', '官网商品购买、通道准备及原订单自动取码'];
+  if (key.startsWith('XIGUA_')) return ['西瓜邮箱', '指定 Offer 下单，保留原订单与取码记录供重跑'];
   if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
   if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '连接本机 iCloud HME 服务、同步全部 active 账号的 Hide My Email 别名并按实际转发目标自动收码'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
@@ -286,6 +288,7 @@ function emailSectionEnabledV2(section) {
     'Email Butler': ['email_butler', 'email-butler'],
     'iCloud 隐藏邮箱': ['icloud_hide', 'icloud_hme'],
     'GPTMail': ['gptmail'], 'MailNest': ['mailnest'], 'Remail': ['remail'],
+    '域名邮箱 MailCode': ['mailcode'], '西瓜邮箱': ['xigua'],
     'CloudMail': ['cloudmail'], 'Outlook 邮箱池': ['outlook'],
     'Cloudflare 临时邮箱': ['cloudflare'], 'Cloudflare 域名邮箱': ['cloudflare_domain'],
   };
@@ -1349,6 +1352,23 @@ function renderConfigLegacyProxyFieldsV2(fields) {
   return `<div class="config-legacy-list-v2"><p class="config-section-v2-subhelp">这些值只为读取旧任务快照和兼容迁移保留。新任务不会使用它们选择供应商，也不能在这里编辑。</p>${fields.map(field => `<div class="config-legacy-row-v2"><span>${esc(field.label || field.key)}</span><code>${esc(field.key)}</code><span>兼容保留</span></div>`).join('')}</div>`;
 }
 
+async function loadMailCodeCatalog(btn) {
+  const output = btn.nextElementSibling;
+  btn.disabled = true;
+  output.hidden = false;
+  output.textContent = '正在查询官网商品与余额...';
+  try {
+    const result = await api('/api/mailcode/catalog');
+    if (!result.ok) throw new Error(result.error || '查询失败');
+    const products = (result.products || []).map(p => `${p.name} | 商品 ID: ${p.id} | 单价: ${p.price} 积分 | 库存: ${p.stock} | 启用: ${p.enabled}`);
+    output.textContent = `余额: ${result.wallet?.balance ?? '-'} 积分\n${products.join('\n') || '暂无商品'}`;
+  } catch (error) {
+    output.textContent = '查询失败：' + error.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function renderEmailSourceManagerV2() {
   const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
   if (!source) return '';
@@ -1429,6 +1449,9 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   }
   if (name === '邮箱 / OTP' && active === 'CloudMail') {
     extra = renderCloudMailTokenToolsV2();
+  }
+  if (name === '邮箱 / OTP' && active === '域名邮箱 MailCode') {
+    extra = '<div><button type="button" class="btn" onclick="loadMailCodeCatalog(this)">查询商品与余额（请先保存密钥）</button><pre style="white-space:pre-wrap" hidden></pre></div>';
   }
   if (name === '邮箱 / OTP' && active === 'Email Butler') {
     extra = renderEmailButlerToolsV2();
@@ -1765,7 +1788,7 @@ function renderConfigDomainSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'iCloud 隐藏邮箱', 'Email Butler', 'GPTMail', 'MailNest', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', 'iCloud 隐藏邮箱', 'Email Butler', 'GPTMail', 'MailNest', 'Remail', '域名邮箱 MailCode', '西瓜邮箱', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );

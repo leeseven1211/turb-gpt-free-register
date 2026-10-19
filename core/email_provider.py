@@ -24,7 +24,7 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "email_butler", "gptmail", "mailnest", "cloudmail", "remail", "icloud_hide")
+_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "email_butler", "gptmail", "mailnest", "cloudmail", "remail", "mailcode", "xigua", "icloud_hide")
 EMAIL_SOURCE_LABELS = {
     "outlook": "Outlook 邮箱池",
     "generic_api": "通用 API 邮箱",
@@ -35,6 +35,8 @@ EMAIL_SOURCE_LABELS = {
     "mailnest": "MailNest",
     "cloudmail": "CloudMail",
     "remail": "Remail",
+    "mailcode": "域名邮箱 MailCode",
+    "xigua": "西瓜邮箱",
     "icloud_hide": "iCloud 隐藏邮箱",
 }
 
@@ -235,6 +237,13 @@ def restore_email_context(
             raise RuntimeError("原 Remail 订单邮箱与注册任务不匹配，不能继续")
         return selected
 
+    if selected in {"mailcode", "xigua"}:
+        module = __import__(f"core.{selected}_client", fromlist=["restore_account_context"])
+        account = module.restore_account_context(address, purpose=purpose)
+        if str(account.email).strip().casefold() != address.casefold():
+            raise RuntimeError("原付费邮箱订单与任务邮箱不一致，不能改领其他邮箱")
+        return selected
+
     # 其余临时邮箱的可用性只存在于进程内上下文。上下文丢失时不能猜测
     # 该地址仍归当前任务链所有，必须让任务明确失败而不是悄悄换邮箱。
     context_getters = {
@@ -314,6 +323,14 @@ def _pick_from_source(
         else:
             kwargs["compatibility"] = True
         return pick_account(**kwargs).email
+    if source in {"mailcode", "xigua"}:
+        module = __import__(f"core.{source}_client", fromlist=["pick_account"])
+        # 任务重跑继承根任务 owner；CLI 与换绑也显式提供自己的稳定身份。
+        selected_owner_kind, selected_owner_id = owner_kind, owner_id
+        if not selected_owner_kind and job_id is not None:
+            selected_owner_kind, selected_owner_id = "registration_job", str(job_id)
+        return module.pick_account(owner_kind=selected_owner_kind, owner_id=selected_owner_id,
+                                   acquisition_id=acquisition_id).email
     if source == "icloud_hide":
         from core.icloud_hme_client import pick_account
         return pick_account(batch_id=batch_id, job_id=job_id).email
@@ -337,15 +354,19 @@ def acquire_email(
     last_exc: Exception | None = None
     for source in sources:
         try:
-            email = _pick_from_source(
-                source, batch_id=batch_id, job_id=job_id,
-                owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
-                legacy_remail_compatibility=legacy_remail_compatibility,
-            )
+            kwargs = {"batch_id": batch_id, "job_id": job_id}
+            if owner_kind is not None or owner_id is not None or acquisition_id is not None:
+                kwargs.update(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
+            if legacy_remail_compatibility:
+                kwargs["legacy_remail_compatibility"] = True
+            email = _pick_from_source(source, **kwargs)
             remember_email_source(email, source)
             logger.info(f"[EmailProvider] 使用邮箱来源: {source}, email={email}")
             return email
         except Exception as exc:
+            if source in {"mailcode", "xigua"}:
+                # 付费供应商的普通失败仍可由原任务重跑；本次领取不跨平台重购。
+                raise
             # 邮箱下单结果不明时必须保留核验状态，不能包装成普通失败或换平台。
             if getattr(exc, "request_unknown", False):
                 raise
@@ -368,6 +389,14 @@ def resolve_email_source(email: str, *, fallback: bool = True) -> str | None:
     hinted_source = _EMAIL_SOURCE_HINTS.get(str(email or "").strip().lower())
     if hinted_source:
         return hinted_source
+
+    from core.storage import mail_provider_orders
+    try:
+        durable_source = mail_provider_orders.find_source(email)
+    except Exception:
+        durable_source = None
+    if durable_source:
+        return durable_source
 
     from core.gptmail_client import get_account_context as get_gptmail_context
     if get_gptmail_context(email):
@@ -495,6 +524,9 @@ def wait_for_otp(
     if source == "remail":
         from core.remail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source in {"mailcode", "xigua"}:
+        module = __import__(f"core.{source}_client", fromlist=["fetch_latest_otp"])
+        return module.fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "icloud_hide":
         from core.icloud_hme_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -570,6 +602,9 @@ def release_email(
     elif selected == "remail":
         from core.remail_client import release_account
         release_account(email, status=status, note=note)
+    elif selected in {"mailcode", "xigua"}:
+        module = __import__(f"core.{selected}_client", fromlist=["release_account"])
+        module.release_account(email, status=status, note=note)
     elif selected == "icloud_hide":
         from core.icloud_hme_client import release_account
         release_account(email, status=status, note=note)

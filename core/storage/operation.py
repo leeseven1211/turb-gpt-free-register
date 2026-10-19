@@ -3726,6 +3726,11 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
     parent = cur.fetchone()
     if not parent:
         return None
+    if str(parent.get("task_type") or "") == "account_inspection_batch":
+        # 巡检批次用定长聚合摘要，避免每个账号完成都重写全部子任务 JSON。
+        from core.storage.account_inspections import reconcile_parent_cur
+
+        return reconcile_parent_cur(cur, parent, child_task_id=child_task_id)
     cur.execute(
         f"""
         SELECT t.id, t.status, t.task_type, t.last_run_id,

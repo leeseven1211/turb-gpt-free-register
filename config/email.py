@@ -23,6 +23,8 @@ USE_EMAIL_SERVICE = schema_default("USE_EMAIL_SERVICE")
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
 #   "remail"            — Remail 开放 API（按项目下单并自动收取验证码）
+#   "mailcode"          — 域名邮箱 MailCode（原订单与游标保存到 PostgreSQL）
+#   "xigua"             — 西瓜邮箱（固定 Offer 下单、原订单取码）
 #   "cloudmail"         — CloudMail/Cloud Mail API（自动从平台获取域名并随机生成邮箱）
 #   "icloud_hide"       — iCloud Hide My Email 别名池（可用本机 Gmail IMAP 或 Email Butler 收码）
 EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
@@ -221,6 +223,19 @@ ICLOUD_HME_FORWARD_IMAP_PASSWORD = schema_default("ICLOUD_HME_FORWARD_IMAP_PASSW
 # 库存为空时是否调用 sidecar 自动创建新隐藏邮箱。默认关闭，优先复用已同步别名。
 ICLOUD_HME_AUTO_CREATE = schema_default("ICLOUD_HME_AUTO_CREATE")
 ICLOUD_HME_CREATE_LABEL_PREFIX = schema_default("ICLOUD_HME_CREATE_LABEL_PREFIX")
+
+# 付费邮箱：任务身份、幂等键、订单及取码游标统一保存到 PostgreSQL。
+MAILCODE_API_KEY = schema_default("MAILCODE_API_KEY")
+MAILCODE_PRODUCT_ID = schema_default("MAILCODE_PRODUCT_ID")
+MAILCODE_REQUEST_TIMEOUT = schema_default("MAILCODE_REQUEST_TIMEOUT")
+MAILCODE_CHANNEL_WAIT_SECONDS = schema_default("MAILCODE_CHANNEL_WAIT_SECONDS")
+XIGUA_API_BASE = schema_default("XIGUA_API_BASE")
+XIGUA_API_KEY = schema_default("XIGUA_API_KEY")
+XIGUA_PROJECT_SLUG = schema_default("XIGUA_PROJECT_SLUG")
+XIGUA_OFFER_ID = schema_default("XIGUA_OFFER_ID")
+XIGUA_REQUEST_TIMEOUT = schema_default("XIGUA_REQUEST_TIMEOUT")
+XIGUA_POLL_ATTEMPTS = schema_default("XIGUA_POLL_ATTEMPTS")
+XIGUA_POLL_INTERVAL = schema_default("XIGUA_POLL_INTERVAL")
 
 # ---- .env overrides for WebUI editable fields ----
 apply_env_overrides(globals())

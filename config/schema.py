@@ -243,6 +243,8 @@ _DEFAULTS: dict[str, Any] = {
     "ROXY_CODEX_CALLBACK_TIMEOUT": 180,
     "ENABLE_2FA": False,
     "TWOFA_DRIVER": "auto",
+    "TWOFA_REAUTH_MAX_ATTEMPTS": 3,
+    "TWOFA_REAUTH_RETRY_DELAY": 3.0,
     "ENABLE_FLOW_TRIGGER": False,
     "ENABLE_HUMANIZE_DELAY": True,
     "HUMANIZE_DELAY_FACTOR": 1.0,
@@ -275,6 +277,17 @@ _DEFAULTS: dict[str, Any] = {
     "QQ_IMAP_PASSWORD": "",
     "MAIL_NEST_API_KEY": "",
     "MAIL_NEST_PROJECT_CODE": "chatgpt001",
+    "MAILCODE_API_KEY": "",
+    "MAILCODE_PRODUCT_ID": "product_a3783a0ead074b4091631b9ad04153f9",
+    "MAILCODE_REQUEST_TIMEOUT": 20,
+    "MAILCODE_CHANNEL_WAIT_SECONDS": 60,
+    "XIGUA_API_BASE": "https://xigua.dasiqo.com",
+    "XIGUA_API_KEY": "",
+    "XIGUA_PROJECT_SLUG": "chatgpt",
+    "XIGUA_OFFER_ID": "off_79b957291b6eae5f53f2abd04ebda998",
+    "XIGUA_REQUEST_TIMEOUT": 20,
+    "XIGUA_POLL_ATTEMPTS": 10,
+    "XIGUA_POLL_INTERVAL": 5,
     "REMAIL_API_BASE": "https://remail.aishop6.com",
     "REMAIL_API_KEY": "",
     "REMAIL_PROJECT_ID": 2,
@@ -322,6 +335,11 @@ _DEFAULTS: dict[str, Any] = {
     ],
     "BROWSER_PUBLIC_ASSET_CACHE_MODE": "off",
     "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": 256,
+    "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS": ["dl.google.com", "gvt1.com"],
+    "BROWSER_TRAFFIC_DETAIL_LOG": False,
+    "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES": 2000,
+    "BROWSER_JS_COVERAGE_LOG": False,
+    "BROWSER_JS_COVERAGE_MAX_ENTRIES": 1000,
     "REGISTRATION_PROXY_MODE": "pool",
     "PROXY_1024_API_URL": "",
     "PROXY_1024_REGION": "",
@@ -810,6 +828,14 @@ _FIELD_DEFINITIONS = [
         "label": "2FA 开通方式", "help": "auto=自动选择（协议优先）；protocol=协议开通并按现有流程回退；browser=直接用 RoxyBrowser 安全设置页面",
     },
     {
+        "key": "TWOFA_REAUTH_MAX_ATTEMPTS", "file": "twofa.py", "type": "int", "group": "账号补全",
+        "label": "2FA 重认证尝试次数", "help": "重认证临时故障的总尝试次数；OTP 仅重试无业务拒绝、无交互挑战的 403/429，复用原会话和验证码",
+    },
+    {
+        "key": "TWOFA_REAUTH_RETRY_DELAY", "file": "twofa.py", "type": "float", "group": "账号补全",
+        "label": "2FA 重认证退避基数", "help": "首次重试等待秒数，后续指数退避；OTP 同时尊重服务端 120 秒以内的 Retry-After",
+    },
+    {
         "key": "ENABLE_FLOW_TRIGGER", "file": "flow_trigger.py", "type": "bool", "group": "注册主链路",
         "label": "启用 Flow 触发", "help": "注册成功后自动调用内部 Flow 接口（不影响注册结果）",
     },
@@ -947,6 +973,52 @@ _FIELD_DEFINITIONS = [
     {
         "key": "MAIL_NEST_PROJECT_CODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "MailNest 项目代码", "help": "项目代码 默认 chatgpt001 获取页面 mailnest.top/buy-email",
+    },
+    {
+        "key": "MAILCODE_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "MailCode API Key", "help": "官网创建的购买及读取密钥，仅保存在 .env；服务地址固定为官网",
+        "storage": "env", "secret": True, "external_url": "https://mailcode.bzb.qzz.io", "external_label": "打开官网",
+    },
+    {
+        "key": "MAILCODE_PRODUCT_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "MailCode 商品 ID", "help": "每个任务购买一个指定商品；重跑沿用 PostgreSQL 原订单和幂等键，不切换商品",
+    },
+    {
+        "key": "MAILCODE_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "MailCode 请求超时(秒)", "help": "单次 API 请求超时，默认 20 秒",
+    },
+    {
+        "key": "MAILCODE_CHANNEL_WAIT_SECONDS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "MailCode 通道准备超时(秒)", "help": "购买后等待通道 READY 再注册；失败保留原订单，默认 60 秒",
+    },
+    {
+        "key": "XIGUA_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "西瓜 API 地址", "help": "默认 https://xigua.dasiqo.com",
+    },
+    {
+        "key": "XIGUA_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "西瓜 API Key", "help": "西瓜控制台密钥，仅保存在 .env",
+        "storage": "env", "secret": True, "external_url": "https://xigua.dasiqo.com", "external_label": "打开官网",
+    },
+    {
+        "key": "XIGUA_PROJECT_SLUG", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "西瓜项目标识", "help": "项目说明标识，默认 chatgpt；实际下单只使用指定的 Offer ID",
+    },
+    {
+        "key": "XIGUA_OFFER_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "西瓜 Offer ID", "help": "固定领取此方案，不自动选择其他方案；重跑沿用原订单，不自动取消",
+    },
+    {
+        "key": "XIGUA_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "西瓜请求超时(秒)", "help": "单次 API 请求超时，默认 20 秒",
+    },
+    {
+        "key": "XIGUA_POLL_ATTEMPTS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "西瓜取码轮询次数", "help": "最多读取原订单的次数；验证码至少连续确认两次",
+    },
+    {
+        "key": "XIGUA_POLL_INTERVAL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "西瓜取码间隔(秒)", "help": "轮询默认间隔 5 秒；受 OTP 总等待时间和阶段预算限制",
     },
     {
         "key": "REMAIL_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1110,6 +1182,26 @@ _FIELD_DEFINITIONS = [
     },
 
     # ---- 代理与网络 ----
+    {
+        "key": "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS", "file": "browser.py", "type": "list_str_multiline", "group": "浏览器画像",
+        "label": "省流量代理域名屏蔽", "help": "仅 Roxy 已领取线路的本机中继生效；连接供应商前拦截指定域名及子域名，默认 dl.google.com、gvt1.com；填 [] 关闭，不估算节省字节",
+    },
+    {
+        "key": "BROWSER_TRAFFIC_DETAIL_LOG", "file": "browser.py", "type": "bool", "group": "浏览器画像",
+        "label": "资源流量明细日志", "help": "默认关闭；仅记录脱敏资源路径、类型和可观测字节，不保存请求头、正文或查询参数",
+    },
+    {
+        "key": "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES", "file": "browser.py", "type": "int", "group": "浏览器画像",
+        "label": "资源流量明细上限", "help": "每个浏览器任务保留并输出的资源明细上限，默认 2000",
+    },
+    {
+        "key": "BROWSER_JS_COVERAGE_LOG", "file": "browser.py", "type": "bool", "group": "浏览器画像",
+        "label": "JS 执行覆盖率", "help": "默认关闭；通过现有 Roxy CDP 连接采集各 target 的函数计数及代码范围，不读取源码、参数或返回值；未观察到执行不能证明脚本可安全拦截",
+    },
+    {
+        "key": "BROWSER_JS_COVERAGE_MAX_ENTRIES", "file": "browser.py", "type": "int", "group": "浏览器画像",
+        "label": "JS 覆盖率明细上限", "help": "每个浏览器任务的函数诊断记录上限，默认 1000；不支持 Profiler 时继续业务",
+    },
     {
         "key": "PROXY_POOL_SOURCE", "file": "proxy.py", "type": "str", "group": "代理与网络",
         "label": "代理来源", "help": "注册和账号动作统一从代理池领取；在此选择 1024Proxy、711Proxy 或手动地址。切换只影响后续领取，已发放租约保持到本轮结束",
@@ -1584,6 +1676,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("cloudflare_domain", "Cloudflare 域名邮箱"), ("cloudflare", "Cloudflare Worker"),
         ("email_butler", "Email Butler"), ("gptmail", "GPTMail"),
         ("mailnest", "MailNest"), ("remail", "Remail"), ("cloudmail", "CloudMail"),
+        ("mailcode", "域名邮箱 MailCode"), ("xigua", "西瓜邮箱"),
         ("icloud_hide", "iCloud Hide My Email"),
     ),
     "REMAIL_SERVICE_MODE": _options(("purchase", "长效购买"), ("code", "短效接码")),
@@ -1599,7 +1692,11 @@ _ALIASES: dict[str, Mapping[str, str]] = {
 
 
 _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
+    "TWOFA_REAUTH_MAX_ATTEMPTS": (1, 8),
+    "TWOFA_REAUTH_RETRY_DELAY": (0, 60),
     "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": (16, 4096),
+    "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES": (1, 10000),
+    "BROWSER_JS_COVERAGE_MAX_ENTRIES": (1, 10000),
     "ACCOUNT_BATCH_WORKERS": (1, 16),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
     "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),
@@ -1634,6 +1731,11 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "REMAIL_PROJECT_ID": (1, None),
     "REMAIL_ORDER_WAIT_SECONDS": (0, 180),
     "REMAIL_REQUEST_TIMEOUT": (1, 120),
+    "MAILCODE_REQUEST_TIMEOUT": (1, 120),
+    "MAILCODE_CHANNEL_WAIT_SECONDS": (1, 600),
+    "XIGUA_REQUEST_TIMEOUT": (1, 120),
+    "XIGUA_POLL_ATTEMPTS": (2, 300),
+    "XIGUA_POLL_INTERVAL": (1, 120),
     "CLOUDFLARE_REQUEST_TIMEOUT": (1, 3600),
     "CLOUDFLARE_NAME_LENGTH": (1, 128),
     "CLOUDMAIL_RANDOM_LOCAL_LENGTH": (1, 128),
@@ -1770,7 +1872,7 @@ _SECRET_KEYS = frozenset({
     "WEBUI_AUTH_CODE", "WEBUI_SESSION_SECRET", "ROXY_API_TOKEN",
     "EMAIL_BUTLER_API_KEY", "GPTMAIL_API_KEY", "CLOUDFLARE_API_KEY",
     "CLOUDFLARE_SIGNAL_API_KEY", "CLOUDFLARE_CUSTOM_AUTH", "QQ_IMAP_PASSWORD",
-    "MAIL_NEST_API_KEY", "REMAIL_API_KEY", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_AUTH_TOKEN",
+    "MAIL_NEST_API_KEY", "REMAIL_API_KEY", "MAILCODE_API_KEY", "XIGUA_API_KEY", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_AUTH_TOKEN",
     "ICLOUD_HME_API_TOKEN", "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
     "PROXY_1024_API_URL", "PROXY_711_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY",
     "EXTRACT_LINK_CDK", "SUB2API_API_KEY", "CPA_MANAGEMENT_KEY", "SMS_API_KEY",
@@ -2026,6 +2128,15 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
     result = _coerce(value, field, strict=strict)
+    if field.key == "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS":
+        normalized = []
+        for host in result:
+            host = str(host).lower().rstrip(".").removeprefix("*.")
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z0-9-]{2,63}", host):
+                raise ValueError("仅填写域名，每行一个；不要包含 URL、端口或路径")
+            if host not in normalized:
+                normalized.append(host)
+        result = normalized
     if field.key == "PROXY_POOL" and strict:
         from urllib.parse import urlsplit
 

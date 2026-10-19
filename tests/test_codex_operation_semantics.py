@@ -255,7 +255,7 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
             task_status=detail["status"], error_code=detail["error_code"],
             result_summary=detail["result_summary"],
         )
-        self.assertEqual("REMOTE-001", projection["display_code"])
+        self.assertEqual("OA-CODEX-CONSENT-001", projection["display_code"])
         self.assertEqual("manual_reconcile", projection["next_action"])
         self.assertEqual("OA-CODEX-CONSENT-001", projection["cause_display_code"])
         self.assertEqual("Codex 授权确认页无法继续，需浏览器驱动", projection["cause_summary"])

@@ -50,6 +50,7 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
+| `mail_provider_orders` | MailCode/Xigua 的稳定领取身份、幂等购买键、供应商订单、已购邮箱和私有取码游标 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
@@ -63,11 +64,19 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 
 代理池的 WebUI 入口是只读快照，返回脱敏状态、统计和生命周期信息，不承载领取/释放操作。完整供应商地址和凭据仍属于环境私密配置。旧 `PROXY_1024_MAX_ATTEMPTS`、`PROXY_1024_ROTATE_SESSION_TIME` 以及 batch/rotate 参数仅为诊断兼容保留，正常库存补货不按任务派生 `time`，也不按注册批次把 `num` 预取后分配。
 
+本机浏览器中继的恢复资料保存在原 `proxy_leases.data.browser_relay`，只记录 Profile、监听端口、域名规则和开放状态；原代理地址沿用该租约已有的私有字段。服务重启后，有恢复资料的保留窗口重建原端口与原线路；端口冲突明确失败，不改用新端口或新租约。续跑的任务与 Run 可更新，线路流量仍归原租约；确认窗口关闭后才撤销对应恢复资格。此元数据不改变租约状态，也不进入普通租约列表。
+
 ### Remail 订单意图
 
 付费邮箱领取不以 HTTP 返回值作为唯一事实。`remail_order_intents` 先记录 `prepared`，再由数据库 CAS 选出唯一执行者写入 `submitting`；只有该执行者可以发出付费 POST。POST 返回订单号后立即持久化 `order_created`，再在有限时间内 GET 原订单补齐凭证。异常退出或网络结果未知时保持 `submitting`/`request_unknown`，恢复流程只能查询同一 `acquisition_id` 对应的原订单，不能因为幂等请求头而自动重放未知 POST。
 
 订单私有凭证写入 `private_json`，普通查询只返回显式安全字段白名单。只有订单号、供应商/项目/模式/库存策略匹配，且 durable 状态为 `delivered` 并已保存完整私有凭证时，协调器才向注册或换绑流程交付邮箱。`owner_kind`、`owner_id` 和稳定 `acquisition_id` 将 root 任务与 retry/resume 子任务绑定，缺少身份上下文时拒绝付费下单。核验接口只能恢复当前操作所属意图，并返回脱敏订单摘要。
+
+### 其他邮箱订单与账号巡检
+
+MailCode/Xigua 的领取按供应商和稳定任务身份唯一绑定，在 PostgreSQL advisory lock 下恢复原订单；商品请求、幂等键在付费请求前落库，已购邮箱和取码游标随后按行合并。MailCode 的游标与私有候选验证码原子保存，恢复时重新检查时间、有效期和取码请求身份；客户端准备返回不等于远端验证成功。订单锁使用独立连接池，先在池外按阶段预算排队，避免慢供应商占满普通读写连接。客户端内存缓存只用于加速，不负责重启恢复。新供应商不改写 Remail 已有订单状态机，也不把上游文件缓存引入主存储。
+
+账号巡检复用统一任务中心的 `operation_batches`、`operation_tasks`、`operation_runs` 和 `operation_batch_items`：父任务协调、每账号子任务走共享执行预算，清单保留最初 Run 关联用于历史读取；停止操作使用子任务当前活动 Run，单独取消子任务后同步收口父任务。AT 和套餐写回同时验证当前执行 fence 与账号邮箱/Token 快照，防止旧执行覆盖后续登录或换绑结果；套餐保存失败不覆盖已经确认的新 AT。巡检不新增 SQLite 或全量 JSON 集合。
 
 ### 字段策略：提升列 + JSONB
 

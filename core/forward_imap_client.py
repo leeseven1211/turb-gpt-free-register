@@ -39,6 +39,7 @@ _DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
 _EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
 _RECIPIENT_SEARCH_CHUNK_SIZE = 50
 _MAX_BULK_MATCHED_MESSAGES = 5000
+_UID_FETCH_BATCH_SIZE = 20
 # Gmail IMAP INTERNALDATE 与本机点击时间可能存在极小的秒级偏差；容忍范围
 # 必须足够小，避免重发前刚到达的旧验证码再次被当成新码。
 _OTP_CLOCK_SKEW_TOLERANCE = 2
@@ -377,7 +378,9 @@ def _fetch_raw_message(
     *,
     budget: _IMAPBudget | None = None,
 ) -> tuple[object, bytes]:
-    status, data = _imap_call(mail, "FETCH", lambda: mail.fetch(message_id, spec), budget)
+    status, data = _imap_call(
+        mail, "FETCH", lambda: mail.uid("fetch", message_id, spec) if _uses_uid(mail) else mail.fetch(message_id, spec), budget,
+    )
     if status != "OK" or not data:
         raise ForwardIMAPError(f"隐藏邮箱转发 IMAP 读取邮件失败: {message_id!r}")
     for entry in data:
@@ -400,6 +403,45 @@ def _message_from_fetch(
     return item, recipient_headers, message_id.decode("ascii", errors="ignore")
 
 
+def _uses_uid(mail) -> bool:
+    """真实 IMAP 连接使用稳定 UID，兼容不提供 UID 的既有收件适配器。"""
+    return callable(getattr(type(mail), "uid", None)) or callable(getattr(mail, "__dict__", {}).get("uid"))
+
+
+def _uid_message_batches(mail, selected: list[bytes]):
+    """批量扫描按 UID 一次读取多封邮件，响应乱序或邮件被删除也不串号。"""
+    newest = list(reversed(selected))
+    for offset in range(0, len(newest), _UID_FETCH_BATCH_SIZE):
+        batch = newest[offset:offset + _UID_FETCH_BATCH_SIZE]
+        status, data = _imap_call(
+            mail, "UID FETCH 批量", lambda: mail.uid("fetch", b",".join(batch), "(UID INTERNALDATE BODY.PEEK[])"),
+        )
+        if status != "OK":
+            raise ForwardIMAPError("隐藏邮箱转发 IMAP 批量读取邮件失败")
+        by_uid = {}
+        response_parts = []
+        for entry in data or []:
+            if isinstance(entry, tuple) and len(entry) >= 2 and isinstance(entry[1], bytes):
+                meta = entry[0] if isinstance(entry[0], bytes) else str(entry[0]).encode("ascii", errors="ignore")
+                response_parts.append([meta, entry[1]])
+            elif isinstance(entry, bytes) and response_parts:
+                # IMAP 允许 UID/INTERNALDATE 在 BODY literal 之后返回。
+                response_parts[-1][0] += b" " + entry
+        for meta, raw in response_parts:
+            match = re.search(rb"\bUID\s+(\d+)\b", meta)
+            if match and match.group(1) in batch:
+                by_uid[match.group(1)] = (meta, raw)
+        for uid in batch:
+            if uid not in by_uid:
+                continue
+            meta, raw = by_uid[uid]
+            try:
+                msg = email_lib.message_from_bytes(raw)
+                yield _apply_internal_date(_msg_to_dict(msg), meta), _recipient_headers(msg), uid.decode("ascii")
+            except Exception as exc:
+                logger.debug("[HME Forward IMAP] 解析批量邮件失败：%s", type(exc).__name__)
+
+
 def _imap_recipient_search(header: str, targets: list[str]) -> str:
     """Build a bounded IMAP OR expression for one recipient header."""
     expression = f'HEADER {header} "{targets[0]}"'
@@ -416,11 +458,12 @@ def _search_message_ids(
     *,
     budget: _IMAPBudget | None = None,
 ) -> list[bytes]:
-    """合并四个收件人字段的匹配结果，保留最新优先所需的消息序号。"""
+    """合并四个收件人字段的匹配结果，真实连接使用 UID 防止删除导致序号漂移。"""
     if not targets:
         return []
     after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
-    since = after_dt.strftime("%d-%b-%Y")
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    since = f"{after_dt.day:02d}-{months[after_dt.month - 1]}-{after_dt.year}"
     ids: set[bytes] = set()
     search_errors: list[Exception] = []
     successful_search = False
@@ -431,7 +474,8 @@ def _search_message_ids(
             query = f'(SINCE "{since}" {_imap_recipient_search(header, chunk)})'
             try:
                 status, ids_data = _imap_call(
-                    mail, f"SEARCH/{header}", lambda: mail.search(None, query), budget,
+                    mail, f"SEARCH/{header}",
+                    lambda: mail.uid("search", None, query) if _uses_uid(mail) else mail.search(None, query), budget,
                 )
             except Exception as exc:
                 if budget is not None:
@@ -443,6 +487,8 @@ def _search_message_ids(
                 successful_search = True
                 if ids_data and ids_data[0]:
                     ids.update(ids_data[0].split())
+            else:
+                search_errors.append(ForwardIMAPError(f"IMAP 收件人搜索被拒绝：{header}"))
             if budget is not None:
                 logger.info(
                     "[HME Forward IMAP] SEARCH字段=%s 匹配数量=%s",
@@ -470,6 +516,13 @@ def _messages_for_recipients(
     """Search all aliases server-side, then fetch each matching message once."""
     indexed: dict[str, list[tuple[dict, str, str]]] = {target: [] for target in targets}
     selected = _search_message_ids(mail, targets, after_ts, limit)
+    if _uses_uid(mail):
+        for item, recipient_headers, message_id in _uid_message_batches(mail, selected):
+            recipients = _recipient_addresses(recipient_headers)
+            for target in targets:
+                if target in recipients:
+                    indexed[target].append((item, recipient_headers, message_id))
+        return indexed
     for mid in reversed(selected):
         try:
             item, recipient_headers, message_id = _message_from_fetch(

@@ -415,6 +415,7 @@ def check_account_liveness(
     clear_log: bool = True,
     proxy_supplier: Callable[[int], str | None] | None = None,
     on_remote_request_started: Callable[[], None] | None = None,
+    on_authenticated=None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
@@ -502,7 +503,7 @@ def check_account_liveness(
         user = session_info.get("user") or {}
         account = session_info.get("account") or {}
         logger.info("[查活] 正常：%s user_id=%s plan=%s", email, user.get("id"), account.get("planType"))
-        return {
+        result = {
             "ok": True,
             "status": "live",
             "checked_at": checked_at,
@@ -512,6 +513,7 @@ def check_account_liveness(
             "proxy_used": session.proxy or None,
             "validation_method": "email_otp",
         }
+        return on_authenticated(result, session) if callable(on_authenticated) else result
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         logger.warning("[查活] 已废号：%s %s", email, code)

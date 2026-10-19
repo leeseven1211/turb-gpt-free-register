@@ -990,9 +990,9 @@ def _prepare_registration_args(
                 }
                 # Remail 付费领取必须有 root owner 与稳定 acquisition_id；
                 # 旧的无身份入口只继续支持非付费邮箱来源，不能静默生成临时 ID。
-                if str(email_source or "").strip().lower() == "remail":
+                if str(email_source or "").strip().lower() in {"remail", "mailcode", "xigua"}:
                     if not owner_kind or owner_id is None or not str(acquisition_id or "").strip():
-                        raise RuntimeError("Remail 注册领取缺少稳定 owner/acquisition_id，已停止下单")
+                        raise RuntimeError("付费邮箱注册领取缺少稳定 owner/acquisition_id，已停止下单")
                     acquire_kwargs.update({
                         "owner_kind": owner_kind,
                         "owner_id": owner_id,
@@ -1863,7 +1863,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         "owner_kind": "registration_root",
                         "owner_id": registration_root_id,
                         "acquisition_id": registration_acquisition_id,
-                    } if selected_source == "remail" else {}),
+                    } if selected_source in {"remail", "mailcode", "xigua"} else {}),
                 )
             from core.email_provider import remember_email_source
 

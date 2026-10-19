@@ -323,6 +323,9 @@
       <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
+        <button type="button" class="jobs-tb-btn" id="btnAccountInspection" onclick="openAccountInspectionStart()">一键巡检</button>
+        <button type="button" class="jobs-tb-btn" onclick="openAccountInspectionHistory()">巡检历史</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()">删除已废</button>
         <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>
@@ -423,6 +426,51 @@
       </div>
       <div class="account-detail-body" id="accountDetailBody"></div>
     </aside>
+    <style>
+      #accountInspectionStart, #accountInspectionHistory, #accountInspectionFailures { padding: 20px; max-height: 88dvh; overflow: auto; }
+      #accountInspectionHistory, #accountInspectionFailures { width: min(1180px, calc(100vw - 28px)); }
+      #accountInspectionStart .modal-header, #accountInspectionHistory .modal-header, #accountInspectionFailures .modal-header { display: flex; align-items: center; gap: 10px; }
+      #accountInspectionStart h2, #accountInspectionHistory h2, #accountInspectionFailures h2 { flex: 1; font-size: 18px; margin: 0; }
+      #accountInspectionStart p, #accountInspectionHistory p, #accountInspectionFailures p { color: var(--ui-color-text-secondary); line-height: 1.65; font-size: 13px; }
+      #accountInspectionWorkers { display: block; margin: 8px 0; width: 100%; padding: 9px; }
+      #accountInspectionStartError { color: var(--ui-color-danger); }
+      #accountInspectionHistoryContent, #accountInspectionFailuresContent { overflow: auto; }
+      [data-inspection-scroll] { overflow-x: auto; }
+      [data-inspection-scroll] table { width: 100%; min-width: 800px; border-collapse: collapse; font-size: 13px; }
+      [data-inspection-scroll] th, [data-inspection-scroll] td { padding: 10px; text-align: left; border-bottom: 1px solid var(--ui-color-border); }
+      [data-inspection-scroll] td { vertical-align: top; }
+      .inspection-error-reason { min-width: 240px; max-width: 460px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      #accountInspectionFailures td:nth-child(2) { max-width: 230px; overflow-wrap: anywhere; }
+      #accountInspectionStart button, #accountInspectionHistory button, #accountInspectionFailures button { min-height: 34px; }
+      @media (max-width: 640px) {
+        #accountInspectionStart, #accountInspectionHistory, #accountInspectionFailures { padding: 14px; }
+      }
+    </style>
+    <dialog class="proxy-traffic-detail-dialog" id="accountInspectionStart" aria-labelledby="accountInspectionStartTitle">
+      <div class="modal-header"><h2 id="accountInspectionStartTitle">启动账号巡检</h2><button type="button" class="jobs-tb-btn" onclick="closeAccountInspectionDialog('accountInspectionStart')" aria-label="关闭启动巡检">关闭</button></div>
+      <form onsubmit="submitAccountInspection(event)">
+        <p id="accountInspectionScope"></p>
+        <p>该归档范围内全部账号，不限当前页，不受勾选、搜索或其他筛选条件影响。</p>
+        <p>已废账号跳过；AT 本地有效则结束；失效时自动刷新，再复用登录会话查套餐。</p>
+        <label for="accountInspectionWorkers">并发账号数</label>
+        <input id="accountInspectionWorkers" type="number" min="1" max="16" step="1" value="3" required>
+        <p>支持 1–16；实际并发同时受共享账号操作预算限制。</p>
+        <p id="accountInspectionStartError" role="status"></p>
+        <button type="submit" class="jobs-tb-btn jobs-tb-btn--primary" id="btnConfirmAccountInspection">开始巡检</button>
+      </form>
+    </dialog>
+    <dialog class="proxy-traffic-detail-dialog" id="accountInspectionHistory" aria-labelledby="accountInspectionHistoryTitle">
+      <div class="modal-header"><h2 id="accountInspectionHistoryTitle">账号巡检历史</h2><button type="button" class="jobs-tb-btn" onclick="refreshAccountInspectionHistory()">刷新</button><button type="button" class="jobs-tb-btn" onclick="closeAccountInspectionDialog('accountInspectionHistory')">关闭</button></div>
+      <p>每 5 秒刷新。进度包含跳过；完成表示本轮处理结束，查活和套餐结果分别统计。</p>
+      <div id="accountInspectionHistoryContent" aria-live="polite"><p>正在读取巡检历史…</p></div>
+      <div class="jobs-v2-pager"><button type="button" class="jobs-tb-btn" id="accountInspectionPrev" onclick="changeAccountInspectionPage(-1)">上一页</button><span id="accountInspectionPageLabel"></span><button type="button" class="jobs-tb-btn" id="accountInspectionNext" onclick="changeAccountInspectionPage(1)">下一页</button></div>
+    </dialog>
+    <dialog class="proxy-traffic-detail-dialog" id="accountInspectionFailures" aria-labelledby="accountInspectionFailuresTitle">
+      <div class="modal-header"><h2 id="accountInspectionFailuresTitle">巡检失败详情</h2><button type="button" class="jobs-tb-btn" onclick="refreshAccountInspectionFailures()">刷新</button><button type="button" class="jobs-tb-btn" onclick="closeAccountInspectionDialog('accountInspectionFailures')">关闭</button></div>
+      <p>保留本轮原始执行快照，后续重跑或删除账号不会改写；含已废跳过，套餐单独失败不计为查活失败。</p>
+      <div id="accountInspectionFailuresContent" aria-live="polite"></div>
+      <div class="jobs-v2-pager"><button type="button" class="jobs-tb-btn" id="accountInspectionFailuresPrev" onclick="changeAccountInspectionFailuresPage(-1)">上一页</button><span id="accountInspectionFailuresPageLabel"></span><button type="button" class="jobs-tb-btn" id="accountInspectionFailuresNext" onclick="changeAccountInspectionFailuresPage(1)">下一页</button></div>
+    </dialog>
     <div class="email-change-modal hidden" id="emailChangeModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="emailChangeTitle" aria-describedby="emailChangeNote">
       <div class="email-change-dialog" role="document">
         <div class="email-change-head">

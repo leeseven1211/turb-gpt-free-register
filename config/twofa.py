@@ -19,6 +19,9 @@ from core.twofa_flow import canonical_twofa_executor, normalize_twofa_mode
 
 ENABLE_2FA = schema_default("ENABLE_2FA")
 TWOFA_DRIVER = schema_default("TWOFA_DRIVER")
+# 重认证及 OTP 临时拒绝共用次数/退避；OTP 只对无业务拒绝的 403/429 重试。
+TWOFA_REAUTH_MAX_ATTEMPTS = schema_default("TWOFA_REAUTH_MAX_ATTEMPTS")
+TWOFA_REAUTH_RETRY_DELAY = schema_default("TWOFA_REAUTH_RETRY_DELAY")
 
 
 def get_twofa_driver(value=None) -> str:

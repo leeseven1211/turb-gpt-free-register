@@ -944,6 +944,8 @@ def run_roxy_registration(
         opened = copy.copy(retained.opened)
         opened.created_by_run = False
         opened.traffic_capture = None
+        client.attach_retained_profile_relay(opened)
+        opened.proxy_route_retained = True
     else:
         opened = _open_roxy_profile_with_capacity_wait(
             client,
@@ -2162,6 +2164,13 @@ def run_roxy_registration(
                 data_saver.stop()
             except Exception:
                 logger.exception("[Roxy注册] 收口省流量统计失败")
+        if not profile_discarded:
+            try:
+                from core.browser_traffic import finish_roxy_capture
+                # Profiler 需要活着的 CDP target，必须先于 driver.quit 收口。
+                finish_roxy_capture(opened)
+            except Exception:
+                logger.exception("[Roxy注册] 收口浏览器流量与执行覆盖率失败")
         if driver and not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             try:
                 _quit_driver(driver)

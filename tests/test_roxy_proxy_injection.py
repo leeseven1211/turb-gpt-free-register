@@ -299,8 +299,11 @@ class RoxyProxyInjectionTests(unittest.TestCase):
         self.assertEqual(opened.profile_id, "123")
         proxy_info = create_profile.call_args.kwargs["payload"]["proxyInfo"]
         self.assertEqual(proxy_info["protocol"], "HTTP")
-        self.assertEqual(proxy_info["host"], "1.2.3.4")
-        self.assertEqual(proxy_info["port"], "8080")
+        self.assertEqual(proxy_info["host"], "127.0.0.1")
+        self.assertEqual(int(proxy_info["port"]), int(opened.proxy_relay.proxy_url.rsplit(":", 1)[1]))
+        self.assertEqual(opened.proxy_relay.target.host, "1.2.3.4")
+        self.assertEqual(opened.proxy_relay.target.port, 8080)
+        roxybrowser_client._close_profile_relay(opened.profile_id)
 
     def test_startup_cleans_registered_orphan_profile(self):
         with tempfile.TemporaryDirectory() as td:
@@ -340,10 +343,11 @@ class RoxyProxyInjectionTests(unittest.TestCase):
                 roxybrowser_client.RoxyBrowserClient, "close_profile", return_value=True
             ) as close_profile, patch.object(
                 roxybrowser_client.RoxyBrowserClient, "delete_profile", return_value=True
-            ) as delete_profile:
+            ) as delete_profile, patch.object(roxybrowser_client, "restore_kept_profile_relays", return_value=(0, 0)):
                 result = roxybrowser_client.cleanup_orphaned_profiles()
 
-            self.assertEqual(result, {"found": 1, "cleaned": 0, "failed": 0, "kept": 1})
+            self.assertEqual(result, {"found": 1, "cleaned": 0, "failed": 0, "kept": 1,
+                                      "restored_relays": 0, "relay_restore_failed": 0})
             close_profile.assert_not_called()
             delete_profile.assert_not_called()
             payload = json.loads(registry.read_text(encoding="utf-8"))

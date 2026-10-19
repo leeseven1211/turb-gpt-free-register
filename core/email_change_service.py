@@ -731,7 +731,7 @@ def _acquire_email_change_target(
     duplicate_count = 0
     while True:
         context.checkpoint()
-        if str(source or "").strip().lower() == "remail":
+        if str(source or "").strip().lower() in {"remail", "mailcode", "xigua"}:
             run_data = context.run.get("data") if isinstance(context.run, Mapping) and isinstance(context.run.get("data"), Mapping) else {}
             acquisition_id = str(run_data.get("remail_acquisition_id") or "").strip() or None
             if acquisition_id:
@@ -742,7 +742,7 @@ def _acquire_email_change_target(
                     acquisition_id=acquisition_id,
                 ) or "").strip()
             else:
-                raise RuntimeError("Remail 换绑运行缺少稳定 acquisition_id，已停止下单")
+                raise RuntimeError("付费邮箱换绑运行缺少稳定 acquisition_id，已停止下单")
         else:
             target = str(email_provider.acquire_email(source) or "").strip()
         if not target:

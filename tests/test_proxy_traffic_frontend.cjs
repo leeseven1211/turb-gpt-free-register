@@ -295,3 +295,24 @@ test('切换代理子视图时关闭已打开的详情弹窗', () => {
   api.setView('history');
   assert.equal(closes, 1);
 });
+
+test('流量详情分开展示隧道和页面口径并转义目标及资源内容', () => {
+  const {api, nodes} = createView();
+  nodes.set('proxyTrafficDetailDialog', {showModal() {}});
+  const body = {innerHTML: ''};
+  nodes.set('proxyTrafficDetailBody', body);
+  nodes.set('proxyTrafficDetailTitle', {textContent: ''});
+  api.setSnapshot({browser_traffic: [{
+    id: 101, source: 'roxy_cdp', availability: 'available', total_bytes: 10,
+    proxy_transport: {available: true, total_bytes: 100, blocked_connection_count: 2,
+      destinations: [{host: '<img src=x onerror=alert(1)>', port: 443, total_bytes: 100}]},
+    resource_details: [{url: '<script>alert(1)</script>', total_bytes: 4, resource_type: 'script'}],
+    js_coverage: {enabled: true, target_count: 2, collected_target_count: 1, unsupported_target_count: 1, scripts: []},
+  }]});
+  api.openDetail('traffic', 101);
+  assert.match(body.innerHTML, /代理隧道传输/);
+  assert.match(body.innerHTML, /100 B/);
+  assert.match(body.innerHTML, /与页面字节重叠，不相加/);
+  assert.match(body.innerHTML, /未观察到执行不能证明资源可安全拦截/);
+  assert.doesNotMatch(body.innerHTML, /<img|<script>/);
+});

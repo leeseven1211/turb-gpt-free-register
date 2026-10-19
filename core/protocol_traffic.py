@@ -59,6 +59,11 @@ def correlation_context(*, inherit: bool = True, **values):
         _CORRELATION.reset(token)
 
 
+def current_correlation() -> dict:
+    """向同一任务的浏览器观察器提供已验证的归属，返回副本。"""
+    return dict(_CORRELATION.get() or {})
+
+
 def _counter(response, field: str) -> int | None:
     value = getattr(response, field, None)
     if isinstance(value, bool) or not isinstance(value, (int, float)):

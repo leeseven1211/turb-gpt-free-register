@@ -2005,7 +2005,7 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         else:
             active_logger.info("无法安全读取 durable extract_link 行级排除项，跳过旧提链恢复")
         live_check_recovery = _legacy_recovery_exclusions(
-            {"live_check", "token_refresh"}, legacy_source_systems=(),
+            {"live_check", "token_refresh", "account_inspection"}, legacy_source_systems=(),
         )
         if not live_check_recovery["skip_all"]:
             recovered_live_checks = db.recover_interrupted_live_checks(

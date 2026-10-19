@@ -57,6 +57,15 @@ def create_config_blueprint(context: WebUIContext):
             "sources": dict(snapshot.sources),
         })
 
+    @bp.get("/api/mailcode/catalog")
+    def api_mailcode_catalog():
+        """使用已保存密钥查询官网商品和余额，不创建订单。"""
+        from core.mailcode_client import MailCodeError, get_wallet, list_products
+        try:
+            return jsonify({"ok": True, "products": list_products(), "wallet": get_wallet()})
+        except MailCodeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
     @bp.get("/api/ui-settings")
     def api_ui_settings():
         """返回前端启动所需的最小非敏感运行参数。

@@ -12,6 +12,23 @@ from core.registration.password_auth import _PasswordTransitionTimeout
 from core.registration.state_machine import StageBudget, StageTimeout
 
 
+class RoxyPasswordRefreshRecoveryTests(unittest.TestCase):
+    def test_unsubmitted_password_form_recovers_when_refresh_times_out(self):
+        driver = MagicMock()
+        driver._browser_submission_receipt = SimpleNamespace(phase="not_dispatched")
+        driver.timeouts.page_load = 60
+        driver.refresh.side_effect = roxy_codex_oauth.TimeoutException("模拟刷新超时")
+        with (
+            patch.object(roxy_codex_oauth, "_is_saved_login_password_route", return_value=True),
+            patch.object(roxy_codex_oauth, "_auth_checkpoint"),
+            patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=[RuntimeError("password_form_not_ready"), None]) as submit,
+        ):
+            roxy_codex_oauth._submit_saved_login_password(driver, "fixture@example.test", "fixture-password")
+        self.assertEqual(submit.call_count, 2)
+        driver.refresh.assert_called_once()
+        driver.set_page_load_timeout.assert_any_call(60)
+
+
 class RoxyEmailOtpChallengeTests(unittest.TestCase):
     def _resolve_offered_password(self, *, password="saved-password", offered=True, navigation_works=True,
                                  password_already_submitted=False):

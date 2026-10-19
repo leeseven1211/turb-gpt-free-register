@@ -154,6 +154,10 @@ class WebUIRuntimeTests(unittest.TestCase):
         ):
             self.assertEqual(1, mock.call_count, getattr(mock, "_mock_name", "mock"))
         self.assertEqual(5, recovery_exclusions.call_count)
+        self.assertTrue(any(
+            set(call.kwargs.get("task_types") or ()) == {"live_check", "token_refresh", "account_inspection"}
+            for call in recovery_exclusions.call_args_list
+        ))
         self.assertGreaterEqual(init_operations.call_count, 1)
         start_proxy_pool.assert_called_once_with(prewarm=True)
 

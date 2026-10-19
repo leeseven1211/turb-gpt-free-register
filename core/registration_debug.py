@@ -1205,11 +1205,23 @@ class _RoxyTargetCollector:
         self._pending: dict[int, dict] = {}
         self._requests: dict[str, dict] = {}
         self._redirect_seq: defaultdict[str, int] = defaultdict(int)
+        self._coverage_ready = threading.Event()
+        self._coverage_failed = False
 
     def start(self) -> None:
         self._thread.start()
 
     def stop(self) -> None:
+        if getattr(self.session, "js_coverage_enabled", False) and self._ws is not None and not self._coverage_failed:
+            try:
+                self._send("Profiler.takePreciseCoverage", pending={"traffic_coverage": True})
+                coverage_deadline = getattr(self.owner, "_coverage_stop_deadline", time.monotonic() + 1.5)
+                if not self._coverage_ready.wait(max(0.0, min(1.5, coverage_deadline - time.monotonic()))):
+                    self.session.record_js_coverage({}, supported=False)
+                self._send("Profiler.stopPreciseCoverage")
+                self._send("Profiler.disable")
+            except Exception:
+                self.session.record_js_coverage({}, supported=False)
         self._stop.set()
         try:
             if self._ws is not None:
@@ -1240,6 +1252,10 @@ class _RoxyTargetCollector:
             })
             self._send("Runtime.enable")
             self._send("Log.enable")
+            if getattr(self.session, "js_coverage_enabled", False):
+                self.session.diagnostics.target_started()
+                self._send("Profiler.enable", pending={"traffic_coverage_start": True})
+                self._send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True}, pending={"traffic_coverage_start": True})
             while not self._stop.is_set():
                 try:
                     raw = self._ws.recv()
@@ -1271,6 +1287,15 @@ class _RoxyTargetCollector:
         if "id" in message:
             pending = self._pending.pop(int(message.get("id") or 0), None)
             if not pending:
+                return
+            if pending.get("traffic_coverage_start"):
+                if message.get("error") and not self._coverage_failed:
+                    self._coverage_failed = True
+                    self.session.record_js_coverage({}, supported=False)
+                return
+            if pending.get("traffic_coverage"):
+                self.session.record_js_coverage(message.get("result") or {}, supported=not bool(message.get("error")))
+                self._coverage_ready.set()
                 return
             request_id = str(pending.get("request_id") or "")
             result = message.get("result") or {}
@@ -1528,6 +1553,7 @@ class RoxyCDPCollector:
         with self._lock:
             targets = list(self._targets.values())
             self._targets.clear()
+        self._coverage_stop_deadline = time.monotonic() + 3.0
         for target in targets:
             target.stop()
 

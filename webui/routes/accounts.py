@@ -16,6 +16,7 @@ import pyotp
 from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
 
 from core import (
+    account_inspection_service,
     account_task_store,
     admin_repository,
     codex_operation_service,
@@ -47,6 +48,73 @@ def create_accounts_blueprint(context: WebUIContext):
     _enqueue_account_setup = context.enqueue_account_setup
     _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
+
+    def _inspection_page():
+        try:
+            page = int(request.args.get("page", "1"))
+            if not 1 <= page <= 100000000:
+                raise ValueError()
+            return page
+        except (TypeError, ValueError):
+            raise ValueError("page 必须为有效正整数")
+
+    @bp.get("/api/accounts/inspections")
+    def api_account_inspections():
+        from core.storage import account_inspections
+        try:
+            page = _inspection_page()
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, **account_inspections.list_inspections(limit=20, offset=(page - 1) * 20)})
+
+    @bp.post("/api/accounts/inspections")
+    def api_start_account_inspection():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        unavailable = _feature_unavailable("live_check")
+        if unavailable:
+            return unavailable
+        try:
+            key = data.get("idempotency_key")
+            if key is not None and (not isinstance(key, str) or not 1 <= len(key) <= 120):
+                raise ValueError("idempotency_key 必须为 1–120 个字符")
+            task = account_inspection_service.start_inspection(workers=data.get("workers"),
+                archived=data.get("archived", "0"), idempotency_key=key)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "task": task, "created": task["created"]}), 202
+
+    @bp.get("/api/accounts/inspections/<int:inspection_id>/failures")
+    def api_account_inspection_failures(inspection_id):
+        from core.storage import account_inspections
+        try:
+            page = _inspection_page()
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        result = account_inspections.failures(inspection_id, limit=20, offset=(page - 1) * 20)
+        if result is None:
+            return jsonify({"ok": False, "error": "巡检任务不存在"}), 404
+        return jsonify({"ok": True, **result})
+
+    @bp.post("/api/accounts/inspections/<int:inspection_id>/cancel")
+    def api_cancel_account_inspection(inspection_id):
+        from core.storage import account_inspections
+        if account_inspections.failures(inspection_id, limit=0) is None:
+            return jsonify({"ok": False, "error": "巡检任务不存在"}), 404
+        return jsonify(account_inspection_service.cancel_inspection(inspection_id))
+
+    @bp.post("/api/accounts/delete-deactivated")
+    def api_accounts_delete_deactivated():
+        from core.storage import account_inspections
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or "archived" not in data:
+            return jsonify({"ok": False, "error": "必须明确指定归档范围"}), 400
+        try:
+            count = account_inspections.delete_deactivated(data["archived"])
+        except (ValueError, TypeError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "deleted_count": count})
 
     # 该 Blueprint 保留无前缀 endpoint，异常处理必须注册到应用层。
     @bp.app_errorhandler(AccountSearchError)

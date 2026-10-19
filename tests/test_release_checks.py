@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,6 +36,23 @@ _RETIRED_ACCOUNT_FILES = (
 )
 
 
+def _retired_source_references(path: Path, text: str, project_root: Path) -> list[str]:
+    """只对显式历史 Profile 补录函数放行其单个只读历史来源。"""
+    references = []
+    for filename in _RETIRED_ACCOUNT_FILES:
+        checked = text
+        if path == project_root / "core" / "roxy_profile_binding.py" and filename == "注册成功的邮箱.json":
+            lines = text.splitlines(keepends=True)
+            for node in ast.parse(text).body:
+                if isinstance(node, ast.FunctionDef) and node.name == "load_historical_profile_bindings":
+                    # 该显式导入经存储 API 写回展示信息，不作为日常账号事实来源。
+                    lines[node.lineno - 1:node.end_lineno] = ["\n"] * (node.end_lineno - node.lineno + 1)
+            checked = "".join(lines)
+        if filename in checked:
+            references.append(f"{path}:{filename}")
+    return references
+
+
 def test_runtime_has_no_retired_root_file_io():
     """账号根快照和批次归档都只能作为历史数据，不得重新进入运行时。"""
     project_root = Path(__file__).resolve().parents[1]
@@ -50,11 +68,17 @@ def test_runtime_has_no_retired_root_file_io():
         if path.name == "migrate_collections_to_tables.py":
             continue
         text = path.read_text(encoding="utf-8")
-        for filename in _RETIRED_ACCOUNT_FILES:
-            if filename not in text:
-                continue
-            violations.append(f"{path}:{filename}")
+        violations.extend(_retired_source_references(path, text, project_root))
     assert violations == [], "retired root-file references: " + ", ".join(violations)
+
+
+def test_historical_import_exception_does_not_allow_normal_runtime_file_reads():
+    root = Path("/fixture")
+    path = root / "core" / "roxy_profile_binding.py"
+    importer = 'def load_historical_profile_bindings():\n    return "注册成功的邮箱.json"\n'
+    assert _retired_source_references(path, importer, root) == []
+    runtime = '\ndef normal_runtime():\n    return "注册成功的邮箱.json"\n'
+    assert _retired_source_references(path, importer + runtime, root) == [f"{path}:注册成功的邮箱.json"]
 
 
 def _runtime_status() -> dict:
