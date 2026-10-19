@@ -202,6 +202,59 @@ class RetainedResumeTests(unittest.TestCase):
             self.assertFalse(result.restart_login)
             write.assert_not_called()
 
+    def test_explicit_resume_with_unknown_original_mail_time_starts_fresh_login(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        for timestamp in (None, "invalid", float("nan"), float("inf"), -1, True):
+            with self.subTest(timestamp=timestamp), self.context(private=private) as (driver, _, _, write, _):
+                driver._registration_resume_login = True
+                result = self.prepare(driver, otp_after_ts=timestamp)
+                self.assertEqual(result.page_state, PageState.OTP_EMAIL)
+                self.assertTrue(result.restart_login)
+                self.assertIsNone(result.pending_otp)
+                self.assertEqual(result.password, PASSWORD)
+                write.assert_not_called()
+
+    def test_explicit_resume_with_original_mail_time_can_continue_current_otp_page(self):
+        with self.context() as (driver, _, _, write, _):
+            driver._registration_resume_login = True
+            result = self.prepare(driver, otp_after_ts=125.5)
+            self.assertEqual(result.page_state, PageState.OTP_EMAIL)
+            self.assertFalse(result.restart_login)
+            write.assert_not_called()
+
+    def test_unknown_mail_time_does_not_reopen_verified_session(self):
+        with self.context() as (driver, _, observer, write, _):
+            driver._registration_resume_login = True
+            result = self.prepare(driver, otp_after_ts=None,
+                                  verified_session={"accessToken": "unit-session", "user": {"email": EMAIL}})
+            self.assertEqual(result.page_state, PageState.AUTHENTICATED)
+            self.assertFalse(result.restart_login)
+            observer.assert_not_called()
+            write.assert_not_called()
+
+    def test_explicit_resume_can_leave_original_oauth_callback_error_page(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        page = snapshot(url="https://chatgpt.com/auth/error?error=OAuthCallback", text="Authentication error", inputs=[])
+        with self.context(snapshots=[page], private=private) as (driver, _, _, write, tick):
+            driver._registration_resume_login = True
+            driver._registration_retained_identity_required = True
+            result = self.prepare(driver, otp_after_ts=None)
+            self.assertTrue(result.restart_login)
+            self.assertEqual(result.password, PASSWORD)
+            self.assertEqual(result.page_state, PageState.AUTH_TRANSIENT)
+            self.assertEqual(tick[0], 0)
+            write.assert_not_called()
+
+    def test_oauth_callback_error_requires_explicit_resume_and_same_identity(self):
+        pages = [snapshot(url="https://chatgpt.com/auth/error?error=OAuthCallback", inputs=[]),
+                 snapshot(url="https://chatgpt.com/auth/error?error=OAuthCallback", text="other@example.test", inputs=[])]
+        for page, resume in ((pages[0], False), (pages[1], True)):
+            with self.subTest(resume=resume), self.context(snapshots=[page]) as (driver, _, _, write, _):
+                driver._registration_resume_login = resume
+                with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                    self.prepare(driver)
+                write.assert_not_called()
+
     def test_explicit_resume_unknown_resend_uses_new_login_without_replaying_resend(self):
         private = {"password": PASSWORD, "submission_facts": [fact("otp_resend", "original-resend")]}
         with self.context(snapshots=[snapshot()], private=private) as (driver, _, _, write, _):

@@ -47,6 +47,7 @@ from .mfa_auth import (
 SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS = 120
 RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 60
 MAX_EXPIRED_RESUME_AUTH_RESTARTS = 2
+MAX_SAVED_PASSWORD_FORM_RECOVERIES = 1
 
 human_delay = _human_delay
 _CHATGPT_PASSWORD_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
@@ -813,6 +814,60 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
     return True
 
 
+def _refresh_saved_login_password_form(driver, *, budget, receipt, observe, form_ready):
+    """保留旧提交事实，GET 原登录页后核验同一身份的新密码表单。"""
+    current_url = str(driver.current_url or "")
+    location = urlsplit(current_url)
+    if not (
+        location.scheme == "https" and location.hostname == "auth.openai.com"
+        and location.port in (None, 443) and not location.username and not location.password
+        and location.path == "/log-in/password" and callable(getattr(driver, "get", None))
+    ):
+        return None
+    recovery = budget.child(RECOVERY_WINDOW_SECONDS)
+    if recovery.expired():
+        return None
+    if observe(recovery):
+        return True
+    # 原请求是否到达远端仍未知；新表单只用于再次登录，不把旧动作改成未派发。
+    record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown")
+    log_submission_diagnostics(driver, "password", "before_saved_login_refresh", receipt=receipt)
+    try:
+        from core.registration_debug import current_session
+
+        session = current_session()
+        if session is not None and session.capture_mode == "full":
+            session.capture_page_snapshot(driver, "password_before_saved_login_refresh")
+    except Exception:
+        logger.debug("%s 保存原身份密码页刷新前现场失败", _log_prefix(driver), exc_info=True)
+    if recovery.expired():
+        return None
+    old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+    try:
+        try:
+            driver.set_page_load_timeout(max(0.1, min(8.0, recovery.remaining())))
+        except Exception:
+            pass
+        driver.get(current_url)
+    except Exception as exc:
+        logger.warning("%s 原身份登录页受控刷新未完成，继续核验新表单：%s", _log_prefix(driver), type(exc).__name__)
+    finally:
+        if isinstance(old_timeout, (int, float)):
+            try:
+                driver.set_page_load_timeout(old_timeout)
+            except Exception:
+                logger.debug("%s 恢复原身份登录页加载超时设置失败", _log_prefix(driver))
+    log_submission_diagnostics(driver, "password", "after_saved_login_refresh", receipt=receipt)
+    while not recovery.expired():
+        _check_manual_stop()
+        if observe(recovery):
+            return True
+        if form_ready():
+            return PageState.PASSWORD_LOGIN
+        time.sleep(min(0.4, recovery.remaining()))
+    return None
+
+
 def _fill_password_page_if_present(
     driver,
     email: str,
@@ -821,6 +876,7 @@ def _fill_password_page_if_present(
     existing_password: str | None = None,
     on_password_prepared=None,
     on_password_submitted=None,
+    login_rejection_detector=None,
 ) -> str | None:
     """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
 
@@ -833,7 +889,20 @@ def _fill_password_page_if_present(
     last = {}
     auth_mode = _registration_auth_mode()
     switched_from_otp = False
+    saved_form_recoveries = 0
+    transition_deadline = None
     while time.time() < end:
+        if saved_form_recoveries:
+            recovered_snapshot = _password_page_state(driver)
+            recovered_state = classify_page(recovered_snapshot)
+            if callable(login_rejection_detector) and login_rejection_detector(recovered_snapshot):
+                record_browser_submission_fact(
+                    driver, "rejected", result="failure", error_type="PasswordRejectedError",
+                )
+                raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
+            if (recovered_state in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.PROFILE}
+                    and has_visible_auth_inputs(recovered_snapshot, allow_password=False)) or _has_access_token(driver):
+                return existing_password
         if _is_email_verification_page(driver):
             if existing_password:
                 if (getattr(driver, "_registration_resume_login", False) and not switched_from_otp
@@ -968,7 +1037,16 @@ def _fill_password_page_if_present(
           return {ok:false, reason:'password_frontend_not_ready'};
         }
         // 空密码时主按钮可能禁用，填写阶段只确认输入框就绪。
-        if (mode === 'input') return {ok:true, reason:'password_input_ready', input};
+        const expectedEmail = String(arguments[4] || '').trim().toLowerCase();
+        if (mode === 'recovery_input' || expectedEmail) {
+            const identityConfirmed = [...form.querySelectorAll('input')].some(el =>
+              (el.readOnly || /email|username/i.test(el.name || el.autocomplete || ''))
+              && String(el.value || '').trim().toLowerCase() === expectedEmail);
+            if (!expectedEmail || !identityConfirmed) return {ok:false, reason:'login_identity_unconfirmed'};
+        }
+        if (mode === 'input' || mode === 'recovery_input') {
+          return {ok:true, reason:'password_input_ready', input};
+        }
         if (input !== filledInput) return {ok:false, reason:'password_input_replaced'};
         if (input.value !== expectedPassword) return {ok:false, reason:'password_value_changed'};
         if (input.validity?.valid === false || !form.checkValidity()) return {ok:false, reason:'password_form_invalid'};
@@ -1048,8 +1126,13 @@ def _fill_password_page_if_present(
         last_safe_pre_dispatch_failure = False
         while True:
             _check_manual_stop()
+            if transition_deadline is not None and time.time() >= transition_deadline:
+                raise _PasswordTransitionTimeout("request_unknown: 原身份密码登录恢复预算已耗尽，保留原密码和提交事实")
             if filled_input is None:
-                result = driver.execute_script(target_script, "input", password, None) or {}
+                result = (
+                    driver.execute_script(target_script, "recovery_input", password, None, None, email)
+                    if saved_form_recoveries else driver.execute_script(target_script, "input", password, None)
+                ) or {}
                 if result.get("ok"):
                     filled_input = result.get("input")
                     try:
@@ -1070,13 +1153,21 @@ def _fill_password_page_if_present(
                             )
                             prepared_reported = True
             if filled_input is not None:
+                if transition_deadline is not None and time.time() >= transition_deadline:
+                    record_browser_submission_fact(
+                        driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
+                    )
+                    raise _PasswordTransitionTimeout("request_unknown: 原身份密码登录恢复预算已耗尽，新表单未提交")
                 # 定时器排队前建立持久围栏，UI queued/click 不等于 HTTP 成功。
                 record_browser_submission_fact(
                     driver, "dispatch_intent", receipt=submission_receipt,
                 )
                 last_safe_pre_dispatch_failure = False
                 try:
-                    result = driver.execute_script(target_script, "queue", password, filled_input, submission_receipt.submission_id)
+                    result = driver.execute_script(
+                        target_script, "queue", password, filled_input, submission_receipt.submission_id,
+                        email if saved_form_recoveries else "",
+                    )
                 except Exception as exc:
                     # 浏览器可能已经排队或派发；保留原密码后收口，不因桥接异常重复点击。
                     record_browser_submission_fact(
@@ -1097,7 +1188,7 @@ def _fill_password_page_if_present(
                     and result.get("reason") in {
                         "missing_password_input", "missing_password_form", "password_frontend_not_ready",
                         "password_input_replaced", "password_value_changed", "password_form_invalid",
-                        "missing_password_submit",
+                        "missing_password_submit", "login_identity_unconfirmed",
                     }
                 ):
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
@@ -1129,14 +1220,31 @@ def _fill_password_page_if_present(
         # 从提交排队后使用独立预算；否则慢代理下页面会在任务判失败后才迟到进入 OTP。
         transition_timeout = _password_transition_timeout_seconds()
         wait_started = time.time()
-        wait_end = wait_started + transition_timeout
-        recovery_at = wait_started + max(5.0, transition_timeout - RECOVERY_WINDOW_SECONDS)
+        if transition_deadline is None:
+            transition_deadline = wait_started + transition_timeout
+        wait_end = transition_deadline
+        recover_saved_form = bool(
+            resume_login and is_login_password
+            and saved_form_recoveries < MAX_SAVED_PASSWORD_FORM_RECOVERIES
+        )
+        # 已保存密码的登录在中点预留一次新表单恢复；两次提交共用首次截止时间。
+        recovery_at = wait_started + max(5.0, (
+            (wait_end - wait_started) / 2 if recover_saved_form
+            else wait_end - wait_started - RECOVERY_WINDOW_SECONDS
+        ))
         recovery_attempted = False
         next_diagnostic_at = wait_started + 15.0
 
         def observe_recovery(_budget):
             snapshot = _password_page_state(driver)
             recovered_state = classify_page(snapshot)
+            if (existing_password and is_login_password and callable(login_rejection_detector)
+                    and login_rejection_detector(snapshot)):
+                record_browser_submission_fact(
+                    driver, "rejected", receipt=submission_receipt, result="failure",
+                    error_type="PasswordRejectedError",
+                )
+                raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
             next_form = recovered_state in {PageState.OTP_EMAIL, PageState.PROFILE} or (
                 existing_password and recovered_state == PageState.MFA_TOTP
             )
@@ -1150,6 +1258,29 @@ def _fill_password_page_if_present(
             if recovery_attempted:
                 return None
             recovery_attempted = True
+            if recover_saved_form:
+                def form_ready():
+                    snapshot = _password_page_state(driver)
+                    location = urlsplit(str(snapshot.get("url") or ""))
+                    if not (
+                        classify_page(snapshot) == PageState.PASSWORD_LOGIN
+                        and location.scheme == "https" and location.hostname == "auth.openai.com"
+                        and location.port in (None, 443) and not location.username and not location.password
+                        and location.path == "/log-in/password"
+                    ):
+                        return False
+                    # GET 后旧 document 的回执必须消失，不能在原表单上再次点击。
+                    if _password_submission_snapshot(driver, submission_receipt)["receipt_present"]:
+                        return False
+                    result = driver.execute_script(target_script, "recovery_input", password, None, None, email)
+                    return isinstance(result, dict) and result.get("ok") is True
+
+                return _refresh_saved_login_password_form(
+                    driver, budget=StageBudget(wait_end, clock=time.time), receipt=submission_receipt,
+                    observe=observe_recovery, form_ready=form_ready,
+                )
+            if resume_login and is_login_password:
+                return None
             return recover_submission_page(
                 driver, "password", observe_recovery,
                 budget=StageBudget(wait_end, clock=time.time), receipt=submission_receipt, sleeper=time.sleep,
@@ -1157,6 +1288,7 @@ def _fill_password_page_if_present(
 
         transition_probe = 0
         last_submission_snapshot = None
+        continue_saved_login = False
         while time.time() < wait_end:
             _check_manual_stop()
             if _is_email_verification_page(driver):
@@ -1187,13 +1319,26 @@ def _fill_password_page_if_present(
                 if receipt_phase == "dispatched":
                     record_browser_submission_fact(driver, "ui_dispatched", receipt=submission_receipt)
                 post_submit_state = _password_page_state(driver)
+                # 已保存密码的登录可识别明确拒绝，立即交给调用方处理；
+                # 注册创建密码和未提供检测器的入口继续沿用原有观察契约。
+                if (existing_password and is_login_password and callable(login_rejection_detector)
+                        and login_rejection_detector(post_submit_state)):
+                    record_browser_submission_fact(
+                        driver, "rejected", receipt=submission_receipt, result="failure",
+                        error_type="PasswordRejectedError",
+                    )
+                    raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
                 if _password_submit_error_marker(post_submit_state):
                     raise _PasswordTransitionTimeout(
                         "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"
                     )
                 next_page = classify_page(post_submit_state)
                 if next_page in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
-                    if recover_once():
+                    recovered = recover_once()
+                    if recovered == PageState.PASSWORD_LOGIN:
+                        continue_saved_login = True
+                        break
+                    if recovered:
                         logger.info("%s 密码提交后的认证异常已通过刷新恢复，继续原任务", _log_prefix(driver))
                         return password
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
@@ -1206,12 +1351,24 @@ def _fill_password_page_if_present(
                                            ui=last_submission_snapshot)
                 next_diagnostic_at = time.time() + 15.0
             if not recovery_attempted and time.time() >= recovery_at:
-                if recover_once():
+                recovered = recover_once()
+                if recovered == PageState.PASSWORD_LOGIN:
+                    continue_saved_login = True
+                    break
+                if recovered:
                     logger.info("%s 密码提交等待已通过刷新进入下一步，继续原任务", _log_prefix(driver))
                     return password
             transition_probe += 1
             # 离开密码页可能只是空壳或错误跳转；继续等待明确的下一页。
-            time.sleep(0.5)
+            time.sleep(min(0.5, max(0.0, wait_end - time.time())))
+        if continue_saved_login:
+            saved_form_recoveries += 1
+            end = wait_end
+            logger.warning(
+                "%s 原身份登录已恢复到同一邮箱的新密码表单，沿用原密码继续一次（%d/%d）",
+                _log_prefix(driver), saved_form_recoveries, MAX_SAVED_PASSWORD_FORM_RECOVERIES,
+            )
+            continue
         stuck_state = _password_page_state(driver)
         log_submission_diagnostics(driver, "password", "timeout", receipt=submission_receipt,
                                    ui=last_submission_snapshot)

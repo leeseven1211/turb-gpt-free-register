@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+import math
 import re
 import time
 from typing import Any, Mapping
@@ -52,6 +53,10 @@ _LOGIN_ENTRY_ROUTES = {
     "auth.openai.com": {"/log-in", "/login", "/sign-up", "/signup"},
     "chatgpt.com": {"/auth/login"},
 }
+_LOGIN_RESTART_ROUTES = {
+    "chatgpt.com": {"/auth/error"},
+}
+_UNSET_OTP_TIME = object()
 
 
 def _unknown(detail: str) -> RuntimeError:
@@ -94,6 +99,10 @@ def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> Page
         raise _unknown("原窗口的邮箱身份与原任务不一致")
     state = PageState.EMAIL_VERIFIED if snapshot.get("emailVerified") else classify_page(snapshot)
     path = url.path.rstrip("/")
+    # OAuth 回调失败不代表原密码被拒绝；显式续跑可以离开错误页重新登录。
+    # 邮箱冲突、异常账号和来源检查已在上面完成，不能据错误页确认旧提交。
+    if allow_restart and path in _LOGIN_RESTART_ROUTES.get(url.hostname, set()):
+        return PageState.AUTH_TRANSIENT
     known_route = path in _LOGIN_ENTRY_ROUTES.get(url.hostname, set()) or (
         url.hostname == "auth.openai.com" and any(path in routes for routes in _ROUTES.values())
     )
@@ -185,7 +194,8 @@ def _pending_receipts(driver: Any, facts: Any, *, allow_login: bool = False) -> 
 
 
 def prepare_retained_resume(driver: Any, *, email: str, existing_password: str | None,
-                            facts: Mapping[str, Any], verified_session: dict | None = None) -> RetainedResumeState:
+                            facts: Mapping[str, Any], verified_session: dict | None = None,
+                            otp_after_ts: Any = _UNSET_OTP_TIME) -> RetainedResumeState:
     """只读选择恢复路径；原身份续跑可自动进入新的登录流程。"""
     _check_manual_stop()
     try:
@@ -213,6 +223,13 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
         state = PageState.AUTHENTICATED
     else:
         state = _page_state(driver, email, allow_restart=automatic_login)
+    original_mail_time_known = True
+    if otp_after_ts is not _UNSET_OTP_TIME:
+        try:
+            value = float(otp_after_ts)
+            original_mail_time_known = not isinstance(otp_after_ts, bool) and math.isfinite(value) and value >= 0
+        except (TypeError, ValueError, OverflowError):
+            original_mail_time_known = False
     try:
         pending = _pending_receipts(driver, private.get("submission_facts"), allow_login=automatic_login)
     except _MultiplePendingSubmissions:
@@ -224,6 +241,7 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
     if automatic_login and (
         ("password" in pending and state in _PASSWORD_STATES)
         or (("otp" in pending or "otp_resend" in pending) and state == PageState.OTP_EMAIL)
+        or (state == PageState.OTP_EMAIL and not original_mail_time_known)
         or state == PageState.AUTH_TRANSIENT
     ):
         # 不把旧未知动作写成成功，也不重复操作旧表单；新 Run 使用原密码重新登录。

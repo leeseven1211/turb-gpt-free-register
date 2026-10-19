@@ -1343,6 +1343,16 @@ def _wait_email_submit_next_state(
         advanced_state = _email_submit_advanced_state(driver, budget=budget) if active_receipt else _email_submit_advanced_state(driver)
         if advanced_state:
             return advanced_state
+        http_receipt = getattr(driver, "_browser_submission_receipt", None)
+        if (getattr(http_receipt, "http_status", None) in {403, 429}
+                and getattr(http_receipt, "result", "") == "failure"):
+            # 已有明确响应时不再把整个等待耗在禁用的旧表单上；是否开始
+            # 新登录由外层核验原身份及新文档，不能在这里重放旧提交。
+            status = http_receipt.http_status
+            log_submission_diagnostics(driver, "email", "http_rejected", receipt=http_receipt)
+            raise _EmailSubmissionUnknown(
+                f"request_unknown: email_auth_http_{status}: 邮箱认证请求返回 HTTP {status}，页面尚未进入下一步"
+            )
         if submission_state == "cancelled":
             logger.info("%s 邮箱点击前校验未通过，未执行提交：%s", _log_prefix(driver),
                         getattr(driver, "_email_submission_diagnostics", None))
@@ -1454,6 +1464,67 @@ def _wait_email_submit_next_state(
     logger.info("%s 邮箱提交后等待下一步超时，最后邮箱页状态=%s", _log_prefix(driver), last)
     return "email_page" if _is_email_login_page_still_present(driver) else "unknown"
 
+
+def _recover_saved_login_email_page(driver, *, budget: StageBudget) -> str | None:
+    """原身份续跑只在受控 GET 后的新页面恢复，不重新点击旧邮箱表单。"""
+    if not getattr(driver, "_registration_resume_login", False) or budget.expired():
+        return None
+
+    def document_time_origin():
+        try:
+            value = driver.execute_script("return performance.timeOrigin;")
+            if type(value) in (int, float) and math.isfinite(value) and value > 0:
+                return float(value)
+        except Exception:
+            pass
+        return None
+
+    original_document = document_time_origin()
+    if original_document is None:
+        return None
+
+    def observe(recovery_budget):
+        snapshot = _page_snapshot(driver)
+        page_state = classify_page(snapshot)
+        if (page_state in {PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN, PageState.OTP_EMAIL}
+                and not has_visible_auth_inputs(snapshot)):
+            return None
+        advanced = _email_submit_advanced_state(driver, budget=recovery_budget)
+        if advanced:
+            return advanced
+        _email_ui_submission_state(driver)
+        diagnostics = getattr(driver, "_email_submission_diagnostics", None)
+        if not isinstance(diagnostics, dict) or diagnostics.get("same_document") is not False:
+            return None
+        current_document = document_time_origin()
+        if current_document is None or current_document == original_document:
+            return None
+        current = urlsplit(str(snapshot.get("url") or ""))
+        trusted_email_route = (
+            current.scheme == "https" and current.port in (None, 443)
+            and not current.username and not current.password
+            and (current.hostname, current.path.rstrip("/")) in {
+                ("chatgpt.com", "/auth/login"), ("auth.openai.com", "/log-in"),
+                ("auth.openai.com", "/log-in/email"),
+            }
+        )
+        email_input_present = any(
+            isinstance(item, dict) and item.get("visible") is not False
+            and (str(item.get("type") or "").lower() == "email"
+                 or str(item.get("name") or "").lower() in {"email", "username"}
+                 or str(item.get("autocomplete") or "").lower() == "email")
+            for item in snapshot.get("inputs") or []
+        )
+        if trusted_email_route and email_input_present:
+            return "email_resume_ready"
+        return None
+
+    return recover_submission_page(
+        driver, "email", observe, budget=budget,
+        receipt=getattr(driver, "_browser_submission_receipt", None), sleeper=time.sleep,
+    )
+
+
 def _submit_email_and_wait_next(
     driver,
     email: str,
@@ -1514,6 +1585,7 @@ def _submit_email_and_wait_next_impl(
     nextauth_fallback_done = False
     submitted_reported = False
     submission_started = False
+    saved_login_restarted = False
 
     def _progress(phase: str, detail: str) -> None:
         if on_progress is not None:
@@ -1650,12 +1722,39 @@ def _submit_email_and_wait_next_impl(
             _use_submission_budget()
             _progress("pending", "邮箱提交已进入排队或派发阶段，正在确认认证下一页")
             logger.info("%s 邮箱提交尚待页面确认，等待密码页或验证码页（%s/%s）", _log_prefix(driver), attempt, attempts)
-            state_name = _wait_email_submit_next_state(
-                driver,
-                email,
-                timeout=_remaining(20),
-                blank_shell_grace=3,
-            )
+            try:
+                state_name = _wait_email_submit_next_state(
+                    driver,
+                    email,
+                    timeout=_remaining(20),
+                    blank_shell_grace=3,
+                )
+            except _EmailSubmissionUnknown:
+                if (not allow_login_password or saved_login_restarted
+                        or attempt >= attempts or outer_budget.expired()):
+                    raise
+                saved_login_restarted = True
+                recovered = _recover_saved_login_email_page(
+                    driver, budget=outer_budget.child(RECOVERY_WINDOW_SECONDS),
+                )
+                accepted = _accept_advanced_state(recovered, "原身份邮箱提交恢复")
+                if accepted:
+                    return accepted
+                if recovered != "email_resume_ready":
+                    raise
+                # 原动作保留未知/拒绝事实；新页面开始独立登录，使用唯一新
+                # submission_id。两次登录仍共享外层截止时间，最多恢复一次。
+                previous = getattr(driver, "_browser_submission_receipt", None)
+                if previous is not None and getattr(previous, "phase", "") not in {"confirmed", "rejected", "not_dispatched", "unknown"}:
+                    record_browser_submission_fact(driver, "unknown", receipt=previous,
+                                                   result=getattr(previous, "result", "") or "unknown")
+                driver._email_submission_receipt = None
+                driver._email_submission_diagnostics = None
+                driver._registration_otp_after_ts = time.time()
+                submission_started = False
+                _use_submission_budget(new_request=True)
+                _progress("recovering", "登录页已刷新，沿用原邮箱继续同一账号认证")
+                continue
             frontend_not_ready = state_name == "email_frontend_not_ready"
         accepted = _accept_advanced_state(state_name, "邮箱提交后")
         if accepted:

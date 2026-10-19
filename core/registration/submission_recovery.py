@@ -341,6 +341,16 @@ def recover_submission_page(driver, stage: str, observe, *, budget: StageBudget,
         logger.warning("%s %s提交未确认，执行一次%s并观察原结果", _log_prefix(driver),
                        {"email": "邮箱", "password": "密码", "profile": "资料", "otp": "验证码"}.get(stage, "认证"),
                        "受控刷新" if action == "refresh" else "认证页面回退")
+        try:
+            from core.registration_debug import current_session
+
+            debug_session = current_session()
+            if debug_session is not None and debug_session.capture_mode == "full":
+                debug_session.capture_page_snapshot(driver, f"{stage}_before_{action}")
+        except Exception:
+            logger.debug("%s 保存恢复前页面现场失败", _log_prefix(driver), exc_info=True)
+        if recovery.expired():
+            break
         old_timeout = None
         try:
             old_timeout = driver.timeouts.page_load

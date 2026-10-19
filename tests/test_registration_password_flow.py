@@ -1,4 +1,5 @@
 import ast
+from contextlib import ExitStack, contextmanager
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from core import browser_use_registration
 from core import roxy_registration
-from core.registration import password_auth
+from core.registration import password_auth, selenium_auth
 from core.registration.browser_submission import BrowserSubmissionReceipt, unresolved_submission_ids
 
 
@@ -62,7 +63,8 @@ def _password_target_result(**fixture):
       getBoundingClientRect:()=>({left:0,right:100,top:60 + index*40,bottom:90 + index*40}),
       getClientRects:()=>[{}], scrollIntoView(){}, closest:()=>form,
     }));
-    form.querySelectorAll = () => buttons;
+    const identityInput = {readOnly:true, name:'username', value:fixture.identityEmail || 'saved@example.test'};
+    form.querySelectorAll = selector => selector === 'input' ? [identityInput, input] : buttons;
     const input = {id:'password', tagName:'INPUT', type:'password', disabled:false, readOnly:false,
       offsetWidth:100, offsetHeight:40, isConnected:true,
       value:fixture.inputValue === undefined ? 'ValidPass123!' : fixture.inputValue,
@@ -72,7 +74,7 @@ def _password_target_result(**fixture):
       getClientRects:()=>[{}], getBoundingClientRect:()=>({left:0,right:100,top:0,bottom:40})};
     const document = {querySelectorAll:selector=>selector.includes('password') ? [input] : buttons};
     const execute = function(){SCRIPT};
-    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input, 'test-submission');
+    const result = execute(fixture.mode || 'submit', 'ValidPass123!', fixture.replaced ? {} : input, 'test-submission', fixture.expectedEmail);
     if (fixture.valueAfterQueue !== undefined) input.value = fixture.valueAfterQueue;
     if (fixture.superseded) window.__turbPasswordSubmissionReceipt = {};
     for (const callback of timers) callback();
@@ -107,6 +109,18 @@ class PasswordFormTargetTests(unittest.TestCase):
 
     def test_password_form_requires_frontend_submit_handler(self):
         self.assertFalse(_password_target_result(hydrated=False)["ok"])
+
+    def test_recovered_password_form_and_queue_require_the_original_identity(self):
+        for mode in ("recovery_input", "queue"):
+            with self.subTest(mode=mode):
+                accepted = _password_target_result(mode=mode, expectedEmail="saved@example.test")
+                self.assertTrue(accepted["ok"])
+                rejected = _password_target_result(
+                    mode=mode, expectedEmail="saved@example.test", identityEmail="other@example.test",
+                )
+                self.assertFalse(rejected["ok"])
+                self.assertEqual(rejected["reason"], "login_identity_unconfirmed")
+                self.assertEqual(rejected["clicks"], 0)
 
     def test_input_without_form_does_not_use_page_wide_buttons(self):
         self.assertFalse(_password_target_result(hasForm=False)["ok"])
@@ -298,6 +312,137 @@ class _SteppingClock:
         return self.value
 
 
+@contextmanager
+def _observed_password_submission(post_submit_state, *, is_login=True):
+    """保留真实填写、一次排队及落点观察，只替换 DOM 和远端边界。"""
+    path = "/log-in/password" if is_login else "/create-account/password"
+    driver = SimpleNamespace(current_url="https://auth.openai.com" + path, refresh=Mock())
+    queues = []
+
+    def execute(_script, *args):
+        if args and args[0] == "queue":
+            queues.append(args[3])
+            return {"ok": True, "reason": "password_submit_queued"}
+        return {"ok": True, "input": object()}
+
+    driver.execute_script = Mock(side_effect=execute)
+    initial_state = {"url": driver.current_url, "inputs": [{"type": "password"}]}
+    with ExitStack() as stack:
+        for name, value in (
+            ("_registration_auth_mode", "password"),
+            ("_is_email_verification_page", False),
+            ("_has_access_token", False),
+            ("_is_signup_password_page", not is_login),
+            ("_is_login_password_page", is_login),
+            ("_registration_password", "NewPass123!"),
+            ("_password_transition_timeout_seconds", 3),
+            ("_password_submission_snapshot", {"phase": "dispatched"}),
+        ):
+            stack.enter_context(patch.object(password_auth, name, return_value=value))
+        states = iter((initial_state, post_submit_state))
+        stack.enter_context(patch.object(
+            password_auth, "_password_page_state",
+            side_effect=lambda _driver: next(states, post_submit_state),
+        ))
+        stack.enter_context(patch.object(password_auth, "_human_type_text"))
+        stack.enter_context(patch.object(password_auth, "human_delay"))
+        stack.enter_context(patch.object(password_auth, "_check_manual_stop"))
+        stack.enter_context(patch.object(password_auth, "time", SimpleNamespace(
+            time=_SteppingClock(step=0.1), sleep=lambda _seconds: None,
+        )))
+        facts = stack.enter_context(patch.object(password_auth, "record_browser_submission_fact"))
+        recovery = stack.enter_context(patch.object(password_auth, "recover_submission_page"))
+        yield SimpleNamespace(driver=driver, queues=queues, facts=facts, recovery=recovery)
+
+
+@contextmanager
+def _saved_password_refresh_flow(*, landing="otp", first_landing=None, explicit_resume=True,
+                                 signup=False, identity_matches=True, same_document=False,
+                                 ready_at=0.0, recovery_typing_seconds=0.0):
+    """模拟首次提交停住、GET 清空表单及第二次提交的真实页面状态变化。"""
+    clock = SimpleNamespace(value=0.0)
+    driver = SimpleNamespace(
+        state="password", input=SimpleNamespace(value=""), queues=[], typed=[], navigations=[],
+        js_receipt=None, timeouts=SimpleNamespace(page_load=90),
+        _registration_resume_login=explicit_resume,
+    )
+    path = "/create-account/password" if signup else "/log-in/password"
+
+    def snapshot(_driver):
+        route = {"otp": "/email-verification", "mfa": "/mfa", "profile": "/about-you"}.get(driver.state, path)
+        driver.current_url = "https://auth.openai.com" + route
+        inputs = {
+            "otp": [{"type": "text", "name": "code"}],
+            "mfa": [{"type": "text", "name": "totp"}],
+            "profile": [{"type": "text", "name": "name"}],
+        }.get(driver.state, [] if driver.state == "pending" else [{"type": "password"}])
+        return {
+            "url": driver.current_url, "inputs": inputs,
+            "text": "Enter your authenticator app code" if driver.state == "mfa" else "",
+            "errors": ["Incorrect password"] if driver.state == "rejected" else [],
+        }
+
+    def execute(_script, *args):
+        if args and args[0] in {"input", "recovery_input"}:
+            if args[0] == "recovery_input" and (not identity_matches or clock.value < ready_at):
+                return {"ok": False, "reason": "login_identity_unconfirmed"}
+            return {"ok": True, "input": driver.input}
+        if args and args[0] == "queue":
+            if driver.input.value != args[1]:
+                return {"ok": False, "reason": "password_value_changed"}
+            driver.queues.append(args[3])
+            driver.js_receipt = args[3]
+            driver.state = (first_landing or "pending") if len(driver.queues) == 1 else landing
+            snapshot(driver)
+            return {"ok": True, "reason": "password_submit_queued"}
+        if args and args[0] == driver.js_receipt:
+            return {
+                "phase": "dispatched", "click_called": True, "submit_event_observed": True,
+                "submit_default_prevented": True, "submitter_matches": True,
+            }
+        return None
+
+    def navigate(url):
+        driver.navigations.append(url)
+        if not same_document:
+            driver.state = "password"
+            driver.input = SimpleNamespace(value="")
+            driver.js_receipt = None
+        snapshot(driver)
+
+    def type_password(_driver, field, value, **_kwargs):
+        field.value = value
+        if driver.typed:
+            clock.value += recovery_typing_seconds
+        driver.typed.append(value)
+
+    driver.execute_script = Mock(side_effect=execute)
+    driver.get = Mock(side_effect=navigate)
+    driver.set_page_load_timeout = Mock()
+    snapshot(driver)
+    real_fact = password_auth.record_browser_submission_fact
+    with ExitStack() as stack:
+        for name, replacement in (
+            ("_registration_auth_mode", lambda: "password"),
+            ("_is_email_verification_page", lambda _driver: driver.state == "otp"),
+            ("_has_access_token", lambda _driver, **_kwargs: driver.state == "session"),
+            ("_is_signup_password_page", lambda _driver: signup),
+            ("_is_login_password_page", lambda _driver: not signup),
+            ("_password_page_state", snapshot),
+            ("_password_transition_timeout_seconds", lambda: 20.0),
+            ("_human_type_text", type_password),
+        ):
+            stack.enter_context(patch.object(password_auth, name, side_effect=replacement))
+        for name in ("human_delay", "_check_manual_stop", "log_submission_diagnostics"):
+            stack.enter_context(patch.object(password_auth, name))
+        stack.enter_context(patch.object(password_auth, "time", SimpleNamespace(
+            time=lambda: clock.value,
+            sleep=lambda seconds: setattr(clock, "value", clock.value + seconds),
+        )))
+        facts = stack.enter_context(patch.object(password_auth, "record_browser_submission_fact", side_effect=real_fact))
+        yield SimpleNamespace(driver=driver, facts=facts, clock=clock)
+
+
 class RegistrationFailureClassificationTests(unittest.TestCase):
     def test_missing_auth_session_keeps_original_attempt_in_unknown_state(self):
         error = "auth_session_unavailable: 验证码页认证会话不可用"
@@ -363,6 +508,151 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_saved_password_refills_only_new_document_and_preserves_the_old_unknown_receipt(self):
+        for landing in ("otp", "mfa", "profile", "session"):
+            with self.subTest(landing=landing), _saved_password_refresh_flow(landing=landing) as flow:
+                result = password_auth._fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+                self.assertEqual(result, "SavedPass123!")
+                self.assertEqual(flow.driver.typed, ["SavedPass123!", "SavedPass123!"])
+                self.assertEqual(len(set(flow.driver.queues)), 2)
+                self.assertEqual(len(flow.driver.navigations), 1)
+                old, new = flow.driver._browser_submission_receipts
+                self.assertEqual(old.phase, "unknown")
+                self.assertEqual(new.phase, "confirmed")
+                self.assertLess(flow.clock.value, 20)
+
+    def test_saved_password_recovery_shares_deadline_and_never_refreshes_or_submits_again(self):
+        with _saved_password_refresh_flow(landing="pending") as flow:
+            with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                password_auth._fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual(len(flow.driver.queues), 2)
+            self.assertEqual(len(flow.driver.navigations), 1)
+            self.assertEqual(flow.clock.value, 20)
+            self.assertTrue(all(receipt.phase == "unknown" for receipt in flow.driver._browser_submission_receipts))
+
+    def test_saved_password_recovery_does_not_submit_when_new_form_is_late_or_identity_changed(self):
+        for options in ({"ready_at": 25}, {"identity_matches": False}, {"same_document": True}):
+            with self.subTest(options=options), _saved_password_refresh_flow(**options) as flow:
+                with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                    password_auth._fill_password_page_if_present(
+                        flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    )
+                self.assertEqual(len(flow.driver.queues), 1)
+                self.assertEqual(len(flow.driver.navigations), 1)
+                self.assertEqual(flow.clock.value, 20)
+
+    def test_advanced_saved_login_pages_continue_without_refresh_or_another_submit(self):
+        for landing in ("otp", "mfa", "profile", "session"):
+            with self.subTest(landing=landing), _saved_password_refresh_flow(first_landing=landing) as flow:
+                result = password_auth._fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+                self.assertEqual(result, "SavedPass123!")
+                self.assertEqual(len(flow.driver.queues), 1)
+                self.assertEqual(flow.driver.navigations, [])
+
+    def test_recovery_never_queues_a_new_login_after_typing_spends_the_remaining_budget(self):
+        with _saved_password_refresh_flow(ready_at=19, recovery_typing_seconds=2) as flow:
+            with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                password_auth._fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual(len(flow.driver.queues), 1)
+            self.assertEqual(flow.driver._browser_submission_receipt.phase, "not_dispatched")
+            self.assertEqual(flow.driver._browser_submission_receipts[0].phase, "unknown")
+
+    def test_saved_login_recovery_rejection_is_distinct_and_does_not_repeat(self):
+        with _saved_password_refresh_flow(landing="rejected") as flow:
+            with self.assertRaises(password_auth.PasswordRejectedError):
+                password_auth._fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    login_rejection_detector=lambda state: bool(state.get("errors")),
+                )
+            self.assertEqual(len(flow.driver.queues), 2)
+            self.assertEqual(len(flow.driver.navigations), 1)
+            self.assertEqual(flow.driver._browser_submission_receipts[0].phase, "unknown")
+            self.assertEqual(flow.driver._browser_submission_receipts[1].phase, "rejected")
+
+    def test_password_creation_and_non_resume_login_never_use_saved_form_resubmission(self):
+        for options in ({"signup": True}, {"explicit_resume": False}):
+            with self.subTest(options=options), _saved_password_refresh_flow(**options) as flow:
+                with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                    password_auth._fill_password_page_if_present(
+                        flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    )
+                self.assertEqual(len(flow.driver.queues), 1)
+
+    def test_saved_login_password_rejection_exits_without_refresh_or_resubmit(self):
+        rejected_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "password"}], "errors": ["Incorrect password"],
+        }
+        detector = Mock(return_value=True)
+        with _observed_password_submission(rejected_state) as flow:
+            with self.assertRaises(password_auth.PasswordRejectedError):
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    login_rejection_detector=detector,
+                )
+            detector.assert_called_once_with(rejected_state)
+            flow.facts.assert_any_call(
+                flow.driver, "rejected", receipt=flow.driver._browser_submission_receipt,
+                result="failure", error_type="PasswordRejectedError",
+            )
+            self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
+            flow.driver.refresh.assert_not_called()
+
+    def test_login_rejection_detector_does_not_apply_to_password_creation(self):
+        for saved_password in (None, "SavedPass123!"):
+            with self.subTest(saved_password=bool(saved_password)):
+                detector = Mock(return_value=True)
+                with _observed_password_submission({"url": "https://auth.openai.com/about-you"}, is_login=False) as flow:
+                    result = selenium_auth.fill_password_page_if_present(
+                        flow.driver, "new@example.test", existing_password=saved_password,
+                        login_rejection_detector=detector,
+                    )
+                    self.assertEqual(result, saved_password or "NewPass123!")
+                    detector.assert_not_called()
+                    self.assertEqual(len(flow.queues), 1)
+                    self.assertNotIn("rejected", [call.args[1] for call in flow.facts.call_args_list])
+
+    def test_saved_login_password_can_continue_to_mfa_with_rejection_detector(self):
+        mfa_state = {
+            "url": "https://auth.openai.com/mfa", "text": "Enter your authenticator app code",
+            "inputs": [{"name": "totp", "inputmode": "numeric"}],
+        }
+        detector = Mock(return_value=False)
+        with _observed_password_submission(mfa_state) as flow:
+            result = selenium_auth.fill_password_page_if_present(
+                flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                login_rejection_detector=detector,
+            )
+            self.assertEqual(result, "SavedPass123!")
+            detector.assert_called_once_with(mfa_state)
+            flow.facts.assert_any_call(
+                flow.driver, "confirmed", receipt=flow.driver._browser_submission_receipt, result="success",
+            )
+            self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
+
+    def test_saved_login_without_rejection_detector_preserves_default_observation(self):
+        state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "password"}], "errors": ["Incorrect password"],
+        }
+        with _observed_password_submission(state) as flow:
+            with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertNotIn("rejected", [call.args[1] for call in flow.facts.call_args_list])
+            self.assertEqual(len(flow.queues), 1)
+
     def test_password_timeout_reports_submit_evidence_without_repeating_click(self):
         driver = _RoxyDriver()
         driver.state = "password"

@@ -53,8 +53,10 @@ logger = logging.getLogger(__name__)
 def _receipt_accepts_submission_endpoint(receipt, endpoint_kind: str) -> bool:
     expected = str(getattr(receipt, "endpoint_kind", "") or "")
     endpoint_kind = str(endpoint_kind or "")
-    if expected == "nextauth_signin":
-        return endpoint_kind in {"nextauth_csrf", "nextauth_signin"}
+    if expected == "email_submit":
+        # UI 邮箱点击实际发送 NextAuth signin；CSRF GET 只是前置读取，
+        # 不能把它的成功或失败写成这次邮箱 POST 的回执。
+        return endpoint_kind in {"email_submit", "nextauth_signin"}
     return bool(expected and expected == endpoint_kind)
 
 
@@ -79,11 +81,55 @@ def _submission_response_fact(endpoint_kind: str, status: object) -> tuple[str, 
         code = int(status or 0)
     except (TypeError, ValueError):
         code = 0
-    if endpoint_kind != "nextauth_csrf" and code in {400, 401}:
+    if endpoint_kind == "nextauth_csrf":
+        return "response_observed", ""
+    if code in {400, 401}:
         return "rejected", "failure"
+    if endpoint_kind == "nextauth_signin" and code == 403:
+        # 挑战拦截属于本次请求失败，不证明账号或后续同身份登录被永久拒绝。
+        return "response_observed", "failure"
     if 100 <= code < 400:
         return "response_observed", "success"
     return "response_observed", ""
+
+
+def _make_submission_observer(driver):
+    """为当前浏览器连接配对请求与响应，不发起任何认证请求。"""
+    submission_requests = {}
+
+    def observe(meta):
+        request_key = (
+            str(meta.get("target_id") or ""),
+            str(meta.get("request_id") or ""),
+        )
+        endpoint_kind = str(meta.get("endpoint_kind") or "")
+        # 没有 CDP requestId 时无法把 response 与同端点提交绑定。
+        if not request_key[1]:
+            return
+        if meta.get("response"):
+            receipt = submission_requests.pop(request_key, None)
+            if receipt is None:
+                # 响应必须沿用请求时已绑定的回执，不重选当前提交或处理重复响应。
+                return
+        else:
+            receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
+            if receipt is None:
+                return
+            submission_requests[request_key] = receipt
+        phase, response_result = _submission_response_fact(endpoint_kind, meta.get("http_status"))
+        if not meta.get("response"):
+            phase, response_result = "request_observed", ""
+        record_browser_submission_fact(
+            driver, phase, receipt=receipt,
+            endpoint_kind=endpoint_kind,
+            http_method=meta.get("http_method"),
+            http_status=meta.get("http_status"),
+            duration_ms=meta.get("duration_ms"),
+            result=response_result,
+        )
+
+    return observe
+
 
 # These failures happen before a local account checkpoint exists. Keeping the
 # temporary Profile for them only consumes a Roxy slot; failures after a
@@ -1051,48 +1097,7 @@ def run_roxy_registration(
                 setter(data_saver)
             observe = getattr(traffic_capture, "set_submission_observer", None)
             if callable(observe):
-                submission_requests = {}
-
-                def _observe_auth_submission(meta):
-                    request_key = (
-                        str(meta.get("target_id") or ""),
-                        str(meta.get("request_id") or ""),
-                    )
-                    endpoint_kind = str(meta.get("endpoint_kind") or "")
-                    # 没有 CDP requestId 时无法把 response 与同端点提交绑定；
-                    # 不使用空键，避免两个并发请求互相覆盖。
-                    if not request_key[1]:
-                        return
-                    if meta.get("response"):
-                        receipt = submission_requests.pop(request_key, None)
-                        if receipt is None:
-                            # 只接受当前连接内已见 request 的 response；避免
-                            # A 请求迟到时被当前 B receipt 错配。
-                            return
-                    else:
-                        receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
-                        if receipt is None:
-                            return
-                        submission_requests[request_key] = receipt
-                    phase = "response_observed" if meta.get("response") else "request_observed"
-                    try:
-                        status = int(meta.get("http_status") or 0)
-                    except (TypeError, ValueError):
-                        status = 0
-                    # 只有同一已匹配提交的 signin/业务 POST 收到明确 400/401
-                    # 才能收口为拒绝；CSRF 端点的 400 只说明读取失败。
-                    phase, response_result = _submission_response_fact(endpoint_kind, status)
-                    if not meta.get("response"):
-                        phase, response_result = "request_observed", ""
-                    record_browser_submission_fact(
-                        driver, phase, receipt=receipt,
-                        endpoint_kind=endpoint_kind,
-                        http_method=meta.get("http_method"),
-                        http_status=meta.get("http_status"),
-                        duration_ms=meta.get("duration_ms"),
-                        result=response_result,
-                    )
-                observe(_observe_auth_submission)
+                observe(_make_submission_observer(driver))
         from core import registration_plan_capture
         registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
@@ -1114,6 +1119,7 @@ def run_roxy_registration(
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
                 verified_session=verified_resume_session,
+                otp_after_ts=retained.otp_after_ts,
             )
             existing_password = retained_state.password
             restart_login = bool(getattr(retained_state, "restart_login", False))
@@ -1368,6 +1374,7 @@ def run_roxy_registration(
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
                 verified_session=verified_resume_session,
+                otp_after_ts=getattr(driver, "_registration_otp_after_ts", otp_after_ts),
             )
             if retained_state.pending_otp is not None or retained_state.page_state not in {
                 PageState.PROFILE, PageState.EMAIL_VERIFIED, PageState.MFA_TOTP, PageState.AUTHENTICATED,
