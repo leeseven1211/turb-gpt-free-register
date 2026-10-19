@@ -63,6 +63,11 @@ def _unknown(detail: str) -> RuntimeError:
     return RuntimeError(f"request_unknown: {detail}，已保留原窗口，未重新提交")
 
 
+def _is_native_resume_start_page(value: Any) -> bool:
+    """浏览器明确的空白/导航错误文档，不包含任意网页或带参数的地址。"""
+    return str(value or "").strip().casefold() in {"chrome-error://chromewebdata/", "about:blank"}
+
+
 def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> PageState:
     """来源、可见身份及当前页面必须同时可核验。"""
     _check_manual_stop()
@@ -72,6 +77,7 @@ def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> Page
         raise _unknown("原窗口页面读取失败") from None
     if not isinstance(snapshot, Mapping) or snapshot.get("error") or snapshot.get("challengePresent"):
         raise _unknown("原窗口页面暂不可核验")
+    native_restart = allow_restart and _is_native_resume_start_page(snapshot.get("url"))
     try:
         url = urlsplit(str(snapshot.get("url") or ""))
         trusted = (
@@ -80,7 +86,7 @@ def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> Page
         )
     except ValueError:
         trusted = False
-    if not trusted:
+    if not trusted and not native_restart:
         raise _unknown("原窗口来源无法核验")
     text = str(snapshot.get("text") or "")
     if any(marker in text.casefold() for marker in (
@@ -97,6 +103,8 @@ def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> Page
     expected = str(email or "").strip().casefold()
     if not expected or any(hint.casefold() != expected for hint in hints):
         raise _unknown("原窗口的邮箱身份与原任务不一致")
+    if native_restart:
+        return PageState.AUTH_TRANSIENT
     state = PageState.EMAIL_VERIFIED if snapshot.get("emailVerified") else classify_page(snapshot)
     path = url.path.rstrip("/")
     # OAuth 回调失败不代表原密码被拒绝；显式续跑可以离开错误页重新登录。

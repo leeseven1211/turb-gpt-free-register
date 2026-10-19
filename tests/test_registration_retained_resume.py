@@ -193,6 +193,40 @@ class RetainedResumeTests(unittest.TestCase):
                 self.assertTrue(self.prepare(driver).restart_login)
                 write.assert_not_called()
 
+    def test_explicit_resume_restarts_from_exact_native_start_pages(self):
+        private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
+        for native_url in ("chrome-error://chromewebdata/", "about:blank"):
+            with self.subTest(native_url=native_url), self.context(
+                snapshots=[snapshot(url=native_url, text="页面加载失败", inputs=[])], private=private,
+            ) as (driver, _, _, write, _):
+                driver._registration_resume_login = True
+                driver._registration_retained_identity_required = True
+                result = self.prepare(driver)
+                self.assertEqual(result.page_state, PageState.AUTH_TRANSIENT)
+                self.assertTrue(result.restart_login)
+                self.assertEqual(result.password, PASSWORD)
+                write.assert_not_called()
+
+    def test_native_start_pages_still_require_scope_password_and_matching_identity(self):
+        cases = [
+            ("chrome-error://chromewebdata/", False, PASSWORD, ""),
+            ("about:blank", True, None, ""),
+            ("chrome-error://chromewebdata/", True, PASSWORD, "other@example.test"),
+            ("about:blank", True, PASSWORD, "account_deactivated"),
+            ("chrome-error://other/", True, PASSWORD, ""),
+            ("about:blank?redirect=other", True, PASSWORD, ""),
+            ("https://other.example.test/", True, PASSWORD, ""),
+        ]
+        for native_url, explicit_resume, password, text in cases:
+            with self.subTest(native_url=native_url, explicit_resume=explicit_resume, text=text), self.context(
+                snapshots=[snapshot(url=native_url, text=text, inputs=[])],
+                private={"password": password, "submission_facts": []},
+            ) as (driver, _, _, write, _):
+                driver._registration_resume_login = explicit_resume
+                with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                    retained_resume.prepare_retained_resume(driver, email=EMAIL, existing_password=password, facts=FACTS)
+                write.assert_not_called()
+
     def test_explicit_resume_does_not_confirm_old_password_from_new_otp_page(self):
         private = {"password": PASSWORD, "submission_facts": [fact("password", "original-password")]}
         with self.context(snapshots=[snapshot()], private=private) as (driver, _, _, write, _):

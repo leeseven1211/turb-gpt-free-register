@@ -29,6 +29,33 @@ def session_driver(response=None):
 
 
 class ResumeSessionReadTests(unittest.TestCase):
+    def test_explicit_resume_can_leave_native_page_reached_during_session_probe(self):
+        for native_url in ("chrome-error://chromewebdata/", "about:blank"):
+            with self.subTest(native_url=native_url):
+                driver = session_driver()
+                driver._registration_resume_login = True
+                def fail_after_origin_change(_driver, **_kwargs):
+                    driver.current_url = native_url
+                    raise RuntimeError("request_unknown: origin_changed")
+                with patch.object(session_auth, "_read_chatgpt_session_once", side_effect=fail_after_origin_change) as read:
+                    self.assertIsNone(roxy._read_registration_resume_session(driver, EMAIL))
+                read.assert_called_once()
+
+    def test_native_page_after_probe_failure_is_not_a_general_retry_escape(self):
+        cases = [(False, "chrome-error://chromewebdata/"), (False, "about:blank"),
+                 (True, "https://other.example.test/"), (True, "chrome-error://other/"),
+                 (True, "about:blank?redirect=other"), (True, "https://chatgpt.com/complete")]
+        for explicit_resume, changed_url in cases:
+            with self.subTest(explicit_resume=explicit_resume, changed_url=changed_url):
+                driver = session_driver()
+                driver._registration_resume_login = explicit_resume
+                def fail_after_origin_change(_driver, **_kwargs):
+                    driver.current_url = changed_url
+                    raise RuntimeError("request_unknown: origin_changed")
+                with (patch.object(session_auth, "_read_chatgpt_session_once", side_effect=fail_after_origin_change),
+                      self.assertRaisesRegex(RuntimeError, "resume_session_probe_incomplete")):
+                    roxy._read_registration_resume_session(driver, EMAIL)
+
     def test_explicit_resume_callback_error_reaches_login_recovery_without_session_probe(self):
         for explicit_resume in (True, False):
             with self.subTest(explicit_resume=explicit_resume):
@@ -208,6 +235,18 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "codex_enabled": False, "plan_check_enabled": False}}
         args.update(kwargs)
         return roxy.run_roxy_registration(EMAIL, "Example User", "2000-01-02", **args)
+
+    def test_native_error_during_bound_profile_probe_reaches_new_login_get(self):
+        with self.run_context() as (driver, mocks):
+            def fail_after_origin_change(_driver, **_kwargs):
+                driver.current_url = "chrome-error://chromewebdata/"
+                raise RuntimeError("request_unknown: origin_changed")
+            with patch.object(session_auth, "_read_chatgpt_session_once", side_effect=fail_after_origin_change):
+                result = self.run_registration()
+        self.assertFalse(result["success"])
+        mocks["navigate"].assert_called_once()
+        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
+        mocks["_submit_email_and_wait_next"].assert_not_called()
 
     def test_verified_resume_skips_all_auth_submissions_and_reuses_shared_persist(self):
         with self.run_context() as (driver, mocks):

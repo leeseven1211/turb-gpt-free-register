@@ -37,7 +37,7 @@ from core.registration.retained_browser import (
     persist_browser_resume_context, recover_attempt_failed_browser,
     recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
 )
-from core.registration.retained_resume import prepare_retained_resume
+from core.registration.retained_resume import _is_native_resume_start_page, prepare_retained_resume
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -187,6 +187,14 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
         return None
     except Exception as exc:
         _check_manual_stop()
+        try:
+            native_start_page = _is_native_resume_start_page(getattr(driver, "current_url", ""))
+        except Exception:
+            native_start_page = False
+        if getattr(driver, "_registration_resume_login", False) and native_start_page:
+            # 启动恢复标签页可能在会话预读期间才落到浏览器错误页；原身份
+            # 续跑应进入正常登录 GET，不能让这次 origin_changed 挡住恢复。
+            return None
         raise RuntimeError("request_unknown: resume_session_probe_incomplete: 原环境会话读取未完成，已保留原提交") from exc
     if session is not None:
         _validate_registration_session_identity(session, email)
