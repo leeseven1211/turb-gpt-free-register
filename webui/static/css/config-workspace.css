@@ -78,6 +78,24 @@
   margin-top: 0;
 }
 
+#tab-config [data-config-section="邮箱 / OTP"] .config-switches-v2 {
+  padding: 4px 12px 4px;
+}
+
+#tab-config [data-config-section="邮箱 / OTP"] .config-switches-v2 > .config-setting-row-v2 {
+  padding: 4px 8px;
+}
+
+#tab-config [data-config-section="邮箱 / OTP"] .config-switches-v2 > .config-setting-row-v2 .config-setting-control-v2 {
+  min-height: 28px;
+  align-items: center;
+}
+
+#tab-config [data-config-section="邮箱 / OTP"] .config-switches-v2 + .config-section-v2-body {
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
 #tab-config .config-setting-copy-v2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
