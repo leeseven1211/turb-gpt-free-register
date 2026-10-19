@@ -1206,7 +1206,13 @@ def run_twofa_worker(
         if clear_log:
             path.write_text("", encoding="utf-8")
         thread_name = threading.current_thread().name
-        fh = task_run_log.TaskRunLogHandler(str(path), task_id=task_id, stage="account_setup")
+        log_context = task_run_log.current_context()
+        native_log_context = log_context.get("identifier_namespace") == "operation"
+        # 原生 Run 的日志过滤必须使用同一归属，不能拿旧账号任务 ID 丢弃内部日志。
+        fh = task_run_log.TaskRunLogHandler(
+            str(path), task_id=log_context.get("task_id") if native_log_context else task_id,
+            run_id=log_context.get("run_id") if native_log_context else None, stage="account_setup",
+        )
         fh.setLevel(logging.DEBUG)
         fh.addFilter(lambda record: record.threadName == thread_name)
         root_logger.addHandler(fh)

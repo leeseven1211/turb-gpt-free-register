@@ -406,6 +406,36 @@ class ResumeSessionFlowTests(unittest.TestCase):
             self.assertTrue(mocks["_fetch_chatgpt_session"].call_args.kwargs["prefer_homepage"])
             mocks["saver"].return_value.activate_post_auth.assert_called_once()
 
+    def test_direct_login_without_a_new_password_keeps_the_original_credential_in_all_checkpoints(self):
+        for returned_password in (None, "", "unit-new-password"):
+            with self.subTest(returned_new_password=bool(returned_password)), self.run_context() as (driver, mocks):
+                driver.execute_async_script.return_value = {
+                    "ok": True, "status": 401, "json_valid": True, "data": {},
+                }
+                mocks["navigate"].side_effect = None
+                mocks["_submit_email_and_wait_next"].return_value = "logged_in"
+                mocks["_fill_password_page_if_present"].return_value = returned_password
+                mocks["_has_access_token"].return_value = True
+                mocks["login"].return_value = "advanced"
+                mocks["_fetch_chatgpt_session"].return_value = SESSION
+                result = self.run_registration()
+                self.assertTrue(result["success"], result.get("error"))
+                expected = returned_password or "unit-original-password"
+                self.assertEqual(mocks["persist"].call_args.kwargs["extra"]["account_password"], expected)
+                for checkpoint in mocks["checkpoint"].call_args_list:
+                    self.assertEqual(checkpoint.kwargs["openai_password"], expected)
+
+    def test_core_checkpoint_without_any_password_omits_the_password_field(self):
+        with self.run_context(action="registration") as (_, mocks):
+            mocks["navigate"].side_effect = None
+            mocks["_submit_email_and_wait_next"].return_value = "logged_in"
+            mocks["_fill_password_page_if_present"].return_value = None
+            mocks["_has_access_token"].return_value = True
+            mocks["_fetch_chatgpt_session"].return_value = SESSION
+            result = self.run_registration(existing_password=None, profile_id=None)
+            self.assertTrue(result["success"], result.get("error"))
+            self.assertNotIn("account_password", mocks["persist"].call_args.kwargs["extra"])
+
     def test_exhausted_homepage_budget_does_not_turn_saved_account_into_registration_failure(self):
         with self.run_context() as (driver, mocks):
             entrypoint = roxy._wait_registration_homepage

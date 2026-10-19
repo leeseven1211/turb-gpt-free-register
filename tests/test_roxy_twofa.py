@@ -612,6 +612,24 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
         self.assertEqual(insert.call_args.kwargs["email_source"], "icloud_hide")
 
+    def test_registration_checkpoint_empty_password_does_not_clear_a_saved_password(self):
+        for missing_password in (None, "", "   "):
+            with self.subTest(password_type=type(missing_password).__name__):
+                existing_extra = {"account_password": "OriginalPass123!"}
+
+                def merge_account(**kwargs):
+                    existing_extra.update(kwargs["extra"])
+                    return 17
+
+                with patch("core.db.insert_account", side_effect=merge_account):
+                    roxy_registration._save_roxy_account_checkpoint(
+                        email="saved@example.test", access_token="unit-token",
+                        session_info={"user": {}, "account": {}},
+                        opened=SimpleNamespace(profile_id="unit-profile", raw={}),
+                        openai_password=missing_password, proxy=None, email_source="icloud_hide",
+                    )
+                self.assertEqual(existing_extra["account_password"], "OriginalPass123!")
+
     def test_password_submission_saves_pending_email_verification_account(self):
         opened = SimpleNamespace(profile_id="profile-1", raw={"ok": True})
         with patch("core.registration.checkpoints.db.get_account_by_email", return_value=None), patch(

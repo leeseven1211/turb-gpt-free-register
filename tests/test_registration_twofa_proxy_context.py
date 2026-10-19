@@ -1,5 +1,6 @@
 """注册链补跑账号配置时使用真实操作归属及本轮代理租约。"""
 from contextlib import ExitStack
+import json
 import logging
 from pathlib import Path
 import tempfile
@@ -117,6 +118,44 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
         self.assertTrue(all("registration_job_id" not in value for value in observed))
         self.assertEqual([value["lease_id"] for value in persisted], ["account-lease-1", "account-lease-2"])
         self.assertEqual([value["operation_task_id"] for value in persisted], [501, 501])
+
+    def test_twofa_worker_writes_internal_logs_in_native_and_legacy_contexts(self):
+        for native in (True, False):
+            with self.subTest(native=native), tempfile.TemporaryDirectory() as tempdir, ExitStack() as stack:
+                path = Path(tempdir) / "twofa.jsonl"
+                route = SimpleNamespace(
+                    proxy_url="http://route.example:8080", provider="unit", mode="pool", region="JP",
+                    lease=SimpleNamespace(lease_id="account-lease"), release=Mock(),
+                    public_dict=Mock(return_value={"proxy_mode": "pool", "network_route": "proxy"}),
+                )
+                stack.enter_context(patch.object(task_run_log, "_LOG_ROOT", Path(tempdir)))
+                stack.enter_context(patch.object(codex_retry_service.db, "get_account_by_email", return_value={"id": 44}))
+                stack.enter_context(patch.object(codex_retry_service.account_task_store, "get_task", return_value={}))
+                stack.enter_context(patch.object(codex_retry_service.account_task_store, "append_event"))
+                stack.enter_context(patch("config.reload_all"))
+                stack.enter_context(patch("core.account_proxy.acquire_account_proxy", return_value=route))
+                stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
+                stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+                stack.enter_context(patch.object(codex_retry_service, "_RUNNING_THREADS", {}))
+                stack.enter_context(patch.object(codex_retry_service, "_RESERVED_AT", {}))
+                stack.enter_context(patch.object(codex_retry_service, "_STOP_REQUESTED", set()))
+                stack.enter_context(patch("core.roxy_codex_oauth.run_roxy_chatgpt_account_action", side_effect=lambda *_args, **_kwargs: (
+                    codex_retry_service.logger.warning("账号配置内部日志回归")
+                )))
+                context = {"task_id": 501, "run_id": 601, "identifier_namespace": "operation"} if native else {}
+                stack.enter_context(task_run_log.stage_context("account_setup", inherit=False, **context))
+                result = codex_retry_service.run_twofa_worker(
+                    "unit@example.test", task_id=81, target_log_path=path, clear_log=False,
+                    manage_task=False, steps={"password"}, password_driver_override="roxy",
+                )
+                rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+            self.assertTrue(result["ok"], result.get("message"))
+            internal = [row for row in rows if row["message"] == "账号配置内部日志回归"]
+            self.assertEqual(len(internal), 1)
+            self.assertEqual(internal[0]["event_type"], "log.record")
+            self.assertEqual(internal[0]["task_id"], 501 if native else 81)
+            self.assertEqual(internal[0]["run_id"], 601 if native else None)
 
 
 if __name__ == "__main__":

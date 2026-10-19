@@ -775,12 +775,14 @@ def _save_roxy_account_checkpoint(
             "open_result": opened.raw,
             "retained": True,
         },
-        "account_password": openai_password,
         "registration_checkpoint": "registered",
         "registration_driver": registration_driver,
         "codex": codex_result,
         "twofa": twofa_result,
     }
+    # 本轮直接复用登录态时可能没有返回密码，空值不能清除账号已有凭据。
+    if str(openai_password or "").strip():
+        extra["account_password"] = openai_password
     twofa_status = str((twofa_result or {}).get("status") or "").strip().lower()
     if totp_secret and twofa_status in {"running", "failed"}:
         # The key is already persisted, but OpenAI has not yet been confirmed
@@ -1272,7 +1274,7 @@ def run_roxy_registration(
                     existing_password=existing_password,
                     on_password_prepared=_checkpoint_prepared_password,
                     on_password_submitted=_checkpoint_submitted_password,
-                )
+                ) or existing_password
         except _PasswordTransitionTimeout:
             report_job_progress("login_password", "failed", "已触发密码提交操作，远端结果仍待确认")
             raise
@@ -1725,7 +1727,7 @@ def run_roxy_registration(
                     "open_result": opened.raw,
                     "retained": True,
                 },
-                "account_password": openai_password,
+                **({"account_password": openai_password} if str(openai_password or "").strip() else {}),
                 "registration_checkpoint": "core_persisted",
                 "registration_driver": registration_driver,
             },
