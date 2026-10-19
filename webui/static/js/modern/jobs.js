@@ -12,16 +12,9 @@ function registrationDriverLabel(value) {
     roxy: 'RoxyBrowser',
   }[String(value || '')] || '未知');
 }
-function updateRegistrationDriverHint(select) {
-  const hint = $('#regDriverHintV2');
-  if (!hint) return;
-  const selected = REGISTRATION_DRIVERS.find(item => item.value === String(select?.value || ''));
-  hint.textContent = selected?.description || '';
-}
 async function loadRegistrationEmailSources() {
   const select = $('#regEmailSourceV2');
-  const driverSelect = $('#regDriverV2');
-  if (!select && !driverSelect) return;
+  if (!select) return;
   try {
     const [result, capabilities] = await Promise.all([
       apiCached('/api/email-sources', {}, 30000),
@@ -29,18 +22,6 @@ async function loadRegistrationEmailSources() {
     ]);
     CAPABILITIES = capabilities;
     REGISTRATION_DRIVERS = Array.isArray(result.registration_drivers) ? result.registration_drivers : [];
-    if (driverSelect) {
-      driverSelect.innerHTML = REGISTRATION_DRIVERS.map(item =>
-        `<option value="${esc(item.value)}">${esc(item.label)}</option>`
-      ).join('');
-      if (REGISTRATION_DRIVERS.some(item => item.value === result.default_registration_driver)) {
-        driverSelect.value = result.default_registration_driver;
-      }
-      driverSelect.disabled = REGISTRATION_DRIVERS.length < 2;
-      updateRegistrationDriverHint(driverSelect);
-      driverSelect.onchange = () => updateRegistrationDriverHint(driverSelect);
-    }
-    if (!select) return;
     const sourceCaps = capabilities.email_sources || {};
     REGISTRATION_EMAIL_SOURCES = (Array.isArray(result.sources) ? result.sources : []).map(item => ({
       ...item,
@@ -61,28 +42,17 @@ async function loadRegistrationEmailSources() {
       select.innerHTML = '<option value="">邮箱来源加载失败</option>';
       select.disabled = true;
     }
-    if (driverSelect) {
-      driverSelect.innerHTML = '<option value="">注册协议加载失败</option>';
-      driverSelect.disabled = true;
-    }
   }
 }
-async function startRegistrationFromInputs(countEl, workersEl, sourceEl, driverEl, startBtn) {
+async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBtn) {
   const count = parseInt((countEl?.value || '1'), 10);
   const workers = parseInt((workersEl?.value || '3'), 10);
   const emailSource = String(sourceEl?.value || '').trim();
-  const registrationDriver = String(driverEl?.value || '').trim();
   const debugEnabled = Boolean($('#regDebugV2')?.checked);
   if (!emailSource) {
     const warnEl = $('#regWarnV2');
     if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册使用的邮箱来源</div>';
     sourceEl?.focus();
-    return;
-  }
-  if (!registrationDriver) {
-    const warnEl = $('#regWarnV2');
-    if (warnEl) warnEl.innerHTML = '<div class="banner warn">请选择本次注册协议</div>';
-    driverEl?.focus();
     return;
   }
   const activeCount = Number(JOB_STATUS_COUNTS.active || 0);
@@ -101,10 +71,10 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, driverE
   };
   const b2 = $('#btnStartV2'); if (b2) b2.disabled = true;
   try {
-    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, registration_driver:registrationDriver, debug_enabled:debugEnabled}) });
+    const r = await api('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({count, workers, email_source:emailSource, debug_enabled:debugEnabled}) });
     setJobProgressBatch(r.jobs?.[0]?.batch_id || '');
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
-    const driverLabel = registrationDriverLabel(r.registration_driver || registrationDriver);
+    const driverLabel = registrationDriverLabel(r.registration_driver);
     const debugLabel = debugEnabled ? ' · 网络调试已开启' : '';
     const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · ${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
@@ -242,7 +212,7 @@ function bindJobsBodyEvents(bodyEl) {
 (() => {
   const startV2 = $('#btnStartV2');
   loadRegistrationEmailSources();
-  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), $('#regEmailSourceV2'), $('#regDriverV2'), startV2));
+  if (startV2) startV2.addEventListener('click', () => startRegistrationFromInputs($('#regCountV2'), $('#regWorkersV2'), $('#regEmailSourceV2'), startV2));
   const delV2 = $('#btnDeleteSelectedJobsV2');
   if (delV2) delV2.addEventListener('click', deleteSelectedJobs);
   const retryV2 = $('#btnRetrySelectedJobsV2');

@@ -13,7 +13,7 @@ function functionSource(name) {
   return source.slice(start, source.indexOf('\n}', index) + 2);
 }
 
-test('注册请求携带本批 driver 并在结果提示中显示协议名称', async () => {
+test('注册请求使用配置中的 driver 并在结果提示中显示协议名称', async () => {
   const requests = [];
   const warning = {innerHTML: ''};
   const countInput = {value: '50'};
@@ -62,12 +62,11 @@ test('注册请求携带本批 driver 并在结果提示中显示协议名称', 
     countInput,
     workersInput,
     {value: 'outlook'},
-    {value: 'protocol_oss'},
     startButton,
   );
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].registration_driver, 'protocol_oss');
+  assert.equal(Object.hasOwn(requests[0], 'registration_driver'), false);
   assert.match(warning.innerHTML, /开源 Protocol/);
   assert.equal(batchId, 'batch-fixture');
 });

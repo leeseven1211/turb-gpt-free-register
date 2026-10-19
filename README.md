@@ -409,7 +409,7 @@ Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池�
 
 ### 2. 配置注册驱动
 
-注册页「注册协议」选择仅作用于本批任务；未显式提交 driver 的 CLI/旧 API 调用仍使用全局默认。全局默认可在 WebUI「配置 → 注册设置 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器设置 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
+WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 调用也使用该默认值。全局默认可在 WebUI「配置 → 注册设置 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器设置 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
 
 #### 使用 RoxyBrowser 注册
 
