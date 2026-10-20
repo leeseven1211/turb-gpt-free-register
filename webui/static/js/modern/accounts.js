@@ -1546,7 +1546,8 @@ function _quotaCell(r) {
   const visible = windows.map((window, index) => ({window, index})).sort((left, right) =>
     (priority[String(left.window.kind || '').toLowerCase()] ?? 2) - (priority[String(right.window.kind || '').toLowerCase()] ?? 2) || left.index - right.index,
   ).slice(0, 2);
-  return `<div class="quota-cell" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${visible.map(({window}) => `<div class="quota-cell-line">${esc(_quotaWindowLabel(window))}</div>`).join('')}</div>`;
+  const singleLineClass = visible.length === 1 ? ' quota-cell--single' : '';
+  return `<div class="quota-cell${singleLineClass}" data-accounts-tooltip="${esc(details.join('；'))}" tabindex="0">${visible.map(({window}) => `<div class="quota-cell-line">${esc(_quotaWindowLabel(window))}</div>`).join('')}</div>`;
 }
 function _plusPromotionKind(r) {
   const explicit = String(r.plus_promo_kind || '').trim().toLowerCase();
@@ -1980,7 +1981,7 @@ function _accountPromotionRowMarkup({best, country = '', stale = false, label, t
   return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
 }
 function _promotionCell(r) {
-  const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries">${lines.join('')}</div>`;
+  const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries${lines.length === 1 ? ' account-promotion-cell--single' : ''}">${lines.join('')}</div>`;
   const countryDisplays = _accountCountryPromotionDisplays(r);
   if (countryDisplays.length) {
     const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));

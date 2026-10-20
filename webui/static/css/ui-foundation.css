@@ -3504,6 +3504,14 @@ table[data-resizable-table="codex"] {
   white-space: nowrap;
 }
 
+#accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single .quota-cell-line {
+  text-align: center;
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .col-check {
   padding-left: 8px !important;
   padding-right: 4px !important;
@@ -3530,6 +3538,14 @@ table[data-resizable-table="codex"] {
   height: calc(var(--account-row-height, 44px) - 4px);
   gap: 0;
   align-items: center;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single .account-promotion-country-row {
+  justify-content: center;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
