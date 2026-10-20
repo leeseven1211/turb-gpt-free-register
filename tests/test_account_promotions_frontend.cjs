@@ -310,16 +310,19 @@ test('列表浮窗省略多语言原文活动与成功时间，账号详情仍�
   for (const account of [single, multi]) {
     const tooltip = promotionTooltip(view._promotionCell(account));
     assert.match(tooltip, /Plus: 免费 1个月/);
-    assert.doesNotMatch(tooltip, /银行卡|\bLink\b|实际应付|结账会话/);
+    assert.match(tooltip, /支付方式: 银行卡 Link/);
+    assert.doesNotMatch(tooltip, /实际应付|结账会话/);
     assert.doesNotMatch(tooltip, /Go:|Try Plus|Bạn có|plus-source-fixture|go-free-one|2026-10-16|查询于/);
     const drawer = view._accountDetailMarkup(account);
     assert.match(drawer, /Go: 免费 1个月/);
     assert.match(drawer, /Try Plus free for 1 month/);
     assert.match(drawer, /Bạn có mã khuyến mãi/);
     assert.match(drawer, /活动 plus-source-fixture/);
+    assert.match(drawer, /支付方式: 银行卡 Link/);
     assert.match(drawer, /2026-10-16 09:00:00/);
   }
-  assert.doesNotMatch(promotionTooltip(view._promotionCell(multi)), /银行卡|\bUPI\b|\bLink\b/);
+  assert.doesNotMatch(visiblePromotionLabels(view._promotionCell(multi)).join(' '), /银行卡|\bUPI\b|\bLink\b/);
+  assert.match(promotionTooltip(view._promotionCell(multi)), /VN Plus: 免费 1个月；支付方式: UPI/);
 });
 
 test('多国查询只显示各国 Plus 优惠，浮窗保留历史与错误但省略 Go 和成功时间', () => {
@@ -375,7 +378,7 @@ test('多国查询初次失败没有快照时不显示无优惠', () => {
   assert.match(html, /没有可用线路/);
 });
 
-test('国家行显示精简 Plus 优惠，不显示重复支付方式', () => {
+test('国家行显示精简 Plus 优惠，浮窗保留各国真实支付方式', () => {
   const html = view._promotionCell({plan_check_status: 'success', plan_check_country_results: [
     {country: 'JP', status: 'success', result: {account_promotions: [
       {...goTrial, payment_method_types: ['upi']},
@@ -394,7 +397,10 @@ test('国家行显示精简 Plus 优惠，不显示重复支付方式', () => {
   assert.deepEqual(visiblePromotionLabels(html), ['免费', '五折 3个月']);
   assert.doesNotMatch(promotionTooltip(html), /Go:/);
   assert.match(promotionTooltip(html), /Plus: 五折 3个月/);
-  assert.doesNotMatch(html, /银行卡|\bUPI\b|\bLink\b|实际应付|结账会话/);
+  assert.doesNotMatch(visiblePromotionLabels(html).join(' '), /银行卡|\bUPI\b|\bLink\b|实际应付|结账会话/);
+  assert.match(promotionTooltip(html), /JP Plus: 免费 1个月；支付方式: 银行卡 Link/);
+  assert.match(promotionTooltip(html), /IN Plus: 五折 3个月；支付方式: 银行卡 Link UPI/);
+  assert.match(promotionTooltip(html), /VN Plus: 免费 1个月；支付方式: 待查询/);
 });
 
 test('所有国家 Plus 无优惠合并显示，浮窗仍显示各国 Plus 状态且省略 Go', () => {
@@ -446,7 +452,7 @@ test('折扣期限以优惠摘要显示，非法支付方式代码不进入套�
   }
 });
 
-test('结账预检结果不增加价格与支付方式噪音，国家行只显示优惠摘要', () => {
+test('国家行只显示优惠摘要，浮窗保留结账预检详情', () => {
   const country = (code, offer) => ({country: code, status: 'success', result: {account_promotions: [
     {...goTrial, checkout_status: 'success', session_type: 'cs_live', payment_method_types: ['upi']}, offer,
   ]}});
@@ -459,7 +465,9 @@ test('结账预检结果不增加价格与支付方式噪音，国家行只显�
   assert.match(html, /class="account-promotion-country">IN：/);
   assert.match(promotionTooltip(html), /Plus: 免费 1个月/);
   assert.match(promotionTooltip(html), /Plus: 五折 2个月/);
-  assert.doesNotMatch(html, /0 JPY|999 INR|oaics|cs_live|银行卡|\bUPI\b|\bLink\b/);
+  assert.doesNotMatch(visiblePromotionLabels(html).join(' '), /0 JPY|999 INR|oaics|cs_live|银行卡|\bUPI\b|\bLink\b/);
+  assert.match(promotionTooltip(html), /JP Plus: 免费 1个月；实际应付: 0 JPY；结账会话: oaics；支付方式: 银行卡 Link/);
+  assert.match(promotionTooltip(html), /IN Plus: 五折 2个月；实际应付: 999 INR；结账会话: cs_live；支付方式: 银行卡 UPI/);
   assert.equal((html.match(/tabindex="0"/g) || []).length, 2);
   assert.doesNotMatch(html, /class="pill /);
 });
@@ -487,9 +495,11 @@ test('支付预检字段不替代优惠摘要或泄漏到套餐优惠列', () =>
   assert.deepEqual(visiblePromotionLabels(html), ['五折 2个月']);
   assert.match(html, /JP：/);
   assert.match(promotionTooltip(html), /Plus: 五折 2个月/);
-  assert.doesNotMatch(html, /0 JPY|oaics|UPI|银行卡|结账接口访问受限/);
+  assert.doesNotMatch(visiblePromotionLabels(html).join(' '), /0 JPY|oaics|UPI|银行卡|结账接口访问受限/);
+  assert.match(promotionTooltip(html), /支付方式查询失败；结账接口访问受限/);
+  assert.doesNotMatch(promotionTooltip(html), /0 JPY|oaics|UPI|银行卡/);
   const httpOnly = view._promotionCell({...checked, account_promotions: [{...plusDiscount, checkout_status: 'failed', checkout_http_status: 429}]});
-  assert.match(promotionTooltip(httpOnly), /Plus: 五折 2个月/);
+  assert.match(promotionTooltip(httpOnly), /Plus: 五折 2个月；支付方式查询失败；HTTP 429/);
 });
 
 test('跳过支付预检与国家不匹配保持待查询，不借用其他活动或国家的结果', () => {
@@ -519,10 +529,11 @@ test('结账展示只接受枚举与支付代码，不输出完整会话、URL�
   assert.doesNotMatch(failure, /<img|https:|sensitiveid|private|client_secret/);
 });
 
-test('多国优惠仍只占两行，价格和支付方式不出现在列表或悬浮提示', () => {
-  const html = view._promotionCell({plan_check_status: 'success', plan_check_country_results: ['JP', 'IN', 'VN'].map((country, index) => ({
+test('多国优惠仍只占两行，浮窗和账号详情保留各国价格与支付方式', () => {
+  const account = {plan_check_status: 'success', plan_check_country_results: ['JP', 'IN', 'VN'].map((country, index) => ({
     country, status: 'success', checked_at: `2026-10-16T0${index + 1}:00:00Z`, result: {account_promotions: [{...goTrial, plan: 'plus', checkout_country: country, checkout_status: 'success', session_type: index === 1 ? 'cs_live' : 'oaics', payment_method_types: index === 1 ? ['card', 'link', 'upi'] : ['card', 'link'], checkout_amount_due_minor: 0, checkout_currency: ['JPY', 'INR', 'VND'][index], checkout_currency_exponent: index === 1 ? 2 : 0}]},
-  }))});
+  }))};
+  const html = view._promotionCell(account);
   assert.equal((html.match(/class="account-promotion-country-row /g) || []).length, 2);
   assert.deepEqual(visiblePromotionCountries(html), ['VN', 'IN']);
   assert.deepEqual(visiblePromotionLabels(html), ['免费', '免费']);
@@ -531,7 +542,12 @@ test('多国优惠仍只占两行，价格和支付方式不出现在列表或�
   assert.match(tooltip, /JP Plus: 免费 1个月/);
   assert.match(tooltip, /IN Plus: 免费 1个月/);
   assert.match(tooltip, /VN Plus: 免费 1个月/);
-  assert.doesNotMatch(html, /0 JPY|0 INR|0 VND|oaics|cs_live|银行卡|\bUPI\b|\bLink\b/);
+  assert.doesNotMatch(visiblePromotionLabels(html).join(' '), /0 JPY|0 INR|0 VND|oaics|cs_live|银行卡|\bUPI\b|\bLink\b/);
+  for (const detail of [tooltip, view._accountDetailMarkup(account)]) {
+    assert.match(detail, /实际应付: 0 JPY；结账会话: oaics；支付方式: 银行卡 Link/);
+    assert.match(detail, /实际应付: 0 INR；结账会话: cs_live；支付方式: 银行卡 Link UPI/);
+    assert.match(detail, /实际应付: 0 VND；结账会话: oaics；支付方式: 银行卡 Link/);
+  }
 });
 
 test('多国详情保留成功总数，任务摘要只展示国家结果和异常状态', () => {
@@ -826,7 +842,10 @@ test('最新无优惠国家仍被过滤，失败历史按最新尝试时间排�
   assert.match(html, /class="account-promotion-stale">历史/);
   assert.match(promotionTooltip(html), /VN（历史）[\s\S]*本次查询失败: HTTP 403/);
   assert.match(promotionTooltip(html), /JP Plus: 五折 2个月/);
-  assert.doesNotMatch(html, /银行卡|\bUPI\b|\bLink\b/);
+  assert.doesNotMatch(visiblePromotionLabels(html).join(' '), /银行卡|\bUPI\b|\bLink\b/);
+  assert.match(promotionTooltip(html), /VN（历史） Plus: 五折 2个月；支付方式: UPI/);
+  assert.match(promotionTooltip(html), /JP Plus: 五折 2个月；支付方式: 银行卡/);
+  assert.match(promotionTooltip(html), /IN Plus: 五折 2个月；支付方式: Link/);
   assert.match(promotionTooltip(html), /US Plus: 无优惠/);
 });
 

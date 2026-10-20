@@ -1969,17 +1969,15 @@ function _accountPromotionRowMarkup({best, country = '', stale = false, label, t
     : '';
   return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${countryTone ? ` ${countryTone}` : ''}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
 }
-function _accountPromotionCellTooltip(item) {
-  return `${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`;
-}
 function _promotionCell(r) {
+  // 列表只显示优惠摘要，悬浮详情保留当前活动的结账信息。
   const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries${lines.length === 1 ? ' account-promotion-cell--single' : ''}">${lines.join('')}</div>`;
   const countryDisplays = _accountCountryPromotionDisplays(r);
   if (countryDisplays.length) {
     const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
     const detail = [
       ...rows.map(({display, best}) => [
-        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionCellTooltip(best)}`,
+        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(best)}`,
         display.queryContext,
       ].filter(Boolean).join('\n')),
       _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
@@ -2008,7 +2006,7 @@ function _promotionCell(r) {
   const label = _accountPlusCellLabel(best);
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
   const tooltip = [
-    `${hasOffer ? `${country} ` : ''}${_accountPromotionCellTooltip(best)}`,
+    `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
     historical ? '显示上次成功快照' : '',
     _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
   ].filter(Boolean).join('\n');

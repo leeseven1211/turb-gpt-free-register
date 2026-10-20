@@ -3577,9 +3577,9 @@ table[data-resizable-table="codex"] {
   line-height: var(--ui-line-height-normal);
 }
 
+/* 优惠标签保持同一字号，单行只调整垂直位置。 */
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single {
   grid-template-rows: minmax(0, 1fr);
-  font-size: var(--account-font-single);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
