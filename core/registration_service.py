@@ -51,12 +51,14 @@ def _now_iso() -> str:
 _REGISTRATION_DRIVER_LABELS = {
     "protocol": "本地优化 Protocol",
     "protocol_oss": "开源 Protocol",
+    "protocol_oss_2": "开源protocol-2",
     "roxy": "本地 Roxy",
     "roxy_oss": "开源 Roxy",
 }
 _REGISTRATION_DRIVER_HINTS = {
     "protocol": "本项目优化实现；认证方式按本批密码配置执行。",
     "protocol_oss": "上游流程固定使用邮箱验证码和密码，后续账号处理仍走本地服务。",
+    "protocol_oss_2": "使用 wangshen233 开源协议流程，邮箱、任务恢复和账号后处理沿用本地服务。",
     "roxy": "使用本地 RoxyBrowser 注册与账号后处理流程。",
     "roxy_oss": "使用固定上游页面识别与表单辅助，认证提交、任务恢复和账号后处理沿用本地服务。",
 }
@@ -89,7 +91,7 @@ def validate_registration_driver(value: object) -> str:
     """校验注册批次显式选择的 canonical driver。"""
     driver = str(value or "").strip().lower()
     if driver not in _REGISTRATION_DRIVER_LABELS:
-        raise ValueError("registration_driver 只能是 protocol、protocol_oss、roxy 或 roxy_oss")
+        raise ValueError("registration_driver 只能是 protocol、protocol_oss、protocol_oss_2、roxy 或 roxy_oss")
     return driver
 
 
@@ -110,6 +112,7 @@ def codex_driver_for_registration(options: dict | None = None) -> str:
         registration_driver = _REGISTRATION_DRIVER_ALIASES.get(registration_driver, registration_driver)
         driver = {
             "protocol_oss": "protocol",
+            "protocol_oss_2": "protocol",
             "roxy_oss": "roxy",
         }.get(registration_driver, registration_driver)
     driver = {
@@ -128,7 +131,7 @@ def _apply_registration_driver_snapshot(snapshot: dict[str, object], driver: str
     """把所选注册驱动及其固有认证要求写入任务快照。"""
     canonical = _REGISTRATION_DRIVER_ALIASES.get(str(driver or "").strip().lower(), str(driver or "").strip().lower())
     snapshot["registration_driver"] = canonical
-    if canonical == "protocol_oss":
+    if canonical in {"protocol_oss", "protocol_oss_2"}:
         snapshot["password_enabled"] = True
         snapshot["password_mode"] = "password"
     return snapshot

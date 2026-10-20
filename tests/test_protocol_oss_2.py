@@ -1,0 +1,244 @@
+"""开源protocol-2 的真实上游控制流与本地接缝回归。"""
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
+from requests.cookies import RequestsCookieJar
+
+from core.registration import dispatcher
+from core.registration.protocol_oss import ProtocolOssRequestUnknown
+from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
+from core.registration.protocol_oss_2.runtime import run_upstream_protocol
+from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
+
+
+class Transport:
+    def __init__(self):
+        self.cookies = RequestsCookieJar()
+        self.headers = {}
+        self.requests = []
+        self.checkpoints = []
+        self.password_error = None
+        self.password_status = 200
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def request(self, method, url, **kwargs):
+        self.requests.append((method, url, kwargs))
+        if url.endswith("/user/register"):
+            assert self.checkpoints[-1]["state"] == "started"
+            if self.password_error:
+                raise self.password_error
+        payload = {}
+        if url.endswith("/email-otp/validate"):
+            payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
+        elif url.endswith("/create_account") or url.endswith("/password/verify"):
+            payload = {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture"}
+        elif url.endswith("/api/auth/session"):
+            payload = {"accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user"}}
+        status = self.password_status if url.endswith("/user/register") else 200
+        response = Mock(status_code=status, headers={}, content=b"{}", text="{}")
+        response.json.return_value = payload
+        return response
+
+
+@pytest.fixture
+def upstream():
+    transport = Transport()
+    session = Mock(proxy="http://proxy.example:8080", protocol_traffic=None, browser_profile={})
+
+    def auth_init(flow, url):
+        flow.result.device_id = "fixture-device"
+        flow._authorize_landing_url = "https://auth.openai.com/create-account/password"
+        return flow.result.device_id
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("core.registration.protocol_oss_2.upstream.http_client_wreq.create_http_session", return_value=transport))
+        stack.enter_context(patch("core.registration.protocol_oss_2.upstream.sentinel.get_sentinel_token", return_value=("fixture", "fixture-so")))
+        stack.enter_context(patch.object(AuthFlow, "check_proxy", return_value=True))
+        stack.enter_context(patch.object(AuthFlow, "warmup", return_value=True))
+        stack.enter_context(patch.object(AuthFlow, "get_csrf_token", return_value="fixture-csrf"))
+        stack.enter_context(patch.object(AuthFlow, "get_auth_url", return_value="https://auth.openai.com/authorize"))
+        stack.enter_context(patch.object(AuthFlow, "auth_oauth_init", auth_init))
+        stack.enter_context(patch.object(AuthFlow, "signup", return_value=True))
+        stack.enter_context(patch.object(AuthFlow, "fetch_client_auth_session_dump", return_value={}))
+        stack.enter_context(patch.object(AuthFlow, "follow_redirect_chain", return_value=(None, "https://chatgpt.com/")))
+        stack.enter_context(patch("core.registration_service.check_stop_requested"))
+        stack.enter_context(patch("core.registration_service.report_job_progress"))
+        stack.enter_context(patch("core.registration_debug.record_protocol_exchange"))
+        stack.enter_context(patch("core.registration.checkpoints.save_protocol_password_checkpoint", side_effect=lambda **kw: transport.checkpoints.append(kw)))
+        wait = stack.enter_context(patch("core.email_provider.wait_for_otp", return_value="123456"))
+        yield session, transport, wait
+
+
+def run_flow(session, **overrides):
+    kwargs = dict(
+        email="protocol2@example.test", name="测试姓名", birthday="1992-06-15", otp_code=None,
+        email_source="icloud_hide", existing_password=None, existing_totp_secret=None,
+        options={"proxy_country": "JP"},
+    )
+    kwargs.update(overrides)
+    return run_upstream_protocol(session, **kwargs)
+
+
+def test_real_upstream_flow_saves_password_before_write_and_reuses_local_mail(upstream):
+    session, transport, wait = upstream
+    result = run_flow(session)
+    assert [row["state"] for row in transport.checkpoints] == ["prepared", "started", "confirmed"]
+    assert len({row["password"] for row in transport.checkpoints}) == 1
+    assert all(row["email_source"] == "icloud_hide" for row in transport.checkpoints)
+    assert wait.call_args.kwargs["email_source"] == "icloud_hide"
+    assert wait.call_args.kwargs["max_wait"] == 240
+    assert wait.call_args.kwargs["after_ts"] > 0
+    profile = next(kw["json"] for _, url, kw in transport.requests if url.endswith("/create_account"))
+    assert profile == {"name": "测试姓名", "birthdate": "1992-06-15"}
+    assert result["access_token"] == "fixture-at"
+    assert result["session_info"]["user"] == {"id": "fixture-user"}
+    assert result["password_validated"] is True
+    assert session.device_id == "fixture-device"
+    assert session.browser_profile["country_code"] == "JP"
+    assert transport.closed is False
+
+
+def test_password_checkpoint_failure_prevents_the_remote_write(upstream):
+    session, transport, _ = upstream
+    with patch("core.registration.checkpoints.save_protocol_password_checkpoint", side_effect=RuntimeError("checkpoint fixture")):
+        with pytest.raises(RuntimeError, match="checkpoint fixture"):
+            run_flow(session)
+    assert not any(url.endswith("/user/register") for _, url, _ in transport.requests)
+    assert transport.closed is True
+
+
+def test_password_transport_failure_retains_original_password_for_retry(upstream):
+    session, transport, _ = upstream
+    transport.password_error = TimeoutError("password result fixture")
+    with pytest.raises(ProtocolOssRequestUnknown):
+        run_flow(session)
+    assert [row["state"] for row in transport.checkpoints] == ["prepared", "started"]
+    assert sum(url.endswith("/user/register") for _, url, _ in transport.requests) == 1
+    assert transport.closed is True
+
+
+def test_retry_uses_original_password_without_registering_another_password(upstream):
+    session, transport, _ = upstream
+
+    def existing(flow, *args, **kwargs):
+        flow._is_existing_account = True
+        flow._existing_page_type = "login_password"
+        flow._existing_email_verification_mode = "existing_login_password"
+        return False
+
+    with patch.object(AuthFlow, "signup", existing):
+        result = run_flow(session, existing_password="original-password", existing_totp_secret="original-totp")
+    assert not transport.checkpoints
+    assert not any(url.endswith("/user/register") for _, url, _ in transport.requests)
+    login = next(kw["json"] for _, url, kw in transport.requests if url.endswith("/password/verify"))
+    assert login["password"] == "original-password"
+    assert result["registration_password"] == "original-password"
+    assert result["remote_identity"] == "existing"
+
+
+def test_retry_before_submission_can_register_with_the_original_password(upstream):
+    session, transport, _ = upstream
+    result = run_flow(session, existing_password="original-password")
+    assert [row["state"] for row in transport.checkpoints] == ["started", "confirmed"]
+    registration = next(kw["json"] for _, url, kw in transport.requests if url.endswith("/user/register"))
+    assert registration["password"] == "original-password"
+    assert result["registration_password"] == "original-password"
+
+
+def test_rejected_password_is_not_presented_as_a_confirmed_credential(upstream):
+    session, transport, _ = upstream
+    transport.password_status = 400
+    result = run_flow(session)
+    assert result["access_token"] == "fixture-at"
+    assert result["registration_password"] is None
+    assert result["password_validated"] is False
+
+
+def test_supplied_otp_is_consumed_without_polling_another_mail_source(upstream):
+    session, _, wait = upstream
+    assert run_flow(session, otp_code="654321")["access_token"] == "fixture-at"
+    wait.assert_not_called()
+
+
+def test_dispatcher_preserves_protocol2_identity_and_resume_parameters():
+    kwargs = dict(
+        email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+        proxy="http://proxy.example:8080", otp_code=None, profile_id=None,
+        existing_password="original-password", existing_totp_secret="original-totp",
+        email_source="icloud_hide", registration_options={"registration_driver": "protocol_oss_2"},
+    )
+    with patch("core.registration.standalone.run_registration_in_context", return_value={"success": True}) as run:
+        assert dispatcher.run_registration(**kwargs)["success"]
+    run.assert_called_once_with(
+        run_protocol_oss_2_registration, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss_2",
+    )
+
+
+def test_core_persists_before_local_postprocessing_and_keeps_driver_identity():
+    session = Mock(proxy="http://proxy.example:8080", device_id="fixture-device")
+    order = []
+    with (
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.validate_email_source", return_value="icloud_hide"),
+        patch("core.registration_service.report_job_progress"),
+        patch("core.registration.protocol_oss_2.runtime.run_upstream_protocol", return_value={
+            "access_token": "fixture-at", "session_info": {"accessToken": "fixture-at"},
+            "registration_password": "fixture-password", "password_validated": True,
+        }),
+        patch("core.registration_service.persist_registration_core", side_effect=lambda **kw: order.append(("persist", kw)) or 42),
+        patch("core.registration.protocol_oss._run_local_postprocessing", side_effect=lambda **kw: order.append(("postprocess", kw)) or {"postprocess_success": True}),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", proxy=session.proxy, email_source="icloud_hide",
+        )
+    assert [row[0] for row in order] == ["persist", "postprocess"]
+    assert order[0][1]["extra"]["registration_driver"] == "protocol_oss_2"
+    assert result["registration_success"] is True
+    session.close.assert_called_once_with()
+
+
+def test_vendor_keeps_license_and_has_no_top_level_config_or_webui_imports():
+    root = Path(__file__).resolve().parents[1] / "core/registration/protocol_oss_2/upstream"
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in (root / "LICENSE").read_text()
+    for path in root.glob("*.py"):
+        text = path.read_text()
+        assert "from webui" not in text
+        assert "from config import" not in text
+        assert "sys.path.insert" not in text
+        assert "sqlite3" not in text
+
+
+def test_protocol2_codex_mapping_and_account_search_are_independent():
+    from core.registration_service import codex_driver_for_registration
+    from core.account_search import parse_account_search
+
+    assert codex_driver_for_registration({"registration_driver": "protocol_oss_2", "codex_driver": "same_as_registration"}) == "protocol"
+    search = parse_account_search("开源protocol-2")
+    assert search[0].value == "protocol_oss_2"
+
+
+def test_retry_reuses_confirmed_totp_instead_of_enrolling_again():
+    from core.registration.protocol_oss import _run_local_postprocessing
+
+    with (
+        patch("core.registration.protocol_oss._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
+        patch("core.registration_service.report_job_progress"),
+        patch("core.account_export.setup_2fa_protocol") as setup,
+        patch("core.db.update_account_codex_status"),
+        patch("core.flow_trigger.trigger_flow", return_value={"status": "skipped"}),
+    ):
+        result = _run_local_postprocessing(
+            session=Mock(proxy="http://proxy.example:8080"), email="protocol2@example.test",
+            access_token="fixture-at", account_id=42, session_info={"accessToken": "fixture-at"},
+            registration_password="original-password", email_source="icloud_hide",
+            existing_totp_secret="original-totp",
+            options={"registration_driver": "protocol_oss_2", "twofa_enabled": True, "codex_enabled": False, "plan_check_enabled": False},
+        )
+    assert result["totp_secret"] == "original-totp"
+    assert result["postprocess_success"] is True
+    setup.assert_not_called()

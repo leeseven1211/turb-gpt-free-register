@@ -57,14 +57,18 @@ def run_registration(
             driver_name="roxy_oss" if driver_mode == "roxy_oss" else "roxy",
         )
 
-    if existing_password and driver_mode not in ("protocol", "protocol_oss", "api", "http"):
+    if existing_password and driver_mode not in ("protocol", "protocol_oss", "protocol_oss_2", "api", "http"):
         raise RuntimeError(
             "待邮箱验证账号续跑当前仅支持 Roxy 或 Protocol 注册驱动"
         )
 
-    if driver_mode == "protocol_oss":
-        from core.registration.protocol_oss import run_protocol_oss_registration
-        from core.registration.standalone import run_protocol_oss_in_context
+    if driver_mode in {"protocol_oss", "protocol_oss_2"}:
+        from core.registration.standalone import run_registration_in_context
+
+        if driver_mode == "protocol_oss_2":
+            from core.registration.protocol_oss_2 import run_protocol_oss_2_registration as run_open_source
+        else:
+            from core.registration.protocol_oss import run_protocol_oss_registration as run_open_source
 
         kwargs = dict(
             email=email,
@@ -82,11 +86,13 @@ def run_registration(
             kwargs["existing_password"] = existing_password
         if existing_totp_secret is not None:
             kwargs["existing_totp_secret"] = existing_totp_secret
-        return run_protocol_oss_in_context(run_protocol_oss_registration, kwargs)
+        return run_registration_in_context(
+            run_open_source, kwargs, entrypoint="protocol_cli", driver_name=driver_mode,
+        )
 
     if driver_mode not in ("protocol", "api", "http"):
         raise RuntimeError(
-            f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，当前仅支持 protocol / protocol_oss / roxy / roxy_oss"
+            f"不支持的 REGISTRATION_DRIVER={driver_mode!r}，当前仅支持 protocol / protocol_oss / protocol_oss_2 / roxy / roxy_oss"
         )
 
     from core.registration.protocol import run_protocol_registration

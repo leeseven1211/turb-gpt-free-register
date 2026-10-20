@@ -32,6 +32,11 @@ class RegistrationDriverApiTests(unittest.TestCase):
                     "description": "上游流程固定使用邮箱验证码和密码，后续账号处理仍走本地服务。",
                 },
                 {
+                    "value": "protocol_oss_2",
+                    "label": "开源protocol-2",
+                    "description": "使用 wangshen233 开源协议流程，邮箱、任务恢复和账号后处理沿用本地服务。",
+                },
+                {
                     "value": "roxy",
                     "label": "本地 Roxy",
                     "description": "使用本地 RoxyBrowser 注册与账号后处理流程。",

@@ -240,7 +240,7 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "workers 非法"}), 400
 
         if debug_enabled:
-            if selected_driver not in {"protocol", "protocol_oss", "roxy", "roxy_oss"}:
+            if selected_driver not in {"protocol", "protocol_oss", "protocol_oss_2", "roxy", "roxy_oss"}:
                 return jsonify({
                     "ok": False,
                     "error": f"调试抓包当前不支持注册驱动 {selected_driver}",

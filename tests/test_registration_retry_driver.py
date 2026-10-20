@@ -112,7 +112,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         executor.submit.assert_called_once()
 
     def test_open_source_resume_keeps_frozen_driver_and_password_mode(self):
-        for driver in ("protocol_oss", "roxy_oss"):
+        for driver in ("protocol_oss", "protocol_oss_2", "roxy_oss"):
             with self.subTest(driver=driver):
                 source, account, attempt = self._facts()
                 source["config_snapshot"] = {

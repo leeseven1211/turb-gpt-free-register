@@ -9,12 +9,12 @@ from tests.support_pg import PostgresTestCase
 
 class FeatureAvailabilityTests(PostgresTestCase):
     def test_open_source_registration_driver_does_not_require_roxy_configuration(self):
-        with patch("config.roxybrowser.REGISTRATION_DRIVER", "protocol_oss"):
-            result = feature_availability._registration_driver_status()
-
-        self.assertTrue(result["enabled"])
-        self.assertEqual(result["driver"], "protocol_oss")
-        self.assertEqual(result["reason"], "")
+        for driver in ("protocol_oss", "protocol_oss_2"):
+            with self.subTest(driver=driver), patch("config.roxybrowser.REGISTRATION_DRIVER", driver):
+                result = feature_availability._registration_driver_status()
+            self.assertTrue(result["enabled"])
+            self.assertEqual(result["driver"], driver)
+            self.assertEqual(result["reason"], "")
 
     def test_open_source_roxy_requires_the_same_browser_configuration(self):
         for configured in (False, True):

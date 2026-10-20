@@ -10,6 +10,31 @@ from tests.support_pg import PostgresTestCase
 
 
 class ProtocolStandaloneTests(PostgresTestCase):
+    def test_protocol2_unknown_write_can_resume_same_attempt_with_original_password(self):
+        from core.registration.standalone import run_registration_in_context
+
+        seen = []
+
+        def disconnected(**kwargs):
+            seen.append(self._save_password())
+            raise TimeoutError("协议2合成无响应")
+
+        kwargs = {"email": self.email, "name": "测试姓名", "email_source": "icloud_hide"}
+        with self.assertRaises(TimeoutError):
+            run_registration_in_context(disconnected, kwargs, driver_name="protocol_oss_2")
+        first = seen[0]
+        self.assertEqual(registration.get_attempt(first["attempt_id"])["driver"], "protocol_oss_2")
+        self.assertEqual(registration.get_run(first["run_id"])["status"], "request_unknown")
+
+        def resume(**restored):
+            self.assertEqual(restored["existing_password"], "fixture-original-password")
+            self.assertEqual(restored["email_source"], "icloud_hide")
+            self.assertEqual(service.registration_fact_context()["attempt_id"], first["attempt_id"])
+            return {"status": "request_unknown", "registration_success": False}
+
+        run_registration_in_context(resume, kwargs, driver_name="protocol_oss_2")
+        self.assertEqual(len(registration.list_runs(first["attempt_id"])), 2)
+
     def setUp(self):
         super().setUp()
         self.email = f"standalone-{self._testMethodName}@example.test"

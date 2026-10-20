@@ -77,4 +77,5 @@ test('注册任务可在选项尚未加载时区分开源和本地 Roxy', () => 
   vm.runInContext(functionSource('registrationDriverLabel'), context);
   assert.equal(context.registrationDriverLabel('roxy_oss'), '开源 Roxy');
   assert.equal(context.registrationDriverLabel('roxy'), '本地 Roxy');
+  assert.equal(context.registrationDriverLabel('protocol_oss_2'), '开源protocol-2');
 });

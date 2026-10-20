@@ -1,9 +1,10 @@
 # Turb GPT 注册与账号管理工具
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动支持本地优化 Protocol、开源 Protocol、本地 Roxy 和开源 Roxy：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动支持本地优化 Protocol、开源 Protocol、开源protocol-2、本地 Roxy 和开源 Roxy：
 
 - **protocol**：本项目持续优化的纯协议注册链路，包含本地恢复、检查点、错误分类与阶段预算。
 - **protocol_oss**：隔离接入上游开源注册协议，保留独立协议流程；邮箱、代理、任务状态、PostgreSQL 和注册后处理继续使用本项目能力。
+- **protocol_oss_2**：接入 wangshen233 开源仓库的 AuthFlow 与 wreq，展示为「开源protocol-2」；复用本地邮箱、代理、原 Attempt 恢复、PostgreSQL 和注册后处理。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
 - **roxy_oss**：使用固定上游 Roxy 页面识别和表单辅助，复用本地浏览器生命周期、认证提交、任务恢复和账号后处理。
 
@@ -29,6 +30,7 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动�
 - 支持注册驱动切换：
   - `REGISTRATION_DRIVER = "protocol"`
   - `REGISTRATION_DRIVER = "protocol_oss"`
+  - `REGISTRATION_DRIVER = "protocol_oss_2"`
   - `REGISTRATION_DRIVER = "roxy"`
   - `REGISTRATION_DRIVER = "roxy_oss"`
 - 注册批次使用全局默认注册方式；每个任务都会冻结所用 driver，任务列表和账号高级搜索可区分本地与开源方式。
@@ -443,7 +445,7 @@ WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 
 #### 使用 RoxyBrowser 注册
 
 ```python
-REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / roxy / roxy_oss
+REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / protocol_oss_2 / roxy / roxy_oss
 ROXY_API_BASE = "http://127.0.0.1:50100"
 ROXY_API_TOKEN = "你的Roxy API Key"
 ROXY_WORKSPACE_ID = "你的workspaceId"
@@ -488,6 +490,18 @@ REGISTRATION_DRIVER = "protocol"
 协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
 
 OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。实现与验证边界见[协议注册可靠性实施记录](docs/development/2026-10-12-protocol-reliability-plan.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
+
+#### 使用开源protocol-2 注册
+
+```dotenv
+REGISTRATION_DRIVER=protocol_oss_2
+```
+
+来源为 [wangshen233/turb-gpt-free-register-oss-20260928](https://github.com/wangshen233/turb-gpt-free-register-oss-20260928)，固定提交 `7df094e05e48a74eeacc4ff6e3c27165def21cae`。这是独立的 AuthFlow / wreq 实现，保留现有 `protocol_oss`。需要 Python 3.11+、`wreq==0.13.0` 和可运行的 Node.js；随项目依赖安装，不需要上游 WebUI、SQLite 或浏览器引擎。
+
+在「配置 → 注册与账号 → 注册主链路」选择「开源protocol-2」后，新的注册批次使用该默认驱动；API 也支持通过 `registration_driver` 为单个批次指定。驱动使用邮箱验证码和密码，入队时冻结这一要求。邮箱领取/取码、代理租约、原密码检查点、任务进度、账号保存和后处理均使用本项目服务；失败后可通过原任务重跑，恢复原邮箱与已保存密码。`CODEX_OAUTH_DRIVER=same_as_registration` 对应本地 Protocol OAuth。账号高级搜索支持 `开源protocol-2`、`protocol-2` 或 `方式:protocol_oss_2`。
+
+上游组件与本地适配说明见 [UPSTREAM.md](core/registration/protocol_oss_2/upstream/UPSTREAM.md)。原组件许可证为 AGPL-3.0，保留在该目录的 `LICENSE`；不将其标为主项目的 MIT 代码。上游独立邮箱、代理轮换、SQLite、凭据明文日志、付费套餐检测及内置 Codex OAuth 不接入。
 
 #### 使用开源 Protocol 注册
 

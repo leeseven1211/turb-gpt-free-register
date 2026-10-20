@@ -9,6 +9,7 @@ function registrationDriverLabel(value) {
   return driver?.label || ({
     protocol: '本地优化 Protocol',
     protocol_oss: '开源 Protocol',
+    protocol_oss_2: '开源protocol-2',
     roxy: '本地 Roxy',
     roxy_oss: '开源 Roxy',
   }[String(value || '')] || '未知');

@@ -15,6 +15,7 @@ from config.schema import schema_default
 #   "roxy"         = RoxyBrowser 主流程（推荐）
 #   "protocol"     = 本地优化 Protocol 注册链路
 #   "protocol_oss" = 固定上游快照并适配本地任务/存储的开源 Protocol 注册链路
+#   "protocol_oss_2" = wangshen233 上游 AuthFlow 与 wreq 的开源protocol-2 注册链路
 #   "roxy_oss"     = 固定上游页面识别与表单辅助，沿用本地注册生命周期
 REGISTRATION_DRIVER: str = schema_default("REGISTRATION_DRIVER")
 

@@ -25,6 +25,13 @@ from webui import config_editor
 
 
 class ConfigSchemaTests(unittest.TestCase):
+    def test_protocol_oss_2_is_an_editable_registration_choice(self):
+        self.assertEqual(validate_config_updates({"REGISTRATION_DRIVER": "protocol_oss_2"}), {
+            "REGISTRATION_DRIVER": "protocol_oss_2",
+        })
+        field = CONFIG_SCHEMA["REGISTRATION_DRIVER"]
+        self.assertEqual({item.value: item.label for item in field.options}["protocol_oss_2"], "开源protocol-2")
+
     def test_open_source_roxy_is_an_editable_registration_choice(self):
         self.assertEqual(validate_config_updates({"REGISTRATION_DRIVER": "roxy_oss"}), {
             "REGISTRATION_DRIVER": "roxy_oss",

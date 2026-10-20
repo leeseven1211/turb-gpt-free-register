@@ -34,6 +34,7 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
 
 @pytest.mark.parametrize("driver,password_enabled,password_mode", [
     ("protocol_oss", True, "password"),
+    ("protocol_oss_2", True, "password"),
     ("roxy_oss", False, "otp"),
 ])
 def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch(driver, password_enabled, password_mode):

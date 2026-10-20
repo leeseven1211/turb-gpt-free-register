@@ -1843,7 +1843,7 @@ def _run_worker_legacy(
         oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver == "same_as_registration":
             oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-            oauth_driver = {"protocol_oss": "protocol", "roxy_oss": "roxy"}.get(oauth_driver, oauth_driver)
+            oauth_driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(oauth_driver, oauth_driver)
         account_task_store.append_event(
             task_id,
             stage="driver",

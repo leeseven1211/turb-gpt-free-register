@@ -393,6 +393,7 @@ def _run_local_postprocessing(
     registration_password: str | None,
     email_source: str | None,
     options: dict[str, Any],
+    existing_totp_secret: str | None = None,
 ) -> dict[str, Any]:
     from config import codex as codex_cfg
     from config import twofa as twofa_cfg
@@ -454,8 +455,10 @@ def _run_local_postprocessing(
             plan_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
             report_job_progress("plan_check", "failed", plan_result["message"])
 
-    totp_secret = None
-    if twofa_enabled:
+    totp_secret = existing_totp_secret or None
+    if twofa_enabled and totp_secret:
+        report_job_progress("twofa", "success", "已复用原任务确认的 Authenticator 2FA")
+    elif twofa_enabled:
         report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
         try:
             if twofa_cfg.get_twofa_driver_for_options(options) != "protocol":
@@ -578,6 +581,11 @@ def run_protocol_oss_registration(
     profile_id: str | None = None,
     registration_options: dict | None = None,
     email_source: str | None = None,
+    *,
+    _flow_runner=None,
+    _driver_name: str = "protocol_oss",
+    _label: str = "开源 Protocol",
+    _session_factory=None,
 ) -> dict:
     """运行固定上游注册流程，并把结果交给本地任务和存储体系。"""
     if not str(proxy or "").strip():
@@ -597,12 +605,12 @@ def run_protocol_oss_registration(
 
     options = dict(registration_options or {})
     selected_source = validate_email_source(email_source) if email_source else resolve_email_source(email)
-    session = BrowserSession(proxy=proxy)
+    session = (_session_factory or BrowserSession)(proxy=proxy)
     account_id = None
     flow_result = None
     try:
-        report_job_progress("browser", "running", "正在启动开源 Protocol 注册")
-        flow_result = _run_upstream_protocol(
+        report_job_progress("browser", "running", f"正在启动{_label}注册")
+        flow_result = (_flow_runner or _run_upstream_protocol)(
             session,
             email=email,
             name=name,
@@ -631,10 +639,10 @@ def run_protocol_oss_registration(
                 "browser_profile": getattr(session, "browser_profile", None),
                 **({"account_password": registration_password} if flow_result.get("password_validated") else {}),
                 "registration_checkpoint": "core_persisted",
-                "registration_driver": "protocol_oss",
+                "registration_driver": _driver_name,
             },
         )
-        report_job_progress("token", "success", "开源 Protocol 核心账号已写入 PostgreSQL")
+        report_job_progress("token", "success", f"{_label}核心账号已写入 PostgreSQL")
         local_result = _run_local_postprocessing(
             session=session,
             email=email,
@@ -644,6 +652,7 @@ def run_protocol_oss_registration(
             registration_password=registration_password,
             email_source=selected_source,
             options=options,
+            **({"existing_totp_secret": existing_totp_secret} if existing_totp_secret else {}),
         )
         postprocess_success = bool(local_result.get("postprocess_success"))
         return {
@@ -667,7 +676,7 @@ def run_protocol_oss_registration(
             "registration_intent": "reconcile" if flow_result.get("remote_identity") == "existing" else "new",
             "auth": auth_result_for_registration(
                 {"success": True},
-                auth_method="protocol_oss",
+                auth_method=_driver_name,
                 remote_identity=flow_result.get("remote_identity") or "new",
                 challenge_chain=flow_result.get("challenge_chain") or [],
             ).as_dict(),
@@ -698,7 +707,7 @@ def run_protocol_oss_registration(
             missing_module,
         ):
             cause_code = "python_module_missing"
-            error = f"开源 Protocol 缺少 Python 依赖：{missing_module}"
+            error = f"{_label} 缺少 Python 依赖：{missing_module}"
         else:
             error = _safe_protocol_registration_error(exc, cause_code)
         try:

@@ -114,7 +114,7 @@ def require_email_source(source: str) -> tuple[bool, str]:
 def _registration_driver_status() -> dict[str, Any]:
     from config import roxybrowser as roxy
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    if driver in {"protocol", "protocol_oss", "api", "http"}:
+    if driver in {"protocol", "protocol_oss", "protocol_oss_2", "api", "http"}:
         return _feature(True) | {"driver": driver}
     if driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
@@ -142,7 +142,7 @@ def _codex_retry_status() -> dict[str, Any]:
     driver = str(getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        driver = {"protocol_oss": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
+        driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
     if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),

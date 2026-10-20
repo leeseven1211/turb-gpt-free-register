@@ -239,7 +239,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
     def test_removed_browser_drivers_are_rejected(self):
         for driver in ("cloak", "browser_use", "skyvern"):
             with self.subTest(driver=driver), patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", driver):
-                with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / roxy"):
+                with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / protocol_oss_2 / roxy"):
                     dispatcher.run_registration(**self.args)
 
     def test_non_roxy_resume_is_rejected_before_driver_import(self):
@@ -249,7 +249,7 @@ class RegistrationDispatcherTests(unittest.TestCase):
 
     def test_unknown_driver_fails_with_available_driver_names(self):
         with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "unknown"):
-            with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / roxy"):
+            with self.assertRaisesRegex(RuntimeError, "仅支持 protocol / protocol_oss / protocol_oss_2 / roxy"):
                 dispatcher.run_registration(**self.args)
 
 

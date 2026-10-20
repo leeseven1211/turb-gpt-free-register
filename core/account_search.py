@@ -12,6 +12,7 @@ class AccountSearchError(ValueError):
 REGISTRATION_DRIVERS = {
     "protocol": frozenset({"protocol", "api", "http"}),
     "protocol_oss": frozenset({"protocol_oss"}),
+    "protocol_oss_2": frozenset({"protocol_oss_2"}),
     "roxy": frozenset({"roxy", "roxybrowser", "fingerprint", "browser"}),
     "roxy_oss": frozenset({"roxy_oss"}),
     "browser": frozenset({
@@ -23,6 +24,7 @@ _METHOD_ALIASES = {
     **dict.fromkeys(("协议", "协议注册", "protocol", "api", "http"), "protocol"),
     **dict.fromkeys(("优化协议", "本地优化协议"), "protocol"),
     **dict.fromkeys(("开源协议", "开源协议注册", "protocol_oss"), "protocol_oss"),
+    **dict.fromkeys(("开源protocol-2", "protocol-2", "开源协议2", "protocol_oss_2"), "protocol_oss_2"),
     **dict.fromkeys((
         "roxy", "roxy注册", "本地roxy", "本地roxy注册", "本地浏览器", "roxybrowser", "roxybrowser注册", "fingerprint",
     ), "roxy"),
@@ -81,6 +83,7 @@ class AccountSearchTerm:
             value = {
                 "protocol": "本地优化协议",
                 "protocol_oss": "开源协议",
+                "protocol_oss_2": "开源protocol-2",
                 "roxy": "本地 Roxy",
                 "roxy_oss": "开源 Roxy",
                 "browser": "浏览器",
