@@ -97,11 +97,16 @@ def _auth_result_clauses(raw: str) -> list[str]:
 
 
 def _openai_verp_recipient(address: str) -> str | None:
-    """仅解码已实测的 OpenAI SendGrid 模板，不将普通退信地址视作收件人。"""
+    """仅解码已实测的两种 OpenAI VERP 模板，不推断普通退信地址。"""
     match = re.fullmatch(
-        r"bounces\+[0-9]+-[a-z0-9]+-([^@\s<>]+)@(em[0-9]+\.tm\.openai\.com)",
+        r"bounces\+[0-9]+-[a-z0-9]+-([^@\s<>]+)@em[0-9]+\.tm\.openai\.com",
         str(address or "").lower(),
     )
+    if match is None:
+        match = re.fullmatch(
+            r"bounce\+[0-9a-f]{6}\.[0-9a-f]{6}-([^@\s<>]+)@tm1\.openai\.com",
+            str(address or "").lower(),
+        )
     if match is None:
         return None
     local, separator, domain = match.group(1).rpartition("=")
@@ -113,6 +118,23 @@ def _openai_verp_recipient(address: str) -> str | None:
     if len(local.encode()) > 64 or len(recipient.encode()) > 254:
         return None
     return recipient if _addresses([recipient]) == {recipient} else None
+
+
+def _unresolved_openai_child_families(address: str, hme_recipients: set[str]) -> set[str]:
+    """已知域的未知模板若明确含完整 child，只能阻断同母回退，不能认领验证码。"""
+    local, separator, domain = str(address or "").lower().rpartition("@")
+    if not separator or re.fullmatch(r"(?:em[0-9]+\.tm\.openai\.com|tm1\.openai\.com)", domain) is None:
+        return set()
+    blocked = set()
+    for parent in hme_recipients:
+        family = _family(parent)
+        parent_local, _, parent_domain = family.partition("@")
+        match = re.search(r"(?:^|[-.])(" + re.escape(parent_local) + r"\+[^@=\s<>]+)=" + re.escape(parent_domain) + r"\Z", local)
+        if match is not None:
+            recipient = match.group(1) + "@" + parent_domain
+            if _addresses([recipient]) == {recipient}:
+                blocked.add(family)
+    return blocked
 
 
 def _hme_addresses(values: list[str]) -> set[str]:
@@ -174,6 +196,7 @@ def _openai_spf_recipients(headers: dict[str, list[str]], hme_recipients: set[st
                 value = value[1:-1]
             recipient = _openai_verp_recipient(value)
             if recipient is None:
+                conflicts.update(_unresolved_openai_child_families(value, hme_recipients))
                 continue
             family = _family(recipient)
             hme_family = {address for address in hme_recipients if _family(address) == family}
@@ -187,6 +210,9 @@ def _openai_spf_recipients(headers: dict[str, list[str]], hme_recipients: set[st
             claims.setdefault(family, set()).add((recipient, verdict))
             if verdict == "pass":
                 recipients.add(recipient)
+            else:
+                # 未通过 SPF 的完整同族声明不可认领，也不能回退到改写后的母 To。
+                conflicts.add(family)
     for family, family_claims in claims.items():
         passed = {(address, verdict) for address, verdict in family_claims if verdict == "pass"}
         if passed and (len(passed) != 1 or family_claims != passed):
@@ -212,7 +238,7 @@ def extract_recipient_evidence(candidate: Message | Mapping) -> dict:
     provider_recipients, conflicting_families = _openai_spf_recipients(headers, hme_recipients)
     if provider_recipients:
         original.update(provider_recipients)
-        evidence.append({"kind": "openai_sendgrid_icloud_spf_verp", "addresses": sorted(provider_recipients)})
+        evidence.append({"kind": "openai_icloud_spf_verp", "addresses": sorted(provider_recipients)})
     for raw in headers.get("received", []):
         value = re.sub(r"\r?\n[ \t]+", " ", raw)
         # 注释不能制造伪造的 for/by 子句；嵌套注释保守移除。

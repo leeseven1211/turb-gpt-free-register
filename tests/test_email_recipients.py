@@ -132,7 +132,7 @@ class OpenAISendGridSPFRecipientTests(unittest.TestCase):
         msg = self.message()
         evidence = extract_recipient_evidence(msg)
         self.assertEqual(evidence["original_recipients"], [CHILD_A])
-        self.assertEqual(evidence["sources"], [{"kind": "openai_sendgrid_icloud_spf_verp", "addresses": [CHILD_A]}])
+        self.assertEqual(evidence["sources"], [{"kind": "openai_icloud_spf_verp", "addresses": [CHILD_A]}])
         self.assertTrue(candidate_match(CHILD_A, msg, forwarded=True))
         self.assertFalse(candidate_match(CHILD_B, msg, forwarded=True))
         self.assertFalse(candidate_match(PARENT, msg, forwarded=True))
@@ -321,3 +321,61 @@ class OpenAISendGridSPFRecipientTests(unittest.TestCase):
             msg["Authentication-Results"] = value
             with self.subTest(value=value):
                 self.assertFalse(candidate_match(CHILD_A, msg, forwarded=True))
+
+
+class OpenAITM1SPFRecipientTests(unittest.TestCase):
+    def message(self, recipient=CHILD_A, *, verdict="pass", domain="tm1.openai.com", prefix="bounce+12ab34.56cd78-"):
+        msg = hme_message(None)
+        msg["X-ICLOUD-HME"] = f"p={PARENT}; d=1; f=owner@gmail.com; s=sender@example.test"
+        msg["Authentication-Results"] = f"spf.icloud.com; spf={verdict} smtp.mailfrom={prefix}{recipient.replace('@', '=')}@{domain}"
+        return msg
+
+    def test_exact_real_tm1_template_matches_only_full_child(self):
+        msg = self.message()
+        for target, expected in ((CHILD_A, True), (CHILD_B, False), (PARENT, False)):
+            self.assertEqual(candidate_match(target, msg, forwarded=True), expected)
+        self.assertEqual(extract_recipient_evidence(msg)["original_recipients"], [CHILD_A])
+
+    def test_tm1_can_prove_original_parent(self):
+        self.assertTrue(candidate_match(PARENT, self.message(PARENT), forwarded=True, strict_family=True))
+
+    def test_similar_child_other_parent_and_domain_are_not_the_target(self):
+        for recipient in (CHILD_A.replace("a1b2c3", "a1b2c3x"), "other+a1b2c3@icloud.com", CHILD_A.replace("icloud.com", "icloud.com.evil.test")):
+            with self.subTest(recipient=recipient):
+                self.assertFalse(candidate_match(CHILD_A, self.message(recipient), forwarded=True))
+
+    def test_provider_domain_is_exact(self):
+        for domain in ("tm2.openai.com", "tm1.openai.com.evil.test", "evil-tm1.openai.com", "openai.com", "tm1.openai.net"):
+            with self.subTest(domain=domain):
+                self.assertFalse(candidate_match(CHILD_A, self.message(domain=domain), forwarded=True))
+
+    def test_unknown_same_domain_prefix_blocks_family_without_claiming_recipient(self):
+        for prefix in ("bounce+12ab34.56cd7g-", "bounce+12ab3.56cd78-", "bounce+12ab34.56cd789-", "unknown-prefix-"):
+            for displayed in (PARENT, CHILD_A):
+                msg = self.message(prefix=prefix)
+                msg.replace_header("To", displayed)
+                with self.subTest(prefix=prefix, displayed=displayed):
+                    self.assertEqual(extract_recipient_evidence(msg)["original_recipients"], [])
+                    for target in (PARENT, CHILD_A, CHILD_B):
+                        self.assertFalse(candidate_match(target, msg, forwarded=True))
+
+    def test_spf_nonpass_blocks_child_and_mother_fallback(self):
+        for verdict in ("fail", "softfail", "neutral", "none", "temperror", "permerror"):
+            msg = self.message(verdict=verdict)
+            for target in (PARENT, CHILD_A, CHILD_B):
+                with self.subTest(verdict=verdict, target=target):
+                    self.assertFalse(candidate_match(target, msg, forwarded=True))
+
+    def test_tm1_and_other_provider_sibling_conflicts_reject_all(self):
+        msg = self.message()
+        msg["Authentication-Results"] = f"spf.icloud.com; spf=pass smtp.mailfrom=bounces+1234567-a1b2-{CHILD_B.replace('@', '=')}@em7877.tm.openai.com"
+        for target in (PARENT, CHILD_A, CHILD_B):
+            self.assertFalse(candidate_match(target, msg, forwarded=True))
+
+    def test_missing_hme_and_fake_authserv_cannot_prove_tm1(self):
+        msg = self.message()
+        del msg["X-ICLOUD-HME"]
+        self.assertFalse(candidate_match(CHILD_A, msg, forwarded=True))
+        msg = self.message()
+        msg.replace_header("Authentication-Results", str(msg["Authentication-Results"]).replace("spf.icloud.com", "spf.icloud.com.evil.test"))
+        self.assertFalse(candidate_match(CHILD_A, msg, forwarded=True))
