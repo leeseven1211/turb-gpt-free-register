@@ -3404,9 +3404,9 @@ table[data-resizable-table="codex"] {
   scrollbar-gutter: auto;
 }
 
-/* 末列手柄留在表格内，避免刚好放下时额外产生横向溢出。 */
-#accountsPanelV2 table[data-resizable-table="accounts"] th:last-child .table-col-resizer { right: 0; }
-#accountsPanelV2 table[data-resizable-table="accounts"] th:last-child .table-col-resizer::after { left: 8px; }
+/* 手柄完整放在所属表头内，避免跨到相邻列或额外产生横向溢出。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] th .table-col-resizer { right: 0; }
+#accountsPanelV2 table[data-resizable-table="accounts"] th .table-col-resizer::after { left: 8px; }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody td {

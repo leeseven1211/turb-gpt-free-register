@@ -511,7 +511,8 @@ function initResizableTable(table) {
     if (header.classList.contains('col-check') || (key !== 'accounts' && index >= headers.length - 1)) return;
     const handle = document.createElement('span');
     handle.className = 'table-col-resizer';
-    handle.title = '拖动调整列宽';
+    const columnTitle = header.dataset?.filterTitle || String(header.firstChild?.textContent || header.textContent || '').trim();
+    handle.title = key === 'accounts' && columnTitle ? `拖动右边界调整「${columnTitle}」列宽` : '拖动调整列宽';
     handle.setAttribute('aria-hidden', 'true');
     header.appendChild(handle);
     handle.addEventListener('pointerdown', event => {
@@ -534,35 +535,11 @@ function initResizableTable(table) {
       const onMove = moveEvent => {
         let delta = moveEvent.clientX - startX;
         if (key === 'accounts') {
+          // 账号列独立调整，整表跟随当前列增减，不把宽度转移给相邻列。
+          delta = Math.max(minCurrent - startWidths[index], delta);
           const nextWidths = [...startWidths];
-          const isLastColumn = index >= headers.length - 1;
-          if (isLastColumn) {
-            // 末列没有可交换的邻列，沿用独立调整整表宽度的行为。
-            delta = Math.max(minCurrent - startWidths[index], delta);
-            nextWidths[index] += delta;
-            const nextTableWidth = Math.max(1, tableWidth + delta);
-            table.style.setProperty('width', `${nextTableWidth}px`, 'important');
-            applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
-            return;
-          }
-
-          // 普通拖动先在当前列和下一列之间交换宽度，避免整表右侧整体后移。
-          // 下一列收缩到 28px 后，继续向右拖才把超出的部分加到整表宽度。
-          const requestedDelta = Math.max(minCurrent - startWidths[index], delta);
-          if (nextIndex === headers.length - 1 && requestedDelta < 0) {
-            // 创建列向左收窄时直接缩表，避免把腾出的宽度堆到操作列。
-            nextWidths[index] += requestedDelta;
-            const nextTableWidth = Math.max(1, tableWidth + requestedDelta);
-            table.style.setProperty('width', `${nextTableWidth}px`, 'important');
-            applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
-            return;
-          }
-          const nextShrinkRoom = Math.max(0, startWidths[nextIndex] - ACCOUNT_COLUMN_MIN_WIDTH);
-          const transferredDelta = Math.min(requestedDelta, nextShrinkRoom);
-          const tableGrowth = Math.max(0, requestedDelta - transferredDelta);
-          nextWidths[index] += requestedDelta;
-          nextWidths[nextIndex] -= transferredDelta;
-          const nextTableWidth = Math.max(1, tableWidth + tableGrowth);
+          nextWidths[index] += delta;
+          const nextTableWidth = Math.max(1, tableWidth + delta);
           table.style.setProperty('width', `${nextTableWidth}px`, 'important');
           applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
           return;
