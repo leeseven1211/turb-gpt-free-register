@@ -425,12 +425,13 @@ class _Headers:
 class WreqResponse:
     """对齐 curl_cffi / requests 的响应对象。"""
 
-    __slots__ = ("_raw", "_session", "_headers")
+    __slots__ = ("_raw", "_session", "_headers", "_protocol2_streaming")
 
     def __init__(self, raw, session=None):
         self._raw = raw
         self._session = session
         self._headers = None
+        self._protocol2_streaming = False
 
     @property
     def status_code(self) -> int:

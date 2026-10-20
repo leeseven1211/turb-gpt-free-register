@@ -9,7 +9,8 @@ import pytest
 from core.registration.protocol_oss_2.runtime import _ObservedSession
 
 
-def test_wreq_posts_json_and_preserves_cookies_through_the_allocated_proxy():
+@pytest.mark.parametrize("stream_navigation", [False, True])
+def test_observed_wreq_posts_json_and_preserves_cookies_through_the_allocated_proxy(stream_navigation):
     pytest.importorskip("wreq")
     from core.registration.protocol_oss_2.upstream.http_client_wreq import create_http_session
 
@@ -38,9 +39,12 @@ def test_wreq_posts_json_and_preserves_cookies_through_the_allocated_proxy():
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     transport = create_http_session(proxy=f"http://127.0.0.1:{server.server_port}", impersonate="chrome152")
+    session = _ObservedSession(transport, {"capture": None})
     try:
-        transport.get("http://protocol2.fixture.invalid/init", timeout=3)
-        response = transport.post("http://protocol2.fixture.invalid/submit", params={"q": "a b"}, json={"fixture": "body"}, timeout=3)
+        with patch("core.registration_service.check_stop_requested"), patch("core.registration_debug.record_protocol_exchange"):
+            navigation = session.get("http://protocol2.fixture.invalid/init", timeout=3, stream=stream_navigation)
+            assert navigation._protocol2_streaming is stream_navigation
+            response = session.post("http://protocol2.fixture.invalid/submit", params={"q": "a b"}, json={"fixture": "body"}, timeout=3)
         assert response.status_code == 200
         assert response.json() == {"ok": True}
         assert requests == [{
