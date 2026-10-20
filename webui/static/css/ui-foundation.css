@@ -3570,11 +3570,11 @@ table[data-resizable-table="codex"] {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  height: calc(var(--account-row-height, 50px) - 4px);
-  gap: 2px;
+  height: calc(var(--account-row-height, 50px) - 12px);
+  gap: 4px;
   align-items: center;
-  font-size: var(--account-font-main);
-  line-height: var(--ui-line-height-normal);
+  font-size: var(--account-font-sub);
+  line-height: var(--ui-line-height-tight);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
