@@ -316,7 +316,8 @@ def _previous_auth_url(driver, current_url: str) -> str | None:
 
 
 def recover_submission_page(driver, stage: str, observe, *, budget: StageBudget,
-                            allow_back: bool = False, receipt=None, sleeper=time.sleep):
+                            allow_back: bool = False, receipt=None, sleeper=time.sleep,
+                            on_navigation=None):
     """刷新后只观察原结果；资料阶段可再回到上一认证地址，整个恢复共用剩余预算。"""
     get = getattr(driver, "get", None)
     current_url = _navigation_url(_current_url(driver))
@@ -388,6 +389,8 @@ def recover_submission_page(driver, stage: str, observe, *, budget: StageBudget,
                 except Exception as exc:
                     logger.warning("%s 恢复页面加载超时设置失败，异常类型=%s", _log_prefix(driver), type(exc).__name__)
         log_submission_diagnostics(driver, stage, f"after_{action}", receipt=receipt)
+        if on_navigation is not None:
+            on_navigation(action)
         action_end = recovery.clock() + recovery.remaining() / (len(actions) - index)
         while True:
             checkpoint()

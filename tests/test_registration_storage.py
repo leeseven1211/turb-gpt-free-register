@@ -47,6 +47,48 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual(len(runs), 1)
         self.assertEqual(int(runs[0]["job_id"]), int(job["id"]))
 
+    def test_refreshed_otp_supersedes_original_fact_before_same_run_retry(self):
+        from types import SimpleNamespace
+
+        attempt = registration.create_attempt("otp-refresh@example.test")
+        run = registration.start_run(int(attempt["id"]), execution_id="otp-refresh", initial_status="running")
+        driver = SimpleNamespace(_registration_fact_context={
+            "attempt_id": int(attempt["id"]), "run_id": int(run["id"]), "execution_id": "otp-refresh",
+        })
+        original = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit")
+        retry = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit")
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=original)
+        record_browser_submission_fact(driver, "unknown", receipt=original, result="unknown")
+        with self.assertRaisesRegex(ValueError, "未决浏览器"):
+            record_browser_submission_fact(driver, "dispatch_intent", receipt=retry)
+        record_browser_submission_fact(
+            driver, "superseded", receipt=original, result="unknown", error_type="otp_refresh_retry",
+        )
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=retry)
+        record_browser_submission_fact(driver, "unknown", receipt=retry, result="unknown")
+        resend = BrowserSubmissionReceipt(kind="otp_resend", stage="otp_resend", endpoint_kind="otp_resend")
+        with self.assertRaisesRegex(ValueError, "未决浏览器"):
+            record_browser_submission_fact(driver, "dispatch_intent", receipt=resend)
+        record_browser_submission_fact(driver, "rejected", receipt=retry, result="failure")
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=resend)
+        private = registration.get_private_resume_context(int(attempt["id"]), email="otp-refresh@example.test")
+        facts = private["submission_facts"]
+        self.assertTrue(any(x["submission_id"] == original.submission_id and x["phase"] == "unknown" for x in facts))
+        self.assertTrue(any(x["submission_id"] == original.submission_id and x["phase"] == "superseded"
+                            and x["result"] == "unknown" for x in facts))
+        self.assertEqual(unresolved_submission_ids(facts), {resend.submission_id})
+
+    def test_superseding_is_limited_to_explicit_otp_refresh_retry(self):
+        for kind, stage, endpoint, marker in (
+            ("password", "password_create", "password_submit", "otp_refresh_retry"),
+            ("otp", "email_otp", "otp_submit", ""),
+            ("otp_resend", "otp_resend", "otp_resend", "otp_refresh_retry"),
+        ):
+            with self.subTest(kind=kind, marker=marker):
+                receipt = BrowserSubmissionReceipt(kind=kind, stage=stage, endpoint_kind=endpoint)
+                with self.assertRaisesRegex(ValueError, "只有验证码刷新后补交"):
+                    receipt.safe_fact(phase="superseded", result="unknown", error_type=marker)
+
     def test_attempt_checkpoint_stays_monotonic_while_run_event_can_resume_earlier_stage(self):
         attempt = registration.create_attempt("checkpoint@example.test")
         attempt_id = int(attempt["id"])

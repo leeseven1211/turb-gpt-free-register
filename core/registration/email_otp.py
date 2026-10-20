@@ -2388,12 +2388,13 @@ def _wait_after_email_otp_submit(
     budget: StageBudget | None = None,
     baseline_state: dict | None = None,
     expected_email: str | None = None,
+    retry_after_refresh: bool = False,
 ) -> str:
     """提交 OTP 后等待明确的资料页、邮箱已验证提示或登录态。
 
     只有页面明确出现验证码错误（aria-invalid / 错误文案）才判定为无效；
     网络慢时最多等待完整 timeout；超时没有明确成功证据时按 stuck 保留
-    原提交，不把空壳、未知跳转或无错误标记当成验证成功，也不自动重发。
+    原提交。注册流程可显式接收刷新后表单就绪的结果，再补交一次原验证码。
     """
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
@@ -2419,6 +2420,8 @@ def _wait_after_email_otp_submit(
     session_probe_started = False
     session_probe_failed = False
     recovery_session_probes = 0
+    refreshed = False
+    last_recovery_state = None
     log_submission_diagnostics(driver, "otp", "submitted", receipt=receipt)
 
     def authenticated_home(read_budget, *, recovery=False):
@@ -2459,9 +2462,17 @@ def _wait_after_email_otp_submit(
         return bool(set(errors) - set(baseline_errors) or set(invalid) - set(baseline_invalid))
 
     def observe_recovery(recovery_budget):
+        nonlocal last_recovery_state
         state = _email_otp_page_state(driver)
         state = state if isinstance(state, dict) else {}
         page_state = classify_page(state)
+        form_ready = _email_otp_form_is_ready(state)
+        recovery_state = (page_state.value, form_ready, bool(state.get("errors")), refreshed)
+        if recovery_state != last_recovery_state:
+            last_recovery_state = recovery_state
+            logger.info("%s[OTP] 恢复页面识别：state=%s form_ready=%s has_errors=%s refreshed=%s",
+                        _log_prefix(driver), *recovery_state)
+            log_submission_diagnostics(driver, "otp", "recovery_state", receipt=receipt)
         if page_state == PageState.LOGGED_OUT:
             return "session_expired"
         if page_state == PageState.AUTH_ERROR:
@@ -2477,9 +2488,33 @@ def _wait_after_email_otp_submit(
             return "accepted"
         if auth_session_unavailable(driver):
             return "session_expired"
-        if _email_otp_form_is_ready(state) and _new_error_mark(state) and not _email_otp_page_recovery_reason(state):
+        if form_ready and _new_error_mark(state) and not _email_otp_page_recovery_reason(state):
             return "invalid"
+        try:
+            location = urlsplit(str(state.get("url") or ""))
+            current_otp_form = (
+                location.scheme == "https" and location.hostname == "auth.openai.com"
+                and location.port in (None, 443) and not location.username and not location.password
+                and location.path.rstrip("/") == "/email-verification"
+            )
+        except ValueError:
+            current_otp_form = False
+        email_hints = re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}",
+                                 str(state.get("text") or ""), flags=re.IGNORECASE)
+        same_identity = not expected_email or all(
+            hint.casefold() == expected_email.strip().casefold() for hint in email_hints
+        )
+        if (retry_after_refresh and refreshed and page_state == PageState.OTP_EMAIL
+                and form_ready and not state.get("challengePresent") and not state.get("error")
+                and current_otp_form and same_identity):
+            logger.info("%s[OTP] 刷新后邮箱验证码表单已就绪，交回注册流程补交上次验证码", _log_prefix(driver))
+            log_submission_diagnostics(driver, "otp", "retry_previous_otp_ready", receipt=receipt)
+            return "retry_previous_otp"
         return None
+
+    def after_navigation(action):
+        nonlocal refreshed
+        refreshed = action == "refresh"
 
     def recover_once():
         nonlocal recovery_attempted
@@ -2487,9 +2522,9 @@ def _wait_after_email_otp_submit(
             return None
         recovery_attempted = True
         driver._email_otp_submission_recovery_id = recovery_id
-        # 收码前的空壳恢复与这次提交的恢复分别计数；不重新填码或点击。
+        # 收码前的空壳恢复与本次提交的恢复分别计数；补交由注册入口单独记录。
         return recover_submission_page(driver, "otp", observe_recovery, budget=confirmation_budget,
-                                       receipt=receipt, sleeper=time.sleep)
+                                       receipt=receipt, sleeper=time.sleep, on_navigation=after_navigation)
 
     while True:
         _check_manual_stop()

@@ -360,7 +360,7 @@ def _submit_email_otp_current_form(driver) -> dict:
     """仅点击当前邮箱验证码表单，自动跳转后不触碰下一页按钮。"""
     receipt = getattr(driver, "_browser_submission_receipt", None)
     if getattr(receipt, "endpoint_kind", "") == "otp_submit" and getattr(receipt, "phase", "") in {
-        "request_observed", "response_observed", "confirmed", "rejected", "unknown",
+        "request_observed", "response_observed", "confirmed", "rejected", "unknown", "superseded",
     }:
         return {"clicked": False, "reason": "request_observed"}
     result = driver.execute_script(
@@ -380,6 +380,74 @@ def _submit_email_otp_current_form(driver) -> dict:
         logger.info("[Roxy注册][OTP] 提交控件判断：clicked=%s diagnostics=%s", result.get("clicked") is True, safe_diagnostics)
     return result if isinstance(result, dict) else {"clicked": False, "reason": "receipt_unknown"}
 
+def _submit_registration_email_otp(driver, otp_code: str, *, budget: StageBudget,
+                                   expected_email: str, on_refresh_retry=None):
+    """每轮验证码刷新后补交原码一次，各次提交保留独立回执和同一总预算。"""
+    for submission_attempt in range(2):
+        # 某些验证码控件在最后一位输入后可能自动提交；因此在清空/填写
+        # 之前先落库本次提交意图和页面基线，任何自动提交都归属于本回执。
+        otp_submission = BrowserSubmissionReceipt(
+            kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "otp",
+            stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
+        )
+        driver._browser_submission_receipt = otp_submission
+        record_browser_submission_fact(driver, "prepared", receipt=otp_submission)
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_submission)
+        log_submission_diagnostics(driver, "otp", "before_submit", receipt=otp_submission)
+        try:
+            otp_submit_baseline = _email_otp_page_state(driver)
+        except Exception:
+            otp_submit_baseline = {}
+        _clear_otp_inputs(driver)
+        otp_input_timeout = _budget_timeout(budget, 20, minimum=1)
+        if otp_input_timeout < 1:
+            raise StageTimeout("email OTP input budget exhausted")
+        _type_otp(
+            driver, otp_code, timeout=max(1, int(otp_input_timeout)),
+            before_input=lambda inputs: _prepare_email_otp_current_form(driver, inputs, budget=budget),
+        )
+        logger.info("[Roxy注册][OTP] 已填写邮箱验证码")
+        _check_manual_stop()
+        # OTP 页面已经确认可提交；保留极短的人类化停顿，但不要让默认
+        # 的“切回邮箱/阅读验证码”长区间拖慢每个批次。
+        human_delay("otp_input", minimum=0.35, maximum=1.0, budget=budget)
+        try:
+            otp_click = _submit_email_otp_current_form(driver)
+            if otp_click.get("clicked") is True:
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
+                logger.info("[Roxy注册][OTP] 已点击当前验证码表单，等待资料页或登录态")
+            else:
+                logger.info("[Roxy注册][OTP] 未追加点击，继续确认原验证码输入结果：reason=%s", otp_click.get("reason"))
+        except Exception as exc:
+            # 点击回调抛错不能证明没有派发；保守保留未知围栏，禁止同一候选重放。
+            record_browser_submission_fact(
+                driver, "unknown", receipt=otp_submission, result="unknown",
+                error_type=type(exc).__name__,
+            )
+            logger.info("[Roxy注册][OTP] 未找到显式提交按钮，继续等待页面状态：%s", str(exc)[:120])
+
+        outcome = _wait_after_email_otp_submit(
+            driver, timeout=60, budget=budget,
+            baseline_state=otp_submit_baseline,
+            expected_email=expected_email,
+            retry_after_refresh=submission_attempt == 0,
+        )
+        if outcome != "retry_previous_otp":
+            return outcome, otp_submission
+        if submission_attempt:
+            return "stuck", otp_submission
+        budget.require("刷新后补交原验证码")
+        record_browser_submission_fact(
+            driver, "superseded", receipt=otp_submission,
+            result="unknown", error_type="otp_refresh_retry",
+        )
+        log_submission_diagnostics(driver, "otp", "retry_previous_otp", receipt=otp_submission)
+        logger.info("[Roxy注册][OTP] 刷新后仍在邮箱验证码页，使用上次验证码补交一次")
+        if on_refresh_retry is not None:
+            on_refresh_retry()
+    return "stuck", otp_submission
+
+
 _PASSWORD_ENTRY_FAILURE_MARKERS = (
     "password_entry_page_not_hydrated",
     "password_entry_not_offered",
@@ -388,7 +456,7 @@ _PASSWORD_ENTRY_FAILURE_MARKERS = (
 
 
 class _OtpAttemptTracker:
-    """Prevent one registration run from submitting the same OTP twice."""
+    """记录已用验证码，防止重发后再次使用上一轮旧码。"""
 
     def __init__(self) -> None:
         self._submitted: set[str] = set()
@@ -1572,52 +1640,11 @@ def run_roxy_registration(
                 current_otp = None
                 continue
             logger.info("[Roxy注册][OTP] 已收到验证码")
-            # 某些验证码控件在最后一位输入后可能自动提交；因此在清空/填写
-            # 之前先落库本次提交意图和页面基线，任何自动提交都归属于本回执。
-            otp_submission = BrowserSubmissionReceipt(
-                kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "otp",
-                stage="email_otp", endpoint_kind="otp_submit", http_method="POST",
-            )
-            driver._browser_submission_receipt = otp_submission
-            record_browser_submission_fact(driver, "prepared", receipt=otp_submission)
-            record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_submission)
-            log_submission_diagnostics(driver, "otp", "before_submit", receipt=otp_submission)
-            try:
-                otp_submit_baseline = _email_otp_page_state(driver)
-            except Exception:
-                otp_submit_baseline = {}
-            _clear_otp_inputs(driver)
-            otp_input_timeout = _budget_timeout(otp_budget, 20, minimum=1)
-            if otp_input_timeout < 1:
-                raise StageTimeout("email OTP input budget exhausted")
-            _type_otp(
-                driver, current_otp, timeout=max(1, int(otp_input_timeout)),
-                before_input=lambda inputs: _prepare_email_otp_current_form(driver, inputs, budget=otp_budget),
-            )
-            logger.info("[Roxy注册][OTP] 已填写邮箱验证码")
-            _check_manual_stop()
-            # OTP 页面已经确认可提交；保留极短的人类化停顿，但不要让默认
-            # 的“切回邮箱/阅读验证码”长区间拖慢每个批次。
-            human_delay("otp_input", minimum=0.35, maximum=1.0, budget=otp_budget)
-            try:
-                otp_click = _submit_email_otp_current_form(driver)
-                if otp_click.get("clicked") is True:
-                    record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
-                    logger.info("[Roxy注册][OTP] 已点击当前验证码表单，等待资料页或登录态")
-                else:
-                    logger.info("[Roxy注册][OTP] 未追加点击，继续确认原验证码输入结果：reason=%s", otp_click.get("reason"))
-            except Exception as exc:
-                # 点击回调抛错不能证明没有派发；保守保留未知围栏，禁止同一候选重放。
-                record_browser_submission_fact(
-                    driver, "unknown", receipt=otp_submission, result="unknown",
-                    error_type=type(exc).__name__,
-                )
-                logger.info("[Roxy注册][OTP] 未找到显式提交按钮，继续等待页面状态：%s", str(exc)[:120])
-
-            outcome = _wait_after_email_otp_submit(
-                driver, timeout=60, budget=otp_budget,
-                baseline_state=otp_submit_baseline,
-                expected_email=email,
+            outcome, otp_submission = _submit_registration_email_otp(
+                driver, current_otp, budget=otp_budget, expected_email=email,
+                on_refresh_retry=lambda: report_job_progress(
+                    "email_otp", "running", "刷新后仍在验证码页，正在使用上次验证码再次验证",
+                ),
             )
             if outcome in ("accepted", "email_verified", "totp_required"):
                 record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")

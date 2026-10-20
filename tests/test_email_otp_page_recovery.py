@@ -133,6 +133,94 @@ class EmailOtpPageRecoveryTests(unittest.TestCase):
         self.assertEqual(self._wait_ready(driver, budget=self._budget(15)), "ready")
         self.assertEqual(driver.refresh_count, 0)
 
+    def test_refreshed_otp_form_returns_original_code_retry_only_after_navigation(self):
+        driver = _FakeDriver(_form_state(), refreshed_state=_form_state())
+        receipt = BrowserSubmissionReceipt(kind="otp", stage="email_otp", endpoint_kind="otp_submit", phase="ui_dispatched")
+        driver._browser_submission_receipt = receipt
+        budget = self._budget(90)
+        with self.assertLogs(email_otp.logger, level="INFO") as captured:
+            result = email_otp._wait_after_email_otp_submit(
+                driver, timeout=60, budget=budget, retry_after_refresh=True,
+            )
+        self.assertEqual(result, "retry_previous_otp")
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+        self.assertGreaterEqual(self.clock.now, 140)
+        self.assertLess(self.clock.now, 160)
+        self.assertEqual(receipt.phase, "unknown")
+        self.assertIn("state=OTP_EMAIL form_ready=True", "\n".join(captured.output))
+
+    def test_refreshed_shell_waits_for_a_real_otp_form_before_retry(self):
+        driver = _FakeDriver(_route_error_state(), refreshed_state=_blank_state())
+        original_get = driver.get
+
+        def navigate(url):
+            original_get(url)
+            mounted_at = self.clock.now + 2
+            driver.execute_script = lambda *_args: deepcopy(_form_state() if self.clock.now >= mounted_at else _blank_state())
+
+        driver.get = navigate
+        result = email_otp._wait_after_email_otp_submit(
+            driver, timeout=15, budget=self._budget(30), retry_after_refresh=True,
+        )
+        self.assertEqual(result, "retry_previous_otp")
+        self.assertGreaterEqual(self.clock.now, 102)
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+
+    def test_refreshed_otp_expiration_is_invalid_before_original_code_retry(self):
+        expired = _form_state()
+        expired["errors"] = ["验证码已过期"]
+        driver = _FakeDriver(_route_error_state(), refreshed_state=expired)
+        self.assertEqual(email_otp._wait_after_email_otp_submit(
+            driver, timeout=15, budget=self._budget(30), retry_after_refresh=True,
+        ), "invalid")
+        self.assertEqual(driver.get_calls, [_OTP_URL])
+
+    def test_refreshed_challenge_or_missing_form_does_not_offer_code_retry(self):
+        challenged = _form_state()
+        challenged["challengePresent"] = True
+        for state in (_blank_state(), challenged):
+            with self.subTest(challenge=state.get("challengePresent")):
+                driver = _FakeDriver(_route_error_state(), refreshed_state=state)
+                self.assertEqual(email_otp._wait_after_email_otp_submit(
+                    driver, timeout=12, budget=self._budget(20), retry_after_refresh=True,
+                ), "stuck")
+                self.assertEqual(driver.get_calls, [_OTP_URL])
+
+    def test_refreshed_next_step_returns_its_state_without_retrying_original_code(self):
+        for state, expected in (
+            ({"url": "https://auth.openai.com/about-you", "text": "Your name",
+              "inputs": [{"type": "text", "name": "name"}], "errors": []}, "accepted"),
+            ({"url": "https://auth.openai.com/mfa-challenge/totp", "text": "Authenticator code",
+              "inputs": [{"type": "text", "name": "totp"}], "errors": []}, "totp_required"),
+            ({"url": _OTP_URL, "text": "Email verified", "inputs": [], "emailVerified": True}, "email_verified"),
+        ):
+            with self.subTest(expected=expected):
+                driver = _FakeDriver(_route_error_state(), refreshed_state=state)
+                self.assertEqual(email_otp._wait_after_email_otp_submit(
+                    driver, timeout=15, budget=self._budget(30), retry_after_refresh=True,
+                ), expected)
+                self.assertEqual(driver.get_calls, [_OTP_URL])
+
+    def test_wrong_origin_or_login_form_after_refresh_cannot_retry_email_code(self):
+        for state in (
+            {**_form_state(), "url": "https://other.example/email-verification"},
+            {"url": "https://auth.openai.com/log-in/password", "text": "Sign in",
+             "inputs": [{"type": "password", "name": "password"}], "errors": []},
+        ):
+            with self.subTest(url=state["url"]):
+                driver = _FakeDriver(_route_error_state(), refreshed_state=state)
+                self.assertEqual(email_otp._wait_after_email_otp_submit(
+                    driver, timeout=12, budget=self._budget(20), retry_after_refresh=True,
+                ), "stuck")
+
+    def test_refreshed_page_for_a_different_email_cannot_retry_original_code(self):
+        state = {**_form_state(), "text": "Verification code for other@example.test"}
+        driver = _FakeDriver(_route_error_state(), refreshed_state=state)
+        self.assertEqual(email_otp._wait_after_email_otp_submit(
+            driver, timeout=12, budget=self._budget(20), retry_after_refresh=True,
+            expected_email="original@example.test",
+        ), "stuck")
+
     def test_otp_home_confirmation_reads_one_complete_identity_matched_session(self):
         state = {"url": "https://chatgpt.com/", "text": "ChatGPT", "inputs": [], "errors": []}
         driver = _FakeDriver(state)

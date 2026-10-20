@@ -15,7 +15,7 @@ from typing import Any, Mapping
 SUBMISSION_PHASES = frozenset({
     "prepared", "dispatch_intent", "ui_queued", "ui_dispatched",
     "request_observed", "response_observed", "confirmed", "rejected",
-    "not_dispatched", "unknown",
+    "not_dispatched", "unknown", "superseded",
 })
 _ENDPOINT_KINDS = frozenset({
     "email_submit", "nextauth_csrf", "nextauth_signin", "password_submit",
@@ -36,6 +36,8 @@ _PHASE_PRIORITY = {
     "unknown": 70,
     # 页面确认/明确拒绝是收口事实；CDP 观察事件可能在其后才抵达。
     "not_dispatched": 80,
+    # 已确认刷新回到验证码表单后，旧动作可由明确记录的补交替代；不冒充成功或未派发。
+    "superseded": 85,
     "rejected": 90,
     "confirmed": 100,
 }
@@ -80,6 +82,12 @@ class BrowserSubmissionReceipt:
         current_phase = phase or self.phase
         if current_phase not in SUBMISSION_PHASES:
             raise ValueError(f"未知浏览器提交阶段: {current_phase}")
+        if current_phase == "superseded" and not (
+            self.kind in {"otp", "resume_login"} and self.stage == "email_otp"
+            and self.endpoint_kind == "otp_submit"
+            and changes.get("error_type", self.error_type) == "otp_refresh_retry"
+        ):
+            raise ValueError("只有验证码刷新后补交可以替代原提交回执")
         method = _bounded_text(changes.get("http_method", self.http_method), 12).upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", ""}:
             method = ""
@@ -140,6 +148,7 @@ def unresolved_submission_ids(facts: Any) -> set[str]:
 
     Attempt 的提交事实跨 Run 保留；新 Run 只能观察或核验这些动作，不能因为
     创建了新的浏览器对象就把未知 POST 当成从未发生过。
+    验证码刷新补交会保留原未知事实，并用 superseded 记录替代关系后再建立新回执。
     """
     latest: dict[str, tuple[int, str]] = {}
     for item in facts if isinstance(facts, (list, tuple)) else ():
