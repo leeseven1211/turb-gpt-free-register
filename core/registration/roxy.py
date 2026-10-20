@@ -1062,6 +1062,50 @@ def _validated_resume_proxy_rotation(options: dict, facts: dict, profile_id: str
     return value
 
 
+def _registration_profile_form_ready(driver) -> bool:
+    """注册恢复已到可信资料表单时，交给资料阶段，不借 URL 空壳跳过认证。"""
+    snapshot = _page_snapshot(driver)
+    if not isinstance(snapshot, dict) or snapshot.get("error"):
+        return False
+    try:
+        current = urlsplit(str(snapshot.get("url") or ""))
+        if (current.scheme != "https" or current.hostname != "auth.openai.com"
+                or current.port not in (None, 443) or current.username or current.password
+                or current.path not in {"/about-you", "/profile", "/signup/profile", "/create-account/profile"}):
+            return False
+    except ValueError:
+        return False
+
+    inputs = snapshot.get("inputs")
+    widgets = snapshot.get("widgets")
+    if not isinstance(inputs, list):
+        return False
+    fields = [item for item in inputs if isinstance(item, dict)
+              and item.get("visible") is True
+              and str(item.get("type") or "").lower() in {"", "text", "number", "date", "tel"}]
+
+    def attributes(item):
+        return " ".join(str(item.get(key) or "") for key in (
+            "name", "id", "autocomplete", "aria", "placeholder",
+        )).casefold()
+
+    has_name = any(
+        str(item.get("type") or "").lower() in {"", "text"}
+        and re.search(r"(?:^|[^a-z])(?:name|full[_ -]?name|first[_ -]?name|last[_ -]?name)(?:[^a-z]|$)", attributes(item))
+        for item in fields
+    )
+    has_age_or_birth = any(
+        str(item.get("type") or "").lower() == "date"
+        or re.search(r"(?:^|[^a-z])(?:age|birth(?:day|date)?|bday)(?:[^a-z]|$)", attributes(item))
+        for item in fields
+    ) or any(
+        isinstance(item, dict) and item.get("visible") is True
+        and item.get("role") == "spinbutton" and item.get("dataType") in {"month", "day", "year"}
+        for item in (widgets if isinstance(widgets, list) else [])
+    )
+    return bool(has_name and has_age_or_birth)
+
+
 def run_roxy_registration(
     email: str,
     name: str,
@@ -1481,7 +1525,13 @@ def run_roxy_registration(
         resume_login_state = ""
         # 会话失效后的新登录必须按新的邮件时间收码，不能沿用原表单的邮件边界。
         otp_after_ts = getattr(driver, "_registration_otp_after_ts", otp_after_ts)
-        if existing_password and not verified_resume_session and not retained_state:
+        if (existing_password and not verified_resume_session and not retained_state
+                and _registration_profile_form_ready(driver)):
+            # password/verify 可以直接进入 about_you，公共 Codex 登录状态机
+            # 不负责注册资料页；资料提交及最终完整邮箱会话核验仍走原流程。
+            resume_login_state = "advanced"
+            logger.info("[Roxy注册] 已核验可见资料表单，继续原注册资料阶段")
+        elif existing_password and not verified_resume_session and not retained_state:
             # 密码提交后可能进入邮箱 OTP，也可能进入 Authenticator TOTP。
             # 两种页面外观相似，必须与 Codex OAuth 共用同一个认证状态机。
             from core.roxy_codex_oauth import complete_openai_login_challenge

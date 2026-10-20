@@ -681,6 +681,90 @@ class ResumeSessionFlowTests(unittest.TestCase):
         mocks["login"].assert_called_once()
         self.assertIs(mocks["login"].call_args.kwargs.get("password_already_submitted"), True)
 
+    def profile_after_saved_password(self, driver, mocks, *, url="https://auth.openai.com/about-you", inputs=None):
+        from core.registration.browser_submission import BrowserSubmissionReceipt
+        mocks["navigate"].side_effect = None
+        mocks["_submit_email_and_wait_next"].return_value = "login_password"
+        mocks["_has_access_token"].return_value = False
+        mocks["_complete_profile_page"].return_value = True
+        mocks["_fetch_chatgpt_session"].return_value = SESSION
+        driver.execute_async_script.return_value = {"ok": True, "status": 200, "data": {}, "json_valid": True}
+        snapshot = {"url": url, "inputs": inputs if inputs is not None else [
+            {"name": "name", "type": "text", "visible": True},
+            {"name": "age", "type": "number", "visible": True},
+        ]}
+
+        def submitted(*_args, **kwargs):
+            kwargs["on_password_submitted"]("unit-original-password")
+            driver.current_url = url
+            driver._browser_submission_receipt = BrowserSubmissionReceipt(
+                kind="resume_login", stage="login_password", endpoint_kind="password_submit", phase="confirmed",
+            )
+            return "unit-original-password"
+
+        mocks["_fill_password_page_if_present"].side_effect = submitted
+        return snapshot
+
+    def test_saved_password_about_you_form_reaches_profile_without_public_challenge(self):
+        with self.run_context() as (driver, mocks), patch(
+            "core.registration.checkpoints.save_protocol_password_checkpoint",
+        ):
+            snapshot = self.profile_after_saved_password(driver, mocks)
+            mocks["login"].side_effect = AssertionError("已到资料表单不能再等待公共验证码分支")
+            with patch.object(roxy, "_page_snapshot", return_value=snapshot):
+                result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["login"].assert_not_called()
+        mocks["wait_for_otp"].assert_not_called()
+        mocks["_complete_profile_page"].assert_called_once()
+        self.assertEqual(mocks["_complete_profile_page"].call_args.kwargs["expected_email"], EMAIL)
+        self.assertEqual(mocks["persist"].call_args.kwargs["extra"]["account_password"], "unit-original-password")
+        self.assertEqual(driver._registration_fact_context["attempt_id"], 41)
+        self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+        mocks["_fill_password_page_if_present"].assert_called_once()
+
+    def test_profile_handoff_rejects_foreign_shell_hidden_or_unrecognized_forms(self):
+        cases = [
+            ("https://auth.openai.com.evil.test/about-you", None),
+            ("http://auth.openai.com/about-you", None),
+            ("https://auth.openai.com:8443/about-you", None),
+            ("https://private@auth.openai.com/about-you", None),
+            ("https://auth.openai.com/log-in/password", None),
+            ("https://auth.openai.com/about-you", []),
+            ("https://auth.openai.com/about-you", [{"name": "name", "type": "hidden", "visible": True}]),
+            ("https://auth.openai.com/about-you", [{"name": "name", "type": "text", "visible": False},
+                                                   {"name": "age", "type": "number", "visible": False}]),
+            ("https://auth.openai.com/about-you", [{"name": "search", "type": "text", "visible": True}]),
+        ]
+        for url, inputs in cases:
+            with self.subTest(url=url, inputs=inputs), self.run_context() as (driver, mocks), patch(
+                "core.registration.checkpoints.save_protocol_password_checkpoint",
+            ):
+                snapshot = self.profile_after_saved_password(driver, mocks, url=url, inputs=inputs)
+                mocks["login"].side_effect = RuntimeError("单测在公共登录边界结束")
+                with patch.object(roxy, "_page_snapshot", return_value=snapshot):
+                    result = self.run_registration()
+                self.assertFalse(result["success"])
+                mocks["login"].assert_called_once()
+                mocks["_complete_profile_page"].assert_not_called()
+                mocks["persist"].assert_not_called()
+
+    def test_profile_handoff_still_requires_full_exact_email_session(self):
+        with self.run_context() as (driver, mocks), patch(
+            "core.registration.checkpoints.save_protocol_password_checkpoint",
+        ):
+            snapshot = self.profile_after_saved_password(driver, mocks)
+            mocks["_fetch_chatgpt_session"].return_value = {
+                "accessToken": "unit-other-token", "user": {"email": "other@example.test"},
+            }
+            with patch.object(roxy, "_page_snapshot", return_value=snapshot):
+                result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertIn("session_identity_mismatch", result["error"])
+        mocks["login"].assert_not_called()
+        mocks["_complete_profile_page"].assert_called_once()
+        mocks["persist"].assert_not_called()
+
 
     def test_unverified_resume_never_navigates_or_submits_or_persists(self):
         for response in (
