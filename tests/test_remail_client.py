@@ -235,6 +235,46 @@ class RemailClientTests(unittest.TestCase):
                     remail_client._request(method, "/v1/open/orders")
                 self.assertNotIsInstance(raised.exception, remail_client.RemailOrderUncertain)
 
+    def test_inventory_shortage_displays_safe_supplier_reason(self):
+        secret = "邮箱和取件凭据不应出现在错误提示中"
+        for payload in (
+            {"error": "insufficient_inventory", "message": secret},
+            {"code": "insufficient_inventory", "message": secret},
+            {"failureCode": "insufficient_inventory", "message": secret},
+            {"error": {"code": "insufficient_inventory", "message": secret}},
+            {"data": {"failureCode": "insufficient_inventory", "message": secret}},
+        ):
+            with self.subTest(payload=payload):
+                self.request.reset_mock()
+                self.request.return_value = self.response(payload, 422)
+                with self.assertRaises(remail_client.RemailOrderRejected) as raised:
+                    remail_client._request("POST", "/v1/open/orders")
+                self.assertEqual(str(raised.exception), "Remail 库存不足 (HTTP 422)")
+                self.assertEqual(raised.exception.allowed_error, "insufficient_inventory")
+                self.assertNotIn(secret, str(raised.exception.safe_details()))
+                self.request.assert_called_once()
+
+    def test_other_422_errors_are_not_reported_as_inventory_shortage(self):
+        malformed = self.response({}, 422)
+        malformed.json.side_effect = ValueError("不能输出供应商原始响应")
+        for response in (
+            self.response({"error": "invalid_state", "message": "insufficient_inventory"}, 422),
+            self.response({"message": "私密响应"}, 422),
+            self.response([], 422),
+            malformed,
+        ):
+            with self.subTest(response=response):
+                self.request.return_value = response
+                with self.assertRaises(remail_client.RemailOrderRejected) as raised:
+                    remail_client._request("POST", "/v1/open/orders")
+                self.assertEqual(str(raised.exception), "Remail 请求参数或订单状态无效 (HTTP 422)")
+
+    def test_failed_order_with_inventory_code_displays_inventory_shortage(self):
+        self.request.return_value = self.response(self.order(status="failed", failureCode="insufficient_inventory"))
+        with self.assertRaisesRegex(remail_client.RemailError, "Remail 库存不足"):
+            remail_client.pick_account(compatibility=True)
+        self.request.assert_called_once()
+
     def test_logs_and_repr_do_not_expose_account_credentials(self):
         self.request.return_value = self.response(self.order())
         with self.assertLogs("core.remail_client", level="INFO") as logs:

@@ -1169,6 +1169,13 @@ def _classify_raw_task_error(
         )
     # 只匹配实际错误；Codex 等阶段名只定位发生位置，不能证明上游服务失败。
     haystack = raw.lower()
+    if "remail 库存不足" in haystack:
+        return _error_projection(
+            TaskErrorCode.EXTERNAL_EMAIL.value,
+            "external", "邮箱服务", "库存不足",
+            stage=stage, error_code=error_code, raw=raw,
+            summary="库存不足",
+        )
     if str(task_type or "").strip().lower() == "email_change":
         projection = _email_change_error_projection(
             raw,

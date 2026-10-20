@@ -5,6 +5,17 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_remail_inventory_shortage_is_displayed_before_coarse_http_failure(self):
+        for task_type, message in (
+            ("registration", "RuntimeError: 所选邮箱来源 remail 领取失败: Remail 库存不足 (HTTP 422)"),
+            ("registration", "registration_failed: RuntimeError: Remail 库存不足 (HTTP 422)"),
+            ("email_change", "邮箱换绑失败: Remail 库存不足 (HTTP 422)"),
+        ):
+            with self.subTest(task_type=task_type, message=message):
+                info = classify_task_error(message, task_type=task_type, error_code="unknown.unclassified")
+                self.assertEqual(info["code"], "external.email")
+                self.assertEqual(info["summary"], "库存不足")
+
     def test_structured_cause_is_primary_error_even_when_remote_receipt_is_missing(self):
         info = classify_task_error(
             "远端结果待确认：查活失败",

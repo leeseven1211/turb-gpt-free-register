@@ -190,6 +190,20 @@ def _auth_headers() -> dict[str, str]:
     return {"Accept": "application/json", "Authorization": f"Bearer {_api_key()}"}
 
 
+def _inventory_unavailable(payload) -> bool:
+    """只识别供应商明确的库存错误码，不把响应原文带入提示。"""
+    if not isinstance(payload, dict):
+        return False
+    candidates = [payload, *(payload.get(key) for key in ("error", "data", "order"))]
+    return any(
+        isinstance(item, dict) and any(
+            item.get(key) == "insufficient_inventory"
+            for key in ("code", "error", "failureCode", "failure_code")
+        )
+        for item in candidates
+    )
+
+
 def _request(
     method: str,
     path: str,
@@ -252,13 +266,22 @@ def _request(
             422: "请求参数或订单状态无效", 429: "请求过于频繁",
         }
         reason = descriptions.get(response.status_code, "服务暂时不可用" if response.status_code >= 500 else "响应状态异常")
+        allowed_error = {400: "invalid_request", 401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid_state", 429: "rate_limited"}.get(response.status_code)
+        if response.status_code in (400, 422):
+            try:
+                inventory_unavailable = _inventory_unavailable(response.json())
+            except ValueError:
+                inventory_unavailable = False
+            if inventory_unavailable:
+                reason = "库存不足"
+                allowed_error = "insufficient_inventory"
         error_type = RemailOrderRejected if method.upper() == "POST" else RemailError
         raise error_type(
             f"Remail {reason} (HTTP {response.status_code})",
             operation_phase="post" if method.upper() == "POST" else "get",
             http_status=response.status_code,
             cause_code="remail_post_rejected" if method.upper() == "POST" else "remail_get_error",
-            allowed_error={400: "invalid_request", 401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid_state", 429: "rate_limited"}.get(response.status_code),
+            allowed_error=allowed_error,
             elapsed_ms=elapsed_ms,
         ) from None
     try:
@@ -574,6 +597,8 @@ def restore_account_context(email: str, *, compatibility: bool = False) -> Remai
 
 def _order_status_error(order: dict) -> str | None:
     status = str(order.get("status") or "").strip().lower()
+    if status == "failed" and _inventory_unavailable(order):
+        return "Remail 库存不足"
     if status in _FINAL_ORDER_STATUSES:
         return f"Remail 订单不可用: status={status}"
     return None
