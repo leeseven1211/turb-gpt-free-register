@@ -3548,13 +3548,13 @@ table[data-resizable-table="codex"] {
   grid-template-rows: minmax(0, 1fr);
 }
 
-#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single .account-promotion-country-row {
-  justify-content: center;
-}
-
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
-  height: 100%;
+  width: fit-content;
+  height: auto;
   min-height: 0;
+  justify-self: start;
+  align-self: center;
+  justify-content: flex-start;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row .account-promotion-label {

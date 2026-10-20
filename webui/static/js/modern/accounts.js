@@ -1938,6 +1938,7 @@ function _accountPromotionCheckoutDetail(item) {
 function _accountPlusCellLabel(item) {
   if (item.kind === 'unknown') return '待查询';
   if (item.kind === 'not_applicable') return '无优惠';
+  if (item.kind === 'free_trial') return '免费';
   return _accountPromotionLabel(item);
 }
 function _accountPromotionTooltip(item) {
