@@ -299,6 +299,91 @@ class ResumeSessionFlowTests(unittest.TestCase):
         self.assertIs(result.get("current_lease_route_verified"), False)
         self.assertIs(result.get("resume_login_get_transport_failure"), False)
 
+    @staticmethod
+    def rotation_context(*, retry_available=True, reopen_profile_id=""):
+        return {"job_id": 31, "attempt_id": 41, "run_id": 71, "execution_id": "rotation-execution",
+                "retry_available": retry_available, "reopen_profile_id": reopen_profile_id}
+
+    def enable_rotation_context(self, mocks):
+        context = {key: value for key, value in self.rotation_context().items()
+                   if key in {"job_id", "attempt_id", "run_id", "execution_id"}}
+        mocks["context"].return_value = context
+        mocks["run"].return_value = {**context, "id": 71, "action_type": "registration_resume", "status": "running"}
+
+    def test_bound_profile_rotation_closes_failed_connection_then_opens_new_lease(self):
+        from core.registration.browser_submission import BrowserSubmissionReceipt
+        with self.run_context() as (driver, mocks):
+            self.enable_rotation_context(mocks)
+            driver.current_url = "https://auth.openai.com/log-in"
+            old = BrowserSubmissionReceipt(kind="profile", stage="profile", phase="unknown")
+            driver._browser_submission_receipts = [old]
+            mocks["client"].return_value.close_profile.return_value = True
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+            options = {"password_enabled": True, "twofa_enabled": False,
+                       "codex_enabled": False, "plan_check_enabled": False,
+                       "_resume_proxy_rotation": self.rotation_context()}
+            debug = SimpleNamespace(capture_mode="full", capture_page_snapshot=Mock())
+            with patch("core.registration_debug.current_session", return_value=debug):
+                first = self.run_registration(registration_options=options)
+            self.assertIs(first.get("resume_proxy_rotation_ready"), True)
+            self.assertEqual(first.get("resume_proxy_rotation_profile_id"), "unit-profile")
+            mocks["client"].return_value.close_profile.assert_called_once_with("unit-profile")
+            mocks["client"].return_value.cleanup_profile.assert_not_called()
+            mocks["client"].return_value.discard_profile.assert_not_called()
+            mocks["retain_default"].assert_not_called()
+            mocks["pause"].assert_not_called()
+            debug.capture_page_snapshot.assert_called_once()
+            # 当前 Run 的持久窗口关联仍可能指向刚关闭的连接；下一圈只凭已核验
+            # 的临时重开事实跳过连接恢复，不能再拿回旧线路。
+            for name in ("take_default", "attempt_default", "bound_default"):
+                mocks[name].side_effect = AssertionError("换线重开不能接管刚关闭的旧连接")
+            options["_resume_proxy_rotation"] = self.rotation_context(
+                retry_available=False, reopen_profile_id=first["resume_proxy_rotation_profile_id"],
+            )
+            mocks["navigate"].side_effect = RuntimeError("HTTP 400")
+            second = self.run_registration(proxy="http://new-pool.example:8080", registration_options=options)
+            self.assertIs(second.get("current_lease_route_verified"), True)
+            self.assertIs(second.get("resume_proxy_rotation_ready"), False)
+            self.assertEqual(mocks["opened"].call_count, 2)
+            self.assertEqual(mocks["opened"].call_args.args[1], "http://new-pool.example:8080")
+            self.assertEqual(mocks["opened"].call_args.kwargs["profile_id"], "unit-profile")
+            self.assertEqual(old.phase, "unknown")
+
+    def test_unconfirmed_close_keeps_failure_window_and_does_not_offer_rotation(self):
+        with self.run_context() as (driver, mocks):
+            self.enable_rotation_context(mocks)
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["client"].return_value.close_profile.return_value = False
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_PROXY_CONNECTION_FAILED")
+            result = self.run_registration(registration_options={"_resume_proxy_rotation": self.rotation_context()})
+        self.assertIs(result.get("resume_proxy_rotation_ready"), False)
+        mocks["pause"].assert_called_once()
+        mocks["retain_default"].assert_called_once()
+
+    def test_exhausted_rotation_budget_preserves_debug_hold_and_window(self):
+        with self.run_context() as (driver, mocks):
+            self.enable_rotation_context(mocks)
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_CONNECTION_RESET")
+            result = self.run_registration(registration_options={
+                "_resume_proxy_rotation": self.rotation_context(retry_available=False),
+            })
+        self.assertIs(result.get("resume_proxy_rotation_ready"), False)
+        mocks["client"].return_value.close_profile.assert_not_called()
+        mocks["pause"].assert_called_once()
+        mocks["retain_default"].assert_called_once()
+
+    def test_reopen_permission_requires_same_run_attempt_execution_and_profile(self):
+        for field, value in (("attempt_id", 42), ("run_id", 72), ("job_id", 32),
+                             ("execution_id", "other-execution"), ("reopen_profile_id", "other-profile")):
+            with self.subTest(field=field), self.run_context() as (_driver, mocks):
+                self.enable_rotation_context(mocks)
+                context = {**self.rotation_context(reopen_profile_id="unit-profile"), field: value}
+                with self.assertRaisesRegex(RuntimeError, "request_unknown"):
+                    self.run_registration(registration_options={"_resume_proxy_rotation": context})
+                mocks["opened"].assert_not_called()
+                mocks["take_default"].assert_not_called()
+
     def test_native_error_during_bound_profile_probe_reaches_new_login_get(self):
         with self.run_context() as (driver, mocks):
             def fail_after_origin_change(_driver, **_kwargs):

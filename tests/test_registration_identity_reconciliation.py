@@ -331,6 +331,7 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
             "request_unknown": True, "checkpoint": "account_request_started",
             "proxy_transport_failure": True, "current_lease_route_verified": True,
             "resume_login_get_transport_failure": True,
+            "resume_proxy_rotation_ready": True, "resume_proxy_rotation_profile_id": "held-profile",
             "error": "net::ERR_TUNNEL_CONNECTION_FAILED",
         }
         with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
@@ -338,7 +339,7 @@ class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
                 result, job, 0, existing_password="saved-password",
             ))
             for field in ("proxy_transport_failure", "current_lease_route_verified",
-                          "resume_login_get_transport_failure"):
+                          "resume_login_get_transport_failure", "resume_proxy_rotation_ready"):
                 for value in (False, None, "true"):
                     with self.subTest(field=field, value=value):
                         self.assertFalse(registration_service._should_retry_registration_resume_with_new_proxy(

@@ -1143,9 +1143,11 @@ def _fill_password_page_if_present(
         // 空密码时主按钮可能禁用，填写阶段只确认输入框就绪。
         const expectedEmail = String(arguments[4] || '').trim().toLowerCase();
         if (mode === 'recovery_input' || expectedEmail) {
-            const identityConfirmed = [...form.querySelectorAll('input')].some(el =>
-              (el.readOnly || /email|username/i.test(el.name || el.autocomplete || ''))
-              && String(el.value || '').trim().toLowerCase() === expectedEmail);
+            const identities = [...form.querySelectorAll('input')]
+              .filter(el => el.readOnly || /email|username/i.test([el.type, el.name, el.autocomplete].join(' ')))
+              .map(el => String(el.value || '').trim().toLowerCase()).filter(Boolean);
+            const identityConfirmed = identities.length > 0 && identities.includes(expectedEmail)
+              && identities.every(value => value === expectedEmail);
             if (!expectedEmail || !identityConfirmed) return {ok:false, reason:'login_identity_unconfirmed'};
         }
         if (mode === 'input' || mode === 'recovery_input') {

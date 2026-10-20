@@ -1038,6 +1038,30 @@ def _is_registration_proxy_transport_failure(exc: BaseException) -> bool:
     ) is not None
 
 
+def _validated_resume_proxy_rotation(options: dict, facts: dict, profile_id: str | None) -> dict:
+    """换线许可只属于当前 Run 的临时调用，不能跨 Attempt 或执行接管窗口。"""
+    value = options.get("_resume_proxy_rotation")
+    if not isinstance(value, dict):
+        return {}
+    reopen = str(value.get("reopen_profile_id") or "").strip()
+    try:
+        keys = ("job_id", "attempt_id", "run_id", "execution_id")
+        if any(facts.get(key) in (None, "") or value.get(key) != facts[key] for key in keys):
+            raise ValueError
+        from core.storage import registration
+
+        run = registration.get_run(int(facts["run_id"])) or {}
+        if (run.get("action_type") != "registration_resume" or run.get("status") != "running"
+                or any(run.get(key) != facts[key] for key in ("job_id", "attempt_id", "execution_id"))
+                or (reopen and reopen != str(profile_id or "").strip())):
+            raise ValueError
+    except Exception:
+        if reopen:
+            raise RuntimeError("request_unknown: 换线重开与原 Run、Attempt 或环境身份不一致，保留原窗口") from None
+        return {}
+    return value
+
+
 def run_roxy_registration(
     email: str,
     name: str,
@@ -1086,11 +1110,14 @@ def run_roxy_registration(
     from core.registration_service import registration_fact_context
 
     facts = registration_fact_context()
-    retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
-    if retained is None:
-        retained = recover_attempt_failed_browser(email=email, profile_id=profile_id, facts=facts)
-    if retained is None:
-        retained = recover_bound_failed_browser(email=email, profile_id=profile_id, facts=facts)
+    rotation_context = _validated_resume_proxy_rotation(options, facts, profile_id)
+    retained = None
+    if not rotation_context.get("reopen_profile_id"):
+        retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
+        if retained is None:
+            retained = recover_attempt_failed_browser(email=email, profile_id=profile_id, facts=facts)
+        if retained is None:
+            retained = recover_bound_failed_browser(email=email, profile_id=profile_id, facts=facts)
     report_job_progress("browser", "running", "正在接管原失败窗口" if retained else "正在打开或创建 Roxy 浏览器环境")
     client = RoxyBrowserClient()
     retained_driver = None
@@ -1179,6 +1206,7 @@ def run_roxy_registration(
     # 不能因该窗口连接失败而隔离服务层刚领到的另一条租约。
     current_lease_route_verified = retained is None and getattr(opened, "proxy_route_retained", False) is False
     resume_login_get_transport_failure = False
+    resume_proxy_rotation_ready = False
     try:
         try:
             from core.registration_debug import attach_current_roxy
@@ -2156,10 +2184,29 @@ def run_roxy_registration(
                 if driver is not None:
                     log_submission_diagnostics(driver, diagnostics_for(driver).stage, "final_failure",
                                                receipt=getattr(driver, "_browser_submission_receipt", None))
-                from core.registration_debug import pause_current_failure
-                pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}")
+                if resume_login_get_transport_failure and rotation_context.get("retry_available") is True:
+                    from core.registration_debug import current_session
+
+                    reason = f"{type(exc).__name__}: {str(exc)[:500]}"
+                    debug_session = current_session()
+                    if debug_session is not None:
+                        # 中间线路失败只存快照，不把整个 Run 标成已捕获最终失败，
+                        # 否则下一条线路的真正终态会失去现场。
+                        debug_session.capture_page_snapshot(driver, reason)
+                    from core.browser_traffic import finish_roxy_capture
+
+                    finish_roxy_capture(opened)
+                    # 只关闭本轮尚未提交认证 POST 的失败连接；不删除 Profile、
+                    # Cookie 或旧未知事实。关闭未确认时不向服务层开放换线。
+                    resume_proxy_rotation_ready = client.close_profile(opened.profile_id) is True
             except Exception:
-                logger.exception("[Roxy注册][Debug] 保留失败现场失败；继续按原失败流程收口")
+                logger.exception("[Roxy注册] 保存换线现场或关闭失败连接未完成，保留原窗口")
+            if not resume_proxy_rotation_ready:
+                try:
+                    from core.registration_debug import pause_current_failure
+                    pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}")
+                except Exception:
+                    logger.exception("[Roxy注册][Debug] 保留失败现场失败；继续按原失败流程收口")
         # 未确认创建前通常可以回收邮箱；但 password 模式下缺少创建密码入口时，
         # 该地址可能已经在 OpenAI 侧进入已有账号/半成品账号状态。继续放回池里只会
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
@@ -2196,7 +2243,7 @@ def run_roxy_registration(
             "没有可用 totp",
             "mfa_secret_missing",
         ))
-        disposable_proxy_failure = pre_account_transport_failure
+        disposable_proxy_failure = pre_account_transport_failure and not resume_login_get_transport_failure
         if disposable_proxy_failure and opened.created_by_run:
             try:
                 client.discard_profile(opened)
@@ -2253,6 +2300,8 @@ def run_roxy_registration(
             "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
             "current_lease_route_verified": current_lease_route_verified,
             "resume_login_get_transport_failure": resume_login_get_transport_failure,
+            "resume_proxy_rotation_ready": resume_proxy_rotation_ready,
+            "resume_proxy_rotation_profile_id": str(opened.profile_id) if resume_proxy_rotation_ready else "",
             "core_persisted": core_persisted,
             "registration_pending": bool(account_id and not access_token),
             "email": email,
@@ -2300,12 +2349,12 @@ def run_roxy_registration(
                 finish_roxy_capture(opened)
             except Exception:
                 logger.exception("[Roxy注册] 收口浏览器流量与执行覆盖率失败")
-        if driver and not profile_discarded and not bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
+        if driver and not profile_discarded and (resume_proxy_rotation_ready or not bool(_cfg.ROXY_KEEP_BROWSER_OPEN)):
             try:
                 _quit_driver(driver)
             except Exception:
                 pass
-        if not profile_discarded:
+        if not profile_discarded and not resume_proxy_rotation_ready:
             try:
                 client.cleanup_profile(opened)
             finally:

@@ -265,6 +265,64 @@ class PasswordPreSubmitRecoveryTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际恢复前只读脚本")
 class PasswordPreSubmitSnapshotScriptTests(unittest.TestCase):
+    def recovery_target(self, mode, identities):
+        module = ast.parse(Path(password_auth.__file__).read_text())
+        script = next(node.value for node in ast.walk(module) if isinstance(node, ast.Constant)
+                      and isinstance(node.value, str) and "missing_password_input" in node.value
+                      and "password_targets" in node.value)
+        source = r"""
+        const fixture = FIXTURE;
+        const window = {}, timers = [];
+        const setTimeout = callback => timers.push(callback);
+        const location = {protocol:'https:',hostname:'auth.openai.com',port:'',pathname:'/create-account/password'};
+        const getComputedStyle = () => ({visibility:'visible',display:'block'});
+        const form = {isConnected:true, __reactProps$test:{onSubmit(){}}, checkValidity:()=>true,
+          addEventListener(){}, removeEventListener(){}};
+        const input = {id:'password',type:'password',name:'password',autocomplete:'new-password',
+          isConnected:true,offsetWidth:100,offsetHeight:30,disabled:false,readOnly:false,
+          matches:()=>false,getClientRects:()=>[{}],getAttribute:()=>'',closest:()=>form,form,
+          value:'SyntheticPass123!',validity:{valid:true}};
+        const button = {isConnected:true,offsetWidth:100,offsetHeight:30,disabled:false,
+          readOnly:false,type:'submit',form,textContent:'Continue',matches:()=>false,
+          getClientRects:()=>[{}],getAttribute:()=>'',scrollIntoView(){},contains:el=>el===button,
+          getBoundingClientRect:()=>({left:0,top:0,width:100,height:30}),click(){}};
+        form.querySelectorAll = selector => selector === 'input' ? fixture.identities.concat([input]) : [button];
+        const document = {querySelectorAll:()=>[input],elementFromPoint:()=>button};
+        const execute = function(){SCRIPT};
+        const result = execute(fixture.mode,'SyntheticPass123!',input,'test-id','owner@example.test',true,'/create-account/password');
+        console.log(JSON.stringify({ok:result.ok,reason:result.reason,
+          phase:window.__turbPasswordSubmissionReceipt?.phase || null}));
+        """.replace("FIXTURE", json.dumps({"mode": mode, "identities": identities})).replace("SCRIPT", script)
+        result = subprocess.run([shutil.which("node"), "-e", source], capture_output=True, text=True, check=True, timeout=10)
+        return json.loads(result.stdout)
+
+    def test_recovery_input_and_queue_reject_mixed_hidden_and_readonly_identities(self):
+        for mode in ("recovery_input", "queue"):
+            for conflicting in (
+                {"type": "email", "name": "email", "readOnly": True, "value": "other@example.test"},
+                {"type": "email", "name": "contact", "value": "other@example.test"},
+                {"type": "text", "name": "contact", "autocomplete": "username", "value": "other@example.test"},
+            ):
+                result = self.recovery_target(mode, [
+                    {"type": "hidden", "name": "username", "value": EMAIL}, conflicting,
+                ])
+                with self.subTest(mode=mode, conflicting=conflicting):
+                    self.assertEqual(result, {"ok": False, "reason": "login_identity_unconfirmed", "phase": None})
+
+    def test_recovery_input_and_queue_require_nonempty_consistent_identity(self):
+        for mode in ("recovery_input", "queue"):
+            for identities in ([], [{"name": "username", "value": " "}]):
+                with self.subTest(mode=mode, identities=identities):
+                    self.assertEqual(self.recovery_target(mode, identities),
+                                     {"ok": False, "reason": "login_identity_unconfirmed", "phase": None})
+            accepted = self.recovery_target(mode, [
+                {"type": "hidden", "name": "username", "value": EMAIL},
+                {"type": "email", "name": "email", "readOnly": True, "value": " OWNER@EXAMPLE.TEST "},
+                {"type": "email", "name": "email", "value": " "},
+            ])
+            self.assertTrue(accepted["ok"])
+            self.assertEqual(accepted["phase"], "dispatched" if mode == "queue" else None)
+
     def evaluate(self, **fixture):
         module = ast.parse(Path(password_auth.__file__).read_text())
         script = next(node.value for node in ast.walk(module) if isinstance(node, ast.Constant)

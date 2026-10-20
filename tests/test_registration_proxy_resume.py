@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from core import db, operation_task_store, record_store, registration_service as service
 from core.registration.browser_submission import unresolved_submission_ids
+from core.registration import roxy
 from core.storage import registration
 from tests.support_pg import PostgresTestCase
 
@@ -66,7 +67,16 @@ class RegistrationProxyResumeTests(PostgresTestCase):
 
         def register(**kwargs):
             calls.append(kwargs)
-            contexts.append(service.registration_fact_context())
+            context = service.registration_fact_context()
+            contexts.append(context)
+            rotation = kwargs["registration_options"]["_resume_proxy_rotation"]
+            self.assertEqual(roxy._validated_resume_proxy_rotation(
+                kwargs["registration_options"], context, kwargs.get("profile_id"),
+            ), rotation)
+            self.assertEqual(rotation["retry_available"], len(calls) == 1)
+            if len(calls) > 1:
+                self.assertEqual(rotation["reopen_profile_id"], "held-profile")
+                self.assertEqual(kwargs["profile_id"], "held-profile")
             return {"success": False, "email": address, **next(remaining)}
 
         with ExitStack() as stack:
@@ -91,6 +101,7 @@ class RegistrationProxyResumeTests(PostgresTestCase):
         self.assertEqual(len({x["run_id"] for x in contexts}), 1)
         self.assertEqual(db.get_job(child_id)["attempt_id"], attempt_id)
         self.assertEqual(db.get_job(child_id)["root_job_id"], root_id)
+        self.assertNotIn("_resume_proxy_rotation", str(db.get_job(child_id).get("data")))
         private = registration.get_private_resume_context(attempt_id, email=address)
         self.assertEqual(private["password"], password)
         self.assertIn("original-unknown-profile", unresolved_submission_ids(private["submission_facts"]))
@@ -104,6 +115,7 @@ class RegistrationProxyResumeTests(PostgresTestCase):
         acquire, release, leases, job = self.run_resume([
             {"proxy_transport_failure": True, "current_lease_route_verified": True,
              "resume_login_get_transport_failure": True, "request_unknown": False,
+             "resume_proxy_rotation_ready": True, "resume_proxy_rotation_profile_id": "held-profile",
              "error": "net::ERR_TUNNEL_CONNECTION_FAILED"},
             {"request_unknown": True, "error": "profile_confirmation_unknown"},
         ])
@@ -126,6 +138,7 @@ class RegistrationProxyResumeTests(PostgresTestCase):
     def test_resume_rotation_is_bounded_and_last_bad_route_is_faulted(self):
         failure = {"proxy_transport_failure": True, "current_lease_route_verified": True,
                    "resume_login_get_transport_failure": True, "request_unknown": False,
+                   "resume_proxy_rotation_ready": True, "resume_proxy_rotation_profile_id": "held-profile",
                    "error": "net::ERR_PROXY_CONNECTION_FAILED"}
         acquire, release, leases, job = self.run_resume([failure, failure])
         self.assertEqual(acquire.call_count, 2)
@@ -142,6 +155,15 @@ class RegistrationProxyResumeTests(PostgresTestCase):
         ])
         self.assertEqual(acquire.call_count, 1)
         release.assert_called_once_with(leases[0], reason="failed")
+
+    def test_unconfirmed_window_close_never_allocates_another_lease(self):
+        acquire, release, leases, _job = self.run_resume([
+            {"proxy_transport_failure": True, "current_lease_route_verified": True,
+             "resume_login_get_transport_failure": True, "resume_proxy_rotation_ready": False,
+             "request_unknown": False, "error": "net::ERR_TUNNEL_CONNECTION_FAILED"},
+        ])
+        self.assertEqual(acquire.call_count, 1)
+        release.assert_called_once_with(leases[0], reason="transport_failure", fault=True)
 
     def assert_terminal_without_proxy_fault(self, error):
         acquire, release, leases, _job = self.run_resume([{"request_unknown": True, "error": error}])

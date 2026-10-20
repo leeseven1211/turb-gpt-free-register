@@ -1357,6 +1357,9 @@ def _should_retry_registration_resume_with_new_proxy(
         bool(original_email)
         and original_email == str(result.get("email") or "").strip().casefold()
         and result.get("resume_login_get_transport_failure") is True
+        and result.get("resume_proxy_rotation_ready") is True
+        and isinstance(result.get("resume_proxy_rotation_profile_id"), str)
+        and bool(result["resume_proxy_rotation_profile_id"].strip())
         and not result.get("success")
         and not result.get("access_token")
     )
@@ -1716,6 +1719,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     email: str | None = None
     proxy_lease = None
     proxy_transport_failure = False
+    resume_rotation_profile_id = ""
     unknown_facts: dict[str, object] = {}
     try:
         with _JobLogContext(log_file, task_id=job_id):
@@ -1941,6 +1945,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 # retry so the next attempt opens that replacement instead of
                 # retrying the stale Profile ID.
                 bound_profile_id = account_profile_id(_account_for_job(current))
+                if resume_rotation_profile_id:
+                    if bound_profile_id and str(bound_profile_id) != resume_rotation_profile_id:
+                        raise RuntimeError("request_unknown: 换线后的账号环境绑定已变化，保留原 Attempt")
+                    bound_profile_id = resume_rotation_profile_id
+                call_options = dict(registration_options_for_job(current))
+                # 仅本轮调用使用；不能写回任务快照或全局配置，也不能继承用户输入。
+                call_options.pop("_resume_proxy_rotation", None)
+                if str(current.get("job_type") or "") == "registration_resume":
+                    call_options["_resume_proxy_rotation"] = {
+                        **registration_fact_context(),
+                        "retry_available": retry_attempt < _registration_proxy_retry_limit(),
+                        "reopen_profile_id": resume_rotation_profile_id,
+                    }
                 from core.protocol_traffic import correlation_context
                 with correlation_context(**{**proxy_correlation,
                         "proxy_lease_id": getattr(proxy_lease, "lease_id", None),
@@ -1955,7 +1972,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         existing_password=existing_password or None,
                         existing_totp_secret=existing_totp_secret or None,
                         profile_id=bound_profile_id or None,
-                        registration_options=registration_options_for_job(current),
+                        registration_options=call_options,
                         email_source=selected_source,
                     )
                 proxy_transport_failure = _confirmed_registration_proxy_transport_failure(result)
@@ -1967,6 +1984,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     retry_with_new_proxy = _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt)
                 if not retry_with_new_proxy:
                     break
+
+                if str(current.get("job_type") or "") == "registration_resume":
+                    resume_rotation_profile_id = result["resume_proxy_rotation_profile_id"].strip()
 
                 retry_attempt += 1
                 retry_error = str((result or {}).get("error") or "代理线路瞬时失败")[:220]
