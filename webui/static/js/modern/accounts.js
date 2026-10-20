@@ -2191,6 +2191,7 @@ function _accountsV2MoreMenu(r) {
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
+    accountIsDeactivated(r) ? `<button type="button" data-account-restore="${esc(r.id)}" title="已确认 OpenAI 恢复访问权限后，解除本地停用标记">已解封，恢复账号</button>` : '',
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
     _planAction(r),
     _extractLinkAction(r),
@@ -2910,6 +2911,12 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const restoreBtn = e.target.closest('[data-account-restore]');
+  if (restoreBtn) {
+    await restoreDeactivatedAccount(Number(restoreBtn.dataset.accountRestore), restoreBtn);
+    return;
+  }
+
   const extractBtn = e.target.closest('[data-extract-link]');
   if (extractBtn) {
     await extractOneLink(Number(extractBtn.dataset.extractLink), extractBtn);
@@ -3580,6 +3587,15 @@ async function checkSelectedDeactivationMail() {
   }
 }
 
+function accountBulkQueueReasons(result) {
+  const reasons = [...(result.skipped || []), ...(result.failed || [])]
+    .map(item => String(item.reason || item.error || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (!reasons.length) return '';
+  const details = reasons.slice(0, 3).map(reason => reason.length > 80 ? `${reason.slice(0, 80)}…` : reason);
+  return `；${details.join('；')}${reasons.length > 3 ? `；另有 ${reasons.length - 3} 条原因` : ''}`;
+}
+
 async function checkSelectedLive(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -3592,7 +3608,6 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
 
 并发线程数：${workers}`;
   if (!confirm(msg)) return;
-  const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
   const btn = btnArg || $('#btnCheckSelectedLiveV2');
   const old = btn ? btn.textContent : '';
   if (btn) {
@@ -3608,10 +3623,9 @@ async function checkSelectedLive(idsArg = null, btnArg = null) {
     const skipped = (r.skipped || []).length;
     const configuredDriver = configuredLiveCheckDriver() || '默认';
     const effectiveDriver = r.live_check_driver || '未知';
-    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${configuredDriver}，实际驱动：${effectiveDriver}）`);
+    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${configuredDriver}，实际驱动：${effectiveDriver}）${accountBulkQueueReasons(r)}`);
     const firstStarted = (r.started || [])[0];
     if (firstStarted?.email) openLiveLog(firstStarted.email);
-    else if (firstAcc && firstAcc.email) openLiveLog(firstAcc.email);
     await loadAccounts();
     loadSummary();
   } catch(err) {
@@ -3631,7 +3645,6 @@ async function refreshSelectedToken(idsArg = null, btnArg = null) {
   const workers = getAccountOperationWorkers();
   const msg = idsArg ? `确定刷新这个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。` : `确定刷新选中的 ${ids.length} 个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。\n\n并发线程数：${workers}`;
   if (!confirm(msg)) return;
-  const firstAcc = ACCOUNTS.find(a => Number(a.id) === Number(ids[0]));
   const btn = btnArg || $('#btnRefreshSelectedTokenV2');
   const old = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; }
@@ -3642,10 +3655,9 @@ async function refreshSelectedToken(idsArg = null, btnArg = null) {
       body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped || []).length;
-    showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}`);
+    showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}${accountBulkQueueReasons(r)}`);
     const firstStarted = (r.started || [])[0];
     if (firstStarted?.email) openLiveLog(firstStarted.email);
-    else if (firstAcc && firstAcc.email) openLiveLog(firstAcc.email);
     await loadAccounts();
     loadSummary();
   } catch(err) {
@@ -3667,6 +3679,32 @@ async function deleteAccount(id, email, btn) {
   } catch(err) {
     showToast('删除失败: ' + err.message);
     btn.disabled = false;
+  }
+}
+
+async function restoreDeactivatedAccount(id, btn) {
+  if (btn?.disabled) return;
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
+  if (!accountIsDeactivated(account)) {
+    showToast('当前账号没有本地停用标记，无需恢复');
+    return;
+  }
+  if (!confirm(`确定恢复账号 #${id}？\n\n已确认 OpenAI 恢复访问权限后，解除本地停用标记；历史封禁记录保留，AT 和 Codex 凭证需要重新验证。`)) return;
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '恢复中…'; }
+  try {
+    const result = await api(`/api/accounts/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason: '已收到 OpenAI 恢复访问通知'}),
+    });
+    showToast(result.message || '已解除本地停用标记，请刷新 AT 重新验证');
+    await loadAccounts();
+    await loadSummary();
+  } catch(err) {
+    showToast('恢复账号失败: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
   }
 }
 

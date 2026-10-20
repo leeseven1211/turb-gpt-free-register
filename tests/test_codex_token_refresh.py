@@ -60,6 +60,36 @@ class CodexOauthMetadataTests(unittest.TestCase):
         self.assertTrue(service.sub2api_status_requires_reauth(401))
         self.assertFalse(service.sub2api_status_requires_reauth(403))
 
+    def test_restoration_requires_reauthorization_in_all_read_models_and_enqueue(self):
+        error = "account_restored_reauth_required: 账号访问已恢复，Codex 凭证需重新授权"
+        row = {
+            "filename": "codex-restored@example.test-free.json",
+            "email": "restored@example.test",
+            "oauth_account_status": "active",
+            "oauth_status": "reauth_required",
+            "oauth_reauth_required": True,
+            "oauth_refresh_error": error,
+            "oauth_refreshable": True,
+            "access_token_preview": "synthetic-access",
+            "expired": "2099-01-01T00:00:00Z",
+            "content": {
+                "access_token": "synthetic-access",
+                "refresh_token": "synthetic-refresh",
+                "expired": "2099-01-01T00:00:00Z",
+            },
+        }
+        self.assertTrue(service.refresh_error_requires_reauth(error))
+        public = db._codex_public_row(row)
+        compact = admin_repository._codex_item({**row, "data": row})
+        for projected in (public, compact, service.decorate_row(row)):
+            with self.subTest(model=projected):
+                self.assertTrue(projected["oauth_reauth_required"])
+        with patch.object(service.db, "list_codex_accounts", return_value=[public]):
+            result = service.enqueue_refresh(filename=row["filename"])
+        self.assertFalse(result["accepted"])
+        self.assertEqual("reauth_required", result["error_code"])
+        self.assertEqual("reauthorize", result["next_action"])
+
     def test_refresh_error_extracts_top_level_code(self):
         response = Mock(status_code=400)
         response.json.return_value = {

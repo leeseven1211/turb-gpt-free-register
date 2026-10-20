@@ -669,6 +669,7 @@ def mark_codex_account_deactivated(
     reason: str | None = None,
     *,
     checked_at: str | None = None,
+    conn=None,
 ) -> int:
     """Mark every local Codex credential for an account as deactivated.
 
@@ -679,6 +680,12 @@ def mark_codex_account_deactivated(
     normalized_email = str(email or "").strip()
     if not normalized_email:
         return 0
+    if conn is None:
+        with record_store.transaction() as own:
+            changed = mark_codex_account_deactivated(email, reason, checked_at=checked_at, conn=own)
+        if changed:
+            compat_export.schedule("codex_credentials")
+        return changed
     normalized_reason = str(reason or "account_deactivated").strip()[:500]
     now = str(checked_at or _now())
     changes = {
@@ -690,24 +697,21 @@ def mark_codex_account_deactivated(
         "oauth_refresh_error": normalized_reason,
     }
     changed = 0
-    with record_store.transaction() as conn:
-        rows = record_store.list_rows(
+    rows = record_store.list_rows(
+        record_store.CODEX_CREDENTIALS,
+        where="LOWER(BTRIM(COALESCE(email, ''))) = LOWER(BTRIM(%s))",
+        params=(normalized_email,),
+        order_by="id",
+        conn=conn,
+    )
+    for row in rows:
+        if record_store.patch_row(
             record_store.CODEX_CREDENTIALS,
-            where="LOWER(BTRIM(COALESCE(email, ''))) = LOWER(BTRIM(%s))",
-            params=(normalized_email,),
-            order_by="id",
+            int(row["id"]),
+            changes,
             conn=conn,
-        )
-        for row in rows:
-            if record_store.patch_row(
-                record_store.CODEX_CREDENTIALS,
-                int(row["id"]),
-                changes,
-                conn=conn,
-            ):
-                changed += 1
-    if changed:
-        compat_export.schedule("codex_credentials")
+        ):
+            changed += 1
     return changed
 
 
@@ -1745,10 +1749,39 @@ def backfill_account_registration_proxy_context() -> int:
     return changed
 
 
-def update_account_deactivation_mail(acc_id: int, result: dict | None = None) -> bool:
+def _deactivation_mail_precedes_restoration(account: dict, result: dict) -> bool:
+    """只忽略人工解封前已有的邮件，无法核实的新信号仍按停用处理。"""
+    restored_at = str(account.get("account_restored_at") or "").strip()
+    if not restored_at:
+        return False
+    message_id = str(result.get("message_id") or "").strip()
+    history = account.get("account_deactivation_history")
+    if message_id and isinstance(history, list):
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            evidence = entry.get("deactivation_mail")
+            if isinstance(evidence, dict) and message_id == str(evidence.get("message_id") or "").strip():
+                return True
+    try:
+        received = datetime.fromisoformat(str(result.get("received_at") or "").strip().replace("Z", "+00:00"))
+        restored = datetime.fromisoformat(restored_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    # 没有时区的收件时间无法与 UTC 恢复时间可靠比较。
+    return received.tzinfo is not None and restored.tzinfo is not None and received <= restored
+
+
+def update_account_deactivation_mail(acc_id: int, result: dict | None = None, *, conn=None) -> bool:
     """保存封号邮件扫描状态，不读取或修改 OAuth Token。"""
     result = result or {}
-    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if conn is None:
+        with record_store.transaction() as own:
+            updated = update_account_deactivation_mail(acc_id, result, conn=own)
+        if updated and str(result.get("status") or "") == "success" and result.get("detected"):
+            compat_export.schedule("codex_credentials")
+        return updated
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=True)
     if row is None:
         return False
     now = _now()
@@ -1763,7 +1796,7 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None) ->
     elif status == "running":
         changes["deactivation_mail_scan_started_at"] = now
     elif status == "success":
-        detected = bool(result.get("detected"))
+        detected = bool(result.get("detected")) and not _deactivation_mail_precedes_restoration(row, result)
         # 已确认的封号通知是持久证据，后续缩短回溯窗口不能把它清掉。
         if detected:
             changes["deactivation_mail_detected"] = True
@@ -1783,12 +1816,13 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None) ->
         if not bool(result.get("preserve_checked_at")):
             changes["deactivation_mail_checked_at"] = result.get("checked_at") or now
         changes["deactivation_mail_error"] = str(result.get("error") or "")[:500]
-    updated = _patch_account(int(acc_id), changes)
-    if updated and status == "success" and bool(result.get("detected")):
+    updated = _patch_account(int(acc_id), changes, conn=conn)
+    if updated and status == "success" and detected:
         mark_account_deactivated(
             int(acc_id),
             reason="account_deactivated",
             source="deactivation_mail",
+            conn=conn,
         )
     return updated
 
@@ -1885,6 +1919,7 @@ def mark_account_deactivated(
     reason: str | None = None,
     *,
     source: str | None = None,
+    conn=None,
 ) -> bool:
     """Persist a confirmed account deactivation from any account-operation path."""
     normalized_reason = str(reason or "account_deactivated").strip()[:500]
@@ -1900,10 +1935,15 @@ def mark_account_deactivated(
     }
     if source:
         changes["account_status_source"] = str(source).strip()[:80]
-    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=conn is not None)
     if account is None:
         return False
-    updated = _patch_account(int(acc_id), changes)
+    updated = _patch_account(int(acc_id), changes, conn=conn)
+    if updated and conn is not None:
+        mark_codex_account_deactivated(
+            str(account.get("email") or ""), normalized_reason, checked_at=now, conn=conn,
+        )
+        return updated
     if updated:
         try:
             mark_codex_account_deactivated(
@@ -1925,6 +1965,106 @@ def account_is_deactivated(account: dict | None) -> bool:
         str((account or {}).get(key) or "").strip().lower() == "deactivated"
         for key in ("account_status", "codex_status", "codex_credential_state")
     )
+
+
+def restore_account_after_deactivation(acc_id: int, *, reason: str) -> bool:
+    """人工确认访问恢复后解除当前停用，保留历史并要求 Codex 重新授权。"""
+    from core.storage import operation
+
+    normalized_reason = str(reason or "").strip()[:500]
+    if not normalized_reason:
+        raise ValueError("恢复账号必须填写确认原因")
+    operation.init()
+    changed_credentials = False
+    with record_store.transaction() as conn:
+        account = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=True)
+        if account is None:
+            return False
+        if not account_is_deactivated(account):
+            return True
+        active_statuses = ("queued", "running", "cancelling", "settling", "stopping", "waiting", "retrying")
+        if any(
+            key.endswith("_status") and str(value or "").strip().lower() in active_statuses
+            for key, value in account.items()
+        ):
+            raise ValueError("账号仍有任务正在执行，请等待结束后恢复")
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT 1 FROM {operation._table('operation_runs')} run "
+                f"JOIN {operation._table('operation_tasks')} task ON task.id=run.task_id "
+                "WHERE (run.account_id=%s OR task.account_id=%s OR LOWER(task.email_snapshot)=LOWER(%s)) "
+                "AND run.status IN ('queued','running','cancelling','settling','stopping','waiting') LIMIT 1",
+                (int(acc_id), int(acc_id), str(account.get("email") or "")),
+            )
+            if cur.fetchone():
+                raise ValueError("账号仍有任务正在执行，请等待结束后恢复")
+        now = _now_utc()
+        history = list(account.get("account_deactivation_history") or [])
+        history.append({
+            "reason": account.get("account_status_reason"),
+            "source": account.get("account_status_source"),
+            "at": account.get("account_status_at"),
+            "account_status": account.get("account_status"),
+            "codex_status": account.get("codex_status"),
+            "codex_credential_state": account.get("codex_credential_state"),
+            "live_check_status": account.get("live_check_status"),
+            "deactivation_mail": {
+                key: account.get(f"deactivation_mail_{key}")
+                for key in ("message_id", "received_at", "subject", "sender")
+            },
+            "restored_at": now,
+            "restore_reason": normalized_reason,
+        })
+        _patch_account(int(acc_id), {
+            "account_status": "active",
+            "account_status_reason": None,
+            "account_status_source": "manual_restore",
+            "account_status_at": now,
+            "account_deactivation_history": history,
+            "account_restored_at": now,
+            "account_restored_reason": normalized_reason,
+            "account_restored_source": "manual",
+            "codex_status": "failed",
+            "codex_credential_state": "reauth_required",
+            "codex_error": "账号访问已恢复，Codex 凭证需重新授权",
+            "live_check_status": "unknown",
+            "live_check_ok": False,
+            "live_check_error": None,
+            "live_check_http_status": None,
+            "deactivation_mail_detected": False,
+            "updated_at": now,
+        }, conn=conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {postgres_store.qualified(record_store.CODEX_CREDENTIALS.name)} "
+                "WHERE LOWER(BTRIM(email))=LOWER(BTRIM(%s)) ORDER BY id FOR UPDATE",
+                (str(account.get("email") or ""),),
+            )
+            credentials = [record_store.merge_row(record_store.CODEX_CREDENTIALS, row) for row in cur.fetchall()]
+        for credential in credentials:
+            credential_history = list(credential.get("oauth_deactivation_history") or [])
+            credential_history.append({
+                "reason": credential.get("oauth_account_status_reason"),
+                "at": credential.get("oauth_account_status_at"),
+                "oauth_status": credential.get("oauth_status"),
+                "oauth_account_status": credential.get("oauth_account_status"),
+                "restored_at": now,
+                "restore_reason": normalized_reason,
+            })
+            record_store.patch_row(record_store.CODEX_CREDENTIALS, int(credential["id"]), {
+                "oauth_status": "reauth_required",
+                "oauth_account_status": "active",
+                "oauth_account_status_reason": None,
+                "oauth_account_status_at": now,
+                "oauth_deactivation_history": credential_history,
+                "oauth_reauth_required": True,
+                "oauth_refresh_error": "account_restored_reauth_required: 账号访问已恢复，Codex 凭证需重新授权",
+                "updated_at": now,
+            }, conn=conn)
+            changed_credentials = True
+    if changed_credentials:
+        compat_export.schedule("codex_credentials")
+    return True
 
 
 def _locked_account_by_id(conn, account_id: int) -> dict | None:

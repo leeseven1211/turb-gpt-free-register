@@ -15,6 +15,154 @@ function render(name, row) {
   return context[name](row);
 }
 
+function loadFunctions(names, dependencies = {}) {
+  const context = {...dependencies};
+  vm.createContext(context);
+  for (const name of names) {
+    const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
+    assert.ok(match, `缺少 ${name}`);
+    const end = source.indexOf('\n}', match.index) + 2;
+    vm.runInContext(source.slice(match.index, end), context);
+  }
+  return context;
+}
+
+function operationContext(name, response) {
+  const calls = {requests: [], toasts: [], logs: [], accounts: 0, summary: 0};
+  const names = ['accountBulkQueueReasons', name].filter(functionName => source.includes(`function ${functionName}(`));
+  const context = loadFunctions(names, {
+    ACCOUNT_SELECTED: new Set([306]),
+    ACCOUNTS: [{id: 306, email: 'old@example.com', account_status: 'deactivated'}],
+    getAccountOperationWorkers: () => 3,
+    configuredLiveCheckDriver: () => 'protocol',
+    confirm: () => true,
+    api: async (url, options) => { calls.requests.push({url, options}); return response; },
+    showToast: message => calls.toasts.push(message),
+    openLiveLog: email => calls.logs.push(email),
+    loadAccounts: async () => { calls.accounts += 1; },
+    loadSummary: () => { calls.summary += 1; },
+    updateAccountSelectionUi: () => {},
+    $: () => null,
+  });
+  return {context, calls};
+}
+
+test('仅已停用账号的更多菜单提供已解封恢复入口，并保留正常账号动作保护', () => {
+  const context = loadFunctions(['accountIsDeactivated', '_accountsV2MoreMenu'], {
+    esc: value => String(value ?? ''),
+    _planAction: () => '', _extractLinkAction: () => '', _codexAction: () => '',
+  });
+  const deactivated = context._accountsV2MoreMenu({id: 306, account_status: 'deactivated'});
+  assert.match(deactivated, /data-account-restore="306"[^>]*>已解封，恢复账号<\/button>/);
+  assert.doesNotMatch(deactivated, /data-account-action|刷新AT|>查活</);
+  const active = context._accountsV2MoreMenu({id: 307, account_status: 'active'});
+  assert.doesNotMatch(active, /data-account-restore/);
+  assert.match(active, /刷新AT/);
+});
+
+test('恢复入口通过账号列表事件委托传递账号和按钮', async () => {
+  const button = {dataset: {accountRestore: '306'}};
+  const calls = [];
+  const context = loadFunctions(['onAccountsBodyClick'], {
+    restoreDeactivatedAccount: async (...args) => calls.push(args),
+  });
+  await context.onAccountsBodyClick({target: {closest: selector => selector === '[data-account-restore]' ? button : null}});
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 306);
+  assert.equal(calls[0][1], button);
+});
+
+test('确认解封后只解除本地停用标记，等待期间防止重复提交并刷新账号和摘要', async () => {
+  let resolveRequest;
+  const calls = {requests: [], confirms: [], toasts: [], accounts: 0, summary: 0};
+  const context = loadFunctions(['accountIsDeactivated', 'restoreDeactivatedAccount'], {
+    ACCOUNTS: [{id: 306, account_status: 'deactivated'}],
+    confirm: message => { calls.confirms.push(message); return true; },
+    api: (url, options) => { calls.requests.push({url, options}); return new Promise(resolve => { resolveRequest = resolve; }); },
+    showToast: message => calls.toasts.push(message),
+    loadAccounts: async () => { calls.accounts += 1; },
+    loadSummary: async () => { calls.summary += 1; },
+  });
+  const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
+  const pending = context.restoreDeactivatedAccount(306, button);
+  assert.equal(button.disabled, true);
+  assert.match(button.textContent, /恢复中/);
+  await context.restoreDeactivatedAccount(306, button);
+  assert.equal(calls.requests.length, 1);
+  assert.equal(calls.confirms.length, 1);
+  assert.match(calls.confirms[0], /已确认 OpenAI 恢复访问权限/);
+  assert.match(calls.confirms[0], /历史封禁记录保留/);
+  assert.match(calls.confirms[0], /AT 和 Codex 凭证需要重新验证/);
+  assert.equal(calls.requests[0].url, '/api/accounts/306/restore');
+  assert.equal(calls.requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls.requests[0].options.body), {reason: '已收到 OpenAI 恢复访问通知'});
+  resolveRequest({ok: true, message: '已解除本地停用标记，请刷新 AT 重新验证'});
+  await pending;
+  assert.deepEqual(calls.toasts, ['已解除本地停用标记，请刷新 AT 重新验证']);
+  assert.equal(calls.accounts, 1);
+  assert.equal(calls.summary, 1);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '已解封，恢复账号');
+});
+
+test('取消恢复确认时不请求接口，活跃操作错误直接反馈并恢复按钮', async () => {
+  for (const accepted of [false, true]) {
+    const calls = {requests: 0, toasts: []};
+    const context = loadFunctions(['accountIsDeactivated', 'restoreDeactivatedAccount'], {
+      ACCOUNTS: [{id: 306, account_status: 'deactivated'}],
+      confirm: () => accepted,
+      api: async () => { calls.requests += 1; throw new Error('账号存在活跃操作，请稍后恢复'); },
+      showToast: message => calls.toasts.push(message),
+      loadAccounts: () => assert.fail('失败或取消时不应刷新账号'),
+      loadSummary: () => assert.fail('失败或取消时不应刷新摘要'),
+    });
+    const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
+    await context.restoreDeactivatedAccount(306, button);
+    assert.equal(calls.requests, accepted ? 1 : 0);
+    assert.equal(calls.toasts.length, accepted ? 1 : 0);
+    if (accepted) assert.match(calls.toasts[0], /账号存在活跃操作/);
+    assert.equal(button.disabled, false);
+    assert.equal(button.textContent, '已解封，恢复账号');
+  }
+});
+
+test('刷新 AT 未入队时显示跳过原因且不打开账号旧日志', async () => {
+  const {context, calls} = operationContext('refreshSelectedToken', {
+    ok: true, started: [], started_count: 0, busy_count: 0, failed: [], failed_count: 0,
+    skipped: [{id: 306, email: 'old@example.com', reason: '账号已标记为封号'}],
+  });
+  const button = {disabled: false, textContent: '刷新AT'};
+  await context.refreshSelectedToken([306], button);
+  assert.deepEqual(calls.logs, []);
+  assert.match(calls.toasts[0], /入队 0 个.*跳过 1/);
+  assert.match(calls.toasts[0], /账号已标记为封号/);
+  assert.equal(calls.accounts, 1);
+  assert.equal(calls.summary, 1);
+  assert.equal(button.disabled, false);
+});
+
+test('刷新 AT 仅打开本次新入队账号日志，并最多展示三条跳过或失败原因', async () => {
+  const {context, calls} = operationContext('refreshSelectedToken', {
+    ok: true, started: [{id: 307, email: 'new@example.com', status: 'queued'}], started_count: 1, busy_count: 0,
+    skipped: [{id: 306, reason: '原因一'}, {id: 308, reason: '原因二'}],
+    failed: [{id: 309, error: '入队失败原因三'}, {id: 310, error: '原因四'}], failed_count: 2,
+  });
+  await context.refreshSelectedToken([306, 307], {disabled: false, textContent: '刷新AT'});
+  assert.deepEqual(calls.logs, ['new@example.com']);
+  assert.match(calls.toasts[0], /原因一.*原因二.*入队失败原因三/);
+  assert.doesNotMatch(calls.toasts[0], /原因四/);
+});
+
+test('查活未入队时不打开账号旧日志，且展示跳过原因', async () => {
+  const {context, calls} = operationContext('checkSelectedLive', {
+    ok: true, started: [], started_count: 0, busy_count: 0, failed: [], failed_count: 0,
+    skipped: [{id: 306, reason: '账号已标记为封号'}], live_check_driver: 'protocol',
+  });
+  await context.checkSelectedLive([306], {disabled: false, textContent: '查活'});
+  assert.deepEqual(calls.logs, []);
+  assert.match(calls.toasts[0], /账号已标记为封号/);
+});
+
 test('封号邮件列统一显示复查按钮并按扫描状态禁用', () => {
   const unscanned = render('_deactivationMailCell', {id: 1, email_source: 'icloud_hide'});
   assert.match(unscanned, /class="account-cell-lines status-action-cell"/);

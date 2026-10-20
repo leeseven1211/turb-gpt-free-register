@@ -48,6 +48,7 @@ _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-
 _CREDENTIAL_URL_RE = re.compile(r"(?i)(https?://)[^/@\s]+@")
 _LONG_OPAQUE_RE = re.compile(r"\b[A-Za-z0-9_\-.]{48,}\b")
 _REAUTH_ERROR_MARKERS = (
+    "account_restored_reauth_required",
     "invalid_grant",
     "invalid refresh token",
     "refresh_token_invalidated",
@@ -1548,7 +1549,7 @@ def enqueue_refresh(
             "accepted": False,
             "error_code": REAUTH_REQUIRED,
             "next_action": "reauthorize",
-            "error": "refresh token 已被远端拒绝，需要重新 OAuth 授权",
+            "error": "当前凭证需要重新 OAuth 授权",
             "filename": filename,
         }
     if _has_reconciliation_marker(refresh_error) and not allow_unknown_manual_retry:

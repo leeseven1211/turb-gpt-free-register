@@ -180,6 +180,8 @@ def create_accounts_blueprint(context: WebUIContext):
             or db.account_is_deactivated(db.get_account_by_email(str(row.get("email") or "").strip()))
         ):
             raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
+        if row and codex_token_refresh_service.refresh_error_requires_reauth(row.get("oauth_refresh_error")):
+            raise RuntimeError("当前 Codex 凭证需重新授权后才能上传")
         text, actual_filename = db.read_codex_credential(filename)
         try:
             auth_json = _json.loads(text)
@@ -678,6 +680,26 @@ def create_accounts_blueprint(context: WebUIContext):
             else:
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "值为空"})
         return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+
+    @bp.post("/api/accounts/<int:acc_id>/restore")
+    def api_account_restore(acc_id: int):
+        """收到恢复访问通知后，显式解除本地停用；凭证仍需重新验证。"""
+        data = request.get_json(silent=True)
+        reason = data.get("reason") if isinstance(data, dict) else None
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 300:
+            return jsonify({"ok": False, "error": "请填写 1–300 字的解封依据"}), 400
+        try:
+            restored = db.restore_account_after_deactivation(acc_id, reason=reason.strip())
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        if not restored:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        logger.info("已显式解除账号本地停用：account_id=%s", acc_id)
+        return jsonify({
+            "ok": True,
+            "id": acc_id,
+            "message": "已解除本地停用标记，请刷新 AT 重新验证；Codex 凭证需重新授权",
+        })
 
     @bp.post("/api/accounts/<int:acc_id>/archive")
     def api_account_archive(acc_id: int):
