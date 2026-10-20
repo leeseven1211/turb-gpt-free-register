@@ -1921,14 +1921,6 @@ function _accountPromotionCheckoutError(item) {
     .replace(/\b(?:cs_(?:live|test)|oaics|(?:pk|sk)_(?:live|test))_[a-z0-9_-]+\b/gi, '[结账标识已隐藏]')
     .replace(/\b[^\s；，]*secret[^\s；，]*\b/gi, '[凭据已隐藏]').slice(0, 240).trim();
 }
-function _accountPromotionCheckoutLabel(item) {
-  const status = _accountPromotionCheckoutStatus(item);
-  if (status === 'failed') return '支付方式查询失败';
-  if (['skipped', 'mismatched'].includes(status)) return '支付方式待查询';
-  const methods = _accountPromotionPaymentMethods(item).join(' ');
-  if (status !== 'success') return methods || '支付方式待查询';
-  return [_accountPromotionCheckoutAmount(item), _accountPromotionCheckoutSession(item), methods].filter(Boolean).join(' · ') || '支付方式未返回';
-}
 function _accountPromotionCheckoutDetail(item) {
   const status = _accountPromotionCheckoutStatus(item);
   if (status === 'failed' || status === 'skipped') {
@@ -1963,22 +1955,21 @@ function _accountPromotionQueryTooltip(queryStatus, error = '') {
   if (status === 'cancelled') return `本次查询已取消${error ? `: ${error}` : ''}`;
   return '';
 }
-function _accountCountryPlusHeading(country, item) {
-  if (item.kind === 'other_promo') return `${country}-其他优惠`;
-  if (item.kind !== 'discount') return country;
-  const percentage = typeof item.discount_percentage === 'boolean' ? NaN : Number(item.discount_percentage);
-  const discount = Number.isFinite(percentage) && percentage > 0 && percentage < 100 ? `${percentage}%` : '折扣';
-  const count = typeof item.duration_num_periods === 'boolean' ? NaN : Number(item.duration_num_periods);
-  const units = {month: '', year: '年', week: '周', day: '天'};
-  const period = String(item.duration_period || '').toLowerCase();
-  const duration = Number.isFinite(count) && count > 0 && Object.hasOwn(units, period) ? `-${count}${units[period]}` : '';
-  return `${country}-${discount}${duration}`;
+function _accountPromotionCountryTone(country) {
+  const code = String(country || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+  const hash = (code.charCodeAt(0) * 31 + code.charCodeAt(1)) % 16;
+  return `is-country-${hash}`;
 }
 function _accountPromotionRowMarkup({best, country = '', stale = false, label, tooltip}) {
+  const countryTone = _accountPromotionCountryTone(country);
   const heading = country
-    ? `<span class="account-promotion-country">${esc(_accountCountryPlusHeading(country, best))}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
+    ? `<span class="account-promotion-country">${esc(country)}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
     : '';
-  return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
+  return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${countryTone ? ` ${countryTone}` : ''}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
+}
+function _accountPromotionCellTooltip(item) {
+  return `${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`;
 }
 function _promotionCell(r) {
   const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries${lines.length === 1 ? ' account-promotion-cell--single' : ''}">${lines.join('')}</div>`;
@@ -1987,7 +1978,7 @@ function _promotionCell(r) {
     const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
     const detail = [
       ...rows.map(({display, best}) => [
-        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(best)}`,
+        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionCellTooltip(best)}`,
         display.queryContext,
       ].filter(Boolean).join('\n')),
       _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
@@ -2003,8 +1994,7 @@ function _promotionCell(r) {
       .sort((left, right) => (right.display.checkedAt || 0) - (left.display.checkedAt || 0))
       .slice(0, 2);
     const countryMarkup = ({display, best}) => {
-      const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-      const label = hasOffer ? _accountPromotionCheckoutLabel(best) : _accountPlusCellLabel(best);
+      const label = _accountPlusCellLabel(best);
       return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip: detail});
     };
     return cell(visibleRows.map(countryMarkup));
@@ -2014,10 +2004,10 @@ function _promotionCell(r) {
   const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
   const countryValue = String(r.plan_promotion_country || best.country || '').trim().toUpperCase();
   const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
-  const label = hasOffer ? _accountPromotionCheckoutLabel(best) : _accountPlusCellLabel(best);
+  const label = _accountPlusCellLabel(best);
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
   const tooltip = [
-    `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
+    `${hasOffer ? `${country} ` : ''}${_accountPromotionCellTooltip(best)}`,
     historical ? '显示上次成功快照' : '',
     _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
   ].filter(Boolean).join('\n');
