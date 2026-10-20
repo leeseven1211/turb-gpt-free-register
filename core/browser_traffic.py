@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from core import record_store
+from core.http_response_diagnostics import auth_submission_endpoint, safe_auth_error
 
 logger = logging.getLogger(__name__)
 
@@ -589,18 +590,7 @@ class _SummaryOnlyCDPSession:
 
     @staticmethod
     def _submission_endpoint_kind(url: Any) -> str:
-        path = str(urlsplit(str(url or "")).path or "").lower()
-        if path.endswith("/api/auth/csrf"):
-            return "nextauth_csrf"
-        if "/api/auth/signin/" in path:
-            return "nextauth_signin"
-        if path.endswith(("/api/accounts/password", "/api/accounts/user/register")) or "/password" in path and "/api/" in path:
-            return "password_submit"
-        if "email-otp" in path and path.endswith(("/validate", "/verify")):
-            return "otp_submit"
-        if "email-otp" in path and path.endswith(("/send", "/resend")):
-            return "otp_resend"
-        return ""
+        return auth_submission_endpoint(url)
 
     def _observe_submission(self, record: Mapping[str, Any], *, response: bool = False) -> None:
         self._observe_auth_diagnostic(record, phase="complete" if response else "request")
@@ -616,6 +606,7 @@ class _SummaryOnlyCDPSession:
         if http_method != expected_method:
             return
         try:
+            auth_error = safe_auth_error(record.get("auth_error")) if response else {}
             callback({
                 "endpoint_kind": endpoint_kind,
                 "http_method": http_method,
@@ -625,6 +616,7 @@ class _SummaryOnlyCDPSession:
                 # 仅在当前 CDP 连接内做请求/响应配对；不进入持久事实或公共投影。
                 "request_id": record.get("request_id"),
                 "target_id": record.get("target_id"),
+                **({"auth_error": auth_error} if auth_error else {}),
             })
         except Exception:
             logger.debug("[浏览器流量] 认证提交事实分发失败", exc_info=True)

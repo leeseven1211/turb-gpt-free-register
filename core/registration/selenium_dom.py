@@ -796,7 +796,7 @@ def _is_login_password_page(driver) -> bool:
     url = str(state.get('url') or '').lower()
     return '/log-in/password' in url
 
-def _click_if_enabled_submit(driver) -> bool:
+def _click_if_enabled_submit(driver, *, before_dispatch=None) -> bool:
     """提交资料页：优先 form.requestSubmit/button[type=submit]，不依赖按钮文字。"""
     try:
         target = driver.execute_script(r"""
@@ -808,9 +808,8 @@ def _click_if_enabled_submit(driver) -> bool:
             submit.scrollIntoView({block:'center'});
             return submit;
           }
-          if (typeof form.requestSubmit === 'function') {
-            form.requestSubmit();
-            return 'submitted_by_requestSubmit';
+          if (!submit && typeof form.requestSubmit === 'function') {
+            return {request_submit_form: form};
           }
         }
         const submitters = [...document.querySelectorAll('button[type="submit"], input[type="submit"]')]
@@ -827,13 +826,22 @@ def _click_if_enabled_submit(driver) -> bool:
         }
         return null;
         """)
-        if not target:
-            return False
-        if isinstance(target, str):
-            return True
-        _human_click(driver, target, label="profile_submit")
+    except Exception:
+        return False
+    if not target:
+        return False
+    # 先找到可提交目标，再建立 durable 派发围栏；保存失败不能继续提交或吞成未就绪。
+    if callable(before_dispatch):
+        before_dispatch()
+    try:
+        if isinstance(target, dict) and target.get("request_submit_form") is not None:
+            driver.execute_script("arguments[0].requestSubmit();", target["request_submit_form"])
+        elif not isinstance(target, str):
+            _human_click(driver, target, label="profile_submit")
         return True
     except Exception:
+        if callable(before_dispatch):
+            raise
         return False
 
 def _button_after_input(driver, field, *, before: bool = False):

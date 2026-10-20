@@ -437,7 +437,7 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
 
         self.assertGreaterEqual(clock.now, 120)
         self.assertLess(clock.now, 121)
-        self.assertEqual(phases, [])
+        self.assertEqual(phases, ["not_dispatched"])
 
     def test_resume_uses_original_password_when_server_still_offers_creating_one(self):
         self._resume_with_offered_password(create_password=True)
@@ -568,7 +568,9 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         profile_url = driver.current_url
         driver.execute_script.return_value = {"valid": True, "fields": []}
 
-        def submit(_driver):
+        def submit(_driver, *, before_dispatch=None):
+            if before_dispatch is not None:
+                before_dispatch()
             driver.current_url = "https://chatgpt.com/"
             return True
 
@@ -853,7 +855,9 @@ class SubmissionRecoveryIntegrationTests(unittest.TestCase):
         driver.execute_script.return_value = {"valid": True, "fields": []}
         driver.get.side_effect = lambda url: setattr(driver, "current_url", "https://chatgpt.com/" if url == profile_url else url)
 
-        def submit(_driver):
+        def submit(_driver, *, before_dispatch=None):
+            if before_dispatch is not None:
+                before_dispatch()
             driver.current_url = error_url
             return True
 

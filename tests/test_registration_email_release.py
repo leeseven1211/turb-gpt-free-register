@@ -898,7 +898,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             ["icloud_hide", "icloud_hide"],
         )
         self.assertNotIn("batch_id", acquire_proxy.call_args_list[1].kwargs)
-        release_proxy.assert_any_call(proxy1, reason="registration_proxy_retry_1")
+        release_proxy.assert_any_call(proxy1, reason="registration_proxy_retry_1", fault=False)
         release_proxy.assert_any_call(proxy2, reason="pending")
         stage_transitions = [
             (call.args[1], call.kwargs.get("state"))

@@ -82,7 +82,8 @@ def test_profile_executes_upstream_filling_before_local_submission_and_identity_
         patch.object(upstream, "_find_any", return_value=element),
         patch.object(upstream, "_human_type_text", side_effect=lambda *_args, **_kwargs: order.append("name")),
         patch.object(upstream, "_fill_birthday_or_age", wraps=upstream._fill_birthday_or_age) as birthday,
-        patch.object(password_auth, "_click_if_enabled_submit", side_effect=lambda *_args: order.append("submit") or True),
+        patch.object(password_auth, "_click_if_enabled_submit", side_effect=lambda *_args, **kw:
+                     (kw["before_dispatch"](), order.append("submit"), True)[-1]),
         patch.object(password_auth, "log_submission_diagnostics"),
         patch.object(password_auth, "_read_profile_session_once", return_value={"accessToken": "unit-token"}) as confirm,
     ):

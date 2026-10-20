@@ -237,6 +237,68 @@ class ResumeSessionFlowTests(unittest.TestCase):
         args.update(kwargs)
         return roxy.run_roxy_registration(EMAIL, "Example User", "2000-01-02", **args)
 
+    def test_fresh_resume_login_get_transport_failure_has_explicit_route_proof(self):
+        with self.run_context() as (driver, mocks):
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+            result = self.run_registration()
+        self.assertIs(result.get("proxy_transport_failure"), True)
+        self.assertIs(result.get("current_lease_route_verified"), True)
+        self.assertIs(result.get("resume_login_get_transport_failure"), True)
+        mocks["_submit_email_and_wait_next"].assert_not_called()
+        mocks["_fill_password_page_if_present"].assert_not_called()
+
+    def test_login_get_http_and_budget_failures_do_not_fault_the_proxy(self):
+        for error in ("HTTP 400", "HTTP 403", "StageTimeout: budget exhausted",
+                      "net::ERR_TIMED_OUT", "chrome-error://chromewebdata/", "找不到邮箱输入框"):
+            with self.subTest(error=error), self.run_context() as (driver, mocks):
+                driver.current_url = "https://auth.openai.com/log-in"
+                mocks["navigate"].side_effect = RuntimeError(error)
+                result = self.run_registration()
+                self.assertIs(result.get("proxy_transport_failure"), False)
+                self.assertIs(result.get("resume_login_get_transport_failure"), False)
+
+    def test_ordinary_registration_get_cannot_claim_resume_retry_permission(self):
+        with self.run_context(action="registration") as (driver, mocks):
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_PROXY_CONNECTION_FAILED")
+            result = self.run_registration(existing_password=None)
+        self.assertIs(result.get("proxy_transport_failure"), True)
+        self.assertIs(result.get("resume_login_get_transport_failure"), False)
+
+    def test_transport_failure_after_email_submission_cannot_claim_get_only_phase(self):
+        with self.run_context() as (driver, mocks):
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["navigate"].side_effect = None
+            def dispatched_then_failed(*_args, **_kwargs):
+                from core.registration.browser_submission import BrowserSubmissionReceipt
+                driver._browser_submission_receipt = BrowserSubmissionReceipt(
+                    kind="resume_login", stage="submit_email", endpoint_kind="email_submit",
+                    phase="ui_dispatched", http_method="POST",
+                )
+                raise RuntimeError("net::ERR_CONNECTION_RESET")
+            mocks["_submit_email_and_wait_next"].side_effect = dispatched_then_failed
+            result = self.run_registration()
+        mocks["_submit_email_and_wait_next"].assert_called_once()
+        self.assertEqual(driver._browser_submission_receipt.phase, "ui_dispatched")
+        self.assertIs(result.get("proxy_transport_failure"), True)
+        self.assertIs(result.get("resume_login_get_transport_failure"), False)
+
+    def test_retained_route_never_faults_unrelated_new_lease(self):
+        with self.run_context() as (driver, mocks):
+            driver.current_url = "https://auth.openai.com/log-in"
+            mocks["take_default"].return_value = SimpleNamespace(
+                driver=driver, opened=mocks["opened"].return_value, otp_after_ts=123.0,
+            )
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+            with patch.object(roxy, "prepare_retained_resume", return_value=SimpleNamespace(
+                password="unit-original-password", restart_login=True,
+            )):
+                result = self.run_registration()
+        self.assertIs(result.get("proxy_transport_failure"), True)
+        self.assertIs(result.get("current_lease_route_verified"), False)
+        self.assertIs(result.get("resume_login_get_transport_failure"), False)
+
     def test_native_error_during_bound_profile_probe_reaches_new_login_get(self):
         with self.run_context() as (driver, mocks):
             def fail_after_origin_change(_driver, **_kwargs):

@@ -324,6 +324,54 @@ class RegistrationIdentityContractTests(unittest.TestCase):
 
 
 class RegistrationServiceRetryBoundaryTests(unittest.TestCase):
+    def test_resume_get_failure_requires_positive_current_route_facts(self):
+        job = {"job_type": "registration_resume", "email": "held@example.test"}
+        result = {
+            "success": False, "email": job["email"], "account_id": 42,
+            "request_unknown": True, "checkpoint": "account_request_started",
+            "proxy_transport_failure": True, "current_lease_route_verified": True,
+            "resume_login_get_transport_failure": True,
+            "error": "net::ERR_TUNNEL_CONNECTION_FAILED",
+        }
+        with patch.object(registration_service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertTrue(registration_service._should_retry_registration_resume_with_new_proxy(
+                result, job, 0, existing_password="saved-password",
+            ))
+            for field in ("proxy_transport_failure", "current_lease_route_verified",
+                          "resume_login_get_transport_failure"):
+                for value in (False, None, "true"):
+                    with self.subTest(field=field, value=value):
+                        self.assertFalse(registration_service._should_retry_registration_resume_with_new_proxy(
+                            {**result, field: value}, job, 0, existing_password="saved-password",
+                        ))
+            for changed_job, password, retry_count in (
+                ({**job, "job_type": "registration"}, "saved-password", 0),
+                ({**job, "email": "other@example.test"}, "saved-password", 0),
+                (job, "", 0), (job, "saved-password", 2),
+            ):
+                with self.subTest(job=changed_job, password_present=bool(password), retry_count=retry_count):
+                    self.assertFalse(registration_service._should_retry_registration_resume_with_new_proxy(
+                        result, changed_job, retry_count, existing_password=password,
+                    ))
+
+    def test_transport_fault_is_independent_from_unknown_account_fence(self):
+        result = {"request_unknown": True, "account_id": 42,
+                  "proxy_transport_failure": True, "current_lease_route_verified": True}
+        self.assertTrue(registration_service._confirmed_registration_proxy_transport_failure(result))
+        for changed in (
+            {"current_lease_route_verified": False},
+            {"proxy_transport_failure": False},
+            {"proxy_transport_failure": "true"},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(registration_service._confirmed_registration_proxy_transport_failure(
+                    {**result, **changed},
+                ))
+        for error in ("HTTP 400", "HTTP 403", "ERR_TUNNEL_CONNECTION_FAILED",
+                      "StageTimeout", "找不到邮箱输入框/邮箱入口"):
+            with self.subTest(error=error):
+                self.assertFalse(registration_service._confirmed_registration_proxy_transport_failure({"error": error}))
+
     def test_transient_pre_auth_unknown_identity_can_rotate_proxy(self):
         proxy = MagicMock(provider="1024proxy")
         result = {

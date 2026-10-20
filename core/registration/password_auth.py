@@ -868,6 +868,103 @@ def _refresh_saved_login_password_form(driver, *, budget, receipt, observe, form
     return None
 
 
+def _refresh_unsubmitted_password_form(driver, *, receipt, email: str, expected_url: str,
+                                       deadline: float) -> bool:
+    """仅在明确未排队时 GET 当前密码页；新表单必须再核验原邮箱才能提交。"""
+    _checkpoint()
+    _check_manual_stop()
+    if not isinstance(receipt, BrowserSubmissionReceipt) or receipt.phase != "prepared":
+        return False
+    if getattr(driver, "_browser_submission_receipt", None) is not receipt:
+        return False
+    history = getattr(driver, "_browser_submission_receipts", ())
+    if not isinstance(history, (list, tuple)):
+        return False
+    if any(getattr(item, "phase", "") not in {"prepared", "not_dispatched", "confirmed", "rejected"}
+           for item in history):
+        return False
+    try:
+        current_url = str(driver.current_url or "")
+        location = urlsplit(current_url)
+        if not (
+            current_url == expected_url and location.scheme == "https"
+            and location.hostname == "auth.openai.com" and location.port in (None, 443)
+            and not location.username and not location.password
+            and location.path in {"/create-account/password", "/signup/password", "/log-in/password"}
+            and callable(getattr(driver, "get", None))
+        ):
+            return False
+        remaining = _budget_timeout(None, max(0.0, deadline - time.time()), minimum=0.0)
+        if remaining < 1.0:
+            return False
+        old_script_timeout = getattr(getattr(driver, "timeouts", None), "script", None)
+        if not isinstance(old_script_timeout, (int, float)):
+            return False
+        driver.set_script_timeout(min(2.0, remaining))
+        try:
+            snapshot = driver.execute_script(r"""
+        const expected = String(arguments[0] || '').trim().toLowerCase();
+        const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+          && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+        const identities = [...document.querySelectorAll('input')]
+          .filter(el => el.readOnly || /email|username/i.test(el.type + ' ' + el.name + ' ' + el.autocomplete))
+          .map(el => String(el.value || '').trim().toLowerCase()).filter(Boolean);
+        const text = String(document.body?.innerText || '').toLowerCase();
+        const blocked = ['verify you are human','checking your browser','enable javascript and cookies to continue',
+          'performing security verification','your session has ended',
+          'session has expired','invalid_auth_step','authentication error','会话已结束','会话已过期',
+          '请验证您是人类','验证您是真人'].some(marker => text.includes(marker))
+          || [...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],#challenge-stage,#challenge-running,#challenge-form')].some(visible);
+        return {url:location.href, identity_conflict:!expected || identities.some(value => value !== expected),
+          blocked_page:blocked,
+          ui_receipt_present:window.__turbPasswordSubmissionReceipt !== undefined
+            && window.__turbPasswordSubmissionReceipt !== null};
+            """, email)
+        finally:
+            driver.set_script_timeout(old_script_timeout)
+        if (not isinstance(snapshot, dict) or snapshot.get("url") != current_url
+                or snapshot.get("identity_conflict") is not False
+                or snapshot.get("blocked_page") is not False
+                or snapshot.get("ui_receipt_present") is not False):
+            return False
+    except Exception:
+        return False
+    # 诊断采集后重新检查围栏和剩余时间；GET 不获得新的准备预算。
+    log_submission_diagnostics(driver, "password", "before_unsubmitted_refresh", receipt=receipt)
+    _checkpoint()
+    _check_manual_stop()
+    if receipt.phase != "prepared" or getattr(driver, "_browser_submission_receipt", None) is not receipt:
+        return False
+    history = getattr(driver, "_browser_submission_receipts", ())
+    if not isinstance(history, (list, tuple)) or any(
+        getattr(item, "phase", "") not in {"prepared", "not_dispatched", "confirmed", "rejected"}
+        for item in history
+    ):
+        return False
+    if str(getattr(driver, "current_url", "") or "") != current_url:
+        return False
+    remaining = _budget_timeout(None, max(0.0, deadline - time.time()), minimum=0.0)
+    if remaining < 0.1:
+        return False
+    old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+    try:
+        driver.set_page_load_timeout(min(8.0, remaining))
+    except Exception:
+        return False
+    logger.warning("%s 密码表单持续未就绪且尚未排队，GET 当前密码页一次后重新核验原身份", _log_prefix(driver))
+    try:
+        driver.get(current_url)
+    except Exception as exc:
+        logger.warning("%s 未提交密码页恢复未完成，继续在原预算内观察：%s", _log_prefix(driver), type(exc).__name__)
+    finally:
+        if isinstance(old_timeout, (int, float)):
+            try:
+                driver.set_page_load_timeout(old_timeout)
+            except Exception:
+                logger.debug("%s 恢复密码页加载超时设置失败", _log_prefix(driver))
+    return True
+
+
 def _fill_password_page_if_present(
     driver,
     email: str,
@@ -890,6 +987,8 @@ def _fill_password_page_if_present(
     auth_mode = _registration_auth_mode()
     switched_from_otp = False
     saved_form_recoveries = 0
+    pre_submit_recovery_checked = False
+    pre_submit_recovery_used = False
     transition_deadline = None
     while time.time() < end:
         if saved_form_recoveries:
@@ -1016,6 +1115,11 @@ def _fill_password_page_if_present(
         const mode = arguments[0];
         const expectedPassword = arguments[1];
         const filledInput = arguments[2];
+        const recoveryPath = arguments[6];
+        if (recoveryPath && !(location.protocol === 'https:' && location.hostname === 'auth.openai.com'
+            && ['', '443'].includes(location.port) && location.pathname === recoveryPath)) {
+          return {ok:false, reason:'password_recovery_route_unconfirmed'};
+        }
         const visible = el => !!el && !!el.isConnected
           && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
@@ -1129,6 +1233,9 @@ def _fill_password_page_if_present(
         """
         filled_input = None
         prepared_reported = False
+        password_form_url = str(getattr(driver, "current_url", "") or "")
+        not_ready_since = None
+        not_ready_reason = None
         submission_receipt = BrowserSubmissionReceipt(
             kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "password",
             stage="login_password" if is_login_password else "password_create",
@@ -1140,12 +1247,23 @@ def _fill_password_page_if_present(
         last_safe_pre_dispatch_failure = False
         while True:
             _check_manual_stop()
+            if pre_submit_recovery_used:
+                location = urlsplit(str(getattr(driver, "current_url", "") or ""))
+                if (time.time() >= end or location.scheme != "https"
+                        or location.hostname != "auth.openai.com" or location.port not in (None, 443)
+                        or location.username or location.password
+                        or location.path != urlsplit(password_form_url).path):
+                    if submission_receipt.phase == "prepared":
+                        record_browser_submission_fact(driver, "not_dispatched", receipt=submission_receipt, result="cancelled")
+                    raise RuntimeError("password_form_not_ready: 恢复后原身份密码页未确认或准备预算耗尽，未提交密码")
             if transition_deadline is not None and time.time() >= transition_deadline:
                 raise _PasswordTransitionTimeout("request_unknown: 原身份密码登录恢复预算已耗尽，保留原密码和提交事实")
             if filled_input is None:
                 result = (
-                    driver.execute_script(target_script, "recovery_input", password, None, None, email)
-                    if saved_form_recoveries else driver.execute_script(target_script, "input", password, None)
+                    driver.execute_script(target_script, "recovery_input", password, None, None, email, False,
+                                          urlsplit(password_form_url).path if pre_submit_recovery_used else "")
+                    if saved_form_recoveries or pre_submit_recovery_used
+                    else driver.execute_script(target_script, "input", password, None)
                 ) or {}
                 if result.get("ok"):
                     filled_input = result.get("input")
@@ -1167,6 +1285,15 @@ def _fill_password_page_if_present(
                             )
                             prepared_reported = True
             if filled_input is not None:
+                if pre_submit_recovery_used:
+                    location = urlsplit(str(getattr(driver, "current_url", "") or ""))
+                    if (time.time() >= end or location.scheme != "https"
+                            or location.hostname != "auth.openai.com" or location.port not in (None, 443)
+                            or location.username or location.password
+                            or location.path != urlsplit(password_form_url).path):
+                        if submission_receipt.phase == "prepared":
+                            record_browser_submission_fact(driver, "not_dispatched", receipt=submission_receipt, result="cancelled")
+                        raise RuntimeError("password_form_not_ready: 恢复后的密码表单在提交前发生变化，未提交密码")
                 if transition_deadline is not None and time.time() >= transition_deadline:
                     record_browser_submission_fact(
                         driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
@@ -1180,8 +1307,9 @@ def _fill_password_page_if_present(
                 try:
                     result = driver.execute_script(
                         target_script, "queue", password, filled_input, submission_receipt.submission_id,
-                        email if saved_form_recoveries else "",
+                        email if saved_form_recoveries or pre_submit_recovery_used else "",
                         callable(getattr(driver, "execute_cdp_cmd", None)),
+                        urlsplit(password_form_url).path if pre_submit_recovery_used else "",
                     )
                     if isinstance(result, dict) and result.get("trusted_click"):
                         _dispatch_trusted_click(driver, result["trusted_click"])
@@ -1199,6 +1327,9 @@ def _fill_password_page_if_present(
                 if isinstance(result, dict) and result.get("ok") is True and result.get("reason") == "password_submit_queued":
                     record_browser_submission_fact(driver, "ui_queued", receipt=submission_receipt)
                     break
+                if isinstance(result, dict) and result.get("ok") is False and result.get("reason") == "password_recovery_route_unconfirmed":
+                    record_browser_submission_fact(driver, "not_dispatched", receipt=submission_receipt, result="cancelled")
+                    raise RuntimeError("password_form_not_ready: 恢复后的密码表单路由发生变化，已取消排队且未提交密码")
                 # 只有明确的点击前拒绝才能重查；空值或不完整回执也可能已经提交。
                 if not (
                     isinstance(result, dict) and result.get("ok") is False
@@ -1219,8 +1350,26 @@ def _fill_password_page_if_present(
                 # 这些结果明确发生在点击前，允许在同一回执内修复页面；若整段
                 # 准备预算耗尽，下面会以 not_dispatched 收口，不留下假的未知围栏。
                 last_safe_pre_dispatch_failure = True
+            reason = result.get("reason")
+            if (filled_input is None and reason in {
+                    "missing_password_input", "missing_password_form", "password_frontend_not_ready",
+            } and submission_receipt.phase == "prepared"):
+                now = time.time()
+                if reason != not_ready_reason:
+                    not_ready_reason, not_ready_since = reason, now
+                if (not pre_submit_recovery_checked and not_ready_since is not None
+                        and now - not_ready_since >= 10.0):
+                    pre_submit_recovery_checked = True
+                    pre_submit_recovery_used = _refresh_unsubmitted_password_form(
+                        driver, receipt=submission_receipt, email=email,
+                        expected_url=password_form_url, deadline=end,
+                    )
+                    if pre_submit_recovery_used and time.time() < end:
+                        continue
+            else:
+                not_ready_since, not_ready_reason = None, None
             if time.time() >= end:
-                if last_safe_pre_dispatch_failure:
+                if submission_receipt.phase == "prepared" or last_safe_pre_dispatch_failure:
                     record_browser_submission_fact(
                         driver, "not_dispatched", receipt=submission_receipt,
                         result="cancelled",
@@ -1470,7 +1619,44 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
     last_snapshot = {}
     recovery_attempted = False
     profile_submitted = False
+    profile_receipt = None
+    profile_dispatch_started = False
     next_diagnostic_at = time.time() + 15.0
+
+    def profile_unknown():
+        if profile_receipt is not None and profile_receipt.phase not in {
+            "prepared", "confirmed", "rejected", "not_dispatched", "unknown",
+        }:
+            record_browser_submission_fact(driver, "unknown", receipt=profile_receipt, result="unknown")
+
+    def check_profile_response():
+        # HTTP 状态必须来自本动作已配对的 CDP 响应；不借全局最近错误或上一 OTP 回执。
+        if (profile_receipt is None or not profile_receipt.request_binding
+                or profile_receipt.response_binding != profile_receipt.request_binding
+                or profile_receipt.phase not in {"response_observed", "rejected"}):
+            return
+        status = profile_receipt.http_status
+        if not isinstance(status, int) or not 400 <= status < 500:
+            return
+        from core.http_response_diagnostics import safe_auth_error
+
+        auth_error = safe_auth_error(profile_receipt.auth_error)
+        code = f"account_create_http_{status}"
+        record_browser_submission_fact(
+            driver, "rejected", receipt=profile_receipt, result="failure", error_type=code,
+        )
+        log_submission_diagnostics(driver, "profile", "http_rejected", receipt=profile_receipt)
+        detail = f"；上游错误枚举={json.dumps(auth_error, ensure_ascii=False, separators=(',', ':'))}" if auth_error else ""
+        raise RuntimeError(
+            f"request_unknown: {code}: 资料创建接口明确返回 HTTP {status}{detail}；"
+            "已保留原身份与密码，需沿原任务链恢复"
+        )
+
+    def profile_confirmed():
+        check_profile_response()
+        if profile_receipt is not None:
+            record_browser_submission_fact(driver, "confirmed", receipt=profile_receipt, result="success")
+        return profile_submitted
 
     def confirm_session(snapshot: dict, deadline: float, *, reserve_recovery: bool = False) -> bool:
         current = urlsplit(str(snapshot.get("url") or ""))
@@ -1486,6 +1672,7 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
         return any(code in str(exc) for code in ("profile_session_read_failed", "profile_session_unconfirmed"))
 
     def observe_recovery(recovery_budget):
+        check_profile_response()
         snapshot = _page_snapshot(driver)
         if classify_page(snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
             return None
@@ -1507,7 +1694,7 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
         recovery_attempted = True
         return recover_submission_page(
             driver, "profile", observe_recovery, budget=StageBudget(end, clock=time.time),
-            allow_back=True, sleeper=time.sleep,
+            allow_back=True, receipt=profile_receipt, sleeper=time.sleep,
         )
 
     while time.time() < end:
@@ -1518,23 +1705,26 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
         if classify_page(snap) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
             recovered = recover_once()
             if recovered == "session_confirmed":
-                return False
+                return profile_confirmed()
             if recovered == "profile_ready":
                 continue
+            profile_unknown()
             raise RuntimeError("request_unknown: 资料阶段进入认证错误页，账号创建结果未确认")
         try:
             if confirm_session(snap, end, reserve_recovery=not recovery_attempted):
                 logger.info('%s 已确认完整登录会话，资料页可能已跳过', _log_prefix(driver))
-                return False
+                return profile_confirmed()
         except RuntimeError as exc:
             if not recoverable_session_error(exc):
+                profile_unknown()
                 raise
             log_submission_diagnostics(driver, "profile", "session_read_failed")
             recovered = recover_once()
             if recovered == "session_confirmed":
-                return False
+                return profile_confirmed()
             if recovered == "profile_ready":
                 continue
+            profile_unknown()
             raise
         if not _is_profile_like(snap):
             if time.time() >= next_diagnostic_at:
@@ -1543,7 +1733,7 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
             if not recovery_attempted and time.time() >= end - RECOVERY_WINDOW_SECONDS:
                 recovered = recover_once()
                 if recovered == "session_confirmed":
-                    return False
+                    return profile_confirmed()
                 if recovered == "profile_ready":
                     continue
             logger.info('%s 等待资料页中：url=%s', _log_prefix(driver), snap.get('url'))
@@ -1601,16 +1791,42 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
             logger.warning('%s 资料页提交前表单校验未通过 state=%s', _log_prefix(driver), form_state)
             continue
         for _ in range(3):
-            log_submission_diagnostics(driver, "profile", "before_submit")
-            if _click_if_enabled_submit(driver):
+            if profile_receipt is None:
+                profile_receipt = BrowserSubmissionReceipt(
+                    kind="profile", stage="profile", endpoint_kind="profile_submit", http_method="POST",
+                )
+                driver._browser_submission_receipt = profile_receipt
+                record_browser_submission_fact(driver, "prepared", receipt=profile_receipt)
+
+            def before_profile_dispatch():
+                nonlocal profile_dispatch_started
+                record_browser_submission_fact(driver, "dispatch_intent", receipt=profile_receipt)
+                profile_dispatch_started = True
+
+            log_submission_diagnostics(driver, "profile", "before_submit", receipt=profile_receipt)
+            try:
+                clicked = _click_if_enabled_submit(driver, before_dispatch=before_profile_dispatch)
+            except Exception as exc:
+                if profile_dispatch_started:
+                    profile_unknown()
+                    raise RuntimeError(
+                        "request_unknown: profile_dispatch_unknown: 资料提交桥接回执丢失，已保留原动作且未重复提交"
+                    ) from exc
+                raise
+            if not clicked and profile_dispatch_started:
+                profile_unknown()
+                raise RuntimeError("request_unknown: 资料提交回执丢失，已保留原动作且未重复提交")
+            if clicked:
                 profile_submitted = True
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=profile_receipt)
                 if callable(on_submit):
                     try:
                         on_submit()
                     except Exception:
                         logger.debug('%s 资料页提交后回调失败', _log_prefix(driver), exc_info=True)
                 logger.info('%s 已点击资料页提交按钮，等待 OAuth 跳转', _log_prefix(driver))
-                log_submission_diagnostics(driver, "profile", "submitted")
+                log_submission_diagnostics(driver, "profile", "submitted", receipt=profile_receipt)
+                check_profile_response()
                 if transition_timeout is not None:
                     # 注册入口显式分开准备和提交后的完整会话预算，慢表单不能挤掉收尾时间。
                     end = time.time() + _budget_timeout(None, max(0.0, float(transition_timeout)), minimum=0)
@@ -1618,25 +1834,30 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                 while time.time() < submit_end:
                     _check_manual_stop()
                     time.sleep(0.5)
+                    check_profile_response()
                     submitted_snapshot = _page_snapshot(driver)
                     if classify_page(submitted_snapshot) in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
                         if recover_once() == "session_confirmed":
-                            return True
+                            return profile_confirmed()
+                        profile_unknown()
                         raise RuntimeError("request_unknown: 资料提交后进入认证错误页，账号创建结果未确认")
                     try:
                         if confirm_session(submitted_snapshot, submit_end, reserve_recovery=not recovery_attempted):
-                            return True
+                            return profile_confirmed()
                     except RuntimeError as exc:
                         if not recoverable_session_error(exc):
+                            profile_unknown()
                             raise
-                        log_submission_diagnostics(driver, "profile", "session_read_failed")
+                        log_submission_diagnostics(driver, "profile", "session_read_failed", receipt=profile_receipt)
                         if recover_once() == "session_confirmed":
-                            return True
+                            return profile_confirmed()
+                        profile_unknown()
                         raise
                     rejection_marker = _profile_account_rejection_marker(driver)
                     if rejection_marker:
+                        profile_unknown()
                         raise RuntimeError(
-                            "account_create_rejected: 远端资料页明确拒绝创建账号；"
+                            "request_unknown: account_create_rejected: 远端资料页明确拒绝创建账号；"
                             "原因属于条款/资格或风控限制"
                         )
                     errors = driver.execute_script(r"""
@@ -1648,20 +1869,24 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
                     ).filter(Boolean).slice(0, 8);
                     """) or []
                     if errors:
-                        raise RuntimeError(f"资料页提交被拒绝：{errors[:3]}")
+                        profile_unknown()
+                        raise RuntimeError("request_unknown: profile_form_rejected: 资料页显示校验错误，已保留原身份")
                     if time.time() >= next_diagnostic_at:
-                        log_submission_diagnostics(driver, "profile", "waiting_for_session")
+                        log_submission_diagnostics(driver, "profile", "waiting_for_session", receipt=profile_receipt)
                         next_diagnostic_at = time.time() + 15.0
                     if not recovery_attempted and time.time() >= submit_end - RECOVERY_WINDOW_SECONDS:
                         if recover_once() == "session_confirmed":
-                            return True
-                log_submission_diagnostics(driver, "profile", "timeout")
+                            return profile_confirmed()
+                profile_unknown()
+                log_submission_diagnostics(driver, "profile", "timeout", receipt=profile_receipt)
                 raise RuntimeError(
                     "request_unknown: 资料提交后预算内未确认登录态，已尝试有界页面恢复并保留原提交"
                 )
             time.sleep(1)
         logger.warning('%s 找不到可点击的资料页提交按钮 snapshot=%s', _log_prefix(driver), _page_snapshot(driver))
-    raise RuntimeError(f'等待/填写资料页超时，最后页面：{last_snapshot}')
+    if profile_receipt is not None and profile_receipt.phase == "prepared":
+        record_browser_submission_fact(driver, "not_dispatched", receipt=profile_receipt, result="cancelled")
+    raise RuntimeError("profile_form_not_ready: 等待/填写资料页超时，尚未提交资料")
 
 def _probe_chatgpt_password_eligibility(driver, *, timeout: int = 12) -> bool | None:
     """Read the authenticated ChatGPT password-setup capability.

@@ -108,15 +108,28 @@ def _make_submission_observer(driver):
         if not request_key[1]:
             return
         if meta.get("response"):
-            receipt = submission_requests.pop(request_key, None)
+            receipt = submission_requests.get(request_key)
             if receipt is None:
                 # 响应必须沿用请求时已绑定的回执，不重选当前提交或处理重复响应。
                 return
+            if receipt.endpoint_kind == "profile_submit" and endpoint_kind != "profile_submit":
+                return
+            submission_requests.pop(request_key, None)
         else:
             receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
             if receipt is None:
                 return
+            if endpoint_kind == "profile_submit":
+                # 一个资料动作只接一个请求；迟到的其他请求不能替换已经绑定的动作。
+                if receipt.request_binding not in (None, request_key):
+                    return
+                receipt.request_binding = request_key
             submission_requests[request_key] = receipt
+        if endpoint_kind == "profile_submit" and meta.get("response"):
+            from core.http_response_diagnostics import safe_auth_error
+
+            receipt.response_binding = request_key
+            receipt.auth_error = safe_auth_error(meta.get("auth_error"))
         phase, response_result = _submission_response_fact(endpoint_kind, meta.get("http_status"))
         if not meta.get("response"):
             phase, response_result = "request_observed", ""
@@ -1015,6 +1028,16 @@ def _run_in_isolated_browser_tab(driver, callback, *, label: str):
             raise RuntimeError(f"{label} 结束后无法恢复原 ChatGPT 标签页：{exc}") from exc
 
 
+def _is_registration_proxy_transport_failure(exc: BaseException) -> bool:
+    """只认明确连接错误；HTTP 拒绝、超时和页面空壳不能证明代理故障。"""
+    return re.search(
+        r"(?<![a-z0-9_])(?:net::)?(?:err_tunnel_connection_failed|err_proxy_connection_failed|"
+        r"err_connection_reset|err_connection_closed|err_connection_refused|err_connection_aborted)"
+        r"(?![a-z0-9_])",
+        f"{type(exc).__name__}: {exc}", re.I,
+    ) is not None
+
+
 def run_roxy_registration(
     email: str,
     name: str,
@@ -1152,6 +1175,10 @@ def run_roxy_registration(
     remote_identity = "unknown"
     auth_challenge_chain: list[str] = []
     failed = False
+    # 非接管分支已把当前租约写入新开/重开的 Profile；接管窗口仍使用原中继，
+    # 不能因该窗口连接失败而隔离服务层刚领到的另一条租约。
+    current_lease_route_verified = retained is None and getattr(opened, "proxy_route_retained", False) is False
+    resume_login_get_transport_failure = False
     try:
         try:
             from core.registration_debug import attach_current_roxy
@@ -1248,13 +1275,23 @@ def run_roxy_registration(
         else:
             report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
             logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
-            _safe_get(
-                driver,
-                "https://chatgpt.com/auth/login",
-                timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
-                attempts=2,
-                accept_hosts=("chatgpt.com", "auth.openai.com"),
-            )
+            try:
+                # 此调用点先于本 Run 的 submit_email、密码、OTP 和资料提交。
+                # 只依据这个明确的初始 GET 控制流给出换线许可，不从缺失网络日志
+                # 推断未提交，也不向后续认证阶段的未知结果开放整段重试。
+                _safe_get(
+                    driver,
+                    "https://chatgpt.com/auth/login",
+                    timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+                    attempts=2,
+                    accept_hosts=("chatgpt.com", "auth.openai.com"),
+                )
+            except Exception as exc:
+                resume_login_get_transport_failure = bool(
+                    resume_scope and current_lease_route_verified
+                    and _is_registration_proxy_transport_failure(exc)
+                )
+                raise
             human_delay("navigate")
             _page_warmup(driver, reason="login_page")
             report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
@@ -2213,6 +2250,9 @@ def run_roxy_registration(
         )
         return {
             "success": False,
+            "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
+            "current_lease_route_verified": current_lease_route_verified,
+            "resume_login_get_transport_failure": resume_login_get_transport_failure,
             "core_persisted": core_persisted,
             "registration_pending": bool(account_id and not access_token),
             "email": email,

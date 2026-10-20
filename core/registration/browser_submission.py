@@ -19,7 +19,7 @@ SUBMISSION_PHASES = frozenset({
 })
 _ENDPOINT_KINDS = frozenset({
     "email_submit", "nextauth_csrf", "nextauth_signin", "password_submit",
-    "otp_submit", "otp_resend", "auth_redirect", "unknown",
+    "otp_submit", "otp_resend", "profile_submit", "auth_redirect", "unknown",
 })
 _RESULTS = frozenset({"success", "failure", "unknown", "cancelled", "timeout", ""})
 _UNRESOLVED_PHASES = frozenset({
@@ -70,6 +70,10 @@ class BrowserSubmissionReceipt:
     error_type: str = ""
     started_at: float = field(default_factory=time.monotonic)
     duration_ms: int | None = None
+    # 仅供当前 CDP 连接配对，不写入提交事实或公开投影。
+    request_binding: tuple[str, str] | None = field(default=None, repr=False)
+    response_binding: tuple[str, str] | None = field(default=None, repr=False)
+    auth_error: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         self.kind = _bounded_text(self.kind, 40) or "unknown"

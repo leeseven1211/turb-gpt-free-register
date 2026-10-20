@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from config import registration_debug as _cfg
-from core.http_response_diagnostics import safe_response_headers
+from core.http_response_diagnostics import auth_error_from_body, auth_submission_endpoint, safe_response_headers
 from core.task_stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger(__name__)
@@ -112,18 +112,7 @@ def _raw_url(value: object) -> str:
 
 def _submission_endpoint_kind(url: object) -> str:
     """把认证请求归为白名单类别，不把 URL 查询参数交给提交事实。"""
-    path = str(urlsplit(str(url or "")).path or "").lower()
-    if path.endswith("/api/auth/csrf"):
-        return "nextauth_csrf"
-    if "/api/auth/signin/" in path:
-        return "nextauth_signin"
-    if path.endswith("/api/accounts/password") or ("/password" in path and "/api/" in path):
-        return "password_submit"
-    if "email-otp" in path and path.endswith(("/validate", "/verify")):
-        return "otp_submit"
-    if "email-otp" in path and path.endswith(("/send", "/resend")):
-        return "otp_resend"
-    return ""
+    return auth_submission_endpoint(url)
 
 
 def _raw_headers(headers: object) -> dict[str, Any]:
@@ -1260,6 +1249,7 @@ class _RoxyTargetCollector:
                 self._send("Profiler.enable", pending={"traffic_coverage_start": True})
                 self._send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": True}, pending={"traffic_coverage_start": True})
             while not self._stop.is_set():
+                self._expire_auth_error_reads()
                 try:
                     raw = self._ws.recv()
                 except websocket.WebSocketTimeoutException:
@@ -1280,8 +1270,13 @@ class _RoxyTargetCollector:
                     "error": f"{type(exc).__name__}: {exc}",
                 })
         finally:
-            for request_id in list(self._requests):
-                self._finish_request(request_id, failure="target_closed", body_unavailable="target_closed")
+            self._finish_open_requests()
+
+    def _finish_open_requests(self) -> None:
+        for request_id, record in list(self._requests.items()):
+            # 已 loadingFinished 的请求只缺诊断正文，窗口关闭不能改写成网络失败。
+            failure = "" if record.get("_auth_error_body_pending") else "target_closed"
+            self._finish_request(request_id, failure=failure, body_unavailable="target_closed")
 
     def _request_key(self, request_id: str) -> str:
         return f"{self.target_id}:{request_id}:{self._redirect_seq[request_id]}"
@@ -1301,6 +1296,33 @@ class _RoxyTargetCollector:
             record.get("response_headers_observed") or isinstance(headers, dict)
         )
 
+    def _expire_auth_error_reads(self) -> None:
+        """诊断正文最多等待两秒，CDP 不回包也不能拖延业务回执。"""
+        for command_id, pending in list(self._pending.items()):
+            if not pending.get("auth_error_only") or time.monotonic() < pending["deadline"]:
+                continue
+            self._pending.pop(command_id, None)
+            request_id = pending["request_id"]
+            record = self._requests.get(request_id)
+            if record is not None and record.get("redirect_index", 0) == pending["redirect_index"]:
+                self._finish_request(request_id, body_unavailable="auth_error_read_timeout")
+
+    def _should_read_auth_error(self, record: dict) -> bool:
+        if not getattr(self.session, "summary_only", False):
+            return False
+        if not callable(getattr(self.session, "submission_observer", None)):
+            return False
+        if record.get("method") != "POST" or not auth_submission_endpoint(record.get("url")):
+            return False
+        try:
+            status, length = int(record.get("status") or 0), float(record.get("encoded_data_length") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        mime = record.get("response_headers", {}).get("content-type") or record.get("mime_type")
+        return 400 <= status < 600 and 0 <= length <= 65536 and mime in {
+            "application/json", "application/problem+json",
+        }
+
     def _handle(self, message: dict) -> None:
         if "id" in message:
             pending = self._pending.pop(int(message.get("id") or 0), None)
@@ -1316,6 +1338,27 @@ class _RoxyTargetCollector:
                 self._coverage_ready.set()
                 return
             request_id = str(pending.get("request_id") or "")
+            record = self._requests.get(request_id)
+            if pending.get("auth_error_only"):
+                # 重定向会复用 requestId，旧正文不能归给后来的请求。
+                if record is None or record.get("redirect_index", 0) != pending["redirect_index"]:
+                    return
+                if time.monotonic() >= pending["deadline"]:
+                    self._finish_request(request_id, body_unavailable="auth_error_read_timeout")
+                    return
+                result = message.get("result") or {}
+                body = result.get("body")
+                if not message.get("error") and isinstance(body, str):
+                    if result.get("base64Encoded"):
+                        try:
+                            body = base64.b64decode(body, validate=True) if len(body) <= 87384 else b""
+                        except (ValueError, TypeError):
+                            body = b""
+                    auth_error = auth_error_from_body(body)
+                    if auth_error:
+                        record["auth_error"] = auth_error
+                self._finish_request(request_id, body_unavailable="auth_error_metadata_only")
+                return
             result = message.get("result") or {}
             error = message.get("error")
             if error:
@@ -1430,6 +1473,7 @@ class _RoxyTargetCollector:
             if getattr(self.session, "summary_only", False):
                 record["status"] = response.get("status", record.get("status"))
                 self._merge_summary_response_headers(record, response.get("headers"))
+                record["mime_type"] = safe_response_headers({"content-type": response.get("mimeType")}).get("content-type", "")
                 # 响应头已到、响应体仍挂起时也留下观测，不能等 loadingFinished 才记录状态。
                 observe = getattr(self.session, "_observe_auth_diagnostic", None)
                 if callable(observe):
@@ -1483,7 +1527,13 @@ class _RoxyTargetCollector:
                 record["duration_ms"] = round(max(0.0, float(params["timestamp"]) - float(started)) * 1000, 2)
             mime = str(record.get("mime_type") or "").lower()
             capture_body = any(marker in mime for marker in ("json", "text/", "html", "xml", "javascript", "x-www-form-urlencoded"))
-            if capture_body and self.session.body_capture_enabled:
+            if self._should_read_auth_error(record):
+                record["_auth_error_body_pending"] = True
+                self._send("Network.getResponseBody", {"requestId": request_id}, {
+                    "request_id": request_id, "auth_error_only": True,
+                    "redirect_index": record.get("redirect_index", 0), "deadline": time.monotonic() + 2.0,
+                })
+            elif capture_body and self.session.body_capture_enabled:
                 self._send("Network.getResponseBody", {"requestId": request_id}, {"request_id": request_id})
             else:
                 self._finish_request(request_id, body_unavailable="binary_or_disabled")
@@ -1559,6 +1609,7 @@ class _RoxyTargetCollector:
         # 该 ID 只存于本次 CDP 回调，不进入 traffic summary 或提交事实。
         record.setdefault("request_id", str(request_id or ""))
         record.setdefault("target_id", self.target_id)
+        record.pop("_auth_error_body_pending", None)
         record.pop("started_monotonic", None)
         if failure:
             record["failure"] = str(failure)[:500]
@@ -1576,7 +1627,7 @@ class _RoxyTargetCollector:
             self._remember_summary_response(str(request_id), {
                 key: record[key] for key in (
                     "request_id", "target_id", "redirect_index", "url", "method", "resource_type", "status",
-                    "response_headers", "response_headers_observed", "duration_ms", "failure",
+                    "response_headers", "response_headers_observed", "duration_ms", "failure", "auth_error",
                 ) if key in record
             })
         self.session.record_network(record)

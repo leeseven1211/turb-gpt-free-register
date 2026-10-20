@@ -13,7 +13,9 @@ from urllib.parse import urlsplit
 
 from selenium.common.exceptions import TimeoutException
 
-from core.http_response_diagnostics import response_rejection_diagnostic, safe_response_headers
+from core.http_response_diagnostics import (
+    auth_submission_endpoint, response_rejection_diagnostic, safe_auth_error, safe_response_headers,
+)
 
 from .auth_context import checkpoint
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
@@ -28,7 +30,7 @@ _SAFE_PATH_PARTS = frozenset({
     "password", "email-otp", "send", "resend", "validate", "verify", "authorize", "login", "logout",
     "error", "register", "user", "create", "create-account", "log-in", "email-verification", "about-you",
     "profile", "token", "refresh", "account", "check", "continue", "consent", "set-password",
-    "client_auth_session_dump", "passwordless", "send-otp",
+    "client_auth_session_dump", "passwordless", "send-otp", "create_account",
 })
 _PAGE_SCRIPT = r"""
 const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -150,6 +152,7 @@ class SubmissionDiagnostics:
             if headers_observed is None:
                 headers_observed = isinstance(record.get("response_headers"), dict)
             observed_status = status if status and status >= 100 else previous.get("status")
+            auth_error = safe_auth_error(record.get("auth_error")) or safe_auth_error(previous.get("auth_error"))
             self.network[key] = {
                 **location, "request": key, "stage": previous.get("stage", self.stage),
                 "method": method, "phase": phase,
@@ -158,6 +161,8 @@ class SubmissionDiagnostics:
                 "network_error": failure.group(0) if failure else ("网络请求未完成" if record.get("failure") else ""),
                 "response_headers": headers,
                 "response_headers_observed": bool(previous.get("response_headers_observed") or headers_observed),
+                "endpoint_kind": auth_submission_endpoint(record.get("url")),
+                **({"auth_error": auth_error} if auth_error else {}),
                 **({"rejection": response_rejection_diagnostic(observed_status, headers)}
                    if observed_status == 403 else {}),
             }

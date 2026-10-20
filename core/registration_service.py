@@ -1330,6 +1330,38 @@ def _has_registration_safety_fence(result: dict) -> bool:
     return any(marker in error_text for marker in ("passwordtransitiontimeout", "密码提交", "password submit"))
 
 
+def _confirmed_registration_proxy_transport_failure(result: object) -> bool:
+    """连接故障和实际使用当前租约必须都有驱动明确事实，旧窗口不能污染新租约。"""
+    return (
+        isinstance(result, dict)
+        and result.get("proxy_transport_failure") is True
+        and result.get("current_lease_route_verified") is True
+    )
+
+
+def _should_retry_registration_resume_with_new_proxy(
+    result: object,
+    job: dict,
+    retry_attempt: int,
+    *,
+    existing_password: str,
+) -> bool:
+    """原身份仅在本轮初始登录 GET 明确失败时有界换线，不重放未知认证 POST。"""
+    if (str(job.get("job_type") or "") != "registration_resume"
+            or retry_attempt >= _registration_proxy_retry_limit()
+            or not str(existing_password or "").strip()
+            or not _confirmed_registration_proxy_transport_failure(result)):
+        return False
+    original_email = str(job.get("email") or "").strip().casefold()
+    return (
+        bool(original_email)
+        and original_email == str(result.get("email") or "").strip().casefold()
+        and result.get("resume_login_get_transport_failure") is True
+        and not result.get("success")
+        and not result.get("access_token")
+    )
+
+
 def _should_retry_registration_with_new_proxy(
     result: object,
     proxy_lease: object,
@@ -1683,6 +1715,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
 
     email: str | None = None
     proxy_lease = None
+    proxy_transport_failure = False
     unknown_facts: dict[str, object] = {}
     try:
         with _JobLogContext(log_file, task_id=job_id):
@@ -1925,7 +1958,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         registration_options=registration_options_for_job(current),
                         email_source=selected_source,
                     )
-                if not _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt):
+                proxy_transport_failure = _confirmed_registration_proxy_transport_failure(result)
+                if str(current.get("job_type") or "") == "registration_resume":
+                    retry_with_new_proxy = _should_retry_registration_resume_with_new_proxy(
+                        result, current, retry_attempt, existing_password=existing_password,
+                    )
+                else:
+                    retry_with_new_proxy = _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt)
+                if not retry_with_new_proxy:
                     break
 
                 retry_attempt += 1
@@ -1937,8 +1977,12 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     _registration_proxy_retry_limit(),
                     retry_error,
                 )
-                release_proxy(proxy_lease, reason=f"registration_proxy_retry_{retry_attempt}")
+                release_proxy(
+                    proxy_lease, reason=f"registration_proxy_retry_{retry_attempt}",
+                    fault=proxy_transport_failure,
+                )
                 proxy_lease = None
+                proxy_transport_failure = False
                 db.update_job(
                     job_id,
                     proxy_status="acquiring",
@@ -2264,7 +2308,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             try:
                 from core.proxy_provider import release_proxy
 
-                release_proxy(proxy_lease, reason=str(final_job.get("status") or "completed"))
+                if proxy_transport_failure:
+                    release_proxy(proxy_lease, reason="transport_failure", fault=True)
+                else:
+                    release_proxy(proxy_lease, reason=str(final_job.get("status") or "completed"))
                 db.update_job(job_id, proxy_status="released")
             except Exception:
                 logger.exception("[Job %s] 释放代理租约失败", job_id)

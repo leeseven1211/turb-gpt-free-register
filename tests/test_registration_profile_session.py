@@ -158,7 +158,9 @@ class ProfileDeadlineTests(unittest.TestCase):
         profile = {"url": "https://auth.openai.com/about-you", "inputs": [{"name": "name"}, {"name": "age"}]}
         submitted = [False]
 
-        def submit(_driver):
+        def submit(_driver, *, before_dispatch=None):
+            if before_dispatch is not None:
+                before_dispatch()
             submitted[0] = True
             return True
 
