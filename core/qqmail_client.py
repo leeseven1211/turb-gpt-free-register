@@ -21,6 +21,7 @@ from pathlib import Path
 
 from config import email as _email_cfg
 from core.otp_utils import looks_like_openai_email, extract_otp
+from core.email_recipients import candidate_match, extract_recipient_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +141,12 @@ def _msg_to_dict(msg) -> dict:
         if ts else ""
     )
     return {
+        "id": str(msg.get("Message-ID") or ""),
         "subject": subject,
         "from": from_,
         "to": to_,
+        "cc": _decode_email_header(msg.get("Cc") or ""),
+        "recipient_evidence": extract_recipient_evidence(msg),
         "sendEmail": from_,
         "text": body_text,
         "bodyPreview": body_text,
@@ -320,8 +324,7 @@ def fetch_latest_otp(
                 continue
 
             # 必须匹配收件地址（避免捡到其他域名地址的旧验证码）
-            to_field = (item.get("to") or "").lower()
-            if target_lower not in to_field:
+            if not candidate_match(target_lower, item):
                 continue
 
             subject = item.get("subject") or ""

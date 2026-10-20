@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
@@ -1073,12 +1073,18 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
         return {"status": "not_claimed", "run_id": int(run_id)}
     context = OperationHandlerContext(claimed, execution_id=execution_id)
     from core.account_operation_executor import operation_log_context
+    from core.storage.email_address_allocations import OtpLeaseBusy
 
     with operation_log_context(context):
         try:
-            with operation_context(context.cancellation, reporter=context.report):
+            from core.email_auth_guard import email_auth_session
+
+            auth_scope = email_auth_session(context.email) if context.resource_family == "openai_interactive" and context.email else nullcontext(None)
+            with operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
                 context.checkpoint()
                 returned = handler(context)
+                if auth_session is not None:
+                    auth_session.set_result(context.last_result if context.finished else returned)
             if not context.finished:
                 if returned is None:
                     raise RuntimeError("durable operation handler 未报告 terminal result")
@@ -1093,7 +1099,7 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 context, result,
                 database_status="attention_required" if result.status == "request_unknown" else result.status,
             )
-        except OperationLeaseUnavailable as exc:
+        except (OperationLeaseUnavailable, OtpLeaseBusy) as exc:
             if context.is_cancel_requested(force=True):
                 result = OperationResult.cancelled("任务在取得账号 lease 前收到取消请求")
                 if not context.finished:

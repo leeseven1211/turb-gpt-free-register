@@ -46,6 +46,9 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 | `email_pool_generic_api` | 通用 API 邮箱池 |
 | `email_pool_domain` | 域名邮箱池 |
 | `email_pool_icloud_hide` | iCloud Hide My Email 别名池 |
+| `email_address_allocations` | 完整业务地址、母资源、固定收件版本、稳定领取归属和生命周期 |
+| `email_inbox_profiles` | 实际收件箱的配置版本和凭据引用，不保存密钥副本 |
+| `email_otp_requests` | 完整派生地址的认证租约、执行 fence、challenge 和候选消息事实，不保存验证码 |
 | `codex_credentials` | Codex OAuth 凭证 |
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
@@ -53,6 +56,16 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 | `mail_provider_orders` | MailCode/Xigua 的稳定领取身份、幂等购买键、供应商订单、已购邮箱和私有取码游标 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
+
+### 通用邮箱子地址
+
+母邮箱继续保存在原邮箱池中，`email_address_allocations` 单独保存完整子地址，不把子地址写回 Apple 别名库存。当前接入 HME `forward_imap` 和 Outlook 精确收件路径。默认按需生成 `+` 后接六位小写字母数字，每母资源累计最多 3 个；提高额度只增加后续可分配数量。`used/replaced` 母资源仍可派生，明确停用、归档或远端失效的资源不参与新分配。
+
+领取使用稳定 `acquisition_id`，通过事务级业务锁、母记录行锁和完整地址锁串行检查配额与唯一性。地址与原 job、Attempt、批次领取记录使用同一个 PostgreSQL 连接提交；成功账号的 `email_address_id`、地址状态和账号引用也在账号写回事务内更新。失败、重启中断和结果不明保留原 root/Attempt 与地址，沿原身份重跑；`reserved/used/replaced/retired` 均占用历史配额，不回收给其他意图。删除有子地址引用的母资源改为归档停用，检查与删除共用母记录锁。
+
+`email_inbox_profiles` 固定实际收件身份、连接器、版本和 `credential_ref`。母资源首次成功派生后固定该版本，后续全局 Gmail 配置变化不会隐式切换同母子地址和母账号的恢复链路。Gmail 应用密码使用版本化引用留在 `.env`；Outlook 凭据沿用原母资源受保护字段。历史绑定和其凭据不能因关闭派生或保存新配置而删除。WebUI 配置回滚与 profile 密钥写入共享可重入的文件锁，避免跨线程、跨进程覆盖。
+
+`email_otp_requests` 对已入账的完整派生地址协调认证执行；不同子地址可并发，同地址的活跃执行受租约与递增 fence 保护。请求分别保留 challenge、发码代次、候选消息 ID、收件证据、cursor 和提交状态；取到候选仅记为 `offered`，不等于远端确认。超时可重新取得执行资格，旧 fence 不能覆盖新事实，未知提交保留原记录。邮件原文和裸验证码不进入三张新表；普通历史原地址仍沿原收件入口读取。
 
 ### 独立代理库存
 

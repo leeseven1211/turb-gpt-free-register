@@ -620,6 +620,30 @@
         <div class="butler-lease-list" id="butlerLeaseList"></div>
       </div>
     </section>
+    <details class="email-derivation-panel" id="emailDerivationPanel">
+      <summary><span>邮箱子地址</span><small id="emailDerivationSummary">正在读取子地址概况</small></summary>
+      <div class="email-derivation-content">
+        <p class="hint">每个母邮箱按额度生成独立子地址，失败与重跑保持原地址。提高配置额度后可继续生成。</p>
+        <div class="email-derivation-toolbar">
+          <label for="emailDerivationSource">邮箱来源</label>
+          <select id="emailDerivationSource"><option value="all">全部来源</option><option value="icloud_hide">iCloud 隐藏邮箱</option><option value="outlook">Outlook</option></select>
+          <span id="emailDerivationParentFilter" class="hint"></span>
+          <button type="button" class="jobs-tb-btn" id="btnClearDerivationParent" hidden>查看全部母邮箱</button>
+          <button type="button" class="jobs-tb-btn" id="btnRefreshEmailDerivation">刷新子地址</button>
+        </div>
+        <div class="email-derivation-table-wrap" id="emailDerivationTableWrap" aria-busy="false">
+          <table class="email-derivation-table">
+            <thead><tr><th scope="col">派生地址</th><th scope="col">母邮箱 / 来源</th><th scope="col">使用状态</th><th scope="col">关联账号 / 任务</th><th scope="col">生成时间</th></tr></thead>
+            <tbody id="emailDerivationBody"><tr><td colspan="5">展开后读取子地址列表</td></tr></tbody>
+          </table>
+        </div>
+        <div class="email-derivation-pager">
+          <span id="emailDerivationListStatus" role="status" aria-live="polite" aria-atomic="true"></span>
+          <button type="button" class="jobs-tb-btn" id="btnDerivationPrev" disabled>上一页</button>
+          <button type="button" class="jobs-tb-btn" id="btnDerivationNext" disabled>下一页</button>
+        </div>
+      </div>
+    </details>
     <section class="outlook-panel-v2" id="outlookPanelV2" aria-label="邮箱池">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="outlookToolbarV2">
         <span class="list-selection-hint" id="outlookSelectedHintV2">选择邮箱后批量操作</span>

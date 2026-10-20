@@ -315,6 +315,42 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 
 匿名模式可将 `CLOUDFLARE_AUTH_MODE=none` 且 Key 留空，创建路径默认 `/api/new_address`；若被 Turnstile 拦截请改用 admin 模式。更多字段见 WebUI「配置 → 邮箱 / OTP」或 `.env.example`。
 
+#### 通用邮箱子地址
+
+在「配置 → 邮箱 / OTP → 邮箱子地址」启用后，新任务可从原邮箱派生
+`母地址+6位随机字母数字@域名`。首期接入 `icloud_hide` 的本机
+`forward_imap` 和具备完整收件人信息的 Outlook 取信链路；固定取码 URL、
+Email Butler 裸验证码接口及付费订单来源不会自动开放派生。
+
+```dotenv
+EMAIL_DERIVATION_ENABLED=False
+EMAIL_DERIVATION_SOURCES=icloud_hide
+EMAIL_DERIVATION_MAX_CHILDREN=3
+EMAIL_DERIVATION_TAG_LENGTH=6
+```
+
+每个母邮箱默认累计生成 **3 个**子地址；后续提高上限时保留已有地址，只增加
+剩余额度。这里母邮箱指一个原始 HME 别名或 Outlook 邮箱，不是整个 Apple 账号。
+母地址已注册或已换出仍可在资源有效时派生，不把原地址重新放回可用池。
+子地址仅保存在 PostgreSQL，不创建新的 Apple 隐藏邮箱。
+
+新任务冻结入队时的生成选项，子地址绑定原 root/Attempt。普通失败、重启和结果
+不明继续原地址；成功时与账号在同一事务写回。子地址不跨任务回收，关闭派生仅
+停止新生成，已有账号仍按持久绑定取码。CLI 的 `--mail-acquisition-id` 可复用
+原派生领取意图。邮箱池可查看母地址额度及带任务、账号关联的子地址台账。
+
+取码按原始完整收件地址隔离，不能直接读取母收件箱最新验证码。HME 转发可能
+改写 `To`，因此会核对 `Received for` 或保留的完整子地址及 HME 母资源证据；
+母地址存在子地址历史时，无法确认归属的邮件不会返回给母账号。同一完整地址的
+认证在发码前取得独占租约，不同子地址可以并发。
+
+收件配置有持久版本引用。更换最终 Gmail 不会让历史绑定静默改读新邮箱；应用
+密码的版本化引用保留在 `.env`，普通 API 不返回凭据或原始邮件。关联已有子地址
+的母资源删除会停止新分配并保留恢复资料。实际转发目标迁移需要明确验证并切换
+绑定的收件配置，不应仅覆盖全局邮箱字段。
+
+完整约束、能力矩阵和发布顺序见[通用子地址设计](docs/superpowers/specs/2026-10-20-email-address-derivation-design.md)。
+
 #### iCloud Hide My Email（`icloud_hide`）
 
 先在本机启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址，账号 ID 留空即可自动发现全部 active 账号；保存后点击“连接并同步”。推荐配置：

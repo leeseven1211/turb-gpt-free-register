@@ -20,6 +20,7 @@ from urllib.parse import urlencode, urlparse, parse_qs, quote
 # 协议级常量（CLIENT_ID/URL/SCOPE/OUTPUT_DIRNAME）虽然不会改，统一从 _cfg 读，
 # 这样 reload 后立即生效，不用再分两套导入。
 from config import codex as _cfg
+from core.email_auth_guard import bind_auth_observer, serialize_email_auth
 from core.session import BrowserSession
 from core.humanize import delay as human_delay
 from core.openai_auth import (
@@ -1910,6 +1911,7 @@ def _remote_callback_result(
 # 入口
 # ============================================================
 
+@serialize_email_auth
 def run_codex_oauth(
     email: str,
     otp_provider=None,
@@ -2073,7 +2075,7 @@ def run_codex_oauth(
             check_cancelled()
             report_stage("email_otp", "等待邮箱验证码")
             logger.info("[Codex] 等待邮箱 OTP")
-            email_otp = call_cancellable(otp_provider, email, after_ts=otp_after_ts)
+            email_otp = call_cancellable(bind_auth_observer(otp_provider), email, after_ts=otp_after_ts)
             logger.info("[Codex] 已收到邮箱 OTP")
             human_delay("otp_input")
             otp_result = _submit_email_otp(session, email_otp)

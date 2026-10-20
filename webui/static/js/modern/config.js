@@ -264,6 +264,7 @@ function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
+  if (key.startsWith('EMAIL_DERIVATION_')) return ['邮箱子地址', '统一管理母邮箱的子地址额度；提高额度后继续生成，历史地址始终保留归属'];
   if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信、释放与封号信号配置'];
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
@@ -279,7 +280,7 @@ function emailConfigSectionForKey(key) {
 }
 
 function emailSectionEnabledV2(section) {
-  if (section === '通用邮箱 / OTP') return true;
+  if (section === '通用邮箱 / OTP' || section === '邮箱子地址') return true;
   const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
   const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EMAIL_SOURCE')
     ? CONFIG_PENDING_UPDATES.EMAIL_SOURCE : source?.value;
@@ -890,13 +891,13 @@ function configDriverChoices(f) {
 }
 
 const CONFIG_MULTI_VALUE_KEYS_V2 = new Set([
-  'EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES',
+  'EMAIL_SOURCE', 'EMAIL_DERIVATION_SOURCES', 'ROXY_RANDOM_OS_CHOICES',
   'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES',
 ]);
 
 function configListValuesV2(value, f = {}) {
   if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean);
-  const separator = f.key === 'EMAIL_SOURCE' || f.key === 'ROXY_RANDOM_OS_CHOICES' ? /[,\n]+/ : /[,\n\s]+/;
+  const separator = ['EMAIL_SOURCE', 'EMAIL_DERIVATION_SOURCES', 'ROXY_RANDOM_OS_CHOICES'].includes(f.key) ? /[,\n]+/ : /[,\n\s]+/;
   return String(value ?? '').split(separator).map(item => item.trim()).filter(Boolean);
 }
 
@@ -1144,7 +1145,7 @@ function renderConfigControlMarkupV2(f) {
     const options = countryOptions.map(item => ({value: item.code, label: `${item.name} · ${item.code}`}));
     if (current && !options.some(item => item.value === current)) options.unshift({value: current, label: `当前值（${current}），需检查`});
     control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">${options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
-  } else if (['EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES', 'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES'].includes(f.key)
+  } else if (['EMAIL_SOURCE', 'EMAIL_DERIVATION_SOURCES', 'ROXY_RANDOM_OS_CHOICES', 'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES'].includes(f.key)
     || (f.type === 'list_str_multiline' && configListOptionValuesV2(f).length)) {
     control = renderConfigMultiSelectV2(f, fv);
   } else if (f.key === 'EXTRACT_LINK_TYPE') {
@@ -1789,7 +1790,7 @@ function renderConfigDomainSectionV2(name, fields) {
       name,
       fields,
       emailConfigSectionForKey,
-      ['通用邮箱 / OTP', 'iCloud 隐藏邮箱', 'Email Butler', 'GPTMail', 'MailNest', 'Remail', '域名邮箱 MailCode', '西瓜邮箱', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
+      ['通用邮箱 / OTP', '邮箱子地址', 'iCloud 隐藏邮箱', 'Email Butler', 'GPTMail', 'MailNest', 'Remail', '域名邮箱 MailCode', '西瓜邮箱', 'CloudMail', 'Outlook 邮箱池', 'Cloudflare 临时邮箱', 'Cloudflare 域名邮箱', '其他邮箱配置'],
       { get: () => CONFIG_EMAIL_ACTIVE_SECTION_V2, set: v => { CONFIG_EMAIL_ACTIVE_SECTION_V2 = v; } },
       'email-section-v2'
     );
@@ -2091,7 +2092,7 @@ function readConfigElementValue(el, f) {
   if (el.multiple) return Array.from(el.selectedOptions || []).map(option => option.value).join(',');
   if (el.closest?.('[data-multi-picker]')) {
     const raw = String(el.value ?? '');
-    return f.key === 'EMAIL_SOURCE' || f.key === 'ROXY_RANDOM_OS_CHOICES'
+    return ['EMAIL_SOURCE', 'EMAIL_DERIVATION_SOURCES', 'ROXY_RANDOM_OS_CHOICES'].includes(f.key)
       ? configListValuesV2(raw, f).join(',')
       : configListValuesV2(raw, f);
   }

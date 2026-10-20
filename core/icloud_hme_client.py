@@ -444,11 +444,14 @@ def pick_account(
 
 def get_account_context(email: str) -> ICloudHMEAccount | None:
     from core import db
-    row = db.get_icloud_hide_email_by_email(email)
+    from core.email_derivation import resolve_route
+
+    route = resolve_route(email, source="icloud_hide")
+    row = route["parent"] if route else db.get_icloud_hide_email_by_email(email)
     if not row:
         return None
     return ICloudHMEAccount(
-        email=str(row.get("email") or ""),
+        email=str(email if route else row.get("email") or ""),
         account_id=str(row.get("account_id") or ""),
         anonymous_id=str(row.get("anonymous_id") or ""),
         label=str(row.get("label") or ""),
@@ -477,6 +480,10 @@ def _validate_forward_route(email: str) -> None:
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     from core import db
+    from core.email_derivation import release_address
+
+    if release_address(email, status=status, note=note):
+        return
     db.release_icloud_hide_email(email, status=status, note=note)
 
 
@@ -510,6 +517,25 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
+    from core.email_derivation import find_binding, fetch_bound_otp
+
+    if find_binding(email) is not None:
+        return fetch_bound_otp(
+            email, after_ts=after_ts, max_wait=max_wait,
+            poll_interval=poll_interval, settle_seconds=settle_seconds,
+        )
+    from core.forward_imap_client import use_inbox_profile
+    from core.email_derivation import inbox_profile_for_address
+
+    profile = inbox_profile_for_address(email)
+    if profile is not None:
+        from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp
+
+        with use_inbox_profile(profile):
+            return fetch_forwarded_otp(
+                email, after_ts=after_ts, max_wait=max_wait,
+                poll_interval=poll_interval, settle_seconds=settle_seconds,
+            )
     if _inbox_mode() in {"forward_imap", "forward_butler"}:
         _validate_forward_route(email)
         from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp

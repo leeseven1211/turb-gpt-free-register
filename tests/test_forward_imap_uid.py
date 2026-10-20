@@ -41,7 +41,7 @@ class ForwardImapUidTests(unittest.TestCase):
         self.assertEqual([row[2] for row in result["alias@icloud.com"]], ["10"])
         self.assertEqual([row[2] for row in result["other@icloud.com"]], ["12"])
         self.assertEqual(mail.fetches, [(b"12,11,10", "(UID INTERNALDATE BODY.PEEK[])")])
-        self.assertEqual(len(mail.searches), 4)
+        self.assertEqual(len(mail.searches), 5)
         self.assertTrue(all("01-Jan-1970" in call[1] for call in mail.searches))
 
     def test_otp_keeps_progressive_early_exit_with_uid(self):

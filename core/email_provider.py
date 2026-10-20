@@ -120,6 +120,10 @@ def mark_email_permanently_unusable(
     selected = remember_email_source(address, source) if source else resolve_email_source(address, fallback=False)
     if not selected:
         raise RuntimeError("邮箱来源无法确认，不能标记为永久失效")
+    from core.email_derivation import release_address
+
+    if release_address(address, status="failed", note=note, permanent=True):
+        return selected
     release_email(address, status="failed", note=note, source=selected)
     logger.warning(
         "[EmailProvider] 上游确认邮箱永久失效: source=%s, email=%s, note=%s",
@@ -163,6 +167,10 @@ def restore_email_context(
     if not address:
         raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
     selected = remember_email_source(address, source)
+    from core.email_derivation import restore_address
+
+    if restore_address(address, source=selected) is not None:
+        return selected
     if _is_configured_manual_email(address):
         return selected
 
@@ -292,6 +300,15 @@ def _pick_from_source(
     acquisition_id: str | None = None,
     legacy_remail_compatibility: bool = False,
 ) -> str:
+    from core import email_derivation
+
+    if email_derivation.enabled_for(source) or (
+        acquisition_id and email_derivation.store.find_allocation(acquisition_id=acquisition_id)
+    ):
+        return email_derivation.acquire_address(
+            source, owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+            job_id=job_id,
+        )
     if source == "gptmail":
         from core.gptmail_client import pick_account
         return pick_account().email
@@ -382,6 +399,11 @@ def acquire_email(
 
 def resolve_email_source(email: str, *, fallback: bool = True) -> str | None:
     """根据邮箱在各池中的归属判断实际来源；可禁止按当前配置猜测。"""
+    from core.email_derivation import find_binding
+
+    binding = find_binding(email)
+    if binding is not None:
+        return str(binding["source"])
     registered_source = _registered_email_source(email)
     if registered_source:
         return registered_source
@@ -500,6 +522,20 @@ def wait_for_otp(
         extra_kwargs["settle_seconds"] = settle_seconds
 
     source = validate_email_source(email_source) if email_source else resolve_email_source(email)
+    from core import email_derivation
+
+    if email_derivation.find_binding(email) is not None:
+        from core.email_auth_guard import begin_generation, checkpoint, current_session
+        from core.storage.email_address_allocations import StaleOtpFence
+
+        session = current_session()
+        if session is not None and session.email != str(email or "").strip().lower():
+            raise StaleOtpFence("验证码目标与当前完整邮箱认证地址不一致")
+        checkpoint()
+        begin_generation(after_ts)
+        code = email_derivation.fetch_bound_otp(email, after_ts=after_ts, **extra_kwargs)
+        checkpoint()
+        return code
     if source == "gptmail":
         from core.gptmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
@@ -544,6 +580,11 @@ def email_material_line(email: str, source: str | None = None) -> str:
     address = str(email or "").strip()
     if not address:
         return ""
+    from core.email_derivation import material_line
+
+    derived_material = material_line(address)
+    if derived_material is not None:
+        return derived_material
     selected = validate_email_source(source) if source else resolve_email_source(address)
     from core import db
 
@@ -578,6 +619,10 @@ def release_email(
 ) -> str:
     """按已确认或解析出的邮箱来源回收状态，返回来源名。"""
     selected = remember_email_source(email, source) if source else resolve_email_source(email)
+    from core.email_derivation import release_address
+
+    if release_address(email, status=status, note=note):
+        return selected
     if selected == "gptmail":
         from core.gptmail_client import release_account
         release_account(email, status=status, note=note)
@@ -617,6 +662,12 @@ def release_email(
 def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:
     """回收仍停留在 used 的任务领取，且绝不覆盖已注册/已判废状态。"""
     if not (email or "").strip():
+        return False
+
+    from core.email_derivation import find_binding
+
+    if find_binding(email) is not None:
+        # 已生成地址继续属于原业务意图，不放回母资源或其他任务。
         return False
 
     source = resolve_email_source(email)

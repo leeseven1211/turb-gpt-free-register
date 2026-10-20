@@ -629,6 +629,12 @@ def insert_account(
                 record_store.ACCOUNTS, row_id, changes, conn=conn,
             )
 
+        from core.email_derivation import mark_registered
+
+        address_id = mark_registered(normalized_email, row_id, conn=conn)
+        if address_id is not None:
+            record_store.patch_row(record_store.ACCOUNTS, row_id, {"email_address_id": address_id}, conn=conn)
+
         if outlook_row is not None:
             pool_changes: dict[str, Any] = {
                 "status": "used",
@@ -2212,7 +2218,15 @@ def finish_account_email_change(
             })
         if material_line is not None:
             changes["email_change_material_line"] = str(material_line or "")
+        from core.email_derivation import mark_registered
+        from core.storage import email_address_allocations
+
+        target_binding_id = mark_registered(target, int(acc_id), conn=conn)
+        changes["email_address_id"] = target_binding_id
         record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)
+        old_binding = email_address_allocations.find_allocation(address=old_email, conn=conn) if old_email else None
+        if old_binding is not None and old_email.lower() != target.lower():
+            email_address_allocations.mark_allocation_state(int(old_binding["id"]), "replaced", account_id=int(acc_id), conn=conn)
         old_source = str(row.get("email_source") or "").strip().lower()
         old_pool_spec = _POOL_SOURCE_SPECS.get(old_source)
         if old_pool_spec is not None and old_email:
@@ -2438,15 +2452,33 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
 
 
 def _delete_pool_email(spec, email: str) -> bool:
-    rows = record_store.delete_rows_where_returning(
-        spec,
-        where="lower(email) = lower(%s)",
-        params=(str(email or "").strip(),),
-    )
+    source = next((name for name, candidate in _POOL_SOURCE_SPECS.items() if candidate.name == spec.name), None)
+    from core.email_derivation import parent_has_allocations
+
+    # 与派生领取争用同一母记录行锁；检查与删除不能跨事务，否则会删除刚被子地址引用的母资源。
+    # 历史大小写重复行仍按完整邮箱一起处理，逐行保留被子地址引用的恢复资料。
+    changed = False
+    with record_store.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f'SELECT * FROM {postgres_store.qualified(spec.name)} '
+                        'WHERE lower(email) = lower(%s) ORDER BY id FOR UPDATE', (str(email or "").strip(),))
+            parents = [record_store.merge_row(spec, row) for row in cur.fetchall()]
+        for parent in parents:
+            if source and parent_has_allocations(source, int(parent["id"]), conn=conn):
+                policy = dict(parent.get("derivation_policy") or {})
+                policy["enabled"] = False
+                updated = record_store.patch_row(spec, int(parent["id"]), {
+                    "archived": True, "status": "disabled", "derivation_policy": policy,
+                    "note": "母资源关联已有子地址，已停止新分配并保留历史恢复资料",
+                }, conn=conn)
+                changed = bool(updated) or changed
+            else:
+                rows = record_store.delete_rows_where_returning(spec, where="id = %s", params=(int(parent["id"]),), conn=conn)
+                changed = bool(rows) or changed
     kind = _POOL_EXPORT_KINDS.get(spec.name)
-    if rows and kind:
+    if changed and kind:
         compat_export.schedule(kind)
-    return bool(rows)
+    return bool(changed)
 
 
 def _pool_summary(spec, statuses: tuple[str, ...]) -> dict:
@@ -2504,6 +2536,12 @@ def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
             if not email:
                 skipped += 1
                 continue
+            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+            from core.storage import email_address_allocations
+
+            if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
+                skipped += 1
+                continue
             now = _now()
             row_id = record_store.insert_row_if_absent(record_store.OUTLOOK_POOL, "email", {
                 "email": email,
@@ -2553,6 +2591,11 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
             # 账号唯一性与对应邮箱池的状态变更必须一起判定；事务级业务键锁住
             # 跨进程的“检查后插入”窗口，数据库 identity 负责生成新 ID。
             record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+            from core.storage import email_address_allocations
+
+            if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
+                skipped += 1
+                continue
             if _locked_row_by_email(conn, record_store.ACCOUNTS, email) is not None:
                 skipped += 1
                 continue
@@ -2738,6 +2781,12 @@ def import_generic_api_emails(records: list[dict]) -> tuple[int, int]:
             email = (raw.get("email") or "").strip()
             code_url = (raw.get("code_url") or raw.get("url") or "").strip()
             if not email or not code_url:
+                skipped += 1
+                continue
+            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
+            from core.storage import email_address_allocations
+
+            if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
                 skipped += 1
                 continue
             now = _now()

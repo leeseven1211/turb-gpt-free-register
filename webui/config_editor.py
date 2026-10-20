@@ -357,11 +357,11 @@ def update_config(updates: dict) -> dict:
             "config_revision": config_revision(),
         }
 
-    from config.env_loader import env_path, load_env, restore_environment, write_env_values
+    from config.env_loader import env_file_lock, env_path, load_env, restore_environment, write_env_values
     import config as config_package
 
     path = env_path()
-    with _CONFIG_WRITE_LOCK:
+    with _CONFIG_WRITE_LOCK, env_file_lock():
         # 保存前固定已发布的旧版本；reload 成功前不会替换它，失败时任务
         # 读者仍能继续使用同一个 snapshot 对象。
         non_sensitive_snapshot()

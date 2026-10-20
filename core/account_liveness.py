@@ -9,6 +9,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from config import openai_protocol as _protocol_cfg
+from core.email_auth_guard import serialize_email_auth
 from core.session import BrowserSession
 from core.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
 from core.openai_auth import (
@@ -226,6 +227,7 @@ def _complete_recent_login_on_session(
     raise RuntimeError("Recent Login 密码验证响应缺少后续认证地址")
 
 
+@serialize_email_auth
 def perform_recent_login(
     session: BrowserSession,
     email: str,
@@ -408,6 +410,7 @@ def _validate_with_retry(
     raise last_exc if last_exc else RuntimeError("OTP 验证失败")
 
 
+@serialize_email_auth
 def check_account_liveness(
     email: str,
     proxy: str | None = None,

@@ -379,7 +379,15 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": f"iCloud HME 服务不可用：{type(exc).__name__}: {str(exc)[:240]}",
                 }), 400
-        if any(source in sources for source in ("gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare", "email_butler")):
+        from core.email_derivation import capacity_summary, enabled_for
+        if enabled_for(selected_source):
+            capacity = capacity_summary(selected_source)
+            remaining = int(capacity.get("remaining", 0))
+            warning = ""
+            if remaining < count:
+                detail = f"；{capacity['reason']}" if capacity.get("reason") else ""
+                warning = f"本地母邮箱剩余派生额度为 {remaining} 个，少于任务数 {count}，不足的可提高每母邮箱额度后重跑{detail}"
+        elif any(source in sources for source in ("gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare", "email_butler")):
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""
         elif sources == ["icloud_hide"]:

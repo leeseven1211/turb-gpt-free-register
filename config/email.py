@@ -29,6 +29,13 @@ USE_EMAIL_SERVICE = schema_default("USE_EMAIL_SERVICE")
 #   "icloud_hide"       — iCloud Hide My Email 别名池（可用本机 Gmail IMAP 或 Email Butler 收码）
 EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
 
+# 通用子地址：仅对明确具备派生和精确收码能力的来源启用。
+# 额度是每个母资源累计生成的子地址数；提高额度后可继续生成，旧地址归属保留。
+EMAIL_DERIVATION_ENABLED = schema_default("EMAIL_DERIVATION_ENABLED")
+EMAIL_DERIVATION_SOURCES = schema_default("EMAIL_DERIVATION_SOURCES")
+EMAIL_DERIVATION_MAX_CHILDREN = schema_default("EMAIL_DERIVATION_MAX_CHILDREN")
+EMAIL_DERIVATION_TAG_LENGTH = schema_default("EMAIL_DERIVATION_TAG_LENGTH")
+
 
 # ============================================================
 # Outlook 模式（外购账号池 + 取信服务）

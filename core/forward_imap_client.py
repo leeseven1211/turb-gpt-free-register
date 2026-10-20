@@ -10,17 +10,22 @@ from __future__ import annotations
 from core.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, current_budget
 import email as email_lib
 import imaplib
+import hashlib
 import logging
 import os
 import re
 import socket
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp, looks_like_openai_email
+from core.email_recipients import candidate_match, extract_recipient_evidence
 from core.qqmail_client import _msg_to_dict
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,7 @@ class ForwardIMAPNoMailTimeout(ForwardIMAPError):
 
 _DEFAULT_IMAP_RETRY_ATTEMPTS = 3
 _DEFAULT_IMAP_RETRY_DELAY_SECONDS = 0.5
+_INBOX_PROFILE: ContextVar[Mapping | None] = ContextVar("forward_imap_inbox_profile", default=None)
 _EMAIL_RE = re.compile(r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+\b")
 _RECIPIENT_SEARCH_CHUNK_SIZE = 50
 _MAX_BULK_MATCHED_MESSAGES = 5000
@@ -225,11 +231,31 @@ def _imap_call(mail, stage: str, operation, budget: _IMAPBudget | None = None):
     return budget.call(stage, operation, mail=mail) if budget is not None else operation()
 
 
+@contextmanager
+def use_inbox_profile(profile: Mapping | None):
+    """当前取信调用固定使用持久路由，上层负责解析 credential_ref。"""
+    token = _INBOX_PROFILE.set(dict(profile) if profile is not None else None)
+    try:
+        yield
+    finally:
+        _INBOX_PROFILE.reset(token)
+
+
 def _settings() -> tuple[str, int, str, str]:
-    server = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_SERVER", "imap.gmail.com") or "").strip()
-    port = int(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_PORT", 993) or 993)
-    username = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "") or "").strip()
-    password = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "") or "").replace(" ", "").strip()
+    profile = _INBOX_PROFILE.get()
+    if profile is None:
+        server = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_SERVER", "imap.gmail.com") or "").strip()
+        port = int(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_PORT", 993) or 993)
+        username = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "") or "").strip()
+        password = str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_PASSWORD", "") or "")
+    else:
+        locator = profile.get("inbox_locator") or {}
+        settings = {**locator, **profile} if isinstance(locator, Mapping) else profile
+        server = str(settings.get("server") or settings.get("imap_server") or "imap.gmail.com").strip()
+        port = int(settings.get("port") or settings.get("imap_port") or 993)
+        username = str(settings.get("email") or settings.get("username") or settings.get("imap_email") or "").strip()
+        password = str(settings.get("password") or settings.get("imap_password") or "")
+    password = password.replace(" ", "").strip()
     if not server or not username or not password:
         raise ForwardIMAPError(
             "隐藏邮箱转发 IMAP 未配置：请填写服务器、邮箱和应用专用密码"
@@ -343,13 +369,22 @@ def test_local_connection() -> dict:
 
 def _recipient_headers(msg) -> str:
     values: list[str] = []
-    for name in ("To", "Delivered-To", "X-Original-To", "X-Forwarded-To", "Envelope-To"):
+    for name in ("To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To", "Envelope-To"):
         values.extend(str(value or "") for value in (msg.get_all(name, []) or []))
     return " ".join(values).lower()
 
 
 def _recipient_addresses(headers: str) -> set[str]:
     return {match.group(0).lower() for match in _EMAIL_RE.finditer(headers or "")}
+
+
+def _matches_recipient(target: str, item: dict, legacy_headers: str = "") -> bool:
+    # 真实消息始终携带结构化证据；保留旧适配器的非派生收件接口。
+    candidate = item if "recipient_evidence" in item else {**item, "toRecipients": sorted(_recipient_addresses(legacy_headers or item.get("to", "")))}
+    profile = _INBOX_PROFILE.get() or {}
+    strict_rules = profile.get("strict_family_by_address") or {}
+    strict_family = strict_rules.get(str(target).strip().lower(), profile.get("strict_family", False))
+    return candidate_match(target, candidate, forwarded=True, strict_family=bool(strict_family))
 
 
 def _internal_date(meta: object) -> str:
@@ -458,7 +493,7 @@ def _search_message_ids(
     *,
     budget: _IMAPBudget | None = None,
 ) -> list[bytes]:
-    """合并四个收件人字段的匹配结果，真实连接使用 UID 防止删除导致序号漂移。"""
+    """合并收件头及 Received 召回结果，统一日期、数量和 UID 预算。"""
     if not targets:
         return []
     after_dt = datetime.fromtimestamp(after_ts, tz=timezone.utc)
@@ -468,7 +503,7 @@ def _search_message_ids(
     search_errors: list[Exception] = []
     successful_search = False
     ordered_targets = sorted(targets)
-    for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To"):
+    for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To", "Received"):
         for start in range(0, len(ordered_targets), _RECIPIENT_SEARCH_CHUNK_SIZE):
             chunk = ordered_targets[start:start + _RECIPIENT_SEARCH_CHUNK_SIZE]
             query = f'(SINCE "{since}" {_imap_recipient_search(header, chunk)})'
@@ -518,9 +553,8 @@ def _messages_for_recipients(
     selected = _search_message_ids(mail, targets, after_ts, limit)
     if _uses_uid(mail):
         for item, recipient_headers, message_id in _uid_message_batches(mail, selected):
-            recipients = _recipient_addresses(recipient_headers)
             for target in targets:
-                if target in recipients:
+                if _matches_recipient(target, item, recipient_headers):
                     indexed[target].append((item, recipient_headers, message_id))
         return indexed
     for mid in reversed(selected):
@@ -530,9 +564,8 @@ def _messages_for_recipients(
                 mid,
                 spec="(INTERNALDATE BODY.PEEK[])",
             )
-            recipients = _recipient_addresses(recipient_headers)
             for target in targets:
-                if target in recipients:
+                if _matches_recipient(target, item, recipient_headers):
                     indexed[target].append((item, recipient_headers, message_id))
         except ForwardIMAPError:
             # A dropped socket must escape so the outer read-only operation
@@ -585,6 +618,44 @@ def _message_timestamp(item: dict) -> float:
         return 0.0
 
 
+def _observe_otp_candidate(mail, item: dict, message_id: str) -> None:
+    """只记录稳定消息身份与地址证据，不写验证码及原文。"""
+    from core.email_auth_guard import observe_candidate
+
+    profile = _INBOX_PROFILE.get() or {}
+    locator = profile.get("inbox_locator") or {}
+    settings = {**locator, **profile} if isinstance(locator, Mapping) else profile
+    inbox_identity = str(profile.get("inbox_key") or profile.get("id") or (
+        str(settings.get("server") or settings.get("imap_server") or getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_SERVER", "")) + ":" +
+        str(settings.get("email") or settings.get("username") or settings.get("imap_email") or getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", ""))
+    ))
+    inbox_key = hashlib.sha256(inbox_identity.encode()).hexdigest()[:24]
+    revision = str(profile.get("revision") or profile.get("route_revision") or "legacy")
+    validity = ""
+    if _uses_uid(mail):
+        cached = getattr(mail, "_forward_imap_uidvalidity", "")
+        if isinstance(cached, str) and cached:
+            validity = cached
+        else:
+            try:
+                kind, values = mail.response("UIDVALIDITY")
+                if kind == "UIDVALIDITY" and values and isinstance(values[0], bytes):
+                    validity = values[0].decode("ascii", errors="ignore").strip()
+                    mail._forward_imap_uidvalidity = validity
+            except (AttributeError, TypeError, ValueError):
+                pass
+    cursor = {"inbox_key": inbox_key, "route_revision": revision}
+    if _uses_uid(mail) and validity:
+        cursor.update({"uidvalidity": validity, "uid": str(message_id)})
+        key = f"imap:{inbox_key}:{revision}:{validity}:{message_id}"
+    else:
+        # 旧适配器没有 UID；保留映射未知，不把序号伪装成稳定 UID。
+        stable_id = str(item.get("id") or "")
+        cursor["message_mapping"] = "message_id" if stable_id else "unknown"
+        key = f"imap-message:{inbox_key}:{revision}:{stable_id}" if stable_id else ""
+    observe_candidate(key, evidence=extract_recipient_evidence(item), cursor=cursor)
+
+
 def _latest_forwarded_otp(
     mail: imaplib.IMAP4_SSL, target: str, after_ts: float, *, budget: _IMAPBudget | None = None,
 ) -> str | None:
@@ -600,7 +671,7 @@ def _latest_forwarded_otp(
         pass
     cutoff = float(after_ts if after_ts is not None else time.time()) - _OTP_CLOCK_SKEW_TOLERANCE
     for item, recipient_headers, _message_id in _iter_messages_for_recipient(mail, target, cutoff, budget=budget):
-        if target not in _recipient_addresses(recipient_headers):
+        if not _matches_recipient(target, item, recipient_headers):
             continue
         received_at = _message_timestamp(item)
         if received_at and received_at < cutoff:
@@ -609,6 +680,9 @@ def _latest_forwarded_otp(
             continue
         otp = extract_otp(item)
         if otp:
+            if budget is not None:
+                budget.require()
+            _observe_otp_candidate(mail, item, _message_id)
             if budget is not None:
                 budget.require()
             return otp
@@ -620,7 +694,7 @@ def _deactivation_result(target: str, messages: list[tuple[dict, str, str]]) -> 
 
     matches: list[dict] = []
     for item, recipient_headers, message_id in messages:
-        if target not in _recipient_addresses(recipient_headers):
+        if not _matches_recipient(target, item, recipient_headers):
             continue
         # The index already proved that this message was delivered to target;
         # pass the exact alias to the shared detector instead of a combined
@@ -649,11 +723,15 @@ def _deactivation_result(target: str, messages: list[tuple[dict, str, str]]) -> 
     }
 
 
-def _scan_openai_deactivation_once(target: str, since_ts: float) -> dict:
+def _scan_deactivation_group(targets: set[str], since_ts: float) -> dict[str, dict]:
+    """同一实际收件配置的目标共用连接与搜索，每封邮件只取回一次。"""
     mail = _connect()
     try:
-        messages = _messages_for_recipient(mail, target, since_ts)
-        return _deactivation_result(target, messages)
+        indexed = _messages_for_recipients(mail, targets, since_ts)
+        return {
+            target: _deactivation_result(target, indexed.get(target, []))
+            for target in sorted(targets)
+        }
     finally:
         try:
             mail.logout()
@@ -662,49 +740,58 @@ def _scan_openai_deactivation_once(target: str, since_ts: float) -> dict:
 
 
 def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
-    """扫描转发收件箱中的高置信度 OpenAI 封号通知，不访问 OpenAI AT。"""
+    """扫描目标原收件链路中的高置信度封号通知，不访问 OpenAI AT。"""
     target = str(email or "").strip().lower()
     if not target or "@" not in target:
         raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
-    lookback = max(1, min(int(lookback_days or 120), 365))
-    since_ts = time.time() - lookback * 86400
-    return _run_with_imap_retry(lambda: _scan_openai_deactivation_once(target, since_ts))
+    return scan_openai_deactivation_bulk([target], lookback_days=lookback_days)[target]
+
+
+def _scan_profile_key(profile: Mapping | None) -> tuple | None:
+    if profile is None:
+        return None
+    locator = profile.get("inbox_locator") or {}
+    settings = {**locator, **profile} if isinstance(locator, Mapping) else profile
+    # 严格母子规则按地址保存，不因同一收件箱里有母账号就拆成额外连接。
+    return tuple(str(settings.get(name) or "") for name in (
+        "connector", "id", "inbox_key", "revision", "server", "port", "email", "username", "imap_server", "imap_port", "imap_email",
+    ))
 
 
 def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120) -> dict[str, dict]:
-    """Scan many aliases through one shared Gmail connection.
-
-    The result is keyed by normalized alias and contains the same safe fields
-    as :func:`scan_openai_deactivation`. Mail bodies and credentials never
-    leave this process.
-    """
+    """按持久收件配置分组扫描，历史地址不随全局 Gmail 配置切换。"""
     targets = {str(email or "").strip().lower() for email in (emails or [])}
     targets.discard("")
     if any("@" not in target for target in targets):
         raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
     if not targets:
         return {}
+    from core.email_derivation import inbox_profiles_for_addresses
+
+    # 一次批量解析，不能为数千个待扫描账号逐个连接 PostgreSQL。
+    profiles = inbox_profiles_for_addresses(sorted(targets))
+    active_profile = _INBOX_PROFILE.get()
+    groups: dict[tuple | None, dict] = {}
+    for target in sorted(targets):
+        profile = profiles.get(target, active_profile)
+        if target in profiles and str(profile.get("connector") or "") != "forward_imap":
+            raise ForwardIMAPError("原邮箱收件配置不支持 IMAP 封号邮件扫描，不能改读当前全局邮箱")
+        key = _scan_profile_key(profile)
+        if key not in groups:
+            groups[key] = {"profile": dict(profile) if profile is not None else None, "targets": set(), "strict": {}}
+        groups[key]["targets"].add(target)
+        strict_rules = (profile or {}).get("strict_family_by_address") or {}
+        groups[key]["strict"][target] = bool(strict_rules.get(target, (profile or {}).get("strict_family")))
     lookback = max(1, min(int(lookback_days or 120), 365))
     since_ts = time.time() - lookback * 86400
-
-    def _scan_once() -> dict[str, dict]:
-        mail = _connect()
-        try:
-            indexed = _messages_for_recipients(mail, targets, since_ts)
-            return {
-                target: _deactivation_result(
-                    target,
-                    indexed.get(target, []),
-                )
-                for target in sorted(targets)
-            }
-        finally:
-            try:
-                mail.logout()
-            except Exception:
-                pass
-
-    return _run_with_imap_retry(_scan_once)
+    results = {}
+    for group in groups.values():
+        profile = group["profile"]
+        if profile is not None:
+            profile["strict_family_by_address"] = group["strict"]
+        with use_inbox_profile(profile):
+            results.update(_run_with_imap_retry(lambda: _scan_deactivation_group(group["targets"], since_ts)))
+    return results
 
 
 def fetch_latest_otp(
@@ -719,13 +806,19 @@ def fetch_latest_otp(
         raise ForwardIMAPError("待查询的转发邮箱地址无效")
     anchor = float(after_ts if after_ts is not None else time.time())
 
-    if str(getattr(_email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_imap":
+    profile = _INBOX_PROFILE.get() or {}
+    connector = str(profile.get("connector") or profile.get("connector_type") or "").strip().lower()
+    mode = connector or str(getattr(_email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower()
+    if mode == "forward_imap":
         return _fetch_latest_otp_local(
             target,
             anchor,
             max_wait=max_wait,
             poll_interval=poll_interval,
         )
+
+    if "+" in target.partition("@")[0]:
+        raise ForwardIMAPError("当前 Email Butler 取码接口缺少完整子地址投递证据，无法隔离验证码")
 
     mail = None
     try:

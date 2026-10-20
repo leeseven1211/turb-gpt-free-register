@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 from config import roxybrowser as _roxy_cfg
+from core.email_auth_guard import serialize_email_auth
 from core.profile_utils import generate_random_birthday
 
 
+@serialize_email_auth
 def run_registration(
     email: str,
     name: str,

@@ -19,6 +19,12 @@ class _Clock:
 
 
 class ForwardIMAPTests(unittest.TestCase):
+    def setUp(self):
+        # 普通 IMAP 单测不访问地址账本，持久路由由专门的 PostgreSQL 集成测试覆盖。
+        profile_lookup = patch("core.email_derivation.inbox_profiles_for_addresses", return_value={}, create=True)
+        profile_lookup.start()
+        self.addCleanup(profile_lookup.stop)
+
     def test_messages_use_imap_internaldate_as_received_time(self):
         msg = EmailMessage()
         msg["From"] = "OpenAI <noreply@openai.com>"
@@ -261,8 +267,8 @@ class ForwardIMAPTests(unittest.TestCase):
             patch.object(client, "_connect", return_value=Mail()),
             patch.object(
                 client,
-                "_messages_for_recipient",
-                return_value=[(message, f"owner@gmail.com {target}", "42")],
+                "_messages_for_recipients",
+                return_value={target: [(message, f"owner@gmail.com {target}", "42")]},
             ),
         ):
             result = client.scan_openai_deactivation(target)
@@ -285,8 +291,8 @@ class ForwardIMAPTests(unittest.TestCase):
             patch.object(client, "_connect", return_value=Mail()),
             patch.object(
                 client,
-                "_messages_for_recipient",
-                return_value=[(message, "another@icloud.com", "43")],
+                "_messages_for_recipients",
+                return_value={"hidden@icloud.com": [(message, "another@icloud.com", "43")]},
             ),
         ):
             result = client.scan_openai_deactivation("hidden@icloud.com")
@@ -304,7 +310,7 @@ class ForwardIMAPTests(unittest.TestCase):
                 "_connect",
                 side_effect=[client.ForwardIMAPError("SSLEOFError"), Mail()],
             ) as connect,
-            patch.object(client, "_messages_for_recipient", return_value=[]),
+            patch.object(client, "_messages_for_recipients", return_value={}),
             patch.object(client.time, "sleep") as sleep,
         ):
             result = client.scan_openai_deactivation("hidden@icloud.com")
@@ -348,7 +354,7 @@ class ForwardIMAPTests(unittest.TestCase):
             ])
 
         self.assertEqual(connect.call_count, 1)
-        self.assertEqual(len(mail.search_calls), 4)
+        self.assertEqual(len(mail.search_calls), 5)
         self.assertTrue(all("HEADER" in call[1] for call in mail.search_calls))
         self.assertTrue(all('FROM "openai.com"' not in call[1] for call in mail.search_calls))
         self.assertTrue(all("OR" in call[1] for call in mail.search_calls))

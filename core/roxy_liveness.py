@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 
 from config import roxybrowser as cfg
+from core.email_auth_guard import serialize_email_auth
 from core.email_provider import wait_for_otp
 from core.openai_auth import AccountUnusableError, detect_account_unusable_text
 from core.registration.selenium_auth import (
@@ -192,6 +193,7 @@ def _complete_otp(
     raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
 
 
+@serialize_email_auth
 def refresh_access_token(
     email: str,
     *,

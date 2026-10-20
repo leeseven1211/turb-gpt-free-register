@@ -23,6 +23,7 @@ import pyotp
 
 from config import account as account_config
 from config.browser import IMPERSONATE, resolve_impersonate
+from core.email_auth_guard import serialize_email_auth
 from core.account_export import fetch_session, follow_oauth_callback
 from core.account_liveness import (
     _network_preflight_with_retry,
@@ -868,6 +869,7 @@ def _success(
     }
 
 
+@serialize_email_auth
 def refresh_access_token(
     email: str,
     *,

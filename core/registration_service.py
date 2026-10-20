@@ -147,6 +147,7 @@ def registration_config_snapshot() -> dict[str, object]:
     from config import register as register_cfg
     from config import roxybrowser as roxy_cfg
     from config import twofa as twofa_cfg
+    from core.email_derivation import policy_snapshot
 
     auth_mode = str(getattr(register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
     if auth_mode not in {"otp", "password"}:
@@ -167,6 +168,7 @@ def registration_config_snapshot() -> dict[str, object]:
         "codex_enabled": bool(getattr(codex_cfg, "ENABLE_CODEX_AUTO", False)),
         "codex_driver": str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "same_as_registration") or "same_as_registration").strip().lower(),
         "plan_check_enabled": bool(getattr(register_cfg, "REGISTRATION_PLAN_CHECK_ENABLED", True)),
+        "email_derivation": policy_snapshot(),
     }
     return _apply_registration_driver_snapshot(snapshot, registration_driver)
 
@@ -719,11 +721,17 @@ def bind_registration_email(
         # ``create_attempt`` is idempotent for the original root job. 重跑子任务
         # 必须继续写回同一个 Attempt，不能各自声明一份邮箱租约。
         root_id = int(root_job_id or job_id)
+        from core.email_derivation import find_binding
+
+        binding = find_binding(address)
+        lease_data = {"email_lease_id": f"root:{root_id}:{address.lower()}"}
+        if binding is not None:
+            lease_data.update(email_lease_id=f"allocation:{binding['id']}", email_address_id=int(binding["id"]))
         registration.create_attempt(
             address,
             email_source=email_source,
             root_job_id=root_id,
-            data={"email_lease_id": f"root:{root_id}:{address.lower()}"},
+            data=lease_data,
         )
     except Exception:
         logger.exception("[Job %s] 绑定 Attempt 邮箱租约快照失败", job_id)
@@ -995,7 +1003,9 @@ def _prepare_registration_args(
                 }
                 # Remail 付费领取必须有 root owner 与稳定 acquisition_id；
                 # 旧的无身份入口只继续支持非付费邮箱来源，不能静默生成临时 ID。
-                if str(email_source or "").strip().lower() in {"remail", "mailcode", "xigua"}:
+                from core.email_derivation import enabled_for
+
+                if str(email_source or "").strip().lower() in {"remail", "mailcode", "xigua"} or enabled_for(str(email_source or "")):
                     if not owner_kind or owner_id is None or not str(acquisition_id or "").strip():
                         raise RuntimeError("付费邮箱注册领取缺少稳定 owner/acquisition_id，已停止下单")
                     acquire_kwargs.update({
@@ -1860,16 +1870,17 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail="已复用原任务邮箱，不会改领新邮箱",
                 )
             else:
-                email, name, birthday = _prepare_registration_args(
-                    selected_source,
-                    batch_id=batch_id,
-                    job_id=job_id,
-                    **({
-                        "owner_kind": "registration_root",
-                        "owner_id": registration_root_id,
+                from core.email_derivation import enabled_for, use_policy
+
+                frozen_policy = registration_options_for_job(current).get("email_derivation", {"enabled": False})
+                with use_policy(frozen_policy):
+                    acquisition = ({
+                        "owner_kind": "registration_root", "owner_id": registration_root_id,
                         "acquisition_id": registration_acquisition_id,
-                    } if selected_source in {"remail", "mailcode", "xigua"} else {}),
-                )
+                    } if selected_source in {"remail", "mailcode", "xigua"} or enabled_for(selected_source) else {})
+                    email, name, birthday = _prepare_registration_args(
+                        selected_source, batch_id=batch_id, job_id=job_id, **acquisition,
+                    )
             from core.email_provider import remember_email_source
 
             remember_email_source(email, selected_source)

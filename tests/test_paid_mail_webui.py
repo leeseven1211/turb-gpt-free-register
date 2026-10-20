@@ -45,7 +45,7 @@ class PaidMailConfigurationTests(unittest.TestCase):
         from core.email_change_service import _acquire_email_change_target
         context = SimpleNamespace(checkpoint=lambda: None, task_id=37, run={"data": {"remail_acquisition_id": "change:37"}})
         for source in ("mailcode", "xigua"):
-            with self.subTest(source=source), patch("core.email_provider.acquire_email", return_value="new@example.test") as acquire, patch("core.db.get_account_by_email", return_value=None):
+            with self.subTest(source=source), patch("core.email_provider.acquire_email", return_value="new@example.test") as acquire, patch("core.db.get_account_by_email", return_value=None), patch("core.email_derivation.store.find_allocation", side_effect=AssertionError("付费订单来源不能查询派生地址账本")):
                 target, result = _acquire_email_change_target(context, account_id=1, source=source, current_email="old@example.test")
             self.assertEqual(target, "new@example.test")
             self.assertIsNone(result)

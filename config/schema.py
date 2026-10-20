@@ -256,6 +256,10 @@ _DEFAULTS: dict[str, Any] = {
     "OTP_MAX_WAIT": 240,
     "OTP_POLL_INTERVAL": 3,
     "EMAIL_SOURCE": "outlook,generic_api,mailnest",
+    "EMAIL_DERIVATION_ENABLED": False,
+    "EMAIL_DERIVATION_SOURCES": "icloud_hide",
+    "EMAIL_DERIVATION_MAX_CHILDREN": 3,
+    "EMAIL_DERIVATION_TAG_LENGTH": 6,
     "EMAIL_BUTLER_API_BASE": "",
     "EMAIL_BUTLER_API_KEY": "",
     "EMAIL_BUTLER_REQUEST_TIMEOUT": 20,
@@ -880,6 +884,22 @@ _FIELD_DEFINITIONS = [
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "邮箱来源", "help": "按列表顺序尝试邮箱来源；可多选，当前已选顺序会被保留（保存为逗号分隔），开始注册时仍必须明确选择一个，任务不会跨平台兜底",
+    },
+    {
+        "key": "EMAIL_DERIVATION_ENABLED", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
+        "label": "启用邮箱子地址", "help": "新注册任务按冻结配置生成子地址；关闭后已有子地址仍可续跑、收码和登录",
+    },
+    {
+        "key": "EMAIL_DERIVATION_SOURCES", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "子地址来源", "help": "选择允许派生的来源；还需具备精确收码能力，不能仅根据邮箱域名判断",
+    },
+    {
+        "key": "EMAIL_DERIVATION_MAX_CHILDREN", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "每个母邮箱的子地址额度", "help": "每个母资源累计最多生成几个子地址，默认 3；以后提高额度即可继续生成，失败地址也保留归属",
+    },
+    {
+        "key": "EMAIL_DERIVATION_TAG_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "子地址随机后缀长度", "help": "在用户名后增加 +随机小写字母数字，默认 6 位；保留完整地址用于注册和后续恢复",
     },
     {
         "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1685,6 +1705,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("mailcode", "域名邮箱 MailCode"), ("xigua", "西瓜邮箱"),
         ("icloud_hide", "iCloud Hide My Email"),
     ),
+    "EMAIL_DERIVATION_SOURCES": _options(("icloud_hide", "iCloud 隐藏邮箱"), ("outlook", "Outlook")),
     "REMAIL_SERVICE_MODE": _options(("purchase", "长效购买"), ("code", "短效接码")),
     "REMAIL_SUPPLY_POLICY": _options(("public_only", "只使用公开库存"), ("private_first", "优先自己的库存")),
 }
@@ -1733,6 +1754,8 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ROXY_CODEX_CALLBACK_TIMEOUT": (1, 86400),
     "OTP_MAX_WAIT": (1, 86400),
     "OTP_POLL_INTERVAL": (1, 3600),
+    "EMAIL_DERIVATION_MAX_CHILDREN": (1, 10000),
+    "EMAIL_DERIVATION_TAG_LENGTH": (4, 24),
     "EMAIL_BUTLER_REQUEST_TIMEOUT": (1, 3600),
     "REMAIL_PROJECT_ID": (1, None),
     "REMAIL_ORDER_WAIT_SECONDS": (0, 180),
@@ -1942,7 +1965,7 @@ def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigFie
             restart=key in _RESTART_KEYS,
             hot_edit=hot_edit,
             allow_prefix="provider:" if key in _PROVIDER_PROXY_KEYS else None,
-            csv_options=tuple(option.value for option in _OPTIONS.get(key, ()) if key in {"EMAIL_SOURCE", "ROXY_RANDOM_OS_CHOICES"}),
+            csv_options=tuple(option.value for option in _OPTIONS.get(key, ()) if key in {"EMAIL_SOURCE", "EMAIL_DERIVATION_SOURCES", "ROXY_RANDOM_OS_CHOICES"}),
         ))
     return tuple(fields)
 
@@ -2240,6 +2263,8 @@ def _cross_field_errors(
     errors: dict[str, str] = {}
     if values.get("USE_EMAIL_SERVICE") and not str(values.get("EMAIL_SOURCE", "")).strip():
         errors["EMAIL_SOURCE"] = "自动取邮箱模式至少启用一个邮箱来源"
+    if values.get("EMAIL_DERIVATION_ENABLED") and not str(values.get("EMAIL_DERIVATION_SOURCES", "")).strip():
+        errors["EMAIL_DERIVATION_SOURCES"] = "启用子地址时至少选择一个允许派生的来源"
     if (
         values.get("ACCOUNT_LIVE_CHECK_DRIVER") == "browser_roxy"
         and not values.get("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED")
@@ -2357,7 +2382,7 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
     if raw is None:
         return ConfigResolution(field.clone_default(), "default", configured=False)
     text = str(raw).strip()
-    explicit_empty_list = text == "" and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE"}
+    explicit_empty_list = text == "" and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE", "EMAIL_DERIVATION_SOURCES"}
     if not text and not explicit_empty_list:
         return ConfigResolution(field.clone_default(), "default", source_key=source_key, configured=False)
     try:

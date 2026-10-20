@@ -368,3 +368,24 @@ test('任意配置编辑清除本轮服务端错误和页面错误节点，不�
   assert.deepEqual(domErrors.map(item => item.removed), [true, true]);
   assert.equal(view.pending.REGISTER_NAME, '新值');
 });
+
+test('邮箱子地址通过通用配置渲染器保留多选顺序和可调整额度', () => {
+  const fields = [
+    field('EMAIL_DERIVATION_SOURCES', '邮箱 / OTP', {value: 'icloud_hide,outlook', csv_options: ['icloud_hide', 'outlook'], options: [
+      {value: 'icloud_hide', label: 'iCloud 隐藏邮箱'}, {value: 'outlook', label: 'Outlook'},
+    ]}),
+    field('EMAIL_DERIVATION_MAX_CHILDREN', '邮箱 / OTP', {type: 'int', value: 3, range: {min: 1, max: 10000}}),
+    field('EMAIL_DERIVATION_ENABLED', '邮箱 / OTP', {type: 'bool', value: false}),
+  ];
+  const {view} = createConfigView(fields);
+  assert.equal(view.emailVisible('邮箱子地址'), true);
+  const markup = view.control(fields[0]);
+  assert.ok(markup.includes('data-multi-picker="EMAIL_DERIVATION_SOURCES"'));
+  assert.ok(markup.includes('value="icloud_hide,outlook"'));
+  const readValue = view.read({value: 'outlook,icloud_hide', dataset: {}, closest() { return true; }}, fields[0]);
+  assert.equal(readValue, 'outlook,icloud_hide');
+  assert.ok(view.control(fields[1]).includes('min="1" max="10000" step="1" value="3"'));
+  view.search('EMAIL_DERIVATION_MAX_CHILDREN');
+  assert.equal(view.state().email, '邮箱子地址');
+  assert.equal(view.state().menu, '邮箱与验证码');
+});

@@ -259,7 +259,7 @@ class ForwardIMAPDeadlineTests(unittest.TestCase):
         with self.assertLogs(client.logger, level="INFO") as logs:
             result = client._latest_forwarded_otp(mail, "alias@icloud.com", 0, budget=client._IMAPBudget(10))
         self.assertEqual(result, "654321")
-        self.assertEqual(mail.search.call_count, 4)
+        self.assertEqual(mail.search.call_count, 5)
         mail.fetch.assert_called_once_with(b"3", "(INTERNALDATE BODY.PEEK[])")
         text = "\n".join(logs.output)
         self.assertIn("SEARCH/To", text)

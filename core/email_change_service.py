@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
@@ -35,6 +36,10 @@ EMAIL_CHANGE_CONFIG_ALLOWLIST = {
     "email_change_proxy_mode": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE",
     "auth_profile_mode": "ACCOUNT_AUTH_PROFILE_MODE",
     "protocol_version": "OPENAI_PROTOCOL_VERSION",
+    "email_derivation_enabled": "EMAIL_DERIVATION_ENABLED",
+    "email_derivation_sources": "EMAIL_DERIVATION_SOURCES",
+    "email_derivation_max_children": "EMAIL_DERIVATION_MAX_CHILDREN",
+    "email_derivation_tag_length": "EMAIL_DERIVATION_TAG_LENGTH",
 }
 
 
@@ -731,18 +736,33 @@ def _acquire_email_change_target(
     duplicate_count = 0
     while True:
         context.checkpoint()
-        if str(source or "").strip().lower() in {"remail", "mailcode", "xigua"}:
-            run_data = context.run.get("data") if isinstance(context.run, Mapping) and isinstance(context.run.get("data"), Mapping) else {}
-            acquisition_id = str(run_data.get("remail_acquisition_id") or "").strip() or None
+        from core import email_derivation
+
+        snapshot = getattr(context, "config_snapshot", None)
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+        raw_sources = snapshot.get("email_derivation_sources", "")
+        sources = raw_sources.replace(";", ",").split(",") if isinstance(raw_sources, str) else list(raw_sources or [])
+        policy = {
+            "enabled": bool(snapshot.get("email_derivation_enabled", False)),
+            "sources": [str(value).strip() for value in sources if str(value).strip()],
+            "max_children": int(snapshot.get("email_derivation_max_children", 3)),
+            "tag_length": int(snapshot.get("email_derivation_tag_length", 6)),
+        }
+        run_data = context.run.get("data") if isinstance(context.run, Mapping) and isinstance(context.run.get("data"), Mapping) else {}
+        acquisition_id = str(run_data.get("remail_acquisition_id") or "").strip() or None
+        supported_derivation = str(source or "").strip().lower() in email_derivation._SUPPORTED_SOURCES
+        previous = email_derivation.store.find_allocation(acquisition_id=acquisition_id) if acquisition_id and supported_derivation else None
+        if str(source or "").strip().lower() in {"remail", "mailcode", "xigua"} or email_derivation.enabled_for(source, policy=policy) or previous:
             if acquisition_id:
-                target = str(email_provider.acquire_email(
-                    source,
-                    owner_kind="email_change",
-                    owner_id=int(context.task_id),
-                    acquisition_id=acquisition_id,
-                ) or "").strip()
+                with email_derivation.use_policy(policy):
+                    target = str(email_provider.acquire_email(
+                        source,
+                        owner_kind="email_change",
+                        owner_id=int(context.task_id),
+                        acquisition_id=acquisition_id,
+                    ) or "").strip()
             else:
-                raise RuntimeError("付费邮箱换绑运行缺少稳定 acquisition_id，已停止下单")
+                raise RuntimeError("邮箱换绑运行缺少稳定 acquisition_id，已保留原业务意图")
         else:
             target = str(email_provider.acquire_email(source) or "").strip()
         if not target:
@@ -896,6 +916,8 @@ def _enqueue_live_check_child(context, account_id: int, email: str) -> dict[str,
 
 
 def _handle_email_change(context):
+    from core.storage.email_address_allocations import OtpLeaseBusy
+
     if context.account_id is None:
         return task_gateway.OperationResult.failed("邮箱换绑缺少账号")
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
@@ -936,6 +958,8 @@ def _handle_email_change(context):
     remote_accepted = False
     writeback_confirmed = False
     email_closeout: dict[str, str] | None = None
+    target_auth_stack = ExitStack()
+    target_auth = None
     active_stage = "email"
     context.report(stage="email", state="running", message="准备新邮箱")
     try:
@@ -965,6 +989,9 @@ def _handle_email_change(context):
                     detail=dict(acquisition_failure.summary),
                 )
                 return acquisition_failure
+            from core.email_auth_guard import checkpoint as email_auth_checkpoint, email_auth_session
+
+            target_auth = target_auth_stack.enter_context(email_auth_session(new_email))
             db.mark_account_email_change_running(account_id, new_email, source=source)
             context.report(stage="email", state="success", message=f"新邮箱已领取：{new_email}")
             active_stage = "network"
@@ -990,6 +1017,7 @@ def _handle_email_change(context):
             context.checkpoint()
             active_stage = "submit_email"
             context.report(stage="submit_email", state="running", message="发送新邮箱验证码")
+            email_auth_checkpoint()
             begin = begin_change_with_optional_reauth(
                 session,
                 account_id=account_id,
@@ -1042,6 +1070,7 @@ def _handle_email_change(context):
                 detail={"account_id": account_id},
             )
             try:
+                email_auth_checkpoint()
                 protocol.verify(session, token, new_email, otp, prepared=prepared_verify)
             except task_gateway.OperationLeaseLost:
                 raise
@@ -1097,6 +1126,7 @@ def _handle_email_change(context):
             active_stage = "complete"
             context.report(stage="complete", state="running", message="确认邮箱换绑本地写回与资源收口")
             material_line = email_provider.email_material_line(new_email, source)
+            email_auth_checkpoint()
             if not db.finish_account_email_change(
                 account_id,
                 ok=True,
@@ -1174,6 +1204,14 @@ def _handle_email_change(context):
                     )
                 except Exception:
                     logger.exception("lease 丢失后的邮箱换绑失败状态写回失败: account_id=%s", account_id)
+        raise
+    except OtpLeaseBusy:
+        # 目标地址尚未发起远端操作；保留原地址归属，由统一调度按现有租约路径延后。
+        if account_claimed:
+            db.finish_account_email_change(
+                account_id, ok=False, new_email=new_email or None, source=source,
+                error="目标邮箱已有活跃认证执行，等待原执行收口",
+            )
         raise
     except OperationCancelled as exc:
         context.report(stage=active_stage, message="邮箱换绑执行已取消", level="warning", detail={"cancelled": True})
@@ -1273,6 +1311,10 @@ def _handle_email_change(context):
                 route.release(reason="email-change-completed")
             except Exception:
                 logger.exception("邮箱换绑线路释放失败: account_id=%s", account_id)
+        if target_auth is not None and writeback_confirmed:
+            # 只有远端验证、本地写回和读回均已确认，才确认目标邮箱认证会话。
+            target_auth.set_result({"ok": True})
+        target_auth_stack.close()
 
     try:
         child = _enqueue_live_check_child(context, account_id, new_email)

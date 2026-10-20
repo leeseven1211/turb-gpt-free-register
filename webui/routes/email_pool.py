@@ -140,6 +140,67 @@ def create_email_pool_blueprint(context: WebUIContext):
             return jsonify(result["items"])
         return jsonify(result)
 
+    @bp.get("/api/email-derivation/summary")
+    def api_email_derivation_summary():
+        """子地址概况只返回展示字段，不下发母资源凭据或收件配置。"""
+        source = str(request.args.get("source") or "").strip().lower()
+        if source in {"", "all"}:
+            source = None
+        elif source not in {"icloud_hide", "outlook", "generic_api", "cloudflare_domain"}:
+            return jsonify({"ok": False, "error": "不支持的邮箱来源"}), 400
+        from core import email_derivation
+
+        result = email_derivation.public_summary(source=source)
+        summary_keys = {
+            "enabled", "max_children", "tag_length", "total", "used", "reserved", "retired",
+            "replaced", "parent_count", "eligible_parent_count", "remaining", "capacity",
+        }
+        parent_keys = {
+            "source", "parent_id", "parent_email", "child_count", "max_children", "remaining",
+            "eligible", "enabled",
+        }
+        result = result if isinstance(result, dict) else {}
+        public = {key: value for key, value in result.items() if key in summary_keys and isinstance(value, (str, int, float, bool, type(None)))}
+        public["sources"] = [value for value in result.get("sources", []) if isinstance(value, str)]
+        public["parents"] = [
+            {key: value for key, value in row.items() if key in parent_keys and isinstance(value, (str, int, float, bool, type(None)))}
+            for row in result.get("parents", []) if isinstance(row, dict)
+        ]
+        return jsonify(public)
+
+    @bp.get("/api/email-derivation/allocations")
+    def api_email_derivation_allocations():
+        """分页查看子地址归属，不提供跨任务释放或复用入口。"""
+        source = str(request.args.get("source") or "").strip().lower()
+        if source in {"", "all"}:
+            source = None
+        elif source not in {"icloud_hide", "outlook", "generic_api", "cloudflare_domain"}:
+            return jsonify({"ok": False, "error": "不支持的邮箱来源"}), 400
+        parent_arg = str(request.args.get("parent_id") or "").strip()
+        try:
+            parent_id = int(parent_arg) if parent_arg else None
+            page = int(request.args.get("page") or 1)
+            page_size = int(request.args.get("page_size") or 50)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "母资源编号和分页参数必须是整数"}), 400
+        if (parent_id is not None and parent_id < 1) or page < 1 or not 1 <= page_size <= 100:
+            return jsonify({"ok": False, "error": "母资源编号和页码须大于零，每页数量须为 1–100"}), 400
+        if parent_id is not None and source is None:
+            return jsonify({"ok": False, "error": "按母资源筛选时须明确邮箱来源"}), 400
+        from core import email_derivation
+
+        result = email_derivation.list_allocations(source=source, parent_id=parent_id, page=page, page_size=page_size)
+        result = result if isinstance(result, dict) else {}
+        item_keys = {
+            "id", "email", "parent_id", "parent_email", "source", "state", "registered_account_id",
+            "root_task_id", "created_at", "updated_at", "used_at", "strategy",
+        }
+        items = [
+            {key: value for key, value in row.items() if key in item_keys and isinstance(value, (str, int, float, bool, type(None)))}
+            for row in result.get("items", []) if isinstance(row, dict)
+        ]
+        return jsonify({"items": items, "total": int(result.get("total") or 0), "page": page, "page_size": page_size})
+
     @bp.get("/api/outlook/secret")
     def api_outlook_secret():
         """按需读取单条邮箱资源，普通列表不会下发敏感凭证或取码地址。"""

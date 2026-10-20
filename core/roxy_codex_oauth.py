@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from selenium.common.exceptions import TimeoutException
 
 from config import roxybrowser as _roxy_cfg
+from core.email_auth_guard import bind_auth_observer, serialize_email_auth
 from core.email_provider import wait_for_otp
 from core.humanize import delay as human_delay
 from core import sms_provider
@@ -1889,7 +1890,7 @@ def _wait_for_fresh_email_otp(otp_provider, email: str, after_ts: float, used_co
                 kwargs["max_wait"] = remaining
         except (TypeError, ValueError):
             pass
-        code = str(call_cancellable(otp_provider, email, **kwargs) or "").strip()
+        code = str(call_cancellable(bind_auth_observer(otp_provider), email, **kwargs) or "").strip()
         if code and code not in used_codes:
             return code
         last_code = code or last_code
@@ -3860,6 +3861,7 @@ def _run_roxy_codex_oauth_once(
 
 
 @_with_auth_execution_context
+@serialize_email_auth
 def run_roxy_chatgpt_account_action(
     email: str,
     *,
@@ -4007,6 +4009,7 @@ def run_roxy_chatgpt_account_action(
             pass
 
 
+@serialize_email_auth
 def run_roxy_codex_oauth(
     email: str,
     otp_provider=None,

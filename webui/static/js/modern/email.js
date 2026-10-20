@@ -1,4 +1,118 @@
 // ---------- 邮箱池 ----------
+// 子地址归属单独展示，母资源的使用状态继续描述母地址本身。
+const EMAIL_DERIVATION_VIEW = {source: 'all', parentId: null, parentEmail: '', page: 1, pageSize: 50, total: 0, summary: null, generation: 0};
+const EMAIL_DERIVATION_STATE_LABELS = {reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '已停用'};
+function _poolDerivationCell(row) {
+  const summary = EMAIL_DERIVATION_VIEW.summary;
+  const recorded = (summary?.parents || []).find(item => item.source === row.source && String(item.parent_id) === String(row.id));
+  const enabledSources = Array.isArray(summary?.sources) ? summary.sources : [];
+  const parentPolicy = row.derivation_policy || {};
+  const canShowDefault = summary?.enabled === true && enabledSources.includes(row.source)
+    && ['icloud_hide', 'outlook'].includes(row.source) && Number(row.id) > 0 && parentPolicy.enabled !== false;
+  // 首个子地址生成前没有聚合行，仍使用当前策略展示零用量和查看入口。
+  const parent = recorded || (canShowDefault ? {parent_id: row.id, child_count: 0, max_children: parentPolicy.max_children} : null);
+  if (!parent) return '';
+  const count = Number(parent.child_count || 0);
+  const maximum = Number(parent.max_children ?? summary.max_children ?? 3);
+  return `<small class="pool-derivation-meta">原地址 · 子地址 ${count}/${maximum}</small><button type="button" class="pool-derivation-open" data-derivation-parent="${attrEsc(parent.parent_id)}" data-source="${attrEsc(row.source)}" data-parent-email="${attrEsc(row.email)}" aria-label="查看 ${attrEsc(row.email)} 的子地址">查看子地址</button>`;
+}
+function renderEmailDerivationSummary(summary) {
+  EMAIL_DERIVATION_VIEW.summary = summary;
+  const node = document.getElementById('emailDerivationSummary');
+  if (node) node.textContent = `${summary.enabled ? '新任务已启用' : '新任务未启用'} · 已生成 ${Number(summary.total || 0)} 个 · 每母邮箱 ${Number(summary.max_children || 3)} 个额度`;
+  if (typeof OUTLOOK !== 'undefined' && OUTLOOK.length) renderOutlook();
+}
+function renderEmailDerivationAllocations(result) {
+  const state = EMAIL_DERIVATION_VIEW;
+  state.total = Number(result.total || 0);
+  const body = document.getElementById('emailDerivationBody');
+  if (!body) return;
+  const items = Array.isArray(result.items) ? result.items : [];
+  body.innerHTML = items.map(item => {
+    const bound = item.registered_account_id ? `账号 #${item.registered_account_id}` : '';
+    const task = item.root_task_id ? `任务 #${item.root_task_id}` : '';
+    return `<tr><td data-label="派生地址"><strong>${esc(item.email || '-')}</strong><small>派生地址</small></td><td data-label="母邮箱 / 来源"><span>${esc(item.parent_email || '-')}</span><small>${esc(poolLabel(item.source))} · 母资源 #${esc(item.parent_id || '-')}</small></td><td data-label="使用状态">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态待确认')}</td><td data-label="关联账号 / 任务">${esc([bound, task].filter(Boolean).join(' · ') || '归属已保留')}</td><td data-label="生成时间">${esc(formatDateTime(item.created_at))}</td></tr>`;
+  }).join('') || '<tr class="email-derivation-empty"><td colspan="5">当前筛选下没有子地址。启用后，新注册任务会按需生成。</td></tr>';
+  const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+  const status = document.getElementById('emailDerivationListStatus');
+  if (status) status.textContent = `共 ${state.total} 个子地址 · 第 ${state.page}/${pages} 页`;
+  document.getElementById('btnDerivationPrev').disabled = state.page <= 1;
+  document.getElementById('btnDerivationNext').disabled = state.page >= pages;
+}
+async function loadEmailDerivationResources() {
+  const panel = document.getElementById('emailDerivationPanel');
+  if (!panel) return;
+  const state = EMAIL_DERIVATION_VIEW;
+  const generation = ++state.generation;
+  // 概况包含所有母资源，列表筛选不影响邮箱池各行的额度显示。
+  const params = new URLSearchParams({source: 'all'});
+  const listParams = new URLSearchParams({source: state.source, page: String(state.page), page_size: String(state.pageSize)});
+  if (state.parentId) listParams.set('parent_id', String(state.parentId));
+  const sourceSelect = document.getElementById('emailDerivationSource');
+  if (sourceSelect) sourceSelect.value = state.source;
+  document.getElementById('emailDerivationParentFilter').textContent = state.parentId ? `母邮箱：${state.parentEmail || `#${state.parentId}`}` : '';
+  document.getElementById('btnClearDerivationParent').hidden = !state.parentId;
+  const wrap = document.getElementById('emailDerivationTableWrap');
+  if (wrap) wrap.setAttribute('aria-busy', panel.open ? 'true' : 'false');
+  const refresh = document.getElementById('btnRefreshEmailDerivation');
+  if (refresh) refresh.disabled = true;
+  const status = document.getElementById('emailDerivationListStatus');
+  if (panel.open && status) status.textContent = '正在读取子地址归属…';
+  document.getElementById('btnDerivationPrev').disabled = true;
+  document.getElementById('btnDerivationNext').disabled = true;
+  try {
+    const [summary, allocations] = await Promise.all([
+      api(`/api/email-derivation/summary?${params.toString()}`),
+      panel.open ? api(`/api/email-derivation/allocations?${listParams.toString()}`) : Promise.resolve(null),
+    ]);
+    if (generation !== state.generation) return;
+    renderEmailDerivationSummary(summary);
+    if (allocations) renderEmailDerivationAllocations(allocations);
+  } catch (error) {
+    if (generation !== state.generation) return;
+    const message = '子地址加载失败，请刷新重试。';
+    document.getElementById('emailDerivationSummary').textContent = message;
+    if (status) status.textContent = message;
+  } finally {
+    if (generation === state.generation) {
+      if (refresh) refresh.disabled = false;
+      if (wrap) wrap.setAttribute('aria-busy', 'false');
+    }
+  }
+}
+function showEmailDerivationParent(button) {
+  const state = EMAIL_DERIVATION_VIEW;
+  state.source = button.dataset.source || 'all';
+  state.parentId = button.dataset.derivationParent;
+  state.parentEmail = button.dataset.parentEmail || '';
+  state.page = 1;
+  const panel = document.getElementById('emailDerivationPanel');
+  if (!panel) return;
+  if (panel.open) loadEmailDerivationResources();
+  else panel.open = true;
+  panel.scrollIntoView({block: 'nearest'});
+}
+document.getElementById('emailDerivationPanel')?.addEventListener('toggle', event => {
+  if (event.currentTarget.open) loadEmailDerivationResources();
+});
+document.getElementById('emailDerivationSource')?.addEventListener('change', event => {
+  Object.assign(EMAIL_DERIVATION_VIEW, {source: event.currentTarget.value, parentId: null, parentEmail: '', page: 1});
+  loadEmailDerivationResources();
+});
+document.getElementById('btnClearDerivationParent')?.addEventListener('click', () => {
+  Object.assign(EMAIL_DERIVATION_VIEW, {parentId: null, parentEmail: '', page: 1});
+  loadEmailDerivationResources();
+});
+document.getElementById('btnRefreshEmailDerivation')?.addEventListener('click', loadEmailDerivationResources);
+document.getElementById('btnDerivationPrev')?.addEventListener('click', () => {
+  EMAIL_DERIVATION_VIEW.page = Math.max(1, EMAIL_DERIVATION_VIEW.page - 1);
+  loadEmailDerivationResources();
+});
+document.getElementById('btnDerivationNext')?.addEventListener('click', () => {
+  EMAIL_DERIVATION_VIEW.page += 1;
+  loadEmailDerivationResources();
+});
+
 function getPoolSource() {
   const v2 = document.getElementById('poolSourceV2');
   return (v2 && v2.value) || 'all';
@@ -141,6 +255,7 @@ function renderButlerLeases(items) {
   </div>`).join('') || '<div class="butler-lease-empty">当前进程没有手动或注册中租约</div>';
 }
 async function loadMailResources() {
+  loadEmailDerivationResources();
   try {
     const [dashboard, leases] = await Promise.all([
       apiCached('/api/dashboard', {}, 5000),
@@ -206,6 +321,7 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
+    loadEmailDerivationResources();
     markViewReady('outlook:list');
   } catch(e) {
     if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(9, '邮箱资源加载失败', '请检查服务状态后刷新列表。', 'error');
@@ -288,6 +404,7 @@ function renderOutlook() {
       <td class="col-check"><input type="checkbox" class="outlook-row-check" data-email="${email}" data-source="${src}" ${OUTLOOK_SELECTED.has(poolKey(r)) ? 'checked' : ''}></td>
       <td class="col-email" title="${email}">
         <div class="acc-v2-email">${email || '-'}</div>
+        ${_poolDerivationCell(r)}
         ${r.remote_label ? `<small class="pool-remote">${esc(r.remote_label)}</small>` : ''}
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
@@ -364,6 +481,8 @@ function onOutlookBodyChange(e) {
   updateOutlookSelectionUi();
 }
 async function onOutlookBodyClick(e) {
+  const derivationParent = e.target.closest('[data-derivation-parent]');
+  if (derivationParent) { showEmailDerivationParent(derivationParent); return; }
   const moreToggle = e.target.closest('[data-outlook-more-toggle]');
   if (moreToggle) {
     e.preventDefault();

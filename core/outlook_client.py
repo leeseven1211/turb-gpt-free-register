@@ -48,6 +48,7 @@ from config.browser import resolve_impersonate
 # OTP_POLL_INTERVAL / OTP_MAX_WAIT 是 WebUI 可热改的，从模块读
 from config import email as _email_cfg
 from core.otp_utils import looks_like_openai_email, extract_otp
+from core.email_recipients import candidate_match, extract_recipient_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -679,10 +680,11 @@ def _live_imap_access_token(account: OutlookAccount, http: CurlSession | None = 
 
 
 def _normalize_ms_message(m: dict) -> dict:
-    sender = (((m.get("from") or {}).get("emailAddress") or {}) if isinstance(m.get("from"), dict) else {})
-    body = m.get("body") if isinstance(m.get("body"), dict) else {}
-    content = body.get("content") if isinstance(body, dict) else ""
-    received = m.get("receivedDateTime") or m.get("DateTimeReceived") or m.get("date") or ""
+    from_obj = m.get("from") or m.get("From") or {}
+    sender = (from_obj.get("emailAddress") or from_obj.get("EmailAddress") or {}) if isinstance(from_obj, dict) else {}
+    body = m.get("body") or m.get("Body") or {}
+    content = (body.get("content") or body.get("Content") or "") if isinstance(body, dict) else str(body or "")
+    received = m.get("receivedDateTime") or m.get("ReceivedDateTime") or m.get("DateTimeReceived") or m.get("date") or ""
     return {
         "id": m.get("id") or m.get("Id") or "",
         "subject": m.get("subject") or m.get("Subject") or "",
@@ -691,6 +693,10 @@ def _normalize_ms_message(m: dict) -> dict:
         "fromName": sender.get("name") or sender.get("Name") or "",
         "receivedDateTime": received,
         "date": received,
+        "toRecipients": m.get("toRecipients") or m.get("ToRecipients") or [],
+        "ccRecipients": m.get("ccRecipients") or m.get("CcRecipients") or [],
+        "internetMessageHeaders": m.get("internetMessageHeaders") or m.get("InternetMessageHeaders") or [],
+        "recipient_evidence": extract_recipient_evidence(m),
         "bodyPreview": m.get("bodyPreview") or m.get("BodyPreview") or "",
         "content": content or "",
         "body": content or "",
@@ -709,7 +715,7 @@ def _fetch_graph_messages(http: CurlSession, token: str) -> list[dict]:
     params = {
         "$top": "20",
         "$orderby": "receivedDateTime desc",
-        "$select": "id,subject,from,receivedDateTime,bodyPreview,body",
+        "$select": "id,subject,from,receivedDateTime,bodyPreview,body,toRecipients,ccRecipients,internetMessageHeaders",
     }
     resp = http.get(url, headers=headers, params=params, **request_kwargs())
     text = resp.text or ""
@@ -736,12 +742,12 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
         {
             "$top": "20",
             "$orderby": "ReceivedDateTime desc",
-            "$select": "Id,Subject,From,ReceivedDateTime,BodyPreview,Body",
+            "$select": "Id,Subject,From,ReceivedDateTime,BodyPreview,Body,ToRecipients,CcRecipients",
         },
         {
             "$top": "20",
             "$orderby": "DateTimeReceived desc",
-            "$select": "Id,Subject,From,DateTimeReceived,BodyPreview,Body",
+            "$select": "Id,Subject,From,DateTimeReceived,BodyPreview,Body,ToRecipients,CcRecipients",
         },
         {"$top": "20"},
     ]
@@ -768,27 +774,9 @@ def _fetch_outlook_rest_messages(http: CurlSession, token: str) -> list[dict]:
     for m in rows:
         if not isinstance(m, dict):
             continue
-        # Outlook REST 字段转 Graph 风格；不同版本字段大小写不同。
-        from_obj = m.get("From") or m.get("from") if isinstance(m.get("From") or m.get("from"), dict) else {}
-        email_addr = from_obj.get("EmailAddress") or from_obj.get("emailAddress") if isinstance(from_obj, dict) else {}
-        if not isinstance(email_addr, dict):
-            email_addr = {}
-        body_obj = m.get("Body") or m.get("body") if isinstance(m.get("Body") or m.get("body"), dict) else {}
-        received = m.get("ReceivedDateTime") or m.get("DateTimeReceived") or m.get("receivedDateTime") or ""
-        out.append({
-            "_fetch_source": "outlook_rest",
-            "id": m.get("Id") or m.get("id") or "",
-            "subject": m.get("Subject") or m.get("subject") or "",
-            "from": {"emailAddress": {"address": email_addr.get("Address") or email_addr.get("address") or "", "name": email_addr.get("Name") or email_addr.get("name") or ""}},
-            "fromEmail": email_addr.get("Address") or email_addr.get("address") or "",
-            "fromName": email_addr.get("Name") or email_addr.get("name") or "",
-            "receivedDateTime": received,
-            "date": received,
-            "bodyPreview": m.get("BodyPreview") or m.get("bodyPreview") or "",
-            "content": body_obj.get("Content") or body_obj.get("content") or "",
-            "body": body_obj.get("Content") or body_obj.get("content") or "",
-            "html": body_obj.get("Content") or body_obj.get("content") or "",
-        })
+        item = _normalize_ms_message(m)
+        item["_fetch_source"] = "outlook_rest"
+        out.append(item)
     logger.debug(f"[Outlook] Outlook REST 直连拿到 {len(out)} 封邮件")
     return out
 
@@ -963,6 +951,16 @@ def _fetch_via(session: CurlSession, protocol: str, account: OutlookAccount) -> 
 # 看到更晚的就重置 settle 计时；连续无新邮件 settle 秒后才返回。
 
 
+def _observe_otp_candidate(item: dict, source: str) -> None:
+    """只传候选身份与收件证据，跨协议不能靠验证码数字推定同一消息。"""
+    from core.email_auth_guard import observe_candidate
+
+    message_id = str(item.get("id") or item.get("Id") or "")
+    cursor = {"connector": source, "message_mapping": "provider_id" if message_id else "unknown"}
+    key = f"{source}:{message_id}" if message_id else ""
+    observe_candidate(key, evidence=extract_recipient_evidence(item), cursor=cursor)
+
+
 def fetch_otp_with_account(
     account: OutlookAccount,
     after_ts: float | None = None,
@@ -971,14 +969,16 @@ def fetch_otp_with_account(
     subject_includes: list[str] | None = None,
     subject_excludes: list[str] | None = None,
     settle_seconds: int | None = None,
+    target_email: str | None = None,
 ) -> str:
     """
     直接给定 OutlookAccount（含 client_id / refresh_token）拉 OTP。
     适用于 account 不在 DB / 不在内存缓存的场景（如外部脚本调用）。
     """
-    _CONTEXT_CACHE[_cache_key(account.email)] = account
+    target = str(target_email or account.email).strip()
+    _CONTEXT_CACHE[_cache_key(target)] = account
     return fetch_latest_otp(
-        account.email,
+        target,
         after_ts=after_ts,
         max_wait=max_wait,
         poll_interval=poll_interval,
@@ -1032,6 +1032,7 @@ def fetch_latest_otp(
     best_subject: str = ""
     best_protocol: str = ""
     best_source: str = ""
+    best_item: dict | None = None
     settle_until: float | None = None # 抓到第一封后，等到这个时刻才返回
     last_diag_log = 0.0
 
@@ -1041,6 +1042,8 @@ def fetch_latest_otp(
         for protocol in ("graph", "imap"):
             emails = _fetch_via(session, protocol, account)
             for item in emails:
+                if not isinstance(item, dict) or not candidate_match(email, item):
+                    continue
                 ts = _parse_email_ts(item) or 0.0
                 source = str(item.get("_fetch_source") or protocol) if isinstance(item, dict) else protocol
                 all_candidates.append((protocol, item, ts, source))
@@ -1098,6 +1101,7 @@ def fetch_latest_otp(
                         f"subject={subject!r}, 等 {settle}s 看是否有更晚邮件..."
                     )
                 best_otp = otp
+                best_item = item
                 best_ts = ts
                 best_subject = subject
                 best_protocol = protocol
@@ -1112,6 +1116,7 @@ def fetch_latest_otp(
                 f"[Outlook] settle 完成，返回 OTP={best_otp}, source={best_source or best_protocol}, protocol={best_protocol}, "
                 f"subject={best_subject!r}"
             )
+            _observe_otp_candidate(best_item or {}, best_source)
             return best_otp
 
         remaining = int(deadline - now)
@@ -1131,6 +1136,7 @@ def fetch_latest_otp(
         logger.warning(
             f"[Outlook] 总超时但已有候选，返回 OTP={best_otp}, source={best_source or best_protocol} (subject={best_subject!r})"
         )
+        _observe_otp_candidate(best_item or {}, best_source)
         return best_otp
 
     raise OutlookClientError(

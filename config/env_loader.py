@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ENV_PATH = _PROJECT_ROOT / ".env"
 _LOADED = False
 _MISSING = object()
+_ENV_WRITE_LOCK = threading.RLock()
+_ENV_WRITE_DEPTH = threading.local()
 
 # 这些多行列表字段允许用空值显式覆盖为 []。
 # 例如 WebUI 清空代理池后会写入 PROXY_POOL="" / PROXY_POOL="[]"，不能再回退到源码默认本地代理。
@@ -164,7 +168,47 @@ def restore_environment(before: dict[str, str], expected: dict[str, str] | None 
             os.environ[key] = previous
 
 
+@contextmanager
+def env_file_lock():
+    """配置保存与收件密钥快照共享可重入的跨进程文件写锁。"""
+    with _ENV_WRITE_LOCK:
+        depth = getattr(_ENV_WRITE_DEPTH, "value", 0)
+        if depth:
+            _ENV_WRITE_DEPTH.value = depth + 1
+            try:
+                yield
+            finally:
+                _ENV_WRITE_DEPTH.value = depth
+            return
+        lock_path = _ENV_PATH.with_name(_ENV_PATH.name + ".lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            try:
+                import fcntl
+            except ImportError:  # Windows 仍由进程内锁保护现有单进程配置入口。
+                fcntl = None
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _ENV_WRITE_DEPTH.value = 1
+            try:
+                yield
+            finally:
+                _ENV_WRITE_DEPTH.value = 0
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
 def write_env_values(updates: dict[str, str]) -> list[str]:
+    """与 WebUI 回滚事务共同保护密钥版本，避免并发写入丢失。"""
+    if not updates:
+        return []
+    with env_file_lock():
+        return _write_env_values_locked(updates)
+
+
+def _write_env_values_locked(updates: dict[str, str]) -> list[str]:
     """更新 .env 中的若干 key；不存在则追加。返回实际写入的 key 列表。"""
     if not updates:
         return []
@@ -200,7 +244,11 @@ def write_env_values(updates: dict[str, str]) -> list[str]:
 
     text = "\n".join(out_lines).rstrip() + "\n"
     tmp = _ENV_PATH.with_suffix(".env.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    descriptor = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        if hasattr(os, "fchmod"):
+            os.fchmod(stream.fileno(), 0o600)
+        stream.write(text)
     tmp.replace(_ENV_PATH)
 
     # 让当前进程立刻看到新值
