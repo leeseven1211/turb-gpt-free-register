@@ -3507,10 +3507,13 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
   gap: 2px;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
   min-height: 0;
   height: calc(var(--account-row-height, 50px) - 4px);
   font-size: var(--account-font-main);
@@ -3518,22 +3521,26 @@ table[data-resizable-table="codex"] {
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .col-quota {
-  text-align: center;
+  text-align: left;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-quota,
+#accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-trial {
+  overflow: hidden !important;
+  text-overflow: clip !important;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell-line {
   display: block;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single {
   grid-template-rows: minmax(0, 1fr);
   font-size: var(--account-font-single);
-}
-
-#accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single .quota-cell-line {
-  text-align: center;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .col-check {
@@ -3558,7 +3565,11 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--countries {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: calc(var(--account-row-height, 50px) - 4px);
   gap: 2px;
   align-items: center;
@@ -3573,8 +3584,10 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
   width: fit-content;
+  max-width: 100%;
   height: auto;
   min-height: 0;
+  overflow: hidden;
   justify-self: start;
   align-self: center;
   justify-content: flex-start;
