@@ -30,7 +30,7 @@ class _Clock:
 
 class _ProfileHarness:
     @contextmanager
-    def profile(self, *, status=None, session=False, context=None, before=None, click=None, prepared_misses=0):
+    def profile(self, *, status=None, auth_error=None, session=False, context=None, before=None, click=None, prepared_misses=0):
         clock = _Clock()
         driver = SimpleNamespace(current_url="https://auth.openai.com/about-you", execute_script=Mock())
         driver.execute_script.side_effect = lambda script, *args: (
@@ -56,7 +56,8 @@ class _ProfileHarness:
                 meta = {"target_id": "current-target", "request_id": "current-request",
                         "endpoint_kind": "profile_submit", "http_method": "POST"}
                 observer(meta)
-                observer({**meta, "response": True, "http_status": status, "duration_ms": 1200})
+                observer({**meta, "response": True, "http_status": status, "duration_ms": 1200,
+                          "auth_error": auth_error})
             if session:
                 current.current_url = "https://chatgpt.com/"
             return True
@@ -88,6 +89,46 @@ class _ProfileHarness:
 
 
 class ProfileSubmissionReceiptTests(_ProfileHarness, unittest.TestCase):
+    def test_exact_current_400_existing_account_has_durable_safe_marker(self):
+        with self.profile(status=400, auth_error={"code": "user_already_exists", "type": "invalid_request_error",
+                                                 "message": "synthetic-private"}) as (driver, _, click, recover, read):
+            with self.assertRaises(RuntimeError) as caught:
+                self.complete(driver)
+            self.assertEqual(driver._browser_submission_receipt.safe_fact()["error_type"],
+                             "account_create_user_already_exists")
+            self.assertEqual(type(caught.exception).__name__, "ProfileAccountAlreadyExistsError")
+            self.assertEqual(caught.exception.http_status, 400)
+            self.assertEqual(caught.exception.auth_error, {
+                "code": "user_already_exists", "type": "invalid_request_error", "category": "email_conflict",
+            })
+            self.assertNotIn("synthetic-private", str(caught.exception))
+            self.assertEqual(driver._browser_submission_receipt.phase, "rejected")
+            click.assert_called_once()
+            recover.assert_not_called()
+            read.assert_not_called()
+
+    def test_other_profile_rejections_never_acquire_existing_account_marker(self):
+        cases = [(400, "invalid_auth_step"), (400, "email_taken"), (401, "user_already_exists"),
+                 (409, "user_already_exists"), (400, None)]
+        for status, code in cases:
+            with self.subTest(status=status, code=code), self.profile(
+                status=status, auth_error={"code": code, "type": "invalid_request_error"},
+            ) as (driver, *_):
+                with self.assertRaises(RuntimeError) as caught:
+                    self.complete(driver)
+                self.assertEqual(driver._browser_submission_receipt.error_type, f"account_create_http_{status}")
+                self.assertEqual(type(caught.exception), RuntimeError)
+
+    def test_existing_profile_exception_retains_only_actual_safe_error_fields(self):
+        with self.profile(status=400, auth_error={"code": "user_already_exists", "type": "authentication_error",
+                                                 "message": "synthetic-private"}) as (driver, *_):
+            with self.assertRaises(RuntimeError) as caught:
+                self.complete(driver)
+        self.assertEqual(caught.exception.auth_error, {
+            "code": "user_already_exists", "type": "authentication_error", "category": "email_conflict",
+        })
+        self.assertNotIn("synthetic-private", str(caught.exception))
+
     def test_current_profile_4xx_rejects_early_without_reposting(self):
         for status in (400, 401, 403, 409, 422, 429):
             with self.subTest(status=status), self.profile(status=status) as (driver, clock, click, recover, read):
@@ -276,6 +317,21 @@ class ProfileReceiptStorageTests(_ProfileHarness, PostgresTestCase):
     def setUp(self):
         registration.reset_ready()
         registration.init()
+
+    def test_exact_profile_conflict_marker_survives_deduplicated_rejection(self):
+        address = "parent+child@example.test"
+        attempt = registration.create_attempt(address)
+        run = registration.start_run(attempt["id"], execution_id="profile-conflict", initial_status="running")
+        context = {"attempt_id": attempt["id"], "run_id": run["id"], "execution_id": "profile-conflict"}
+        with self.profile(status=400, auth_error={"code": "user_already_exists", "type": "invalid_request_error"},
+                          context=context) as (driver, *_):
+            with self.assertRaises(RuntimeError):
+                self.complete(driver)
+        private = registration.get_private_resume_context(attempt["id"], email=address)
+        rejected = [item for item in private["submission_facts"] if item["phase"] == "rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["error_type"], "account_create_user_already_exists")
+        self.assertEqual(rejected[0]["http_status"], 400)
 
     def test_rejected_profile_preserves_original_password_account_and_resume(self):
         address = "parent+child@example.test"

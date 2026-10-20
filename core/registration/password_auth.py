@@ -97,6 +97,23 @@ class _PasswordTransitionTimeout(RuntimeError):
     """Password submit was dispatched but the remote result is still unknown."""
 
 
+class ProfileAccountAlreadyExistsError(RuntimeError):
+    """本次资料请求明确拒绝创建；既存账号仍须完整会话核验。"""
+
+    error_type = "account_create_user_already_exists"
+    http_status = 400
+
+    def __init__(self, *, reason: str = "session_unconfirmed", auth_error: dict | None = None):
+        from core.http_response_diagnostics import safe_auth_error
+
+        self.auth_error = safe_auth_error(auth_error or {"code": "user_already_exists"})
+        self.reason = reason
+        super().__init__(
+            f"request_unknown: {self.error_type}: {reason}: 账号已存在，完整登录态尚未确认；"
+            "已保留原身份与密码"
+        )
+
+
 _PASSWORD_SUBMIT_REMOTE_ERROR_MARKERS = (
     "account could not be created",
     "couldn't create account",
@@ -1738,11 +1755,14 @@ def _complete_profile_page(driver, name: str, birthday: str, timeout: int = 45, 
         from core.http_response_diagnostics import safe_auth_error
 
         auth_error = safe_auth_error(profile_receipt.auth_error)
-        code = f"account_create_http_{status}"
+        existing_account = status == 400 and auth_error.get("code") == "user_already_exists"
+        code = ProfileAccountAlreadyExistsError.error_type if existing_account else f"account_create_http_{status}"
         record_browser_submission_fact(
             driver, "rejected", receipt=profile_receipt, result="failure", error_type=code,
         )
         log_submission_diagnostics(driver, "profile", "http_rejected", receipt=profile_receipt)
+        if existing_account:
+            raise ProfileAccountAlreadyExistsError(auth_error=auth_error)
         detail = f"；上游错误枚举={json.dumps(auth_error, ensure_ascii=False, separators=(',', ':'))}" if auth_error else ""
         raise RuntimeError(
             f"request_unknown: {code}: 资料创建接口明确返回 HTTP {status}{detail}；"

@@ -5,6 +5,27 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_existing_account_without_session_keeps_specific_cause_and_unknown_outcome(self):
+        info = classify_task_error(
+            "request_unknown: 既存账号完整登录态尚未确认",
+            task_type="registration_resume", error_code="request_unknown",
+            result_summary={"outcome": "request_unknown", "cause_code": "account_create_user_already_exists"},
+        )
+        self.assertEqual("account_create_user_already_exists", info["error_code"])
+        self.assertEqual("OA-REG-EXISTS-001", info["display_code"])
+        self.assertEqual("远端提示账号已存在，完整登录态尚未确认", info["summary"])
+        self.assertTrue(info["reconcile_required"])
+
+    def test_existing_account_cause_survives_registration_fact_allowlist(self):
+        from core.registration_service import _registration_request_unknown_facts
+
+        facts = _registration_request_unknown_facts({
+            "cause_code": "account_create_user_already_exists", "register_response_confirmed": True,
+            "response_body": "必须丢弃的私有正文",
+        })
+        self.assertEqual({"outcome": "request_unknown", "cause_code": "account_create_user_already_exists",
+                          "register_response_confirmed": True}, facts)
+
     def test_remail_inventory_shortage_is_displayed_before_coarse_http_failure(self):
         for task_type, message in (
             ("registration", "RuntimeError: 所选邮箱来源 remail 领取失败: Remail 库存不足 (HTTP 422)"),

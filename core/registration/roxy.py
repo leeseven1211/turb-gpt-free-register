@@ -38,7 +38,10 @@ from core.registration.retained_browser import (
     persist_browser_resume_context, recover_attempt_failed_browser,
     recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
 )
-from core.registration.retained_resume import _is_native_resume_start_page, prepare_retained_resume
+from core.registration.retained_resume import (
+    _is_native_resume_start_page, has_rejected_existing_profile, prepare_retained_resume,
+)
+from core.registration.password_auth import ProfileAccountAlreadyExistsError
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -131,6 +134,12 @@ def _make_submission_observer(driver):
             receipt.response_binding = request_key
             receipt.auth_error = safe_auth_error(meta.get("auth_error"))
         phase, response_result = _submission_response_fact(endpoint_kind, meta.get("http_status"))
+        error_type = ""
+        if (endpoint_kind == "profile_submit" and meta.get("response")
+                and meta.get("http_status") == 400
+                and receipt.auth_error.get("code") == "user_already_exists"):
+            # 同一 phase 的事实只保存一次，首次拒绝落库时就写入精确安全枚举。
+            error_type = ProfileAccountAlreadyExistsError.error_type
         if not meta.get("response"):
             phase, response_result = "request_observed", ""
         record_browser_submission_fact(
@@ -140,6 +149,7 @@ def _make_submission_observer(driver):
             http_status=meta.get("http_status"),
             duration_ms=meta.get("duration_ms"),
             result=response_result,
+            **({"error_type": error_type} if error_type else {}),
         )
 
     return observe
@@ -213,6 +223,52 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
     if session is not None:
         _validate_registration_session_identity(session, email)
         logger.info("[Roxy注册] 原环境会话已核验：token_present=%s identity_matched=%s", True, True)
+    return session
+
+
+def _reconcile_existing_profile_session(driver, email: str) -> dict:
+    """明确账号已存在后，仅用一次固定 GET 和一次同源读取核验原邮箱会话。"""
+    from .session_auth import _read_chatgpt_session_once
+
+    budget = StageBudget.start(30)
+
+    def require_session_target():
+        try:
+            current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+            trusted = (
+                current.scheme == "https" and current.hostname == "chatgpt.com"
+                and current.port in {None, 443} and current.username is None and current.password is None
+                and current.path == "/api/auth/session" and not current.query and not current.fragment
+            )
+        except ValueError:
+            trusted = False
+        if not trusted:
+            raise ProfileAccountAlreadyExistsError(reason="session_origin_unverified")
+
+    try:
+        _safe_get(
+            driver, "https://chatgpt.com/api/auth/session", timeout=min(10, int(budget.require("既存账号会话导航"))),
+            attempts=1, accept_hosts=("chatgpt.com",),
+        )
+        require_session_target()
+        session = _read_chatgpt_session_once(
+            driver, timeout=budget.require("既存账号会话读取"), strict_read=True,
+        )
+        budget.require("既存账号会话核验")
+        require_session_target()
+    except ProfileAccountAlreadyExistsError:
+        raise
+    except Exception:
+        _check_manual_stop()
+        raise ProfileAccountAlreadyExistsError(reason="session_probe_incomplete") from None
+    if (not isinstance(session, dict) or not isinstance(session.get("accessToken"), str)
+            or not session["accessToken"].strip()):
+        raise ProfileAccountAlreadyExistsError(reason="session_unconfirmed")
+    try:
+        _validate_registration_session_identity(session, email)
+    except RuntimeError:
+        raise ProfileAccountAlreadyExistsError(reason="session_identity_unverified") from None
+    logger.info("[Roxy注册] 既存账号完整会话已核验：token_present=%s identity_matched=%s", True, True)
     return session
 
 
@@ -1251,6 +1307,8 @@ def run_roxy_registration(
     current_lease_route_verified = retained is None and getattr(opened, "proxy_route_retained", False) is False
     resume_login_get_transport_failure = False
     resume_proxy_rotation_ready = False
+    existing_profile_unverified = False
+    existing_profile_reconciliation = False
     try:
         try:
             from core.registration_debug import attach_current_roxy
@@ -1320,9 +1378,19 @@ def run_roxy_registration(
         verified_resume_session = None
         retained_state = None
         restart_login = False
+        rejected_existing_profile = False
+        if resume_scope:
+            try:
+                private = registration.get_private_resume_context(int(context["attempt_id"]), email=email)
+                rejected_existing_profile = has_rejected_existing_profile(private.get("submission_facts"))
+                existing_profile_unverified = rejected_existing_profile
+            except Exception:
+                raise RuntimeError("request_unknown: 同一 Attempt 的原资料拒绝事实无法核验，已保留原身份") from None
         if retained or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
             report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
             verified_resume_session = _read_registration_resume_session(driver, email)
+            if verified_resume_session:
+                existing_profile_unverified = False
         if retained:
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
@@ -1842,16 +1910,29 @@ def run_roxy_registration(
         _check_manual_stop()
         profile_submitted = False
         if not verified_resume_session:
-            report_job_progress("profile", "running", "正在填写账号资料")
+            report_job_progress("profile", "running", "正在核验原账号登录态" if rejected_existing_profile else "正在填写账号资料")
             logger.info("[Roxy注册] 开始等待资料页/登录态")
-            profile_submitted = complete_profile(
-                driver,
-                name,
-                birthday,
-                timeout=60,
-                expected_email=email,
-                transition_timeout=90,
-            )
+            if rejected_existing_profile:
+                existing_profile_reconciliation = True
+                verified_resume_session = _reconcile_existing_profile_session(driver, email)
+                existing_profile_unverified = False
+                existing_profile_reconciliation = False
+            else:
+                try:
+                    profile_submitted = complete_profile(
+                        driver,
+                        name,
+                        birthday,
+                        timeout=60,
+                        expected_email=email,
+                        transition_timeout=90,
+                    )
+                except ProfileAccountAlreadyExistsError:
+                    existing_profile_unverified = True
+                    existing_profile_reconciliation = True
+                    verified_resume_session = _reconcile_existing_profile_session(driver, email)
+                    existing_profile_unverified = False
+                    existing_profile_reconciliation = False
         if profile_submitted:
             remote_identity = "new_candidate"
             create_acknowledged = True
@@ -2268,11 +2349,13 @@ def run_roxy_registration(
             error_text,
             create_acknowledged=create_acknowledged,
             account_id=account_id,
-        ) and not (password_result_unknown or email_result_unknown)
+        ) and not (password_result_unknown or email_result_unknown or existing_profile_unverified)
         request_unknown = (
-            password_result_unknown or _is_registration_request_unknown(exc)
+            password_result_unknown or existing_profile_unverified or _is_registration_request_unknown(exc)
         ) and not pre_account_transport_failure
-        remote_existing = isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
+        remote_existing = (
+            isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
+        ) and not existing_profile_unverified
         password_rejected = isinstance(exc, PasswordRejectedError)
         account_create_rejected = "account_create_rejected" in error_text.lower()
         password_entry_error_code = next(
@@ -2325,6 +2408,9 @@ def run_roxy_registration(
             pass
         auth_remote_identity = "existing" if remote_existing else remote_identity
         auth_error_code = (
+            ProfileAccountAlreadyExistsError.error_type
+            if existing_profile_reconciliation
+            else
             "password_rejected"
             if password_rejected
             else "account_create_rejected"
@@ -2347,6 +2433,8 @@ def run_roxy_registration(
         )
         return {
             "success": False,
+            **({"cause_code": ProfileAccountAlreadyExistsError.error_type, "register_response_confirmed": True}
+               if existing_profile_reconciliation else {}),
             "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
             "current_lease_route_verified": current_lease_route_verified,
             "resume_login_get_transport_failure": resume_login_get_transport_failure,

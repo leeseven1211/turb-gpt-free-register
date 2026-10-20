@@ -54,6 +54,36 @@ class RetainedResumeTests(unittest.TestCase):
         return retained_resume.prepare_retained_resume(driver, email=EMAIL, existing_password=PASSWORD,
                                                       facts=FACTS, **kwargs)
 
+    def test_existing_account_profile_rejection_restarts_original_identity_login(self):
+        rejected = {**fact("profile", "original-profile", phase="rejected", endpoint="profile_submit"),
+                    "http_status": 400, "error_type": "account_create_user_already_exists"}
+        private = {"password": PASSWORD, "submission_facts": [rejected]}
+        with self.context(private=private, snapshots=[snapshot("/about-you", inputs=[
+            {"name": "name", "type": "text"}, {"name": "age", "type": "number"},
+        ])]) as (driver, read, _, write, _):
+            driver._registration_resume_login = True
+            result = self.prepare(driver)
+            self.assertTrue(result.restart_login)
+            self.assertEqual(result.password, PASSWORD)
+            self.assertEqual(result.page_state, PageState.PROFILE)
+            read.assert_called_once_with(41, email=EMAIL)
+            write.assert_not_called()
+        self.assertEqual(private["submission_facts"], [rejected])
+
+    def test_existing_profile_rejection_with_old_unknown_actions_still_restarts_login(self):
+        rejected = {**fact("profile", "original-profile", phase="rejected", endpoint="profile_submit"),
+                    "http_status": 400, "error_type": "account_create_user_already_exists"}
+        unknown = [fact("password", "old-password-1"), fact("password", "old-password-2")]
+        private = {"password": PASSWORD, "submission_facts": [*unknown, rejected]}
+        with self.context(private=private, snapshots=[snapshot("/about-you", inputs=[
+            {"name": "name", "type": "text"}, {"name": "age", "type": "number"},
+        ])]) as (driver, _, _, write, _):
+            driver._registration_resume_login = True
+            result = self.prepare(driver)
+            self.assertTrue(result.restart_login)
+            write.assert_not_called()
+        self.assertEqual(private["submission_facts"], [*unknown, rejected])
+
     def test_original_otp_form_keeps_private_password_without_navigation(self):
         with self.context() as (driver, read, _, write, _):
             result = self.prepare(driver)

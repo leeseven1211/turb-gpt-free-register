@@ -990,11 +990,13 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
     "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认"),
+    "account_create_user_already_exists": ("OA-REG-EXISTS-001", "远端提示账号已存在，完整登录态尚未确认"),
 }
 
 
 # 注册驱动可以写入 Run 的固定原因码；拒绝从异常正文推断或透传任意字符串。
 REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
+    "account_create_user_already_exists",
     "user_register_result_unknown",
     "registration_checkpoint_failed",
     "user_register_continue_url_missing",

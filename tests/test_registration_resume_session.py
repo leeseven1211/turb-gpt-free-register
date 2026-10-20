@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from core.registration import roxy, session_auth
+from core.registration import password_auth, roxy, session_auth
 from core.registration.state_machine import StageBudget
 
 
@@ -185,6 +185,9 @@ class ResumeSessionFlowTests(unittest.TestCase):
             mock("context", "core.registration_service.registration_fact_context",
                  return_value={"run_id": 71, "attempt_id": 41, "job_id": 31})
             mock("run", "core.storage.registration.get_run", return_value={"action_type": action, "status": status})
+            mock("private", "core.storage.registration.get_private_resume_context", return_value={
+                "password": "unit-original-password", "submission_facts": [],
+            })
             mock("take_default", "core.registration.roxy.take_failed_browser", return_value=None)
             mock("attempt_default", "core.registration.roxy.recover_attempt_failed_browser", return_value=None, create=True)
             mock("bound_default", "core.registration.roxy.recover_bound_failed_browser", return_value=None, create=True)
@@ -235,7 +238,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "password_enabled": True, "twofa_enabled": False,
                     "codex_enabled": False, "plan_check_enabled": False}}
         args.update(kwargs)
-        return roxy.run_roxy_registration(EMAIL, "Example User", "2000-01-02", **args)
+        return roxy.run_roxy_registration(args.pop("email", EMAIL), "Example User", "2000-01-02", **args)
 
     def test_fresh_resume_login_get_transport_failure_has_explicit_route_proof(self):
         with self.run_context() as (driver, mocks):
@@ -722,6 +725,173 @@ class ResumeSessionFlowTests(unittest.TestCase):
         self.assertEqual(driver._registration_fact_context["attempt_id"], 41)
         self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
         mocks["_fill_password_page_if_present"].assert_called_once()
+
+    @contextmanager
+    def existing_profile_context(self, *, session=None, historical=False, email=EMAIL):
+        from core.registration.browser_submission import BrowserSubmissionReceipt
+        with self.run_context() as (driver, mocks), patch(
+            "core.registration.checkpoints.save_protocol_password_checkpoint",
+        ):
+            snapshot = self.profile_after_saved_password(driver, mocks)
+            driver.current_url = "https://auth.openai.com/log-in"
+            receipt = BrowserSubmissionReceipt(
+                kind="profile", stage="profile", endpoint_kind="profile_submit", http_method="POST",
+                phase="rejected", http_status=400, error_type="account_create_user_already_exists",
+            )
+            if historical:
+                mocks["private"].return_value["submission_facts"] = [receipt.safe_fact()]
+            else:
+                def rejected(*_args, **_kwargs):
+                    driver._browser_submission_receipt = receipt
+                    raise password_auth.ProfileAccountAlreadyExistsError()
+                mocks["_complete_profile_page"].side_effect = rejected
+
+            def navigate(_driver, url, **_kwargs):
+                driver.current_url = url
+            mocks["navigate"].side_effect = navigate
+            driver.execute_async_script.return_value = {
+                "ok": True, "status": 200, "json_valid": True,
+                "data": session if session is not None else {"accessToken": "unit-token", "user": {"email": email}},
+            }
+            with patch.object(roxy, "_page_snapshot", return_value=snapshot):
+                yield driver, mocks, receipt
+
+    def test_current_existing_profile_rejection_reconciles_without_second_create(self):
+        with self.existing_profile_context() as (driver, mocks, receipt):
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["_complete_profile_page"].assert_called_once()
+        mocks["_fetch_chatgpt_session"].assert_not_called()
+        driver.execute_async_script.assert_called_once()
+        self.assertEqual([c.args[1] for c in mocks["navigate"].call_args_list], [
+            "https://chatgpt.com/auth/login", "https://chatgpt.com/api/auth/session",
+        ])
+        self.assertEqual(mocks["navigate"].call_args.kwargs["attempts"], 1)
+        self.assertEqual(receipt.phase, "rejected")
+        self.assertEqual(receipt.error_type, "account_create_user_already_exists")
+        self.assertEqual(mocks["persist"].call_args.kwargs["extra"]["account_password"], "unit-original-password")
+        self.assertEqual(driver._registration_fact_context["attempt_id"], 41)
+        mocks["wait_for_otp"].assert_not_called()
+        mocks["login"].assert_not_called()
+
+    def test_existing_profile_without_full_exact_tag_session_never_persists_or_confirms(self):
+        email = "resume+original@example.test"
+        for session in ({"user": {"email": email}},
+                        {"accessToken": "unit-token", "user": {"email": "resume@example.test"}},
+                        {"accessToken": "unit-token", "user": {"email": "resume+other@example.test"}}):
+            with self.subTest(session=session), self.existing_profile_context(session=session, email=email) as (driver, mocks, receipt):
+                result = self.run_registration(email=email)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["email"], email)
+            self.assertTrue(result["request_unknown"])
+            self.assertEqual(result["remote_account_state"], "request_unknown")
+            self.assertEqual(result["remote_identity_state"], "unknown")
+            self.assertFalse(result["manual_reconcile"])
+            self.assertEqual(result.get("cause_code"), "account_create_user_already_exists")
+            self.assertIs(result.get("register_response_confirmed"), True)
+            self.assertIn("account_create_user_already_exists", result["error"])
+            self.assertEqual(receipt.phase, "rejected")
+            mocks["persist"].assert_not_called()
+            mocks["_complete_profile_page"].assert_called_once()
+            mocks["_fetch_chatgpt_session"].assert_not_called()
+            driver.execute_async_script.assert_called_once()
+            mocks["wait_for_otp"].assert_not_called()
+
+    def test_historical_existing_profile_marker_skips_create_after_original_login(self):
+        with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+            result = self.run_registration()
+        self.assertTrue(result["success"], result.get("error"))
+        mocks["private"].assert_called_once_with(41, email=EMAIL)
+        mocks["_complete_profile_page"].assert_not_called()
+        mocks["_fill_password_page_if_present"].assert_called_once()
+        mocks["_fetch_chatgpt_session"].assert_not_called()
+        driver.execute_async_script.assert_called_once()
+        self.assertEqual(receipt.phase, "rejected")
+        self.assertEqual(driver._registration_fact_context["attempt_id"], 41)
+
+    def test_historical_generic_400_is_not_reinterpreted_as_existing_account(self):
+        with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+            mocks["private"].return_value["submission_facts"][0]["error_type"] = "account_create_http_400"
+            mocks["_complete_profile_page"].side_effect = RuntimeError("request_unknown: account_create_http_400")
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        mocks["_complete_profile_page"].assert_called_once()
+        self.assertEqual([c.args[1] for c in mocks["navigate"].call_args_list], ["https://chatgpt.com/auth/login"])
+        driver.execute_async_script.assert_not_called()
+
+    def test_existing_profile_session_reconciliation_rejects_changed_or_untrusted_target(self):
+        for target in ("https://chatgpt.com.evil.test/api/auth/session", "http://chatgpt.com/api/auth/session",
+                       "https://chatgpt.com:8443/api/auth/session", "https://private@chatgpt.com/api/auth/session",
+                       "https://chatgpt.com/auth/error", "https://auth.openai.com/api/auth/session"):
+            with self.subTest(target=target), self.existing_profile_context() as (driver, mocks, receipt):
+                def navigate(_driver, url, **_kwargs):
+                    driver.current_url = target if url.endswith("/api/auth/session") else url
+                mocks["navigate"].side_effect = navigate
+                result = self.run_registration()
+            self.assertFalse(result["success"])
+            self.assertEqual(result["remote_account_state"], "request_unknown")
+            mocks["persist"].assert_not_called()
+            driver.execute_async_script.assert_not_called()
+            self.assertEqual(receipt.phase, "rejected")
+
+    def test_existing_profile_reconciliation_get_and_read_share_one_deadline(self):
+        for navigation_seconds, expected_read_ms in ((19, 11000), (31, None)):
+            tick = [0.0]
+            budget = StageBudget(30, clock=lambda: tick[0])
+            with self.subTest(navigation_seconds=navigation_seconds), self.existing_profile_context() as (driver, mocks, receipt):
+                def navigate(_driver, url, **_kwargs):
+                    driver.current_url = url
+                    if url.endswith("/api/auth/session"):
+                        tick[0] = navigation_seconds
+                mocks["navigate"].side_effect = navigate
+                with patch.object(roxy.StageBudget, "start", return_value=budget):
+                    result = self.run_registration()
+            self.assertEqual(result["success"], expected_read_ms is not None, result.get("error"))
+            if expected_read_ms is None:
+                driver.execute_async_script.assert_not_called()
+                mocks["persist"].assert_not_called()
+                self.assertEqual(result["remote_account_state"], "request_unknown")
+            else:
+                self.assertEqual(driver.execute_async_script.call_args.args[1], expected_read_ms)
+            self.assertEqual(receipt.phase, "rejected")
+
+    def test_existing_profile_verified_session_then_persist_failure_preserves_confirmed_identity(self):
+        with self.existing_profile_context() as (driver, mocks, receipt):
+            mocks["persist"].side_effect = RuntimeError("unit-persist-failure")
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["remote_account_state"], "confirmed")
+        self.assertEqual(result["remote_identity_state"], "confirmed")
+        self.assertNotEqual(result["error_code"], "account_create_user_already_exists")
+        self.assertEqual(receipt.phase, "rejected")
+
+    def test_historical_existing_profile_password_failure_keeps_identity_unconfirmed_and_real_cause(self):
+        from core.auth_challenge import PasswordRejectedError
+        with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+            mocks["_fill_password_page_if_present"].side_effect = PasswordRejectedError("unit-password-rejected")
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["remote_account_state"], "request_unknown")
+        self.assertEqual(result["remote_identity_state"], "unknown")
+        self.assertFalse(result["manual_reconcile"])
+        self.assertEqual(result["error_code"], "password_rejected")
+        self.assertNotIn("cause_code", result)
+        mocks["persist"].assert_not_called()
+        driver.execute_async_script.assert_not_called()
+        self.assertEqual(receipt.phase, "rejected")
+
+    def test_historical_existing_profile_transport_failure_never_discards_original_identity(self):
+        with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+            mocks["opened"].return_value.created_by_run = True
+            mocks["navigate"].side_effect = RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+            result = self.run_registration()
+        self.assertFalse(result["success"])
+        self.assertTrue(result["request_unknown"])
+        self.assertEqual(result["remote_account_state"], "request_unknown")
+        mocks["persist"].assert_not_called()
+        mocks["release"].assert_not_called()
+        mocks["client"].return_value.discard_profile.assert_not_called()
+        self.assertEqual(receipt.phase, "rejected")
 
     def test_profile_handoff_rejects_foreign_shell_hidden_or_unrecognized_forms(self):
         cases = [

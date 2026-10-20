@@ -153,6 +153,19 @@ def _submission_kind(fact: Mapping[str, Any]) -> str:
     return kind if endpoint in allowed.get(kind, set()) else ""
 
 
+def has_rejected_existing_profile(facts: Any) -> bool:
+    """只识别已持久化的精确拒绝标记，不追认旧的通用 HTTP 400。"""
+    return isinstance(facts, (list, tuple)) and any(
+        isinstance(item, Mapping) and item.get("kind") == "profile"
+        and item.get("stage") == "profile" and item.get("endpoint_kind") == "profile_submit"
+        and item.get("http_method") == "POST" and item.get("phase") == "rejected"
+        and type(item.get("http_status")) is int and item.get("http_status") == 400
+        and item.get("error_type") == "account_create_user_already_exists"
+        and bool(str(item.get("submission_id") or "").strip())
+        for item in facts
+    )
+
+
 def _pending_receipts(driver: Any, facts: Any, *, allow_login: bool = False) -> dict[str, BrowserSubmissionReceipt]:
     """先核验全部未决动作，避免确认一部分后才发现另一条围栏。"""
     if facts is None:
@@ -222,6 +235,7 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
         raise _unknown("原任务密码与恢复凭据不一致")
     password = original_password or existing_password or None
     automatic_login = bool(password and getattr(driver, "_registration_resume_login", False))
+    rejected_existing_profile = has_rejected_existing_profile(private.get("submission_facts"))
     if verified_session is not None:
         user = verified_session.get("user") if isinstance(verified_session, Mapping) else None
         actual = str(user.get("email") or "").strip() if isinstance(user, Mapping) else ""
@@ -244,13 +258,17 @@ def prepare_retained_resume(driver: Any, *, email: str, existing_password: str |
         if not automatic_login:
             raise
         return RetainedResumeState(
-            state, password, restart_login=state in _PASSWORD_STATES | {PageState.OTP_EMAIL, PageState.AUTH_TRANSIENT},
+            state, password, restart_login=(
+                state in _PASSWORD_STATES | {PageState.OTP_EMAIL, PageState.AUTH_TRANSIENT}
+                or (state == PageState.PROFILE and rejected_existing_profile)
+            ),
         )
     if automatic_login and (
         ("password" in pending and state in _PASSWORD_STATES)
         or (("otp" in pending or "otp_resend" in pending) and state == PageState.OTP_EMAIL)
         or (state == PageState.OTP_EMAIL and not original_mail_time_known)
         or state == PageState.AUTH_TRANSIENT
+        or (state == PageState.PROFILE and rejected_existing_profile)
     ):
         # 不把旧未知动作写成成功，也不重复操作旧表单；新 Run 使用原密码重新登录。
         return RetainedResumeState(state, password, restart_login=True)
