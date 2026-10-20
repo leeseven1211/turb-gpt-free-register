@@ -3345,6 +3345,16 @@ class AuthFlow:
         return ""
 
     # ── Step 10: 跟踪重定向链 ──
+    @staticmethod
+    def _is_chatgpt_callback_url(url: str) -> bool:
+        parsed = urlparse(str(url or ""))
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc == "chatgpt.com"
+            and parsed.path == "/api/auth/callback/openai"
+            and bool(parse_qs(parsed.query).get("code"))
+        )
+
     def follow_redirect_chain(self, start_url: str) -> tuple[str, str]:
         """手动跟踪重定向，返回 (callback_url, final_url)"""
         logger.info("[9/10] 跟踪重定向链...")
@@ -3354,6 +3364,11 @@ class AuthFlow:
         referer = "https://auth.openai.com/"
 
         for i in range(max_hops):
+            # 初始地址也可能已是回调；统一留给后续步骤消费一次性 code。
+            if self._is_chatgpt_callback_url(current_url):
+                callback_url = current_url
+                self._sniff_login_verifier(current_url, f"redirect_hop_{i+1}_callback_url")
+                break
             # 逐跳整页导航，头必须像浏览器：同 auth_oauth_init，旧版只发
             # Accept/Referer/UA，缺 client hints 和 Sec-Fetch-*（实测那正是
             # 409 invalid_state 的来源，见 auth_oauth_init docstring）。
@@ -3379,10 +3394,6 @@ class AuthFlow:
             self._trace_http(f"redirect_hop_{i+1}", resp)
             referer = current_url
 
-            if "/api/auth/callback/openai" in current_url:
-                callback_url = current_url
-                self._sniff_login_verifier(current_url, f"redirect_hop_{i+1}_callback_url")
-
             # workspace 页面常见为 200，需要主动调 workspace/select 获取下一跳
             if "/workspace" in current_url and resp.status_code == 200:
                 workspace_id = self._extract_workspace_id() or self._extract_workspace_id_from_html(resp.text or "")
@@ -3403,7 +3414,7 @@ class AuthFlow:
                     parsed = urlparse(current_url)
                     location = f"{parsed.scheme}://{parsed.netloc}{location}"
                 # 关键：不要主动 GET callback，避免 code 被服务端回调消费
-                if "/api/auth/callback/openai" in location and "code=" in location:
+                if self._is_chatgpt_callback_url(location):
                     callback_url = location
                     current_url = location
                     self._sniff_login_verifier(location, f"redirect_hop_{i+1}_location_callback")
@@ -3577,7 +3588,7 @@ class AuthFlow:
         在拿不到 session_token 时主动消费一次 callback：跟随到 chatgpt.com 主页，
         服务器会 Set-Cookie session-token。
         """
-        if not callback_url or "code=" not in callback_url:
+        if not self._is_chatgpt_callback_url(callback_url):
             return False
         try:
             current = callback_url
@@ -3915,7 +3926,7 @@ class AuthFlow:
                 issued_after=otp_sent_at,
             )
             try:
-                self.verify_otp(otp_code)
+                verify_result = self.verify_otp(otp_code)
                 self.fetch_client_auth_session_dump("post_verify_otp_new")
             except RuntimeError as e:
                 # 偶发 401 错码，补发一次 OTP 并重试
@@ -3929,22 +3940,27 @@ class AuthFlow:
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
                     )
-                    self.verify_otp(otp_code)
+                    verify_result = self.verify_otp(otp_code)
                     self.fetch_client_auth_session_dump("post_verify_otp_retry_new")
                 else:
                     raise
 
-            try:
-                continue_url = self.create_account()
-            except Exception as e:
-                # registration_disallowed 时尝试 reauthorize 兜底，若仍不可用再抛出
-                if self._is_registration_disallowed_error(e):
-                    logger.warning("create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
-                    continue_url = self._reauthorize_for_session(auth_url) or ""
-                    if not continue_url:
+            otp_continue_url = str((verify_result or {}).get("continue_url") or "")
+            if self._is_chatgpt_callback_url(otp_continue_url):
+                # 原账号 OTP 登录已经完成认证，不再向失效认证会话提交建号资料。
+                continue_url = otp_continue_url
+            else:
+                try:
+                    continue_url = self.create_account()
+                except Exception as e:
+                    # registration_disallowed 时尝试 reauthorize 兜底获取 session。
+                    if self._is_registration_disallowed_error(e):
+                        logger.warning("create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
+                        continue_url = self._reauthorize_for_session(auth_url) or ""
+                        if not continue_url:
+                            raise
+                    else:
                         raise
-                else:
-                    raise
         else:
             # 已有账号：直接发 OTP → 验证 → 获取 session
             mode = (self._existing_email_verification_mode or "").lower()

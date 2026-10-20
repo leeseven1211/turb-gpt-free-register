@@ -21,6 +21,7 @@ class Transport:
         self.checkpoints = []
         self.password_error = None
         self.password_status = 200
+        self.otp_payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
         self.closed = False
 
     def close(self):
@@ -34,7 +35,7 @@ class Transport:
                 raise self.password_error
         payload = {}
         if url.endswith("/email-otp/validate"):
-            payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
+            payload = self.otp_payload
         elif url.endswith("/create_account") or url.endswith("/password/verify"):
             payload = {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture"}
         elif url.endswith("/api/auth/session"):
@@ -157,6 +158,61 @@ def test_rejected_password_is_not_presented_as_a_confirmed_credential(upstream):
     assert result["access_token"] == "fixture-at"
     assert result["registration_password"] is None
     assert result["password_validated"] is False
+
+
+def test_login_callback_after_password_rejection_does_not_create_account_again(upstream):
+    session, transport, _ = upstream
+    transport.password_status = 400
+    transport.otp_payload = {
+        "page": {"type": "external_url"},
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture",
+    }
+    result = run_flow(session, existing_password="original-password")
+    assert not any(url.endswith("/create_account") for _, url, _ in transport.requests)
+    assert result["access_token"] == "fixture-at"
+
+
+def test_initial_callback_url_is_consumed_only_once():
+    callback = "https://chatgpt.com/api/auth/callback/openai?code=fixture"
+    flow = AuthFlow.__new__(AuthFlow)
+    flow._ua = "fixture-user-agent"
+    flow._navigation_headers = Mock(return_value={})
+    flow._sniff_login_verifier = Mock()
+    flow.session = Mock()
+    flow.session.cookies = RequestsCookieJar()
+    flow.session.cookies.set("__Secure-next-auth.session-token", "fixture-session")
+    flow.session.get.side_effect = lambda url, **kwargs: Mock(
+        status_code=302 if url == callback else 200,
+        headers={"Location": "https://chatgpt.com/"} if url == callback else {},
+    )
+    captured, _ = flow.follow_redirect_chain(callback)
+    assert flow._consume_callback_for_session(captured) is True
+    callback_requests = [call.args[0] for call in flow.session.get.call_args_list if call.args[0] == callback]
+    assert callback_requests == [callback]
+
+
+@pytest.mark.parametrize("initial_url", [False, True])
+@pytest.mark.parametrize("invalid_callback", [
+    "https://example.test/api/auth/callback/openai?code=fixture",
+    "https://chatgpt.com/api/auth/callback/openai?code=",
+    "https://chatgpt.com/api/auth/callback/openai/other?code=fixture",
+])
+def test_invalid_callback_is_not_consumed_as_a_login_callback(initial_url, invalid_callback):
+    start = "https://auth.openai.com/continue"
+    flow = AuthFlow.__new__(AuthFlow)
+    flow._ua = "fixture-user-agent"
+    flow._navigation_headers = Mock(return_value={})
+    flow._sniff_login_verifier = Mock()
+    flow.session = Mock()
+    flow.session.get.side_effect = lambda url, **kwargs: Mock(
+        status_code=302 if url == start else 200,
+        headers={"Location": invalid_callback} if url == start else {},
+    )
+    captured, _ = flow.follow_redirect_chain(invalid_callback if initial_url else start)
+    assert captured == ""
+    assert flow._consume_callback_for_session(captured) is False
+    callback_requests = [call.args[0] for call in flow.session.get.call_args_list if call.args[0] == invalid_callback]
+    assert callback_requests == [invalid_callback]
 
 
 def test_supplied_otp_is_consumed_without_polling_another_mail_source(upstream):
