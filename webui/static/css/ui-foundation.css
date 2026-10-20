@@ -3498,6 +3498,10 @@ table[data-resizable-table="codex"] {
   line-height: 1.2;
 }
 
+#accountsPanelV2 table[data-resizable-table="accounts"] .col-quota {
+  text-align: center;
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell-line {
   display: block;
   min-width: 0;
