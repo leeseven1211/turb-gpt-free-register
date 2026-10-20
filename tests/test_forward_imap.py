@@ -354,7 +354,7 @@ class ForwardIMAPTests(unittest.TestCase):
             ])
 
         self.assertEqual(connect.call_count, 1)
-        self.assertEqual(len(mail.search_calls), 5)
+        self.assertEqual(len(mail.search_calls), 7)
         self.assertTrue(all("HEADER" in call[1] for call in mail.search_calls))
         self.assertTrue(all('FROM "openai.com"' not in call[1] for call in mail.search_calls))
         self.assertTrue(all("OR" in call[1] for call in mail.search_calls))

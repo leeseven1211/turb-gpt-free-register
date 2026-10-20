@@ -51,7 +51,7 @@ class DerivedForwardIMAPTests(unittest.TestCase):
             PARENT: ["1"], CHILD_A: ["2"], CHILD_B: ["3"],
         })
         self.assertEqual(len(mail.fetches), 1)
-        self.assertEqual(len(mail.searches), 5)
+        self.assertEqual(len(mail.searches), 7)
         self.assertTrue(any("HEADER Received" in query for query in mail.searches))
         self.assertTrue(all('SINCE "01-Jan-1970"' in query for query in mail.searches))
 
@@ -205,7 +205,7 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
         self.assertEqual(lookup.call_args.args[0], sorted([PARENT, CHILD_A, CHILD_B]))
         self.assertEqual({target: result["message_id"] for target, result in results.items()}, {PARENT: "2", CHILD_A: "3", CHILD_B: "4"})
         self.assertEqual(len(mail.fetches), 1)
-        self.assertEqual(len(mail.searches), 5)
+        self.assertEqual(len(mail.searches), 7)
 
     def test_distinct_profiles_and_legacy_group_read_their_own_inboxes(self):
         seen = []
@@ -251,3 +251,44 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
             self.assertEqual(forward.scan_openai_deactivation_bulk(["", " "]), {})
         lookup.assert_not_called()
         connect.assert_not_called()
+
+
+class ForwardProviderSPFRecallTests(unittest.TestCase):
+    def test_encoded_target_recall_fetches_once_and_applies_provider_exact_match(self):
+        msg = hme_message(None)
+        msg["Authentication-Results"] = f"spf.icloud.com; spf=pass smtp.mailfrom=bounces+1234567-a1b2-{CHILD_A.replace('@', '=')}@em7877.tm.openai.com"
+        msg["Return-Path"] = "owner@gmail.com"
+        msg["Return-Path"] = f"bounces+1234567-a1b2-{CHILD_A.replace('@', '=')}-forwarded@icloud.com"
+        msg["From"] = "OpenAI <noreply@openai.com>"
+        msg["Subject"] = "Your ChatGPT code is 123456"
+        msg.set_content("Your code is 123456")
+        # 原始认证头保留 addr-spec；默认生成器会把长属性改写为 RFC 2047 编码词。
+        raw = (b"7 (UID 42 BODY[] {1}", msg.as_bytes(policy=msg.policy.clone(max_line_length=0)))
+
+        class ProviderMail(Mail):
+            def uid(self, command, *args):
+                if command == "search":
+                    self.searches.append(args[-1])
+                    encoded = CHILD_A.replace("@", "=")
+                    hit = f'HEADER Return-Path "{encoded}"' in args[-1] or f'HEADER Authentication-Results "{encoded}"' in args[-1]
+                    return "OK", [b"42" if hit else b""]
+                return super().uid(command, *args)
+
+        mail = ProviderMail({42: raw})
+        self.assertEqual(forward._latest_forwarded_otp(mail, CHILD_A, 0), "123456")
+        self.assertEqual(len(mail.searches), 7)
+        self.assertEqual(len(mail.fetches), 1)
+        for query in mail.searches[-2:]:
+            self.assertIn(CHILD_A.replace("@", "="), query)
+            self.assertIn('SINCE "', query)
+            self.assertNotIn(CHILD_A, query)
+
+    def test_server_substring_recall_never_assigns_similar_sibling(self):
+        msg = hme_message(None)
+        sibling = CHILD_A.replace("+a1b2c3", "+a1b2c3x")
+        msg["Authentication-Results"] = f"spf.icloud.com; spf=pass smtp.mailfrom=bounces+1234567-a1b2-{sibling.replace('@', '=')}@em7877.tm.openai.com"
+        msg["From"] = "OpenAI <noreply@openai.com>"
+        msg["Subject"] = "Your code is 123456"
+        msg.set_content("Your code is 123456")
+        mail = Mail({42: (b"7 (UID 42 BODY[] {1}", msg.as_bytes(policy=msg.policy.clone(max_line_length=0)))})
+        self.assertIsNone(forward._latest_forwarded_otp(mail, CHILD_A, 0))

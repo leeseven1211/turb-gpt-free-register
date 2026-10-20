@@ -503,9 +503,10 @@ def _search_message_ids(
     search_errors: list[Exception] = []
     successful_search = False
     ordered_targets = sorted(targets)
-    for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To", "Received"):
-        for start in range(0, len(ordered_targets), _RECIPIENT_SEARCH_CHUNK_SIZE):
-            chunk = ordered_targets[start:start + _RECIPIENT_SEARCH_CHUNK_SIZE]
+    for header in ("To", "X-Original-To", "Delivered-To", "Envelope-To", "Received", "Return-Path", "Authentication-Results"):
+        search_targets = [target.replace("@", "=") for target in ordered_targets] if header in {"Return-Path", "Authentication-Results"} else ordered_targets
+        for start in range(0, len(search_targets), _RECIPIENT_SEARCH_CHUNK_SIZE):
+            chunk = search_targets[start:start + _RECIPIENT_SEARCH_CHUNK_SIZE]
             query = f'(SINCE "{since}" {_imap_recipient_search(header, chunk)})'
             try:
                 status, ids_data = _imap_call(
@@ -514,7 +515,7 @@ def _search_message_ids(
                 )
             except Exception as exc:
                 if budget is not None:
-                    # 收码命令中断后立即交给外层重连，不能在失效连接上继续四轮搜索。
+                    # 收码命令中断后立即交给外层重连，不能在失效连接上继续其他字段搜索。
                     raise
                 search_errors.append(exc)
                 continue

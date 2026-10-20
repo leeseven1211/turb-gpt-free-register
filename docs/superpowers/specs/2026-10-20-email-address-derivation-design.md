@@ -40,6 +40,8 @@
 
 该实验确认了具体链路的可行性。由于发件源是自有 iCloud SMTP，还不能据此承诺真实目标平台发出的邮件一定保留同一证据；上线验收需补目标平台的实际取码。本文不把 `Received` 某处出现邮箱字符串直接等同于可靠归属。
 
+第一轮真实任务补充发现：两封目标平台验证码邮件在 Apple 转发后，完整 child 已不在 `To` 或 `Received for`；最终 Gmail 对原发信签名报失败，而 iCloud 的原始校验记录为通过。`spf.icloud.com` 的同一 `spf=pass` 结果条目保留了原 `smtp.mailfrom`，其中 SendGrid VERP 可完整还原 `local+tag@domain`。因此增加限于该已验证发信域、明确模板及同母 HME 证据的分拣规则，不将一般退信地址当收件人，也不按单独后缀猜测。格式依据可参见 [Twilio 的延迟退信说明](https://help.twilio.com/articles/47454664426395)；具体可用性仍以本链路真实邮件与续跑验收为准。
+
 ## 3. 能力按资源与链路声明
 
 “供应商支持加号”与“当前 API 能准确读取子地址邮件”分开记录。建议能力描述为：
@@ -219,6 +221,8 @@ resolve_route(binding_id | exact_address)
 
 - 直收链路优先使用连接器明确交付的信封目标、API 原始收件人；完整 `To/CC` 是否可作为依据取决于链路是否改写。
 - HME 转发链按已验证的证据规则解析 `Received` 的 `for <完整地址>`。搜索 `HEADER Received` 仅负责召回候选，不能直接决定归属。
+- 已验证的 iCloud/OpenAI SendGrid 链路，可解析 `spf.icloud.com` 同一 SPF 通过条目中的完整 VERP 原收件人。限定发信域和模板，并与 `X-ICLOUD-HME` 同母信息核对；冲突时拒绝。`Return-Path` 或 `Authentication-Results` 的编码地址搜索同样只召回候选。
+- 本链路的 `X-ICLOUD-HME` 是参数头，只使用明确的 `p` 母地址；`f` 转发目的地和 `s` 发件人不参与母资源判断。多值或冲突证据不降级猜测。
 - 不把 `Received` 内的发件人、任意邮箱字符串或声称来自 Apple 的主机名一概认作原始目标。规则要定位实际转发链生成的证据，处理折叠、重复和冲突头。
 - 其他最终 `Delivered-To` 或 `X-Forwarded-To` 可能只是收件 Gmail，不能据此将所有邮件分给某个子地址。
 - IMAP 搜索可能采用子串匹配，取回后统一解析完整 addr-spec，再做精确比较。
