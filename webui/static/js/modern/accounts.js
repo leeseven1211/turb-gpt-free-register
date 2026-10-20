@@ -2651,7 +2651,7 @@ function updateAccountRowDensity() {
   const wrap = document.querySelector('#accountsPanelV2 > .accounts-table-v2-wrap');
   const table = wrap?.querySelector('table');
   if (!table || wrap.clientHeight <= 0) return;
-  const minimum = window.matchMedia('(max-width: 860px)').matches ? 60 : 44;
+  const minimum = window.matchMedia('(max-width: 860px)').matches ? 60 : 50;
   const available = wrap.clientHeight - (table.tHead?.getBoundingClientRect().height || 0) - 2;
   const height = Math.max(minimum, Math.min(56, Math.floor(available / 10)));
   table.style.setProperty('--account-row-height', `${height}px`);

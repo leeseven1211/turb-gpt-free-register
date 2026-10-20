@@ -3389,10 +3389,14 @@ table[data-resizable-table="codex"] {
 
 /* 账号表使用两条稳定内容轨道，横向滚动留在现有表格容器内。 */
 #accountsPanelV2 table[data-resizable-table="accounts"] {
+  --account-font-single: var(--ui-font-size-md);
+  --account-font-main: var(--ui-font-size-sm);
+  --account-font-sub: var(--ui-font-size-xs);
   width: 1396px !important;
   min-width: 0 !important;
   max-width: none !important;
   table-layout: fixed !important;
+  font-size: var(--account-font-single);
 }
 
 #accountsPanelV2 > .accounts-table-v2-wrap {
@@ -3406,24 +3410,26 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
-  height: var(--account-row-height, 44px);
+  height: var(--account-row-height, 50px);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
   padding-top: 1px !important;
   padding-bottom: 1px !important;
   vertical-align: middle !important;
+  line-height: var(--ui-line-height-normal);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-lines {
   display: grid;
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 0;
+  gap: 2px;
   min-width: 0;
   min-height: 0;
-  height: calc(var(--account-row-height, 44px) - 4px);
+  height: calc(var(--account-row-height, 50px) - 4px);
   width: 100%;
+  font-size: var(--account-font-main);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line {
@@ -3436,49 +3442,61 @@ table[data-resizable-table="codex"] {
   white-space: nowrap;
 }
 
-#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line:only-child { grid-row: 1 / -1; }
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line:only-child {
+  grid-row: 1 / -1;
+  font-size: var(--account-font-single);
+}
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line--sub {
   color: #7b8494;
-  font-size: 11px;
-  line-height: 1.2;
+  font-size: var(--account-font-sub);
+  line-height: var(--ui-line-height-normal);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button { flex: 0 0 auto; }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .pill {
   min-height: 0;
-  padding-top: 1px;
-  padding-bottom: 1px;
-  line-height: 16px;
+  height: 22px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: inherit;
+  line-height: 20px;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line button,
 #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions > button,
 #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn {
-  min-height: 20px;
-  height: 20px;
+  min-height: 22px;
+  height: 22px;
   padding: 0 6px;
-  font-size: 11px;
-  line-height: 18px;
+  font-size: inherit;
+  line-height: 20px;
 }
 
-/* 账号状态与快捷操作使用和密码复制一致的字号。 */
-#accountsPanelV2 table[data-resizable-table="accounts"] .col-token .acc-v2-token-state,
-#accountsPanelV2 table[data-resizable-table="accounts"] .col-token > .acc-v2-muted,
-#accountsPanelV2 table[data-resizable-table="accounts"] [data-account-totp-cell] button,
-#accountsPanelV2 table[data-resizable-table="accounts"] .col-risk-mail :is(button, .pill),
-#accountsPanelV2 table[data-resizable-table="accounts"] .col-status .acc-v2-codex {
-  font-size: var(--ui-font-size-sm);
+/* 单行放大，双行保持主次层级，控件继承所在内容行的字号。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] :is(.acc-v2-email-link, .acc-v2-token-copy, .acc-v2-account-status, .acc-v2-codex) {
+  font-size: inherit;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line:only-child :is(button, .pill) {
+  min-height: 26px;
+  height: 26px;
+  line-height: 24px;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-token-state {
+  min-width: 0;
+  max-width: 100%;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-time-label {
   flex: 0 0 auto;
   color: #737d8d;
-  font-size: 10px;
+  font-size: inherit;
 }
 
-#accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell { font-size: 10px; }
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell { font-size: var(--account-font-sub); }
 #accountsPanelV2 table[data-resizable-table="accounts"] td.col-time { padding-left: 6px !important; padding-right: 6px !important; }
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell .account-cell-line { gap: 3px; }
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-times-cell time {
@@ -3491,11 +3509,12 @@ table[data-resizable-table="codex"] {
   display: grid;
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 0;
+  gap: 2px;
   min-width: 0;
   min-height: 0;
-  height: calc(var(--account-row-height, 44px) - 4px);
-  line-height: 1.2;
+  height: calc(var(--account-row-height, 50px) - 4px);
+  font-size: var(--account-font-main);
+  line-height: var(--ui-line-height-normal);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .col-quota {
@@ -3510,6 +3529,7 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single {
   grid-template-rows: minmax(0, 1fr);
+  font-size: var(--account-font-single);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell--single .quota-cell-line {
@@ -3531,7 +3551,7 @@ table[data-resizable-table="codex"] {
   grid-template-rows: repeat(2, minmax(0, 1fr));
   justify-items: start;
   align-items: center;
-  gap: 0;
+  gap: 2px;
   min-height: 0;
   overflow: visible !important;
 }
@@ -3539,13 +3559,16 @@ table[data-resizable-table="codex"] {
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--countries {
   display: grid;
   grid-template-rows: repeat(2, minmax(0, 1fr));
-  height: calc(var(--account-row-height, 44px) - 4px);
-  gap: 0;
+  height: calc(var(--account-row-height, 50px) - 4px);
+  gap: 2px;
   align-items: center;
+  font-size: var(--account-font-main);
+  line-height: var(--ui-line-height-normal);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single {
   grid-template-rows: minmax(0, 1fr);
+  font-size: var(--account-font-single);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
@@ -3555,6 +3578,18 @@ table[data-resizable-table="codex"] {
   justify-self: start;
   align-self: center;
   justify-content: flex-start;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country {
+  font-size: inherit;
+}
+
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-stale {
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: var(--account-font-sub);
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row .account-promotion-label {
@@ -3581,7 +3616,7 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-summary-count {
   color: #526071;
-  font-size: 11px;
+  font-size: var(--account-font-sub);
   font-weight: 700;
 }
 
@@ -3589,7 +3624,7 @@ table[data-resizable-table="codex"] {
   padding: 1px 4px;
   border: 1px solid currentColor;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--account-font-sub);
   font-weight: 700;
   line-height: 1.2;
 }
