@@ -1964,8 +1964,9 @@ function _accountPromotionCountryTone(country) {
 }
 function _accountPromotionRowMarkup({best, country = '', stale = false, label, tooltip}) {
   const countryTone = _accountPromotionCountryTone(country);
+  const unknownCountry = country === '国家未记录';
   const heading = country
-    ? `<span class="account-promotion-country">${esc(country)}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
+    ? `<span class="account-promotion-country"${unknownCountry ? ' aria-label="国家未记录"' : ''}>${esc(unknownCountry ? '—' : country)}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
     : '';
   return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${countryTone ? ` ${countryTone}` : ''}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
 }

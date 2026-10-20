@@ -3577,11 +3577,6 @@ table[data-resizable-table="codex"] {
   line-height: var(--ui-line-height-normal);
 }
 
-/* 优惠标签保持同一字号，单行只调整垂直位置。 */
-#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single {
-  grid-template-rows: minmax(0, 1fr);
-}
-
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
   width: fit-content;
   max-width: 100%;
@@ -3597,6 +3592,12 @@ table[data-resizable-table="codex"] {
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country {
   font-size: inherit;
+}
+
+/* 单条与多条优惠共用首行轨道，国家前缀等宽以对齐优惠文字。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row:not(.is-stale) .account-promotion-country {
+  width: 2.5em;
+  flex-basis: 2.5em;
 }
 
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-stale {

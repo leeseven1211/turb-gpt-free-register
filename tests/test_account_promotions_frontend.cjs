@@ -70,7 +70,7 @@ function assertSinglePromotion(html, expected, visibleExpected = expected.replac
   if (expected.startsWith('Plus: ')) {
     assert.deepEqual(visiblePromotionLabels(html), [visibleExpected]);
     assert.ok(promotionTooltip(html).startsWith(`国家未记录 ${expected}`), '浮窗首项保留所选 Plus 优惠，列表使用统一国家格式');
-    assert.match(html, /class="account-promotion-country">国家未记录/);
+    assert.match(html, /class="account-promotion-country" aria-label="国家未记录">—：/);
   } else {
     assert.deepEqual(visiblePromotionLabels(html), [expected], '列表只显示 Plus 最高优惠或一个状态');
   }
@@ -1010,7 +1010,8 @@ test('旧单国成功与历史优惠采用同一国家格式，不借注册国�
   assert.match(html, /is-country-\d+/);
   assert.deepEqual(visiblePromotionLabels(html), ['五折 2个月']);
   const unknown = view._promotionCell({...checked, registration_proxy_region: 'US'});
-  assert.match(unknown, /class="account-promotion-country">国家未记录：/);
+  assert.match(unknown, /class="account-promotion-country" aria-label="国家未记录">—：/);
+  assert.match(promotionTooltip(unknown), /国家未记录 Plus: 五折 2个月/);
   assert.doesNotMatch(unknown, /class="account-promotion-country">US/);
   const historical = view._promotionCell({...checked, plan_promotion_country: 'JP', plan_check_status: 'failed', plan_last_success_at: '2026-10-15'});
   assert.match(historical, /JP<span class="account-promotion-stale">历史/);
