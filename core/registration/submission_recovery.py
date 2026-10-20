@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 from selenium.common.exceptions import TimeoutException
 
 from core.http_response_diagnostics import (
-    auth_submission_endpoint, response_rejection_diagnostic, safe_auth_error, safe_response_headers,
+    auth_submission_endpoint, is_auth_session_diagnostic, response_rejection_diagnostic,
+    safe_auth_error, safe_response_headers,
 )
 
 from .auth_context import checkpoint
@@ -129,6 +130,12 @@ class SubmissionDiagnostics:
         self.stage = "auth"
         self.network: OrderedDict[str, dict] = OrderedDict()
         self.lock = threading.Lock()
+        self.auth_generation = 0
+        self.session_requests: OrderedDict[str, int] = OrderedDict()
+
+    def begin_session(self) -> None:
+        with self.lock:
+            self.auth_generation += 1
 
     def observe_network(self, record, *, phase: str) -> None:
         if not isinstance(record, dict) or not _auth_url(record.get("url")):
@@ -145,6 +152,13 @@ class SubmissionDiagnostics:
         status = _number(record.get("status"), 599)
         failure = re.search(r"(?:net::)?ERR_[A-Z_]+", str(record.get("failure") or ""))
         with self.lock:
+            session_diagnostic = is_auth_session_diagnostic(record.get("url")) and method == "GET"
+            if session_diagnostic and phase == "request":
+                self.session_requests[key] = self.auth_generation
+                self.session_requests.move_to_end(key)
+                while len(self.session_requests) > 64:
+                    self.session_requests.popitem(last=False)
+            request_generation = self.session_requests.get(key) if session_diagnostic else None
             previous = self.network.get(key, {})
             headers = {**previous.get("response_headers", {}),
                        **safe_response_headers(record.get("response_headers"))}
@@ -161,8 +175,11 @@ class SubmissionDiagnostics:
                 "network_error": failure.group(0) if failure else ("网络请求未完成" if record.get("failure") else ""),
                 "response_headers": headers,
                 "response_headers_observed": bool(previous.get("response_headers_observed") or headers_observed),
-                "endpoint_kind": auth_submission_endpoint(record.get("url")),
+                "endpoint_kind": auth_submission_endpoint(record.get("url")) or (
+                    "auth_session_dump" if is_auth_session_diagnostic(record.get("url")) else ""
+                ),
                 **({"auth_error": auth_error} if auth_error else {}),
+                **({"auth_generation": request_generation} if request_generation is not None else {}),
                 **({"rejection": response_rejection_diagnostic(observed_status, headers)}
                    if observed_status == 403 else {}),
             }
@@ -201,11 +218,27 @@ def auth_session_unavailable(driver) -> bool:
 
 def begin_auth_session(driver) -> None:
     """新登录保留旧诊断，旧请求的迟到响应不能判定新会话失效。"""
+    diagnostics = diagnostics_for(driver)
+    diagnostics.begin_session()
     driver._registration_previous_auth_session_requests = frozenset(
-        item.get("request") for item in diagnostics_for(driver).recent_network()
+        item.get("request") for item in diagnostics.recent_network()
         if item.get("origin") == "https://auth.openai.com"
         and item.get("path") == "/api/accounts/client_auth_session_dump"
     )
+
+
+def auth_session_missing(driver) -> bool:
+    """只有当前会话最新诊断明确缺失，才允许提交前恢复；404 本身不够。"""
+    ignored = getattr(driver, "_registration_previous_auth_session_requests", ())
+    diagnostics = diagnostics_for(driver)
+    for item in reversed(diagnostics.recent_network()):
+        if (item.get("origin") == "https://auth.openai.com"
+                and item.get("path") == "/api/accounts/client_auth_session_dump"
+                and item.get("request") not in ignored
+                and item.get("auth_generation") == diagnostics.auth_generation):
+            return (item.get("method") == "GET" and item.get("status") == 404
+                    and safe_auth_error(item.get("auth_error")).get("code") == "missing_session")
+    return False
 
 
 def _log_diagnostic_chunks(driver, safe: dict) -> None:

@@ -84,6 +84,17 @@ def safe_auth_error(value: object) -> dict[str, str]:
     return {"code": code, "type": error_type, "category": _AUTH_ERROR_CODES[code]}
 
 
+def is_auth_session_diagnostic(url: object) -> bool:
+    """会话诊断 GET 不属于业务提交，单独限定来源与固定路由。"""
+    try:
+        parsed = urlsplit(str(url or ""))
+        return (parsed.scheme == "https" and parsed.hostname == "auth.openai.com"
+                and parsed.port in (None, 443) and not parsed.username and not parsed.password
+                and parsed.path == "/api/accounts/client_auth_session_dump")
+    except (TypeError, ValueError):
+        return False
+
+
 def auth_error_from_body(body: object) -> dict[str, str]:
     """有限解析认证失败 JSON，只返回结构化固定枚举，不返回原始正文。"""
     if isinstance(body, bytes):

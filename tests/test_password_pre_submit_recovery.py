@@ -95,6 +95,16 @@ def _flow(driver, clock):
         yield
 
 
+@contextmanager
+def _resume_flow(driver, clock):
+    driver.current_url = "https://auth.openai.com/log-in/password"
+    driver._registration_resume_login = True
+    with (_flow(driver, clock),
+          patch.object(password_auth, "_is_signup_password_page", return_value=False),
+          patch.object(password_auth, "_is_login_password_page", return_value=True)):
+        yield
+
+
 class PasswordPreSubmitRecoveryTests(unittest.TestCase):
     def test_blank_or_unhydrated_form_recovers_once_then_submits_original_password(self):
         for reason in ("missing_password_input", "missing_password_form", "password_frontend_not_ready"):
@@ -219,6 +229,97 @@ class PasswordPreSubmitRecoveryTests(unittest.TestCase):
         self.assertFalse(self.helper(driver, receipt))
         self.assertEqual(driver.gets, [])
 
+    def resumed_email_history(self, *, status=403, phase="unknown"):
+        failed = BrowserSubmissionReceipt(
+            kind="resume_login", stage="submit_email", endpoint_kind="email_submit", http_method="POST",
+            phase=phase, http_status=status, result="failure",
+        )
+        confirmed = BrowserSubmissionReceipt(
+            kind="resume_login", stage="submit_email", endpoint_kind="nextauth_signin", http_method="POST",
+            phase="confirmed", http_status=200, result="success",
+        )
+        return [failed, confirmed]
+
+    def test_confirmed_later_resume_login_allows_get_preserving_old_403_or_429_fact(self):
+        for status in (403, 429):
+            for phase in ("unknown", "response_observed"):
+                driver = _Driver(_Clock())
+                driver._registration_resume_login = True
+                driver._browser_submission_receipts = self.resumed_email_history(status=status, phase=phase)
+                old, confirmed = driver._browser_submission_receipts
+                receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password", endpoint_kind="password_submit")
+                with self.subTest(status=status, phase=phase):
+                    self.assertTrue(self.helper(driver, receipt))
+                    self.assertEqual(driver.gets, [PASSWORD_URL])
+                    self.assertEqual((old.phase, old.http_status, old.result), (phase, status, "failure"))
+                    self.assertEqual(confirmed.phase, "confirmed")
+                    self.assertEqual(receipt.phase, "prepared")
+
+    def test_actual_resume_sequence_recovers_prepared_login_form_and_queues_once(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        driver.current_url = "https://auth.openai.com/log-in/password"
+        driver._registration_resume_login = True
+        driver._browser_submission_receipts = self.resumed_email_history()
+        old, confirmed = driver._browser_submission_receipts
+        with _flow(driver, clock), patch.object(password_auth, "_is_signup_password_page", return_value=False), patch.object(password_auth, "_is_login_password_page", return_value=True):
+            result = password_auth._fill_password_page_if_present(
+                driver, EMAIL, timeout=30, existing_password=PASSWORD,
+            )
+        self.assertEqual(result, PASSWORD)
+        self.assertEqual(driver.gets, ["https://auth.openai.com/log-in/password"])
+        self.assertEqual(driver.queues, [PASSWORD])
+        self.assertEqual(driver.queue_identities, [EMAIL])
+        self.assertEqual(old.phase, "unknown")
+        self.assertEqual(confirmed.phase, "confirmed")
+        self.assertEqual(driver._browser_submission_receipt.phase, "confirmed")
+
+    def test_failed_email_history_without_explicit_resume_or_later_confirmation_blocks_get(self):
+        for variant in ("ordinary", "no_later", "wrong_order", "only_response", "new_failed", "same_submission"):
+            driver = _Driver(_Clock())
+            driver._registration_resume_login = variant != "ordinary"
+            history = self.resumed_email_history()
+            if variant == "no_later":
+                history.pop()
+            elif variant == "wrong_order":
+                history.reverse()
+            elif variant == "only_response":
+                history[1].phase = "response_observed"
+            elif variant == "new_failed":
+                history[1].result = "failure"
+            elif variant == "same_submission":
+                history[1].submission_id = history[0].submission_id
+            driver._browser_submission_receipts = history
+            receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password", endpoint_kind="password_submit")
+            with self.subTest(variant=variant):
+                self.assertFalse(self.helper(driver, receipt))
+                self.assertEqual(driver.gets, [])
+
+    def test_unverified_email_failure_status_or_result_cannot_allow_get(self):
+        for status, result in ((None, "failure"), (401, "failure"), (500, "failure"), (403, "unknown"), (429, "")):
+            driver = _Driver(_Clock())
+            driver._registration_resume_login = True
+            driver._browser_submission_receipts = self.resumed_email_history(status=status)
+            driver._browser_submission_receipts[0].result = result
+            receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password", endpoint_kind="password_submit")
+            with self.subTest(status=status, result=result):
+                self.assertFalse(self.helper(driver, receipt))
+                self.assertEqual(driver.gets, [])
+
+    def test_password_otp_or_profile_unknown_still_blocks_after_confirmed_email(self):
+        for endpoint in ("password_submit", "otp_submit", "otp_resend", "profile_submit"):
+            driver = _Driver(_Clock())
+            driver._registration_resume_login = True
+            history = self.resumed_email_history()
+            unresolved = BrowserSubmissionReceipt(kind="resume_login", stage="login_password", phase="unknown", http_method="POST", http_status=403, result="failure")
+            unresolved.endpoint_kind = endpoint
+            history.insert(1, unresolved)
+            driver._browser_submission_receipts = history
+            receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password", endpoint_kind="password_submit")
+            with self.subTest(endpoint=endpoint):
+                self.assertFalse(self.helper(driver, receipt))
+                self.assertEqual(driver.gets, [])
+
     def test_foreign_unexpected_or_changed_route_refuses_get(self):
         for url in ("https://auth.openai.com.evil.test/create-account/password", "https://auth.openai.com/api/accounts/user/register", "https://auth.openai.com/email-verification", "https://user@auth.openai.com/create-account/password", "https://auth.openai.com:444/create-account/password"):
             driver = _Driver(_Clock())
@@ -261,6 +362,224 @@ class PasswordPreSubmitRecoveryTests(unittest.TestCase):
             )
         self.assertFalse(result)
         self.assertEqual(driver.gets, [])
+
+    def test_missing_session_closes_prepared_receipt_and_submits_new_form_once_with_saved_password(self):
+        clock, prepared, submitted, old_receipts = _Clock(), [], [], []
+        driver = _Driver(clock)
+        driver._browser_submission_receipts = self.resumed_email_history()
+        old_failure = driver._browser_submission_receipts[0]
+
+        def restart(_driver, email, *, budget, allow_password_route):
+            self.assertEqual(email, EMAIL)
+            self.assertTrue(allow_password_route)
+            self.assertEqual(budget.deadline, 180)
+            old_receipts.append(driver._browser_submission_receipt)
+            self.assertEqual(old_receipts[-1].phase, "not_dispatched")
+            self.assertEqual(driver.queues, [])
+            self.assertEqual(submitted, [])
+            driver._registration_auth_restart_count = 1
+            driver.ready = True
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", side_effect=[True, False, False]),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart) as restarted,
+              patch.object(password_auth, "_registration_password") as generated):
+            result = password_auth._fill_password_page_if_present(
+                driver, EMAIL, timeout=30, existing_password=PASSWORD,
+                on_password_prepared=prepared.append, on_password_submitted=submitted.append,
+            )
+        self.assertEqual(result, PASSWORD)
+        restarted.assert_called_once()
+        generated.assert_not_called()
+        self.assertEqual((driver.gets, driver.queues), ([], [PASSWORD]))
+        self.assertEqual(driver.queue_identities, [EMAIL])
+        self.assertEqual(driver.queue_paths, ["/log-in/password"])
+        self.assertEqual((prepared, submitted), ([PASSWORD], [PASSWORD]))
+        self.assertIsNot(old_receipts[0], driver._browser_submission_receipt)
+        self.assertEqual(old_receipts[0].phase, "not_dispatched")
+        self.assertEqual(old_failure.phase, "unknown")
+
+    def test_missing_session_new_ready_otp_does_not_revisit_password_or_claim_password_submission(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        submitted = []
+
+        def restart(*_args, **_kwargs):
+            self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+            driver._registration_auth_restart_count = 1
+            driver._registration_resume_password_attempted = False
+            driver.current_url = "https://auth.openai.com/email-verification"
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", return_value=True),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart),
+              patch.object(password_auth, "_wait_email_otp_page_ready", return_value="ready") as ready,
+              patch.object(password_auth, "_resume_login_password_url") as offered):
+            result = password_auth._fill_password_page_if_present(
+                driver, EMAIL, existing_password=PASSWORD, on_password_submitted=submitted.append,
+            )
+        self.assertEqual(result, PASSWORD)
+        ready.assert_called_once()
+        offered.assert_not_called()
+        self.assertTrue(driver._registration_resume_password_attempted)
+        self.assertEqual((driver.gets, driver.queues, submitted), ([], [], []))
+        self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+
+    def test_missing_session_arriving_after_typing_restarts_before_first_dispatch_then_submits_once(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        driver.ready = True
+        missing, events, submitted, old_receipts = [False], [], [], []
+
+        def delay(*_args, **_kwargs):
+            if "missing_arrived" not in events:
+                missing[0] = True
+                events.append("missing_arrived")
+
+        def restart(_driver, email, **_kwargs):
+            self.assertEqual(driver.queues, [])
+            self.assertEqual(submitted, [])
+            old_receipts.append(driver._browser_submission_receipt)
+            self.assertEqual(old_receipts[-1].phase, "not_dispatched")
+            events.append("restarted")
+            driver._registration_auth_restart_count = 1
+            missing[0] = False
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", side_effect=lambda _driver: missing[0]),
+              patch.object(password_auth, "_human_type_text", side_effect=lambda *_args, **_kw: events.append("typed")),
+              patch.object(password_auth, "human_delay", side_effect=delay),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart) as restarted):
+            result = password_auth._fill_password_page_if_present(
+                driver, EMAIL, existing_password=PASSWORD, on_password_submitted=submitted.append,
+            )
+        self.assertEqual(result, PASSWORD)
+        self.assertEqual(events, ["typed", "missing_arrived", "restarted", "typed"])
+        restarted.assert_called_once()
+        self.assertEqual(driver.queues, [PASSWORD])
+        self.assertEqual(submitted, [PASSWORD])
+        self.assertEqual(driver.modes, ["input", "recovery_input"])
+        self.assertIsNot(old_receipts[0], driver._browser_submission_receipt)
+        self.assertEqual(old_receipts[0].phase, "not_dispatched")
+
+    def test_missing_session_restarts_at_most_twice_without_renewing_initial_deadline(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        deadlines, remaining = [], []
+
+        def restart(*_args, budget, **_kwargs):
+            self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+            deadlines.append(budget.deadline)
+            remaining.append(budget.remaining())
+            driver._registration_auth_restart_count = len(deadlines)
+            clock.sleep(20)
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", return_value=True),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart) as restarted,
+              self.assertRaisesRegex(RuntimeError, "auth_session_unavailable")):
+            password_auth._fill_password_page_if_present(driver, EMAIL, existing_password=PASSWORD)
+        self.assertEqual(restarted.call_count, 2)
+        self.assertEqual(deadlines, [180, 180])
+        self.assertEqual(remaining, [180, 160])
+        self.assertEqual(clock.now, 40)
+        self.assertEqual((driver.gets, driver.queues), ([], []))
+        self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+
+    def test_missing_session_restart_spending_fixed_budget_cannot_wait_or_submit_afterward(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+
+        def restart(*_args, budget, **_kwargs):
+            clock.sleep(budget.remaining())
+            driver.ready = True
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", return_value=True),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart) as restarted,
+              self.assertRaisesRegex(RuntimeError, "auth_session_unavailable")):
+            password_auth._fill_password_page_if_present(driver, EMAIL, existing_password=PASSWORD)
+        restarted.assert_called_once()
+        self.assertEqual(clock.now, 180)
+        self.assertEqual((driver.gets, driver.queues), ([], []))
+
+    def test_missing_session_cannot_bypass_ui_receipt_identity_challenge_history_or_origin(self):
+        for variant in ("ui_receipt", "identity", "challenge", "history", "foreign", "other_route"):
+            clock = _Clock()
+            driver = _Driver(clock)
+            with self.subTest(variant=variant), _resume_flow(driver, clock):
+                if variant == "ui_receipt":
+                    driver.ui_receipt = True
+                elif variant == "identity":
+                    driver.identity_ok = False
+                elif variant == "challenge":
+                    driver.blocked = True
+                elif variant == "history":
+                    driver._browser_submission_receipts = [BrowserSubmissionReceipt(
+                        kind="resume_login", stage="email_otp", endpoint_kind="otp_submit", phase="unknown",
+                    )]
+                elif variant == "foreign":
+                    driver.current_url = "https://other.test/log-in/password"
+                else:
+                    driver.current_url = PASSWORD_URL
+                with (patch.object(password_auth, "auth_session_missing", return_value=True),
+                      patch.object(password_auth, "_restart_expired_resume_auth") as restarted,
+                      self.assertRaisesRegex(RuntimeError, "auth_session_unavailable")):
+                    password_auth._fill_password_page_if_present(driver, EMAIL, existing_password=PASSWORD)
+            restarted.assert_not_called()
+            self.assertEqual((driver.gets, driver.queues), ([], []))
+
+    def test_missing_session_cannot_recover_queued_dispatched_or_unknown_current_receipt(self):
+        for phase in ("dispatch_intent", "ui_queued", "ui_dispatched", "unknown"):
+            clock = _Clock()
+            driver = _Driver(clock)
+
+            def advanced(_driver, _stage, point, *, receipt=None):
+                if point == "before_submit":
+                    receipt.transition(phase)
+
+            with (self.subTest(phase=phase), _resume_flow(driver, clock),
+                  patch.object(password_auth, "auth_session_missing", return_value=True),
+                  patch.object(password_auth, "log_submission_diagnostics", side_effect=advanced),
+                  patch.object(password_auth, "_restart_expired_resume_auth") as restarted,
+                  self.assertRaisesRegex(RuntimeError, "password_form_not_ready")):
+                password_auth._fill_password_page_if_present(driver, EMAIL, existing_password=PASSWORD)
+            restarted.assert_not_called()
+            self.assertEqual((driver.gets, driver.queues), ([], []))
+            self.assertEqual(driver._browser_submission_receipt.phase, phase)
+
+    def test_plain_404_stale_missing_or_newer_success_does_not_restart_password_login(self):
+        from core.registration.submission_recovery import SubmissionDiagnostics, begin_auth_session
+
+        for variant in ("plain_404", "old_session", "newer_success"):
+            clock = _Clock()
+            driver = _Driver(clock)
+            diagnostics = SubmissionDiagnostics()
+            driver._registration_submission_diagnostics = diagnostics
+            item = {"url": "https://auth.openai.com/api/accounts/client_auth_session_dump",
+                    "method": "GET", "request_id": "old", "target_id": "target", "status": 404}
+            if variant != "plain_404":
+                item["auth_error"] = {"code": "missing_session"}
+            diagnostics.observe_network(item, phase="request")
+            diagnostics.observe_network(item, phase="complete")
+            if variant == "old_session":
+                begin_auth_session(driver)
+            elif variant == "newer_success":
+                current = {**item, "request_id": "current", "status": 200, "auth_error": {}}
+                diagnostics.observe_network(current, phase="request")
+                diagnostics.observe_network(current, phase="complete")
+            driver.ready = True
+            with (self.subTest(variant=variant), _resume_flow(driver, clock),
+                  patch.object(password_auth, "_restart_expired_resume_auth") as restarted):
+                result = password_auth._fill_password_page_if_present(driver, EMAIL, existing_password=PASSWORD)
+            self.assertEqual(result, PASSWORD)
+            restarted.assert_not_called()
+            self.assertEqual(driver.queues, [PASSWORD])
 
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际恢复前只读脚本")

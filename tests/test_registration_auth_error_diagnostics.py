@@ -9,7 +9,9 @@ from core.browser_traffic import _SummaryOnlyCDPSession
 from core.http_response_diagnostics import (
     auth_error_from_body, auth_submission_endpoint, safe_auth_error,
 )
-from core.registration.submission_recovery import SubmissionDiagnostics
+from core.registration.submission_recovery import (
+    SubmissionDiagnostics, auth_session_missing, begin_auth_session,
+)
 from core.registration_debug import _RoxyTargetCollector
 
 
@@ -180,3 +182,66 @@ class AuthErrorCollectorTests(unittest.TestCase):
         result = diagnostics.recent_network()[0]
         self.assertNotIn('private', json.dumps(result))
         self.assertEqual(result['auth_error']['code'], 'unknown')
+
+    def test_current_session_missing_get_is_diagnostic_and_never_a_submission(self):
+        session, diagnostics, worker = self.worker(
+            status=404, method='GET', url='https://auth.openai.com/api/accounts/client_auth_session_dump',
+        )
+        command = json.loads(worker._ws.send.call_args.args[0])
+        worker._handle({'id': command['id'], 'result': {
+            'body': '{"error":{"code":"missing_session","message":"private-token"}}',
+        }})
+        driver = SimpleNamespace(_registration_submission_diagnostics=diagnostics)
+        self.assertTrue(auth_session_missing(driver))
+        session.submission_observer.assert_not_called()
+        record = session.record_network.call_args.args[0]
+        self.assertNotIn('response_body', record)
+        self.assertNotIn('private-token', json.dumps(record))
+        self.assertEqual(diagnostics.recent_network()[-1]['endpoint_kind'], 'auth_session_dump')
+        begin_auth_session(driver)
+        self.assertFalse(auth_session_missing(driver))
+
+    def test_404_without_exact_missing_session_or_newer_healthy_response_cannot_restart(self):
+        diagnostics = SubmissionDiagnostics()
+        driver = SimpleNamespace(_registration_submission_diagnostics=diagnostics)
+        base = {'url': 'https://auth.openai.com/api/accounts/client_auth_session_dump',
+                'method': 'GET', 'request_id': 'old', 'target_id': 'target', 'status': 404}
+        diagnostics.observe_network(base, phase='request')
+        diagnostics.observe_network(base, phase='complete')
+        self.assertFalse(auth_session_missing(driver))
+        diagnostics.observe_network({**base, 'auth_error': {'code': 'missing_session'}}, phase='complete')
+        self.assertTrue(auth_session_missing(driver))
+        healthy = {**base, 'request_id': 'new', 'status': 200}
+        diagnostics.observe_network(healthy, phase='request')
+        diagnostics.observe_network(healthy, phase='complete')
+        self.assertFalse(auth_session_missing(driver))
+
+    def test_late_or_orphan_old_session_response_cannot_contaminate_new_session(self):
+        diagnostics = SubmissionDiagnostics()
+        driver = SimpleNamespace(_registration_submission_diagnostics=diagnostics)
+        old = {'url': 'https://auth.openai.com/api/accounts/client_auth_session_dump',
+               'method': 'GET', 'request_id': 'old', 'target_id': 'target'}
+        diagnostics.observe_network(old, phase='request')
+        for number in range(45):
+            diagnostics.observe_network({**old, 'url': 'https://auth.openai.com/api/accounts/authorize',
+                                         'request_id': str(number)}, phase='request')
+        begin_auth_session(driver)
+        rejection = {'status': 404, 'auth_error': {'code': 'missing_session'}}
+        diagnostics.observe_network({**old, **rejection}, phase='complete')
+        self.assertFalse(auth_session_missing(driver))
+        diagnostics.observe_network({**old, **rejection, 'request_id': 'unobserved'}, phase='complete')
+        self.assertFalse(auth_session_missing(driver))
+        fresh = {**old, 'request_id': 'fresh'}
+        diagnostics.observe_network(fresh, phase='request')
+        diagnostics.observe_network({**fresh, **rejection}, phase='complete')
+        self.assertTrue(auth_session_missing(driver))
+
+    def test_session_error_body_is_not_read_for_post_or_foreign_origin(self):
+        for options in ({'method': 'POST'}, {'status': 200},
+                        {'url': 'https://auth.openai.com.evil.test/api/accounts/client_auth_session_dump'}):
+            with self.subTest(options=options):
+                kwargs = {'status': 404, 'method': 'GET',
+                          'url': 'https://auth.openai.com/api/accounts/client_auth_session_dump', **options}
+                session, _diagnostics, worker = self.worker(**kwargs)
+                worker._ws.send.assert_not_called()
+                session.submission_observer.assert_not_called()

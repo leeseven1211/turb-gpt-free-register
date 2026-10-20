@@ -25,7 +25,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from config import registration_debug as _cfg
-from core.http_response_diagnostics import auth_error_from_body, auth_submission_endpoint, safe_response_headers
+from core.http_response_diagnostics import (
+    auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, safe_response_headers,
+)
 from core.task_stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger(__name__)
@@ -1310,13 +1312,19 @@ class _RoxyTargetCollector:
     def _should_read_auth_error(self, record: dict) -> bool:
         if not getattr(self.session, "summary_only", False):
             return False
-        if not callable(getattr(self.session, "submission_observer", None)):
+        session_diagnostic = is_auth_session_diagnostic(record.get("url"))
+        observer = "auth_diagnostic_observer" if session_diagnostic else "submission_observer"
+        if not callable(getattr(self.session, observer, None)):
             return False
-        if record.get("method") != "POST" or not auth_submission_endpoint(record.get("url")):
+        if record.get("method") != ("GET" if session_diagnostic else "POST"):
+            return False
+        if not session_diagnostic and not auth_submission_endpoint(record.get("url")):
             return False
         try:
             status, length = int(record.get("status") or 0), float(record.get("encoded_data_length") or 0)
         except (TypeError, ValueError, OverflowError):
+            return False
+        if session_diagnostic and status != 404:
             return False
         mime = record.get("response_headers", {}).get("content-type") or record.get("mime_type")
         return 400 <= status < 600 and 0 <= length <= 65536 and mime in {

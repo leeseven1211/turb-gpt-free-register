@@ -21,7 +21,7 @@ from core.registration.state_machine import PageState, StageBudget, StageTimeout
 from .auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
 from .browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from .submission_recovery import (
-    RECOVERY_WINDOW_SECONDS, begin_auth_session, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
+    RECOVERY_WINDOW_SECONDS, auth_session_missing, begin_auth_session, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page,
 )
 from .email_otp import (
     _clear_otp_inputs, _is_email_verification_page, _type_otp, _wait_email_otp_page_ready,
@@ -737,7 +737,8 @@ def _resume_login_password_url(driver) -> str | None:
     return _offered_password_url(driver)
 
 
-def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> bool:
+def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget,
+                                 allow_password_route: bool = False) -> bool:
     """原身份显式续跑最多重建两次登录会话，不重放失效表单。"""
     restart_count = int(getattr(driver, "_registration_auth_restart_count", 0) or 0)
     if (not getattr(driver, "_registration_resume_login", False)
@@ -747,8 +748,17 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget) -> 
         location = urlsplit(str(driver.current_url or ""))
         if (location.scheme != "https" or location.hostname != "auth.openai.com"
                 or location.port not in (None, 443) or location.username or location.password
-                or location.path.rstrip("/") != "/email-verification"):
+                or location.path.rstrip("/") not in (
+                    {"/email-verification", "/log-in/password"} if allow_password_route
+                    else {"/email-verification"}
+                )):
             return False
+        if location.path.rstrip("/") == "/log-in/password":
+            receipt = getattr(driver, "_browser_submission_receipt", None)
+            if not (isinstance(receipt, BrowserSubmissionReceipt)
+                    and receipt.kind == "resume_login" and receipt.endpoint_kind == "password_submit"
+                    and receipt.http_method == "POST" and receipt.phase == "not_dispatched"):
+                return False
     except ValueError:
         return False
     _check_manual_stop()
@@ -869,7 +879,7 @@ def _refresh_saved_login_password_form(driver, *, budget, receipt, observe, form
 
 
 def _refresh_unsubmitted_password_form(driver, *, receipt, email: str, expected_url: str,
-                                       deadline: float) -> bool:
+                                       deadline: float, validate_only: bool = False) -> bool:
     """仅在明确未排队时 GET 当前密码页；新表单必须再核验原邮箱才能提交。"""
     _checkpoint()
     _check_manual_stop()
@@ -877,11 +887,42 @@ def _refresh_unsubmitted_password_form(driver, *, receipt, email: str, expected_
         return False
     if getattr(driver, "_browser_submission_receipt", None) is not receipt:
         return False
-    history = getattr(driver, "_browser_submission_receipts", ())
-    if not isinstance(history, (list, tuple)):
+
+    def history_blocks():
+        history = getattr(driver, "_browser_submission_receipts", ())
+        if not isinstance(history, (list, tuple)):
+            return True
+        email_endpoints = {"email_submit", "nextauth_signin"}
+        for index, previous in enumerate(history):
+            phase = getattr(previous, "phase", "")
+            if phase in {"prepared", "not_dispatched", "confirmed", "rejected"}:
+                continue
+            # 显式原身份登录可能保留先前 403/429 的失败回执；只有后续独立
+            # 邮箱登录已由页面确认，才不让该旧事实阻挡当前未提交密码页的 GET。
+            # 这里只判断恢复资格，不改写旧事实，更不认可密码/OTP/资料的未知写入。
+            if not (
+                getattr(driver, "_registration_resume_login", False) is True
+                and getattr(previous, "kind", "") == "resume_login"
+                and getattr(previous, "endpoint_kind", "") in email_endpoints
+                and getattr(previous, "http_method", "") == "POST"
+                and getattr(previous, "http_status", None) in {403, 429}
+                and getattr(previous, "result", "") == "failure"
+                and phase in {"response_observed", "unknown"}
+            ):
+                return True
+            if not any(
+                getattr(later, "kind", "") == "resume_login"
+                and getattr(later, "endpoint_kind", "") in email_endpoints
+                and getattr(later, "http_method", "") == "POST"
+                and getattr(later, "phase", "") == "confirmed"
+                and getattr(later, "result", "") == "success"
+                and getattr(later, "submission_id", None) != getattr(previous, "submission_id", None)
+                for later in history[index + 1:]
+            ):
+                return True
         return False
-    if any(getattr(item, "phase", "") not in {"prepared", "not_dispatched", "confirmed", "rejected"}
-           for item in history):
+
+    if history_blocks():
         return False
     try:
         current_url = str(driver.current_url or "")
@@ -929,17 +970,19 @@ def _refresh_unsubmitted_password_form(driver, *, receipt, email: str, expected_
             return False
     except Exception:
         return False
+    if validate_only:
+        # 明确缺失认证会话时复用同一组资格检查；调用方会重建登录，不 GET 失效页。
+        return (receipt.phase == "prepared"
+                and getattr(driver, "_browser_submission_receipt", None) is receipt
+                and str(getattr(driver, "current_url", "") or "") == current_url
+                and not history_blocks() and deadline - time.time() >= 1.0)
     # 诊断采集后重新检查围栏和剩余时间；GET 不获得新的准备预算。
     log_submission_diagnostics(driver, "password", "before_unsubmitted_refresh", receipt=receipt)
     _checkpoint()
     _check_manual_stop()
     if receipt.phase != "prepared" or getattr(driver, "_browser_submission_receipt", None) is not receipt:
         return False
-    history = getattr(driver, "_browser_submission_receipts", ())
-    if not isinstance(history, (list, tuple)) or any(
-        getattr(item, "phase", "") not in {"prepared", "not_dispatched", "confirmed", "rejected"}
-        for item in history
-    ):
+    if history_blocks():
         return False
     if str(getattr(driver, "current_url", "") or "") != current_url:
         return False
@@ -983,6 +1026,8 @@ def _fill_password_page_if_present(
     resume_login = bool(existing_password and getattr(driver, "_registration_resume_login", False))
     password_timeout = max(timeout, SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS) if resume_login else timeout
     end = time.time() + password_timeout
+    password_session_recovery_deadline = end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS
+    password_session_recovery_started = False
     last = {}
     auth_mode = _registration_auth_mode()
     switched_from_otp = False
@@ -1004,15 +1049,28 @@ def _fill_password_page_if_present(
                 return existing_password
         if _is_email_verification_page(driver):
             if existing_password:
+                recovered_otp_state = None
+                if password_session_recovery_started:
+                    recovered_otp_state = _wait_email_otp_page_ready(
+                        driver, timeout=min(45.0, max(0.0, end - time.time())),
+                        budget=StageBudget(end, clock=time.time),
+                    )
+                    if recovered_otp_state == "ready":
+                        # 新会话已明确提供 OTP；继续原身份验证，不再导航旧密码入口。
+                        driver._registration_resume_password_attempted = True
+                        return existing_password
+                    if recovered_otp_state != "session_expired":
+                        raise RuntimeError("request_unknown: auth_session_unavailable: 重建登录后的验证码页不可用，已保留原 Attempt")
                 if (getattr(driver, "_registration_resume_login", False) and not switched_from_otp
                         and not getattr(driver, "_registration_resume_password_attempted", False)):
-                    ready = _wait_email_otp_page_ready(
+                    ready = recovered_otp_state or _wait_email_otp_page_ready(
                         driver, timeout=min(45.0, max(0.0, end - time.time())),
                         budget=StageBudget(end, clock=time.time),
                     )
                     if ready == "session_expired":
                         recovery_budget = StageBudget(
-                            end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS,
+                            password_session_recovery_deadline if password_session_recovery_started
+                            else end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS,
                             clock=time.time,
                         )
                         if _restart_expired_resume_auth(driver, email, budget=recovery_budget):
@@ -1247,9 +1305,37 @@ def _fill_password_page_if_present(
         driver._browser_submission_receipt = submission_receipt
         log_submission_diagnostics(driver, "password", "before_submit", receipt=submission_receipt)
         last_safe_pre_dispatch_failure = False
+        session_restarted_before_submit = False
         while True:
             _check_manual_stop()
-            if pre_submit_recovery_used:
+            if (resume_login and submission_receipt.phase == "prepared"
+                    and auth_session_missing(driver)):
+                if (urlsplit(password_form_url).path != "/log-in/password"
+                        or not _refresh_unsubmitted_password_form(
+                            driver, receipt=submission_receipt, email=email,
+                            expected_url=password_form_url, deadline=password_session_recovery_deadline,
+                            validate_only=True,
+                        )):
+                    raise RuntimeError("request_unknown: auth_session_unavailable: 密码页会话缺失但未确认未派发恢复资格，已保留原 Attempt")
+                # 当前密码确定未排队，先关闭本次回执，再沿用原身份创建全新登录会话。
+                record_browser_submission_fact(
+                    driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
+                )
+                end = password_session_recovery_deadline
+                password_session_recovery_started = True
+                recovery_budget = StageBudget(end, clock=time.time)
+                if (int(getattr(driver, "_registration_auth_restart_count", 0) or 0)
+                        >= MAX_EXPIRED_RESUME_AUTH_RESTARTS or recovery_budget.remaining() < 1.0
+                        or not _restart_expired_resume_auth(
+                            driver, email, budget=recovery_budget, allow_password_route=True,
+                        )):
+                    raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录会话重建次数或预算已耗尽，已保留原 Attempt")
+                if recovery_budget.remaining() <= 0:
+                    raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录会话重建预算已耗尽，已保留原 Attempt")
+                switched_from_otp = False
+                session_restarted_before_submit = True
+                break
+            if pre_submit_recovery_used or password_session_recovery_started:
                 location = urlsplit(str(getattr(driver, "current_url", "") or ""))
                 if (time.time() >= end or location.scheme != "https"
                         or location.hostname != "auth.openai.com" or location.port not in (None, 443)
@@ -1263,8 +1349,8 @@ def _fill_password_page_if_present(
             if filled_input is None:
                 result = (
                     driver.execute_script(target_script, "recovery_input", password, None, None, email, False,
-                                          urlsplit(password_form_url).path if pre_submit_recovery_used else "")
-                    if saved_form_recoveries or pre_submit_recovery_used
+                                          urlsplit(password_form_url).path if pre_submit_recovery_used or password_session_recovery_started else "")
+                    if saved_form_recoveries or pre_submit_recovery_used or password_session_recovery_started
                     else driver.execute_script(target_script, "input", password, None)
                 ) or {}
                 if result.get("ok"):
@@ -1287,7 +1373,7 @@ def _fill_password_page_if_present(
                             )
                             prepared_reported = True
             if filled_input is not None:
-                if pre_submit_recovery_used:
+                if pre_submit_recovery_used or password_session_recovery_started:
                     location = urlsplit(str(getattr(driver, "current_url", "") or ""))
                     if (time.time() >= end or location.scheme != "https"
                             or location.hostname != "auth.openai.com" or location.port not in (None, 443)
@@ -1301,6 +1387,10 @@ def _fill_password_page_if_present(
                         driver, "not_dispatched", receipt=submission_receipt, result="cancelled",
                     )
                     raise _PasswordTransitionTimeout("request_unknown: 原身份密码登录恢复预算已耗尽，新表单未提交")
+                if (resume_login and submission_receipt.phase == "prepared"
+                        and auth_session_missing(driver)):
+                    # 输入/拟人等待期间可能迟到会话缺失诊断；派发前交回同一恢复入口。
+                    continue
                 # 定时器排队前建立持久围栏，UI queued/click 不等于 HTTP 成功。
                 record_browser_submission_fact(
                     driver, "dispatch_intent", receipt=submission_receipt,
@@ -1309,9 +1399,9 @@ def _fill_password_page_if_present(
                 try:
                     result = driver.execute_script(
                         target_script, "queue", password, filled_input, submission_receipt.submission_id,
-                        email if saved_form_recoveries or pre_submit_recovery_used else "",
+                        email if saved_form_recoveries or pre_submit_recovery_used or password_session_recovery_started else "",
                         callable(getattr(driver, "execute_cdp_cmd", None)),
-                        urlsplit(password_form_url).path if pre_submit_recovery_used else "",
+                        urlsplit(password_form_url).path if pre_submit_recovery_used or password_session_recovery_started else "",
                     )
                     if isinstance(result, dict) and result.get("trusted_click"):
                         _dispatch_trusted_click(driver, result["trusted_click"])
@@ -1381,6 +1471,9 @@ def _fill_password_page_if_present(
                     f"{result.get('reason') or 'empty_result'}；{_password_page_state_summary(last)}"
                 )
             time.sleep(0.4)
+        if session_restarted_before_submit:
+            # 丢弃旧文档的输入和回执；外层重新识别新页，不能误报已提交密码。
+            continue
         logger.info("%s 已填写%s密码页并排队一次提交，等待页面确认", _log_prefix(driver), "登录" if is_login_password else "注册")
         if on_password_submitted is not None:
             on_password_submitted(password)
@@ -1552,6 +1645,8 @@ def _fill_password_page_if_present(
             "password_entry_not_offered: 密码模式要求创建账号密码，但认证跳转预算内未检测到密码页"
         )
     logger.info("%s 未检测到密码页，继续后续流程 last=%s", _log_prefix(driver), last)
+    if password_session_recovery_started:
+        raise RuntimeError("request_unknown: auth_session_unavailable: 重建登录后未能确认可用认证页，已保留原 Attempt")
     return None
 
 def _accept_profile_consents(driver) -> int:
