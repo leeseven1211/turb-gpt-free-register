@@ -57,6 +57,46 @@ def test_missing_runtime_settings_are_schema_fields_with_explicit_restart_semant
             assert (field.min_value, field.max_value) == (lower, upper)
 
 
+def test_extract_provider_payment_switches_are_editable_and_auto_payment_defaults_off():
+    fields = schema.CONFIG_SCHEMA
+    assert fields["EXTRACT_LINK_LUMEN_FLOW_ENABLED"].type == "bool"
+    assert fields["EXTRACT_LINK_LUMEN_FLOW_CDK"].secret is True
+    assert schema.schema_default("EXTRACT_LINK_DEFAULT_MODE") == "extract_only"
+    assert schema.schema_default("EXTRACT_LINK_AUTO_PAYMENT_ENABLED") is False
+    assert schema.schema_default("EXTRACT_LINK_LUMEN_FLOW_AUTO_PAYMENT_ENABLED") is False
+    assert schema.schema_default("EXTRACT_LINK_DEFAULT_PROVIDER") == "legacy"
+    assert schema.schema_default("EXTRACT_LINK_ENABLED") is True
+    assert schema.schema_default("EXTRACT_LINK_LEGACY_ENABLED") is True
+    assert schema.schema_default("EXTRACT_LINK_LEGACY_CONCURRENCY") == 1
+    assert schema.schema_default("EXTRACT_LINK_HUANGUANG_ENABLED") is False
+    for provider in ("LEGACY", "LUMEN_FLOW", "HUANGUANG"):
+        assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].type == "int"
+        assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].range == {"min": 1, "max": 32}
+
+
+def test_extract_link_legacy_environment_names_remain_the_only_connection_keys():
+    legacy_keys = {
+        "EXTRACT_LINK_API_BASE", "EXTRACT_LINK_CDK", "EXTRACT_LINK_TYPE",
+        "EXTRACT_LINK_REQUEST_TIMEOUT", "EXTRACT_LINK_EVENT_TIMEOUT",
+    }
+    assert legacy_keys.issubset(set(schema.CONFIG_SCHEMA.keys()))
+    assert not any(key.startswith("EXTRACT_LINK_LEGACY_") and key.endswith(("API_BASE", "CDK", "TYPE", "REQUEST_TIMEOUT", "EVENT_TIMEOUT")) for key in schema.CONFIG_SCHEMA.keys())
+
+
+def test_extract_link_cdk_values_are_never_returned_in_metadata_or_snapshot():
+    secret = "extract-link-config-test-secret"
+    with (
+        patch.object(schema, "_PUBLISHED_SNAPSHOT", None),
+        patch.object(env_loader, "read_env_file", return_value={}),
+        patch.dict("os.environ", {"EXTRACT_LINK_LUMEN_FLOW_CDK": secret}, clear=True),
+    ):
+        metadata = schema.effective_config_metadata()
+        assert next(item for item in metadata if item["key"] == "EXTRACT_LINK_LUMEN_FLOW_CDK")["value"] == ""
+        snapshot = schema.non_sensitive_snapshot().as_dict()
+        assert secret not in str(metadata)
+        assert secret not in str(snapshot)
+
+
 @pytest.mark.parametrize("key,lower,upper", RUNTIME_RANGES)
 def test_saved_runtime_ranges_accept_boundaries_and_reject_clipped_values(key, lower, upper):
     assert schema.validate_value(key, lower) == lower

@@ -197,6 +197,9 @@ for (const field of [
         self.assertIn("f.restart", CONFIG_JS)
         self.assertIn("await loadConfig();", CONFIG_JS)
 
+    def test_extract_link_section_summary_covers_platforms_and_payment_controls(self):
+        self.assertIn("管理平台启用、默认模式、支付权限、平台凭据与并发。", CONFIG_JS)
+
     def test_config_workspace_keeps_global_save_bar_without_redundant_page_header(self):
         self.assertIn('class="config-workspace-v2"', TEMPLATE)
         self.assertNotIn('config-page-head-v2', TEMPLATE)

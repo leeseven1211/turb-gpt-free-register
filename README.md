@@ -1364,6 +1364,12 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 ## 常见问题
 
+### 提链平台配置
+
+提链工作台由 `EXTRACT_LINK_ENABLED` 总开关控制，默认平台为 `legacy`，默认模式为 `extract_only`。全局提取、手动支付、自动支付和支付后检查/刷新 AT/查询套餐开关，与对应平台开关取交集；自动支付及支付后操作默认关闭。支付后刷新 AT 还依赖支付后检查，并且只在检查确认 AT 失效时触发。每个平台可单独设置启用状态、能力开关和并发，默认并发为 1；`lumen_flow`、`huanguang` 新平台默认关闭。
+
+`legacy` 的连接参数继续使用既有环境变量 `EXTRACT_LINK_API_BASE`、`EXTRACT_LINK_CDK`、`EXTRACT_LINK_TYPE`、`EXTRACT_LINK_REQUEST_TIMEOUT` 和 `EXTRACT_LINK_EVENT_TIMEOUT`，不另建重复配置键。新平台各自配置 API 地址、CDK、默认提链类型、请求超时、轮询间隔和事件超时。CDK 属于密钥，只在 `.env` 中保存，配置 API 和快照不返回密钥内容。
+
 ### 配置保存后没生效？
 
 WebUI 配置页保存后会热加载。Codex 补跑线程启动前也会重新热加载一次配置。

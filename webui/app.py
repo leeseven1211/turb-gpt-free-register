@@ -43,6 +43,7 @@ from webui.routes.codex import create_codex_blueprint
 from webui.routes.config import create_config_blueprint
 from webui.routes.dashboard import create_dashboard_blueprint
 from webui.routes.email_pool import create_email_pool_blueprint
+from webui.routes.extract_workbench import create_extract_workbench_blueprint
 from webui.routes.integrations import create_integrations_blueprint
 from webui.routes.jobs import create_jobs_blueprint
 from webui.routes.operations import create_operations_blueprint
@@ -72,6 +73,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         create_proxy_traffic_blueprint,
         create_codex_blueprint,
         create_integrations_blueprint,
+        create_extract_workbench_blueprint,
         create_health_blueprint,
     ):
         app.register_blueprint(factory(context))

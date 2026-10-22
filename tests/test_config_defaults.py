@@ -55,6 +55,17 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "https://ple.bzb.qzz.io",
         )
 
+    def test_extract_workbench_defaults_keep_legacy_and_disable_payment(self):
+        self.assertTrue(extract_link_config.EXTRACT_LINK_ENABLED)
+        self.assertEqual("legacy", extract_link_config.EXTRACT_LINK_DEFAULT_PROVIDER)
+        self.assertEqual("extract_only", extract_link_config.EXTRACT_LINK_DEFAULT_MODE)
+        self.assertTrue(extract_link_config.EXTRACT_LINK_LEGACY_ENABLED)
+        self.assertEqual(1, extract_link_config.EXTRACT_LINK_LEGACY_CONCURRENCY)
+        self.assertFalse(extract_link_config.EXTRACT_LINK_AUTO_PAYMENT_ENABLED)
+        self.assertFalse(extract_link_config.EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED)
+        self.assertFalse(extract_link_config.EXTRACT_LINK_LUMEN_FLOW_ENABLED)
+        self.assertFalse(extract_link_config.EXTRACT_LINK_HUANGUANG_ENABLED)
+
     def test_blank_env_value_uses_default_for_all_supported_types(self):
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True

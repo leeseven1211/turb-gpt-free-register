@@ -44,6 +44,12 @@ _DEPENDENCY_BATCH_SIZE = 32
 # task type, so adding a maintenance handler does not require another raw
 # scheduler thread.
 _DISPATCH_HANDLERS: dict[str, tuple[Callable[[int], Any], tuple[str, ...] | None]] = {}
+_DISPATCH_CAPACITY_HANDLERS: dict[
+    str,
+    tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]],
+] = {}
+_DISPATCH_CAPACITY_COUNTS: dict[tuple[str, str], int] = {}
+_DISPATCH_CAPACITY_LOCK = threading.RLock()
 _OPERATION_HANDLERS: dict[str, Callable[[OperationHandlerContext], Any]] = {}
 _OPERATION_ACTIONS: dict[str, dict[str, Callable[[Mapping[str, Any]], Any]]] = {}
 _OPERATION_ACTION_SOURCES: dict[str, tuple[str, ...] | None] = {}
@@ -615,6 +621,8 @@ def register_operation_handler(
     retry_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     cancel_handler: Callable[[Mapping[str, Any]], Any] | None = None,
     terminate_handler: Callable[[Mapping[str, Any]], Any] | None = None,
+    dispatch_capacity_key: Callable[[Mapping[str, Any]], Any] | None = None,
+    dispatch_capacity_limit: Callable[[Any], Any] | None = None,
 ) -> None:
     """Register the reusable context-based durable handler contract.
 
@@ -636,7 +644,13 @@ def register_operation_handler(
     def invoke(run_id: int, *, _task_type: str = name) -> Any:
         return _execute_operation_handler(_task_type, run_id)
 
-    register_dispatch_handler(name, invoke, source_systems=source_systems)
+    register_dispatch_handler(
+        name,
+        invoke,
+        source_systems=source_systems,
+        dispatch_capacity_key=dispatch_capacity_key,
+        dispatch_capacity_limit=dispatch_capacity_limit,
+    )
     # Maintenance adapters commonly only need to provide their execution
     # handler. Install the shared safe route actions at this boundary so a
     # newly migrated native type remains controllable from the task center.
@@ -1400,6 +1414,8 @@ def register_dispatch_handler(
     handler: Callable[[int], Any],
     *,
     source_systems: tuple[str, ...] | list[str] | None = ("native_operations",),
+    dispatch_capacity_key: Callable[[Mapping[str, Any]], Any] | None = None,
+    dispatch_capacity_limit: Callable[[Any], Any] | None = None,
 ) -> None:
     """Register a durable run handler by task type and source namespace.
 
@@ -1413,17 +1429,31 @@ def register_dispatch_handler(
         raise ValueError("task_type 不能为空")
     if not callable(handler):
         raise TypeError("task handler 必须可调用")
+    if (dispatch_capacity_key is None) != (dispatch_capacity_limit is None):
+        raise ValueError("dispatch capacity key 和 limit 必须同时提供")
+    if dispatch_capacity_key is not None and not callable(dispatch_capacity_key):
+        raise TypeError("dispatch capacity key 必须可调用")
+    if dispatch_capacity_limit is not None and not callable(dispatch_capacity_limit):
+        raise TypeError("dispatch capacity limit 必须可调用")
     allowed_sources = None if source_systems is None else tuple(
         str(item).strip() for item in source_systems if str(item).strip()
     )
     with _DISPATCH_HANDLER_LOCK:
         _DISPATCH_HANDLERS[name] = (handler, allowed_sources)
+        if dispatch_capacity_key is None:
+            _DISPATCH_CAPACITY_HANDLERS.pop(name, None)
+        else:
+            _DISPATCH_CAPACITY_HANDLERS[name] = (
+                dispatch_capacity_key,
+                dispatch_capacity_limit,
+            )
     _RUN_DISPATCH_WAKE.set()
 
 
 def unregister_dispatch_handler(task_type: str) -> None:
     with _DISPATCH_HANDLER_LOCK:
         _DISPATCH_HANDLERS.pop(str(task_type or "").strip(), None)
+        _DISPATCH_CAPACITY_HANDLERS.pop(str(task_type or "").strip(), None)
         _OPERATION_HANDLERS.pop(str(task_type or "").strip(), None)
         _OPERATION_HANDLER_ALLOWLISTS.pop(str(task_type or "").strip(), None)
         _OPERATION_ACTIONS.pop(str(task_type or "").strip(), None)
@@ -1451,14 +1481,58 @@ def release_dispatch(run_id: int) -> None:
     _RUN_DISPATCH_WAKE.set()
 
 
-def _run_handler_snapshot() -> dict[str, tuple[Callable[[int], Any], tuple[str, ...] | None]]:
+def _run_handler_snapshot() -> tuple[
+    dict[str, tuple[Callable[[int], Any], tuple[str, ...] | None]],
+    dict[str, tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]]],
+]:
     with _DISPATCH_HANDLER_LOCK:
-        return dict(_DISPATCH_HANDLERS)
+        return dict(_DISPATCH_HANDLERS), dict(_DISPATCH_CAPACITY_HANDLERS)
+
+
+def _reserve_dispatch_capacity(
+    task_type: str,
+    run: Mapping[str, Any],
+    handler: tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]] | None,
+) -> tuple[bool, tuple[str, str] | None]:
+    if handler is None:
+        return True, None
+    key_fn, limit_fn = handler
+    try:
+        raw_key = key_fn(run)
+        key = "" if raw_key is None else str(raw_key).strip()
+        limit = max(0, int(limit_fn(key)))
+    except (TypeError, ValueError, KeyError):
+        logger.warning("durable operation 容量配置无效：task_type=%s", task_type)
+        return False, None
+    except Exception:
+        logger.exception("读取 durable operation 容量配置失败：task_type=%s", task_type)
+        return False, None
+    if not key:
+        logger.warning("durable operation 容量 key 为空：task_type=%s", task_type)
+        return False, None
+    token = (task_type, key)
+    with _DISPATCH_CAPACITY_LOCK:
+        active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
+        if active >= limit:
+            return False, None
+        _DISPATCH_CAPACITY_COUNTS[token] = active + 1
+    return True, token
+
+
+def _release_dispatch_capacity(token: tuple[str, str] | None) -> None:
+    if token is None:
+        return
+    with _DISPATCH_CAPACITY_LOCK:
+        active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
+        if active <= 1:
+            _DISPATCH_CAPACITY_COUNTS.pop(token, None)
+        else:
+            _DISPATCH_CAPACITY_COUNTS[token] = active - 1
 
 
 def dispatch_registered_once(*, limit: int | None = None) -> int:
     """Submit a finite batch of registered durable runs through the budget."""
-    handlers = _run_handler_snapshot()
+    handlers, capacity_handlers = _run_handler_snapshot()
     if not handlers:
         return 0
     slots = _executor().available_slots()
@@ -1501,22 +1575,36 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
             continue
         if not reserve_dispatch(int(run["id"])):
             continue
+        capacity_reserved, capacity_token = _reserve_dispatch_capacity(
+            task_type,
+            run,
+            capacity_handlers.get(task_type),
+        )
+        if not capacity_reserved:
+            release_dispatch(int(run["id"]))
+            continue
         try:
             future = _executor().try_submit(handler, int(run["id"]))
         except Exception:
             release_dispatch(int(run["id"]))
+            _release_dispatch_capacity(capacity_token)
             logger.exception("提交 durable operation 失败：run_id=%s", run.get("id"))
             continue
         if future is None:
             release_dispatch(int(run["id"]))
+            _release_dispatch_capacity(capacity_token)
             break
         submitted += 1
         try:
             future.add_done_callback(
-                lambda _completed, run_id=int(run["id"]): release_dispatch(run_id)
+                lambda _completed, run_id=int(run["id"]), token=capacity_token: (
+                    release_dispatch(run_id),
+                    _release_dispatch_capacity(token),
+                )
             )
-        except AttributeError:
+        except Exception:
             release_dispatch(int(run["id"]))
+            _release_dispatch_capacity(capacity_token)
     return submitted
 
 

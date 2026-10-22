@@ -9,6 +9,7 @@
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -62,6 +63,10 @@
     <button type="button" data-tab="tasks" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h11M9 12h11M9 19h11"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></svg>
       <span class="sidebar-item-label">任务中心</span><span class="sidebar-item-meta">统一</span>
+    </button>
+    <button type="button" data-tab="extract-workbench" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h7"/><path d="m17 15 3 3-3 3"/><path d="M20 18h-6"/></svg>
+      <span class="sidebar-item-label">提链工作台</span>
     </button>
     <div class="sidebar-module" data-sidebar-module="outlook">
       <button type="button" data-tab="outlook" class="sidebar-item">
@@ -315,6 +320,47 @@
       <div class="jobs-v2-pager module-tasks-only" id="pager-jobs-v2"></div>
     </section>
   </div>
+
+  <section id="tab-extract-workbench" class="hidden" aria-labelledby="extractWorkbenchTitle">
+    <div class="extract-workbench-page" id="extractWorkbenchRoot">
+      <header class="extract-workbench-header">
+        <div><p class="extract-workbench-kicker">账号操作</p><h1 id="extractWorkbenchTitle">提链工作台</h1></div>
+        <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台">刷新</button>
+      </header>
+      <div class="extract-workbench-create">
+        <div class="extract-workbench-section-head"><div><h2>新建提链任务</h2><p>选择账号、平台和运行模式</p></div></div>
+        <div class="extract-workbench-create-controls">
+          <label>平台<select data-workbench-provider></select></label>
+          <label>运行模式<select data-workbench-mode></select></label>
+          <label>账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱"></label>
+          <button type="button" class="btn" data-workbench-search-accounts>查找账号</button>
+          <button type="button" class="btn btn-primary" data-workbench-create disabled>创建提链任务</button>
+        </div>
+        <div class="extract-workbench-account-results" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">正在加载可选账号…</p></div>
+        <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
+      </div>
+      <section class="extract-workbench-list" aria-labelledby="extractWorkbenchTasksTitle">
+        <div class="extract-workbench-section-head"><div><h2 id="extractWorkbenchTasksTitle">提链记录</h2><p data-workbench-summary>加载中…</p></div></div>
+        <div class="extract-workbench-filters">
+          <label>状态<select data-workbench-status>
+            <option value="">全部状态</option><option value="processing">处理中</option>
+            <option value="extraction_succeeded">成功出链</option><option value="payment_succeeded">成功支付</option>
+            <option value="plus_confirmed">Plus 已确认</option><option value="needs_attention">失败 / 待确认</option>
+          </select></label>
+          <label>平台<select data-workbench-filter-provider><option value="">全部平台</option></select></label>
+          <label>模式<select data-workbench-filter-mode><option value="">全部模式</option></select></label>
+          <label class="extract-workbench-search">账号搜索<input type="search" data-workbench-query placeholder="邮箱或账号"></label>
+          <button type="button" class="btn" data-workbench-apply-filters>筛选</button>
+        </div>
+        <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
+        <nav class="extract-workbench-pager" aria-label="提链任务分页">
+          <button type="button" class="btn" data-workbench-page="prev" disabled>上一页</button>
+          <span data-workbench-page-label>第 1 页</span>
+          <button type="button" class="btn" data-workbench-page="next" disabled>下一页</button>
+        </nav>
+      </section>
+    </div>
+  </section>
 
   <!-- ============ 账号 ============ -->
   <div id="tab-accounts" class="hidden" data-module-view="active">
@@ -937,5 +983,6 @@
 <script src="{{ url_for('static', filename='js/modern/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

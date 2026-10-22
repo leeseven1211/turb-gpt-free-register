@@ -1156,13 +1156,14 @@ const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
   tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
+  'extract-workbench': { title: '提链工作台', description: '管理提链、支付状态和 Plus 权益核验' },
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },
   codex: { title: 'Codex 授权', description: '管理 OAuth 凭证、归档与导出状态' },
   outlook: { title: '邮箱资源池', description: '统一维护注册邮箱素材及可用状态' },
   'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约、线路历史和请求流量' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
 };
-const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','proxy-traffic','config'];
+const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
 const NAV_HISTORY_KEY = 'gptConsoleNav';
 let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
@@ -1318,7 +1319,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
     item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
   });
-  const contentTabs = ['overview','register','accounts','codex','outlook','proxy-traffic','config'];
+  const contentTabs = ['overview','register','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
   const accountTab = $('#tab-accounts');
   if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
   if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
@@ -1350,6 +1351,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   }
   if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
+  if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, Number.MAX_SAFE_INTEGER);
   if (tab === 'register') refreshJobs({coalesce: true});
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();

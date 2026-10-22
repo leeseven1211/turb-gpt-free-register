@@ -542,7 +542,7 @@ function configSectionIntro(name) {
   if (name === '人工节奏') return '配置流程操作的随机停顿节奏，适用于协议全链路和浏览器操作。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
   if (name === '代理与网络') return '统一管理代理池来源、默认国家和库存策略；业务任务只提交用途与国家需求。';
-  if (name === '提链') return '提链服务地址、CDK 与并发参数。';
+  if (name === '提链') return '管理平台启用、默认模式、支付权限、平台凭据与并发。';
   return '';
 }
 function configFeatureIcon(key) {

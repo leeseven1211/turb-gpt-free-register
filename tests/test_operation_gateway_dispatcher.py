@@ -50,6 +50,103 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
 
         self.assertEqual([7001], submitted)
 
+    def test_provider_capacity_skips_full_provider_without_blocking_other_provider(self):
+        from core.operations import task_gateway
+
+        submitted = []
+        callbacks = []
+        completed = set()
+        rows = [
+            {"id": 7101, "task_type": "maintenance_capacity_test", "source_system": "native_operations", "data": {"provider_id": "lumen_flow"}},
+            {"id": 7102, "task_type": "maintenance_capacity_test", "source_system": "native_operations", "data": {"provider_id": "lumen_flow"}},
+            {"id": 7103, "task_type": "maintenance_capacity_test", "source_system": "native_operations", "data": {"provider_id": "huanguang"}},
+        ]
+
+        class Future:
+            def add_done_callback(self, callback):
+                callbacks.append(callback)
+
+        class Executor:
+            def available_slots(self):
+                return 3
+
+            def try_submit(self, handler, run_id):
+                submitted.append(int(run_id))
+                return Future()
+
+        operation = SimpleNamespace(
+            list_dispatchable_runs=lambda **_kwargs: [
+                row for row in rows if int(row["id"]) not in completed
+            ]
+        )
+        try:
+            with (
+                patch.object(task_gateway, "_operation", return_value=operation),
+                patch.object(task_gateway, "_executor", return_value=Executor()),
+            ):
+                task_gateway.register_dispatch_handler(
+                    "maintenance_capacity_test",
+                    lambda _run_id: None,
+                    dispatch_capacity_key=lambda run: run["data"]["provider_id"],
+                    dispatch_capacity_limit=lambda _key: 1,
+                )
+                self.assertEqual(2, task_gateway.dispatch_registered_once(limit=10))
+                self.assertEqual([7101, 7103], submitted)
+                completed.add(7101)
+                callbacks[0](None)
+                self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+                for callback in callbacks[1:]:
+                    callback(None)
+        finally:
+            task_gateway.unregister_dispatch_handler("maintenance_capacity_test")
+            for run_id in (7101, 7102, 7103):
+                task_gateway.release_dispatch(run_id)
+
+        self.assertEqual([7101, 7103, 7102], submitted)
+
+    def test_provider_capacity_is_released_when_executor_rejects_submission(self):
+        from core.operations import task_gateway
+
+        submitted = []
+        rows = [
+            {"id": 7201, "task_type": "maintenance_capacity_reject_test", "source_system": "native_operations", "data": {"provider_id": "lumen_flow"}},
+            {"id": 7202, "task_type": "maintenance_capacity_reject_test", "source_system": "native_operations", "data": {"provider_id": "lumen_flow"}},
+        ]
+
+        class Future:
+            def add_done_callback(self, callback):
+                callback(self)
+
+        class Executor:
+            def available_slots(self):
+                return 2
+
+            def try_submit(self, handler, run_id):
+                submitted.append(int(run_id))
+                if int(run_id) == 7201:
+                    raise RuntimeError("executor unavailable")
+                return Future()
+
+        operation = SimpleNamespace(list_dispatchable_runs=lambda **_kwargs: rows)
+        try:
+            with (
+                patch.object(task_gateway, "_operation", return_value=operation),
+                patch.object(task_gateway, "_executor", return_value=Executor()),
+            ):
+                task_gateway.register_dispatch_handler(
+                    "maintenance_capacity_reject_test",
+                    lambda _run_id: None,
+                    dispatch_capacity_key=lambda run: run["data"]["provider_id"],
+                    dispatch_capacity_limit=lambda _key: 1,
+                )
+                self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+        finally:
+            task_gateway.unregister_dispatch_handler("maintenance_capacity_reject_test")
+            for run_id in (7201, 7202):
+                task_gateway.release_dispatch(run_id)
+
+        self.assertEqual([7201, 7202], submitted)
+
     def test_dependency_dispatcher_has_one_persistent_thread(self):
         from core.operations import task_gateway
 
