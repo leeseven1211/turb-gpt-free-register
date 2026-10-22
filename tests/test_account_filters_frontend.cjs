@@ -26,13 +26,15 @@ function harness() {
   const controls = new Map();
   const view = {
     document: {getElementById: id => controls.get(id)},
-    LIST_FACET_LABELS: {}, URLSearchParams,
+    URLSearchParams,
     esc: value => String(value), attrEsc: value => String(value),
     refreshColumnFilterState() {}, renderColumnFilterOptions() {},
     SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
     accountAdvancedSearchQuery: '', PAGERS: {accounts: {page: 2, size: 20}},
   };
   vm.createContext(view);
+  const labelsStart = common.indexOf('const LIST_FACET_LABELS =');
+  vm.runInContext(common.slice(labelsStart, common.indexOf('\n};', labelsStart) + 3), view);
   vm.runInContext(common.slice(common.indexOf('function facetLabel('), common.indexOf('// ---------- 分页状态 ----------')), view);
   vm.runInContext([functionSource(common, 'columnFilterDisplayValue'), functionSource(accounts, 'getAccountsQuery'), functionSource(accounts, 'accountListQueryParams')].join('\n'), view);
   return {view, controls};
@@ -78,7 +80,7 @@ test('全部清除所有选项，条件标签回显全部所选值', () => {
 
 test('列表与轮询共用的查询参数包含每列全部选中值和分页条件', () => {
   const {view, controls} = harness();
-  for (const [id, values] of [['accountPlanFilterV2', ['free', 'unqueried']], ['accountSourceFilterV2', ['outlook', 'icloud_hide']], ['accountCodexFilterV2', ['success', 'failed']]]) {
+  for (const [id, values] of [['accountPlanFilterV2', ['free', 'unqueried']], ['accountSourceFilterV2', ['outlook', 'icloud_hide']], ['accountRegistrationDriverFilterV2', ['roxy', 'protocol_oss']], ['accountCodexFilterV2', ['success', 'failed']]]) {
     const control = select();
     controls.set(id, control);
     view.syncFacetSelect(id, values.map(value => ({value, count: 1})));
@@ -88,9 +90,23 @@ test('列表与轮询共用的查询参数包含每列全部选中值和分页�
   const params = view.accountListQueryParams();
   assert.equal(params.get('plan'), 'free,unqueried');
   assert.equal(params.get('source'), 'icloud_hide,outlook');
+  assert.equal(params.get('registration_driver'), 'protocol_oss,roxy');
   assert.equal(params.get('codex'), 'failed,success');
   assert.equal(params.get('email'), 'example.test');
   assert.equal(params.get('page'), '2');
+});
+
+test('注册驱动选项与显示名一致，包含未记录，多选回显且同步后保留条件', () => {
+  const {view, controls} = harness();
+  const control = select();
+  controls.set('accountRegistrationDriverFilterV2', control);
+  const rows = ['roxy', 'roxy_oss', 'protocol', 'protocol_oss', 'protocol_oss_2', 'unknown'].map(value => ({value, count: 1}));
+  view.syncFacetSelect('accountRegistrationDriverFilterV2', rows, {group: 'registration_driver'});
+  assert.deepEqual(control.options.map(option => option.textContent), ['全部', 'roxy · 1', 'roxy-public · 1', 'proto-local · 1', 'proto-public · 1', 'proto-sso · 1', '未记录 · 1']);
+  view.setColumnFilterValue(control, 'protocol_oss,unknown');
+  assert.equal(view.columnFilterDisplayValue({dataset: {filterType: 'select', columnFilter: 'accountRegistrationDriverFilterV2'}}), 'proto-public、未记录');
+  view.syncFacetSelect('accountRegistrationDriverFilterV2', rows.slice().reverse(), {group: 'registration_driver'});
+  assert.equal(view.columnFilterValue(control), 'protocol_oss,unknown');
 });
 
 test('套餐为空时与筛选统一显示未查询，有旧套餐时沿用旧值', () => {

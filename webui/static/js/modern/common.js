@@ -64,6 +64,10 @@ const LIST_FACET_LABELS = {
     outlook:'Outlook', generic_api:'通用 API', cloudflare_domain:'域名邮箱', cloudflare_temp:'Cloudflare 临时邮箱',
     icloud_hide:'iCloud 隐藏邮箱', email_butler:'Email Butler', gptmail:'GPTMail', mailnest:'MailNest', remail:'Remail', cloudmail:'CloudMail', mailcode:'域名邮箱 MailCode', xigua:'西瓜邮箱',
   },
+  registration_driver: {
+    roxy:'roxy', roxy_oss:'roxy-public', protocol:'proto-local',
+    protocol_oss:'proto-public', protocol_oss_2:'proto-sso', unknown:'未记录',
+  },
   token: {has:'有 Token', none:'无 Token'},
   account_token: {
     has:'正常', expired:'过期', invalid_401:'失效 · 401', invalid_403:'失效 · 403',

@@ -1123,7 +1123,7 @@ function accountListQueryParams() {
   const p = PAGERS.accounts;
   const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, q, date_from:dateFrom, date_to:dateTo});
   const accountFilters = {
-    id: 'accountIdFilterV2', source: 'accountSourceFilterV2', token: 'accountTokenFilterV2',
+    id: 'accountIdFilterV2', source: 'accountSourceFilterV2', registration_driver: 'accountRegistrationDriverFilterV2', token: 'accountTokenFilterV2',
     password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
   };
   Object.entries(accountFilters).forEach(([key, id]) => params.set(key, columnFilterValue(document.getElementById(id))));
@@ -1150,6 +1150,9 @@ async function loadAccounts() {
     renderAccountSearchTerms(res.search_terms || []);
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
+    syncFacetSelect('accountRegistrationDriverFilterV2', facets.registration_driver, {
+      group:'registration_driver', values:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','unknown'],
+    });
     syncFacetSelect('accountTokenFilterV2', facets.token, {
       group:'account_token',
       values:['has','expired','invalid_401','invalid_403','invalid_other','none'],
@@ -3103,7 +3106,7 @@ async function refreshAccountsList(btn) {
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);
   });
-  ['accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+  ['accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', reload);
   });
 
@@ -3114,7 +3117,7 @@ async function refreshAccountsList(btn) {
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
       setColumnFilterValue(document.getElementById(id), '');
     });
     syncSearch(); refreshColumnFilterStates(); apply();

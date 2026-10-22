@@ -217,7 +217,7 @@ def create_accounts_blueprint(context: WebUIContext):
         search_terms = parse_account_search(q)
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
+            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
@@ -292,7 +292,7 @@ def create_accounts_blueprint(context: WebUIContext):
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
+            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip()
         date_to = str(request.args.get("date_to", default="") or "").strip()

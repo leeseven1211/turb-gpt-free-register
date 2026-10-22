@@ -201,6 +201,18 @@ def _account_registration_driver_sql() -> str:
     )))"""
 
 
+def _account_registration_driver_filter_sql() -> str:
+    """筛选选项与列表五种驱动的显示一致，其余记录合并为未记录。"""
+    return f"""CASE {_account_registration_driver_sql()}
+        WHEN 'roxy' THEN 'roxy'
+        WHEN 'roxy_oss' THEN 'roxy_oss'
+        WHEN 'protocol' THEN 'protocol'
+        WHEN 'protocol_oss' THEN 'protocol_oss'
+        WHEN 'protocol_oss_2' THEN 'protocol_oss_2'
+        ELSE 'unknown'
+    END"""
+
+
 def _account_where(
     archived: str,
     plan: str,
@@ -268,6 +280,7 @@ def _account_where(
         params.extend((f"%{value}%", f"%{value}%"))
     enum_filters = {
         "source": "LOWER(COALESCE(a.email_source, ''))",
+        "registration_driver": _account_registration_driver_filter_sql(),
         "token": _ACCOUNT_TOKEN_STATE,
         "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
         "totp": f"CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END",
@@ -306,12 +319,13 @@ def list_accounts(
     base_where, base_params = _account_where(archived, "", "", "", "", {})
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
     # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
-    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开九个维度聚合；
+    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
     # 复杂 JSON/正则表达式只计算一遍。
     facet_sql = f"""
         WITH base AS MATERIALIZED (
             SELECT
                 LOWER(COALESCE(a.email_source, '')) AS source,
+                {_account_registration_driver_filter_sql()} AS registration_driver,
                 {_ACCOUNT_TOKEN_STATE} AS token,
                 CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
                 {_ACCOUNT_PLAN_VALUE} AS plan,
@@ -326,6 +340,7 @@ def list_accounts(
           FROM base b
           CROSS JOIN LATERAL (VALUES
               ('source', b.source),
+              ('registration_driver', b.registration_driver),
               ('token', b.token),
               ('password', b.password),
               ('plan', b.plan),

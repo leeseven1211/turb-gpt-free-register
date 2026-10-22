@@ -144,6 +144,21 @@ test('清筛同时移除高级搜索和列条件，不留下延迟请求', () =>
   assert.equal(requests[0].get('page'), '1');
 });
 
+test('注册驱动变更回到第一页并重载，清筛移除驱动和其他列条件', () => {
+  const {element, requests, flush} = harness();
+  const driver = element('accountRegistrationDriverFilterV2');
+  driver.value = 'protocol_oss,roxy';
+  driver.dispatch('change'); flush();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].get('registration_driver'), 'protocol_oss,roxy');
+  assert.equal(requests[0].get('page'), '1');
+  element('accountSourceFilterV2').value = 'icloud_hide';
+  element('btnResetAccountFiltersV2').dispatch('click'); flush();
+  assert.equal(driver.value, '');
+  assert.equal(requests.at(-1).get('registration_driver'), '');
+  assert.equal(requests.at(-1).get('source'), '');
+});
+
 test('切换搜索时丢弃旧请求结果，避免旧账号覆盖新条件', async () => {
   const {view, element} = harness();
   const pending = [];
