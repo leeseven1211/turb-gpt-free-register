@@ -58,9 +58,11 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             "items": [{
                 "task_id": 11,
                 "run_id": 22,
+                "account_id": 77,
                 "email": "person@example.test",
                 "provider_id": "lumen_flow",
                 "mode": "extract_only",
+                "link_type": "momo",
                 "task_status": "running",
                 "preflight_status": "passed",
                 "extraction_status": "running",
@@ -80,7 +82,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             "total": 1,
             "page": 2,
             "page_size": 25,
-            "counts": {"running": 1},
+            "counts": {"all": 3, "running": 1},
             "internal": "must-not-project",
         }
         with patch.object(
@@ -106,7 +108,9 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(1, payload["total"])
         self.assertEqual(2, payload["page"])
-        self.assertEqual({"running": 1}, payload["counts"])
+        self.assertEqual({"all": 3, "running": 1}, payload["counts"])
+        self.assertEqual(77, payload["items"][0]["account_id"])
+        self.assertEqual("momo", payload["items"][0]["link_type"])
         self.assertNotIn("access_token", payload["items"][0])
         self.assertNotIn("extract_link", payload["items"][0])
         self.assertNotIn("internal", payload)

@@ -1714,9 +1714,11 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     return {
         "task_id": int(row.get("task_id") or 0),
         "run_id": int(row.get("run_id") or 0) or None,
+        "account_id": int(row.get("account_id") or 0) or None,
         "email": str(row.get("email") or ""),
         "provider_id": provider_id,
         "mode": mode,
+        "link_type": str(data.get("link_type") or "")[:80],
         "task_status": task_status,
         "preflight_status": preflight,
         "extraction_status": extraction,
@@ -1742,6 +1744,8 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     plus = str(item.get("plus_status") or "")
     if status == "processing":
         return task_status in {"queued", "running", "waiting", "cancelling", "settling"} or extraction in {"queued", "running"}
+    if status == "running":
+        return task_status in {"running", "cancelling", "settling"} or extraction == "running"
     if status == "extraction_succeeded":
         return extraction == "success"
     if status == "payment_succeeded":
@@ -1864,7 +1868,9 @@ def list_workbench_tasks(
         for row in rows
     ]
     counts = {
+        "all": len(items),
         "processing": sum(_workbench_status_matches(item, "processing") for item in items),
+        "running": sum(_workbench_status_matches(item, "running") for item in items),
         "extraction_succeeded": sum(_workbench_status_matches(item, "extraction_succeeded") for item in items),
         "payment_succeeded": sum(_workbench_status_matches(item, "payment_succeeded") for item in items),
         "plus_confirmed": sum(_workbench_status_matches(item, "plus_confirmed") for item in items),

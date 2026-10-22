@@ -22,7 +22,7 @@ _LINK_KINDS = {"extract", "payment"}
 _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
 _ITEM_FIELDS = (
-    "task_id", "run_id", "email", "provider_id", "mode", "task_status",
+    "task_id", "run_id", "account_id", "email", "provider_id", "mode", "link_type", "task_status",
     "preflight_status", "extraction_status", "payment_status", "plus_status",
     "run_count", "progress", "created_at", "updated_at", "message", "error",
     "has_extract_link", "has_payment_link",

@@ -7,6 +7,44 @@ from unittest.mock import Mock, patch
 
 
 class ExtractLinkProviderFlowTests(unittest.TestCase):
+    def test_workbench_projection_keeps_account_reference_without_credentials(self):
+        from core import extract_link_service
+
+        item = extract_link_service._workbench_task_item({
+            "task_id": 17,
+            "run_id": 28,
+            "account_id": 77,
+            "task_data": {"provider_id": "lumen_flow", "link_type": "momo"},
+            "access_token": "must-not-project",
+        })
+
+        self.assertEqual(77, item["account_id"])
+        self.assertEqual("momo", item["link_type"])
+        self.assertNotIn("access_token", item)
+        self.assertNotIn("must-not-project", repr(item))
+
+    def test_workbench_counts_running_separately_from_queued_before_status_filter(self):
+        from core import extract_link_service
+
+        rows = [
+            {"task_id": task_id, "run_status": status}
+            for task_id, status in enumerate(("queued", "running", "settling", "cancelling", "waiting", "success"), 1)
+        ]
+        with (
+            patch("core.storage.extract_link_jobs.list_workbench_rows", return_value=rows) as list_rows,
+            patch.object(extract_link_service.db, "get_accounts_for_jobs", return_value={}),
+        ):
+            result = extract_link_service.list_workbench_tasks(
+                provider_id="lumen_flow", mode="extract_only", query="fixture", status="running",
+            )
+
+        list_rows.assert_called_once_with(provider_id="lumen_flow", mode="extract_only", query="fixture")
+        self.assertEqual(6, result["counts"]["all"])
+        self.assertEqual(5, result["counts"]["processing"])
+        self.assertEqual(3, result["counts"]["running"])
+        self.assertEqual(3, result["total"])
+        self.assertEqual({2, 3, 4}, {item["task_id"] for item in result["items"]})
+
     def test_legacy_provider_mode_reads_its_own_platform_switches(self):
         from core import extract_link_service
 

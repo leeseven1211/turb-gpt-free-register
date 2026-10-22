@@ -9,7 +9,7 @@
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-prototype') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -324,33 +324,23 @@
   <section id="tab-extract-workbench" class="hidden" aria-labelledby="extractWorkbenchTitle">
     <div class="extract-workbench-page" id="extractWorkbenchRoot">
       <header class="extract-workbench-header">
-        <div><p class="extract-workbench-kicker">账号操作</p><h1 id="extractWorkbenchTitle">提链工作台</h1></div>
-        <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台">刷新</button>
-      </header>
-      <div class="extract-workbench-create">
-        <div class="extract-workbench-section-head"><div><h2>新建提链任务</h2><p>选择账号、平台和运行模式</p></div></div>
-        <div class="extract-workbench-create-controls">
-          <label>平台<select data-workbench-provider></select></label>
-          <label>运行模式<select data-workbench-mode></select></label>
-          <label>账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱"></label>
-          <button type="button" class="btn" data-workbench-search-accounts>查找账号</button>
-          <button type="button" class="btn btn-primary" data-workbench-create disabled>创建提链任务</button>
+        <div>
+          <p class="extract-workbench-kicker">业务工作区 / Plus 流程</p>
+          <h1 id="extractWorkbenchTitle">提链工作台</h1>
+          <p class="extract-workbench-subtitle">查看出链、支付平台处理和 Plus 到账核实进度</p>
         </div>
-        <div class="extract-workbench-account-results" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">正在加载可选账号…</p></div>
-        <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
-      </div>
-      <section class="extract-workbench-list" aria-labelledby="extractWorkbenchTasksTitle">
-        <div class="extract-workbench-section-head"><div><h2 id="extractWorkbenchTasksTitle">提链记录</h2><p data-workbench-summary>加载中…</p></div></div>
-        <div class="extract-workbench-filters">
-          <label>状态<select data-workbench-status>
-            <option value="">全部状态</option><option value="processing">处理中</option>
-            <option value="extraction_succeeded">成功出链</option><option value="payment_succeeded">成功支付</option>
-            <option value="plus_confirmed">Plus 已确认</option><option value="needs_attention">失败 / 待确认</option>
-          </select></label>
-          <label>平台<select data-workbench-filter-provider><option value="">全部平台</option></select></label>
-          <label>模式<select data-workbench-filter-mode><option value="">全部模式</option></select></label>
-          <label class="extract-workbench-search">账号搜索<input type="search" data-workbench-query placeholder="邮箱或账号"></label>
-          <button type="button" class="btn" data-workbench-apply-filters>筛选</button>
+        <div class="extract-workbench-head-actions">
+          <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
+          <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建提链</button>
+        </div>
+      </header>
+      <section class="extract-workbench-list" aria-label="提链任务记录">
+        <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
+        <div class="extract-workbench-filters" role="search" aria-label="筛选提链任务">
+          <select data-workbench-filter-provider aria-label="按平台筛选"><option value="">全部平台</option></select>
+          <select data-workbench-filter-mode aria-label="按模式筛选"><option value="">全部模式</option></select>
+          <label class="extract-workbench-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><button type="button" data-workbench-apply-filters aria-label="搜索任务"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"></label>
+          <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
         </div>
         <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
         <nav class="extract-workbench-pager" aria-label="提链任务分页">
@@ -359,6 +349,24 @@
           <button type="button" class="btn" data-workbench-page="next" disabled>下一页</button>
         </nav>
       </section>
+      <dialog class="extract-workbench-create-dialog" data-workbench-create-dialog aria-labelledby="extractWorkbenchCreateTitle" aria-describedby="extractWorkbenchCreateHint">
+        <div class="extract-workbench-section-head">
+          <div><h2 id="extractWorkbenchCreateTitle">新建提链任务</h2><p id="extractWorkbenchCreateHint">选择账号、平台和运行模式，批量创建提链任务</p></div>
+          <button type="button" class="extract-workbench-dialog-close" data-workbench-close-create aria-label="关闭新建提链"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+        <div class="extract-workbench-create-controls">
+          <label>平台<select data-workbench-provider></select></label>
+          <label>运行模式<select data-workbench-mode></select></label>
+          <label class="extract-workbench-account-search">账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱" autocomplete="off"></label>
+          <button type="button" class="btn" data-workbench-search-accounts>查找账号</button>
+        </div>
+        <div class="extract-workbench-account-results" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">打开后加载可选账号</p></div>
+        <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
+        <div class="extract-workbench-dialog-footer">
+          <span data-workbench-selection-count>已选择 0 个账号</span>
+          <div><button type="button" class="btn" data-workbench-close-create>取消</button><button type="button" class="btn extract-workbench-primary" data-workbench-create disabled>创建提链任务</button></div>
+        </div>
+      </dialog>
     </div>
   </section>
 
@@ -983,6 +991,6 @@
 <script src="{{ url_for('static', filename='js/modern/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-prototype') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>
