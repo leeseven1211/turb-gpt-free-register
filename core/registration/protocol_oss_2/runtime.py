@@ -120,11 +120,25 @@ def run_upstream_protocol(
     from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
-    from core.registration_service import StopRequested, check_stop_requested, report_job_progress
+    from core.registration_service import (
+        StopRequested, check_stop_requested, registration_fact_context, report_job_progress,
+    )
+
+    password_confirmed = False
+    if existing_password:
+        from core.storage import registration
+
+        facts = registration_fact_context()
+        if facts.get("attempt_id") is not None:
+            private = registration.get_private_resume_context(int(facts["attempt_id"]), email=email)
+            saved_password = private.get("password")
+            if saved_password and saved_password != existing_password:
+                raise RuntimeError("原 Attempt 的恢复密码不一致，已停止")
+            password_confirmed = bool(saved_password) and private.get("password_state") == "confirmed"
 
     context = {
         "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [],
-        "password_started": False, "password_confirmed": False,
+        "password_started": False, "password_confirmed": password_confirmed,
         "profile_started": False, "write_unknown": False, "session_info": {},
     }
 
@@ -158,6 +172,16 @@ def run_upstream_protocol(
             )
 
     class LocalAuthFlow(AuthFlow):
+        def register_password(self, address):
+            if context["password_confirmed"]:
+                # 原 Attempt 已有远端确认，续跑沿用原密码并进入邮箱认证分支。
+                progress("password", "skipped", "复用原任务已确认的账号密码，本次不重复提交密码注册")
+                return False
+            accepted = super().register_password(address)
+            if not accepted:
+                progress("password", "failed", "上游未接受密码注册，继续通过原邮箱验证")
+            return accepted
+
         def _random_password(self):
             if existing_password:
                 # 上次可能停在提交前；远端仍走新注册时复用原密码完成该请求。

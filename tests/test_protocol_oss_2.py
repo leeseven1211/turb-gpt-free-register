@@ -21,6 +21,7 @@ class Transport:
         self.checkpoints = []
         self.password_error = None
         self.password_status = 200
+        self.progress_events = []
         self.otp_payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
         self.closed = False
 
@@ -68,7 +69,8 @@ def upstream():
         stack.enter_context(patch.object(AuthFlow, "fetch_client_auth_session_dump", return_value={}))
         stack.enter_context(patch.object(AuthFlow, "follow_redirect_chain", return_value=(None, "https://chatgpt.com/")))
         stack.enter_context(patch("core.registration_service.check_stop_requested"))
-        stack.enter_context(patch("core.registration_service.report_job_progress"))
+        stack.enter_context(patch("core.registration_service.report_job_progress", side_effect=lambda *event: transport.progress_events.append(event)))
+        stack.enter_context(patch("core.registration_service.registration_fact_context", return_value={}))
         stack.enter_context(patch("core.registration_debug.record_protocol_exchange"))
         stack.enter_context(patch("core.registration.checkpoints.save_protocol_password_checkpoint", side_effect=lambda **kw: transport.checkpoints.append(kw)))
         wait = stack.enter_context(patch("core.email_provider.wait_for_otp", return_value="123456"))
@@ -120,6 +122,7 @@ def test_password_transport_failure_retains_original_password_for_retry(upstream
         run_flow(session)
     assert [row["state"] for row in transport.checkpoints] == ["prepared", "started"]
     assert sum(url.endswith("/user/register") for _, url, _ in transport.requests) == 1
+    assert [state for stage, state, _ in transport.progress_events if stage == "password"] == ["running"]
     assert transport.closed is True
 
 
@@ -158,6 +161,60 @@ def test_rejected_password_is_not_presented_as_a_confirmed_credential(upstream):
     assert result["access_token"] == "fixture-at"
     assert result["registration_password"] is None
     assert result["password_validated"] is False
+    assert [state for stage, state, _ in transport.progress_events if stage == "password"] == ["running", "failed"]
+
+
+@pytest.mark.parametrize("password_state, validated", [("prepared", False), ("started", False), ("confirmed", True)])
+def test_resume_only_inherits_a_matching_confirmed_password(upstream, password_state, validated):
+    session, transport, _ = upstream
+    transport.password_status = 400
+    transport.otp_payload = {
+        "page": {"type": "external_url"},
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture",
+    }
+    with (
+        patch("core.registration_service.registration_fact_context", return_value={"attempt_id": 42}),
+        patch("core.storage.registration.get_private_resume_context", return_value={
+            "password": "original-password", "password_state": password_state,
+        }),
+    ):
+        result = run_flow(session, existing_password="original-password")
+    assert result["access_token"] == "fixture-at"
+    assert result["password_validated"] is validated
+    assert result["registration_password"] == ("original-password" if validated else None)
+    writes = [request for request in transport.requests if request[1].endswith("/user/register")]
+    assert len(writes) == (0 if validated else 1)
+    assert [state for stage, state, _ in transport.progress_events if stage == "password"] == (
+        ["skipped"] if validated else ["running", "failed"]
+    )
+
+
+def test_resume_rejects_a_password_that_does_not_match_the_original_attempt(upstream):
+    session, transport, _ = upstream
+    with (
+        patch("core.registration_service.registration_fact_context", return_value={"attempt_id": 42}),
+        patch("core.storage.registration.get_private_resume_context", return_value={
+            "password": "another-password", "password_state": "confirmed",
+        }),
+    ):
+        with pytest.raises(RuntimeError, match="恢复密码不一致"):
+            run_flow(session, existing_password="original-password")
+    assert transport.requests == []
+
+
+def test_existing_password_without_confirmation_stays_unconfirmed_on_otp_login(upstream):
+    session, transport, _ = upstream
+
+    def existing(flow, *args, **kwargs):
+        flow._is_existing_account = True
+        flow._existing_email_verification_mode = "passwordless_login"
+        return False
+
+    with patch.object(AuthFlow, "signup", existing):
+        result = run_flow(session, existing_password="original-password")
+    assert result["access_token"] == "fixture-at"
+    assert result["password_validated"] is False
+    assert result["registration_password"] is None
 
 
 def test_login_callback_after_password_rejection_does_not_create_account_again(upstream):

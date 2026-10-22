@@ -13,7 +13,7 @@ FLOW_VERSION = 2
 
 # 注册页面、邮箱、凭证准备、密码和验证码是同一认证主步骤中的独立阶段。
 REGISTRATION_AUTH_STAGES = (
-    "page", "submit_email", "auth_redirect", "login", "credential_prepare", "login_password", "email_otp",
+    "page", "submit_email", "auth_redirect", "login", "credential_prepare", "password", "login_password", "email_otp",
 )
 
 
@@ -72,6 +72,7 @@ STAGES: dict[str, dict[str, str]] = {
     "submit_email": {"label": "提交邮箱", "group": "identity"},
     "auth_redirect": {"label": "进入认证", "group": "identity"},
     "credential_prepare": {"label": "准备注册凭证", "group": "identity"},
+    "password": {"label": "提交注册密码", "group": "identity"},
     "login_password": {"label": "账号密码", "group": "identity"},
     "mfa_challenge": {"label": "TOTP MFA", "group": "identity"},
     "email_otp": {"label": "邮箱验证", "group": "identity"},

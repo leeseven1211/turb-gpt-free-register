@@ -761,6 +761,106 @@ def test_registration_credential_prepare_is_a_labeled_authentication_child():
     assert not any(step["id"] == "unknown:credential_prepare" for step in snapshot["main_steps"])
 
 
+def test_registration_password_is_a_labeled_authentication_child():
+    events = [
+        _event("password-start", "password", "running", created_at="2026-10-22T03:00:00Z"),
+        _event("password-done", "password", "success", created_at="2026-10-22T03:00:10Z"),
+        _event("otp-done", "email_otp", "success", created_at="2026-10-22T03:00:20Z"),
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("success"), events)
+        authenticate = _step(snapshot, "authenticate")
+        assert "password" in [child["id"] for child in authenticate["children"]]
+        password = next(child for child in authenticate["children"] if child["id"] == "password")
+
+        assert password["label"] == "提交注册密码"
+        assert password["display_status"] == "success"
+        assert password["event_ids"] == ["password-start", "password-done"]
+        assert password["started_at"] == "2026-10-22T03:00:00Z"
+        assert password["completed_at"] == "2026-10-22T03:00:10Z"
+        assert password["duration_ms"] == 10000
+        assert password["attempts"][1]["raw_stage"] == "password"
+        assert password["attempts"][1]["raw_stage_label"] == "提交注册密码"
+        assert authenticate["state"] == "success"
+        assert not any(step["id"] == "unknown:password" for step in snapshot["main_steps"])
+
+
+def test_historical_registration_password_running_is_not_fabricated_as_success():
+    started_at = "2026-10-22T03:00:00Z"
+    for task_type in ("registration", "registration_resume"):
+        for source in ("events", "progress_steps"):
+            for later_stage, expected_display in ((None, "unconfirmed"), ("token", "record_incomplete")):
+                run = _run("success")
+                events = []
+                if source == "events":
+                    events.append(_event("password-start", "password", "running", created_at=started_at))
+                else:
+                    run["progress_steps"] = {"password": {"state": "running", "started_at": started_at}}
+                if later_stage:
+                    events.append(_event("token-done", later_stage, "success", created_at="2026-10-22T03:00:20Z"))
+
+                snapshot = build_progress_snapshot(1, 2, task_type, run, events)
+                authenticate = _step(snapshot, "authenticate")
+                assert "password" in [child["id"] for child in authenticate["children"]]
+                password = next(child for child in authenticate["children"] if child["id"] == "password")
+
+                assert password["label"] == "提交注册密码"
+                assert password["state"] == "pending"
+                assert password["display_status"] == expected_display
+                assert password["evidence"] == "unconfirmed"
+                assert password["started_at"] == started_at
+                assert password["completed_at"] is None
+                assert password["duration_ms"] is None
+                assert len(password["attempts"]) == 1
+                assert password["attempts"][0]["state"] == "running"
+                assert authenticate["state"] == "pending"
+                assert authenticate["display_status"] == expected_display
+                assert not any(step["id"] == "unknown:password" for step in snapshot["main_steps"])
+                assert snapshot["outcome"]["status"] == "success"
+
+
+def test_registration_password_failure_retains_authentication_failure_location():
+    events = [
+        _event("password-start", "password", "running", created_at="2026-10-22T03:00:00Z"),
+        _event("password-failed", "password", "failed", created_at="2026-10-22T03:00:10Z",
+               message="注册密码提交失败", detail={"error_code": "password_registration_failed"}),
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("failed", progress_stage="password"), events)
+        authenticate = _step(snapshot, "authenticate")
+        assert "password" in [child["id"] for child in authenticate["children"]]
+        password = next(child for child in authenticate["children"] if child["id"] == "password")
+
+        assert password["state"] == password["display_status"] == "failed"
+        assert password["completed_at"] == "2026-10-22T03:00:10Z"
+        assert password["event_ids"] == ["password-start", "password-failed"]
+        assert authenticate["state"] == "failed"
+        assert snapshot["failure"]["step_id"] == "authenticate"
+        assert snapshot["failure"]["event_id"] == "password-failed"
+        assert password["attempts"][-1]["error_code"] == "password_registration_failed"
+        assert not any(step["id"] == "unknown:password" for step in snapshot["main_steps"])
+
+
+def test_registration_reused_password_skips_submission_without_failing_authentication():
+    events = [
+        _event("password-reused", "password", "skipped", created_at="2026-10-22T03:00:00Z",
+               message="复用已确认的注册密码"),
+        _event("otp-done", "email_otp", "success", created_at="2026-10-22T03:00:20Z"),
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("success"), events)
+        authenticate = _step(snapshot, "authenticate")
+        assert "password" in [child["id"] for child in authenticate["children"]]
+        password = next(child for child in authenticate["children"] if child["id"] == "password")
+
+        assert password["state"] == password["display_status"] == "skipped"
+        assert password["event_ids"] == ["password-reused"]
+        assert password["message"] == "复用已确认的注册密码"
+        assert authenticate["state"] == "success"
+        assert snapshot["failure"] is None
+        assert not any(step["id"] == "unknown:password" for step in snapshot["main_steps"])
+
+
 def test_legacy_progress_steps_preserve_evidence_without_events():
     run = _run("running")
     run["progress_steps"] = {
