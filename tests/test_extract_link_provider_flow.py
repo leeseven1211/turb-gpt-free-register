@@ -412,7 +412,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
                 "job_id": "existing-order",
                 "public_state": {"extraction_state": "succeeded", "payment_state": "unknown"},
             }),
-            patch("core.storage.operation.retry_runtime_task", return_value={"run": {"id": 33}}) as retry,
+            patch("core.storage.operation.retry_runtime_task", return_value={"id": 33}) as retry,
             patch.object(extract_link_service.account_task_store, "notify_dispatch") as notify,
             patch.object(extract_link_service.db, "claim_account_extract") as claim,
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
@@ -422,6 +422,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             result = extract_link_service.perform_extract_workbench_action(11, "retry")
 
         self.assertTrue(result["accepted"])
+        self.assertEqual(33, result["run_id"])
         payload = retry.call_args.kwargs["data"]
         self.assertEqual("sync_status", payload["workbench_action"])
         self.assertEqual(22, payload["provider_job_run_id"])
@@ -445,7 +446,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         with (
             patch("core.storage.operation.get_task", return_value=task),
             patch("core.storage.extract_link_jobs.get_provider_job_public", return_value=None),
-            patch("core.storage.operation.retry_runtime_task", return_value={"run": {"id": 34}}) as retry,
+            patch("core.storage.operation.retry_runtime_task", return_value={"id": 34}) as retry,
             patch.object(extract_link_service.account_task_store, "notify_dispatch"),
             patch.object(extract_link_service.db, "claim_account_extract", return_value=True) as claim,
             patch.object(extract_link_service.db, "update_account_extract"),
@@ -456,6 +457,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             result = extract_link_service.perform_extract_workbench_action(12, "retry")
 
         self.assertTrue(result["accepted"])
+        self.assertEqual(34, result["run_id"])
         payload = retry.call_args.kwargs["data"]
         self.assertEqual("create", payload["workbench_action"])
         self.assertEqual("extract_only", payload["mode"])

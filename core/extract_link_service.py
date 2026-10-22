@@ -2050,7 +2050,12 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
                 "error": "提链重跑未能入队",
             })
         raise
-    run = submitted.get("run") if isinstance(submitted.get("run"), dict) else {}
+    if isinstance(submitted, dict) and isinstance(submitted.get("run"), dict):
+        run = submitted["run"]
+    elif isinstance(submitted, dict) and submitted.get("id"):
+        run = submitted
+    else:
+        run = {}
     if not run:
         return {"accepted": False}
     account_task_store.notify_dispatch()
