@@ -26,7 +26,7 @@ function pagerHarness() {
 }
 
 function createResizableTable(key, savedWidths, savedTotal, options = {}) {
-  const count = key === 'accounts' ? 15 : 10;
+  const count = key === 'accounts' ? 16 : 10;
   const layoutStorageKey = 'gpt_console_accounts_columns_v2';
   const columns = Array.from({length: count}, () => ({style: {}}));
   const listeners = new Map();
@@ -106,8 +106,47 @@ test('账号分页默认 10 条，其他表仍默认 20 条且无效重置不退
   assert.match(elements.get('pager-accounts-v2').innerHTML, /10条\/页/);
 });
 
+test('账号表首次加载时注册驱动列默认 104px，整表宽度为 1500px', () => {
+  const result = createResizableTable('accounts', null, 0);
+  assert.equal(result.columns.length, 16);
+  assertPixels(result.table.getBoundingClientRect().width, 1500);
+  assertPixels(pixelWidths(result.table)[4], 104);
+});
+
+test('历史 15 列缓存插入注册驱动列，保留用户列宽并在刷新后稳定', () => {
+  const pixels = [36, 55, 233, 93, 86, 97, 62, 110, 122, 176, 61, 90, 88, 75, 600];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const result = createResizableTable('accounts', pixels.map(width => width / total), total, {layoutVersion: true});
+  const expected = [...pixels];
+  expected.splice(4, 0, 104);
+  pixelWidths(result.table).forEach((width, index) => assertPixels(width, expected[index], `升级后第 ${index} 列`));
+  assertPixels(result.table.getBoundingClientRect().width, total + 104);
+  assert.equal(JSON.parse(result.storage.get('gpt_console_table_widths_accounts')).length, 16);
+
+  const reloaded = createResizableTable(
+    'accounts',
+    JSON.parse(result.storage.get('gpt_console_table_widths_accounts')),
+    Number(result.storage.get('gpt_console_table_total_accounts')),
+    {layoutVersion: true},
+  );
+  pixelWidths(reloaded.table).forEach((width, index) => assertPixels(width, expected[index], `刷新后第 ${index} 列`));
+  assertPixels(reloaded.table.getBoundingClientRect().width, total + 104);
+});
+
+test('历史 15 列旧拖动布局先清理操作列再插入驱动列，其余列宽不变', () => {
+  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 300];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const result = createResizableTable('accounts', pixels, total, {layoutVersion: '1'});
+  const expected = [...pixels];
+  expected[expected.length - 1] = 108;
+  expected.splice(4, 0, 104);
+  pixelWidths(result.table).forEach((width, index) => assertPixels(width, expected[index], `兼容升级后第 ${index} 列`));
+  assertPixels(result.table.getBoundingClientRect().width, total - 300 + 108 + 104);
+  assert.equal(result.storage.get(result.layoutStorageKey), '2');
+});
+
 test('账号 Codex 列独立调宽，创建时间与操作列保持像素宽度', () => {
-  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
+  const pixels = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
   const total = pixels.reduce((sum, width) => sum + width, 0);
   const table = createResizableTable('accounts', pixels.map(width => width / total), total);
   const before = pixelWidths(table.table);
@@ -128,7 +167,7 @@ test('账号 Codex 列独立调宽，创建时间与操作列保持像素宽度'
 });
 
 test('账号列大幅调宽时同步扩表，其他列宽度保存重载后保持一致', () => {
-  const pixels = [100, 200, 100, 100, 100, 50, 50, 50, 50, 50, 50, 25, 25, 25, 25];
+  const pixels = [100, 200, 100, 100, 50, 50, 50, 50, 50, 50, 50, 50, 25, 25, 25, 25];
   const ratios = pixels.map(width => width / 1000);
   const first = createResizableTable('accounts', ratios, 1000);
   const before = pixelWidths(first.table);
@@ -152,7 +191,7 @@ test('账号列大幅调宽时同步扩表，其他列宽度保存重载后保�
 });
 
 test('未标记的历史超宽操作列只迁移一次，并保持其余列像素宽度', () => {
-  const defaultPrefix = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
+  const defaultPrefix = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
   const prefixScale = 1406.72 / defaultPrefix.reduce((sum, value) => sum + value, 0);
   const historicalPixels = defaultPrefix.map(value => value * prefixScale).concat(696.28);
   const historicalRatios = historicalPixels.map(value => value / 2103);
@@ -180,7 +219,7 @@ test('未标记的历史超宽操作列只迁移一次，并保持其余列像�
 });
 
 test('已标记的新布局允许用户把操作列调到 600px，刷新后不会再次压缩', () => {
-  const prefix = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
+  const prefix = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
   const pixels = prefix.concat(600);
   const total = pixels.reduce((sum, value) => sum + value, 0);
   const first = createResizableTable('accounts', pixels.map(value => value / total), total, {layoutVersion: true});
@@ -201,7 +240,7 @@ test('已标记的新布局允许用户把操作列调到 600px，刷新后不�
 });
 
 test('未标记但末列不明显过宽的历史布局保持原比例', () => {
-  const prefix = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
+  const prefix = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96];
   const prefixScale = 800 / prefix.reduce((sum, value) => sum + value, 0);
   const pixels = prefix.map(value => value * prefixScale).concat(200);
   const total = pixels.reduce((sum, value) => sum + value, 0);
@@ -214,7 +253,7 @@ test('未标记但末列不明显过宽的历史布局保持原比例', () => {
 });
 
 test('账号列向左拖动同步缩表并保留邻列宽度，其他表保持相邻列拖动', () => {
-  const savedRatios = [0.1, 0.2, 0.1, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.025, 0.025, 0.025, 0.025];
+  const savedRatios = [0.1, 0.2, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.025, 0.025, 0.025, 0.025];
   const account = createResizableTable('accounts', savedRatios, 1000);
   const tinyIdRatio = [...savedRatios];
   tinyIdRatio[1] = 0.001;
@@ -237,9 +276,9 @@ test('账号列向左拖动同步缩表并保留邻列宽度，其他表保持�
 });
 
 test('额度和套餐优惠分别调整后其他列像素宽度不变，保存重载保持调整结果', () => {
-  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
+  const pixels = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
   const total = pixels.reduce((sum, width) => sum + width, 0);
-  for (const [index, delta] of [[8, -40], [9, 60]]) {
+  for (const [index, delta] of [[9, -40], [10, 60]]) {
     const result = createResizableTable('accounts', pixels.map(width => width / total), total, {layoutVersion: true});
     result.headers[index].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
     result.listeners.get('pointermove')({clientX: 100 + delta});
@@ -264,7 +303,7 @@ test('额度和套餐优惠分别调整后其他列像素宽度不变，保存�
 });
 
 test('账号表最后操作列也可大幅调宽，并保持其他列像素宽度', () => {
-  const pixels = [100, 200, 100, 100, 100, 50, 50, 50, 50, 50, 50, 25, 25, 25, 25];
+  const pixels = [100, 200, 100, 100, 50, 50, 50, 50, 50, 50, 50, 50, 25, 25, 25, 25];
   const table = createResizableTable('accounts', pixels.map(width => width / 1000), 1000);
   const before = pixelWidths(table.table);
   const last = table.headers.length - 1;
@@ -281,7 +320,7 @@ test('账号表最后操作列也可大幅调宽，并保持其他列像素宽�
 });
 
 test('旧相邻拖动布局清理操作列残留空白，保留前面列宽并在刷新后稳定', () => {
-  const saved = [0.03110207, 0.03987567, 0.13956959, 0.05410544, 0.05102565, 0.05344955, 0.04367788, 0.05344955, 0.04127298, 0.08696603, 0.04357332, 0.07112983, 0.05385829, 0.09039752, 0.14654664];
+  const saved = [0.03110207, 0.03987567, 0.08956959, 0.05410544, 0.05, 0.05102565, 0.05344955, 0.04367788, 0.05344955, 0.04127298, 0.08696603, 0.04357332, 0.07112983, 0.05385829, 0.09039752, 0.14654664];
   const total = 1643.7813;
   const sum = saved.reduce((value, width) => value + width, 0);
   const original = saved.map(value => value / sum * total);
@@ -297,7 +336,7 @@ test('旧相邻拖动布局清理操作列残留空白，保留前面列宽并�
 });
 
 test('旧布局中的紧凑末列升级时不被放大', () => {
-  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 60];
+  const pixels = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 60];
   const total = pixels.reduce((sum, width) => sum + width, 0);
   const result = createResizableTable('accounts', pixels, total, {layoutVersion: '1'});
   pixelWidths(result.table).forEach((width, index) => assertPixels(width, pixels[index]));
@@ -305,7 +344,7 @@ test('旧布局中的紧凑末列升级时不被放大', () => {
 });
 
 test('收窄创建列同步缩表且不扩大操作列，同次拖回原位可还原', () => {
-  const pixels = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 148, 108];
+  const pixels = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 148, 108];
   const total = pixels.reduce((sum, width) => sum + width, 0);
   const result = createResizableTable('accounts', pixels, total, {layoutVersion: true});
   const index = pixels.length - 2;

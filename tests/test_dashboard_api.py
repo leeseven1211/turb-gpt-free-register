@@ -17,6 +17,17 @@ class DashboardUiScriptTests(unittest.TestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/common.js"
     MODERN_CODEX_JS = Path(__file__).resolve().parents[1] / "webui/static/js/modern/codex.js"
 
+    def test_compact_account_keeps_registration_driver_without_private_metadata(self):
+        from webui.route_helpers import _compact_account_for_list
+
+        compact = _compact_account_for_list({
+            "id": 1, "email": "driver@example.test", "registration_driver": "protocol_oss_2",
+            "extra_json": '{"account_password":"private-password"}', "access_token": "private-token",
+        })
+        self.assertEqual(compact["registration_driver"], "protocol_oss_2")
+        self.assertNotIn("extra_json", compact)
+        self.assertNotIn("access_token", compact)
+
     def test_dashboard_proxy_platform_labels_follow_current_source_and_keep_legacy_aliases(self):
         source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
         function_source = source[:source.index("function renderDashboard")]

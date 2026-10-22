@@ -379,7 +379,7 @@ const ACCOUNT_COLUMN_LAYOUT_VERSION = '2';
 const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
-  accounts: [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
+  accounts: [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
@@ -424,7 +424,7 @@ function resetResizableTable(key) {
   if (key === 'accounts') localStorage.removeItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
   table.dataset.autoSized = '0';
   table.style.removeProperty('width');
-  if (key === 'accounts') table.style.setProperty('width', '1396px', 'important');
+  if (key === 'accounts') table.style.setProperty('width', '1500px', 'important');
   applyResizableTableWidths(table, TABLE_DEFAULT_WIDTHS[key]);
   showToast('已恢复默认列宽');
 }
@@ -476,20 +476,22 @@ function initResizableTable(table) {
   const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
   if (!key || !cols.length || cols.length !== headers.length) return;
   table.dataset.resizableReady = '1';
-  const savedWidths = readSavedTableWidths(key, cols.length);
+  const savedWidths = readSavedTableWidths(key, cols.length)
+    || (key === 'accounts' && cols.length === 16 ? readSavedTableWidths(key, 15) : null);
   if (savedWidths && key === 'accountTasks') {
     table.style.removeProperty('width');
   }
   let effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
   if (key === 'accounts') {
-    let tableWidth = readSavedTableTotal(key) || 1396;
+    const needsDriverColumn = savedWidths?.length === 15 && cols.length === 16;
+    let tableWidth = readSavedTableTotal(key) || (needsDriverColumn ? 1396 : 1500);
     const layoutVersion = localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
     if (savedWidths && layoutVersion !== ACCOUNT_COLUMN_LAYOUT_VERSION) {
       const weights = savedWidths.map(value => Math.max(0, Number(value) || 0));
       const weightTotal = weights.reduce((sum, value) => sum + value, 0);
       const lastIndex = weights.length - 1;
       const actionWidth = weightTotal > 0 ? weights[lastIndex] / weightTotal * tableWidth : 0;
-      const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts[lastIndex];
+      const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts.at(-1);
       // 旧相邻拖动布局会把创建列收窄的空间转给操作列；升级时清理一次，
       // 保留前面各列的像素宽度。新版本中主动拖宽的末列继续正常记忆。
       const hasTransferredSpace = layoutVersion === '1' && actionWidth > defaultActionWidth;
@@ -501,6 +503,14 @@ function initResizableTable(table) {
         saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
       }
       localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, ACCOUNT_COLUMN_LAYOUT_VERSION);
+    }
+    if (needsDriverColumn) {
+      // 先还原历史列的像素宽度，再插入注册驱动列，避免后续列错位或被压缩。
+      const weightTotal = effectiveWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+      effectiveWidths = effectiveWidths.map(value => weightTotal > 0 ? Math.max(0, Number(value) || 0) / weightTotal * tableWidth : 0);
+      effectiveWidths.splice(4, 0, TABLE_DEFAULT_WIDTHS.accounts[4]);
+      tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
+      saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
     }
     table.style.setProperty('width', `${tableWidth}px`, 'important');
   }

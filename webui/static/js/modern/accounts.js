@@ -1189,7 +1189,7 @@ async function loadAccounts() {
       renderAccounts();
       return;
     }
-    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(15, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
+    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(16, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);
   }
   finally {
@@ -2593,6 +2593,15 @@ document.addEventListener('keydown', event => {
     closeAccountDetail();
   }
 });
+function accountRegistrationDriverLabel(value) {
+  return ({
+    roxy: 'roxy',
+    roxy_oss: 'roxy-public',
+    protocol: 'proto-local',
+    protocol_oss: 'proto-public',
+    protocol_oss_2: 'proto-sso',
+  })[String(value || '').trim().toLowerCase()] || '未记录';
+}
 function renderAccounts() {
   const openMoreId = getOpenAccountsV2MoreId();
   const total = ACCOUNTS_TOTAL;
@@ -2611,6 +2620,7 @@ function renderAccounts() {
         <div class="acc-v2-sub account-cell-line account-cell-line--sub">${esc(r.user_name || '-')}</div>
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
+      <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
       <td class="col-token">${_tokenCellV2(r)}</td>
       <td class="col-account-status">${_accountStatusCellV2(r)}</td>
       <td class="col-small">${_passwordCellV2(r)}</td>
@@ -2636,8 +2646,8 @@ function renderAccounts() {
   const bodyV2 = $('#accountsBodyV2');
   if (bodyV2) {
     bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || (accountSearchErrorQuery === accountAdvancedSearchQuery
-      ? renderTableStateRow(15, '搜索条件有误', '请按输入框旁的提示修改，或清空高级搜索。', 'error')
-      : renderTableStateRow(15, '暂无匹配账号', '可移除部分搜索条件，或切换活跃与归档账号视图。'));
+      ? renderTableStateRow(16, '搜索条件有误', '请按输入框旁的提示修改，或清空高级搜索。', 'error')
+      : renderTableStateRow(16, '暂无匹配账号', '可移除部分搜索条件，或切换活跃与归档账号视图。'));
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   const summary = $('#accountsPageSummary');

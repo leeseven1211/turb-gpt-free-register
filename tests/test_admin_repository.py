@@ -159,6 +159,40 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(status["total"], 1)
         self.assertEqual(status["items"][0]["id"], protocol_id)
 
+    def test_account_registration_driver_projects_metadata_then_latest_registration_job(self):
+        expected = {}
+        for name, metadata, drivers, driver in (
+            ("top-level", {"registration_driver": " ROXY ", "extra_json": {"registration_driver": "protocol"}}, ["protocol_oss"], "roxy"),
+            ("extra-object", {"extra_json": {"registration_driver": "roxy_oss", "account_password": "private-value"}}, ["protocol"], "roxy_oss"),
+            ("extra-string", {"extra_json": json.dumps({"registration_driver": "protocol_oss", "account_password": "private-value"})}, [], "protocol_oss"),
+            ("latest-job", {}, ["protocol", "protocol_oss_2"], "protocol_oss_2"),
+            ("invalid-extra", {"extra_json": "{invalid-json"}, ["protocol"], "protocol"),
+            ("unknown", {}, [], None),
+            ("latest-unknown", {}, ["protocol", None], None),
+        ):
+            account_id = rs.insert_row(rs.ACCOUNTS, {"email": f"driver-{name}@example.test", **metadata})
+            expected[account_id] = driver
+            for index, job_driver in enumerate(drivers):
+                rs.insert_row(rs.JOBS, {
+                    "job_uuid": f"driver-projection-{name}-{index}", "account_id": account_id,
+                    "job_type": "registration_resume" if index else "registration",
+                    "data": {"config_snapshot": {"registration_driver": job_driver}},
+                })
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"driver-projection-{name}-non-registration", "account_id": account_id,
+                "job_type": "account_setup", "data": {"config_snapshot": {"registration_driver": "roxy"}},
+            })
+
+        result = repo.list_accounts(repo.PageRequest(page_size=500))
+        projected = {row["id"]: row for row in result["items"] if row["id"] in expected}
+        self.assertEqual(set(projected), set(expected))
+        for account_id, driver in expected.items():
+            with self.subTest(account_id=account_id):
+                row = projected[account_id]
+                self.assertEqual(row.get("registration_driver"), driver)
+                self.assertNotIn("extra_json", row)
+                self.assertNotIn("private-value", json.dumps(row))
+
     def test_account_query_does_not_scan_arbitrary_json_or_credentials(self):
         rs.insert_row(rs.ACCOUNTS, {
             "email": "safe-fields-only@example.test",

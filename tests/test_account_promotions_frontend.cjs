@@ -875,7 +875,7 @@ function createResizableAccountTable(savedWidths = null, savedTotal = 0) {
     removeProperty(name) { delete this[name]; },
   };
   const table = {dataset: {resizableTable: 'accounts'}, style, querySelectorAll: selector => selector === 'colgroup col' ? columns : headers};
-  table.getBoundingClientRect = () => ({width: Number.parseFloat(table.style.width) || 1396});
+  table.getBoundingClientRect = () => ({width: Number.parseFloat(table.style.width) || 1500});
   const headers = columnClasses.map((value, index) => ({
     classList: {contains: name => value.split(' ').includes(name)},
     appendChild(handle) { this.handle = handle; },
@@ -907,17 +907,17 @@ function createResizableAccountTable(savedWidths = null, savedTotal = 0) {
   return {columns, table, headers, listeners, promotionIndex: columnClasses.indexOf('col-trial'), storage, storageKey};
 }
 
-test('默认列宽按 1396px 设计宽度应用，给国家与支付方式至少 180px 内容空间', () => {
+test('默认列宽按 1500px 设计宽度应用，给国家与支付方式至少 180px 内容空间', () => {
   const {columns, promotionIndex} = createResizableAccountTable();
   assert.ok(promotionIndex >= 0, '账号表格应包含套餐优惠列');
   assert.ok(columns.every(column => Number.parseFloat(column.style.width) > 0), '默认列宽应覆盖所有真实表格列');
-  const contentWidth = 1396 * Number.parseFloat(columns[promotionIndex].style.width) / 100 - 12;
+  const contentWidth = 1500 * Number.parseFloat(columns[promotionIndex].style.width) / 100 - 12;
   assert.ok(contentWidth >= 180, `套餐优惠内容空间不足: ${contentWidth}px`);
 });
 
 test('扩大默认套餐优惠列不覆盖用户已经保存的列宽', () => {
-  const saved = Array(15).fill(10);
-  saved[9] = 7;
+  const saved = Array(16).fill(10);
+  saved[10] = 7;
   const {columns, promotionIndex, storage, storageKey} = createResizableAccountTable(saved);
   const expected = saved[promotionIndex] / saved.reduce((sum, value) => sum + value, 0) * 100;
   assert.equal(Number.parseFloat(columns[promotionIndex].style.width), expected);
@@ -925,7 +925,7 @@ test('扩大默认套餐优惠列不覆盖用户已经保存的列宽', () => {
 });
 
 test('恢复保存的账号表格总宽，必要时只扩表并保留原列宽比例', () => {
-  const saved = [36, 72, 160, 80, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
+  const saved = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
   const {columns, table, promotionIndex} = createResizableAccountTable(saved, 1520);
   assert.equal(table.style.width, '1520px');
   const total = saved.reduce((sum, value) => sum + value, 0);
@@ -933,7 +933,7 @@ test('恢复保存的账号表格总宽，必要时只扩表并保留原列宽�
 });
 
 test('优惠列保存比例较窄时尊重用户选择，不强制扩展表格', () => {
-  const saved = [4, 8, 12, 5, 6, 6, 5, 5, 5, 4, 5, 5, 5, 6, 4];
+  const saved = [4, 8, 12, 5, 7, 6, 6, 5, 5, 5, 4, 5, 5, 5, 6, 4];
   const {columns, table, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
   const savedTotal = saved.reduce((sum, value) => sum + value, 0);
   assert.equal(Number.parseFloat(table.style.width), 1396);
@@ -942,12 +942,12 @@ test('优惠列保存比例较窄时尊重用户选择，不强制扩展表格',
 });
 
 test('历史窄 Token 与操作列不再被默认最小宽度重写，重载保持用户选择', () => {
-  const saved = [36, 5, 160, 80, 0.1, 88, 72, 88, 88, 1, 72, 88, 72, 96, 0.2];
+  const saved = [36, 5, 160, 80, 104, 0.1, 88, 72, 88, 88, 1, 72, 88, 72, 96, 0.2];
   const first = createResizableAccountTable(saved, 1396);
   const storedBefore = first.storage.get(first.storageKey);
   const actualWidths = first.columns.map(column => Number.parseFloat(column.style.width) * Number.parseFloat(first.table.style.width) / 100);
   assert.equal(first.table.style.width, '1396px');
-  assert.ok(actualWidths[4] < 28);
+  assert.ok(actualWidths[5] < 28);
   assert.equal(storedBefore, JSON.stringify(saved));
 
   const reloaded = createResizableAccountTable(JSON.parse(storedBefore), Number.parseFloat(first.table.style.width));
@@ -989,7 +989,7 @@ test('默认 2FA 窄列保留可完整点击的短验证码复制按钮', () => 
 });
 
 test('用户调窄优惠列仍可通过提示查看完整国家与历史信息', () => {
-  const saved = [36, 72, 160, 80, 84, 88, 72, 88, 88, 1, 72, 88, 72, 96, 108];
+  const saved = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 1, 72, 88, 72, 96, 108];
   const {columns, table, headers, listeners, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
   headers[promotionIndex].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
   listeners.get('pointermove')({clientX: -1000});

@@ -180,6 +180,27 @@ def _registration_driver_exists(drivers: frozenset[str]) -> tuple[str, list[Any]
     )
 
 
+def _account_registration_driver_sql() -> str:
+    """只投影注册驱动，兼容账号元数据和历史注册任务快照。"""
+    jobs = _q(record_store.JOBS)
+    return f"""LOWER(BTRIM(COALESCE(
+        NULLIF(BTRIM(a.data->>'registration_driver'), ''),
+        NULLIF(BTRIM(CASE
+            WHEN jsonb_typeof(a.data->'extra_json') = 'object'
+                THEN a.data #>> '{{extra_json,registration_driver}}'
+            WHEN jsonb_typeof(a.data->'extra_json') = 'string'
+                 AND (a.data->>'extra_json') IS JSON OBJECT
+                THEN (a.data->>'extra_json')::jsonb->>'registration_driver'
+            ELSE NULL
+        END), ''),
+        (SELECT j.data #>> '{{config_snapshot,registration_driver}}'
+         FROM {jobs} j WHERE j.account_id = a.id
+           AND LOWER(COALESCE(j.job_type, 'registration'))
+               IN ('registration', 'registration_resume')
+         ORDER BY j.id DESC LIMIT 1)
+    )))"""
+
+
 def _account_where(
     archived: str,
     plan: str,
@@ -327,7 +348,8 @@ def list_accounts(
         "a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
         "'registration_password','totp_secret','extra_json','copy_line','original_email_line']::text[] "
         f"|| jsonb_build_object('has_access_token', {_ACCOUNT_ACCESS_TOKEN_PRESENT}, "
-        f"'has_account_password', {_ACCOUNT_PASSWORD_PRESENT}, 'totp_enabled', {_ACCOUNT_TOTP_PRESENT})"
+        f"'has_account_password', {_ACCOUNT_PASSWORD_PRESENT}, 'totp_enabled', {_ACCOUNT_TOTP_PRESENT}, "
+        f"'registration_driver', {_account_registration_driver_sql()})"
     )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)

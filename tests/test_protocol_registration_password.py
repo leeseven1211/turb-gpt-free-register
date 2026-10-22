@@ -606,6 +606,7 @@ class ProtocolPasswordRegistrationTests(unittest.TestCase):
         self.assertTrue(result["success"], result)
         self.assertEqual(events[:4], ["core_persisted", "plan_check", "twofa", "codex"])
         self.assertEqual(persist.call_args.kwargs["extra"]["account_password"], "Password!123")
+        self.assertEqual(persist.call_args.kwargs["extra"]["registration_driver"], "protocol")
         self.assertEqual(oauth.call_args.kwargs["login_password"], "Password!123")
         self.assertEqual(oauth.call_args.kwargs["login_totp_secret"], "totp-secret")
         self.assertEqual(["core_persisted", "plan_check", "twofa", "codex"], events)

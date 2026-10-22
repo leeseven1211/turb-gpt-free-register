@@ -1024,6 +1024,7 @@ def run_protocol_registration(
                 "browser_profile": getattr(session, "browser_profile", None),
                 **({"account_password": openai_password} if openai_password and password_validated else {}),
                 "registration_checkpoint": "core_persisted",
+                "registration_driver": "protocol",
             },
         )
         core_persisted = True

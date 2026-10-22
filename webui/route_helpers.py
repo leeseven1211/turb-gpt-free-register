@@ -219,7 +219,7 @@ def _compact_account_for_list(row: dict) -> dict:
 
     # 这些是列表固定列直接展示字段。
     for key in (
-        "user_name", "email_source", "note", "archived", "created_at", "updated_at",
+        "user_name", "email_source", "registration_driver", "note", "archived", "created_at", "updated_at",
         "plan_type", "current_plan_type", "plus_trial_eligible",
         "plan_check_status", "codex_status", "codex_credential_state",
         "codex_execution_status", "codex_last_run_status", "codex_active_run_id", "account_status",
