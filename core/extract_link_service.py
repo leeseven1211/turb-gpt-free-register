@@ -1715,6 +1715,7 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "task_id": int(row.get("task_id") or 0),
         "run_id": int(row.get("run_id") or 0) or None,
         "account_id": int(row.get("account_id") or 0) or None,
+        "batch_id": int(row.get("batch_id") or 0) or None,
         "email": str(row.get("email") or ""),
         "provider_id": provider_id,
         "mode": mode,
@@ -1743,9 +1744,14 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     payment = str(item.get("payment_status") or "")
     plus = str(item.get("plus_status") or "")
     if status == "processing":
-        return task_status in {"queued", "running", "waiting", "cancelling", "settling"} or extraction in {"queued", "running"}
+        return (
+            task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
+            or extraction in {"queued", "running"}
+            or (item.get("mode") == "auto_payment" and payment in {"pending_payment", "request_unknown"})
+            or (payment == "paid" and plus in {"unknown", "pending", "queued"})
+        )
     if status == "running":
-        return task_status in {"running", "cancelling", "settling"} or extraction == "running"
+        return task_status in {"running", "cancelling", "settling", "stopping"} or extraction == "running"
     if status == "extraction_succeeded":
         return extraction == "success"
     if status == "payment_succeeded":
@@ -1753,13 +1759,18 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     if status == "plus_confirmed":
         return plus == "confirmed"
     if status == "needs_attention":
-        return task_status in {"failed", "request_unknown", "cancelled", "attention_required"} or "unknown" in {extraction, payment, plus} or extraction == "failed"
+        return (
+            task_status in {"failed", "request_unknown", "cancelled", "attention_required", "partial_success", "stopped"}
+            or extraction in {"unknown", "failed"} or payment in {"request_unknown", "failed"}
+            or plus in {"unknown", "failed", "not_confirmed"}
+        )
     return False
 
 
 def create_workbench_tasks(
     *, account_ids: list[int], provider_id: str, mode: str,
     type: str | None = None, options: dict | None = None,
+    batch_id: int | None = None, dispatch: bool = True,
 ) -> dict:
     provider_id = str(provider_id or "").strip().lower()
     mode = str(mode or "").strip().lower()
@@ -1784,7 +1795,7 @@ def create_workbench_tasks(
     register_operation_handlers()
     for account_id in ids:
         account = db.get_account(account_id)
-        if not account or db.account_is_deactivated(account):
+        if not account or account.get("archived") or db.account_is_deactivated(account):
             skipped += 1
             continue
         try:
@@ -1823,7 +1834,8 @@ def create_workbench_tasks(
                 data=data,
                 config_snapshot_provider=get_config_snapshot,
                 config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
-                dispatch=True,
+                dispatch=dispatch,
+                **({"batch_id": int(batch_id)} if batch_id is not None else {}),
             )
         except Exception:
             db.update_account_extract(account_id, {
@@ -1849,12 +1861,25 @@ def create_workbench_tasks(
 def list_workbench_tasks(
     *, provider_id: str | None = None, mode: str | None = None,
     status: str = "", query: str = "", page: int = 1, page_size: int = 20,
+    batch_id: int | None = None,
 ) -> dict:
     from core.storage import extract_link_jobs
 
     rows = extract_link_jobs.list_workbench_rows(
         provider_id=provider_id, mode=mode, query=query,
+        **({"batch_id": int(batch_id)} if batch_id is not None else {}),
     )
+    items = _workbench_project_rows(rows)
+    counts = _workbench_counts(items)
+    filtered = [item for item in items if _workbench_status_matches(item, status)]
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 20)))
+    total = len(filtered)
+    selected = filtered[(page - 1) * page_size:page * page_size]
+    return {"items": selected, "total": total, "page": page, "page_size": page_size, "counts": counts}
+
+
+def _workbench_project_rows(rows: list[dict]) -> list[dict]:
     account_rows = db.get_accounts_for_jobs([
         {
             "id": int(row.get("task_id") or 0),
@@ -1863,11 +1888,14 @@ def list_workbench_tasks(
         }
         for row in rows
     ])
-    items = [
+    return [
         _workbench_task_item(row, account=account_rows.get(int(row.get("task_id") or 0)))
         for row in rows
     ]
-    counts = {
+
+
+def _workbench_counts(items: list[dict]) -> dict:
+    return {
         "all": len(items),
         "processing": sum(_workbench_status_matches(item, "processing") for item in items),
         "running": sum(_workbench_status_matches(item, "running") for item in items),
@@ -1876,12 +1904,134 @@ def list_workbench_tasks(
         "plus_confirmed": sum(_workbench_status_matches(item, "plus_confirmed") for item in items),
         "needs_attention": sum(_workbench_status_matches(item, "needs_attention") for item in items),
     }
-    filtered = [item for item in items if _workbench_status_matches(item, status)]
-    page = max(1, int(page or 1))
-    page_size = max(1, min(100, int(page_size or 20)))
-    total = len(filtered)
-    selected = filtered[(page - 1) * page_size:page * page_size]
-    return {"items": selected, "total": total, "page": page, "page_size": page_size, "counts": counts}
+
+
+def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 100) -> dict:
+    from core.storage import extract_link_batches
+
+    result = extract_link_batches.candidate_accounts(filters=filters, limit=limit)
+    items = result.get("items") or []
+    return {
+        "total": int(result.get("total") or 0),
+        "selected_count": len(items),
+        "limit": int(result["limit"]),
+        "max_batch_size": extract_link_batches.MAX_BATCH_SIZE,
+        "items": items[:20],
+    }
+
+
+def create_workbench_batch(
+    *, title: str = "", provider_id: str, mode: str, filters: dict | None = None,
+    limit: int = 100, type: str | None = None, options: dict | None = None,
+    submission_id: str | None = None,
+) -> dict:
+    """按提交时筛选快照创建同一批次，逐个任务仍执行既有资格与占用检查。"""
+    from core.storage import extract_link_batches, operation
+
+    submission_id = extract_link_batches.normalize_submission_id(submission_id)
+    if submission_id:
+        existing = extract_link_batches.submission_result(submission_id)
+        if existing is not None:
+            return existing
+    provider_id = str(provider_id or "").strip().lower()
+    mode = str(mode or "").strip().lower()
+    if not _provider_mode_enabled(provider_id, mode):
+        raise ValueError("当前配置未启用该平台或运行模式")
+    runtime_config = _provider_configuration(provider_id)
+    link_type = _provider_link_type(provider_id, type, runtime_config.default_type)
+    safe_options = _provider_request_options(provider_id, options, mode=mode, link_type=link_type)
+    if mode == "auto_payment" and not runtime_config.capabilities.get("payment"):
+        raise ValueError("平台没有可用的支付能力")
+    if not isinstance(title, str) or len(title.strip()) > 120:
+        raise ValueError("批次名称最多 120 个字符")
+    selected_title = title.strip() or f"提链批次 · {datetime.now():%Y-%m-%d %H:%M}"
+    if submission_id:
+        reservation = extract_link_batches.reserve_submission(
+            submission_id=submission_id, title=selected_title, provider_id=provider_id,
+            mode=mode, link_type=link_type, filters=filters, limit=limit,
+        )
+        if not reservation["created"]:
+            return reservation["result"]
+        batch_id, ids = reservation["batch_id"], reservation["account_ids"]
+    else:
+        candidates = extract_link_batches.candidate_accounts(filters=filters, limit=limit)
+        ids = [int(item["account_id"]) for item in candidates.get("items") or []]
+        if not ids:
+            raise ValueError("当前筛选没有符合提链条件的账号")
+        batch = operation.create_runtime_batch(
+            batch_type="extract_link", title=selected_title, requested_count=len(ids),
+            trigger="extract_workbench_batch",
+            data={
+                "workbench_batch": True, "provider_id": provider_id, "mode": mode,
+                "link_type": link_type, "filters": candidates["filters"], "limit": candidates["limit"],
+                "submission_complete": False,
+            },
+        )
+        batch_id = int(batch["id"])
+    skipped = failed = started = 0
+    complete = False
+    try:
+        for offset in range(0, len(ids), 500):
+            result = create_workbench_tasks(
+                account_ids=ids[offset:offset + 500], provider_id=provider_id, mode=mode,
+                type=link_type, options=safe_options, batch_id=batch_id, dispatch=False,
+            )
+            skipped += int(result.get("skipped") or 0)
+            failed += int(result.get("failed") or 0)
+        complete = True
+    finally:
+        started = extract_link_batches.finish_submission(
+            batch_id, skipped=skipped, failed=failed, complete=complete,
+        )
+        if started:
+            account_task_store.notify_dispatch()
+    return {"batch_id": batch_id, "requested": len(ids), "started": started, "skipped": skipped, "failed": failed}
+
+
+def _workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
+    data = batch.get("data") if isinstance(batch.get("data"), dict) else {}
+    counts = {key: int(aggregate.get(key) or 0) for key in (
+        "all", "processing", "running", "extraction_succeeded", "payment_succeeded", "plus_confirmed", "needs_attention",
+    )}
+    requested = int(batch.get("requested_count") or 0)
+    skipped = int(data.get("submission_skipped") or 0)
+    failed = int(data.get("submission_failed") or 0)
+    incomplete = not data.get("submission_complete") or requested != counts["all"] + skipped + failed
+    if counts["running"]:
+        status = "running"
+    elif counts["processing"]:
+        status = "queued" if aggregate.get("task_queued") and not counts["extraction_succeeded"] else "running"
+    elif incomplete or skipped or failed or counts["needs_attention"]:
+        status = "partial_success" if aggregate.get("task_succeeded") or counts["extraction_succeeded"] or counts["payment_succeeded"] else "failed"
+    else:
+        status = "success" if counts["all"] else "failed"
+    created_at = batch.get("created_at")
+    return {
+        "batch_id": int(batch["id"]), "title": str(batch.get("title") or "提链批次")[:240],
+        "provider_id": str(data.get("provider_id") or "legacy"), "mode": str(data.get("mode") or "extract_only"),
+        "status": status, "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+        "requested_count": requested, "started_count": counts["all"], "skipped_count": skipped,
+        "submission_failed_count": failed, "submission_incomplete": bool(incomplete), "counts": counts,
+    }
+
+
+def list_workbench_batches(*, page: int = 1, page_size: int = 20) -> dict:
+    from core.storage import extract_link_batches
+
+    result = extract_link_batches.batch_rows(page=page, page_size=page_size)
+    batches = result.get("items") or []
+    grouped = extract_link_batches.batch_task_counts([int(batch["id"]) for batch in batches])
+    return {**result, "items": [_workbench_batch_summary(batch, grouped.get(int(batch["id"]), {})) for batch in batches]}
+
+
+def workbench_batch_detail(batch_id: int) -> dict | None:
+    from core.storage import extract_link_batches
+
+    batches = extract_link_batches.batch_rows(batch_id=int(batch_id)).get("items") or []
+    if not batches:
+        return None
+    counts = extract_link_batches.batch_task_counts([int(batch_id)])
+    return _workbench_batch_summary(batches[0], counts.get(int(batch_id), {}))
 
 
 def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:

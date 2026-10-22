@@ -9,7 +9,7 @@
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-prototype') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-batches') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -331,9 +331,15 @@
         </div>
         <div class="extract-workbench-head-actions">
           <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
-          <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建提链</button>
+          <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         </div>
       </header>
+      <section class="extract-workbench-batch-bar" aria-label="提链批次">
+        <label class="extract-workbench-batch-picker"><span>提链批次</span><select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
+        <div class="extract-workbench-batch-summary" data-workbench-batch-summary role="status">按批次查看提链进度与结果</div>
+        <button type="button" class="btn extract-workbench-all-batches" data-workbench-all-batches>全部任务</button>
+        <nav class="extract-workbench-batch-pagination" aria-label="历史提链批次分页"><button type="button" class="btn" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" class="btn" data-workbench-batch-page="next" disabled>下一组</button></nav>
+      </section>
       <section class="extract-workbench-list" aria-label="提链任务记录">
         <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
         <div class="extract-workbench-filters" role="search" aria-label="筛选提链任务">
@@ -351,20 +357,31 @@
       </section>
       <dialog class="extract-workbench-create-dialog" data-workbench-create-dialog aria-labelledby="extractWorkbenchCreateTitle" aria-describedby="extractWorkbenchCreateHint">
         <div class="extract-workbench-section-head">
-          <div><h2 id="extractWorkbenchCreateTitle">新建提链任务</h2><p id="extractWorkbenchCreateHint">选择账号、平台和运行模式，批量创建提链任务</p></div>
-          <button type="button" class="extract-workbench-dialog-close" data-workbench-close-create aria-label="关闭新建提链"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+          <div><h2 id="extractWorkbenchCreateTitle">新建提链批次</h2><p id="extractWorkbenchCreateHint">筛选账号并设置本批运行数量，一次提交整批任务</p></div>
+          <button type="button" class="extract-workbench-dialog-close" data-workbench-close-create aria-label="关闭新建批次"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </div>
-        <div class="extract-workbench-create-controls">
+        <div class="extract-workbench-create-controls extract-workbench-batch-fields">
+          <label class="extract-workbench-batch-name">批次名称<input type="text" data-workbench-batch-title maxlength="120" placeholder="选填，例如：10 月 14 日账号提链" autocomplete="off"></label>
           <label>平台<select data-workbench-provider></select></label>
           <label>运行模式<select data-workbench-mode></select></label>
-          <label class="extract-workbench-account-search">账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱" autocomplete="off"></label>
-          <button type="button" class="btn" data-workbench-search-accounts>查找账号</button>
         </div>
-        <div class="extract-workbench-account-results" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">打开后加载可选账号</p></div>
+        <section class="extract-workbench-candidate-section" aria-labelledby="extractWorkbenchCandidateTitle">
+          <div class="extract-workbench-candidate-head"><h3 id="extractWorkbenchCandidateTitle">筛选本批账号</h3><p>仅匹配活跃、未归档且具备 Plus 免费试用资格的 free 账号；提交前仍会在线查活。</p></div>
+          <div class="extract-workbench-create-controls extract-workbench-candidate-filters">
+          <label class="extract-workbench-account-search">账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱" autocomplete="off"></label>
+          <label>邮箱来源<select data-workbench-account-source><option value="">全部来源</option></select></label>
+          <label>提链状态<select data-workbench-extract-status><option value="not_succeeded">未成功提链</option><option value="all">全部可用账号</option><option value="failed">失败 / 待确认</option><option value="never">从未提链</option><option value="success">已成功提链</option></select></label>
+          <label>注册日期从<input type="date" data-workbench-date-from></label>
+          <label>注册日期至<input type="date" data-workbench-date-to></label>
+          <label>本批运行数量<input type="number" data-workbench-batch-limit value="100" min="1" max="5000" step="1" inputmode="numeric"></label>
+          </div>
+          <div class="extract-workbench-candidate-toolbar"><p data-workbench-candidate-summary role="status" aria-live="polite">设置条件后预览匹配账号</p><button type="button" class="btn" data-workbench-search-accounts>预览匹配账号</button></div>
+          <div class="extract-workbench-account-results extract-workbench-candidate-preview" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">预览会显示匹配数量与部分账号，无需逐个勾选。</p></div>
+        </section>
         <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
         <div class="extract-workbench-dialog-footer">
-          <span data-workbench-selection-count>已选择 0 个账号</span>
-          <div><button type="button" class="btn" data-workbench-close-create>取消</button><button type="button" class="btn extract-workbench-primary" data-workbench-create disabled>创建提链任务</button></div>
+          <span data-workbench-selection-count>本批计划运行 0 个账号</span>
+          <div><button type="button" class="btn" data-workbench-close-create>取消</button><button type="button" class="btn extract-workbench-primary" data-workbench-create disabled>创建并运行批次</button></div>
         </div>
       </dialog>
     </div>
@@ -991,6 +1008,6 @@
 <script src="{{ url_for('static', filename='js/modern/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-prototype') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-batches') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

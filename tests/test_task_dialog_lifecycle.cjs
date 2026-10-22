@@ -74,7 +74,7 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
   const documentElement = element();
   documentElement.scrollTop = 0;
   body.parentElement = documentElement;
-  const tabs = ['overview', 'register', 'accounts', 'codex', 'outlook', 'proxy-traffic', 'config'];
+  const tabs = ['overview', 'register', 'accounts', 'extract-workbench', 'codex', 'outlook', 'proxy-traffic', 'config'];
   const contentTab = activeTab === 'tasks' ? 'accounts' : activeTab;
   for (const tab of tabs) nodes.set(`#tab-${tab}`, element(tab === contentTab ? [] : ['hidden'], body));
   nodes.get('#tab-accounts').dataset.moduleView = activeTab === 'tasks' ? 'tasks' : 'active';
@@ -136,6 +136,7 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
     loadDashboard: noop,
     loadAccountTasks: noop,
     loadAccounts: noop,
+    loadExtractWorkbench: noop,
     loadCodex: noop,
     loadMailResources: noop,
     loadOutlook: noop,

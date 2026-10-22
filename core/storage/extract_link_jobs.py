@@ -239,6 +239,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
 
 def list_workbench_rows(
     *, provider_id: str | None = None, mode: str | None = None, query: str = "",
+    batch_id: int | None = None, batch_ids: list[int] | None = None,
 ) -> list[dict]:
     """批量读取提链工作台公开任务与当前 Run 状态。"""
     operation_store.init()
@@ -247,6 +248,12 @@ def list_workbench_rows(
         "lower(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'",
     ]
     params: list[Any] = []
+    if batch_id is not None:
+        clauses.append("t.batch_id=%s")
+        params.append(int(batch_id))
+    if batch_ids is not None:
+        clauses.append("t.batch_id = ANY(%s)")
+        params.append([int(value) for value in batch_ids])
     if provider_id:
         clauses.append("COALESCE(t.data->>'provider_id', 'legacy')=%s")
         params.append(str(provider_id))
@@ -260,7 +267,7 @@ def list_workbench_rows(
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT t.id AS task_id, t.account_id, t.email_snapshot AS email, t.data AS task_data,
+            SELECT t.id AS task_id, t.account_id, t.batch_id, t.email_snapshot AS email, t.data AS task_data,
                    t.status AS task_status, t.target_status, t.current_stage,
                    t.created_at AS task_created_at, t.updated_at AS task_updated_at,
                    t.last_run_id, COUNT(all_runs.id) AS run_count,

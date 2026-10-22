@@ -18,12 +18,14 @@ function createView() {
     addEventListener() {},
   };
   const window = {
+    crypto: require('node:crypto').webcrypto,
     __EXTRACT_WORKBENCH_DATA_SOURCE__(endpoint, options = {}) {
       requests.push({endpoint, options});
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
     },
   };
   const context = {document, window, URLSearchParams, setTimeout, clearTimeout,
+    LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
     navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast() {}};
   vm.createContext(context);
   vm.runInContext(`${source}\n;globalThis.workbench = {
@@ -37,6 +39,12 @@ function createView() {
     copy: extractWorkbenchCopy,
     submit: extractWorkbenchSubmit,
     loadAccounts: extractWorkbenchLoadAccounts,
+    candidateSignature: extractWorkbenchCandidateSignature,
+    candidateFilters: extractWorkbenchCandidateFilters,
+    invalidatePreview: extractWorkbenchInvalidatePreview,
+    switchBatch: extractWorkbenchSwitchBatch,
+    renderBatches: extractWorkbenchRenderBatches,
+    accountSources: extractWorkbenchAccountSources,
     setConfig(value) { if (typeof EXTRACT_WORKBENCH_CONFIG !== 'undefined') EXTRACT_WORKBENCH_CONFIG = value; },
     load: typeof loadExtractWorkbench === 'function' ? loadExtractWorkbench : undefined,
     setRoot(value) { if (typeof EXTRACT_WORKBENCH_ROOT !== 'undefined') EXTRACT_WORKBENCH_ROOT = value; },
@@ -133,20 +141,19 @@ test('顶部标签使用全部统计数，切换状态后不把筛选结果当�
   assert.match(tabs.innerHTML,/只看运行中<\/strong><span>7/);
 });
 
-test('新建任务弹窗打开后才加载账号，取消后保留选择且不重复加载', async () => {
+test('新建批次弹窗打开后才查询候选，重新打开会刷新匹配数量', async () => {
   const {api,requests}=createView();
   const dialog={open:false, showModal(){this.open=true;},close(){this.open=false;}};
   const accounts={innerHTML:''};
   api.setConfig({providers:[]});
   api.setRoot({querySelector:selector=>({'[data-workbench-create-dialog]':dialog,'[data-workbench-accounts]':accounts})[selector] || null});
-  api.setState({selectedAccounts:new Set(['7'])});
   assert.equal(requests.length,0);
   await api.openCreate();
   assert.equal(dialog.open,true);
   dialog.close();
   await api.openCreate();
-  assert.equal(requests.filter(item=>item.endpoint.startsWith('/api/accounts?')).length,1);
-  assert.equal(api.state().selectedAccounts.has('7'),true);
+  assert.equal(requests.filter(item=>item.endpoint.startsWith('/api/extract-workbench/candidates?')).length,2);
+  assert.doesNotMatch(accounts.innerHTML,/type="checkbox"/);
 });
 
 test('复制 AT 只在点击时读取指定账号密钥，不写入任务卡片或状态', async () => {
@@ -204,23 +211,118 @@ test('账号搜索的新响应先返回后，旧的成功或失败响应都不�
   }
 });
 
-test('创建成功后刷新任务卡并关闭新建弹窗', async () => {
+test('筛选批次提交数量不受预览条数限制，成功后切到新批次', async () => {
   const {api,window}=createView();
   const dialog={open:true,close(){this.open=false;}};
   const feedback={textContent:''};
   api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo'}]});
   const selectors={'[data-workbench-create-dialog]':dialog,'[data-workbench-create-feedback]':feedback,
-    '[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
+    '[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'},
+    '[data-workbench-batch-limit]':{value:'100'},'[data-workbench-batch-title]':{value:'10月14日提链'},
+    '[data-workbench-date-from]':{value:'2026-10-14'},'[data-workbench-date-to]':{value:'2026-10-14'}};
   api.setRoot({querySelector:selector=>selectors[selector] || null,addEventListener(){}});
-  api.setState({selectedAccounts:new Set(['7'])});
+  api.setState({preview:{selected_count:100,items:[{account_id:7}]},previewSignature:api.candidateSignature()});
+  const posted=[];
   window.__EXTRACT_WORKBENCH_DATA_SOURCE__=async (endpoint,options={})=>{
-    if (endpoint==='/api/extract-workbench/tasks' && options.method==='POST') return {started:1,skipped:0,failed:0};
+    if (endpoint==='/api/extract-workbench/batches' && options.method==='POST') {
+      posted.push(JSON.parse(options.body));return {batch_id:44,requested:100,started:98,skipped:2,failed:0};
+    }
     if (endpoint==='/api/extract-workbench/config') return {providers:[{id:'lumen_flow',modes:['extract_only']}]};
+    if (endpoint==='/api/extract-workbench/batches/44') return {item:{batch_id:44,title:'10月14日提链'}};
     return {items:[{task_id:42}],total:1,counts:{all:1},page:1};
   };
   await api.submit();
   assert.equal(dialog.open,false);
-  assert.equal(api.state().selectedAccounts.size,0);
+  assert.equal(api.state().batch,'44');
+  assert.equal(api.state().batchDetail.title,'10月14日提链');
   assert.equal(api.state().items[0].task_id,42);
-  assert.match(feedback.textContent,/已提交 1 个任务/);
+  assert.equal(posted.length,1);
+  assert.equal(posted[0].limit,100);
+  assert.equal(posted[0].filters.date_from,'2026-10-14');
+  assert.equal(posted[0].filters.extract_status,'not_succeeded');
+  assert.equal(posted[0].account_ids,undefined);
+  assert.match(posted[0].submission_id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.match(feedback.textContent,/入队 98 个任务/);
+});
+
+test('筛选条件变更后预览失效，提交不会沿用旧匹配数量', async () => {
+  const {api,requests}=createView();
+  const query={value:'first'};
+  const feedback={textContent:''};
+  const selectors={'[data-workbench-account-query]':query,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'},'[data-workbench-candidate-summary]':feedback};
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}]});
+  api.setRoot({querySelector:selector=>selectors[selector] || null});
+  api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
+  query.value='second';
+  api.invalidatePreview();
+  await api.submit();
+  assert.equal(api.state().preview,null);
+  assert.equal(requests.length,0);
+  assert.match(feedback.textContent,/重新预览/);
+});
+
+test('切换批次后旧批次任务和摘要的迟到响应均被忽略', async () => {
+  const {api,window}=createView();
+  api.setConfig({providers:[]});
+  api.setRoot({querySelector(){return null;},addEventListener(){}});
+  const pending={};
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__=endpoint=>{
+    if(endpoint==='/api/extract-workbench/config')return Promise.resolve({providers:[]});
+    return new Promise(resolve=>{pending[endpoint]=resolve;});
+  };
+  const older=api.switchBatch('11');
+  await new Promise(resolve=>setImmediate(resolve));
+  const newer=api.switchBatch('22');
+  await new Promise(resolve=>setImmediate(resolve));
+  const taskUrl=id=>Object.keys(pending).find(url=>url.includes('/tasks?') && url.includes(`batch_id=${id}`));
+  pending[taskUrl('22')]({items:[{task_id:222}],counts:{all:1},total:1,page:1});
+  pending['/api/extract-workbench/batches/22']({item:{batch_id:22,title:'新批次'}});
+  await newer;
+  pending[taskUrl('11')]({items:[{task_id:111}],counts:{all:1},total:1,page:1});
+  pending['/api/extract-workbench/batches/11']({item:{batch_id:11,title:'旧批次'}});
+  await older;
+  assert.equal(api.state().items[0].task_id,222);
+  assert.equal(api.state().batchDetail.title,'新批次');
+  assert.equal(api.state().batch,'22');
+});
+
+test('批次切换清空上批筛选，全部任务请求不携带batch_id', async () => {
+  const {api,requests}=createView();
+  api.setConfig({providers:[]});
+  api.setRoot({querySelector(){return null;},addEventListener(){}});
+  api.setState({batch:'11',status:'running',provider:'lumen_flow',query:'older',page:4});
+  await api.switchBatch('');
+  assert.equal(api.state().status,'');
+  assert.equal(api.state().provider,'');
+  assert.equal(api.state().query,'');
+  assert.equal(api.state().page,1);
+  assert.ok(requests.some(r=>r.endpoint.includes('/tasks?') && !r.endpoint.includes('batch_id=')));
+});
+
+test('创建响应丢失后重试沿用提交标识，改变批次参数才生成新标识', async () => {
+  const {api,window}=createView();
+  const title={value:'同一批次'};
+  const selectors={'[data-workbench-batch-title]':title,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}]});
+  api.setRoot({querySelector:selector=>selectors[selector] || null});
+  api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
+  const posted=[];
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__=async (endpoint,options)=>{
+    posted.push(JSON.parse(options.body)); throw new Error('连接中断');
+  };
+  await api.submit();
+  await api.submit();
+  assert.equal(posted.length,2);
+  assert.equal(posted[0].submission_id,posted[1].submission_id);
+  title.value='另一个批次';
+  await api.submit();
+  assert.notEqual(posted[0].submission_id,posted[2].submission_id);
+});
+
+test('邮箱来源复用账号现有枚举，域名邮箱和 Butler 等来源不遗漏', () => {
+  const {api}=createView();
+  assert.equal(api.accountSources().cloudflare_domain,'域名邮箱');
+  assert.equal(api.accountSources().email_butler,'Email Butler');
+  assert.equal(api.accountSources().remail,'Remail');
+  assert.equal(api.accountSources().domain,undefined);
 });

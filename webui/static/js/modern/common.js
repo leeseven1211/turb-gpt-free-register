@@ -1351,7 +1351,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   }
   if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
-  if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, Number.MAX_SAFE_INTEGER);
+  if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
   if (tab === 'register') refreshJobs({coalesce: true});
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();

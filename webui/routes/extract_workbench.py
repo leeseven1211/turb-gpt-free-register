@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from flask import jsonify, request
 
@@ -21,8 +23,15 @@ _ACTIONS = {"sync_status", "retry", "manual_payment", "auto_payment"}
 _LINK_KINDS = {"extract", "payment"}
 _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
+_MAX_BATCH_SIZE = 5000
+_CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status"}
+_EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
+_BATCH_COUNT_FIELDS = (
+    "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
+    "plus_confirmed", "needs_attention",
+)
 _ITEM_FIELDS = (
-    "task_id", "run_id", "account_id", "email", "provider_id", "mode", "link_type", "task_status",
+    "task_id", "run_id", "account_id", "batch_id", "email", "provider_id", "mode", "link_type", "task_status",
     "preflight_status", "extraction_status", "payment_status", "plus_status",
     "run_count", "progress", "created_at", "updated_at", "message", "error",
     "has_extract_link", "has_payment_link",
@@ -82,6 +91,50 @@ def _public_item(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     return _safe_tree({key: value[key] for key in _ITEM_FIELDS if key in value})
+
+
+def _safe_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _public_batch(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or _safe_count(value.get("batch_id")) < 1:
+        return None
+    result = {"batch_id": value["batch_id"]}
+    for field in ("title", "provider_id", "mode", "status", "created_at"):
+        if field in value:
+            result[field] = value[field]
+    for field in ("requested_count", "started_count", "skipped_count", "submission_failed_count"):
+        result[field] = _safe_count(value.get(field))
+    result["submission_incomplete"] = value.get("submission_incomplete") is True
+    counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+    result["counts"] = {field: _safe_count(counts.get(field)) for field in _BATCH_COUNT_FIELDS}
+    return _safe_tree(result)
+
+
+def _candidate_filters(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) - _CANDIDATE_FILTER_FIELDS:
+        return None
+    result = {}
+    for field, maximum in (("query", 200), ("source", 80), ("date_from", 10), ("date_to", 10), ("extract_status", 20)):
+        raw = value.get(field, "")
+        if not isinstance(raw, str) or len(raw) > maximum:
+            return None
+        result[field] = raw.strip()
+    result["extract_status"] = result["extract_status"] or "not_succeeded"
+    if result["extract_status"] not in _EXTRACT_STATUSES:
+        return None
+    for field in ("date_from", "date_to"):
+        if result[field]:
+            if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", result[field]):
+                return None
+            try:
+                date.fromisoformat(result[field])
+            except ValueError:
+                return None
+    if result["date_from"] and result["date_to"] and result["date_from"] > result["date_to"]:
+        return None
+    return result
 
 
 def _public_config(value: Any) -> dict[str, Any] | None:
@@ -152,6 +205,120 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             return _error("提链工作台配置暂不可用", 503)
         return jsonify(public)
 
+    @bp.get("/api/extract-workbench/candidates")
+    def extract_workbench_candidates():
+        if set(request.args) - (_CANDIDATE_FILTER_FIELDS | {"limit"}):
+            return _error("筛选条件包含不支持的字段", 400)
+        filters = _candidate_filters({key: request.args[key] for key in _CANDIDATE_FILTER_FIELDS if key in request.args})
+        limit = _pagination_arg("limit", 100, _MAX_BATCH_SIZE)
+        if filters is None or limit is None:
+            return _error("账号筛选条件或运行数量无效", 400)
+        try:
+            result = extract_link_service.preview_workbench_candidates(filters=filters, limit=limit)
+        except ValueError:
+            return _error("账号筛选条件或运行数量无效", 400)
+        except Exception as exc:
+            return _service_error("候选账号读取", exc)
+        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+            return _error("候选账号暂不可用", 503)
+        items = []
+        for item in result["items"]:
+            if not isinstance(item, dict) or _safe_count(item.get("account_id")) < 1:
+                continue
+            items.append(_safe_tree({
+                key: item[key] for key in ("account_id", "email", "created_at", "email_source", "extract_link_status")
+                if key in item
+            }))
+        return jsonify({
+            "total": _safe_count(result.get("total")),
+            "selected_count": _safe_count(result.get("selected_count")),
+            "limit": limit,
+            "max_batch_size": _MAX_BATCH_SIZE,
+            "items": items,
+        })
+
+    @bp.get("/api/extract-workbench/batches")
+    def extract_workbench_batches():
+        page = _pagination_arg("page", 1, 1_000_000)
+        page_size = _pagination_arg("page_size", 20, _MAX_PAGE_SIZE)
+        if page is None or page_size is None:
+            return _error("分页参数无效", 400)
+        try:
+            result = extract_link_service.list_workbench_batches(page=page, page_size=page_size)
+        except Exception as exc:
+            return _service_error("批次读取", exc)
+        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+            return _error("提链批次暂不可用", 503)
+        items = [_public_batch(item) for item in result["items"]]
+        return jsonify({
+            "items": [item for item in items if item is not None],
+            "total": _safe_count(result.get("total")),
+            "page": page,
+            "page_size": page_size,
+        })
+
+    @bp.get("/api/extract-workbench/batches/<int:batch_id>")
+    def extract_workbench_batch_detail(batch_id: int):
+        if batch_id < 1:
+            return _error("batch_id 参数无效", 400)
+        try:
+            result = extract_link_service.workbench_batch_detail(batch_id)
+        except Exception as exc:
+            return _service_error("批次详情读取", exc)
+        if result is None:
+            return _error("批次不存在", 404)
+        item = _public_batch(result)
+        if item is None:
+            return _error("提链批次详情暂不可用", 503)
+        return jsonify({"item": item})
+
+    @bp.post("/api/extract-workbench/batches")
+    def create_extract_workbench_batch():
+        data, error = _parse_object_body({"title", "provider_id", "mode", "type", "options", "filters", "limit", "submission_id"})
+        if error is not None:
+            return error
+        title = data.get("title", "")
+        submission_id = data.get("submission_id")
+        if not isinstance(submission_id, str) or len(submission_id) != 36:
+            return _error("submission_id 必须是标准 UUID", 400)
+        try:
+            canonical_submission_id = str(UUID(submission_id))
+        except ValueError:
+            return _error("submission_id 必须是标准 UUID", 400)
+        if canonical_submission_id != submission_id.lower():
+            return _error("submission_id 必须是标准 UUID", 400)
+        provider_id, mode = data.get("provider_id"), data.get("mode")
+        filters = _candidate_filters(data.get("filters", {}))
+        limit = data.get("limit", 100)
+        link_type, options = data.get("type"), data.get("options", {})
+        if not isinstance(title, str) or len(title) > 120:
+            return _error("批次名称最多 120 个字符", 400)
+        if not _valid_identifier(provider_id) or not isinstance(mode, str) or mode not in _MODES:
+            return _error("平台或运行模式无效", 400)
+        if filters is None or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_BATCH_SIZE:
+            return _error("账号筛选条件或运行数量无效", 400)
+        if link_type is not None and (not isinstance(link_type, str) or len(link_type) > 80):
+            return _error("type 参数无效", 400)
+        if not isinstance(options, dict):
+            return _error("options 必须是 JSON 对象", 400)
+        payload = {
+            "title": title.strip(), "provider_id": provider_id, "mode": mode,
+            "filters": filters, "limit": limit, "options": options,
+            "submission_id": canonical_submission_id,
+        }
+        if link_type is not None:
+            payload["type"] = link_type
+        try:
+            result = extract_link_service.create_workbench_batch(**payload)
+        except ValueError:
+            return _error("批次未创建，请检查筛选条件、平台能力和运行数量", 400)
+        except Exception as exc:
+            return _service_error("批次提交", exc)
+        if not isinstance(result, dict) or _safe_count(result.get("batch_id")) < 1:
+            return _error("提链工作台未能创建批次", 503)
+        counts = {name: _safe_count(result.get(name)) for name in ("requested", "started", "skipped", "failed")}
+        return jsonify({"ok": True, "batch_id": result["batch_id"], **counts}), 202 if counts["started"] else 200
+
     @bp.get("/api/extract-workbench/tasks")
     def extract_workbench_tasks():
         provider_id = request.args.get("provider_id") or None
@@ -160,6 +327,9 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         query = request.args.get("query", "")
         page = _pagination_arg("page", 1, 1_000_000)
         page_size = _pagination_arg("page_size", 50, _MAX_PAGE_SIZE)
+        batch_id = _pagination_arg("batch_id", 0, 2**63 - 1) if "batch_id" in request.args else None
+        if "batch_id" in request.args and batch_id is None:
+            return _error("batch_id 参数无效", 400)
         if page is None or page_size is None:
             return _error("分页参数无效", 400)
         if provider_id is not None and not _valid_identifier(provider_id):
@@ -171,7 +341,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         if len(query) > 200:
             return _error("query 最多 200 个字符", 400)
         try:
-            result = extract_link_service.list_workbench_tasks(
+            payload = dict(
                 provider_id=provider_id,
                 mode=mode,
                 status=status,
@@ -179,6 +349,9 @@ def create_extract_workbench_blueprint(context: WebUIContext):
                 page=page,
                 page_size=page_size,
             )
+            if batch_id is not None:
+                payload["batch_id"] = batch_id
+            result = extract_link_service.list_workbench_tasks(**payload)
         except Exception as exc:
             return _service_error("任务读取", exc)
         if not isinstance(result, dict) or not isinstance(result.get("items"), list):

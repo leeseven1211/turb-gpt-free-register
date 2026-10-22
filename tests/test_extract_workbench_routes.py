@@ -147,6 +147,156 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             page_size=20,
         )
 
+    def test_task_list_filters_batch_and_keeps_batch_reference(self):
+        with patch.object(
+            extract_workbench.extract_link_service, "list_workbench_tasks",
+            return_value={"items": [{"task_id": 11, "batch_id": 7}], "total": 1},
+        ) as list_tasks:
+            response = self.client.get("/api/extract-workbench/tasks?batch_id=7")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(7, list_tasks.call_args.kwargs["batch_id"])
+        self.assertEqual(7, response.get_json()["items"][0]["batch_id"])
+        for invalid in ("0", "-1", "", "foo", "1.2"):
+            with self.subTest(batch_id=invalid), patch.object(
+                extract_workbench.extract_link_service, "list_workbench_tasks",
+            ) as invalid_list:
+                result = self.client.get(f"/api/extract-workbench/tasks?batch_id={invalid}")
+                self.assertEqual(400, result.status_code)
+                invalid_list.assert_not_called()
+
+    def test_candidate_preview_validates_filters_and_removes_credentials(self):
+        with patch.object(
+            extract_workbench.extract_link_service, "preview_workbench_candidates", create=True,
+            return_value={"total": 150, "selected_count": 100, "items": [{
+                "account_id": 77, "email": "candidate@example.test", "created_at": "2026-10-14",
+                "email_source": "icloud_hide", "extract_link_status": "failed", "access_token": "must-not-project",
+            }]},
+        ) as preview:
+            response = self.client.get(
+                "/api/extract-workbench/candidates?query=example&source=icloud_hide"
+                "&date_from=2026-10-14&date_to=2026-10-15&extract_status=failed&limit=100"
+            )
+        self.assertEqual(200, response.status_code)
+        preview.assert_called_once_with(filters={
+            "query": "example", "source": "icloud_hide", "date_from": "2026-10-14",
+            "date_to": "2026-10-15", "extract_status": "failed",
+        }, limit=100)
+        self.assertEqual(150, response.get_json()["total"])
+        self.assertEqual(100, response.get_json()["selected_count"])
+        self.assertEqual(5000, response.get_json()["max_batch_size"])
+        self.assertNotIn("must-not-project", response.get_data(as_text=True))
+
+    def test_candidate_preview_rejects_invalid_filters_before_service(self):
+        for query in (
+            "date_from=2026-02-30", "date_from=20261014", "date_from=2026-10-15&date_to=2026-10-14",
+            "extract_status=unknown", "limit=0", "limit=5001", "limit=true", "access_token=must-not-return",
+        ):
+            with self.subTest(query=query), patch.object(
+                extract_workbench.extract_link_service, "preview_workbench_candidates", create=True,
+            ) as preview:
+                response = self.client.get("/api/extract-workbench/candidates?" + query)
+                self.assertEqual(400, response.status_code)
+                self.assertNotIn("must-not-return", response.get_data(as_text=True))
+                preview.assert_not_called()
+
+    def test_create_batch_submits_filters_and_returns_batch_counts(self):
+        with patch.object(
+            extract_workbench.extract_link_service, "create_workbench_batch", create=True,
+            return_value={"batch_id": 7, "requested": 100, "started": 98, "skipped": 1, "failed": 1, "cdk": "must-not-project"},
+        ) as create_batch:
+            response = self.client.post("/api/extract-workbench/batches", json={
+                "title": "  14号账号提链  ", "provider_id": "lumen_flow", "mode": "extract_only",
+                "filters": {"date_from": "2026-10-14", "date_to": "2026-10-14"}, "limit": 100,
+                "submission_id": "44DAAB12-8F2E-49A9-AF4E-D9347A8EF770",
+            })
+        self.assertEqual(202, response.status_code)
+        self.assertEqual({"ok": True, "batch_id": 7, "requested": 100, "started": 98, "skipped": 1, "failed": 1}, response.get_json())
+        create_batch.assert_called_once_with(
+            title="14号账号提链", provider_id="lumen_flow", mode="extract_only", limit=100, options={},
+            filters={"query": "", "source": "", "date_from": "2026-10-14", "date_to": "2026-10-14", "extract_status": "not_succeeded"},
+            submission_id="44daab12-8f2e-49a9-af4e-d9347a8ef770",
+        )
+
+    def test_batch_create_requires_valid_submission_uuid_before_service(self):
+        valid = {"provider_id": "lumen_flow", "mode": "extract_only", "limit": 100}
+        invalid_ids = (None, "", True, 7, "not-a-uuid", "44daab128f2e49a9af4ed9347a8ef770", " 44daab12-8f2e-49a9-af4e-d9347a8ef770", [])
+        for submission_id in invalid_ids:
+            with self.subTest(submission_id=submission_id), patch.object(
+                extract_workbench.extract_link_service, "create_workbench_batch", create=True,
+            ) as create_batch:
+                payload = dict(valid)
+                if submission_id is not None:
+                    payload["submission_id"] = submission_id
+                response = self.client.post("/api/extract-workbench/batches", json=payload)
+                self.assertEqual(400, response.status_code)
+                self.assertIn("submission_id", response.get_json()["error"])
+                create_batch.assert_not_called()
+
+    def test_batch_create_rejects_unsupported_and_private_options(self):
+        valid = {"provider_id": "lumen_flow", "mode": "extract_only", "limit": 100,
+                 "submission_id": "44daab12-8f2e-49a9-af4e-d9347a8ef770"}
+        for changed in (
+            {"limit": True}, {"limit": "100"}, {"limit": 5001}, {"title": "x" * 121},
+            {"filters": {"date_from": "2026-02-30"}}, {"filters": {"archived": "1"}},
+            {"options": {"job_secret": "must-not-return"}}, {"account_ids": [77]},
+        ):
+            with self.subTest(changed=changed), patch.object(
+                extract_workbench.extract_link_service, "create_workbench_batch", create=True,
+            ) as create_batch:
+                response = self.client.post("/api/extract-workbench/batches", json={**valid, **changed})
+                self.assertEqual(400, response.status_code)
+                self.assertNotIn("must-not-return", response.get_data(as_text=True))
+                create_batch.assert_not_called()
+
+    def test_batch_service_value_error_is_safe_validation_failure(self):
+        with patch.object(
+            extract_workbench.extract_link_service, "create_workbench_batch", create=True,
+            side_effect=ValueError("credential-value must-not-return"),
+        ) as create_batch:
+            response = self.client.post("/api/extract-workbench/batches", json={
+                "provider_id": "lumen_flow", "mode": "extract_only",
+                "submission_id": "44daab12-8f2e-49a9-af4e-d9347a8ef770",
+            })
+        self.assertEqual(400, response.status_code)
+        self.assertNotIn("credential-value", response.get_data(as_text=True))
+        create_batch.assert_called_once()
+
+    def test_batches_list_and_detail_return_only_safe_summary(self):
+        summary = {"batch_id": 7, "title": "提链批次", "provider_id": "lumen_flow", "mode": "extract_only",
+                   "requested_count": 100, "started_count": 98, "skipped_count": 2, "submission_failed_count": 0,
+                   "status": "running", "counts": {"all": 98, "running": 3, "cdk": "must-not-project", "paid": True},
+                   "private_data": {"cdk": "must-not-project"}}
+        with (
+            patch.object(extract_workbench.extract_link_service, "list_workbench_batches", create=True,
+                         return_value={"items": [summary], "total": 1}) as list_batches,
+            patch.object(extract_workbench.extract_link_service, "workbench_batch_detail", create=True,
+                         return_value=summary) as detail,
+        ):
+            response = self.client.get("/api/extract-workbench/batches?page=2&page_size=10")
+            detail_response = self.client.get("/api/extract-workbench/batches/7")
+        self.assertEqual(200, response.status_code)
+        list_batches.assert_called_once_with(page=2, page_size=10)
+        detail.assert_called_once_with(7)
+        item = response.get_json()["items"][0]
+        self.assertEqual(98, item["counts"]["all"])
+        self.assertEqual(3, item["counts"]["running"])
+        self.assertNotIn("cdk", item["counts"])
+        self.assertNotIn("paid", item["counts"])
+        self.assertEqual(item, detail_response.get_json()["item"])
+        self.assertNotIn("must-not-project", response.get_data(as_text=True))
+        self.assertNotIn("must-not-project", detail_response.get_data(as_text=True))
+
+    def test_batch_detail_not_found_and_invalid_pagination(self):
+        with patch.object(
+            extract_workbench.extract_link_service, "workbench_batch_detail", create=True, return_value=None,
+        ):
+            self.assertEqual(404, self.client.get("/api/extract-workbench/batches/7").status_code)
+        with patch.object(
+            extract_workbench.extract_link_service, "list_workbench_batches", create=True,
+        ) as list_batches:
+            self.assertEqual(400, self.client.get("/api/extract-workbench/batches?page=0").status_code)
+            list_batches.assert_not_called()
+
     def test_create_rejects_credentials_and_nonpositive_account_ids(self):
         with patch.object(
             extract_workbench.extract_link_service,

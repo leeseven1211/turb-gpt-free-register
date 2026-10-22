@@ -336,7 +336,7 @@ test('实际导航入口初始化同一注册视图只发一个 GET，终态重�
   const h = harness();
   const network = useRealApi(h);
   const tabs = new Map();
-  for (const name of ['overview', 'register', 'accounts', 'codex', 'outlook', 'proxy-traffic', 'config']) {
+  for (const name of ['overview', 'register', 'accounts', 'extract-workbench', 'codex', 'outlook', 'proxy-traffic', 'config']) {
     tabs.set(`tab-${name}`, name === 'register' ? h.register : {dataset: {}, classList: {toggle() {}}});
   }
   h.register.classList.toggle = () => {};
