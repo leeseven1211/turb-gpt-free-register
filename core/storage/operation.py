@@ -4627,6 +4627,42 @@ def list_queued_runs(*, limit: int = 500) -> list[dict]:
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
 
+def _extract_batch_workers_sql(alias: str = "b") -> str:
+    """旧批次及其他业务不启用提链工作台的每批并发门限。"""
+    return f"""CASE WHEN {alias}.batch_type='extract_link'
+        AND {alias}.data->>'workbench_batch'='true'
+        AND jsonb_typeof({alias}.data->'workers')='number'
+        AND ({alias}.data->>'workers') ~ '^([1-9]|1[0-6])$'
+        THEN ({alias}.data->>'workers')::integer END"""
+
+
+def _extract_batch_has_capacity_sql() -> str:
+    workers = _extract_batch_workers_sql()
+    return f"""(({workers}) IS NULL OR
+        (SELECT COUNT(*) FROM {_table('operation_runs')} batch_active
+         WHERE batch_active.batch_id=r.batch_id
+           AND batch_active.status IN ('running','waiting','cancelling','settling','stopping')) < ({workers}))"""
+
+
+def _claim_extract_batch_capacity(conn, cur, run: dict) -> bool:
+    """在认领事务内串行核验同批次，避免多个服务进程同时越过门限。"""
+    batch_id = run.get("batch_id")
+    if not batch_id:
+        return True
+    cur.execute(f"SELECT {_extract_batch_workers_sql()} AS workers FROM {_table('operation_batches')} b WHERE b.id=%s", (int(batch_id),))
+    batch = cur.fetchone()
+    workers = (batch or {}).get("workers")
+    if workers is None:
+        return True
+    record_store.advisory_xact_lock(conn, f"{_table('operation_batches')}:extract-workers:{int(batch_id)}")
+    cur.execute(
+        f"""SELECT COUNT(*) AS active FROM {_table('operation_runs')}
+            WHERE batch_id=%s AND status IN ('running','waiting','cancelling','settling','stopping')""",
+        (int(batch_id),),
+    )
+    return int(cur.fetchone()["active"]) < int(workers)
+
+
 def list_dispatchable_runs(
     *,
     limit: int = 500,
@@ -4654,6 +4690,7 @@ def list_dispatchable_runs(
         "r.cancel_requested_at IS NULL",
         "(r.next_attempt_at IS NULL OR r.next_attempt_at <= now())",
         "t.last_run_id=r.id",
+        _extract_batch_has_capacity_sql(),
     ]
     params: list[Any] = []
     if values:
@@ -4666,9 +4703,11 @@ def list_dispatchable_runs(
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT r.*, t.email_snapshot, t.task_type, t.source_system
+            SELECT r.*, t.email_snapshot, t.task_type, t.source_system,
+                   {_extract_batch_workers_sql()} AS batch_workers
             FROM {_table('operation_runs')} r
             JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            LEFT JOIN {_table('operation_batches')} b ON b.id=r.batch_id
             WHERE {' AND '.join(clauses)}
             ORDER BY r.created_at, r.id LIMIT %s
             """,
@@ -4699,6 +4738,7 @@ def claim_next_queued_run(
             "r.status='queued'",
             "r.cancel_requested_at IS NULL",
             "(r.next_attempt_at IS NULL OR r.next_attempt_at <= now())",
+            _extract_batch_has_capacity_sql(),
         ]
         params: list[Any] = []
         sources = [str(item).strip() for item in (source_systems or ()) if str(item).strip()]
@@ -4720,6 +4760,7 @@ def claim_next_queued_run(
             SELECT r.id
             FROM {_table('operation_runs')} r
             JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+            LEFT JOIN {_table('operation_batches')} b ON b.id=r.batch_id
             WHERE {' AND '.join(clauses)}
             ORDER BY r.created_at, r.id
             FOR UPDATE OF r SKIP LOCKED
@@ -4736,6 +4777,8 @@ def claim_next_queued_run(
             (run_id,),
         )
         run_meta = cur.fetchone()
+        if not run_meta or not _claim_extract_batch_capacity(conn, cur, run_meta):
+            return None
         account = (
             record_store.get_row(
                 record_store.ACCOUNTS,
@@ -5143,7 +5186,7 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
             (int(run_id),),
         )
         run = cur.fetchone()
-        if not run:
+        if not run or not _claim_extract_batch_capacity(conn, cur, run):
             return None
         account_id = int(run.get("account_id") or 0)
         account = (

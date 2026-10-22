@@ -43,6 +43,14 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
         value = str(uuid.uuid4())
         self.assertEqual(value, extract_link_batches.normalize_submission_id(value.upper()))
 
+    def test_workbench_config_exposes_safe_batch_worker_defaults(self):
+        with patch.object(extract_link_service, "_bool_setting", return_value=False), patch.object(
+            extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: 7 if key == "EXTRACT_LINK_BATCH_WORKERS" else default,
+        ):
+            result = extract_link_service.workbench_config()
+        self.assertEqual(7, result["batch_workers_default"])
+        self.assertEqual(16, result["batch_workers_max"])
+
     def test_more_than_500_accounts_share_one_batch_and_only_notify_once(self):
         candidates = {"total": 501, "items": [{"account_id": value} for value in range(1, 502)],
                       "filters": {"extract_status": "not_succeeded"}, "limit": 501}
@@ -131,6 +139,131 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         all_result = extract_link_service.preview_workbench_candidates(filters={"source": "icloud_hide", "extract_status": "all"}, limit=100)
         self.assertEqual({ids[0], ids[1], ids[6]}, {item["account_id"] for item in all_result["items"]})
 
+    def test_batch_workers_are_persisted_and_old_batches_keep_existing_limits(self):
+        self.accounts([{}, {}])
+        with self.provider_patches():
+            created = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="extract_only", limit=1, workers=3)
+            with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: 5 if key == "EXTRACT_LINK_BATCH_WORKERS" else default):
+                defaulted = extract_link_service.create_workbench_batch(
+                    provider_id="lumen_flow", mode="extract_only", limit=1)
+        self.assertEqual(3, extract_link_service.workbench_batch_detail(created["batch_id"])["workers"])
+        self.assertEqual(5, extract_link_service.workbench_batch_detail(defaulted["batch_id"])["workers"])
+        legacy = operation.create_runtime_batch(batch_type="extract_link", title="并发测试", requested_count=4, data={"workbench_batch": True})
+        self.assertIsNone(extract_link_service.workbench_batch_detail(legacy["id"])["workers"])
+
+    def test_batch_workers_strictly_validate_before_account_reads(self):
+        for value in (True, 0, 17, "2", 2.0):
+            with self.subTest(value=value), self.provider_patches(), self.assertRaises(ValueError):
+                extract_link_service.create_workbench_batch(
+                    provider_id="lumen_flow", mode="extract_only", workers=value)
+
+    def test_old_and_non_extract_batches_keep_their_existing_claim_behavior(self):
+        for batch_type, metadata in (("extract_link", {"workbench_batch": True}),
+                                     ("account_action", {"workbench_batch": True, "workers": 1})):
+            batch = operation.create_runtime_batch(batch_type=batch_type, title="旧批次", requested_count=2, data=metadata)
+            tasks = [operation.create_runtime_task(task_type="extract_link", batch_id=batch["id"], account_id=None,
+                         email="legacy@example.test") for _ in range(2)]
+            for task in tasks:
+                claimed = operation.claim_next_queued_run(execution_id="legacy", worker_pid=os.getpid())
+                self.assertEqual(task["run"]["id"], claimed["id"])
+
+    def test_parallel_claims_respect_batch_capacity_release_and_retry(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="并发测试", requested_count=4, data={"workbench_batch": True, "workers": 2})
+        account_ids = self.accounts([{}, {}, {}, {}])
+        tasks = [operation.create_runtime_task(task_type="extract_link", batch_id=batch["id"], account_id=account_id, email="workers@example.test",
+                    data={"provider_id": "lumen_flow"}) for account_id in account_ids]
+        barrier = threading.Barrier(4)
+        def claim(task):
+            barrier.wait(timeout=10)
+            return operation.claim_run(task["run"]["id"], execution_id=uuid.uuid4().hex, worker_pid=os.getpid())
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(claim, tasks))
+        claimed = [item for item in results if item]
+        self.assertEqual(2, len(claimed))
+        leases = {run["id"]: operation.acquire_account_lease(account_id=run["account_id"], run_id=run["id"]) for run in claimed}
+        self.assertTrue(all(leases.values()))
+        self.assertEqual([], operation.list_dispatchable_runs(task_types=("extract_link",)))
+        # 独立批次仍可认领，已满批次不会挡住后面的批次。
+        other = operation.create_runtime_batch(batch_type="extract_link", title="并发测试", requested_count=4, data={"workbench_batch": True, "workers": 1})
+        other_task = operation.create_runtime_task(task_type="extract_link", batch_id=other["id"], account_id=None, email="other@example.test")
+        self.assertEqual([other_task["run"]["id"]], [r["id"] for r in operation.list_dispatchable_runs(task_types=("extract_link",))])
+        operation.finish_run(claimed[0]["id"], status="failed", execution_id=claimed[0]["execution_id"], lease_token=leases[claimed[0]["id"]])
+        self.assertFalse(operation.release_account_lease(claimed[0]["id"], leases[claimed[0]["id"]]))
+        retry = operation.retry_runtime_task(claimed[0]["task_id"])
+        self.assertEqual(batch["id"], retry["batch_id"])
+        retried = operation.claim_run(retry["id"], execution_id="retry", worker_pid=os.getpid())
+        self.assertIsNotNone(retried)
+        retry_lease = operation.acquire_account_lease(account_id=retried["account_id"], run_id=retried["id"])
+        self.assertTrue(retry_lease)
+        queued = next(task for task in tasks if task["run"]["id"] not in {r["id"] for r in claimed})
+        self.assertIsNone(operation.claim_run(queued["run"]["id"], execution_id="blocked", worker_pid=os.getpid()))
+        operation.finish_run(retried["id"], status="cancelled", execution_id="retry", lease_token=retry_lease)
+        self.assertIsNotNone(operation.claim_run(queued["run"]["id"], execution_id="released", worker_pid=os.getpid()))
+
+    def test_dispatch_reserves_batch_and_provider_capacity_before_shared_workers(self):
+        for provider_limit, shared_workers, expected_first in ((4, 4, 3), (2, 4, 2), (4, 2, 2)):
+            with self.subTest(provider_limit=provider_limit, shared_workers=shared_workers):
+                self.assert_dispatch_capacity(provider_limit, shared_workers, expected_first)
+
+    def assert_dispatch_capacity(self, provider_limit, shared_workers, expected_first):
+        from core.account_operation_executor import AccountOperationExecutor
+        from core.operations import task_gateway
+
+        batches = [operation.create_runtime_batch(batch_type="extract_link", title="并发调度", requested_count=2,
+                   data={"workbench_batch": True, "workers": workers}) for workers in (1, 2)]
+        tasks = [operation.create_runtime_task(task_type="extract_link", batch_id=batch["id"], account_id=None, email="workers@example.test",
+                     data={"provider_id": "lumen_flow"}) for batch in batches for _ in range(2)]
+        executor = AccountOperationExecutor()
+        release = threading.Event()
+        started = threading.Condition()
+        active = []
+        errors = []
+        def handler(run_id):
+            try:
+                run = operation.claim_run(run_id, execution_id=str(run_id), worker_pid=os.getpid())
+                if not run:
+                    return
+                with started:
+                    active.append(run_id)
+                    started.notify_all()
+                release.wait(timeout=10)
+                operation.finish_run(run_id, status="success", execution_id=str(run_id))
+            except Exception as exc:
+                errors.append(exc)
+        try:
+            with (
+                patch("core.account_operation_executor.configured_workers", return_value=shared_workers),
+                patch.object(task_gateway, "_executor", return_value=executor),
+                patch.dict(task_gateway._DISPATCH_HANDLERS, {}, clear=True),
+                patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True),
+                patch.dict(task_gateway._DISPATCH_CAPACITY_COUNTS, {}, clear=True),
+                patch.object(extract_link_service, "_provider_dispatch_capacity_limit", return_value=provider_limit),
+            ):
+                task_gateway.register_dispatch_handler("extract_link", handler,
+                    dispatch_capacity_key=extract_link_service._provider_dispatch_capacity_key,
+                    dispatch_capacity_limit=extract_link_service._provider_dispatch_capacity_limit)
+                self.assertEqual(expected_first, task_gateway.dispatch_registered_once(limit=20))
+                with started:
+                    self.assertTrue(started.wait_for(lambda: len(active) == expected_first, timeout=10))
+                self.assertEqual({task["run"]["id"] for task in ([tasks[0]] + tasks[2:expected_first + 1])}, set(active))
+                self.assertEqual(shared_workers - expected_first, executor.available_slots())
+                self.assertEqual(0, task_gateway.dispatch_registered_once(limit=20))
+                release.set()
+                # 等待真实 worker 终态与容量回调，再运行剩余任务。
+                with executor._condition:
+                    self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
+                self.assertEqual(4 - expected_first, task_gateway.dispatch_registered_once(limit=20))
+                with executor._condition:
+                    self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
+                self.assertEqual([], errors)
+        finally:
+            release.set()
+            if executor._executor:
+                executor._executor.shutdown(wait=True)
+            for task in tasks:
+                task_gateway.release_dispatch(task["run"]["id"])
+
     def test_batch_creation_persists_membership_and_filtered_task_counts(self):
         ids = self.accounts([{}, {}, {"email_source": "domain"}])
         with self.provider_patches():
@@ -192,9 +325,10 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         ids = self.accounts([{}, {}, {}])
         submission_id = str(uuid.uuid4())
         with self.provider_patches(), patch.object(extract_link_batches, "candidate_accounts", wraps=extract_link_batches.candidate_accounts) as candidates:
-            first = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=1, submission_id=submission_id)
-            second = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=2, submission_id=submission_id)
+            first = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=1, submission_id=submission_id, workers=3)
+            second = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=2, submission_id=submission_id, workers=5)
         self.assertEqual(first, second)
+        self.assertEqual(3, extract_link_service.workbench_batch_detail(first["batch_id"])["workers"])
         self.assertEqual(1, candidates.call_count)
         self.assertEqual(1, extract_link_service.list_workbench_batches()["total"])
         tasks = extract_link_service.list_workbench_tasks()["items"]

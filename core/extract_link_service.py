@@ -387,6 +387,8 @@ def workbench_config() -> dict:
     if provider and not default_mode:
         default_mode = "extract_only" if "extract_only" in provider["modes"] else provider["modes"][0]
     return {
+        "batch_workers_default": _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 16),
+        "batch_workers_max": 16,
         "default_provider": default_provider,
         "default_mode": default_mode,
         "providers": providers,
@@ -1503,10 +1505,16 @@ def _cancel_unclaimed_native_run(run_id: int | None) -> None:
         logger.exception("[提链] 取消孤立 durable run 失败: run_id=%s", run_id)
 
 
-def _provider_dispatch_capacity_key(run: dict) -> str:
+def _provider_dispatch_capacity_key(run: dict) -> str | dict[str, int]:
     data = run.get("data") if isinstance(run, dict) else {}
     provider_id = str((data or {}).get("provider_id") or "legacy").strip().lower()
-    return provider_id if provider_id in _PROVIDER_SETTINGS else "invalid"
+    provider_id = provider_id if provider_id in _PROVIDER_SETTINGS else "invalid"
+    workers = run.get("batch_workers")
+    if run.get("batch_id") and isinstance(workers, int) and not isinstance(workers, bool) and 1 <= workers <= 16:
+        # 一次预约两个维度，批次满额时不消耗平台或共享 worker。
+        return {provider_id: _provider_dispatch_capacity_limit(provider_id),
+                f"batch:{int(run['batch_id'])}": workers}
+    return provider_id
 
 
 def _provider_dispatch_capacity_limit(provider_id: str) -> int:
@@ -1923,12 +1931,15 @@ def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 10
 def create_workbench_batch(
     *, title: str = "", provider_id: str, mode: str, filters: dict | None = None,
     limit: int = 100, type: str | None = None, options: dict | None = None,
-    submission_id: str | None = None,
+    submission_id: str | None = None, workers: int | None = None,
 ) -> dict:
     """按提交时筛选快照创建同一批次，逐个任务仍执行既有资格与占用检查。"""
     from core.storage import extract_link_batches, operation
 
     submission_id = extract_link_batches.normalize_submission_id(submission_id)
+    selected_workers = extract_link_batches.normalize_workers(
+        _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 16) if workers is None else workers,
+    )
     if submission_id:
         existing = extract_link_batches.submission_result(submission_id)
         if existing is not None:
@@ -1948,7 +1959,7 @@ def create_workbench_batch(
     if submission_id:
         reservation = extract_link_batches.reserve_submission(
             submission_id=submission_id, title=selected_title, provider_id=provider_id,
-            mode=mode, link_type=link_type, filters=filters, limit=limit,
+            mode=mode, link_type=link_type, filters=filters, limit=limit, workers=selected_workers,
         )
         if not reservation["created"]:
             return reservation["result"]
@@ -1964,7 +1975,7 @@ def create_workbench_batch(
             data={
                 "workbench_batch": True, "provider_id": provider_id, "mode": mode,
                 "link_type": link_type, "filters": candidates["filters"], "limit": candidates["limit"],
-                "submission_complete": False,
+                "submission_complete": False, "workers": selected_workers,
             },
         )
         batch_id = int(batch["id"])
@@ -2006,8 +2017,12 @@ def _workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
     else:
         status = "success" if counts["all"] else "failed"
     created_at = batch.get("created_at")
+    workers = data.get("workers")
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
+        workers = None
     return {
         "batch_id": int(batch["id"]), "title": str(batch.get("title") or "提链批次")[:240],
+        "workers": workers,
         "provider_id": str(data.get("provider_id") or "legacy"), "mode": str(data.get("mode") or "extract_only"),
         "status": status, "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
         "requested_count": requested, "started_count": counts["all"], "skipped_count": skipped,

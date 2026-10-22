@@ -1,7 +1,7 @@
 const EXTRACT_WORKBENCH_PAGE_SIZE = 20;
 let EXTRACT_WORKBENCH_ROOT = null;
 let EXTRACT_WORKBENCH_CONFIG = null;
-let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, preview:null, previewSignature:'', creating:false, submission:null};
+let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
 let EXTRACT_WORKBENCH_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_CONFIG_PROMISE = null;
@@ -172,7 +172,41 @@ function extractWorkbenchNode(selector) {
   return extractWorkbenchRoot()?.querySelector(selector) || null;
 }
 
+function extractWorkbenchBatchWorkersMax() {
+  const maximum = EXTRACT_WORKBENCH_CONFIG?.batch_workers_max;
+  return Number.isInteger(maximum) && maximum >= 1 && maximum <= 16 ? maximum : 16;
+}
+
+function extractWorkbenchBatchWorkersDefault() {
+  const workers = EXTRACT_WORKBENCH_CONFIG?.batch_workers_default;
+  return Number.isInteger(workers) && workers >= 1 && workers <= extractWorkbenchBatchWorkersMax() ? workers : 1;
+}
+
+function extractWorkbenchBatchWorkers() {
+  const input = extractWorkbenchNode('[data-workbench-batch-workers]');
+  const workers = input ? Number(input.value) : extractWorkbenchBatchWorkersDefault();
+  return Number.isInteger(workers) && workers >= 1 && workers <= extractWorkbenchBatchWorkersMax() ? workers : null;
+}
+
+function extractWorkbenchRenderBatchWorkers() {
+  const input = extractWorkbenchNode('[data-workbench-batch-workers]');
+  if (!input) return;
+  input.min = '1';
+  input.max = String(extractWorkbenchBatchWorkersMax());
+  input.step = '1';
+  if (!EXTRACT_WORKBENCH_STATE.batchWorkersInitialized) {
+    input.value = String(extractWorkbenchBatchWorkersDefault());
+    EXTRACT_WORKBENCH_STATE.batchWorkersInitialized = true;
+  }
+  const hint = extractWorkbenchNode('[data-workbench-concurrency-hint]');
+  const workers = extractWorkbenchBatchWorkers();
+  if (hint) hint.textContent = workers
+    ? `本批最多同时运行 ${workers} 个账号，仍受平台与共享执行额度限制。`
+    : `批次并发请输入 1 到 ${extractWorkbenchBatchWorkersMax()} 的整数。`;
+}
+
 function extractWorkbenchRenderProviders() {
+  extractWorkbenchRenderBatchWorkers();
   const config = EXTRACT_WORKBENCH_CONFIG || {providers: []};
   const providers = Array.isArray(config.providers) ? config.providers : [];
   const providerSelect = extractWorkbenchNode('[data-workbench-provider]');
@@ -225,7 +259,7 @@ function extractWorkbenchRenderModes() {
   const createButton = extractWorkbenchNode('[data-workbench-create]');
   const previewValid = EXTRACT_WORKBENCH_STATE.previewSignature === extractWorkbenchCandidateSignature();
   const count = previewValid ? Number(EXTRACT_WORKBENCH_STATE.preview?.selected_count || 0) : 0;
-  if (createButton) createButton.disabled = EXTRACT_WORKBENCH_STATE.creating || !provider || !modes.includes(modeSelect.value) || count === 0;
+  if (createButton) createButton.disabled = EXTRACT_WORKBENCH_STATE.creating || !provider || !modes.includes(modeSelect.value) || count === 0 || extractWorkbenchBatchWorkers() === null;
   const selectedCount = extractWorkbenchNode('[data-workbench-selection-count]');
   if (selectedCount) selectedCount.textContent = `本批计划运行 ${count.toLocaleString('zh-CN')} 个账号`;
 }
@@ -246,7 +280,7 @@ function extractWorkbenchRenderBatches() {
   const summary = extractWorkbenchNode('[data-workbench-batch-summary]');
   const batch = EXTRACT_WORKBENCH_STATE.batchDetail;
   if (summary) summary.innerHTML = batch
-    ? `<strong>${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)}</strong><span>${extractWorkbenchEscape(extractWorkbenchTime(batch.created_at))} · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))}</span><span>计划 ${Number(batch.requested_count || 0)} · 入队 ${Number(batch.started_count || 0)} · 跳过 ${Number(batch.skipped_count || 0)} · 提交失败 ${Number(batch.submission_failed_count || 0)}${batch.submission_incomplete ? ' · 本批提交未完整完成，请核对已入队任务' : ''}</span>`
+    ? `<strong>${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)}</strong><span>${extractWorkbenchEscape(extractWorkbenchTime(batch.created_at))} · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))} · ${Number.isInteger(batch.workers) && batch.workers >= 1 && batch.workers <= 16 ? `并发 ${batch.workers}` : '沿用平台并发'}</span><span>计划 ${Number(batch.requested_count || 0)} · 入队 ${Number(batch.started_count || 0)} · 跳过 ${Number(batch.skipped_count || 0)} · 提交失败 ${Number(batch.submission_failed_count || 0)}${batch.submission_incomplete ? ' · 本批提交未完整完成，请核对已入队任务' : ''}</span>`
     : '<span>选择批次查看本批进度；全部任务保留历史单独提链记录。</span>';
   const pages = Math.max(1, Math.ceil(EXTRACT_WORKBENCH_STATE.batchTotal / 20));
   const label = extractWorkbenchNode('[data-workbench-batch-page-label]');
@@ -444,10 +478,15 @@ async function extractWorkbenchSubmit() {
   const selected = extractWorkbenchCreatePayload([], providerId, requestedMode);
   const count = Number(EXTRACT_WORKBENCH_STATE.preview?.selected_count || 0);
   if (EXTRACT_WORKBENCH_STATE.creating || !count || !selected.mode || EXTRACT_WORKBENCH_STATE.previewSignature !== extractWorkbenchCandidateSignature()) return;
-  const payload = {title:extractWorkbenchNode('[data-workbench-batch-title]')?.value?.trim() || '',provider_id:selected.provider_id,mode:selected.mode,type:selected.type,filters:extractWorkbenchCandidateFilters(),limit:Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 100)};
+  const workers = extractWorkbenchBatchWorkers();
+  const feedback = extractWorkbenchNode('[data-workbench-create-feedback]');
+  if (workers === null) {
+    if (feedback) feedback.textContent = `批次并发请输入 1 到 ${extractWorkbenchBatchWorkersMax()} 的整数。`;
+    return;
+  }
+  const payload = {workers,title:extractWorkbenchNode('[data-workbench-batch-title]')?.value?.trim() || '',provider_id:selected.provider_id,mode:selected.mode,type:selected.type,filters:extractWorkbenchCandidateFilters(),limit:Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 100)};
   const button = extractWorkbenchNode('[data-workbench-create]');
   if (button) button.disabled = true;
-  const feedback = extractWorkbenchNode('[data-workbench-create-feedback]');
   if (payload.mode === 'auto_payment' && !window.confirm(`将为本批约 ${count} 个账号启用自动支付任务，确认继续？`)) {
     if (button) button.disabled = false;
     return;
@@ -607,6 +646,11 @@ function extractWorkbenchBindEvents() {
     if (event.target.matches('[data-workbench-provider], [data-workbench-mode]')) extractWorkbenchRenderModes();
   });
   root.addEventListener('input', event => {
+    if (event.target.matches('[data-workbench-batch-workers]')) {
+      EXTRACT_WORKBENCH_STATE.batchWorkersInitialized = true;
+      extractWorkbenchRenderBatchWorkers();
+      extractWorkbenchRenderModes();
+    }
     if (event.target.matches('[data-workbench-account-query], [data-workbench-batch-limit], [data-workbench-date-from], [data-workbench-date-to]')) extractWorkbenchInvalidatePreview();
     if (event.target.matches('[data-workbench-query]')) {
       clearTimeout(EXTRACT_WORKBENCH_QUERY_TIMER);

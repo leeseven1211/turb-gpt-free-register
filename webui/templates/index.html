@@ -7,9 +7,9 @@
   <title>GPT 注册控制台</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-batches') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-compact-v2') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -321,25 +321,17 @@
     </section>
   </div>
 
-  <section id="tab-extract-workbench" class="hidden" aria-labelledby="extractWorkbenchTitle">
+  <section id="tab-extract-workbench" class="hidden" aria-label="提链工作台">
     <div class="extract-workbench-page" id="extractWorkbenchRoot">
-      <header class="extract-workbench-header">
-        <div>
-          <p class="extract-workbench-kicker">业务工作区 / Plus 流程</p>
-          <h1 id="extractWorkbenchTitle">提链工作台</h1>
-          <p class="extract-workbench-subtitle">查看出链、支付平台处理和 Plus 到账核实进度</p>
-        </div>
-        <div class="extract-workbench-head-actions">
+      <div class="extract-workbench-toolbar" role="group" aria-label="提链批次操作">
+        <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
+        <div class="extract-workbench-batch-query">
+          <label class="extract-workbench-batch-picker"><span>批次查询</span><select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
+          <button type="button" class="btn extract-workbench-all-batches" data-workbench-all-batches>全部任务</button>
           <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
-          <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         </div>
-      </header>
-      <section class="extract-workbench-batch-bar" aria-label="提链批次">
-        <label class="extract-workbench-batch-picker"><span>提链批次</span><select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
-        <div class="extract-workbench-batch-summary" data-workbench-batch-summary role="status">按批次查看提链进度与结果</div>
-        <button type="button" class="btn extract-workbench-all-batches" data-workbench-all-batches>全部任务</button>
-        <nav class="extract-workbench-batch-pagination" aria-label="历史提链批次分页"><button type="button" class="btn" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" class="btn" data-workbench-batch-page="next" disabled>下一组</button></nav>
-      </section>
+      </div>
+      <div class="extract-workbench-batch-summary" data-workbench-batch-summary role="status">按批次查看提链进度与结果</div>
       <section class="extract-workbench-list" aria-label="提链任务记录">
         <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
         <div class="extract-workbench-filters" role="search" aria-label="筛选提链任务">
@@ -349,11 +341,14 @@
           <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
         </div>
         <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
+        <div class="extract-workbench-pagination">
+        <nav class="extract-workbench-batch-pagination" aria-label="历史提链批次分页"><span>历史批次</span><button type="button" class="btn" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" class="btn" data-workbench-batch-page="next" disabled>下一组</button></nav>
         <nav class="extract-workbench-pager" aria-label="提链任务分页">
           <button type="button" class="btn" data-workbench-page="prev" disabled>上一页</button>
           <span data-workbench-page-label>第 1 页</span>
           <button type="button" class="btn" data-workbench-page="next" disabled>下一页</button>
         </nav>
+        </div>
       </section>
       <dialog class="extract-workbench-create-dialog" data-workbench-create-dialog aria-labelledby="extractWorkbenchCreateTitle" aria-describedby="extractWorkbenchCreateHint">
         <div class="extract-workbench-section-head">
@@ -364,7 +359,9 @@
           <label class="extract-workbench-batch-name">批次名称<input type="text" data-workbench-batch-title maxlength="120" placeholder="选填，例如：10 月 14 日账号提链" autocomplete="off"></label>
           <label>平台<select data-workbench-provider></select></label>
           <label>运行模式<select data-workbench-mode></select></label>
+          <label>批次并发<input type="number" data-workbench-batch-workers value="1" min="1" max="16" step="1" inputmode="numeric" aria-describedby="extractWorkbenchConcurrencyHint"></label>
         </div>
+        <p class="extract-workbench-concurrency-hint" id="extractWorkbenchConcurrencyHint" data-workbench-concurrency-hint>设置本批同时运行的账号数，实际并发同时受平台和共享账号操作上限限制。</p>
         <section class="extract-workbench-candidate-section" aria-labelledby="extractWorkbenchCandidateTitle">
           <div class="extract-workbench-candidate-head"><h3 id="extractWorkbenchCandidateTitle">筛选本批账号</h3><p>仅匹配活跃、未归档且具备 Plus 免费试用资格的 free 账号；提交前仍会在线查活。</p></div>
           <div class="extract-workbench-create-controls extract-workbench-candidate-filters">
@@ -1008,6 +1005,6 @@
 <script src="{{ url_for('static', filename='js/modern/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-batches') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-compact-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

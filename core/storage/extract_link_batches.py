@@ -11,6 +11,7 @@ from core.storage import operation
 
 
 MAX_BATCH_SIZE = 5000
+MAX_BATCH_WORKERS = 16
 _FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 
@@ -49,6 +50,13 @@ def normalize_limit(limit: int) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_BATCH_SIZE:
         raise ValueError(f"本批数量必须在 1 至 {MAX_BATCH_SIZE} 之间")
     return limit
+
+
+def normalize_workers(workers: int) -> int:
+    """每批并发只接受整数，不把布尔值或小数隐式转为并发数。"""
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_BATCH_WORKERS:
+        raise ValueError(f"本批并发必须在 1 至 {MAX_BATCH_WORKERS} 之间")
+    return workers
 
 
 def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=None) -> dict:
@@ -133,7 +141,7 @@ def submission_result(submission_id: str) -> dict | None:
 
 
 def reserve_submission(*, submission_id: str, title: str, provider_id: str, mode: str,
-                       link_type: str, filters: dict | None, limit: int) -> dict:
+                       link_type: str, filters: dict | None, limit: int, workers: int | None = None) -> dict:
     """锁定提交标识，原子保存候选快照与批次身份，再由提交者创建子任务。"""
     operation.init()
     with operation._connect() as conn, conn.cursor() as cur:
@@ -150,6 +158,7 @@ def reserve_submission(*, submission_id: str, title: str, provider_id: str, mode
             "link_type": link_type, "filters": candidates["filters"], "limit": candidates["limit"],
             "submission_id": submission_id, "submission_account_ids": ids,
             "submission_complete": False,
+            **({"workers": normalize_workers(workers)} if workers is not None else {}),
         }
         cur.execute(
             f"""INSERT INTO {operation._table('operation_batches')}
@@ -181,6 +190,7 @@ def batch_rows(*, page: int = 1, page_size: int = 20, batch_id: int | None = Non
             f"""SELECT b.id, b.title, b.status, b.requested_count, b.skipped_count,
                        b.created_at, jsonb_build_object(
                            'provider_id', b.data->'provider_id', 'mode', b.data->'mode',
+                           'workers', b.data->'workers',
                            'submission_complete', b.data->'submission_complete',
                            'submission_skipped', b.data->'submission_skipped',
                            'submission_failed', b.data->'submission_failed'

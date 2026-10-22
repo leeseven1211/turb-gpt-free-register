@@ -326,3 +326,71 @@ test('邮箱来源复用账号现有枚举，域名邮箱和 Butler 等来源不
   assert.equal(api.accountSources().remail,'Remail');
   assert.equal(api.accountSources().domain,undefined);
 });
+
+
+test('批次配置初始化默认并发，刷新保留用户已编辑的值', async () => {
+  const {api, window}=createView();
+  const workers={value:'1'};
+  const hint={textContent:''};
+  const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-concurrency-hint]':hint};
+  api.setRoot({querySelector:selector=>selectors[selector] || null,addEventListener(){}});
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__=async endpoint=>endpoint.endsWith('/config')
+    ? {providers:[],batch_workers_default:4,batch_workers_max:16}
+    : {items:[],counts:{},total:0,page:1};
+  await api.load({force:true});
+  assert.equal(workers.value,'4');
+  assert.equal(workers.min,'1');
+  assert.equal(workers.max,'16');
+  assert.match(hint.textContent,/并发|同时/);
+  workers.value='7';
+  await api.load({force:true});
+  assert.equal(workers.value,'7');
+});
+
+test('提交携带批次并发，连接失败重试保留标识，修改并发生成新标识', async () => {
+  const {api,window}=createView();
+  const workers={value:'4'};
+  const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}],batch_workers_default:1,batch_workers_max:16});
+  api.setRoot({querySelector:selector=>selectors[selector] || null});
+  api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
+  const posted=[];
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__=async (endpoint,options)=>{
+    posted.push(JSON.parse(options.body)); throw new Error('连接中断');
+  };
+  await api.submit();
+  await api.submit();
+  assert.equal(posted[0].workers,4);
+  assert.equal(posted[0].submission_id,posted[1].submission_id);
+  workers.value='8';
+  await api.submit();
+  assert.equal(posted[2].workers,8);
+  assert.notEqual(posted[0].submission_id,posted[2].submission_id);
+});
+
+test('批次并发空值、非整数和超范围时不发送创建请求', async () => {
+  for (const value of ['', '0', '17', '1.5', 'abc']) {
+    const {api,requests}=createView();
+    const feedback={textContent:''};
+    const selectors={'[data-workbench-batch-workers]':{value},'[data-workbench-provider]':{value:'lumen_flow'},
+      '[data-workbench-mode]':{value:'extract_only'},'[data-workbench-create-feedback]':feedback};
+    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}],batch_workers_default:1,batch_workers_max:16});
+    api.setRoot({querySelector:selector=>selectors[selector] || null});
+    api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
+    await api.submit();
+    assert.equal(requests.length,0,`非法并发 ${value} 不应发起请求`);
+    assert.match(feedback.textContent,/并发.*1.*16/);
+  }
+});
+
+test('批次摘要显示本批并发，历史批次显示沿用平台并发', () => {
+  const {api}=createView();
+  const summary={innerHTML:''};
+  api.setRoot({querySelector:selector=>selector==='[data-workbench-batch-summary]' ? summary : null});
+  api.setState({batchDetail:{batch_id:7,title:'当前批次',workers:4}});
+  api.renderBatches();
+  assert.match(summary.innerHTML,/并发 4/);
+  api.setState({batchDetail:{batch_id:6,title:'历史批次',workers:null}});
+  api.renderBatches();
+  assert.match(summary.innerHTML,/平台并发/);
+});

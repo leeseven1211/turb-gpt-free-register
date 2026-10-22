@@ -24,6 +24,7 @@ _LINK_KINDS = {"extract", "payment"}
 _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
 _MAX_BATCH_SIZE = 5000
+_MAX_BATCH_WORKERS = 16
 _CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _BATCH_COUNT_FIELDS = (
@@ -100,7 +101,8 @@ def _safe_count(value: Any) -> int:
 def _public_batch(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict) or _safe_count(value.get("batch_id")) < 1:
         return None
-    result = {"batch_id": value["batch_id"]}
+    workers = value.get("workers")
+    result = {"batch_id": value["batch_id"], "workers": workers if _valid_batch_workers(workers) else None}
     for field in ("title", "provider_id", "mode", "status", "created_at"):
         if field in value:
             result[field] = value[field]
@@ -137,6 +139,10 @@ def _candidate_filters(value: Any) -> dict[str, str] | None:
     return result
 
 
+def _valid_batch_workers(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= _MAX_BATCH_WORKERS
+
+
 def _public_config(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict) or not isinstance(value.get("providers"), list):
         return None
@@ -159,6 +165,8 @@ def _public_config(value: Any) -> dict[str, Any] | None:
         "default_provider": default_provider if _valid_identifier(default_provider) else "",
         "default_mode": default_mode if isinstance(default_mode, str) and default_mode in _MODES else "",
         "providers": providers,
+        "batch_workers_default": value.get("batch_workers_default") if _valid_batch_workers(value.get("batch_workers_default")) else 1,
+        "batch_workers_max": _MAX_BATCH_WORKERS,
     }
 
 
@@ -274,7 +282,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
 
     @bp.post("/api/extract-workbench/batches")
     def create_extract_workbench_batch():
-        data, error = _parse_object_body({"title", "provider_id", "mode", "type", "options", "filters", "limit", "submission_id"})
+        data, error = _parse_object_body({"title", "provider_id", "mode", "type", "options", "filters", "limit", "submission_id", "workers"})
         if error is not None:
             return error
         title = data.get("title", "")
@@ -291,6 +299,8 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         filters = _candidate_filters(data.get("filters", {}))
         limit = data.get("limit", 100)
         link_type, options = data.get("type"), data.get("options", {})
+        if "workers" in data and not _valid_batch_workers(data["workers"]):
+            return _error("批次并发必须是 1 到 16 的整数", 400)
         if not isinstance(title, str) or len(title) > 120:
             return _error("批次名称最多 120 个字符", 400)
         if not _valid_identifier(provider_id) or not isinstance(mode, str) or mode not in _MODES:
@@ -308,6 +318,8 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         }
         if link_type is not None:
             payload["type"] = link_type
+        if "workers" in data:
+            payload["workers"] = data["workers"]
         try:
             result = extract_link_service.create_workbench_batch(**payload)
         except ValueError:

@@ -1493,41 +1493,48 @@ def _reserve_dispatch_capacity(
     task_type: str,
     run: Mapping[str, Any],
     handler: tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]] | None,
-) -> tuple[bool, tuple[str, str] | None]:
+) -> tuple[bool, tuple[tuple[str, str], ...] | None]:
+    """在占用共享 worker 前，一次预约平台和批次等全部容量维度。
+
+    旧 key 回调仍可返回字符串；多个门限使用 key 到 limit 的映射。
+    """
     if handler is None:
         return True, None
     key_fn, limit_fn = handler
     try:
         raw_key = key_fn(run)
-        key = "" if raw_key is None else str(raw_key).strip()
-        limit = max(0, int(limit_fn(key)))
+        if isinstance(raw_key, Mapping):
+            requirements = {str(key).strip(): max(0, int(value)) for key, value in raw_key.items()}
+        else:
+            key = "" if raw_key is None else str(raw_key).strip()
+            requirements = {key: max(0, int(limit_fn(key)))}
+        if not requirements or any(not key for key in requirements):
+            raise ValueError("容量 key 不能为空")
     except (TypeError, ValueError, KeyError):
         logger.warning("durable operation 容量配置无效：task_type=%s", task_type)
         return False, None
     except Exception:
         logger.exception("读取 durable operation 容量配置失败：task_type=%s", task_type)
         return False, None
-    if not key:
-        logger.warning("durable operation 容量 key 为空：task_type=%s", task_type)
-        return False, None
-    token = (task_type, key)
+    tokens = tuple((task_type, key) for key in requirements)
     with _DISPATCH_CAPACITY_LOCK:
-        active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
-        if active >= limit:
+        if any(_DISPATCH_CAPACITY_COUNTS.get(token, 0) >= requirements[token[1]] for token in tokens):
             return False, None
-        _DISPATCH_CAPACITY_COUNTS[token] = active + 1
-    return True, token
+        for token in tokens:
+            _DISPATCH_CAPACITY_COUNTS[token] = _DISPATCH_CAPACITY_COUNTS.get(token, 0) + 1
+    return True, tokens
 
 
-def _release_dispatch_capacity(token: tuple[str, str] | None) -> None:
-    if token is None:
+def _release_dispatch_capacity(tokens: tuple[tuple[str, str], ...] | None) -> None:
+    if tokens is None:
         return
     with _DISPATCH_CAPACITY_LOCK:
-        active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
-        if active <= 1:
-            _DISPATCH_CAPACITY_COUNTS.pop(token, None)
-        else:
-            _DISPATCH_CAPACITY_COUNTS[token] = active - 1
+        for token in tokens:
+            active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
+            if active <= 1:
+                _DISPATCH_CAPACITY_COUNTS.pop(token, None)
+            else:
+                _DISPATCH_CAPACITY_COUNTS[token] = active - 1
 
 
 def dispatch_registered_once(*, limit: int | None = None) -> int:
