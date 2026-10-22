@@ -819,6 +819,65 @@ def test_historical_registration_password_running_is_not_fabricated_as_success()
                 assert snapshot["outcome"]["status"] == "success"
 
 
+def test_registration_pending_password_closeout_keeps_child_record_gap():
+    events = [
+        _event("password-start", "password", "running", created_at="2026-10-22T03:00:00Z"),
+        _event("otp-done", "email_otp", "success", created_at="2026-10-22T03:00:10Z"),
+        _event("token-done", "token", "success", created_at="2026-10-22T03:00:20Z"),
+        _event("password-closeout", "password", "pending", created_at="2026-10-22T03:00:30Z",
+               message="任务已结束，但此阶段缺少完成记录", detail={"evidence": "unconfirmed"}),
+    ]
+    for task_type in ("registration", "registration_resume"):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run("success"), events)
+        authenticate = _step(snapshot, "authenticate")
+        password = next(child for child in authenticate["children"] if child["id"] == "password")
+
+        assert password["state"] == "pending"
+        assert password["display_status"] == "record_incomplete"
+        assert password["evidence"] == "unconfirmed"
+        assert password["started_at"] == "2026-10-22T03:00:00Z"
+        assert password["completed_at"] is None
+        assert password["duration_ms"] is None
+        assert password["event_ids"] == ["password-start", "password-closeout"]
+        assert [attempt["state"] for attempt in password["attempts"]] == ["running", "pending"]
+        assert snapshot["outcome"]["status"] == "success"
+
+
+def test_registration_unconfirmed_password_survives_legacy_authentication_child():
+    for task_type in ("registration", "registration_resume"):
+        for later_token, expected_display in ((False, "unconfirmed"), (True, "record_incomplete")):
+            events = [
+                _event("password-start", "password", "running", created_at="2026-10-22T03:00:00Z"),
+                _event("otp-done", "email_otp", "success", created_at="2026-10-22T03:00:10Z"),
+            ]
+            if later_token:
+                events.append(_event("token-done", "token", "success", created_at="2026-10-22T03:00:20Z"))
+            events.append(_event("password-closeout", "password", "pending", created_at="2026-10-22T03:00:30Z",
+                                 message="任务已结束，但此阶段缺少完成记录", detail={"evidence": "unconfirmed"}))
+            run = _run("success", progress_steps={
+                "submit_email": {
+                    "state": "success", "evidence": "explicit", "started_at": "2026-10-22T02:59:50Z",
+                    "completed_at": "2026-10-22T02:59:55Z",
+                },
+            })
+            snapshot = build_progress_snapshot(1, 2, task_type, run, events)
+            authenticate = _step(snapshot, "authenticate")
+            password = next(child for child in authenticate["children"] if child["id"] == "password")
+            submit_email = next(child for child in authenticate["children"] if child["id"] == "submit_email")
+
+            assert authenticate["state"] == "pending"
+            assert authenticate["display_status"] == expected_display
+            assert authenticate["evidence"] == "unconfirmed"
+            assert authenticate["completed_at"] is None
+            assert authenticate["duration_ms"] is None
+            assert password["state"] == "pending"
+            assert password["display_status"] == expected_display
+            assert password["completed_at"] is None
+            assert password["event_ids"] == ["password-start", "password-closeout"]
+            assert submit_email["state"] == submit_email["display_status"] == "success"
+            assert snapshot["outcome"]["status"] == "success"
+
+
 def test_registration_password_failure_retains_authentication_failure_location():
     events = [
         _event("password-start", "password", "running", created_at="2026-10-22T03:00:00Z"),

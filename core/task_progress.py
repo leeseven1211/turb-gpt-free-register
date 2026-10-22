@@ -686,7 +686,7 @@ def _close_terminal_steps(
             _state(item, "pending", display=display, reason=reason)
             item["evidence"] = "unconfirmed"
         for child in item.get("children", []):
-            if child.get("state") == "running":
+            if child.get("state") == "running" or (child.get("state") == "pending" and child.get("evidence") == "unconfirmed"):
                 display = "record_incomplete" if started_later else unresolved_display
                 _state(child, "pending", display=display, reason="子阶段已开始，但缺少结束事件")
                 child["evidence"] = "unconfirmed"
@@ -896,6 +896,9 @@ def _project_registration_authentication(
     else:
         state = "pending"
     _state(item, state)
+    if state == "pending" and any(child.get("evidence") == "unconfirmed" for child in observed):
+        # 其他子阶段的明确记录不能覆盖尚未确认的认证结果。
+        item["evidence"] = "unconfirmed"
     if state == "running" and all(child.get("state") in {"success", "skipped"} for child in observed):
         item["reason"] = "已完成当前准备阶段，等待身份验证结果"
     elif state == "success" and confirmation and confirmation.get("main_step_id") == "token":
