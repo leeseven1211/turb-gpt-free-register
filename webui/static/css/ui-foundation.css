@@ -3577,6 +3577,11 @@ table[data-resizable-table="codex"] {
   line-height: var(--ui-line-height-tight);
 }
 
+/* 无国家前缀的单行状态占满内容区，避免落在双行布局的首行。 */
+#accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single:has(> .account-promotion-country-row > .account-promotion-label:only-child) {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row {
   width: fit-content;
   max-width: 100%;
