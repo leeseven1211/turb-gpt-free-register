@@ -1638,6 +1638,13 @@ def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
         logger.exception("周期性恢复中断 Run 失败")
         return 0
     _reconcile_recovered_projections()
+    if recovered:
+        try:
+            from core import extract_link_service
+
+            extract_link_service.resume_known_remote_jobs()
+        except Exception:
+            logger.exception("恢复中断的提链远端状态同步失败")
     return recovered
 
 

@@ -179,6 +179,64 @@ def get_provider_job_public(run_id: int) -> dict | None:
     return result
 
 
+def has_unresolved_auto_payment(account_id: int) -> bool:
+    """检查该账号是否有已成功或尚未收敛的自动付款请求。"""
+    operation_store.init()
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM {operation_store._table('operation_tasks')} task
+                JOIN {operation_store._table('operation_runs')} run ON run.task_id=task.id
+                LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+                WHERE task.task_type='extract_link'
+                  AND task.account_id=%s
+                  AND COALESCE(run.data->>'mode', task.data->>'mode')='auto_payment'
+                  AND (
+                      job.payment_state IN ('pending', 'unknown', 'succeeded')
+                      OR run.result_summary->>'payment_status' IN ('pending', 'unknown', 'succeeded')
+                      OR (
+                          run.data->'remote_intent'->>'action'='extract_link_create'
+                          AND COALESCE(
+                              run.data->'remote_intent'->>'receipt_state',
+                              run.data->'remote_intent'->>'state', 'started'
+                          ) NOT IN ('rejected', 'not_submitted')
+                          AND COALESCE(job.payment_state, run.result_summary->>'payment_status', 'not_started')
+                              NOT IN ('failed', 'succeeded')
+                      )
+                  )
+            ) AS unresolved
+            """,
+            (int(account_id),),
+        )
+        row = cur.fetchone() or {}
+    return bool(row.get("unresolved"))
+
+
+def list_recoverable_workbench_jobs() -> list[dict]:
+    """读取重启后需要继续同步的原生提链任务，不包含远端私有凭据。"""
+    operation_store.init()
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT task.id AS task_id,
+                   run.id AS run_id,
+                   COALESCE(job.provider_id, run.data->>'provider_id', task.data->>'provider_id', 'legacy') AS provider_id,
+                   COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') AS mode
+            FROM {operation_store._table('operation_tasks')} task
+            JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
+            JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+            WHERE task.task_type='extract_link'
+              AND task.source_system='native_operations'
+              AND run.status='attention_required'
+              AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL
+            ORDER BY job.updated_at, run.id
+            """
+        )
+        return [operation_store._row(dict(row)) or {} for row in cur.fetchall()]
+
+
 def list_workbench_rows(
     *, provider_id: str | None = None, mode: str | None = None, query: str = "",
 ) -> list[dict]:

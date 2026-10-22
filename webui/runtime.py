@@ -1916,6 +1916,12 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
                 "已修复 %s 个底层已结束但统一任务仍显示活动的兼容投影",
                 repaired_compatibility_projections,
             )
+        try:
+            resumed_extract_jobs = extract_link_service.resume_known_remote_jobs()
+            if resumed_extract_jobs:
+                active_logger.warning("已为 %s 个中断的提链远端任务排队状态同步", resumed_extract_jobs)
+        except Exception:
+            active_logger.exception("恢复中断的提链远端状态同步失败")
         registration_recovery = _legacy_recovery_exclusions(
             {"registration_resume"},
             legacy_source_systems=("registration_jobs",),

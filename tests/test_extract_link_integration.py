@@ -406,6 +406,7 @@ class ExtractLinkServiceTests(unittest.TestCase):
 
     def test_enqueue_creates_native_extract_run_without_legacy_executor(self):
         with (
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
             patch.object(extract_link_service.db, "get_account", return_value={"id": 7, "email": "masked@example.com"}),
             patch.object(extract_link_service, "_select_account_link_type", return_value=("pix", None)),
             patch.object(extract_link_service, "_cdk", return_value="cdk"),
@@ -459,6 +460,41 @@ class ExtractLinkServiceTests(unittest.TestCase):
         )
         self.assertNotIn("access_token", submit.call_args.kwargs)
         self.assertNotIn("cdk", result)
+
+    def test_enqueue_rejects_when_global_or_legacy_extract_switch_is_off(self):
+        with (
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=False),
+            patch.object(extract_link_service.db, "get_account", return_value={"id": 7, "email": "masked@example.com"}),
+            patch.object(extract_link_service.db, "claim_account_extract") as claim,
+            patch.object(extract_link_service, "_submit_native_extract") as submit,
+        ):
+            result = extract_link_service.enqueue_account_extract(
+                account_id=7,
+                email="masked@example.com",
+                access_token="token",
+            )
+
+        self.assertFalse(result["accepted"])
+        self.assertFalse(result["busy"])
+        claim.assert_not_called()
+        submit.assert_not_called()
+
+    def test_queued_legacy_handler_respects_disabled_global_switch(self):
+        context = Mock()
+        context.run = {"data": {"link_type": "pix"}}
+        context.account_id = 7
+        with (
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=False),
+            patch.object(extract_link_service, "_run_extract") as run_extract,
+        ):
+            extract_link_service._handle_extract_operation(context)
+
+        context.finish.assert_called_once_with(
+            status="failed",
+            message="提链平台或提取能力已关闭",
+            error="提链功能未启用",
+        )
+        run_extract.assert_not_called()
 
     def test_failed_extract_task_retry_uses_recorded_type_for_fallback(self):
         context = runtime.WebUIContext(Mock(), Mock())

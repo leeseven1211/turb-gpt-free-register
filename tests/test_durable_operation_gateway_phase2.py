@@ -1063,12 +1063,14 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
             with (
                 patch.object(task_gateway, "_operation") as operation_module,
                 patch.object(task_gateway, "_reconcile_recovered_projections") as reconcile,
+                patch("core.extract_link_service.resume_known_remote_jobs") as resume_extract,
             ):
                 operation_module.return_value.recover_interrupted_runtime_runs.return_value = 1
                 self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=60.0))
                 self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=90.0))
                 self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=121.0))
                 self.assertEqual(2, reconcile.call_count)
+                self.assertEqual(2, resume_extract.call_count)
         finally:
             task_gateway._LAST_RUNTIME_RECOVERY_AT = previous
 

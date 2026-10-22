@@ -132,3 +132,72 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertEqual("succeeded", rows[0]["extraction_state"])
         self.assertEqual(["https://example.test/result"], rows[0]["public_state"]["links"])
         self.assertNotIn("private-resume-secret", repr(rows))
+
+    def test_unresolved_auto_payment_includes_unknown_payment_without_remote_job_id(self):
+        from core.storage import extract_link_jobs
+
+        payment_task = operation.create_runtime_task(
+            task_type="extract_link",
+            account_id=77,
+            email="redacted@example.test",
+            trigger="test",
+            data={"provider_id": "lumen_flow", "mode": "auto_payment"},
+        )
+        extract_link_jobs.save_provider_job(
+            int(payment_task["run"]["id"]),
+            "lumen_flow",
+            None,
+            {"extraction_state": "unknown", "payment_state": "unknown"},
+            {},
+        )
+
+        extraction_task = operation.create_runtime_task(
+            task_type="extract_link",
+            account_id=78,
+            email="redacted@example.test",
+            trigger="test",
+            data={"provider_id": "lumen_flow", "mode": "extract_only"},
+        )
+        extract_link_jobs.save_provider_job(
+            int(extraction_task["run"]["id"]),
+            "lumen_flow",
+            None,
+            {"extraction_state": "unknown", "payment_state": "unknown"},
+            {},
+        )
+
+        self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(77))
+        self.assertFalse(extract_link_jobs.has_unresolved_auto_payment(78))
+
+    def test_recoverable_remote_jobs_only_include_interrupted_current_runs(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(
+            task_type="extract_link",
+            account_id=77,
+            email="redacted@example.test",
+            trigger="test",
+            source_system="native_operations",
+            data={"provider_id": "lumen_flow", "mode": "auto_payment"},
+        )
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(
+            run_id,
+            "lumen_flow",
+            "remote-job-4",
+            {"extraction_state": "running", "payment_state": "pending"},
+            {},
+        )
+        operation.finish_run(
+            run_id,
+            status="attention_required",
+            message="worker restarted",
+        )
+
+        rows = extract_link_jobs.list_recoverable_workbench_jobs()
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(int(task["id"]), rows[0]["task_id"])
+        self.assertEqual(run_id, rows[0]["run_id"])
+        self.assertEqual("lumen_flow", rows[0]["provider_id"])
+        self.assertEqual("auto_payment", rows[0]["mode"])
