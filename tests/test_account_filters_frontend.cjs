@@ -109,6 +109,42 @@ test('注册驱动选项与显示名一致，包含未记录，多选回显且�
   assert.equal(view.columnFilterValue(control), 'protocol_oss,unknown');
 });
 
+test('切换注册驱动筛选后，接口返回前不继续展示上一次的行', async () => {
+  const {view} = harness();
+  const body = {innerHTML: '<tr><td>proto-sso</td></tr>'};
+  let resolveApi;
+  view.$ = () => body;
+  view.accountListQueryParams = () => new URLSearchParams('registration_driver=unknown');
+  view.PAGERS = {accounts: {page: 1, size: 20}};
+  view.accountsLoading = false;
+  view.accountsReloadQueued = false;
+  view.accountsRenderedQuery = 'registration_driver=protocol_oss_2';
+  view.api = () => new Promise(resolve => { resolveApi = resolve; });
+  view.setListBusy = () => {};
+  view.showAccountSearchError = () => {};
+  view.renderAccountSearchTerms = () => {};
+  view.syncFacetSelect = () => {};
+  view.renderAccounts = () => {};
+  view.markViewReady = () => {};
+  view.renderTableStateRow = (_columns, title) => title;
+  vm.runInContext(functionSource(accounts, 'showAccountsLoadingState'), view);
+  vm.runInContext(`async ${functionSource(accounts, 'loadAccounts')}`, view);
+
+  const pending = view.loadAccounts();
+  const bodyWhileLoading = body.innerHTML;
+  resolveApi({items: [], total: 0, facets: {}});
+  await pending;
+
+  assert.equal(bodyWhileLoading, '正在加载筛选结果…');
+
+  body.innerHTML = '<tr><td>未记录结果</td></tr>';
+  view.api = () => Promise.resolve({items: [], total: 0, facets: {}});
+  const refresh = view.loadAccounts();
+  const bodyWhileRefreshing = body.innerHTML;
+  await refresh;
+  assert.equal(bodyWhileRefreshing, '<tr><td>未记录结果</td></tr>');
+});
+
 test('套餐为空时与筛选统一显示未查询，有旧套餐时沿用旧值', () => {
   const {view} = harness();
   Object.assign(view, {_fmtPlanTime: () => '', _billingLabel: () => '', _discountLabel: () => ''});

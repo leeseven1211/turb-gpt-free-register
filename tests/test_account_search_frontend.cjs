@@ -31,10 +31,12 @@ function harness() {
     document: {getElementById: element}, $: selector => element(selector.slice(1)),
     URLSearchParams, SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
     accountAdvancedSearchQuery: '',
+    accountsRenderedQuery: '',
     accountSearchTerms: [], accountSearchErrorQuery: null,
     esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
     PAGERS: {accounts: {page: 3, size: 20}}, ACCOUNT_SELECTED: new Set([7]),
     updateAccountSelectionUi() {}, refreshColumnFilterStates() {},
+    renderTableStateRow: (_columns, title) => title,
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
     loadAccounts() { requests.push(view.accountListQueryParams()); },
@@ -46,7 +48,7 @@ function harness() {
   vm.runInContext([
     ...['columnFilterValue', 'setColumnFilterValue'].filter(name => commonSource.includes(`function ${name}(`)).map(name => functionSource(name, commonSource)),
     functionSource('renderAccountSearchTerms'), functionSource('showAccountSearchError'),
-    functionSource('getAccountsQuery'), functionSource('accountListQueryParams'),
+    functionSource('getAccountsQuery'), functionSource('accountListQueryParams'), functionSource('showAccountsLoadingState'),
     source.slice(bindingStart, source.indexOf('\n})();', bindingStart) + 6),
   ].join('\n'), view);
   function flush() {

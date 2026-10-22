@@ -1,6 +1,7 @@
 // ---------- 账号 ----------
 let accountsLoading = false;
 let accountsReloadQueued = false;
+let accountsRenderedQuery = '';
 let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
@@ -1129,7 +1130,15 @@ function accountListQueryParams() {
   Object.entries(accountFilters).forEach(([key, id]) => params.set(key, columnFilterValue(document.getElementById(id))));
   return params;
 }
+function showAccountsLoadingState(query) {
+  if (query === accountsRenderedQuery) return;
+  const body = $('#accountsBodyV2');
+  if (body) body.innerHTML = renderTableStateRow(16, '正在加载筛选结果…', '', 'loading');
+}
 async function loadAccounts() {
+  const params = accountListQueryParams();
+  const query = params.toString();
+  showAccountsLoadingState(query);
   if (accountsLoading) {
     accountsReloadQueued = true;
     return;
@@ -1137,7 +1146,6 @@ async function loadAccounts() {
   accountsLoading = true;
   accountsReloadQueued = false;
   setListBusy('accountsPanelV2', true);
-  const params = accountListQueryParams();
   try {
     const p = PAGERS.accounts;
     const res = await api(`/api/accounts?${params.toString()}`);
@@ -1176,6 +1184,7 @@ async function loadAccounts() {
       accountsReloadQueued = true;
       return;
     }
+    accountsRenderedQuery = params.toString();
     renderAccounts();
     markViewReady(`accounts:${SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active'}`);
   } catch(e) {
@@ -1193,6 +1202,7 @@ async function loadAccounts() {
       return;
     }
     if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(16, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
+    else if (query !== accountsRenderedQuery) $('#accountsBodyV2').innerHTML = renderTableStateRow(16, '筛选结果加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载账号失败: ' + e.message);
   }
   finally {
