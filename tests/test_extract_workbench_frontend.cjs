@@ -35,6 +35,7 @@ function createView() {
     listUrl: typeof extractWorkbenchListUrl === 'function' ? extractWorkbenchListUrl : undefined,
     outcome: extractWorkbenchOutcome,
     renderTabs: extractWorkbenchRenderStatusTabs,
+    renderTasks: extractWorkbenchRenderTasks,
     openCreate: extractWorkbenchOpenCreate,
     copy: extractWorkbenchCopy,
     submit: extractWorkbenchSubmit,
@@ -107,6 +108,80 @@ test('页面刷新查询列表和能力配置，列表不请求敏感链接', as
   assert.ok(requests.some(item => item.endpoint.startsWith('/api/extract-workbench/tasks?')));
   assert.ok(requests.every(item => !item.endpoint.endsWith('/links')));
   assert.ok(requests.every(item => !item.endpoint.startsWith('/api/accounts')));
+});
+
+test('任务列表每页查询 10 条，批次历史仍每页查询 20 条', async () => {
+  const {api, requests} = createView();
+  const batchSelect = {innerHTML:'', value:''};
+  api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-batch-select]' ? batchSelect : null});
+  await api.load({force:true});
+  const taskRequest = requests.find(item => item.endpoint.startsWith('/api/extract-workbench/tasks?'));
+  assert.equal(new URLSearchParams(taskRequest.endpoint.split('?')[1]).get('page_size'), '10');
+  assert.ok(requests.some(item => item.endpoint === '/api/extract-workbench/batches?page=1&page_size=20'));
+});
+
+test('31 条任务分为四页，第二页摘要与首尾翻页状态正确', () => {
+  const {api} = createView();
+  const tasks = {innerHTML:''};
+  const summary = {textContent:''};
+  const label = {textContent:''};
+  const previous = {disabled:false};
+  const next = {disabled:false};
+  const selectors = {'[data-workbench-tasks]':tasks, '[data-workbench-summary]':summary,
+    '[data-workbench-page-label]':label, '[data-workbench-page="prev"]':previous, '[data-workbench-page="next"]':next};
+  api.setRoot({querySelector: selector => selectors[selector] || null});
+  for (const [page, count, range, previousDisabled, nextDisabled] of [
+    [1, 10, '1–10', true, false], [2, 10, '11–20', false, false], [4, 1, '31–31', false, true],
+  ]) {
+    api.setState({page, total:31, items:Array.from({length:count}, (_, index) => ({task_id:(page - 1) * 10 + index + 1}))});
+    api.renderTasks();
+    assert.equal(summary.textContent, `显示 ${range} / 31 个任务`);
+    assert.equal(label.textContent, `第 ${page} / 4 页`);
+    assert.equal(previous.disabled, previousDisabled);
+    assert.equal(next.disabled, nextDisabled);
+    assert.equal((tasks.innerHTML.match(/class="extract-workbench-task"/g) || []).length, count);
+  }
+});
+
+test('批次历史 31 条仍分为两页并保留独立翻页状态', () => {
+  const {api} = createView();
+  const label = {textContent:''};
+  const previous = {disabled:false};
+  const next = {disabled:false};
+  const selectors = {'[data-workbench-batch-page-label]':label,
+    '[data-workbench-batch-page="prev"]':previous, '[data-workbench-batch-page="next"]':next};
+  api.setRoot({querySelector: selector => selectors[selector] || null});
+  api.setState({batchPage:1, batchTotal:31});
+  api.renderBatches();
+  assert.equal(label.textContent, '第 1 / 2 页');
+  assert.equal(previous.disabled, true);
+  assert.equal(next.disabled, false);
+  api.setState({batchPage:2});
+  api.renderBatches();
+  assert.equal(label.textContent, '第 2 / 2 页');
+  assert.equal(previous.disabled, false);
+  assert.equal(next.disabled, true);
+});
+
+test('主动刷新与切换批次重置卡片滚动，自动刷新保留最新滚动位置', async () => {
+  const {api, window} = createView();
+  const tasks = {scrollTop:140, innerHTML:''};
+  api.setConfig({providers:[]});
+  api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-tasks]' ? tasks : null});
+  api.setState({page:2, status:'running'});
+  await api.load({force:true});
+  assert.equal(tasks.scrollTop, 0);
+  tasks.scrollTop = 140;
+  await api.switchBatch('22');
+  assert.equal(tasks.scrollTop, 0);
+  Object.defineProperty(tasks, 'innerHTML', {set(value) { this.html = value; this.scrollTop = 0; }, get() { return this.html; }});
+  tasks.scrollTop = 140;
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) tasks.scrollTop = 185;
+    return {items:[{task_id:1}], counts:{}, total:1, page:1};
+  };
+  await api.load({quiet:true});
+  assert.equal(tasks.scrollTop, 185);
 });
 
 test('原型卡片保留三项主操作、中文平台和运行次数，未知进度不伪造百分比', () => {

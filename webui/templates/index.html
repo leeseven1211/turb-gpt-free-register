@@ -9,7 +9,7 @@
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-compact-v2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-five-by-two-v3') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -344,6 +344,7 @@
         <div class="extract-workbench-pagination">
         <nav class="extract-workbench-batch-pagination" aria-label="历史提链批次分页"><span>历史批次</span><button type="button" class="btn" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" class="btn" data-workbench-batch-page="next" disabled>下一组</button></nav>
         <nav class="extract-workbench-pager" aria-label="提链任务分页">
+          <span class="extract-workbench-page-size">每页 10 个</span>
           <button type="button" class="btn" data-workbench-page="prev" disabled>上一页</button>
           <span data-workbench-page-label>第 1 页</span>
           <button type="button" class="btn" data-workbench-page="next" disabled>下一页</button>
@@ -1005,6 +1006,6 @@
 <script src="{{ url_for('static', filename='js/modern/email.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-compact-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261022-five-by-two-v3') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

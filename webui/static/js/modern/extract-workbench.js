@@ -1,4 +1,4 @@
-const EXTRACT_WORKBENCH_PAGE_SIZE = 20;
+const EXTRACT_WORKBENCH_PAGE_SIZE = 10;
 let EXTRACT_WORKBENCH_ROOT = null;
 let EXTRACT_WORKBENCH_CONFIG = null;
 let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
@@ -131,7 +131,7 @@ function renderExtractWorkbenchTaskCard(task) {
   const note = extractWorkbenchEscape(task?.error || task?.message || progressLabel || outcome.copy);
   const linkType = task?.link_type ? ` · ${extractWorkbenchEscape(String(task.link_type).toUpperCase())}` : '';
   return `<article class="extract-workbench-task" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
-    <header class="extract-workbench-top"><div class="extract-workbench-id-line"><span class="extract-workbench-number">任务 #${taskId}</span><span class="extract-workbench-state extract-workbench-state--${outcome.tone}">${outcome.state}</span><span class="extract-workbench-attempt">运行 ${runCount} 次</span></div><span class="extract-workbench-percent">${percent === null ? '—' : `${percent}%`}</span></header>
+    <header class="extract-workbench-top"><div class="extract-workbench-id-line"><span class="extract-workbench-number">任务 #${taskId}</span><span class="extract-workbench-state extract-workbench-state--${outcome.tone}">${outcome.state}</span></div><span class="extract-workbench-percent">${percent === null ? '—' : `${percent}%`}</span></header>
     <div class="extract-workbench-identity"><span class="extract-workbench-email" title="${email}">${email}</span><button type="button" class="extract-workbench-copy-mini" data-workbench-copy-email="${taskId}" aria-label="复制邮箱">复制</button></div>
     <div class="extract-workbench-data-rows">
       <div class="extract-workbench-data-row"><span class="extract-workbench-data-label">提链平台</span><span class="extract-workbench-data-value extract-workbench-provider-mark"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}" aria-hidden="true"></i>${extractWorkbenchEscape(providerLabel)}${linkType}</span></div>
@@ -149,7 +149,7 @@ function renderExtractWorkbenchTaskCard(task) {
       ${linkButton('extract', '复制链接', 'copy', canExtractLink)}
       <button type="button" class="btn" data-workbench-copy-at="${taskId}"${Number(task?.account_id) > 0 ? '' : ' disabled'}>${extractWorkbenchIcon('token')}复制 AT</button>
     </div>
-    <details class="extract-workbench-tools"><summary>${extractWorkbenchEscape(extractWorkbenchModeLabel(mode))}<span>更多操作</span></summary><div class="extract-workbench-task-actions">
+    <details class="extract-workbench-tools"><summary>${extractWorkbenchEscape(extractWorkbenchModeLabel(mode))}<small class="extract-workbench-attempt">运行 ${runCount} 次</small><span>更多操作</span></summary><div class="extract-workbench-task-actions">
         <button type="button" class="btn" data-workbench-detail="${taskId}" aria-expanded="false">查看详情</button>
         ${actionButton('sync_status', '同步状态')}${actionButton('retry', '重跑')}
         ${mode === 'auto_payment' && task?.payment_status !== 'paid' ? actionButton('auto_payment', '查询自动支付') : ''}
@@ -358,7 +358,10 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
   extractWorkbenchBindEvents();
   const sequence = ++EXTRACT_WORKBENCH_SEQUENCE;
   const tasksNode = extractWorkbenchNode('[data-workbench-tasks]');
-  if (tasksNode && !quiet) tasksNode.innerHTML = '<p class="extract-workbench-muted">加载任务中…</p>';
+  if (tasksNode && !quiet) {
+    tasksNode.innerHTML = '<p class="extract-workbench-muted">加载任务中…</p>';
+    tasksNode.scrollTop = 0;
+  }
   try {
     await extractWorkbenchLoadConfig(force);
     if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
@@ -381,7 +384,9 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
     if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
     EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, batchDetail:detail?.item || null, items: result?.items || [], counts: result?.counts || {}, total: Number(result?.total || 0), page: Number(result?.page || EXTRACT_WORKBENCH_STATE.page)};
     extractWorkbenchRenderBatches();
+    const scrollTop = quiet ? tasksNode?.scrollTop || 0 : 0;
     extractWorkbenchRenderTasks();
+    if (tasksNode) tasksNode.scrollTop = scrollTop;
     extractWorkbenchScheduleRefresh();
     if (typeof markViewReady === 'function') markViewReady('extract-workbench');
   } catch (error) {
