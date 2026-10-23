@@ -2510,6 +2510,29 @@ def _payment_aftercare(context, account_id: int, email: str, *, config_snapshot=
     return "succeeded", str(fresh.get("access_token") or "").strip(), False
 
 
+def _provider_job_for_sync(run_id: int):
+    """跳过旧版同步失败写入的空状态，沿相同远端任务恢复最近有效记录。"""
+    from core.storage import extract_link_jobs, operation
+
+    seen = set()
+    job = None
+    while run_id and run_id not in seen and len(seen) < 20:
+        seen.add(run_id)
+        current = extract_link_jobs.get_provider_job_private(run_id)
+        if not current or (job and (current.get("job_id"), current.get("provider_id")) != (job.get("job_id"), job.get("provider_id"))):
+            return job
+        job = current
+        public = job.get("public_state") or {}
+        if public.get("extraction_state") not in {"pending", "unknown"} or public.get("preflight_status") != "failed":
+            return job
+        run = operation.get_run(run_id) or {}
+        data = run.get("data") or {}
+        if data.get("workbench_action") != "sync_status":
+            return job
+        run_id = int(data.get("provider_job_run_id") or 0)
+    return job
+
+
 def _handle_provider_operation(context):
     from core.extract_link_providers.contracts import ExtractRequest, ProviderJob
     from core.storage import extract_link_jobs
@@ -2548,7 +2571,7 @@ def _handle_provider_operation(context):
     provider = _provider(provider_id, runtime)
     email = str(account.get("email") or context.email or "").strip()
     prior_run_id = int(data.get("provider_job_run_id") or 0)
-    prior_job = extract_link_jobs.get_provider_job_private(prior_run_id) if prior_run_id else None
+    prior_job = _provider_job_for_sync(prior_run_id) if prior_run_id else None
     prior_private = prior_job.get("private_data") if prior_job and isinstance(prior_job.get("private_data"), dict) else {}
     job_id = str(prior_job.get("job_id") or "") if prior_job else ""
     state = _safe_provider_job_state(
@@ -2557,6 +2580,16 @@ def _handle_provider_operation(context):
         preflight_status="pending",
         plus_status="not_applicable",
     )
+    if action == "sync_status" and prior_job:
+        prior_state = prior_job.get("public_state") or {}
+        state = _safe_provider_job_state(ProviderJob(
+            job_id=job_id, extraction_state=prior_state.get("extraction_state", "unknown"),
+            payment_state=prior_state.get("payment_state", "not_started"),
+            links=tuple(prior_state.get("links") or ()), payment_links=tuple(prior_state.get("payment_links") or ()),
+            payment_artifact=prior_state.get("payment_artifact") or {}, summary=prior_state.get("summary") or {},
+        ), mode=mode, preflight_status=prior_state.get("preflight_status", "passed"),
+            plus_status=prior_state.get("plus_status", "not_applicable"),
+            aftercare_status=prior_state.get("aftercare_status", "not_started"))
     leases = []
     proxy_resource_ids = []
     remote_write_started = False
@@ -2893,6 +2926,9 @@ def _handle_provider_operation(context):
         elif terminal_status != "request_unknown" and not remote_rejected:
             terminal_status = "failed"
             status_message = "提链失败"
+        if action == "sync_status":
+            status_message = "同步状态失败，已保留上次平台结果"
+            context.report(stage="extraction", level="warning", message=f"{status_message}：{safe_error}")
         if (
             remote_write_started
             and not remote_rejected
@@ -2927,6 +2963,7 @@ def _handle_provider_operation(context):
                 message=status_message,
                 error=safe_error,
                 result_summary={
+                    "message": status_message,
                     "provider_id": provider_id,
                     "mode": mode,
                     "preflight_status": state.get("preflight_status"),

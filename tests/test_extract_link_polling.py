@@ -109,6 +109,15 @@ class ExtractPollingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "UPI"):
             service._provider_link_type("huanguang", "pix", "upi")
 
+    def test_sync_reference_recovers_before_old_empty_failure_without_crossing_jobs(self):
+        empty = {"provider_id": "lumen_flow", "job_id": "same-job", "public_state": {"extraction_state": "pending", "preflight_status": "failed"}}
+        known = {"provider_id": "lumen_flow", "job_id": "same-job", "public_state": {"extraction_state": "failed", "preflight_status": "passed"}}
+        with patch("core.storage.extract_link_jobs.get_provider_job_private", side_effect=[empty, known]), patch("core.storage.operation.get_run", return_value={"data": {"workbench_action": "sync_status", "provider_job_run_id": 10}}):
+            self.assertEqual(known, service._provider_job_for_sync(11))
+        other = {**known, "job_id": "other-job"}
+        with patch("core.storage.extract_link_jobs.get_provider_job_private", side_effect=[empty, other]), patch("core.storage.operation.get_run", return_value={"data": {"workbench_action": "sync_status", "provider_job_run_id": 10}}):
+            self.assertEqual(empty, service._provider_job_for_sync(11))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -700,6 +700,25 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("explicit", snapshot["failure"]["evidence"])
         self.assertEqual("LINK-FAILED", snapshot["failure"]["error_info"]["display_code"])
 
+    def test_sync_error_keeps_previous_business_state_and_reports_query_failure(self):
+        from core import extract_link_service
+
+        prior = {"job_id": "fixture-job", "private_data": {}, "public_state": {
+            "extraction_state": "failed", "payment_state": "not_started", "preflight_status": "passed",
+            "plus_status": "not_applicable", "summary": {"failure_code": "SETUP_INTENT_FAILED", "remote_terminal_failure": True},
+        }}
+        with self._scenario(poll_error=RuntimeError("Provider 请求失败（HTTP 404）")) as scenario, patch(
+            "core.storage.extract_link_jobs.get_provider_job_private", return_value=prior,
+        ):
+            scenario.context.run["data"].update({"workbench_action": "sync_status", "provider_job_run_id": 28})
+            extract_link_service._handle_provider_operation(scenario.context)
+        result = scenario.context.finish.call_args.kwargs
+        self.assertEqual("failed", result["result_summary"]["extraction_status"])
+        self.assertEqual("passed", result["result_summary"]["preflight_status"])
+        self.assertIn("同步状态失败", result["message"])
+        self.assertEqual("SETUP_INTENT_FAILED", scenario.save_job.call_args.args[3]["summary"]["failure_code"])
+        scenario.provider.create_job.assert_not_called()
+
     def test_extraction_success_keeps_compatibility_summary_and_native_payment_result(self):
         from core import extract_link_service
         from core.extract_link_providers.contracts import ProviderJob
