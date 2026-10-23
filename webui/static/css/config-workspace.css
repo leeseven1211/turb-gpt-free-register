@@ -216,6 +216,7 @@
   display: grid;
   gap: 8px;
   min-width: 0;
+  width: 100%;
 }
 
 #tab-config [data-huanguang-xxsyun-key] > .btn {
