@@ -3,20 +3,23 @@ let CONFIG_EMAIL_ACTIVE_SECTION_V2 = '通用邮箱 / OTP';
 let CONFIG_SMS_ACTIVE_SECTION_V2 = '通用接码';
 let CONFIG_CODEX_ACTIVE_SECTION_V2 = '基础配置';
 let CONFIG_PROXY_ACTIVE_SECTION_V2 = '任务用池';
+let CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = '通用配置';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
 const CONFIG_FIELD_ERRORS_V2 = {};
 const CONFIG_COMPOSITE_MODES_V2 = {};
 const CONFIG_ACTIVE_DOMAIN_V2 = {};
-// 菜单集中定义；schema 的 group 继续表示配置所属领域。六个主分类是
-// 页面导航契约，底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
+const CONFIG_MULTI_PICKER_FIELDS_V2 = new Map();
+// 菜单集中定义；schema 的 group 继续表示配置所属领域。导航菜单是页面导航契约，
+// 底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
 const CONFIG_MENU_DOMAINS_V2 = {
   '注册与账号': ['注册主链路', '账号补全', '注册与账号'],
   '代理与网络': ['代理与网络'],
   '邮箱与验证码': ['邮箱 / OTP', '接码平台'],
   '浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏'],
-  '服务集成': ['Codex', '提链'],
+  '服务集成': ['Codex'],
+  '提链': ['提链'],
   '系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试'],
 };
 const CONFIG_DOMAIN_ALIASES_V2 = {
@@ -36,7 +39,7 @@ const CONFIG_DOMAIN_ALIASES_V2 = {
 const CONFIG_NAV_CATEGORY_ORDER_V2 = ['业务流程', '资源与服务', '系统'];
 const CONFIG_NAV_CATEGORY_RULES_V2 = {
   '业务流程': new Set(['注册与账号', '邮箱与验证码']),
-  '资源与服务': new Set(['代理与网络', '浏览器', '服务集成']),
+  '资源与服务': new Set(['代理与网络', '浏览器', '服务集成', '提链']),
   '系统': new Set(['系统与维护']),
 };
 const CONFIG_PROXY_FEATURES_V2 = [
@@ -441,6 +444,63 @@ function configFieldMenuV2(field) {
   if (CONFIG_PLAN_BUSINESS_KEYS_V2.has(field.key)) return '注册与账号';
   return configMenuGroupV2(configFieldUiGroupV2(field));
 }
+const CONFIG_EXTRACT_LINK_COMMON_KEYS_V2 = new Set([
+  'EXTRACT_LINK_ENABLED', 'EXTRACT_LINK_DEFAULT_PROVIDER', 'EXTRACT_LINK_DEFAULT_MODE',
+  'EXTRACT_LINK_BATCH_WORKERS', 'EXTRACT_LINK_EXTRACT_ENABLED',
+  'EXTRACT_LINK_MANUAL_PAYMENT_ENABLED', 'EXTRACT_LINK_AUTO_PAYMENT_ENABLED',
+  'EXTRACT_LINK_POST_PAYMENT_CHECK_ENABLED', 'EXTRACT_LINK_POST_PAYMENT_REFRESH_AT_ENABLED',
+  'EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED', 'EXTRACT_LINK_QUEUE_LIMIT',
+]);
+const CONFIG_EXTRACT_LINK_LEGACY_KEYS_V2 = new Set([
+  'EXTRACT_LINK_API_BASE', 'EXTRACT_LINK_CDK', 'EXTRACT_LINK_TYPE',
+  'EXTRACT_LINK_REQUEST_TIMEOUT', 'EXTRACT_LINK_EVENT_TIMEOUT',
+]);
+const CONFIG_EXTRACT_LINK_PROVIDER_LABELS_V2 = Object.freeze({
+  legacy: '现有提链服务', lumen_flow: '流光', huanguang: '幻光',
+});
+function extractLinkProviderEnabledKeyV2(providerId) {
+  return `EXTRACT_LINK_${String(providerId || '').trim().toUpperCase()}_ENABLED`;
+}
+function extractLinkProviderFieldBelongsV2(field, providerId) {
+  const key = String(field?.key || '');
+  const id = String(providerId || '').trim().toLowerCase();
+  if (!key || key === extractLinkProviderEnabledKeyV2(id)) return false;
+  if (id === 'legacy') return CONFIG_EXTRACT_LINK_LEGACY_KEYS_V2.has(key) || key.startsWith('EXTRACT_LINK_LEGACY_');
+  return key.startsWith(`EXTRACT_LINK_${id.toUpperCase()}_`);
+}
+function extractLinkProviderOptionsV2(fields = CONFIG) {
+  const source = fields || [];
+  const defaults = source.find(field => field.key === 'EXTRACT_LINK_DEFAULT_PROVIDER') || configSchemaField('EXTRACT_LINK_DEFAULT_PROVIDER');
+  return configSchemaOptions(defaults).filter(option => {
+    const id = option.value.toLowerCase();
+    return source.some(field => field.key === extractLinkProviderEnabledKeyV2(id));
+  }).map(option => ({
+    ...option,
+    value: option.value.toLowerCase(),
+    label: CONFIG_EXTRACT_LINK_PROVIDER_LABELS_V2[option.value.toLowerCase()] || option.label,
+    enabledKey: extractLinkProviderEnabledKeyV2(option.value),
+  }));
+}
+function extractLinkProviderSectionForFieldV2(field) {
+  const key = String(field?.key || '');
+  if (CONFIG_EXTRACT_LINK_COMMON_KEYS_V2.has(key)
+    || extractLinkProviderOptionsV2().some(provider => provider.enabledKey === key)) return '通用配置';
+  const provider = extractLinkProviderOptionsV2().find(item => extractLinkProviderFieldBelongsV2(field, item.value));
+  return provider?.label || '通用配置';
+}
+function extractLinkProviderSelectionValueV2(value) {
+  return value === true || ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value ?? '').trim().toLowerCase());
+}
+function applyExtractLinkProviderSelectionV2(values) {
+  const selected = new Set(configListValuesV2(values, {key: 'EXTRACT_LINK_ENABLED_PROVIDERS'}));
+  extractLinkProviderOptionsV2().forEach(provider => {
+    if (CONFIG.some(field => field.key === provider.enabledKey)) {
+      setPendingConfigValue(provider.enabledKey, selected.has(provider.value));
+    }
+  });
+  renderConfigOverviewCards();
+  updateConfigSaveUi();
+}
 function configFieldMatchesQueryV2(field, query = CONFIG_NAV_QUERY_V2) {
   const needle = String(query || '').trim().toLowerCase();
   return !!needle && configNavSearchTextV2('', [field]).toLowerCase().includes(needle);
@@ -466,6 +526,7 @@ function selectConfigSearchDestinationV2(name = CONFIG_ACTIVE_GROUP_V2) {
   if (field.group === '接码平台') CONFIG_SMS_ACTIVE_SECTION_V2 = subsection;
   if (field.group === '代理与网络') CONFIG_PROXY_ACTIVE_SECTION_V2 = subsection;
   if (field.group === 'Codex') CONFIG_CODEX_ACTIVE_SECTION_V2 = subsection;
+  if (field.group === '提链') CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = extractLinkProviderSectionForFieldV2(field);
 }
 function configNavDirtyV2(fields) {
   return (fields || []).some(f => Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key));
@@ -527,7 +588,7 @@ function configSectionIntro(name) {
   if (name === '注册与账号') return '按业务动作维护注册、账号补全和套餐查询；代理线路由统一代理池领取。';
   if (name === '邮箱与验证码') return '选择可用邮箱来源并维护验证码与短信接码服务。';
   if (name === '浏览器') return '维护浏览器连接、账号环境、地区画像、省流量和人工节奏。';
-  if (name === '服务集成') return '维护 CPA、sub2api、提链及其他外部服务连接。';
+  if (name === '服务集成') return '维护 CPA、sub2api 等外部服务连接。';
   if (name === '系统与维护') return '维护并发、自动任务、诊断日志、任务保留和访问设置。';
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
@@ -934,23 +995,28 @@ function renderConfigMultiSelectV2(f, value) {
   // 保留一个不可见 native select 供旧脚本和无 JS 表单检查读取；实际交互使用
   // 可搜索、可键盘操作的按钮列表，避免要求用户按 Ctrl/Cmd。
   const compat = options.map(item => `<option value="${attrEsc(item.value)}"${selected.has(item.value) ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
+  const providerPicker = f.key === 'EXTRACT_LINK_ENABLED_PROVIDERS';
   return `
-    <div class="config-multi-select-v2" data-multi-picker="${attrEsc(f.key)}" data-multi-values="${attrEsc(values.join(','))}">
+    <div class="config-multi-select-v2" data-multi-picker="${attrEsc(f.key)}" data-multi-values="${attrEsc(values.join(','))}"${providerPicker ? ' data-extract-provider-picker="true"' : ''}>
       <button type="button" class="config-multi-trigger-v2" aria-expanded="false" aria-haspopup="listbox"><span data-multi-summary>${esc(summary)}</span><span aria-hidden="true">⌄</span></button>
       <div class="config-multi-menu-v2" role="listbox" hidden>
         <input type="search" class="config-multi-search-v2" placeholder="搜索并勾选" aria-label="搜索${attrEsc(f.label)}" data-multi-search>
         <div class="config-multi-options-v2" data-multi-options>${optionsMarkup}</div>
       </div>
-      <input type="hidden" data-key="${attrEsc(f.key)}" value="${attrEsc(values.join(','))}">
+      <input type="hidden" data-key="${attrEsc(f.key)}" value="${attrEsc(values.join(','))}"${providerPicker ? ' data-extract-provider-selection="true"' : ''}>
       <select class="config-multi-compat-v2" multiple tabindex="-1" aria-hidden="true" data-config-compat-key="${attrEsc(f.key)}">${compat}</select>
     </div>
   `;
 }
 
+function configMultiPickerFieldV2(key) {
+  return CONFIG.find(item => item.key === key) || CONFIG_MULTI_PICKER_FIELDS_V2.get(key) || {key};
+}
+
 function syncConfigMultiSelectV2(picker) {
   const hidden = picker.querySelector('input[type="hidden"][data-key]');
   if (!hidden) return;
-  const f = CONFIG.find(item => item.key === hidden.dataset.key) || {key: hidden.dataset.key};
+  const f = configMultiPickerFieldV2(hidden.dataset.key);
   const values = configListValuesV2(hidden.value, f);
   const options = configListOptionValuesV2(f);
   picker.dataset.multiValues = values.join(',');
@@ -993,7 +1059,7 @@ function bindConfigMultiSelectsV2() {
       event.preventDefault();
       const hidden = picker.querySelector('input[type="hidden"][data-key]');
       if (!hidden) return;
-      const f = CONFIG.find(item => item.key === hidden.dataset.key) || {key: hidden.dataset.key};
+      const f = configMultiPickerFieldV2(hidden.dataset.key);
       const values = configListValuesV2(hidden.value, f);
       const next = values.includes(option.dataset.multiValue)
         ? values.filter(value => value !== option.dataset.multiValue)
@@ -1307,6 +1373,56 @@ function renderMixedConfigSectionV2(name, fields, intro) {
       ${extra}
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}
+      ${renderConfigSaveActions()}
+    </section>
+  `;
+}
+
+function renderExtractLinkProviderSelectionV2(providers) {
+  const selected = providers
+    .filter(provider => extractLinkProviderSelectionValueV2(configFieldValueV2(provider.enabledKey, false)))
+    .map(provider => provider.value);
+  const field = {
+    key: 'EXTRACT_LINK_ENABLED_PROVIDERS', label: '启用平台', type: 'list_str_multiline',
+    value: selected.join(','), options: providers.map(provider => ({value: provider.value, label: provider.label})),
+    help: '选择允许在提链工作台中使用的平台；取消选择不会清除该平台的地址或 CDK。',
+  };
+  CONFIG_MULTI_PICKER_FIELDS_V2.set(field.key, field);
+  return `<div class="config-section-v2-body">${renderConfigSettingRowV2(field, renderConfigMultiSelectV2(field, field.value))}</div>`;
+}
+
+function renderExtractLinkSectionV2(fields) {
+  const providers = extractLinkProviderOptionsV2(fields);
+  const sections = ['通用配置', ...providers.map(provider => provider.label)];
+  let active = CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2;
+  if (!sections.includes(active)) active = sections[0];
+  CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = active;
+
+  const providerEnabledKeys = new Set(providers.map(provider => provider.enabledKey));
+  const providerFieldMatches = field => providers.some(provider =>
+    extractLinkProviderFieldBelongsV2(field, provider.value));
+  const commonFields = fields.filter(field =>
+    !providerEnabledKeys.has(field.key) && !providerFieldMatches(field));
+  const selectedProvider = providers.find(provider => provider.label === active);
+  const pageFields = selectedProvider
+    ? fields.filter(field => extractLinkProviderFieldBelongsV2(field, selectedProvider.value))
+    : commonFields;
+  const switches = pageFields.filter(field => field.type === 'bool');
+  const inputs = pageFields.filter(field => field.type !== 'bool');
+  const body = selectedProvider
+    ? `${switches.length ? `<div class="config-switches-v2">${switches.map(field => renderFeatureSwitchField(field, {withIcon: false})).join('')}</div>` : ''}
+       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`
+    : `${renderExtractLinkProviderSelectionV2(providers)}
+       ${switches.length ? `<div class="config-switches-v2">${switches.map(field => renderFeatureSwitchField(field, {withIcon: false})).join('')}</div>` : ''}
+       ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`;
+
+  return `
+    <section class="config-section-v2" id="${esc(configGroupSlug('提链'))}" data-config-section="提链">
+      ${renderConfigSectionHead('提链', configSectionIntro('提链'))}
+      <div class="config-subtabs-v2" role="group" aria-label="提链配置分类">
+        ${sections.map(section => `<button type="button" data-extract-link-tab="${attrEsc(section)}" class="${section === active ? 'active' : ''}" aria-pressed="${section === active}">${esc(section)}</button>`).join('')}
+      </div>
+      ${body}
       ${renderConfigSaveActions()}
     </section>
   `;
@@ -1766,6 +1882,7 @@ function renderConfigSectionV2(name, fields) {
 
 function renderConfigDomainSectionV2(name, fields) {
   const slug = configGroupSlug(name);
+  if (name === '提链') return renderExtractLinkSectionV2(fields);
   if (name === '注册与账号') return renderPlanBusinessSectionV2(fields);
   if (name === '注册主链路') return renderRegistrationMainSectionV2(fields);
   if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
@@ -1940,6 +2057,13 @@ function bindConfigLayoutV2() {
   if (layout && !layout.dataset.epBound) {
     layout.dataset.epBound = '1';
     layout.addEventListener('click', (e) => {
+      const extractLinkTab = e.target.closest('[data-extract-link-tab]');
+      if (extractLinkTab) {
+        e.preventDefault();
+        CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = extractLinkTab.dataset.extractLinkTab;
+        renderConfigLayoutV2();
+        return;
+      }
       const domainTab = e.target.closest('[data-config-domain-v2]');
       if (domainTab) {
         e.preventDefault();
@@ -2117,6 +2241,10 @@ function trackConfigFieldChange(e) {
   if (!el || !el.closest('#tab-config')) return;
   clearConfigFieldErrorsV2();
   const key = el.dataset.key || el.dataset.waitSecondsKey || el.dataset.priceKey;
+  if (el.dataset.extractProviderSelection === 'true') {
+    applyExtractLinkProviderSelectionV2(el.value);
+    return;
+  }
   const f = CONFIG.find(x => x.key === key);
   if (!f) return;
   el.closest('.config-setting-row-v2')?.querySelector('.config-field-error-v2')?.remove();

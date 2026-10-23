@@ -17,11 +17,15 @@ function createConfigView(fields = []) {
     querySelector(selector) { return selector.includes('data-config-save-copy') ? saveCopy : null; },
   };
   const saveButton = {disabled: false, textContent: ''};
+  const layoutListeners = {};
   nodes.set('configSaveBarV2', {hidden: false});
   nodes.set('configDirtyBadge', {hidden: false, textContent: '', setAttribute() {}});
+  nodes.set('configNavV2', {dataset: {}, addEventListener(name, callback) { this.listener = callback; }});
+  nodes.set('configLayoutV2', {dataset: {}, addEventListener(name, callback) { layoutListeners[name] = callback; }});
   const root = {addEventListener() {}};
   const context = {
     CONFIG: fields,
+    layoutListeners,
     domErrors, saveCopy, saveHint,
     document: {
       getElementById(id) { return nodes.get(id) || null; },
@@ -34,6 +38,7 @@ function createConfigView(fields = []) {
         if (selector.includes('config-field-error-v2')) return domErrors;
         return [];
       },
+      addEventListener() {},
       documentElement: {dataset: {}},
     },
     window: {addEventListener() {}, scrollTo() {}, confirm() { return true; }},
@@ -53,9 +58,15 @@ function createConfigView(fields = []) {
     loadConfig = async () => {};
     globalThis.view = {
       groups: configGroups, names: getConfigGroupNames,
+      renderNav: renderConfigNavV2,
       destination: setConfigDestinationV2, open: openConfigGroup,
       render: renderConfigSectionV2, renderDomain: renderConfigDomainSectionV2,
       bind: bindConfigLayoutV2, save: saveConfigUpdates,
+      stubLayoutRender() { renderConfigLayoutV2 = () => {}; },
+      clickExtractLinkTab(section) {
+        const button = {dataset: {extractLinkTab: section}};
+        layoutListeners.click({target: {closest(selector) { return selector === '[data-extract-link-tab]' ? button : null; }}, preventDefault() {}});
+      },
       pending: CONFIG_PENDING_UPDATES, setPending: setPendingConfigValue,
       forcePending: (key, value) => setPendingConfigValue(key, value, {force: true}),
       errors: CONFIG_FIELD_ERRORS_V2, compositeModes: CONFIG_COMPOSITE_MODES_V2,
@@ -70,6 +81,7 @@ function createConfigView(fields = []) {
         menu: CONFIG_ACTIVE_GROUP_V2, domains: {...CONFIG_ACTIVE_DOMAIN_V2},
         email: CONFIG_EMAIL_ACTIVE_SECTION_V2, proxy: CONFIG_PROXY_ACTIVE_SECTION_V2,
         sms: CONFIG_SMS_ACTIVE_SECTION_V2, codex: CONFIG_CODEX_ACTIVE_SECTION_V2,
+        extractLink: CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2,
       }; },
     };
   `, context);
@@ -78,16 +90,109 @@ function createConfigView(fields = []) {
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
 
-test('配置导航使用六个主分类，字段只进入一个编辑投影', () => {
+test('配置导航包含独立提链菜单，字段只进入一个编辑投影', () => {
   const domains = ['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台',
     '代理与网络', 'RoxyBrowser', '浏览器画像', '人工节奏', 'Codex', '提链', 'WebUI 授权', '定时任务', '任务中心'];
   const fields = domains.map((domain, index) => field(`KEY_${index}`, domain));
   const {view} = createConfigView([...fields, {...fields[0]}]);
   const groups = view.groups();
-  assert.equal(Object.keys(groups).length, 6);
+  assert.equal(Object.keys(groups).length, 7);
   assert.deepEqual(Array.from(view.names()), Object.keys(groups));
   assert.equal(Object.values(groups).flat().length, fields.length);
-  assert.deepEqual(Object.keys(groups), ['系统与维护', '注册与账号', '邮箱与验证码', '代理与网络', '浏览器', '服务集成']);
+  assert.deepEqual(Object.keys(groups), ['系统与维护', '注册与账号', '邮箱与验证码', '代理与网络', '浏览器', '服务集成', '提链']);
+});
+
+test('提链在资源与服务中独立成项，并分为通用与平台页签', () => {
+  const fields = [
+    field('EXTRACT_LINK_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'lumen_flow', options: [
+      {value: 'legacy', label: '现有提链服务'}, {value: 'lumen_flow', label: '流光'}, {value: 'huanguang', label: '幻光'},
+    ]}),
+    field('EXTRACT_LINK_DEFAULT_MODE', '提链', {value: 'extract_only'}),
+    field('EXTRACT_LINK_BATCH_WORKERS', '提链', {type: 'int', value: 2}),
+    field('EXTRACT_LINK_LEGACY_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LEGACY_EXTRACT_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_API_BASE', '提链', {value: 'https://provider.example.test'}),
+    field('EXTRACT_LINK_CDK', '提链', {secret: true, configured: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_EXTRACT_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_API_BASE', '提链', {value: 'https://flow.example.test'}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: false}),
+    field('EXTRACT_LINK_HUANGUANG_EXTRACT_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_HUANGUANG_API_BASE', '提链', {value: 'https://light.example.test'}),
+  ];
+  const {view} = createConfigView(fields);
+  const groups = view.groups();
+  const navigation = view.renderNav(view.names(), groups);
+  const markup = view.renderDomain('提链', fields);
+
+  assert.match(navigation, /data-config-nav-group="资源与服务"/);
+  assert.equal(groups['服务集成'], undefined);
+  assert.ok((groups['提链'] || []).length > 0);
+  assert.match(markup, /data-extract-link-tab="通用配置"/);
+  assert.match(markup, /data-extract-link-tab="现有提链服务"/);
+  assert.match(markup, /data-extract-link-tab="流光"/);
+  assert.match(markup, /data-extract-link-tab="幻光"/);
+  assert.match(markup, /data-multi-picker="EXTRACT_LINK_ENABLED_PROVIDERS"/);
+  assert.match(markup, /data-multi-values="legacy,lumen_flow"/);
+  assert.doesNotMatch(markup, /data-key="EXTRACT_LINK_(?:LEGACY|LUMEN_FLOW|HUANGUANG)_ENABLED"/);
+});
+
+test('提链平台多选保存回现有平台启用开关', () => {
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'legacy', options: [
+      {value: 'legacy', label: 'legacy'}, {value: 'lumen_flow', label: 'lumen_flow'}, {value: 'huanguang', label: 'huanguang'},
+    ]}),
+    field('EXTRACT_LINK_LEGACY_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: false}),
+  ];
+  const {view} = createConfigView(fields);
+  const input = {
+    value: 'legacy,huanguang', type: 'hidden',
+    dataset: {key: 'EXTRACT_LINK_ENABLED_PROVIDERS', extractProviderSelection: 'true'},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  };
+
+  view.track({target: input});
+
+  assert.deepEqual(JSON.parse(JSON.stringify(view.pending)), {
+    EXTRACT_LINK_LUMEN_FLOW_ENABLED: false,
+    EXTRACT_LINK_HUANGUANG_ENABLED: true,
+  });
+});
+
+test('搜索提链平台配置时自动切换到对应平台页签', () => {
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'legacy', options: [
+      {value: 'legacy', label: 'legacy'}, {value: 'lumen_flow', label: 'lumen_flow'}, {value: 'huanguang', label: 'huanguang'},
+    ]}),
+    field('EXTRACT_LINK_LEGACY_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LUMEN_FLOW_API_BASE', '提链'),
+    field('EXTRACT_LINK_HUANGUANG_API_BASE', '提链'),
+  ];
+  const {view} = createConfigView(fields);
+
+  view.search('EXTRACT_LINK_HUANGUANG_API_BASE');
+
+  assert.equal(view.state().menu, '提链');
+  assert.equal(view.state().extractLink, '幻光');
+});
+
+test('点击提链平台页签会切换页面内容', () => {
+  const {view} = createConfigView([]);
+  view.stubLayoutRender();
+  view.bind();
+
+  view.clickExtractLinkTab('流光');
+
+  assert.equal(view.state().extractLink, '流光');
 });
 
 test('旧入口迁移到新分类并保留草稿值', () => {
