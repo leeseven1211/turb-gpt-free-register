@@ -350,11 +350,6 @@ function extractWorkbenchRenderBatches() {
     select.innerHTML = '<option value="">全部任务（含历史单独任务）</option>' + batches.map(batch => `<option value="${extractWorkbenchEscape(batch.batch_id)}">${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)} · ${Number(batch.requested_count || 0)} 个 · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))}</option>`).join('');
     select.value = EXTRACT_WORKBENCH_STATE.batch;
   }
-  const summary = extractWorkbenchNode('[data-workbench-batch-summary]');
-  const batch = EXTRACT_WORKBENCH_STATE.batchDetail;
-  if (summary) summary.innerHTML = batch
-    ? `<strong>${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)}</strong><span>${extractWorkbenchEscape(extractWorkbenchTime(batch.created_at))} · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))} · ${Number.isInteger(batch.workers) && batch.workers >= 1 && batch.workers <= 16 ? `并发 ${batch.workers}` : '沿用平台并发'}</span><span>计划 ${Number(batch.requested_count || 0)} · 入队 ${Number(batch.started_count || 0)} · 跳过 ${Number(batch.skipped_count || 0)} · 提交失败 ${Number(batch.submission_failed_count || 0)}${batch.submission_incomplete ? ' · 本批提交未完整完成，请核对已入队任务' : ''}</span>`
-    : '<span>选择批次查看本批进度；全部任务保留历史单独提链记录。</span>';
   const pages = Math.max(1, Math.ceil(EXTRACT_WORKBENCH_STATE.batchTotal / 20));
   const label = extractWorkbenchNode('[data-workbench-batch-page-label]');
   if (label) label.textContent = `第 ${EXTRACT_WORKBENCH_STATE.batchPage} / ${pages} 页`;

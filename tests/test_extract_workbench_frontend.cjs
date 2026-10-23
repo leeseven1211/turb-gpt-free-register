@@ -1135,14 +1135,26 @@ test('批次并发空值、非整数和超范围时不发送创建请求', async
   }
 });
 
-test('批次摘要显示本批并发，历史批次显示沿用平台并发', () => {
+test('批次摘要行已移除，批次选择和分页仍可用', () => {
+  const template=fs.readFileSync(path.join(__dirname, '../webui/templates/index.html'), 'utf8');
+  assert.doesNotMatch(template,/data-workbench-batch-summary|extract-workbench-batch-summary/);
   const {api}=createView();
-  const summary={innerHTML:''};
-  api.setRoot({querySelector:selector=>selector==='[data-workbench-batch-summary]' ? summary : null});
-  api.setState({batchDetail:{batch_id:7,title:'当前批次',workers:4}});
+  const select={innerHTML:'',value:''};
+  const label={textContent:''};
+  const previous={disabled:false};
+  const next={disabled:false};
+  const nodes={
+    '[data-workbench-batch-select]':select,
+    '[data-workbench-batch-page-label]':label,
+    '[data-workbench-batch-page="prev"]':previous,
+    '[data-workbench-batch-page="next"]':next,
+  };
+  api.setRoot({querySelector:selector=>nodes[selector] || null});
+  api.setState({batches:[{batch_id:7,title:'当前批次',requested_count:9,status:'running'}],batch:'7',batchTotal:21,batchPage:2});
   api.renderBatches();
-  assert.match(summary.innerHTML,/并发 4/);
-  api.setState({batchDetail:{batch_id:6,title:'历史批次',workers:null}});
-  api.renderBatches();
-  assert.match(summary.innerHTML,/平台并发/);
+  assert.match(select.innerHTML,/当前批次/);
+  assert.equal(select.value,'7');
+  assert.equal(label.textContent,'第 2 / 2 页');
+  assert.equal(previous.disabled,false);
+  assert.equal(next.disabled,true);
 });
