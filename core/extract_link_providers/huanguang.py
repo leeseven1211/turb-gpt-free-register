@@ -11,6 +11,7 @@ from .contracts import (
     request,
     require_capability,
     safe_links,
+    safe_payment_artifact,
 )
 
 
@@ -76,6 +77,16 @@ class HuanguangProvider:
                 result.get("provider_redirect_url"),
                 result.get("checkout_url"),
             ),
+            payment_artifact=safe_payment_artifact({
+                "payment_page_url": next(iter(safe_links(result.get("short_link"), result.get("provider_redirect_url"), result.get("checkout_url"))), None),
+                "payment_url": result.get("payment_url") or result.get("hosted_instructions_url"),
+                "qr_data": result.get("qr_data"),
+                "qr_image_url_png": result.get("image_url_png") or result.get("qr_image_url_png"),
+                "qr_image_url_svg": result.get("image_url_svg") or result.get("qr_image_url_svg"),
+                "amount": result.get("amount"), "currency": result.get("currency"),
+                "expires_at": result.get("expires_at"),
+                "payment_status": result.get("payment_status"),
+            }),
             private_data={"job_secret": secret},
             summary={"percent": data.get("percent") if isinstance(data.get("percent"), int) else None},
         )

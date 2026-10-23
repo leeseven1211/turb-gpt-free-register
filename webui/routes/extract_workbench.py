@@ -12,6 +12,7 @@ from uuid import UUID
 from flask import jsonify, request
 
 from core import extract_link_service
+from core.extract_link_providers.contracts import safe_payment_artifact
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
@@ -35,7 +36,7 @@ _ITEM_FIELDS = (
     "task_id", "run_id", "account_id", "batch_id", "email", "provider_id", "mode", "link_type", "task_status",
     "preflight_status", "extraction_status", "payment_status", "plus_status",
     "run_count", "progress", "created_at", "updated_at", "message", "error",
-    "has_extract_link", "has_payment_link",
+    "has_extract_link", "has_payment_link", "has_payment_entry", "has_qr",
 )
 _PRIVATE_KEY_NAMES = {
     "accesstoken", "refreshtoken", "idtoken", "at", "token", "authorization",
@@ -503,6 +504,26 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         if not accepted:
             payload["error"] = "操作未接受，请刷新任务状态并检查配置"
         return jsonify(payload), 202 if accepted else 409
+
+    @bp.post("/api/extract-workbench/tasks/<int:task_id>/payment-entry")
+    def extract_workbench_task_payment_entry(task_id: int):
+        if task_id < 1:
+            return _error("task_id 参数无效", 400)
+        _, error = _parse_object_body(set())
+        if error is not None:
+            return error
+        try:
+            result = extract_link_service.extract_workbench_task_payment_entry(task_id)
+        except Exception as exc:
+            return _service_error("支付入口读取", exc)
+        entry = safe_payment_artifact(result)
+        if not any(entry.get(name) for name in (
+            "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+        )):
+            return _error("当前任务没有已保存的支付入口，可同步原任务状态后重试", 404)
+        response = jsonify({"ok": True, "entry": entry})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.post("/api/extract-workbench/tasks/<int:task_id>/links")
     def extract_workbench_task_link(task_id: int):

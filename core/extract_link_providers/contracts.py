@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import math
+import re
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -45,6 +49,7 @@ class ProviderJob:
     payment_state: str = "not_started"
     links: tuple[str, ...] = field(default=(), repr=False)
     payment_links: tuple[str, ...] = field(default=(), repr=False)
+    payment_artifact: dict = field(default_factory=dict, repr=False)
     private_data: dict = field(default_factory=dict, repr=False)
     summary: dict = field(default_factory=dict)
 
@@ -75,14 +80,51 @@ def safe_links(*values: object) -> tuple[str, ...]:
     for value in values:
         if not isinstance(value, str):
             continue
+        if len(value) > 16384 or any(ord(character) < 32 or ord(character) == 127 for character in value):
+            continue
         value = value.strip()
         try:
             parsed = urlsplit(value)
+            parsed.port
         except ValueError:
             continue
         if parsed.scheme in {"https", "http"} and parsed.hostname and not parsed.username and not parsed.password and value not in links:
             links.append(value)
     return tuple(links)
+
+
+def safe_payment_artifact(value: object) -> dict:
+    """支付产物使用专门白名单；保留二维码原文，不走日志脱敏或字符串截断。"""
+    if not isinstance(value, Mapping):
+        return {}
+    result = {}
+    for name in ("payment_page_url", "payment_url", "qr_image_url_png", "qr_image_url_svg"):
+        links = safe_links(value.get(name))
+        if links:
+            result[name] = links[0]
+    data = value.get("qr_data")
+    if isinstance(data, str) and data.strip() and len(data) <= 65536 and "\x00" not in data:
+        result["qr_data"] = data
+    amount = value.get("amount")
+    if type(amount) in (int, float) and 0 <= amount <= 10 ** 18 and math.isfinite(amount):
+        result["amount"] = amount
+    elif isinstance(amount, str) and re.fullmatch(r"\d{1,16}(?:\.\d{1,8})?", amount.strip()):
+        result["amount"] = amount.strip()
+    expires = value.get("expires_at")
+    if type(expires) in (int, float) and 0 <= expires <= 253402300799 and math.isfinite(expires):
+        result["expires_at"] = datetime.fromtimestamp(expires, timezone.utc).isoformat().replace("+00:00", "Z")
+    elif isinstance(expires, str) and len(expires) <= 160:
+        try:
+            parsed_expires = datetime.fromisoformat(expires.strip().replace("Z", "+00:00"))
+            if parsed_expires.tzinfo is not None:
+                result["expires_at"] = parsed_expires.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except (ValueError, OverflowError, OSError):
+            pass
+    for name in ("currency", "payment_status", "platform_plus_status"):
+        text = value.get(name)
+        if isinstance(text, str) and text.strip() and len(text) <= 160 and not any(ord(character) < 32 for character in text):
+            result[name] = text.strip()
+    return result
 
 
 def response_dict(response: object) -> dict:

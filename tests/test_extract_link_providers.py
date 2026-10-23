@@ -435,6 +435,68 @@ class ExtractLinkProviderTests(unittest.TestCase):
             self.assertNotIn("private-secret", repr(value))
 
 
+class PaymentArtifactProviderTests(unittest.TestCase):
+    def test_lumen_keeps_checkout_page_payment_entry_and_original_qr_separately(self):
+        from core.extract_link_providers import get_provider
+
+        qr_data = "upi://pay?pa=synthetic@example.test&am=0&tn=Token%2BExact"
+        provider = get_provider("lumen_flow", config=_config("lumen_flow"), transport=_Transport([{
+            "taskId": "artifact-task", "status": "SUCCEEDED", "plusVerificationStatus": "ACTIVE",
+            "result": {
+                "hostedUrl": "https://checkout.example.test/page", "paymentStatus": "requires_action",
+                "amount": 0, "currency": "BRL", "paymentArtifact": {
+                    "data": qr_data, "imageUrlPng": "https://qr.example.test/code.png",
+                    "imageUrlSvg": "https://qr.example.test/code.svg",
+                    "hostedInstructionsUrl": "https://payments.example.test/instructions",
+                    "expiresAt": 1792800000, "accessToken": "must-not-project",
+                },
+            },
+        }]))
+        job = provider.get_status("artifact-task")
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual("pending", job.payment_state)
+        self.assertEqual({
+            "payment_page_url": "https://checkout.example.test/page",
+            "payment_url": "https://payments.example.test/instructions",
+            "qr_data": qr_data, "qr_image_url_png": "https://qr.example.test/code.png",
+            "qr_image_url_svg": "https://qr.example.test/code.svg", "amount": 0, "currency": "BRL",
+            "expires_at": "2026-10-24T00:00:00Z", "payment_status": "requires_action",
+            "platform_plus_status": "ACTIVE",
+        }, job.payment_artifact)
+        self.assertNotIn(qr_data, repr(job))
+        self.assertNotIn("must-not-project", repr(job))
+
+    def test_payment_artifact_rejects_invalid_urls_without_truncating_payment_data(self):
+        from core.extract_link_providers.contracts import safe_payment_artifact
+
+        long_url = "https://checkout.example.test/" + "x" * 3000
+        self.assertEqual({"payment_page_url": long_url}, safe_payment_artifact({"payment_page_url": long_url}))
+        for url in ("javascript:alert(1)", "https://user:pass@example.test/code", "https://[", "https://example.test/\ncode", "https://example.test/" + "x" * 17000):
+            with self.subTest(url=url[:30]):
+                self.assertEqual({}, safe_payment_artifact({"payment_url": url}))
+        self.assertEqual({}, safe_payment_artifact({"qr_data": "x" * 65537, "amount": True, "extra": "private"}))
+        self.assertEqual({"qr_data": "  exact payload\n", "amount": 0}, safe_payment_artifact({"qr_data": "  exact payload\n", "amount": 0}))
+        for amount in (float("inf"), float("nan"), -1, 10 ** 999):
+            self.assertEqual({}, safe_payment_artifact({"amount": amount}))
+
+    def test_payment_expiration_normalizes_seconds_and_rejects_invalid_values(self):
+        from core.extract_link_providers.contracts import safe_payment_artifact
+
+        for expires in (1792800000, 1792800000.0, "2026-10-24T08:00:00+08:00"):
+            self.assertEqual({"expires_at": "2026-10-24T00:00:00Z"}, safe_payment_artifact({"expires_at": expires}))
+        for expires in (True, -1, 10 ** 999, float("inf"), "not-a-date", "2026-10-24T00:00:00", "9999-12-31T23:59:59-23:00"):
+            self.assertEqual({}, safe_payment_artifact({"expires_at": expires}))
+
+    def test_other_providers_preserve_native_qr_artifacts(self):
+        from core.extract_link_providers.huanguang import HuanguangProvider
+        from core.extract_link_providers.legacy import LegacyProvider
+
+        result = {"checkout_url": "https://checkout.example.test/page", "qr_data": "upi://pay?pa=synthetic&tn=Token%2BExact", "image_url_png": "https://qr.example.test/code.png", "image_url_svg": "https://qr.example.test/code.svg", "amount": 0}
+        for job in (HuanguangProvider._job({"status": "done", "result": result}, "hg-job", "private-secret"), LegacyProvider._job({"status": "done", "result": result}, "legacy-job")):
+            self.assertEqual("succeeded", job.extraction_state)
+            self.assertEqual({"payment_page_url": result["checkout_url"], "qr_data": result["qr_data"], "qr_image_url_png": result["image_url_png"], "qr_image_url_svg": result["image_url_svg"], "amount": 0}, job.payment_artifact)
+
+
 class _Transport:
     def __init__(self, responses):
         self.responses = list(responses)

@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit
 
+from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
 from core.storage import operation as operation_store
 
 
@@ -48,24 +48,13 @@ def _public_state(value: Mapping[str, Any]) -> dict:
     for field_name in ("links", "payment_links"):
         links = value.get(field_name)
         if isinstance(links, (list, tuple)):
-            safe = []
-            for link in links[:20]:
-                if not isinstance(link, str):
-                    continue
-                candidate = link.strip()[:2000]
-                try:
-                    parsed = urlsplit(candidate)
-                except ValueError:
-                    continue
-                if (
-                    parsed.scheme in {"http", "https"}
-                    and parsed.hostname
-                    and not parsed.username
-                    and not parsed.password
-                ):
-                    safe.append(candidate)
+            safe = list(safe_links(*links[:20]))
             if safe:
                 result[field_name] = safe
+
+    artifact = safe_payment_artifact(value.get("payment_artifact"))
+    if artifact:
+        result["payment_artifact"] = artifact
 
     summary = value.get("summary")
     if isinstance(summary, Mapping):
@@ -130,7 +119,13 @@ def save_provider_job(
                 job_id=COALESCE(EXCLUDED.job_id, stored.job_id),
                 extraction_state=EXCLUDED.extraction_state,
                 payment_state=EXCLUDED.payment_state,
-                public_state=EXCLUDED.public_state,
+                public_state=EXCLUDED.public_state || jsonb_build_object(
+                    'links', COALESCE(EXCLUDED.public_state->'links', stored.public_state->'links', '[]'::jsonb),
+                    'payment_links', COALESCE(EXCLUDED.public_state->'payment_links', stored.public_state->'payment_links', '[]'::jsonb),
+                    'payment_artifact',
+                    COALESCE(stored.public_state->'payment_artifact', '{{}}'::jsonb)
+                    || COALESCE(EXCLUDED.public_state->'payment_artifact', '{{}}'::jsonb)
+                ),
                 private_data=stored.private_data || EXCLUDED.private_data,
                 updated_at=now()
             """,
@@ -328,7 +323,10 @@ def update_provider_job_state(run_id: int, public_state: Mapping[str, Any]) -> b
         if row is None:
             return False
         merged = _json_object(row["public_state"], field_name="public_state")
+        artifact = {**safe_payment_artifact(merged.get("payment_artifact")), **incoming.get("payment_artifact", {})}
         merged.update(incoming)
+        if artifact:
+            merged["payment_artifact"] = artifact
         cur.execute(
             f"""
             UPDATE {operation_store._table('extract_link_provider_jobs')}

@@ -8,6 +8,9 @@ let EXTRACT_WORKBENCH_CONFIG_PROMISE = null;
 let EXTRACT_WORKBENCH_BOUND = false;
 let EXTRACT_WORKBENCH_QUERY_TIMER = null;
 let EXTRACT_WORKBENCH_POLL_TIMER = null;
+let EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
+let EXTRACT_WORKBENCH_PAYMENT_SEQUENCE = 0;
+let EXTRACT_WORKBENCH_PAYMENT_TRIGGER = null;
 const EXTRACT_WORKBENCH_PROVIDER_LABELS = {legacy:'现有提链', lumen_flow:'Lumen Flow', huanguang:'幻光提链'};
 
 const EXTRACT_WORKBENCH_STATUS_LABELS = {
@@ -93,12 +96,14 @@ function extractWorkbenchOutcome(task) {
   if (paid && confirmed) return {tone:'success', state:'完成', title:'支付成功 · 到账已核实', copy:'平台状态与本地套餐核实分别记录', icon:'check'};
   if (paid) return {tone:'warning', state:'待核实', title:'支付成功 · 到账待核实', copy:'已记录支付成功，等待本地 Plus 到账核验', icon:'dots'};
   if (task?.payment_status === 'failed' && ['success', 'succeeded'].includes(extraction)) return {tone:'danger', state:'支付失败', title:'提链完成 · 支付失败', copy:'提链结果与支付结果分别记录，可查看任务详情', icon:'warning'};
-  if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'平台结果 · 等待确认', copy:'请查看任务详情或同步原任务状态', icon:'warning'};
-  if (['failed', 'cancelled', 'stopped'].includes(status) || extraction === 'failed') return {tone:'danger', state:status === 'cancelled' ? '已取消' : '失败', title:status === 'cancelled' ? '任务已取消' : '提链未完成', copy:'保留本次运行记录，可查看原因后重跑', icon:'warning'};
   if (['success', 'succeeded'].includes(extraction)) {
+    if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'提链成功 · 后续结果待确认', copy:'提链结果已保留，请查看后续处理详情', icon:'warning'};
+    if (['failed', 'cancelled', 'stopped'].includes(status)) return {tone:'warning', state:'待处理', title:status === 'failed' ? '提链成功 · 后续处理失败' : '提链成功 · 任务已停止', copy:'提链结果已保留，后续处理状态单独记录', icon:'warning'};
     if (task?.mode !== 'extract_only' && ['running', 'queued', 'pending_payment'].includes(task?.payment_status)) return {tone:'active', state:'支付中', title:'支付处理中', copy:'出链完成与支付结果分开统计', icon:'dots'};
     return {tone:'success', state:'完成', title:'提链成功', copy:task?.mode === 'extract_only' ? '仅提链已完成，未发起支付' : '支付链接已生成，等待完成支付', icon:'check'};
   }
+  if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'平台结果 · 等待确认', copy:'请查看任务详情或同步原任务状态', icon:'warning'};
+  if (['failed', 'cancelled', 'stopped'].includes(status) || extraction === 'failed') return {tone:'danger', state:status === 'cancelled' ? '已取消' : '失败', title:status === 'cancelled' ? '任务已取消' : '提链未完成', copy:'保留本次运行记录，可查看原因后重跑', icon:'warning'};
   if (status === 'queued' || status === 'waiting') return {tone:'muted', state:'排队中', title:'等待开始提链', copy:'执行前会在线查活并检查 AT', icon:'dots'};
   return {tone:'active', state:'运行中', title:'正在获取支付链接', copy:'出链完成后将显示对应平台结果', icon:'dots'};
 }
@@ -124,7 +129,7 @@ function renderExtractWorkbenchTaskCard(task) {
   const percent = hasPercent ? Math.min(100, Math.max(0, Number(rawPercent))) : finished ? 100 : null;
   const progressLabel = task?.progress?.label || task?.progress?.stage || '';
   const canExtractLink = task?.has_extract_link === true;
-  const canPaymentLink = task?.has_payment_link === true;
+  const canPaymentEntry = task?.has_payment_entry === true || task?.has_qr === true || task?.has_payment_link === true || canExtractLink;
   const active = ['queued', 'running', 'waiting', 'settling', 'cancelling'].includes(task?.task_status);
   const actionButton = (action, label) => `<button type="button" class="btn" data-workbench-action="${action}" data-task-id="${taskId}"${active ? ' disabled' : ''}>${label}</button>`;
   const linkButton = (kind, label, icon, enabled) => `<button type="button" class="btn" data-workbench-link="${kind}" data-task-id="${taskId}"${enabled ? '' : ' disabled'}>${extractWorkbenchIcon(icon)}${label}</button>`;
@@ -145,7 +150,7 @@ function renderExtractWorkbenchTaskCard(task) {
     <div class="extract-workbench-progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100"${percent === null ? ' aria-valuetext="尚无进度信息"' : ` aria-valuenow="${percent}"`}><div class="extract-workbench-progress-fill extract-workbench-progress-fill--${outcome.tone}" style="width:${percent ?? 0}%"></div></div>
     <div class="extract-workbench-outcome"><span class="extract-workbench-outcome-symbol extract-workbench-outcome-symbol--${outcome.tone}">${extractWorkbenchIcon(outcome.icon)}</span><strong class="extract-workbench-outcome-title extract-workbench-outcome-title--${outcome.tone}">${outcome.title}</strong><span class="extract-workbench-outcome-copy">${outcome.copy}</span></div>
     <div class="extract-workbench-card-actions">
-      ${linkButton('payment', '打开支付', 'external', canPaymentLink)}
+      <button type="button" class="btn" data-workbench-payment-entry="${taskId}"${canPaymentEntry ? '' : ' disabled'}>${extractWorkbenchIcon('external')}支付入口</button>
       ${linkButton('extract', '复制链接', 'copy', canExtractLink)}
       <button type="button" class="btn" data-workbench-copy-at="${taskId}"${Number(task?.account_id) > 0 ? '' : ' disabled'}>${extractWorkbenchIcon('token')}复制 AT</button>
     </div>
@@ -539,6 +544,122 @@ async function extractWorkbenchTaskAction(taskId, action, button) {
   }
 }
 
+function extractWorkbenchPaymentUrl(value, {image = false} = {}) {
+  const text = String(value || '').trim();
+  if (image && /^data:image\/(?:png|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(text)) return text;
+  try {
+    const parsed = new URL(text);
+    return ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : '';
+  } catch (_) { return ''; }
+}
+
+function extractWorkbenchPaymentQrSources(entry) {
+  return [...new Set([entry?.qr_image_url_png, entry?.qr_image_url_svg]
+    .map(value => extractWorkbenchPaymentUrl(value, {image:true})).filter(Boolean))];
+}
+
+function extractWorkbenchPaymentStatus(value, {plus = false} = {}) {
+  const key = String(value ?? '').toLowerCase();
+  const labels = plus
+    ? {true:'平台显示已开通', confirmed:'平台显示已开通', plus:'平台显示已开通', active:'平台显示已开通', activated:'平台显示已开通', success:'平台显示已开通', succeeded:'平台显示已开通', false:'平台尚未确认', pending:'平台待核验', unknown:'平台待核验', not_started:'平台尚未核验', not_confirmed:'平台尚未确认', failed:'平台核验失败', not_applicable:'不适用'}
+    : {paid:'支付成功', succeeded:'支付成功', success:'支付成功', pending:'待支付', unpaid:'未支付', not_started:'未发起支付', pending_payment:'待支付', requires_action:'等待扫码或付款', requires_confirmation:'等待支付确认', requires_payment_method:'需要支付方式', running:'支付处理中', processing:'支付处理中', failed:'支付失败', canceled:'已取消', cancelled:'已取消', expired:'已过期', unknown:'待确认'};
+  return labels[key] || (key ? String(value) : '平台未返回');
+}
+
+function renderExtractWorkbenchPaymentEntry(entry = {}) {
+  const pageUrl = extractWorkbenchPaymentUrl(entry.payment_page_url);
+  const paymentUrl = extractWorkbenchPaymentUrl(entry.payment_url);
+  const qrData = String(entry.qr_data || '');
+  const images = extractWorkbenchPaymentQrSources(entry);
+  const alternative = pageUrl || paymentUrl ? '可使用上方支付链接。' : qrData ? '可复制下方二维码原文。' : '平台未返回其他支付入口。';
+  const hasAmount = entry.amount !== null && entry.amount !== undefined && entry.amount !== '';
+  const amount = hasAmount ? `${String(entry.amount)}${entry.currency ? ` ${String(entry.currency).toUpperCase()}` : ''}` : '平台未返回';
+  const field = (label, value, key, url = false) => `<section class="extract-workbench-payment-field"><div class="extract-workbench-payment-field-head"><h3>${label}</h3>${value ? `<div><button type="button" class="btn" data-workbench-payment-copy="${key}" aria-label="复制${label}">${extractWorkbenchIcon('copy')}复制</button>${url ? `<a class="btn" href="${extractWorkbenchEscape(value)}" target="_blank" rel="noopener noreferrer" aria-label="打开${label}">${extractWorkbenchIcon('external')}打开</a>` : ''}</div>` : ''}</div>${value ? `<pre>${extractWorkbenchEscape(value)}</pre>` : '<p class="extract-workbench-payment-missing">平台未返回</p>'}</section>`;
+  return `<dl class="extract-workbench-payment-facts"><div><dt>金额</dt><dd>${extractWorkbenchEscape(amount)}</dd></div><div><dt>平台支付状态</dt><dd>${extractWorkbenchEscape(extractWorkbenchPaymentStatus(entry.payment_status))}</dd></div><div><dt>平台 Plus 核验</dt><dd>${extractWorkbenchEscape(extractWorkbenchPaymentStatus(entry.platform_plus_status, {plus:true}))}</dd></div><div><dt>有效期至</dt><dd>${entry.expires_at ? extractWorkbenchEscape(extractWorkbenchTime(entry.expires_at)) : '平台未返回'}</dd></div></dl>
+    <p class="extract-workbench-payment-hint">平台 Plus 状态供参考，本地到账以卡片中的“Plus 到账核验”为准。</p>
+    ${field('支付页面', pageUrl, 'payment_page_url', true)}${field('支付入口', paymentUrl, 'payment_url', true)}
+    <section class="extract-workbench-payment-qr"><h3>支付二维码</h3>${images.length ? `<img src="${extractWorkbenchEscape(images[0])}" alt="平台返回的支付二维码" width="208" height="208" referrerpolicy="no-referrer" data-workbench-payment-qr><p class="extract-workbench-payment-missing" data-workbench-payment-qr-fallback hidden>二维码图片加载失败。${alternative}</p>` : `<p class="extract-workbench-payment-missing">${qrData ? '平台未返回二维码图片，可复制下方二维码原文。' : `平台未返回二维码。${alternative}`}</p>`}</section>
+    ${field('二维码原文', qrData, 'qr_data')}`;
+}
+
+function extractWorkbenchPaymentQrError(image) {
+  const sources = extractWorkbenchPaymentQrSources(EXTRACT_WORKBENCH_PAYMENT_ENTRY);
+  const index = Number(image.dataset.workbenchQrIndex || 0) + 1;
+  image.dataset.workbenchQrIndex = String(index);
+  if (sources[index]) { image.src = sources[index]; return; }
+  image.hidden = true;
+  const fallback = image.parentElement?.querySelector('[data-workbench-payment-qr-fallback]');
+  if (fallback) fallback.hidden = false;
+}
+
+function extractWorkbenchPaymentDialog() {
+  const root = extractWorkbenchRoot();
+  if (!root) return null;
+  let dialog = root.querySelector('[data-workbench-payment-dialog]');
+  if (dialog) return dialog;
+  dialog = document.createElement('dialog');
+  dialog.className = 'extract-workbench-payment-dialog';
+  dialog.setAttribute('data-workbench-payment-dialog', '');
+  dialog.setAttribute('aria-labelledby', 'extractWorkbenchPaymentTitle');
+  dialog.innerHTML = `<header class="extract-workbench-payment-head"><div><h2 id="extractWorkbenchPaymentTitle">支付入口</h2><p data-workbench-payment-task></p></div><button type="button" class="extract-workbench-dialog-close" data-workbench-close-payment aria-label="关闭支付入口" autofocus>${extractWorkbenchIcon('close')}</button></header><div data-workbench-payment-content aria-live="polite"></div>`;
+  dialog.addEventListener('close', () => {
+    EXTRACT_WORKBENCH_PAYMENT_SEQUENCE += 1;
+    EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
+    dialog.querySelector('[data-workbench-payment-content]').textContent = '';
+    const trigger = EXTRACT_WORKBENCH_PAYMENT_TRIGGER?.isConnected ? EXTRACT_WORKBENCH_PAYMENT_TRIGGER
+      : Array.from(root.querySelectorAll?.('[data-workbench-payment-entry]') || []).find(node => node.dataset.workbenchPaymentEntry === dialog.dataset.workbenchTaskId);
+    trigger?.focus();
+    EXTRACT_WORKBENCH_PAYMENT_TRIGGER = null;
+  });
+  dialog.addEventListener('error', event => {
+    if (event.target.matches('[data-workbench-payment-qr]')) extractWorkbenchPaymentQrError(event.target);
+  }, true);
+  dialog.addEventListener('click', event => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  });
+  root.appendChild(dialog);
+  return dialog;
+}
+
+async function extractWorkbenchShowPaymentEntry(taskId, button) {
+  const dialog = extractWorkbenchPaymentDialog();
+  if (!dialog) return;
+  const sequence = ++EXTRACT_WORKBENCH_PAYMENT_SEQUENCE;
+  EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
+  dialog.dataset.workbenchTaskId = String(taskId);
+  if (button && !dialog.open) EXTRACT_WORKBENCH_PAYMENT_TRIGGER = button;
+  const content = dialog.querySelector('[data-workbench-payment-content]');
+  dialog.querySelector('[data-workbench-payment-task]').textContent = `任务 #${taskId} · 查看平台返回的链接与二维码`;
+  content.setAttribute('aria-busy', 'true');
+  content.innerHTML = '<p class="extract-workbench-payment-message" role="status">正在读取支付入口…</p>';
+  if (!dialog.open) dialog.showModal();
+  try {
+    const result = await extractWorkbenchRequest(`/api/extract-workbench/tasks/${encodeURIComponent(taskId)}/payment-entry`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}),
+    });
+    if (sequence !== EXTRACT_WORKBENCH_PAYMENT_SEQUENCE || !dialog.open) return;
+    if (result?.ok === false || !result?.entry || typeof result.entry !== 'object') throw new Error(result?.error || '服务端未返回支付入口');
+    EXTRACT_WORKBENCH_PAYMENT_ENTRY = result.entry;
+    content.innerHTML = renderExtractWorkbenchPaymentEntry(result.entry);
+  } catch (error) {
+    if (sequence !== EXTRACT_WORKBENCH_PAYMENT_SEQUENCE || !dialog.open) return;
+    content.innerHTML = `<div class="extract-workbench-payment-message" role="alert"><p>${extractWorkbenchEscape(error?.message || '支付入口读取失败')}</p><button type="button" class="btn" data-workbench-payment-entry="${extractWorkbenchEscape(taskId)}">重新读取</button></div>`;
+  } finally {
+    if (sequence === EXTRACT_WORKBENCH_PAYMENT_SEQUENCE) content.setAttribute('aria-busy', 'false');
+  }
+}
+
+async function extractWorkbenchCopyPaymentEntry(key) {
+  if (!['payment_page_url', 'payment_url', 'qr_data'].includes(key)) return;
+  const value = key === 'qr_data' ? String(EXTRACT_WORKBENCH_PAYMENT_ENTRY?.qr_data || '')
+    : extractWorkbenchPaymentUrl(EXTRACT_WORKBENCH_PAYMENT_ENTRY?.[key]);
+  if (!value) return;
+  try { await navigator.clipboard.writeText(value); showToast?.('已复制'); }
+  catch (_) { window.prompt('复制支付入口内容', value); }
+}
+
 async function extractWorkbenchShowLink(taskId, kind) {
   try {
     const result = await extractWorkbenchRequest(`/api/extract-workbench/tasks/${encodeURIComponent(taskId)}/links`, {
@@ -607,6 +728,12 @@ function extractWorkbenchBindEvents() {
   if (!root || EXTRACT_WORKBENCH_BOUND) return;
   EXTRACT_WORKBENCH_BOUND = true;
   root.addEventListener('click', event => {
+    const closePayment = event.target.closest('[data-workbench-close-payment]');
+    if (closePayment) { extractWorkbenchNode('[data-workbench-payment-dialog]')?.close(); return; }
+    const paymentCopy = event.target.closest('[data-workbench-payment-copy]');
+    if (paymentCopy) { void extractWorkbenchCopyPaymentEntry(paymentCopy.dataset.workbenchPaymentCopy); return; }
+    const paymentEntry = event.target.closest('[data-workbench-payment-entry]');
+    if (paymentEntry) { void extractWorkbenchShowPaymentEntry(paymentEntry.dataset.workbenchPaymentEntry, paymentEntry); return; }
     const allBatches = event.target.closest('[data-workbench-all-batches]');
     if (allBatches) { void extractWorkbenchSwitchBatch(''); return; }
     const batchPage = event.target.closest('[data-workbench-batch-page]');

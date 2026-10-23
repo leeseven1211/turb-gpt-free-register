@@ -458,6 +458,27 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual(503, response.status_code)
         self.assertNotIn("credential-value", response.get_data(as_text=True))
 
+    def test_payment_entry_is_explicitly_requested_and_returns_only_validated_fields(self):
+        entry = {
+            "payment_page_url": "https://checkout.example.test/page", "payment_url": "https://payments.example.test/entry",
+            "qr_data": "upi://pay?pa=synthetic@example.test&tn=Token%2BExact", "amount": 0,
+            "qr_image_url_png": "javascript:alert(1)", "job_secret": "must-not-project", "raw": "must-not-project",
+        }
+        with patch.object(extract_workbench.extract_link_service, "extract_workbench_task_payment_entry", return_value=entry) as get_entry:
+            response = self.client.post("/api/extract-workbench/tasks/11/payment-entry", json={})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "entry": {key: entry[key] for key in ("payment_page_url", "payment_url", "qr_data", "amount")}}, response.get_json())
+        get_entry.assert_called_once_with(11)
+        self.assertNotIn("must-not-project", response.get_data(as_text=True))
+
+    def test_payment_entry_rejects_unknown_body_and_missing_artifact(self):
+        with patch.object(extract_workbench.extract_link_service, "extract_workbench_task_payment_entry", return_value=None) as get_entry:
+            bad = self.client.post("/api/extract-workbench/tasks/11/payment-entry", json={"sync": True})
+            missing = self.client.post("/api/extract-workbench/tasks/11/payment-entry", json={})
+        self.assertEqual(400, bad.status_code)
+        self.assertEqual(404, missing.status_code)
+        get_entry.assert_called_once_with(11)
+
     def test_application_factory_registers_workbench_api_behind_auth(self):
         app = create_app(auth_code="workbench-route-auth")
         client = app.test_client()

@@ -27,6 +27,104 @@ function loadFunctions(names, dependencies = {}) {
   return context;
 }
 
+test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示成功', () => {
+  const context = loadFunctions(['accountTaskResultText']);
+  const task = {task_type: 'extract_link', status: 'success', result_summary: {
+    extraction_status: 'succeeded', payment_status: 'not_started', mode: 'extract_only',
+  }};
+  assert.equal(context.accountTaskResultText(task), '提链成功');
+  assert.equal(context.accountTaskResultText(task, true), '提链成功');
+  assert.equal(context.accountTaskResultText({...task, result_summary: {
+    ...task.result_summary, ok: false, message: '提炼失败',
+  }}), '提链成功');
+});
+
+test('已出链后支付失败或待确认保留提链成功事实，包括带错误信息的任务', () => {
+  const context = loadFunctions(['accountTaskResultText'], {
+    accountTaskErrorDisplayText: () => '支付接口异常',
+  });
+  for (const [payment, status, expected] of [
+    ['failed', 'failed', '提链成功 · 支付失败'],
+    ['unknown', 'attention_required', '提链成功 · 支付待确认'],
+    ['pending', 'partial_success', '提链成功 · 支付待确认'],
+    ['succeeded', 'success', '提链成功 · 支付成功'],
+  ]) {
+    assert.equal(context.accountTaskResultText({
+      task_type: 'extract_link', status, error_message: '支付接口异常',
+      result_summary: {extraction_status: 'succeeded', payment_status: payment, mode: 'auto_payment'},
+    }), expected);
+  }
+  assert.equal(context.accountTaskResultText({
+    task_type: 'extract_link', status: 'success',
+    result_summary: {extraction_status: 'succeeded', payment_status: 'pending', mode: 'manual_payment'},
+  }), '提链成功 · 等待手动支付');
+});
+
+test('空摘要和未确认状态不会误报提链失败，明确失败优先于旧成功字段', () => {
+  const context = loadFunctions(['accountTaskResultText']);
+  for (const [status, expected] of [
+    ['queued', '等待执行'], ['running', '执行中'], ['cancelled', '任务已取消'],
+    ['stopped', '任务已中断'], ['interrupted', '任务已中断'],
+    ['request_unknown', '提链结果待确认'], ['attention_required', '提链结果待确认'],
+    ['partial_success', '提链结果待确认'], ['unknown', '提链结果待确认'],
+    ['success', '提链结果未记录'], ['', '提链结果未记录'], ['failed', '提链失败'],
+  ]) {
+    assert.equal(context.accountTaskResultText({task_type: 'extract_link', status}), expected);
+  }
+  assert.equal(context.accountTaskResultText({
+    task_type: 'extract_link', status: 'failed',
+    result_summary: {extraction_status: 'failed', ok: true, has_link: true, message: '提链成功'},
+  }), '提链失败');
+  assert.equal(context.accountTaskResultText({
+    task_type: 'extract_link', status: 'success',
+    result_summary: {extraction_status: 'unknown', ok: false},
+  }), '提链结果待确认');
+});
+
+test('旧提链摘要继续识别成功、失败和已有消息', () => {
+  const context = loadFunctions(['accountTaskResultText']);
+  for (const [result_summary, expected] of [
+    [{ok: true, has_link: true, link_type: 'upi'}, '提链成功 · UPI'],
+    [{ok: true, has_link: false}, '提炼完成'],
+    [{ok: false}, '提炼失败'],
+    [{ok: false, message: '平台拒绝请求'}, '平台拒绝请求'],
+  ]) {
+    assert.equal(context.accountTaskResultText({task_type: 'extract_link', status: 'success', result_summary}), expected);
+  }
+});
+
+test('任务列表支付异常仍显示提链成功并保留错误徽标和详细提示，其他错误不变', () => {
+  const body = {innerHTML: ''};
+  const context = loadFunctions(['accountTaskResultText', 'renderAccountTasks'], {
+    $: selector => selector === '#accountTasksBody' ? body : null,
+    ACCOUNT_TASKS: [], ACCOUNT_TASK_SELECTED: new Set(), ACCOUNT_TASKS_TOTAL: 1,
+    document: {querySelector: () => null},
+    accountTaskIsActive: () => false, accountTaskCanRetry: () => false,
+    accountTaskCanTerminate: () => false, accountTaskCanStop: () => false,
+    accountTaskErrorDisplayText: (_info, error) => error,
+    accountTaskErrorDisplayTitle: (_info, error) => error,
+    taskErrorBadge: () => '<span class="error-badge">PAYMENT</span>',
+    esc: value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char])),
+    short: (value, length) => String(value || '').slice(0, length),
+    facetLabel: (_group, value) => value || '', normalizeAccountTaskStage: value => value,
+    pillV2: () => '', formatTaskDuration: () => '-', formatDateTime: () => '-',
+    updateAccountTaskSelectionUi() {}, autoSizeResizableTableColumns() {}, _renderPager() {},
+  });
+  for (const [task_type, result_summary, expected] of [
+    ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功 · 支付失败'],
+    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功 · 支付待确认'],
+    ['extract_link', {extraction_status: 'failed'}, '支付&lt;失败&gt;'],
+    ['live_check', {}, '支付&lt;失败&gt;'],
+  ]) {
+    context.ACCOUNT_TASKS = [{id: 1, task_type, status: 'failed', error_message: '支付<失败>', result_summary}];
+    context.renderAccountTasks();
+    const cell = body.innerHTML.match(/<td class="task-error"[^>]*>.*?<\/td>/s)?.[0] || '';
+    assert.match(cell, /title="支付&lt;失败&gt;"/);
+    assert.match(cell, /class="error-badge">PAYMENT<\/span>/);
+    assert.ok(cell.includes(`<span class="task-error-cell-text">${expected}</span>`));
+  }
+});
+
 function operationContext(name, response) {
   const calls = {requests: [], toasts: [], logs: [], accounts: 0, summary: 0};
   const names = ['accountBulkQueueReasons', name].filter(functionName => source.includes(`function ${functionName}(`));

@@ -24,7 +24,7 @@ function createView() {
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
     },
   };
-  const context = {document, window, URLSearchParams, setTimeout, clearTimeout,
+  const context = {document, window, URL, URLSearchParams, setTimeout, clearTimeout,
     LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
     navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast() {}};
   vm.createContext(context);
@@ -46,13 +46,19 @@ function createView() {
     switchBatch: extractWorkbenchSwitchBatch,
     renderBatches: extractWorkbenchRenderBatches,
     accountSources: extractWorkbenchAccountSources,
+    renderPaymentEntry: renderExtractWorkbenchPaymentEntry,
+    showPaymentEntry: extractWorkbenchShowPaymentEntry,
+    copyPaymentEntry: extractWorkbenchCopyPaymentEntry,
+    paymentQrError: extractWorkbenchPaymentQrError,
+    paymentQrSources: extractWorkbenchPaymentQrSources,
+    paymentUrl: extractWorkbenchPaymentUrl,
     setConfig(value) { if (typeof EXTRACT_WORKBENCH_CONFIG !== 'undefined') EXTRACT_WORKBENCH_CONFIG = value; },
     load: typeof loadExtractWorkbench === 'function' ? loadExtractWorkbench : undefined,
     setRoot(value) { if (typeof EXTRACT_WORKBENCH_ROOT !== 'undefined') EXTRACT_WORKBENCH_ROOT = value; },
     state: () => typeof EXTRACT_WORKBENCH_STATE === 'undefined' ? {} : ({...EXTRACT_WORKBENCH_STATE}),
     setState(value) { if (typeof EXTRACT_WORKBENCH_STATE !== 'undefined') EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, ...value}; },
   };`, context);
-  return {api: context.workbench, nodes, requests, window, copied};
+  return {api: context.workbench, nodes, requests, window, copied, document};
 }
 
 test('任务卡分别呈现预检、提链、支付和 Plus 状态', () => {
@@ -189,7 +195,7 @@ test('原型卡片保留三项主操作、中文平台和运行次数，未知�
   const html = api.renderCard({task_id:42, account_id:7, email:'<account>@example.test',
     provider_id:'lumen_flow', mode:'extract_only', task_status:'running', run_count:2,
     preflight_status:'passed', extraction_status:'running', payment_status:'unpaid', plus_status:'pending'});
-  for (const label of ['Lumen Flow', '仅提链', '运行 2 次', '预检通过', '打开支付', '复制链接', '复制 AT']) assert.ok(html.includes(label));
+  for (const label of ['Lumen Flow', '仅提链', '运行 2 次', '预检通过', '支付入口', '复制链接', '复制 AT']) assert.ok(html.includes(label));
   assert.match(html, /extract-workbench-card-actions/);
   assert.match(html, /&lt;account&gt;@example.test/);
   assert.doesNotMatch(html, /Run 2|运行 2\/3|aria-valuenow="100"|>extract_only</);
@@ -203,6 +209,160 @@ test('支付成功待核验、出链成功未支付和提链失败呈现不同�
   assert.equal(api.outcome({task_status:'failed',extraction_status:'failed',payment_status:'unpaid'}).title,'提链未完成');
   assert.equal(api.outcome({task_status:'failed',extraction_status:'failed',payment_status:'failed'}).title,'提链未完成');
   assert.equal(api.outcome({task_status:'request_unknown',extraction_status:'failed',payment_status:'unpaid'}).title,'平台结果 · 等待确认');
+});
+
+test('提链成功事实独立于任务后续失败和待确认，结果区不反写提链失败', () => {
+  const {api} = createView();
+  for (const [status, title] of [['failed','提链成功 · 后续处理失败'], ['attention_required','提链成功 · 后续结果待确认'], ['request_unknown','提链成功 · 后续结果待确认']]) {
+    const task = {task_status:status, extraction_status:'success', payment_status:'unpaid', has_extract_link:true};
+    assert.equal(api.outcome(task).title, title);
+    assert.doesNotMatch(api.renderCard(task), /提链未完成/);
+  }
+});
+
+test('支付入口兼容列表能力标记与历史链接，卡片不携带敏感支付内容', () => {
+  const {api} = createView();
+  for (const flag of ['has_payment_entry', 'has_qr', 'has_payment_link', 'has_extract_link']) {
+    const html = api.renderCard({task_id:42, [flag]:true, payment_url:'https://private.example.test/session', qr_data:'private-payment-data'});
+    assert.match(html, /data-workbench-payment-entry="42">/);
+    assert.doesNotMatch(html, /private-payment-data|private\.example/);
+  }
+  assert.match(api.renderCard({task_id:42}), /data-workbench-payment-entry="42" disabled/);
+});
+
+test('支付入口分别呈现支付页面、平台入口、二维码与平台核验，零金额不丢失', () => {
+  const {api} = createView();
+  const html = api.renderPaymentEntry({payment_page_url:'https://checkout.example.test/page', payment_url:'https://pay.example.test/entry',
+    qr_data:'payment-payload<&>', qr_image_url_png:'https://img.example.test/code.png', qr_image_url_svg:'https://img.example.test/code.svg',
+    amount:0, currency:'inr', payment_status:'succeeded', platform_plus_status:'confirmed'});
+  assert.match(html, /支付页面/);
+  assert.match(html, /href="https:\/\/checkout\.example\.test\/page"/);
+  assert.match(html, /href="https:\/\/pay\.example\.test\/entry"/);
+  assert.match(html, /src="https:\/\/img\.example\.test\/code\.png"/);
+  assert.match(html, /payment-payload&lt;&amp;&gt;/);
+  assert.match(html, /0 INR/);
+  assert.match(html, /平台显示已开通/);
+  assert.match(html, /本地到账以卡片中的/);
+  assert.doesNotMatch(html, /onerror=|到账已核实/);
+});
+
+test('只有普通支付页面时不伪造二维码，无图片的二维码内容只呈现原文', () => {
+  const {api} = createView();
+  const page = api.renderPaymentEntry({payment_page_url:'https://checkout.example.test/page'});
+  assert.doesNotMatch(page, /<img/);
+  assert.match(page, /平台未返回二维码/);
+  const raw = api.renderPaymentEntry({qr_data:'upi://pay?pa=demo'});
+  assert.doesNotMatch(raw, /<img/);
+  assert.match(raw, /upi:\/\/pay\?pa=demo/);
+  assert.match(raw, /可复制下方二维码原文/);
+});
+
+test('平台链接与二维码图片过滤脚本地址，不把不可信字段注入 HTML', () => {
+  const {api} = createView();
+  const html = api.renderPaymentEntry({payment_page_url:'javascript:alert(1)', payment_url:'data:text/html,<script>alert(1)</script>',
+    qr_image_url_png:'javascript:alert(1)', qr_image_url_svg:'https://img.example.test/qr.svg', qr_data:'<img src=x onerror=alert(1)>'});
+  assert.doesNotMatch(html, /href="(?:javascript|data):|src="javascript:|<img src=x/);
+  assert.match(html, /src="https:\/\/img\.example\.test\/qr\.svg"/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.equal(api.paymentUrl('https://user:secret@example.test/private'), '');
+  assert.deepEqual(Array.from(api.paymentQrSources({qr_image_url_png:'data:image/png;base64,YWJj'})), ['data:image/png;base64,YWJj']);
+});
+
+function installPaymentDialog(view) {
+  const listeners = {};
+  const content = {innerHTML:'', textContent:'', attributes:{}, setAttribute(name,value) {this.attributes[name]=value;}};
+  const task = {textContent:''};
+  const dialog = {open:false, dataset:{}, attributes:{}, innerHTML:'',
+    setAttribute(name,value) {this.attributes[name]=value;},
+    querySelector:selector => ({'[data-workbench-payment-content]':content, '[data-workbench-payment-task]':task})[selector] || null,
+    addEventListener(name,handler) {listeners[name]=handler;},
+    showModal() {this.open=true;},
+    close() {this.open=false; listeners.close?.();},
+    getBoundingClientRect() {return {left:10,right:100,top:10,bottom:100};},
+  };
+  let appended = null;
+  const root = {querySelector:selector => selector === '[data-workbench-payment-dialog]' ? appended : null,
+    appendChild(node) {appended=node;}, querySelectorAll() {return [];}};
+  view.document.createElement = () => dialog;
+  view.api.setRoot(root);
+  return {dialog, content, task, listeners};
+}
+
+test('支付入口点击后按需读取，加载与完成状态清晰且不会自动打开支付页面', async () => {
+  const view = createView();
+  const {dialog, content} = installPaymentDialog(view);
+  const deferred = [];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = (endpoint,options) => {
+    view.requests.push({endpoint,options}); return new Promise(resolve => deferred.push(resolve));
+  };
+  let focused = 0;
+  const request = view.api.showPaymentEntry(42, {isConnected:true, focus() {focused++;}});
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.attributes['aria-labelledby'], 'extractWorkbenchPaymentTitle');
+  assert.match(dialog.innerHTML, /data-workbench-close-payment.*aria-label="关闭支付入口"/);
+  assert.match(content.innerHTML, /正在读取支付入口/);
+  assert.equal(content.attributes['aria-busy'], 'true');
+  assert.equal(view.requests[0].endpoint, '/api/extract-workbench/tasks/42/payment-entry');
+  assert.equal(view.requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(view.requests[0].options.body), {});
+  deferred[0]({ok:true,entry:{payment_page_url:'https://checkout.example.test/page', qr_data:'private-qr-data'}});
+  await request;
+  assert.equal(content.attributes['aria-busy'], 'false');
+  assert.match(content.innerHTML, /private-qr-data/);
+  await view.api.copyPaymentEntry('qr_data');
+  assert.deepEqual(view.copied, ['private-qr-data']);
+  assert.equal(view.api.state().qr_data, undefined);
+  dialog.close();
+  assert.equal(content.textContent, '');
+  assert.equal(focused, 1);
+  await view.api.copyPaymentEntry('qr_data');
+  assert.equal(view.copied.length, 1);
+});
+
+test('关闭窗口或切换任务后迟到的支付入口响应不能覆盖当前内容', async () => {
+  const view = createView();
+  const {dialog, content} = installPaymentDialog(view);
+  const deferred = [];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = () => new Promise(resolve => deferred.push(resolve));
+  const older = view.api.showPaymentEntry(41);
+  dialog.close();
+  const newer = view.api.showPaymentEntry(42);
+  deferred[1]({ok:true,entry:{qr_data:'new-qr-data'}});
+  await newer;
+  deferred[0]({ok:true,entry:{qr_data:'old-qr-data'}});
+  await older;
+  assert.match(content.innerHTML, /new-qr-data/);
+  assert.doesNotMatch(content.innerHTML, /old-qr-data/);
+});
+
+test('支付入口读取失败保留重试，二维码图片失败依次回退 SVG 和文字', async () => {
+  const view = createView();
+  const {content} = installPaymentDialog(view);
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async () => {throw new Error('平台暂不可用');};
+  await view.api.showPaymentEntry(42);
+  assert.match(content.innerHTML, /role="alert"/);
+  assert.match(content.innerHTML, /平台暂不可用/);
+  assert.match(content.innerHTML, /重新读取/);
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async () => ({ok:true, entry:{qr_image_url_png:'https://img.example.test/code.png',qr_image_url_svg:'https://img.example.test/code.svg'}});
+  await view.api.showPaymentEntry(42);
+  const fallback = {hidden:true};
+  const image = {dataset:{},hidden:false,parentElement:{querySelector:() => fallback}};
+  view.api.paymentQrError(image);
+  assert.equal(image.src, 'https://img.example.test/code.svg');
+  view.api.paymentQrError(image);
+  assert.equal(image.hidden, true);
+  assert.equal(fallback.hidden, false);
+});
+
+test('点击遮罩关闭支付入口，弹窗内部留白不触发关闭', async () => {
+  const view = createView();
+  const {dialog, listeners} = installPaymentDialog(view);
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async () => ({ok:true,entry:{}});
+  await view.api.showPaymentEntry(42);
+  listeners.click({target:dialog,clientX:50,clientY:50});
+  assert.equal(dialog.open,true);
+  listeners.click({target:dialog,clientX:5,clientY:5});
+  assert.equal(dialog.open,false);
 });
 
 test('顶部标签使用全部统计数，切换状态后不把筛选结果当全部数量', () => {

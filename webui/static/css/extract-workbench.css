@@ -179,6 +179,33 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
 .extract-workbench-section-head p { margin-top: 5px; color: var(--ew-muted); font-size: 12px; line-height: 1.5; }
 .extract-workbench-dialog-close { display: grid; place-items: center; min-width: 32px; min-height: 32px; margin: -6px -7px 0 0; padding: 6px; border: 0; border-radius: 4px; color: #66756f; background: transparent; cursor: pointer; }
 .extract-workbench-dialog-close:hover { background: #eef4f0; }
+.extract-workbench-payment-dialog { width: min(660px, calc(100vw - 24px)); max-width: none; max-height: calc(100dvh - 32px); padding: 14px; overflow: auto; border: 1px solid #c9d8d3; border-radius: 8px; color: var(--ew-ink); background: var(--ew-surface); box-shadow: 0 18px 64px rgb(12 32 27 / 22%); }
+.extract-workbench-payment-dialog::backdrop { background: rgb(16 29 26 / 46%); }
+.extract-workbench-payment-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.extract-workbench-payment-head h2 { margin: 0; color: var(--ew-ink); font-size: 16px; line-height: 1.5; }
+.extract-workbench-payment-head p { margin: 3px 0 0; color: var(--ew-muted); font-size: 12px; line-height: 1.5; }
+.extract-workbench-payment-head .extract-workbench-dialog-close { flex: 0 0 auto; margin: -3px -3px 0 0; }
+.extract-workbench-payment-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.extract-workbench-payment-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--ew-line); border-radius: 5px; background: #f8fbf9; font-size: 12px; line-height: 1.5; }
+.extract-workbench-payment-facts dt { flex: 0 0 auto; color: var(--ew-muted); }
+.extract-workbench-payment-facts dd { min-width: 0; margin: 0; color: #245f50; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.extract-workbench-payment-hint { margin: 7px 0 12px; color: var(--ew-muted); font-size: 11px; line-height: 1.5; }
+.extract-workbench-payment-field { margin-top: 12px; }
+.extract-workbench-payment-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.extract-workbench-payment-field-head h3,
+.extract-workbench-payment-qr h3 { margin: 0; color: #52655b; font-size: 12px; font-weight: 600; line-height: 1.5; }
+.extract-workbench-payment-field-head > div { display: flex; gap: 5px; }
+.extract-workbench-payment-field-head .btn { min-height: 26px; padding: 0 7px; font-size: 11px; text-decoration: none; }
+.extract-workbench-payment-field pre { max-height: 92px; margin: 0; padding: 8px; overflow: auto; border: 1px solid #e0e8e3; border-radius: 5px; color: #344a3f; background: #f5f8f6; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.extract-workbench-payment-qr { margin-top: 12px; }
+.extract-workbench-payment-qr img { display: block; width: min(208px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; margin: 8px auto 0; border: 8px solid #fff; border-radius: 5px; background: #fff; }
+.extract-workbench-payment-qr [hidden] { display: none; }
+.extract-workbench-payment-missing { margin: 5px 0 0; color: var(--ew-muted); font-size: 12px; line-height: 1.5; }
+.extract-workbench-payment-message { margin: 0; padding: 28px 8px; color: var(--ew-muted); font-size: 12px; text-align: center; }
+.extract-workbench-payment-message p { margin: 0 0 10px; }
+@media (max-width: 480px) {
+  .extract-workbench-payment-facts { grid-template-columns: minmax(0, 1fr); }
+}
 .extract-workbench-create-controls { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(180px, 1.4fr) auto; align-items: end; gap: 10px; min-width: 0; }
 .extract-workbench-create-controls label { display: grid; gap: 6px; min-width: 0; color: #4c5967; font-size: 12px; font-weight: 600; }
 .extract-workbench-create-controls input,

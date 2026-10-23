@@ -39,8 +39,40 @@ function accountTaskResultText(task, compact = false) {
   const status = String(task.status || '');
   if (status === 'queued') return '等待执行';
   if (status === 'running') return '执行中';
-  if (task.error_message) return accountTaskErrorDisplayText(task.error_info, task.error_message);
   const result = task.result_summary || {};
+  if (task.task_type === 'extract_link') {
+    const extraction = String(result.extraction_status || '').toLowerCase();
+    const payment = String(result.payment_status || '').toLowerCase();
+    const extracted = ['succeeded', 'success'].includes(extraction)
+      || (!extraction && result.ok === true && result.has_link === true);
+    if (extracted) {
+      const label = `提链成功${result.link_type ? ` · ${String(result.link_type).toUpperCase()}` : ''}`;
+      if (['failed', 'error'].includes(payment)) return `${label} · 支付失败`;
+      if (['succeeded', 'success', 'paid'].includes(payment)) return `${label} · 支付成功`;
+      if (['unknown', 'request_unknown', 'attention_required'].includes(payment)) return `${label} · 支付待确认`;
+      if (['pending', 'pending_payment', 'processing'].includes(payment)) {
+        return `${label} · ${result.mode === 'manual_payment' ? '等待手动支付' : '支付待确认'}`;
+      }
+      if (result.mode === 'manual_payment' && payment === 'not_started') return `${label} · 等待手动支付`;
+      if (['request_unknown', 'attention_required', 'partial_success'].includes(status)) return `${label} · 后续处理待确认`;
+      if (['cancelled', 'stopped', 'interrupted'].includes(status)) return `${label} · 任务已中断`;
+      if (status === 'failed') return `${label} · 后续处理失败`;
+      return label;
+    }
+    if (['failed', 'error'].includes(extraction)) return '提链失败';
+    if (['unknown', 'request_unknown', 'attention_required'].includes(extraction)) return '提链结果待确认';
+    if (['pending', 'queued'].includes(extraction)) return '等待提链';
+    if (extraction === 'running') return '提链中';
+    if (status === 'cancelled') return '任务已取消';
+    if (['stopped', 'interrupted'].includes(status)) return '任务已中断';
+    if (['request_unknown', 'attention_required', 'partial_success', 'unknown'].includes(status)) return '提链结果待确认';
+    if (task.error_message) return accountTaskErrorDisplayText(task.error_info, task.error_message);
+    if (Object.prototype.hasOwnProperty.call(result, 'ok')) {
+      return result.message || result.status || (result.ok ? '提炼完成' : '提炼失败');
+    }
+    return result.message || (status === 'failed' ? '提链失败' : '提链结果未记录');
+  }
+  if (task.error_message) return accountTaskErrorDisplayText(task.error_info, task.error_message);
   if (task.task_type === 'registration' || task.task_type === 'registration_resume') {
     return facetLabel('target_status', task.target_status) || '注册执行已结束';
   }
@@ -59,10 +91,6 @@ function accountTaskResultText(task, compact = false) {
   if (task.task_type === 'deactivation_mail') {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
-  }
-  if (task.task_type === 'extract_link') {
-    if (result.ok && result.has_link) return `提炼成功${result.link_type ? ` · ${String(result.link_type).toUpperCase()}` : ''}`;
-    return result.message || result.status || (result.ok ? '提炼完成' : '提炼失败');
   }
   if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
   if (task.task_type === 'email_change') {
@@ -433,6 +461,11 @@ function renderAccountTasks() {
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
     const errorText = accountTaskErrorDisplayText(errorInfo, error);
+    const extractionSucceeded = task.task_type === 'extract_link' && (
+      ['succeeded', 'success'].includes(String(task.result_summary?.extraction_status || '').toLowerCase())
+      || (!task.result_summary?.extraction_status && task.result_summary?.ok === true && task.result_summary?.has_link === true)
+    );
+    const resultErrorText = extractionSucceeded ? result : errorText;
     const compactPlanResult = task.task_type === 'plan_check' && !active && !error;
     return `<tr class="${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'is-selected' : ''}">
       <td class="task-col-check col-check"><input type="checkbox" data-account-task-select="${esc(task.id)}" ${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'checked' : ''} aria-label="选择任务 #${esc(task.id)}"></td>
@@ -445,7 +478,7 @@ function renderAccountTasks() {
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(errorText, 90))}</span>` : esc(short(result, 90))}</td>
+      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(resultErrorText, 90))}</span>` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');

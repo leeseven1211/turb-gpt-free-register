@@ -1583,7 +1583,7 @@ def _safe_provider_job_state(
     aftercare_status: str = "not_started",
     message: str = "",
 ) -> dict:
-    from core.extract_link_providers.contracts import ProviderJob
+    from core.extract_link_providers.contracts import ProviderJob, safe_payment_artifact
 
     item = job if isinstance(job, ProviderJob) else ProviderJob()
     extraction_state = str(item.extraction_state or "unknown").strip().lower()
@@ -1637,6 +1637,7 @@ def _safe_provider_job_state(
         "aftercare_status": str(aftercare_status or "not_started")[:40],
         "links": list(item.links or ()),
         "payment_links": list(item.payment_links or ()),
+        "payment_artifact": safe_payment_artifact(item.payment_artifact),
         "summary": safe_summary,
         "message": task_run_log.redact_text(message or safe_summary.get("failure_message") or "", 300),
     }
@@ -1724,6 +1725,14 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         and str(account.get("extract_link_job_id") or "") == str(run_summary.get("remote_job_id") or "")
     )
     legacy_has_link = bool(legacy_projection_matches and account.get("extract_link_long_url"))
+    from core.extract_link_providers.contracts import safe_payment_artifact
+    artifact = safe_payment_artifact(state.get("payment_artifact"))
+    has_payment_entry = bool(
+        state.get("payment_links") or state.get("links") or legacy_has_link
+        or any(artifact.get(key) for key in (
+            "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+        ))
+    )
     message = str(state.get("message") or run_summary.get("message") or error or "")
     created_at = row.get("run_created_at") or row.get("task_created_at")
     updated_at = row.get("task_updated_at") or row.get("run_completed_at") or created_at
@@ -1747,8 +1756,10 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
         "message": message[:500],
         "error": error[:500],
-        "has_extract_link": bool(state.get("links") or legacy_has_link),
-        "has_payment_link": bool(state.get("payment_links") or state.get("links") or legacy_has_link),
+        "has_extract_link": bool(state.get("links") or artifact.get("payment_page_url") or state.get("payment_links") or legacy_has_link),
+        "has_payment_link": bool(artifact.get("payment_url") or artifact.get("payment_page_url") or state.get("payment_links") or state.get("links") or legacy_has_link),
+        "has_payment_entry": has_payment_entry,
+        "has_qr": bool(artifact.get("qr_data") or artifact.get("qr_image_url_png") or artifact.get("qr_image_url_svg")),
     }
 
 
@@ -2059,6 +2070,7 @@ def workbench_batch_detail(batch_id: int) -> dict | None:
 
 def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:
     from core.storage import extract_link_jobs, operation
+    from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
 
     task = operation.get_task(int(task_id), include_events=False)
     if not task or str(task.get("task_type") or "") != "extract_link":
@@ -2069,8 +2081,15 @@ def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:
     job = extract_link_jobs.get_provider_job_public(run_id)
     if job:
         state = job.get("public_state") if isinstance(job.get("public_state"), dict) else {}
-        candidates = state.get("links") if kind == "extract" else state.get("payment_links") or state.get("links")
-        if isinstance(candidates, list) and candidates:
+        artifact = safe_payment_artifact(state.get("payment_artifact"))
+        candidates = safe_links(
+            *((state.get("links") or []) if kind == "extract" else []),
+            artifact.get("payment_page_url") if kind == "extract" else artifact.get("payment_url"),
+            artifact.get("payment_page_url"),
+            *(state.get("payment_links") or []),
+            *(state.get("links") or []),
+        )
+        if candidates:
             return {"url": candidates[0]}
     data = task.get("data") if isinstance(task.get("data"), dict) else {}
     if str(data.get("provider_id") or "legacy") != "legacy":
@@ -2091,6 +2110,37 @@ def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         return None
     return {"url": candidate}
+
+
+def extract_workbench_task_payment_entry(task_id: int) -> dict | None:
+    """按需读取本地已保存的支付产物，不触发远端查询或支付。"""
+    from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
+    from core.storage import extract_link_jobs, operation
+
+    task = operation.get_task(int(task_id), include_events=False)
+    if not task or str(task.get("task_type") or "") != "extract_link":
+        return None
+    run_id = int(task.get("last_run_id") or 0)
+    job = extract_link_jobs.get_provider_job_public(run_id) if run_id else None
+    state = job.get("public_state") if job and isinstance(job.get("public_state"), dict) else {}
+    entry = safe_payment_artifact(state.get("payment_artifact"))
+    links = safe_links(*(state.get("links") or []))
+    payment_links = safe_links(*(state.get("payment_links") or []))
+    if not entry.get("payment_page_url") and links:
+        entry["payment_page_url"] = links[0]
+    elif not entry.get("payment_page_url") and not entry.get("payment_url") and payment_links:
+        entry["payment_page_url"] = payment_links[0]
+    if not any(entry.get(name) for name in (
+        "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+    )):
+        legacy_link = extract_workbench_task_link(int(task_id), "payment")
+        if legacy_link:
+            entry["payment_page_url"] = legacy_link["url"]
+    if not any(entry.get(name) for name in (
+        "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+    )):
+        return None
+    return entry
 
 
 def extract_workbench_task_detail(task_id: int) -> dict | None:
@@ -2510,6 +2560,12 @@ def _handle_provider_operation(context):
                 if not prior_job or not job_id:
                     raise RuntimeError("没有可同步的远端任务")
                 job = provider.get_status(job_id, private_data=prior_private)
+                saved_state = prior_job.get("public_state") if isinstance(prior_job.get("public_state"), dict) else {}
+                job = _merge_provider_jobs(ProviderJob(
+                    links=tuple(saved_state.get("links") or ()),
+                    payment_links=tuple(saved_state.get("payment_links") or ()),
+                    payment_artifact=saved_state.get("payment_artifact") or {},
+                ), job)
                 state = _safe_provider_job_state(
                     job,
                     mode=mode,
@@ -2560,11 +2616,14 @@ def _handle_provider_operation(context):
                 time.sleep(runtime.poll_interval)
                 try:
                     status_job = provider.get_status(job_id, private_data=prior_private or state.get("private_data"))
+                    saved_artifacts = ProviderJob(
+                        links=job.links, payment_links=job.payment_links, payment_artifact=job.payment_artifact,
+                    )
                     if mode == "auto_payment" and callable(getattr(provider, "get_automatic_payment_status", None)):
                         payment_job = provider.get_automatic_payment_status(job_id)
-                        job = _merge_provider_jobs(status_job, payment_job)
+                        job = _merge_provider_jobs(saved_artifacts, _merge_provider_jobs(status_job, payment_job))
                     else:
-                        job = status_job
+                        job = _merge_provider_jobs(saved_artifacts, status_job)
                     state = _safe_provider_job_state(
                         job,
                         mode=mode,
@@ -2647,9 +2706,17 @@ def _handle_provider_operation(context):
 
             state["message"] = status_message
             _update_provider_job(context, provider_id, job_id or None, state, job.private_data if "job" in locals() else prior_private)
+            artifact = state.get("payment_artifact") or {}
+            checkout_url = (state.get("links") or [None])[0] or artifact.get("payment_page_url") or (state.get("payment_links") or [None])[0]
             result_summary = {
                 "provider_id": provider_id,
                 "mode": mode,
+                "ok": extraction == "succeeded",
+                "status": "success" if extraction == "succeeded" else terminal_status,
+                "message": status_message,
+                "link_type": link_type,
+                "has_link": bool(checkout_url or artifact.get("payment_url")),
+                "has_qr": bool(any(artifact.get(key) for key in ("qr_data", "qr_image_url_png", "qr_image_url_svg"))),
                 "extraction_status": extraction,
                 "payment_status": payment,
                 "preflight_status": state.get("preflight_status"),
@@ -2667,8 +2734,8 @@ def _handle_provider_operation(context):
                     "failure_message": state.get("summary", {}).get("failure_message") or "平台未提供失败细项",
                 })
             result = {
-                "ok": terminal_status == "success" and extraction == "succeeded",
-                "status": "success" if extraction == "succeeded" else "failed",
+                "ok": extraction == "succeeded",
+                "status": "success" if extraction == "succeeded" else terminal_status,
                 "job_id": job_id or None,
                 "link_type": link_type,
                 "message": status_message,
@@ -2786,7 +2853,7 @@ def _handle_provider_operation(context):
 
 
 def _merge_provider_jobs(primary, secondary):
-    from core.extract_link_providers.contracts import ProviderJob
+    from core.extract_link_providers.contracts import ProviderJob, safe_payment_artifact
 
     if not isinstance(primary, ProviderJob):
         primary = ProviderJob()
@@ -2798,6 +2865,7 @@ def _merge_provider_jobs(primary, secondary):
         payment_state=secondary.payment_state if secondary.payment_state != "not_started" else primary.payment_state,
         links=tuple(dict.fromkeys((*primary.links, *secondary.links))),
         payment_links=tuple(dict.fromkeys((*primary.payment_links, *secondary.payment_links))),
+        payment_artifact={**safe_payment_artifact(primary.payment_artifact), **safe_payment_artifact(secondary.payment_artifact)},
         private_data={**(primary.private_data or {}), **(secondary.private_data or {})},
         summary={**(primary.summary or {}), **(secondary.summary or {})},
     )

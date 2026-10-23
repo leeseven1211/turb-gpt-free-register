@@ -103,6 +103,35 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertEqual(["https://example.test/result"], saved["public_state"]["links"])
         self.assertEqual("private-cursor", saved["private_data"]["resume_cursor"])
 
+    def test_payment_artifact_roundtrip_merges_partial_updates_without_truncating_links(self):
+        from core import extract_link_service
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(
+            task_type="extract_link", account_id=None, email="redacted@example.test", trigger="test",
+            data={"provider_id": "lumen_flow", "mode": "extract_only"},
+        )
+        run_id = int(task["run"]["id"])
+        page = "https://checkout.example.test/" + "x" * 3000
+        qr_data = "upi://pay?pa=synthetic@example.test&tn=Token%2BExact"
+        extract_link_jobs.save_provider_job(run_id, "lumen_flow", "artifact-job", {
+            "extraction_state": "succeeded", "payment_state": "not_started", "payment_links": [page],
+            "payment_artifact": {"payment_page_url": page, "qr_data": qr_data, "amount": 0, "raw": "must-not-project"},
+        }, {})
+        extract_link_jobs.save_provider_job(run_id, "lumen_flow", "artifact-job", {
+            "extraction_state": "succeeded", "payment_state": "not_started", "links": [], "payment_artifact": {},
+        }, {})
+        extract_link_jobs.update_provider_job_state(run_id, {"payment_artifact": {"currency": "BRL", "amount": None}})
+        saved = extract_link_jobs.get_provider_job_public(run_id)["public_state"]
+        self.assertEqual({"payment_page_url": page, "qr_data": qr_data, "amount": 0, "currency": "BRL"}, saved["payment_artifact"])
+        self.assertEqual([page], saved["payment_links"])
+        listed = extract_link_service.list_workbench_tasks()
+        self.assertNotIn(qr_data, repr(listed))
+        self.assertNotIn(page, repr(listed))
+        self.assertTrue(listed["items"][0]["has_qr"])
+        self.assertTrue(listed["items"][0]["has_payment_entry"])
+        self.assertNotIn(qr_data, repr(operation.get_task(int(task["id"]))))
+
     def test_workbench_rows_join_current_run_and_return_only_public_state(self):
         from core.storage import extract_link_jobs
 

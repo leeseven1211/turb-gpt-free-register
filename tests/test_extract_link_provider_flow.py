@@ -7,6 +7,74 @@ from unittest.mock import Mock, patch
 
 
 class ExtractLinkProviderFlowTests(unittest.TestCase):
+    def test_payment_artifact_survives_merge_and_summary_hides_payment_contents(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        artifact = {"payment_page_url": "https://checkout.example.test/page", "qr_data": "upi://pay?pa=synthetic&tn=Token%2BExact", "amount": 0}
+        first = ProviderJob(extraction_state="succeeded", payment_artifact=artifact)
+        partial = ProviderJob(payment_artifact={"currency": "BRL", "qr_data": ""})
+        job = extract_link_service._merge_provider_jobs(first, partial)
+        state = extract_link_service._safe_provider_job_state(job, mode="extract_only")
+        self.assertEqual({**artifact, "currency": "BRL"}, state["payment_artifact"])
+        item = extract_link_service._workbench_task_item({"task_id": 17, "public_state": state})
+        self.assertTrue(item["has_extract_link"])
+        self.assertTrue(item["has_payment_entry"])
+        self.assertTrue(item["has_qr"])
+        self.assertNotIn(artifact["qr_data"], repr(item))
+        self.assertNotIn(artifact["payment_page_url"], repr(item))
+
+    def test_hosted_url_only_historical_job_has_copy_link_and_read_only_payment_entry(self):
+        from core import extract_link_service
+
+        job = {"public_state": {"payment_links": ["https://checkout.example.test/page"], "extraction_state": "succeeded"}}
+        task = {"task_type": "extract_link", "last_run_id": 18, "data": {"provider_id": "lumen_flow"}}
+        with (
+            patch("core.storage.operation.get_task", return_value=task),
+            patch("core.storage.extract_link_jobs.get_provider_job_public", return_value=job),
+            patch.object(extract_link_service, "_provider") as create_provider,
+            patch.object(extract_link_service.db, "get_account") as get_account,
+        ):
+            copied = extract_link_service.extract_workbench_task_link(17, "extract")
+            entry = extract_link_service.extract_workbench_task_payment_entry(17)
+        self.assertEqual({"url": "https://checkout.example.test/page"}, copied)
+        self.assertEqual({"payment_page_url": "https://checkout.example.test/page"}, entry)
+        create_provider.assert_not_called()
+        get_account.assert_not_called()
+        item = extract_link_service._workbench_task_item({"task_id": 17, "public_state": job["public_state"]})
+        self.assertTrue(item["has_extract_link"])
+        self.assertFalse(item["has_qr"])
+
+    def test_payment_entry_keeps_distinct_page_and_payment_urls_and_checks_task_kind(self):
+        from core import extract_link_service
+
+        artifact = {"payment_page_url": "https://checkout.example.test/page", "payment_url": "https://payments.example.test/entry", "qr_data": "exact:token/value"}
+        job = {"public_state": {"payment_artifact": artifact, "links": [], "payment_links": []}}
+        with (
+            patch("core.storage.operation.get_task", return_value={"task_type": "extract_link", "last_run_id": 18}),
+            patch("core.storage.extract_link_jobs.get_provider_job_public", return_value=job),
+        ):
+            self.assertEqual(artifact, extract_link_service.extract_workbench_task_payment_entry(17))
+            self.assertEqual({"url": artifact["payment_page_url"]}, extract_link_service.extract_workbench_task_link(17, "extract"))
+            self.assertEqual({"url": artifact["payment_url"]}, extract_link_service.extract_workbench_task_link(17, "payment"))
+        with patch("core.storage.operation.get_task", return_value={"task_type": "check_plan", "last_run_id": 18}):
+            self.assertIsNone(extract_link_service.extract_workbench_task_payment_entry(17))
+
+    def test_historical_payment_links_are_not_hidden_by_new_metadata_only_artifact(self):
+        from core import extract_link_service
+
+        state = {
+            "payment_links": ["https://checkout.example.test/historical"],
+            "payment_artifact": {"payment_status": "requires_action", "amount": 0},
+        }
+        with (
+            patch("core.storage.operation.get_task", return_value={"task_type": "extract_link", "last_run_id": 18}),
+            patch("core.storage.extract_link_jobs.get_provider_job_public", return_value={"public_state": state}),
+        ):
+            self.assertEqual({
+                **state["payment_artifact"], "payment_page_url": state["payment_links"][0],
+            }, extract_link_service.extract_workbench_task_payment_entry(17))
+
     def test_workbench_projection_keeps_account_reference_without_credentials(self):
         from core import extract_link_service
 
@@ -616,6 +684,58 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("extraction", snapshot["failure"]["stage"])
         self.assertEqual("explicit", snapshot["failure"]["evidence"])
         self.assertEqual("LINK-FAILED", snapshot["failure"]["error_info"]["display_code"])
+
+    def test_extraction_success_keeps_compatibility_summary_and_native_payment_result(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        artifact = {
+            "payment_page_url": "https://checkout.example.test/session",
+            "payment_url": "https://payments.example.test/instructions",
+            "qr_data": "000201-PAYMENT-EXACT+VALUE",
+            "qr_image_url_png": "https://payments.example.test/qr.png",
+            "qr_image_url_svg": "https://payments.example.test/qr.svg",
+            "expires_at": "2026-10-24T00:00:00+00:00",
+        }
+        with self._scenario(failed_job=ProviderJob(
+            job_id="fixture-job", extraction_state="succeeded", payment_artifact=artifact,
+        )) as scenario:
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        summary = scenario.context.finish.call_args.kwargs["result_summary"]
+        self.assertTrue(summary["ok"])
+        self.assertEqual("success", summary["status"])
+        self.assertTrue(summary["has_link"])
+        self.assertTrue(summary["has_qr"])
+        self.assertEqual("提链成功", summary["message"])
+        self.assertNotIn(artifact["qr_data"], repr(summary))
+        self.assertNotIn(artifact["payment_page_url"], repr(summary))
+        account_result = scenario.save_account.call_args.args[1]
+        self.assertTrue(account_result["ok"])
+        self.assertEqual({**artifact, "expires_at": "2026-10-24T00:00:00Z"}, scenario.save_job.call_args.args[3]["payment_artifact"])
+        self.assertNotIn(artifact["qr_data"], repr(account_result))
+        self.assertNotIn(artifact["qr_image_url_png"], repr(account_result))
+        self.assertNotIn(artifact["payment_page_url"], repr(account_result))
+
+    def test_pending_automatic_payment_does_not_undo_successful_extraction(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        with self._scenario() as scenario, patch.object(extract_link_service.time, "monotonic", side_effect=[0, 11]):
+            scenario.context.run["data"]["mode"] = "auto_payment"
+            scenario.provider.create_job.return_value = ProviderJob(
+                job_id="fixture-job", extraction_state="succeeded", payment_state="pending",
+                links=("https://checkout.example.test/session",),
+            )
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        finish = scenario.context.finish.call_args.kwargs
+        self.assertEqual("partial_success", finish["status"])
+        self.assertEqual("succeeded", finish["result_summary"]["extraction_status"])
+        self.assertEqual("pending", finish["result_summary"]["payment_status"])
+        self.assertTrue(finish["result_summary"]["ok"])
+        self.assertTrue(scenario.save_account.call_args.args[1]["ok"])
+        scenario.provider.start_payment.assert_not_called()
 
     def test_terminal_failure_without_reason_does_not_invent_platform_detail(self):
         from core import extract_link_service

@@ -14,6 +14,7 @@ from .contracts import (
     request,
     require_capability,
     safe_links,
+    safe_payment_artifact,
 )
 
 
@@ -212,6 +213,20 @@ class LumenFlowProvider:
         private_data = {}
         if isinstance(next_sync_at, str) and next_sync_at.strip():
             private_data["next_payment_state_sync_at"] = next_sync_at.strip()[:80]
+        payment_artifact = safe_payment_artifact({
+            "payment_page_url": result.get("hostedUrl"),
+            "payment_url": next(iter(safe_links(
+                artifact.get("hostedInstructionsUrl"), artifact.get("url"), artifact.get("processorUrl"),
+            )), None),
+            "qr_data": artifact.get("data"),
+            "qr_image_url_png": artifact.get("imageUrlPng"),
+            "qr_image_url_svg": artifact.get("imageUrlSvg"),
+            "amount": result.get("amount") if result.get("amount") is not None else artifact.get("amount"),
+            "currency": result.get("currency") or artifact.get("currency"),
+            "expires_at": artifact.get("expiresAt"),
+            "payment_status": data.get("paymentStatus") or result.get("paymentStatus"),
+            "platform_plus_status": data.get("plusVerificationStatus"),
+        })
         return ProviderJob(
             job_id=str(data.get("taskId") or data.get("checkoutTaskId") or expected_job_id) if data.get("taskId") or data.get("checkoutTaskId") or expected_job_id else None,
             extraction_state=extraction_state,
@@ -223,6 +238,7 @@ class LumenFlowProvider:
                 artifact.get("processorUrl"),
                 artifact.get("hostedInstructionsUrl"),
             ),
+            payment_artifact=payment_artifact,
             private_data=private_data,
             summary=summary,
         )
