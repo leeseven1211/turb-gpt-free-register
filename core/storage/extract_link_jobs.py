@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from core import record_store
 from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
 from core.storage import operation as operation_store
 
@@ -13,6 +14,11 @@ _SUMMARY_FIELDS = frozenset({
     "current_step", "percent", "outcome", "preflight_status", "plus_status",
     "aftercare_status", "message", "remote_status", "remote_terminal_failure",
     "failure_message",
+    "completed_steps", "total_steps", "run_attempt", "step_attempt", "failure_code",
+    "failure_type", "last_event", "plus_verification_status", "automatic_payment_status",
+    "automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
+    "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred",
+    "queue_position", "max_attempts", "cdk_state",
 })
 _REMOTE_STATUSES = frozenset({
     "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
@@ -246,12 +252,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
         return [operation_store._row(dict(row)) or {} for row in cur.fetchall()]
 
 
-def list_workbench_rows(
-    *, provider_id: str | None = None, mode: str | None = None, query: str = "",
-    batch_id: int | None = None, batch_ids: list[int] | None = None,
-) -> list[dict]:
-    """批量读取提链工作台公开任务与当前 Run 状态。"""
-    operation_store.init()
+def _workbench_where(*, provider_id=None, mode=None, query="", batch_id=None, batch_ids=None):
     clauses = [
         "t.task_type='extract_link'",
         "lower(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'",
@@ -273,35 +274,209 @@ def list_workbench_rows(
         clauses.append("(t.email_snapshot ILIKE %s OR CAST(t.id AS TEXT) ILIKE %s)")
         pattern = f"%{str(query)[:200]}%"
         params.extend((pattern, pattern))
-    with operation_store._connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT t.id AS task_id, t.account_id, t.batch_id, t.email_snapshot AS email, t.data AS task_data,
+    return clauses, params
+
+
+def _workbench_columns() -> str:
+    return f"""t.id AS task_id, t.account_id, t.batch_id, t.email_snapshot AS email, t.data AS task_data,
                    t.status AS task_status, t.target_status, t.current_stage,
                    t.created_at AS task_created_at, t.updated_at AS task_updated_at,
-                   t.last_run_id, COUNT(all_runs.id) AS run_count,
+                   t.last_run_id,
+                   (SELECT COUNT(*) FROM {operation_store._table('operation_runs')} history
+                    WHERE history.task_id=t.id) AS run_count,
                    r.id AS run_id, r.status AS run_status, r.progress_stage,
                    r.created_at AS run_created_at, r.completed_at AS run_completed_at,
                    r.result_summary, r.error_message,
                    job.provider_id AS job_provider_id,
                    job.job_id AS remote_job_id,
-                   job.extraction_state, job.payment_state, job.public_state
-            FROM {operation_store._table('operation_tasks')} t
-            LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
-            LEFT JOIN {operation_store._table('operation_runs')} all_runs ON all_runs.task_id=t.id
-            LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
-            WHERE {' AND '.join(clauses)}
-            GROUP BY t.id, r.id, job.run_id
-            ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC
-            """,
-            tuple(params),
-        )
-        rows = [operation_store._row(dict(row)) or {} for row in cur.fetchall()]
+                   job.extraction_state, job.payment_state, job.public_state,
+                   job.updated_at AS job_updated_at"""
+
+
+def _workbench_joins() -> str:
+    return f"""FROM {operation_store._table('operation_tasks')} t
+        LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
+        LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id"""
+
+
+def _workbench_rows(rows) -> list[dict]:
+    rows = [operation_store._row(dict(row)) or {} for row in rows]
     for row in rows:
         row["task_data"] = _json_object(row.get("task_data") or {}, field_name="task_data")
         row["result_summary"] = _json_object(row.get("result_summary") or {}, field_name="result_summary")
         row["public_state"] = _json_object(row.get("public_state") or {}, field_name="public_state")
     return rows
+
+
+def list_workbench_rows(
+    *, provider_id: str | None = None, mode: str | None = None, query: str = "",
+    batch_id: int | None = None, batch_ids: list[int] | None = None,
+) -> list[dict]:
+    """批量读取公开状态；交互列表应使用数据库分页入口。"""
+    operation_store.init()
+    clauses, params = _workbench_where(provider_id=provider_id, mode=mode, query=query, batch_id=batch_id, batch_ids=batch_ids)
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT {_workbench_columns()} {_workbench_joins()}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC""",
+            tuple(params),
+        )
+        return _workbench_rows(cur.fetchall())
+
+
+_WORKBENCH_STATUS_SQL = {
+    "processing": """task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+        OR extraction_status IN ('queued','running')
+        OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
+        OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued'))""",
+    "running": "task_status IN ('running','cancelling','settling','stopping') OR extraction_status='running'",
+    "extraction_succeeded": "extraction_status='success'",
+    "payment_succeeded": "payment_status='paid'",
+    "plus_confirmed": "plus_status='confirmed'",
+    "needs_attention": """task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
+        OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
+        OR plus_status IN ('unknown','failed','not_confirmed')""",
+}
+
+
+def _workbench_projection_sql(clauses: list[str]) -> str:
+    """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
+    accounts = record_store._qualified(record_store.ACCOUNTS)
+    # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
+    account_columns = """id, plan_check_status, current_plan_type, plan_type,
+        COALESCE(data->'has_active_subscription' NOT IN
+            ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{}'::jsonb), FALSE) AS subscribed"""
+    return f"""filtered_tasks AS MATERIALIZED (
+        SELECT t.id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
+            t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode
+        FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
+    ), missing_account_emails AS MATERIALIZED (
+        SELECT DISTINCT LOWER(BTRIM(t.email_snapshot)) AS email_key
+        FROM filtered_tasks t WHERE BTRIM(t.email_snapshot) <> ''
+            AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=t.account_id)
+    ), account_emails AS (
+        SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
+        FROM {accounts} fallback_account
+        WHERE EXISTS (SELECT 1 FROM missing_account_emails)
+            AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
+        GROUP BY LOWER(fallback_account.email)
+    ), raw AS (
+        SELECT t.id AS task_id, COALESCE(r.created_at, t.created_at) AS sort_created_at,
+            CASE WHEN LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))='attention_required'
+                THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
+            COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
+            COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
+            LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''), NULLIF(r.result_summary->>'extraction_status', ''), '')) AS extraction,
+            LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) AS payment,
+            LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
+            COALESCE(r.result_summary->'has_link' NOT IN
+                ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
+                OR COALESCE(r.result_summary->>'remote_job_id', '') <> '' AS legacy_succeeded,
+            LOWER(COALESCE(by_id.plan_check_status, by_email.plan_check_status, '')) AS plan_check_status,
+            LOWER(COALESCE(NULLIF(by_id.current_plan_type, ''), by_id.plan_type,
+                NULLIF(by_email.current_plan_type, ''), by_email.plan_type, '')) AS plan,
+            COALESCE(by_id.subscribed, by_email.subscribed, FALSE) AS subscribed
+        FROM filtered_tasks t
+        LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
+        LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
+        LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON by_id.id=t.account_id
+        LEFT JOIN account_emails email_match ON by_id.id IS NULL AND BTRIM(t.email_snapshot) <> ''
+            AND email_match.email_key=LOWER(BTRIM(t.email_snapshot))
+        LEFT JOIN LATERAL (
+            SELECT {account_columns} FROM {accounts} WHERE id=email_match.account_id LIMIT 1
+        ) by_email ON TRUE
+    ), normalized AS (
+        SELECT *, CASE
+            WHEN extraction IN ('succeeded','success') THEN 'success'
+            WHEN extraction IN ('queued','running','failed','pending','unknown','not_started') THEN extraction
+            WHEN extraction='' AND provider_id='legacy' AND task_status='success' AND legacy_succeeded THEN 'success'
+            WHEN extraction='' AND provider_id='legacy' AND task_status IN ('failed','request_unknown','cancelled','stopped') THEN 'failed'
+            WHEN extraction='' THEN 'pending' ELSE 'unknown' END AS extraction_status,
+            CASE WHEN mode='extract_only' THEN 'unpaid'
+                WHEN payment IN ('succeeded','success','paid') THEN 'paid'
+                WHEN payment='not_started' THEN 'unpaid' WHEN payment='failed' THEN 'failed'
+                WHEN payment='unknown' THEN 'request_unknown' ELSE 'pending_payment' END AS payment_status
+        FROM raw
+    ), projected AS (
+        SELECT *, CASE WHEN payment_status='paid' AND plus IN ('unknown','pending','queued') AND plan_check_status='success'
+            THEN CASE WHEN plan LIKE '%%plus%%' OR plan LIKE '%%pro%%' OR subscribed THEN 'confirmed' ELSE 'not_confirmed' END
+            ELSE plus END AS plus_status
+        FROM normalized
+    )"""
+
+
+def list_workbench_page(
+    *, provider_id: str | None = None, mode: str | None = None, query: str = "",
+    status: str = "", page: int = 1, page_size: int = 20, batch_id: int | None = None,
+) -> dict:
+    """数据库内统计、筛选和分页，仅返回当前页的公开任务明细。"""
+    operation_store.init()
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 20)))
+    clauses, params = _workbench_where(provider_id=provider_id, mode=mode, query=query, batch_id=batch_id)
+    projection = _workbench_projection_sql(clauses)
+    predicate = _WORKBENCH_STATUS_SQL.get(status, "FALSE") if status else "TRUE"
+    count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in _WORKBENCH_STATUS_SQL.items()]
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""WITH {projection} SELECT COUNT(*) AS all,
+                {', '.join(count_columns)}, COUNT(*) FILTER (WHERE {predicate}) AS total FROM projected""",
+            tuple(params),
+        )
+        totals = dict(cur.fetchone() or {})
+        cur.execute(
+            f"""WITH {projection}, selected AS (
+                SELECT task_id FROM projected WHERE {predicate}
+                ORDER BY sort_created_at DESC, task_id DESC LIMIT %s OFFSET %s
+            )
+            SELECT {_workbench_columns()} {_workbench_joins()}
+            JOIN selected ON selected.task_id=t.id
+            ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC""",
+            (*params, page_size, (page - 1) * page_size),
+        )
+        items = _workbench_rows(cur.fetchall())
+    return {"items": items, "total": int(totals.pop("total", 0) or 0), "page": page, "page_size": page_size,
+            "counts": {key: int(value or 0) for key, value in totals.items()}}
+
+
+def get_workbench_detail_rows(task_id: int) -> dict | None:
+    """精确读取提链任务、批量历史 Run，以及最近 200 条事件。"""
+    operation_store.init()
+    clauses, _ = _workbench_where()
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {_workbench_columns()} {_workbench_joins()} WHERE {' AND '.join(clauses)} AND t.id=%s",
+            (int(task_id),),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        item = _workbench_rows([row])[0]
+        cur.execute(
+            f"""SELECT r.id AS run_id, r.run_no, r.status, r.source_system,
+                COALESCE(NULLIF(job.provider_id, ''), NULLIF(r.data->>'provider_id', ''), 'legacy') AS provider_id,
+                COALESCE(NULLIF(job.public_state->>'extraction_state', ''), 'unknown') AS extraction_status,
+                COALESCE(NULLIF(job.public_state->>'payment_state', ''), 'not_started') AS payment_status,
+                r.created_at, r.completed_at, r.error_message,
+                {operation_store._compatibility_run_projection_sql(run_alias='r')}
+                FROM {operation_store._table('operation_runs')} r
+                {operation_store._compatibility_run_joins_sql(run_alias='r')}
+                LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
+                WHERE r.task_id=%s ORDER BY r.run_no, r.id""",
+            (int(task_id),),
+        )
+        history = [operation_store._normalize_compatibility_run(operation_store._row(dict(row)) or {})
+                   for row in cur.fetchall()]
+        cur.execute(
+            f"""SELECT e.*, r.run_no FROM {operation_store._table('operation_events')} e
+                LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=e.run_id
+                WHERE e.task_id=%s ORDER BY e.created_at DESC, e.id DESC LIMIT 200""",
+            (int(task_id),),
+        )
+        events = [operation_store._normalize_compatibility_event(operation_store._read_event(dict(row)))
+                  for row in reversed(cur.fetchall())]
+    return {"item": item, "history": history, "events": events}
 
 
 def update_provider_job_state(run_id: int, public_state: Mapping[str, Any]) -> bool:

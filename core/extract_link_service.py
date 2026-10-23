@@ -271,6 +271,9 @@ def _provider_configuration(provider_id: str):
         default_type = str(_runtime_setting("EXTRACT_LINK_TYPE", "pix") or "pix").strip().lower()
     if default_type not in SUPPORTED_LINK_TYPES:
         default_type = "pix"
+    if provider_id == "huanguang":
+        # 兼容旧版配置写入的 pix；当前平台仅开放 UPI。
+        default_type = "upi"
     timeout = _int_setting(f"{config_prefix}_REQUEST_TIMEOUT", 30, 5, 300)
     event_timeout = _int_setting(f"{config_prefix}_EVENT_TIMEOUT", 180, 30, 900)
     poll_interval = _int_setting(f"{config_prefix}_POLL_INTERVAL", 5, 1, 60)
@@ -308,6 +311,12 @@ class _ProviderHTTPTransport:
         self.runtime_config = runtime_config
 
     def request(self, method, path, *, json=None, headers=None, timeout=30):
+        deadline = getattr(self, "deadline", None)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("平台监控等待时间已到")
+            timeout = min(float(timeout), remaining)
         url = f"{self.runtime_config.api_base}/{str(path or '').lstrip('/')}"
         safe_headers = {"Accept": "application/json", **dict(headers or {})}
         if curl_requests is not None:
@@ -1530,6 +1539,8 @@ def _provider_link_type(provider_id: str, value: object, default: str) -> str:
         raise ValueError("提链类型无效")
     if provider_id == "lumen_flow" and link_type in {"ideal_short", "ph_short"}:
         raise ValueError("Lumen Flow 不支持当前提链类型")
+    if provider_id == "huanguang" and link_type != "upi":
+        raise ValueError("幻光当前仅支持 UPI 提链")
     return link_type
 
 
@@ -1615,14 +1626,23 @@ def _safe_provider_job_state(
         payment_state = "unknown"
     summary = item.summary if isinstance(item.summary, dict) else {}
     safe_summary = {}
-    for key in ("current_step", "percent", "outcome"):
+    for key in ("current_step", "percent", "outcome", "failure_code", "failure_type", "last_event",
+                "plus_verification_status", "automatic_payment_status", "payment_check_status", "platform_plus_status"):
         value = summary.get(key)
         if key == "percent" and isinstance(value, (int, float)) and not isinstance(value, bool):
             safe_summary[key] = max(0, min(100, int(value)))
         elif isinstance(value, str):
             safe_summary[key] = value[:100]
+    for key in ("completed_steps", "total_steps", "run_attempt", "step_attempt", "max_attempts", "queue_position"):
+        value = summary.get(key)
+        if type(value) is int and 0 <= value <= 1000000:
+            safe_summary[key] = value
+    for key in ("automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
+                "entitlement_active", "entitlement_inferred"):
+        if type(summary.get(key)) is bool:
+            safe_summary[key] = summary[key]
     remote_status = summary.get("remote_status")
-    if remote_status in {"QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "ERROR", "CANCELED", "CANCELLED"}:
+    if remote_status in {"QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "ERROR", "DONE", "AWAITING_BLIK_CODE", "CANCELED", "CANCELLED"}:
         safe_summary["remote_status"] = remote_status
     if extraction_state == "failed" and summary.get("remote_terminal_failure") is True:
         safe_summary["remote_terminal_failure"] = True
@@ -1667,7 +1687,7 @@ def _provider_payment_sync_due(private_data: object, *, now: datetime | None = N
     details = private_data if isinstance(private_data, dict) else {}
     raw = details.get("next_payment_state_sync_at")
     if not raw:
-        return True
+        return False
     try:
         due_at = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -1714,7 +1734,7 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         if check_status == "success":
             plus = "confirmed" if ("plus" in plan or "pro" in plan or bool(account.get("has_active_subscription"))) else "not_confirmed"
     progress = {
-        "label": str(row.get("progress_stage") or row.get("current_stage") or ""),
+        "label": str(summary.get("current_step") or row.get("progress_stage") or row.get("current_stage") or ""),
         "percent": summary.get("percent"),
     }
     error = str(row.get("error_message") or "")
@@ -1735,7 +1755,7 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     )
     message = str(state.get("message") or run_summary.get("message") or error or "")
     created_at = row.get("run_created_at") or row.get("task_created_at")
-    updated_at = row.get("task_updated_at") or row.get("run_completed_at") or created_at
+    updated_at = row.get("job_updated_at") or row.get("task_updated_at") or row.get("run_completed_at") or created_at
     return {
         "task_id": int(row.get("task_id") or 0),
         "run_id": int(row.get("run_id") or 0) or None,
@@ -1892,18 +1912,12 @@ def list_workbench_tasks(
 ) -> dict:
     from core.storage import extract_link_jobs
 
-    rows = extract_link_jobs.list_workbench_rows(
-        provider_id=provider_id, mode=mode, query=query,
+    result = extract_link_jobs.list_workbench_page(
+        provider_id=provider_id, mode=mode, query=query, status=status,
+        page=page, page_size=page_size,
         **({"batch_id": int(batch_id)} if batch_id is not None else {}),
     )
-    items = _workbench_project_rows(rows)
-    counts = _workbench_counts(items)
-    filtered = [item for item in items if _workbench_status_matches(item, status)]
-    page = max(1, int(page or 1))
-    page_size = max(1, min(100, int(page_size or 20)))
-    total = len(filtered)
-    selected = filtered[(page - 1) * page_size:page * page_size]
-    return {"items": selected, "total": total, "page": page, "page_size": page_size, "counts": counts}
+    return {**result, "items": _workbench_project_rows(result["items"])}
 
 
 def _workbench_project_rows(rows: list[dict]) -> list[dict]:
@@ -2144,36 +2158,27 @@ def extract_workbench_task_payment_entry(task_id: int) -> dict | None:
 
 
 def extract_workbench_task_detail(task_id: int) -> dict | None:
-    from core.storage import extract_link_jobs, operation
+    from core.storage import extract_link_jobs
 
-    task = operation.get_task(int(task_id), include_events=True)
-    if not task or str(task.get("task_type") or "") != "extract_link":
+    detail = extract_link_jobs.get_workbench_detail_rows(int(task_id))
+    if detail is None:
         return None
-    row = next(
-        (item for item in extract_link_jobs.list_workbench_rows() if int(item.get("task_id") or 0) == int(task_id)),
-        None,
-    )
-    if row is None:
-        return None
-    item = _workbench_task_item(row)
+    item = _workbench_project_rows([detail["item"]])[0]
     history = []
-    for run in task.get("runs") or []:
-        run_id = int(run.get("id") or 0)
-        job = extract_link_jobs.get_provider_job_public(run_id) if run_id else None
-        state = job.get("public_state") if job and isinstance(job.get("public_state"), dict) else {}
+    for run in detail["history"]:
         history.append({
-            "run_id": run_id,
+            "run_id": run["run_id"],
             "run_no": run.get("run_no"),
             "status": run.get("status"),
-            "provider_id": (job or {}).get("provider_id") or (run.get("data") or {}).get("provider_id") or "legacy",
-            "extraction_status": state.get("extraction_state") or "unknown",
-            "payment_status": state.get("payment_state") or "not_started",
+            "provider_id": run["provider_id"],
+            "extraction_status": run["extraction_status"],
+            "payment_status": run["payment_status"],
             "created_at": run.get("created_at"),
             "completed_at": run.get("completed_at"),
             "message": task_run_log.redact_text(str(run.get("error_message") or ""), 500),
         })
     events = []
-    for event in (task.get("events") or [])[-200:]:
+    for event in detail["events"]:
         message = task_run_log.redact_text(str(event.get("message") or ""), 500)
         events.append({
             "id": event.get("id"),
@@ -2306,9 +2311,13 @@ def _acquire_huanguang_proxies(context):
     try:
         for purpose in ("entry", "exit"):
             context.checkpoint("正在分配幻光提链线路")
+            context.report(stage="network", state="running", message=f"正在申请幻光 {purpose} 印度线路，最多等待 45 秒")
             lease = proxy_pool.acquire_proxy(
                 purpose=f"extract_link_{purpose}",
+                country="IN",
                 timeout=45,
+                progress_callback=lambda message: context.report(stage="network", message=str(message)),
+                cancel=lambda: context.is_cancel_requested(),
                 account_id=int(context.account_id),
                 operation_task_id=int(context.task_id),
                 operation_run_id=int(context.run_id),
@@ -2354,6 +2363,113 @@ def _release_huanguang_proxies(context, leases, resource_ids, *, terminal: bool)
                 context.release_resource(resource_id, state="released")
             except Exception:
                 logger.exception("[提链] 收口幻光线路资源失败")
+
+
+def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id, mode, action):
+    """在有限预算内跟踪远端任务，并持久化可供排障的安全进度。"""
+    from core.extract_link_providers.contracts import ProviderJob
+
+    started_at = time.monotonic()
+    deadline = started_at + runtime.event_timeout
+    transport = getattr(provider, "transport", None)
+    if transport is not None:
+        transport.deadline = deadline
+    query_count = 0
+    errors = 0
+    next_wait = runtime.poll_interval
+    last_report = started_at
+    last_signature = None
+    safe_error = ""
+
+    def report_snapshot(*, force=False, request_seconds=None):
+        nonlocal last_report, last_signature
+        summary = state.get("summary") or {}
+        signature = (state["extraction_state"], state["payment_state"], tuple(sorted(summary.items())))
+        now = time.monotonic()
+        if not force and signature == last_signature and now - last_report < 30:
+            return
+        labels = {"queued": "排队中", "running": "执行中", "unknown": "待确认", "succeeded": "成功",
+                  "failed": "失败", "pending": "等待中", "not_started": "未开始"}
+        parts = [f"平台提链：{labels.get(state['extraction_state'], '待确认')}"]
+        for key, label in (("current_step", "步骤"), ("percent", "进度"), ("step_attempt", "步骤尝试"),
+                           ("run_attempt", "任务尝试"), ("queue_position", "队列位置"), ("failure_code", "失败码")):
+            if summary.get(key) is not None:
+                parts.append(f"{label} {summary[key]}" + ("%" if key == "percent" else ""))
+        if mode != "extract_only":
+            parts.append(f"支付：{labels.get(state['payment_state'], '待确认')}")
+        parts.append(f"已监控 {int(now - started_at)} 秒，第 {query_count} 次查询")
+        detail = {"provider_id": provider_id, "poll_count": query_count, "elapsed_seconds": round(now - started_at, 2),
+                  "remaining_seconds": max(0, round(deadline - now, 2)), **summary}
+        if request_seconds is not None:
+            detail["request_seconds"] = round(request_seconds, 2)
+        context.report(stage="payment" if mode != "extract_only" and state["extraction_state"] == "succeeded" else "extraction",
+                       message="；".join(parts), detail=detail)
+        last_report, last_signature = now, signature
+
+    try:
+        report_snapshot(force=True)
+        while job.job_id and action != "sync_status":
+            summary = state.get("summary") or {}
+            if mode == "auto_payment" and summary.get("automatic_payment_requires_reconcile") is True:
+                context.report(stage="payment", message="自动支付结果待核实，已停止本次自动查询；可主动同步状态或重跑")
+                break
+            extraction_pending = state["extraction_state"] in {"queued", "running", "unknown"}
+            payment_pending = mode == "auto_payment" and state["payment_state"] in {"not_started", "pending", "unknown"}
+            payment_pending = payment_pending and not summary.get("automatic_payment_terminal", False)
+            manual_pending = mode == "manual_payment" and summary.get("remote_polling") is True
+            if not (extraction_pending or payment_pending or manual_pending):
+                break
+            if time.monotonic() >= deadline:
+                context.report(stage="extraction", message="本次平台监控等待时间已到，已保留远端任务，可继续同步状态或重跑",
+                               detail={"poll_count": query_count, "monitor_timeout_seconds": runtime.event_timeout})
+                break
+            # 分段等待以响应取消，不把剩余监控预算再次花在完整轮询间隔上。
+            wait_until = min(deadline, time.monotonic() + next_wait)
+            while time.monotonic() < wait_until:
+                context.checkpoint()
+                time.sleep(max(0, min(5, wait_until - time.monotonic())))
+            if time.monotonic() >= deadline:
+                continue
+            context.checkpoint()
+            query_count += 1
+            request_started = time.monotonic()
+            if query_count == 1 or request_started - last_report >= 30:
+                context.report(stage="extraction", message=f"正在查询平台状态（第 {query_count} 次，已监控 {int(request_started - started_at)} 秒），本次请求最多等待 {min(runtime.timeout, deadline - request_started):.1f} 秒",
+                               detail={"poll_count": query_count, "elapsed_seconds": round(request_started - started_at, 2)})
+                last_report = request_started
+            try:
+                phase = "query"
+                private_data = job.private_data
+                status_job = provider.get_status(job.job_id, private_data=private_data)
+                saved = ProviderJob(extraction_state=job.extraction_state, links=job.links, payment_links=job.payment_links,
+                                    payment_artifact=job.payment_artifact, private_data=private_data)
+                if mode == "auto_payment" and callable(getattr(provider, "get_automatic_payment_status", None)):
+                    payment_job = provider.get_automatic_payment_status(job.job_id)
+                    status_job = _merge_provider_jobs(status_job, payment_job)
+                job = _merge_provider_jobs(saved, status_job)
+                state = _safe_provider_job_state(job, mode=mode,
+                    preflight_status=state.get("preflight_status", "passed"), plus_status=state.get("plus_status", "not_applicable"),
+                    aftercare_status=state.get("aftercare_status", "not_started"))
+                request_seconds = time.monotonic() - request_started
+                logger.info("[提链] 已收到平台状态：run_id=%s provider=%s query=%s 耗时=%.2f秒 提链=%s 支付=%s，正在保存状态",
+                            context.run_id, provider_id, query_count, request_seconds, state["extraction_state"], state["payment_state"])
+                phase = "save"
+                _update_provider_job(context, provider_id, job.job_id, state, job.private_data)
+                logger.info("[提链] 平台状态已保存：run_id=%s query=%s 保存耗时=%.2f秒",
+                            context.run_id, query_count, time.monotonic() - request_started - request_seconds)
+                report_snapshot(request_seconds=request_seconds)
+                errors, next_wait, safe_error = 0, runtime.poll_interval, ""
+            except Exception as exc:
+                errors += 1
+                safe_error = task_run_log.redact_text(str(exc), 300) if phase == "query" else "平台状态保存暂时失败"
+                next_wait = min(30, 10 * errors)
+                context.report(stage="extraction", level="warning",
+                    message=f"第 {query_count} 次平台状态查询失败，保留上次有效结果，将在 {next_wait} 秒后重试：{safe_error}",
+                    detail={"poll_count": query_count, "request_seconds": round(time.monotonic() - request_started, 2)})
+        return job, state, safe_error
+    finally:
+        if transport is not None:
+            transport.deadline = None
 
 
 def _payment_aftercare(context, account_id: int, email: str, *, config_snapshot=None) -> tuple[str, str, bool]:
@@ -2459,7 +2575,9 @@ def _handle_provider_operation(context):
                 state["preflight_status"] = "running"
                 state["message"] = "正在检查账号与 AT"
                 _update_provider_job(context, provider_id, None, state, {})
-                context.report(stage="preflight", state="running", message="正在检查账号与 AT")
+                context.report(stage="preflight", state="running", message="正在检查账号与 AT",
+                               detail={"provider_id": provider_id, "mode": mode, "request_timeout_seconds": runtime.timeout,
+                                       "monitor_timeout_seconds": runtime.event_timeout, "poll_interval_seconds": runtime.poll_interval})
                 latest_token = _ensure_extract_token(
                     account_id=account_id,
                     email=email,
@@ -2559,9 +2677,11 @@ def _handle_provider_operation(context):
             elif action == "sync_status":
                 if not prior_job or not job_id:
                     raise RuntimeError("没有可同步的远端任务")
+                context.report(stage="extraction", message=f"正在读取已有远端任务状态，本次请求最多等待 {runtime.timeout} 秒")
                 job = provider.get_status(job_id, private_data=prior_private)
                 saved_state = prior_job.get("public_state") if isinstance(prior_job.get("public_state"), dict) else {}
                 job = _merge_provider_jobs(ProviderJob(
+                    extraction_state=saved_state.get("extraction_state", "unknown"),
                     links=tuple(saved_state.get("links") or ()),
                     payment_links=tuple(saved_state.get("payment_links") or ()),
                     payment_artifact=saved_state.get("payment_artifact") or {},
@@ -2575,6 +2695,7 @@ def _handle_provider_operation(context):
                 )
                 if (
                     mode == "manual_payment"
+                    and state["extraction_state"] == "succeeded"
                     and callable(getattr(provider, "sync_payment_state", None))
                     and _provider_payment_sync_due(job.private_data or prior_private)
                 ):
@@ -2601,44 +2722,10 @@ def _handle_provider_operation(context):
             else:
                 raise ValueError("提链操作类型无效")
 
-            started_at = time.monotonic()
-            deadline = started_at + runtime.event_timeout
-            while job_id and time.monotonic() < deadline:
-                extraction_pending = state["extraction_state"] in {"queued", "running", "unknown"}
-                payment_pending = mode == "auto_payment" and state["payment_state"] in {
-                    "not_started", "pending", "unknown",
-                }
-                if not extraction_pending and not payment_pending:
-                    break
-                if action == "sync_status" and time.monotonic() > started_at:
-                    break
-                context.checkpoint()
-                time.sleep(runtime.poll_interval)
-                try:
-                    status_job = provider.get_status(job_id, private_data=prior_private or state.get("private_data"))
-                    saved_artifacts = ProviderJob(
-                        links=job.links, payment_links=job.payment_links, payment_artifact=job.payment_artifact,
-                    )
-                    if mode == "auto_payment" and callable(getattr(provider, "get_automatic_payment_status", None)):
-                        payment_job = provider.get_automatic_payment_status(job_id)
-                        job = _merge_provider_jobs(saved_artifacts, _merge_provider_jobs(status_job, payment_job))
-                    else:
-                        job = _merge_provider_jobs(saved_artifacts, status_job)
-                    state = _safe_provider_job_state(
-                        job,
-                        mode=mode,
-                        preflight_status=state.get("preflight_status", "passed"),
-                        plus_status=state.get("plus_status", "not_applicable"),
-                        aftercare_status=state.get("aftercare_status", "not_started"),
-                    )
-                    _update_provider_job(context, provider_id, job_id, state, job.private_data or prior_private)
-                except Exception as exc:
-                    safe_error = task_run_log.redact_text(str(exc), 300)
-                    state["extraction_state"] = "unknown"
-                    if mode != "extract_only" and mode == "auto_payment":
-                        state["payment_state"] = "unknown"
-                    _update_provider_job(context, provider_id, job_id, state, prior_private)
-                    break
+            job, state, safe_error = _monitor_provider_job(
+                context, provider, runtime, job, state,
+                provider_id=provider_id, mode=mode, action=action,
+            )
             if state["payment_state"] == "succeeded":
                 context.report(stage="payment", state="success", message="平台已确认支付成功")
                 aftercare = state.get("aftercare_status") or "not_started"
@@ -2859,9 +2946,15 @@ def _merge_provider_jobs(primary, secondary):
         primary = ProviderJob()
     if not isinstance(secondary, ProviderJob):
         return primary
+    artifact = safe_payment_artifact(primary.payment_artifact)
+    confirmed_extraction = primary.extraction_state == "succeeded" and bool(
+        primary.links or primary.payment_links or any(artifact.get(key) for key in (
+            "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+        ))
+    )
     return ProviderJob(
         job_id=secondary.job_id or primary.job_id,
-        extraction_state=secondary.extraction_state if secondary.extraction_state != "unknown" else primary.extraction_state,
+        extraction_state="succeeded" if confirmed_extraction else secondary.extraction_state if secondary.extraction_state != "unknown" else primary.extraction_state,
         payment_state=secondary.payment_state if secondary.payment_state != "not_started" else primary.payment_state,
         links=tuple(dict.fromkeys((*primary.links, *secondary.links))),
         payment_links=tuple(dict.fromkeys((*primary.payment_links, *secondary.payment_links))),

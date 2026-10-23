@@ -363,7 +363,7 @@ class ExtractLinkProviderTests(unittest.TestCase):
         created = provider.create_job(request)
         status = provider.get_status(created.job_id)
 
-        self.assertEqual(status.extraction_state, "running")
+        self.assertEqual(status.extraction_state, "succeeded")
         self.assertEqual(status.payment_links, (
             "https://pay.example/short",
             "https://provider.example/pay",
@@ -378,7 +378,7 @@ class ExtractLinkProviderTests(unittest.TestCase):
     def test_huanguang_restores_job_secret_after_provider_restart(self):
         from core.extract_link_providers import get_provider
 
-        transport = _Transport([{"id": "hg-1", "status": "done"}])
+        transport = _Transport([{"id": "hg-1", "status": "done", "result": {"checkout_url": "https://checkout.example/pay"}}])
         provider = get_provider("huanguang", config=_config("huanguang"), transport=transport)
         self.assertEqual(
             provider.get_status("hg-1", private_data={"job_secret": "private-secret"}).extraction_state,

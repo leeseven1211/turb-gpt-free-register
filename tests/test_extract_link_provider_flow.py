@@ -99,14 +99,19 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             for task_id, status in enumerate(("queued", "running", "settling", "cancelling", "waiting", "success"), 1)
         ]
         with (
-            patch("core.storage.extract_link_jobs.list_workbench_rows", return_value=rows) as list_rows,
+            patch("core.storage.extract_link_jobs.list_workbench_page", return_value={
+                "items": rows[1:4], "total": 3, "page": 1, "page_size": 20,
+                "counts": {"all": 6, "processing": 5, "running": 3, "extraction_succeeded": 0,
+                           "payment_succeeded": 0, "plus_confirmed": 0, "needs_attention": 6},
+            }) as list_rows,
             patch.object(extract_link_service.db, "get_accounts_for_jobs", return_value={}),
         ):
             result = extract_link_service.list_workbench_tasks(
                 provider_id="lumen_flow", mode="extract_only", query="fixture", status="running",
             )
 
-        list_rows.assert_called_once_with(provider_id="lumen_flow", mode="extract_only", query="fixture")
+        list_rows.assert_called_once_with(provider_id="lumen_flow", mode="extract_only", query="fixture",
+                                          status="running", page=1, page_size=20)
         self.assertEqual(6, result["counts"]["all"])
         self.assertEqual(5, result["counts"]["processing"])
         self.assertEqual(3, result["counts"]["running"])
@@ -252,7 +257,11 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             "extract_link_long_url": "https://example.test/old-result",
         }
         with (
-            patch("core.storage.extract_link_jobs.list_workbench_rows", return_value=[row]),
+            patch("core.storage.extract_link_jobs.list_workbench_page", return_value={
+                "items": [row], "total": 1, "page": 1, "page_size": 20,
+                "counts": {"all": 1, "processing": 0, "running": 0, "extraction_succeeded": 1,
+                           "payment_succeeded": 0, "plus_confirmed": 0, "needs_attention": 1},
+            }),
             patch("core.storage.extract_link_jobs.get_provider_job_public", return_value=None),
             patch.object(extract_link_service.db, "get_accounts_for_jobs", return_value={17: account}),
             patch("core.storage.operation.get_task", return_value={
@@ -484,7 +493,11 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             },
         }
         with (
-            patch("core.storage.extract_link_jobs.list_workbench_rows", return_value=[row]),
+            patch("core.storage.extract_link_jobs.list_workbench_page", return_value={
+                "items": [row], "total": 1, "page": 1, "page_size": 20,
+                "counts": {"all": 1, "processing": 0, "running": 0, "extraction_succeeded": 1,
+                           "payment_succeeded": 1, "plus_confirmed": 1, "needs_attention": 0},
+            }),
             patch.object(extract_link_service.db, "get_accounts_for_jobs", return_value={
                 11: {
                     "plan_check_status": "success",
@@ -631,6 +644,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
             start_payment=Mock(),
         )
         account = {"id": 77, "email": context.email, "access_token": "fixture-token"}
+        clock = [0.0]
         with (
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
@@ -640,12 +654,13 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
-                default_type="momo", event_timeout=10, poll_interval=1,
+                default_type="momo", event_timeout=10, poll_interval=1, timeout=30,
             )),
             patch.object(extract_link_service, "_provider", return_value=provider),
             patch.object(extract_link_service, "_update_provider_job") as save_job,
             patch.object(extract_link_service.db, "update_account_extract") as save_account,
-            patch.object(extract_link_service.time, "sleep"),
+            patch.object(extract_link_service.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
+            patch.object(extract_link_service.time, "monotonic", side_effect=lambda: clock[0]),
         ):
             yield SimpleNamespace(
                 context=context, provider=provider, events=events,
@@ -721,7 +736,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         from core import extract_link_service
         from core.extract_link_providers.contracts import ProviderJob
 
-        with self._scenario() as scenario, patch.object(extract_link_service.time, "monotonic", side_effect=[0, 11]):
+        with self._scenario(failed_job=ProviderJob(job_id="fixture-job", extraction_state="succeeded", payment_state="pending")) as scenario:
             scenario.context.run["data"]["mode"] = "auto_payment"
             scenario.provider.create_job.return_value = ProviderJob(
                 job_id="fixture-job", extraction_state="succeeded", payment_state="pending",
@@ -752,7 +767,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertIn("平台未提供失败细项", finished["message"])
         self.assertEqual("平台未提供失败细项", finished["result_summary"]["failure_message"])
 
-    def test_poll_transport_error_keeps_unknown_instead_of_platform_failure(self):
+    def test_poll_transport_error_keeps_last_valid_state_instead_of_platform_failure(self):
         from core import extract_link_service
 
         with self._scenario(poll_error=TimeoutError("平台查询超时")) as scenario:
@@ -760,7 +775,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
 
         finished = scenario.context.finish.call_args.kwargs
         self.assertEqual("request_unknown", finished["status"])
-        self.assertEqual("unknown", finished["result_summary"]["extraction_status"])
+        self.assertEqual("running", finished["result_summary"]["extraction_status"])
         self.assertNotIn("remote_terminal_failure", finished["result_summary"])
         self.assertNotIn("cause_code", finished["result_summary"])
         self.assertFalse(any(event.get("stage") == "extraction" and event.get("state") == "failed" for event in scenario.events))

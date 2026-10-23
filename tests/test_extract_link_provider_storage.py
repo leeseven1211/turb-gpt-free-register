@@ -425,7 +425,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
-                default_type="momo", event_timeout=10, poll_interval=1,
+                default_type="momo", event_timeout=10, poll_interval=1, timeout=30,
             )),
             patch.object(extract_link_service, "_provider", return_value=provider),
             patch.object(extract_link_service.db, "update_account_extract") as save_account,
@@ -464,3 +464,32 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertEqual("extraction", snapshot["failure"]["stage"])
         self.assertEqual("explicit", snapshot["failure"]["evidence"])
         self.assertEqual("LINK-FAILED", snapshot["failure"]["error_info"]["display_code"])
+
+    def test_provider_polling_summary_roundtrip_keeps_safe_fields_without_private_payloads(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(
+            task_type="extract_link", account_id=None, email="summary@example.test", trigger="test",
+            data={"provider_id": "lumen_flow", "mode": "auto_payment"},
+        )
+        summary = {
+            "completed_steps": 1, "total_steps": 5, "run_attempt": 2, "step_attempt": 3,
+            "failure_code": "remote_read_timeout", "failure_type": "ReadTimeout", "last_event": "step.failed",
+            "plus_verification_status": "pending", "automatic_payment_status": "queued",
+            "automatic_payment_terminal": False, "automatic_payment_requires_reconcile": True,
+            "remote_polling": True, "payment_check_status": "pending", "platform_plus_status": "unknown",
+            "entitlement_active": False, "entitlement_inferred": True, "queue_position": 7,
+            "max_attempts": 4, "cdk_state": "allocated",
+        }
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(run_id, "lumen_flow", "summary-job", {
+            "extraction_state": "unknown", "payment_state": "unknown",
+            "summary": {**summary, "raw": "raw-private-marker", "job_secret": "summary-private-marker"},
+        }, {"job_secret": "private-resume-marker"})
+
+        public = extract_link_jobs.get_provider_job_public(run_id)
+        self.assertEqual(summary, {key: public["public_state"]["summary"].get(key) for key in summary})
+        self.assertNotIn("raw-private-marker", repr(public))
+        self.assertNotIn("summary-private-marker", repr(public))
+        self.assertNotIn("private-resume-marker", repr(public))
+        self.assertEqual("private-resume-marker", extract_link_jobs.get_provider_job_private(run_id)["private_data"]["job_secret"])

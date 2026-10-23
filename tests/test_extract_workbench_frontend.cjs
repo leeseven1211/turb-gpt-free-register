@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const sourcePath = path.join(__dirname, '../webui/static/js/modern/extract-workbench.js');
 const source = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
 
-function createView() {
+function createView({timers = null} = {}) {
   const nodes = new Map();
   const requests = [];
   const copied = [];
@@ -17,6 +17,7 @@ function createView() {
     querySelectorAll() { return []; },
     addEventListener() {},
   };
+  const timerApi = timers || {setTimeout, clearTimeout};
   const window = {
     crypto: require('node:crypto').webcrypto,
     __EXTRACT_WORKBENCH_DATA_SOURCE__(endpoint, options = {}) {
@@ -24,7 +25,7 @@ function createView() {
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
     },
   };
-  const context = {document, window, URL, URLSearchParams, setTimeout, clearTimeout,
+  const context = {document, window, URL, URLSearchParams, setTimeout:timerApi.setTimeout, clearTimeout:timerApi.clearTimeout,
     LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
     navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast() {}};
   vm.createContext(context);
@@ -36,6 +37,7 @@ function createView() {
     outcome: extractWorkbenchOutcome,
     renderTabs: extractWorkbenchRenderStatusTabs,
     renderTasks: extractWorkbenchRenderTasks,
+    syncTasks: extractWorkbenchSyncTaskCards,
     openCreate: extractWorkbenchOpenCreate,
     copy: extractWorkbenchCopy,
     submit: extractWorkbenchSubmit,
@@ -48,6 +50,8 @@ function createView() {
     accountSources: extractWorkbenchAccountSources,
     renderPaymentEntry: renderExtractWorkbenchPaymentEntry,
     showPaymentEntry: extractWorkbenchShowPaymentEntry,
+    showDetail: extractWorkbenchShowDetail,
+    scheduleRefresh: extractWorkbenchScheduleRefresh,
     copyPaymentEntry: extractWorkbenchCopyPaymentEntry,
     paymentQrError: extractWorkbenchPaymentQrError,
     paymentQrSources: extractWorkbenchPaymentQrSources,
@@ -59,6 +63,233 @@ function createView() {
     setState(value) { if (typeof EXTRACT_WORKBENCH_STATE !== 'undefined') EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, ...value}; },
   };`, context);
   return {api: context.workbench, nodes, requests, window, copied, document};
+}
+
+function createFakeTimers() {
+  let nextId = 1;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = nextId++;
+      pending.set(id, {callback, delay});
+      return id;
+    },
+    clearTimeout(id) { pending.delete(id); },
+    runNext() {
+      const next = pending.keys().next();
+      if (next.done) return null;
+      const id = next.value;
+      const item = pending.get(id);
+      pending.delete(id);
+      item.callback();
+      return item;
+    },
+    pendingDelays() { return [...pending.values()].map(item => item.delay); },
+  };
+}
+
+function createWorkbenchTaskDom(view, taskIds = []) {
+  const cards = new Map();
+  const makeCard = (taskId) => {
+    const detailButton = {
+      tagName: 'BUTTON',
+      dataset: {workbenchDetail: String(taskId)},
+      attributes: {'aria-expanded': 'false'},
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+      getAttribute(name) { return this.attributes[name]; },
+      closest(selector) { return selector === '.extract-workbench-task' ? card : null; },
+      focus() { view.document.activeElement = this; },
+    };
+    const summary = {
+      tagName: 'SUMMARY',
+      dataset: {},
+      closest(selector) { return selector === '.extract-workbench-task' ? card : selector === 'details' ? details : null; },
+      focus() { view.document.activeElement = this; },
+    };
+    const actionButton = {
+      tagName: 'BUTTON',
+      dataset: {workbenchAction: 'retry', taskId: String(taskId)},
+      closest(selector) { return selector === '.extract-workbench-task' ? card : null; },
+      focus() { view.document.activeElement = this; },
+    };
+    const detailContent = {
+      innerHTML: '',
+      textContent: '',
+      classList: {
+        hidden: true,
+        contains(name) { return name === 'hidden' ? this.hidden : false; },
+        add(name) { if (name === 'hidden') this.hidden = true; },
+        remove(name) { if (name === 'hidden') this.hidden = false; },
+      },
+    };
+    const details = {
+      open: false,
+      closest(selector) { return selector === '.extract-workbench-task' ? card : null; },
+      querySelector(selector) {
+        if (selector === '[data-workbench-detail]') return detailButton;
+        if (selector === '[data-workbench-detail-content]') return detailContent;
+        return null;
+      },
+    };
+    const card = {
+      dataset: {taskId: String(taskId)},
+      querySelector(selector) {
+        if (selector === 'details') return details;
+        if (selector === 'summary') return summary;
+        if (selector === '[data-workbench-detail]') return detailButton;
+        if (selector === '[data-workbench-action="retry"]') return actionButton;
+        if (selector === '[data-workbench-detail-content]') return detailContent;
+        return null;
+      },
+      querySelectorAll(selector) { return selector === 'details[open]' && details.open ? [details] : []; },
+      closest(selector) { return selector === '.extract-workbench-task' ? card : null; },
+      contains(node) { return node === detailButton || node === detailContent || node === details || node === summary || node === actionButton; },
+      detailButton,
+      summary,
+      actionButton,
+      detailContent,
+      details,
+    };
+    cards.set(String(taskId), card);
+    return card;
+  };
+  const tasks = {
+    scrollTop: 0,
+    _html: '',
+    get innerHTML() { return this._html; },
+    set innerHTML(value) {
+      this._html = String(value);
+      cards.clear();
+      for (const match of this._html.matchAll(/data-task-id="([^"]+)"/g)) makeCard(match[1]);
+    },
+    querySelector(selector) {
+      if (selector === '.extract-workbench-task') return cards.values().next().value || null;
+      const match = selector.match(/^\[data-task-id="([^"]+)"\]$/);
+      return match ? cards.get(match[1]) || null : null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'details[open]') return [...cards.values()].filter(card => card.details.open).map(card => card.details);
+      if (selector === '.extract-workbench-task') return [...cards.values()];
+      return [];
+    },
+    contains(node) { return [...cards.values()].some(card => card.contains(node)); },
+    card(taskId) { return cards.get(String(taskId)) || null; },
+  };
+  const root = {
+    extra: {},
+    addEventListener() {},
+    querySelector(selector) {
+      if (this.extra[selector]) return this.extra[selector];
+      if (selector === '[data-workbench-tasks]') return tasks;
+      if (selector === '[data-workbench-tasks] details[open]') return [...cards.values()].find(card => card.details.open)?.details || null;
+      return null;
+    },
+  };
+  view.api.setRoot(root);
+  tasks.innerHTML = taskIds.map(taskId => view.api.renderCard({task_id: taskId, task_status: 'running', extraction_status: 'running'})).join('');
+  return {root, tasks, card: taskId => tasks.card(taskId)};
+}
+
+class SampleDomNode {
+  constructor(tagName, attributes = {}, textContent = '') {
+    this.nodeType = 1;
+    this.tagName = String(tagName).toUpperCase();
+    this.attributes = Object.entries(attributes).map(([name, value]) => ({name, value: String(value)}));
+    this.childNodes = [];
+    this.replaceChildrenCalls = 0;
+    this.insertBeforeCalls = 0;
+    this.removeChildCalls = 0;
+    this.parentNode = null;
+    this._textContent = String(textContent);
+    this.dataset = {};
+    for (const attribute of this.attributes) {
+      if (attribute.name.startsWith('data-')) {
+        const key = attribute.name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+        this.dataset[key] = attribute.value;
+      }
+    }
+  }
+  get textContent() { return this.childNodes.length ? this.childNodes.map(child => child.textContent).join('') : this._textContent; }
+  set textContent(value) { this.childNodes = []; this._textContent = String(value ?? ''); }
+  appendChild(child) { child.parentNode = this; this.childNodes.push(child); return child; }
+  replaceChildren(...children) { this.replaceChildrenCalls += 1; for (const child of [...this.childNodes]) this.removeChild(child); for (const child of children) this.appendChild(child); }
+  insertBefore(child, before = null) {
+    this.insertBeforeCalls += 1;
+    if (child.parentNode) child.parentNode.removeChild(child);
+    const index = before ? this.childNodes.indexOf(before) : -1;
+    child.parentNode = this;
+    if (index < 0) this.childNodes.push(child);
+    else this.childNodes.splice(index, 0, child);
+    return child;
+  }
+  removeChild(child) {
+    this.removeChildCalls += 1;
+    const index = this.childNodes.indexOf(child);
+    if (index < 0) throw new Error('NotFoundError');
+    this.childNodes.splice(index, 1);
+    child.parentNode = null;
+    return child;
+  }
+  setAttribute(name, value) {
+    const existing = this.attributes.find(attribute => attribute.name === name);
+    if (existing) existing.value = String(value);
+    else this.attributes.push({name, value: String(value)});
+    if (name.startsWith('data-')) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+      this.dataset[key] = String(value);
+    }
+  }
+  removeAttribute(name) { this.attributes = this.attributes.filter(attribute => attribute.name !== name); }
+  matches(selector) {
+    if (selector === '.extract-workbench-task') return this.attributes.some(attribute => attribute.name === 'class' && attribute.value.includes('extract-workbench-task'));
+    if (selector === 'details') return this.tagName === 'DETAILS';
+    if (selector === 'summary') return this.tagName === 'SUMMARY';
+    if (selector.startsWith('[data-') && selector.endsWith(']')) return this.attributes.some(attribute => attribute.name === selector.slice(1, -1));
+    return false;
+  }
+  querySelectorAll(selector) {
+    const found = [];
+    const visit = node => {
+      for (const child of node.childNodes || []) {
+        if (child.matches?.(selector)) found.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return found;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  cloneNode(deep = false) {
+    const copy = new SampleDomNode(this.tagName, Object.fromEntries(this.attributes.map(attribute => [attribute.name, attribute.value])), this.textContent);
+    if (deep) for (const child of this.childNodes) copy.appendChild(child.cloneNode(true));
+    return copy;
+  }
+}
+
+class SampleTextNode {
+  constructor(value) { this.nodeType = 3; this.nodeValue = String(value); this.parentNode = null; }
+  get textContent() { return this.nodeValue; }
+  set textContent(value) { this.nodeValue = String(value ?? ''); }
+  cloneNode() { return new SampleTextNode(this.nodeValue); }
+}
+
+function sampleTaskCard(taskId, progress, detailText) {
+  const card = new SampleDomNode('article', {'class': 'extract-workbench-task', 'data-task-id': taskId});
+  const progressNode = new SampleDomNode('div', {'data-progress': ''});
+  progressNode.appendChild(new SampleTextNode(progress));
+  card.appendChild(progressNode);
+  const details = new SampleDomNode('details');
+  details.open = true;
+  details.appendChild(new SampleDomNode('summary'));
+  const actions = new SampleDomNode('div');
+  actions.appendChild(new SampleDomNode('button', {'data-workbench-detail': taskId, 'aria-expanded': 'true'}));
+  actions.appendChild(new SampleDomNode('button', {'data-workbench-action': 'retry', 'data-task-id': taskId}));
+  details.appendChild(actions);
+  const detailNode = new SampleDomNode('div', {'data-workbench-detail-content': '', 'class': 'extract-workbench-detail'});
+  detailNode.appendChild(new SampleTextNode(detailText));
+  details.appendChild(detailNode);
+  card.appendChild(details);
+  return card;
 }
 
 test('任务卡分别呈现预检、提链、支付和 Plus 状态', () => {
@@ -169,6 +400,66 @@ test('批次历史 31 条仍分为两页并保留独立翻页状态', () => {
   assert.equal(next.disabled, true);
 });
 
+test('quiet DOM 同步按 task_id 复用卡片、详情按钮和详情内容节点，并支持重排', () => {
+  const {api} = createView();
+  const tasks = new SampleDomNode('div');
+  const old42 = sampleTaskCard('42', '10%', '旧详情');
+  const old43 = sampleTaskCard('43', '20%', '另一个详情');
+  const old42Button = old42.querySelector('[data-workbench-detail]');
+  const old42Action = old42.querySelector('[data-workbench-action]');
+  const old42Details = old42.querySelector('details');
+  const old42Content = old42.querySelector('[data-workbench-detail-content]');
+  tasks.replaceChildren(old42, old43);
+  tasks.replaceChildrenCalls = 0;
+  old42.replaceChildrenCalls = 0;
+  old42Details.replaceChildrenCalls = 0;
+  const fresh43 = sampleTaskCard('43', '30%', '新详情 43');
+  const fresh42 = sampleTaskCard('42', '90%', '新详情 42');
+  const fresh44 = sampleTaskCard('44', '40%', '新详情 44');
+
+  api.syncTasks(tasks, [{task_id: '43'}, {task_id: '42'}, {task_id: '44'}], [fresh43, fresh42, fresh44]);
+
+  assert.deepEqual(tasks.childNodes.map(card => card.dataset.taskId), ['43', '42', '44']);
+  assert.equal(tasks.childNodes[1], old42);
+  assert.equal(tasks.childNodes[1].querySelector('[data-workbench-detail]'), old42Button);
+  assert.equal(tasks.childNodes[1].querySelector('[data-workbench-action]'), old42Action);
+  assert.equal(tasks.childNodes[1].querySelector('[data-workbench-detail-content]'), old42Content);
+  assert.equal(tasks.childNodes[1].querySelector('[data-progress]').textContent, '90%');
+  assert.equal(tasks.childNodes[1].querySelector('[data-workbench-detail-content]').textContent, '旧详情');
+  assert.equal(tasks.childNodes[0], old43);
+
+  const stableTasks = new SampleDomNode('div');
+  const stable42 = sampleTaskCard('42', '10%', '保留详情');
+  const stable42Details = stable42.querySelector('details');
+  const stable42Button = stable42.querySelector('[data-workbench-detail]');
+  const stable42Action = stable42.querySelector('[data-workbench-action]');
+  stableTasks.replaceChildren(stable42);
+  stableTasks.replaceChildrenCalls = 0;
+  stable42.replaceChildrenCalls = 0;
+  stable42Details.replaceChildrenCalls = 0;
+  const stableFresh = sampleTaskCard('42', '11%', '新详情不能覆盖');
+  api.syncTasks(stableTasks, [{task_id: '42'}], [stableFresh]);
+  assert.equal(stableTasks.replaceChildrenCalls, 0);
+  assert.equal(stable42.replaceChildrenCalls, 0);
+  assert.equal(stable42Details.replaceChildrenCalls, 0);
+  assert.equal(stable42.querySelector('[data-workbench-detail]'), stable42Button);
+  assert.equal(stable42.querySelector('[data-workbench-action]'), stable42Action);
+});
+
+test('DOM 同步处理空文本子节点时不会重复删除已清空节点', () => {
+  const {api} = createView();
+  const tasks = new SampleDomNode('div');
+  const oldCard = sampleTaskCard('42', '10%', '旧详情');
+  tasks.replaceChildren(oldCard);
+  const freshCard = sampleTaskCard('42', '10%', '新详情');
+  const freshProgress = freshCard.querySelector('[data-progress]');
+  freshProgress.childNodes = [];
+  freshProgress._textContent = '';
+
+  assert.doesNotThrow(() => api.syncTasks(tasks, [{task_id: '42'}], [freshCard]));
+  assert.equal(oldCard.querySelector('[data-progress]').textContent, '');
+});
+
 test('主动刷新与切换批次重置卡片滚动，自动刷新保留最新滚动位置', async () => {
   const {api, window} = createView();
   const tasks = {scrollTop:140, innerHTML:''};
@@ -188,6 +479,192 @@ test('主动刷新与切换批次重置卡片滚动，自动刷新保留最新�
   };
   await api.load({quiet:true});
   assert.equal(tasks.scrollTop, 185);
+});
+
+test('quiet 刷新继续同步其他卡片，并保留展开详情、安全内容、滚动和焦点', async () => {
+  const timers = createFakeTimers();
+  const view = createView({timers});
+  const fixture = createWorkbenchTaskDom(view, [42, 43]);
+  const tab = {classList: {contains: () => false}};
+  view.nodes.set('tab-extract-workbench', tab);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42}, {task_id: 43}], counts: {processing: 2}, total: 2});
+  const openCard = fixture.card(42);
+  openCard.details.open = true;
+  openCard.detailButton.setAttribute('aria-expanded', 'true');
+  openCard.detailContent.classList.remove('hidden');
+  openCard.detailContent.innerHTML = '<ul><li>安全阶段事件</li></ul>';
+  openCard.detailContent.textContent = '安全阶段事件';
+  view.document.activeElement = openCard.detailButton;
+  fixture.tasks.scrollTop = 137;
+  const requests = [];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    requests.push(endpoint);
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) {
+      return {items: [{task_id: 42, task_status: 'running'}, {task_id: 43, task_status: 'success'}], counts: {processing: 1}, total: 2, page: 1};
+    }
+    if (endpoint === '/api/extract-workbench/tasks/42') return {events: [{label: '提链', status: 'success', message: '安全阶段事件（最新）'}]};
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+
+  await view.api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+
+  const restored = fixture.card(42);
+  assert.equal(restored.details.open, true);
+  assert.equal(restored.detailButton.getAttribute('aria-expanded'), 'true');
+  assert.match(restored.detailContent.innerHTML, /安全阶段事件（最新）/);
+  assert.equal(fixture.tasks.scrollTop, 137);
+  assert.equal(view.document.activeElement, restored.detailButton);
+  assert.ok(requests.some(endpoint => endpoint.startsWith('/api/extract-workbench/tasks?')));
+  assert.equal(requests.filter(endpoint => endpoint === '/api/extract-workbench/tasks/42').length, 1);
+  assert.ok(requests.every(endpoint => !endpoint.endsWith('/links') && !endpoint.endsWith('/payment-entry') && !endpoint.startsWith('/api/accounts')));
+});
+
+test('只展开更多操作但未展开安全详情时，quiet 刷新不强开详情或请求详情', async () => {
+  const view = createView();
+  const fixture = createWorkbenchTaskDom(view, [42]);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42}], counts: {processing: 1}, total: 1});
+  fixture.card(42).details.open = true;
+  const detailRequests = [];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) return {items: [{task_id: 42}], counts: {processing: 1}, total: 1, page: 1};
+    detailRequests.push(endpoint);
+    return {events: [{label: '不应读取', status: 'success'}]};
+  };
+  await view.api.load({quiet: true});
+  const restored = fixture.card(42);
+  assert.equal(restored.details.open, true);
+  assert.equal(restored.detailContent.classList.contains('hidden'), true);
+  assert.equal(detailRequests.length, 0);
+});
+
+test('quiet 请求完成前用户收起详情并把焦点移到更多操作时，刷新保留最新状态', async () => {
+  const view = createView();
+  const fixture = createWorkbenchTaskDom(view, [42]);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42}], counts: {processing: 1}, total: 1});
+  const card = fixture.card(42);
+  card.details.open = true;
+  card.detailContent.classList.remove('hidden');
+  card.detailContent.innerHTML = '<p>旧详情</p>';
+  card.detailButton.setAttribute('aria-expanded', 'true');
+  view.document.activeElement = card.detailButton;
+  let resolveTasks;
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => endpoint.startsWith('/api/extract-workbench/tasks?')
+    ? new Promise(resolve => { resolveTasks = resolve; })
+    : Promise.resolve({events: []});
+  const loading = view.api.load({quiet: true});
+  await Promise.resolve();
+  card.details.open = false;
+  card.detailContent.classList.add('hidden');
+  card.summary.focus();
+  resolveTasks({items: [{task_id: 42}], counts: {processing: 1}, total: 1, page: 1});
+  await loading;
+  const restored = fixture.card(42);
+  assert.equal(restored.details.open, false);
+  assert.equal(restored.detailContent.classList.contains('hidden'), true);
+  assert.equal(view.document.activeElement, restored.summary);
+
+  restored.details.open = true;
+  restored.actionButton.focus();
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => endpoint.startsWith('/api/extract-workbench/tasks?')
+    ? {items: [{task_id: 42}], counts: {processing: 1}, total: 1, page: 1}
+    : {events: []};
+  await view.api.load({quiet: true});
+  assert.equal(view.document.activeElement, fixture.card(42).actionButton);
+});
+
+test('详情请求未完成时列表刷新立即安排下一轮定时器', async () => {
+  const timers = createFakeTimers();
+  const view = createView({timers});
+  const fixture = createWorkbenchTaskDom(view, [42]);
+  const tab = {classList: {contains: () => false}};
+  view.nodes.set('tab-extract-workbench', tab);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42}], counts: {processing: 1}, total: 1});
+  fixture.card(42).details.open = true;
+  fixture.card(42).detailContent.classList.remove('hidden');
+  let resolveDetail;
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) return Promise.resolve({items: [{task_id: 42, task_status: 'success'}], counts: {processing: 1}, total: 1, page: 1});
+    return new Promise(resolve => { resolveDetail = resolve; });
+  };
+  await view.api.load({quiet: true});
+  assert.match(fixture.tasks.innerHTML, /任务 #42/);
+  assert.deepEqual(timers.pendingDelays(), [5000]);
+  resolveDetail({events: []});
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+test('展开详情不会暂停定时刷新', async () => {
+  const timers = createFakeTimers();
+  const view = createView({timers});
+  const fixture = createWorkbenchTaskDom(view, [42]);
+  const tab = {classList: {contains: () => false}};
+  view.nodes.set('tab-extract-workbench', tab);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42}], counts: {processing: 1}, total: 1});
+  fixture.card(42).details.open = true;
+  let taskRefreshes = 0;
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) taskRefreshes += 1;
+    return {items: [{task_id: 42, task_status: 'running'}], counts: {processing: 1}, total: 1, page: 1};
+  };
+  view.api.scheduleRefresh();
+  assert.deepEqual(timers.pendingDelays(), [5000]);
+  timers.runNext();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(taskRefreshes, 1);
+});
+
+test('批次列表已有当前批次摘要时复用摘要，没有当前批次才读取详情', async () => {
+  const view = createView();
+  const fixture = createWorkbenchTaskDom(view, []);
+  const batchSelect = {innerHTML: '', value: ''};
+  fixture.root.extra = {'[data-workbench-batch-select]': batchSelect};
+  const originalQuerySelector = fixture.root.querySelector.bind(fixture.root);
+  fixture.root.querySelector = selector => fixture.root.extra[selector] || originalQuerySelector(selector);
+  view.api.setConfig({providers: []});
+  view.api.setState({batch: '7', batchInitialized: true});
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/batches?page=')) return {items: [{batch_id: 7, title: '当前批次', counts: {processing: 1}}], total: 1};
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) return {items: [], counts: {}, total: 0, page: 1};
+    throw new Error(`不应请求当前批次详情: ${endpoint}`);
+  };
+  await view.api.load({quiet: true});
+  assert.equal(view.api.state().batchDetail.title, '当前批次');
+});
+
+test('quiet 网络错误保留旧卡片并安排自动重试', async () => {
+  const timers = createFakeTimers();
+  const view = createView({timers});
+  const fixture = createWorkbenchTaskDom(view, [42]);
+  const tab = {classList: {contains: () => false}};
+  view.nodes.set('tab-extract-workbench', tab);
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '', items: [{task_id: 42, task_status: 'running'}], counts: {processing: 1}, total: 1});
+  const summary = {textContent: ''};
+  fixture.root.extra = {'[data-workbench-summary]': summary};
+  const oldHtml = fixture.tasks.innerHTML;
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) throw new Error('网络暂不可用');
+    return {items: [], counts: {processing: 1}, total: 1, page: 1};
+  };
+  await view.api.load({quiet: true});
+  assert.equal(fixture.tasks.innerHTML, oldHtml);
+  assert.match(summary.textContent, /重试/);
+  assert.deepEqual(timers.pendingDelays(), [5000]);
+
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) return {items: [{task_id: 42, task_status: 'success'}], counts: {}, total: 1, page: 1};
+    return {items: [], counts: {}, total: 0, page: 1};
+  };
+  timers.runNext();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(fixture.tasks.innerHTML, /任务 #42/);
+  assert.doesNotMatch(fixture.tasks.innerHTML, /网络暂不可用/);
 });
 
 test('原型卡片保留三项主操作、中文平台和运行次数，未知进度不伪造百分比', () => {

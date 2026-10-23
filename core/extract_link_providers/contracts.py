@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import base64
+import binascii
 import math
 import re
 from typing import Literal, Protocol
@@ -102,6 +104,16 @@ def safe_payment_artifact(value: object) -> dict:
         links = safe_links(value.get(name))
         if links:
             result[name] = links[0]
+        elif name == "qr_image_url_png":
+            image = value.get(name)
+            prefix = "data:image/png;base64,"
+            if isinstance(image, str) and image.startswith(prefix) and len(image) <= 2 * 1024 * 1024:
+                try:
+                    decoded = base64.b64decode(image[len(prefix):], validate=True)
+                    if decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+                        result[name] = image
+                except (ValueError, binascii.Error):
+                    pass
     data = value.get("qr_data")
     if isinstance(data, str) and data.strip() and len(data) <= 65536 and "\x00" not in data:
         result["qr_data"] = data
