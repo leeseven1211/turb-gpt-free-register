@@ -159,6 +159,73 @@ class ExtractLinkServiceTests(unittest.TestCase):
         run_inline.assert_called_once()
         get_account.assert_not_called()
 
+    def test_extract_preflight_reads_current_switches_when_not_explicitly_passed(self):
+        values = {
+            "EXTRACT_LINK_PREFLIGHT_ENABLED": False,
+            "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED": False,
+        }
+        with (
+            patch.object(extract_link_service, "_runtime_setting", side_effect=lambda name, default=None: values.get(name, default)),
+            patch("core.live_check_service.run_account_live_check_inline", return_value={
+                "accepted": True, "result": {"ok": True, "status": "live"},
+            }) as run_inline,
+            patch.object(extract_link_service.db, "get_account", return_value={"access_token": "current-database-token"}),
+        ):
+            self.assertEqual("current-database-token", extract_link_service._ensure_extract_token(
+                account_id=7, email="fixture@example.test",
+            ))
+            run_inline.assert_not_called()
+            values["EXTRACT_LINK_PREFLIGHT_ENABLED"] = True
+            self.assertEqual("current-database-token", extract_link_service._ensure_extract_token(
+                account_id=7, email="fixture@example.test",
+            ))
+            run_inline.assert_called_once()
+            self.assertFalse(run_inline.call_args.kwargs["force_refresh"])
+
+    def test_explicit_preflight_switches_override_current_configuration(self):
+        with (
+            patch.object(extract_link_service, "_runtime_setting", return_value=True),
+            patch("core.live_check_service.run_account_live_check_inline") as run_inline,
+            patch.object(extract_link_service.db, "get_account", return_value={"access_token": "latest-database-token"}),
+        ):
+            token = extract_link_service._ensure_extract_token(
+                account_id=7, email="fixture@example.test", preflight_enabled=False, refresh_at_enabled=False,
+            )
+        self.assertEqual("latest-database-token", token)
+        run_inline.assert_not_called()
+
+    def test_disabled_preflight_without_database_token_never_calls_live_service(self):
+        with (
+            patch("core.live_check_service.run_account_live_check_inline") as run_inline,
+            patch.object(extract_link_service.db, "get_account", return_value={"access_token": ""}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "AT|access_token"):
+                extract_link_service._ensure_extract_token(
+                    account_id=7, email="fixture@example.test", preflight_enabled=False, refresh_at_enabled=True,
+                )
+        run_inline.assert_not_called()
+
+    def test_disabled_refresh_does_not_invoke_refresh_callbacks_for_invalid_token(self):
+        refresh_start = Mock()
+        refresh_success = Mock()
+        with (
+            patch("core.live_check_service.run_account_live_check_inline", return_value={
+                "accepted": True,
+                "result": {"ok": False, "status": "failed", "http_status": 401, "token_expired": True},
+            }) as run_inline,
+            patch.object(extract_link_service.db, "get_account") as get_account,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "刷新.*关闭|关闭.*刷新"):
+                extract_link_service._ensure_extract_token(
+                    account_id=7, email="fixture@example.test", preflight_enabled=True, refresh_at_enabled=False,
+                    on_refresh_start=refresh_start, on_refresh_success=refresh_success,
+                )
+        run_inline.assert_called_once()
+        self.assertFalse(run_inline.call_args.kwargs["force_refresh"])
+        get_account.assert_not_called()
+        refresh_start.assert_not_called()
+        refresh_success.assert_not_called()
+
     def test_extract_flow_has_task_center_stages(self):
         self.assertEqual(
             ["preflight", "access_token", "refresh_token", "extract_link", "complete"],

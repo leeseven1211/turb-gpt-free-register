@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -617,6 +617,115 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         self.assertFalse(extract_link_service._provider_payment_sync_due(
             {"next_payment_state_sync_at": "not-a-timestamp"}, now=now,
         ))
+
+
+class ExtractLinkPreflightConfigurationTests(unittest.TestCase):
+    @contextmanager
+    def _scenario(self, *, provider_id, preflight_enabled, refresh_at_enabled, inline_results):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        context = SimpleNamespace(
+            account_id=77, email="fixture@example.test", task_id=810, run_id=811,
+            config_snapshot={}, checkpoint=Mock(), report=Mock(), finish=Mock(),
+            run={"data": {"provider_id": provider_id, "mode": "extract_only", "link_type": "pix"}},
+            remote_request_started=Mock(), remote_request_receipt=Mock(),
+        )
+        context.lease = contextmanager(lambda **_kwargs: iter([None]))
+        provider = SimpleNamespace(
+            create_job=Mock(return_value=ProviderJob(
+                job_id="fixture-job", extraction_state="succeeded", links=("https://example.test/fixture",),
+            )),
+            get_status=Mock(), start_payment=Mock(),
+        )
+        account = {"id": 77, "email": context.email, "access_token": "initial-account-token"}
+        settings = {
+            "EXTRACT_LINK_PREFLIGHT_ENABLED": preflight_enabled,
+            "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED": refresh_at_enabled,
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(extract_link_service, "_runtime_setting", side_effect=lambda name, default=None: settings.get(name, default)))
+            get_account = stack.enter_context(patch.object(extract_link_service.db, "get_account", side_effect=[
+                account, {**account, "access_token": "latest-database-token"},
+            ]))
+            stack.enter_context(patch.object(extract_link_service.db, "account_is_deactivated", return_value=False))
+            stack.enter_context(patch("core.plus_promotion.is_extract_link_eligible", return_value=True))
+            stack.enter_context(patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True))
+            inline = stack.enter_context(patch("core.live_check_service.run_account_live_check_inline", side_effect=inline_results))
+            stack.enter_context(patch.object(extract_link_service, "_provider_enabled", return_value=True))
+            stack.enter_context(patch.object(extract_link_service, "_provider_mode_enabled", return_value=True))
+            stack.enter_context(patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
+                default_type="pix", event_timeout=10, poll_interval=1, timeout=30,
+            )))
+            stack.enter_context(patch.object(extract_link_service, "_provider_link_type", return_value="pix"))
+            stack.enter_context(patch.object(extract_link_service, "_provider_request_options", return_value={}))
+            stack.enter_context(patch.object(extract_link_service, "_provider", return_value=provider))
+            stack.enter_context(patch.object(extract_link_service, "_acquire_huanguang_proxies", return_value=([], [])))
+            stack.enter_context(patch.object(extract_link_service, "_release_huanguang_proxies"))
+            save_job = stack.enter_context(patch.object(extract_link_service, "_update_provider_job"))
+            stack.enter_context(patch.object(extract_link_service.db, "update_account_extract"))
+            yield SimpleNamespace(context=context, provider=provider, inline=inline, get_account=get_account, save_job=save_job)
+
+    @staticmethod
+    def _states(scenario, stage):
+        return [call.kwargs["state"] for call in scenario.context.report.call_args_list
+                if call.kwargs.get("stage") == stage and call.kwargs.get("state")]
+
+    def test_all_providers_skip_preflight_and_keep_skipped_after_job_creation(self):
+        from core import extract_link_service
+
+        for provider_id in ("legacy", "lumen_flow", "huanguang"):
+            for refresh_at_enabled in (True, False):
+                with self.subTest(provider_id=provider_id, refresh_at_enabled=refresh_at_enabled), self._scenario(
+                    provider_id=provider_id, preflight_enabled=False,
+                    refresh_at_enabled=refresh_at_enabled, inline_results=[],
+                ) as scenario:
+                    extract_link_service._handle_provider_operation(scenario.context)
+                    scenario.inline.assert_not_called()
+                    self.assertEqual(2, scenario.get_account.call_count)
+                    self.assertEqual("latest-database-token", scenario.provider.create_job.call_args.args[0].access_token)
+                    self.assertEqual(["skipped"], self._states(scenario, "preflight"))
+                    self.assertEqual(["skipped"], self._states(scenario, "refresh_token"))
+                    self.assertEqual("skipped", scenario.save_job.call_args.args[3]["preflight_status"])
+                    finished = scenario.context.finish.call_args.kwargs
+                    self.assertEqual("success", finished["status"])
+                    self.assertEqual("skipped", finished["result_summary"]["preflight_status"])
+                    scenario.provider.start_payment.assert_not_called()
+
+    def test_all_providers_continue_with_live_token_when_refresh_is_disabled(self):
+        from core import extract_link_service
+
+        for provider_id in ("legacy", "lumen_flow", "huanguang"):
+            with self.subTest(provider_id=provider_id), self._scenario(
+                provider_id=provider_id, preflight_enabled=True, refresh_at_enabled=False,
+                inline_results=[{"accepted": True, "result": {"ok": True, "status": "live"}}],
+            ) as scenario:
+                extract_link_service._handle_provider_operation(scenario.context)
+                scenario.inline.assert_called_once()
+                self.assertFalse(scenario.inline.call_args.kwargs["force_refresh"])
+                self.assertEqual("latest-database-token", scenario.provider.create_job.call_args.args[0].access_token)
+                self.assertEqual("success", self._states(scenario, "preflight")[-1])
+                self.assertEqual(["skipped"], self._states(scenario, "refresh_token"))
+                self.assertEqual("passed", scenario.save_job.call_args.args[3]["preflight_status"])
+                self.assertEqual("success", scenario.context.finish.call_args.kwargs["status"])
+
+    def test_all_providers_stop_invalid_token_when_refresh_is_disabled(self):
+        from core import extract_link_service
+
+        for provider_id in ("legacy", "lumen_flow", "huanguang"):
+            with self.subTest(provider_id=provider_id), self._scenario(
+                provider_id=provider_id, preflight_enabled=True, refresh_at_enabled=False,
+                inline_results=[{"accepted": True, "result": {"ok": False, "status": "failed", "token_expired": True}}],
+            ) as scenario:
+                extract_link_service._handle_provider_operation(scenario.context)
+                scenario.inline.assert_called_once()
+                self.assertFalse(scenario.inline.call_args.kwargs["force_refresh"])
+                scenario.provider.create_job.assert_not_called()
+                scenario.context.remote_request_started.assert_not_called()
+                self.assertEqual("failed", self._states(scenario, "preflight")[-1])
+                self.assertEqual(["skipped"], self._states(scenario, "refresh_token"))
+                self.assertEqual("failed", scenario.save_job.call_args.args[3]["preflight_status"])
+                self.assertEqual("failed", scenario.context.finish.call_args.kwargs["status"])
 
 
 class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):

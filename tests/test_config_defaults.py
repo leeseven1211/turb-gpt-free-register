@@ -66,6 +66,27 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertFalse(extract_link_config.EXTRACT_LINK_LUMEN_FLOW_ENABLED)
         self.assertFalse(extract_link_config.EXTRACT_LINK_HUANGUANG_ENABLED)
 
+    def test_extract_preflight_settings_are_enabled_by_default_and_env_editable(self):
+        keys = ("EXTRACT_LINK_PREFLIGHT_ENABLED", "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED")
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertTrue(getattr(extract_link_config, key))
+                self.assertTrue(fields[key]["default"])
+                self.assertEqual("bool", fields[key]["type"])
+                self.assertEqual("提链", fields[key]["group"])
+
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {key: "false" for key in keys}, clear=False):
+                reloaded = importlib.reload(extract_link_config)
+                for key in keys:
+                    self.assertFalse(getattr(reloaded, key))
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(extract_link_config)
+
     def test_blank_env_value_uses_default_for_all_supported_types(self):
         old_loaded = env_loader._LOADED
         env_loader._LOADED = True

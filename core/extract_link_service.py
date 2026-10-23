@@ -109,7 +109,7 @@ class _ReporterAdapter:
         if self._context is None:
             self._legacy.start(message)
         else:
-            self._context.report(stage="preflight", state="running", message=message)
+            self._context.report(stage="preflight", message=message)
 
     def stage(self, stage: str, state: str, message: str, **kwargs) -> None:
         if self._context is None:
@@ -956,8 +956,19 @@ def _confirm_extract_job_receipt(
 def _ensure_extract_token(
     *, account_id: int, email: str, progress=None, on_refresh_start=None,
     on_refresh_success=None, operation_context=None, config_snapshot=None,
+    preflight_enabled: bool | None = None, refresh_at_enabled: bool | None = None,
 ) -> str:
-    """提炼前在线验证 Token，失效时同步刷新并读取数据库新 Token。"""
+    """按提炼预检开关查活及刷新，始终读取数据库最新 Token。"""
+    if preflight_enabled is None:
+        preflight_enabled = _bool_setting("EXTRACT_LINK_PREFLIGHT_ENABLED", True)
+    if not preflight_enabled:
+        account = db.get_account(account_id) or {}
+        token = str(account.get("access_token") or "").strip()
+        if not token:
+            raise RuntimeError("提炼前预检已关闭，但数据库没有 access_token，未调用提炼网站")
+        return token
+    if refresh_at_enabled is None:
+        refresh_at_enabled = _bool_setting("EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED", True)
     from core import live_check_service
 
     if progress:
@@ -995,6 +1006,8 @@ def _ensure_extract_token(
             f"提炼前查活失败，未判定为 Token 失效，已停止提炼："
             f"{_preflight_failure(live_result, '未知查活错误')}"
         )
+    if not refresh_at_enabled:
+        raise RuntimeError("AT 已失效，预检刷新 AT 已关闭，未调用提炼网站")
 
     if progress:
         progress("现有 AT 已失效，正在刷新 AT；刷新成功后继续提炼")
@@ -1097,11 +1110,18 @@ def _run_extract(
             reporter.stage("refresh_token", "success", "AT 刷新成功")
             task_stage = "preflight"
 
-        reporter.stage("preflight", "running", "提炼前正在在线查活")
-        preflight_open = True
+        preflight_enabled = _bool_setting("EXTRACT_LINK_PREFLIGHT_ENABLED", True)
+        refresh_at_enabled = preflight_enabled and _bool_setting("EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED", True)
+        if preflight_enabled:
+            reporter.stage("preflight", "running", "提炼前正在在线查活")
+            preflight_open = True
+        else:
+            reporter.stage("preflight", "skipped", "提炼前预检已关闭，直接使用数据库 AT")
+            task_stage = "access_token"
+        if not refresh_at_enabled:
+            reporter.stage("refresh_token", "skipped", "预检刷新 AT 已关闭" if preflight_enabled else "预检已关闭，跳过刷新 AT")
 
-        # 不使用入队时传进来的 Token 快照；查活/刷新完成后重新从数据库读取，
-        # 确保外部提链网站拿到的是刚刚验证过或刚刚刷新写回的 AT。
+        # 不使用入队时传进来的 Token 快照；关闭预检时也读取数据库最新 AT。
         extract_token = _ensure_extract_token(
             account_id=account_id,
             email=email,
@@ -1110,15 +1130,18 @@ def _run_extract(
             on_refresh_success=mark_refresh_success,
             operation_context=operation_context,
             config_snapshot=config_snapshot,
+            preflight_enabled=preflight_enabled,
+            refresh_at_enabled=refresh_at_enabled,
         )
-        reporter.stage("preflight", "success", "提炼前 Token 检查完成")
+        if preflight_enabled:
+            reporter.stage("preflight", "success", "提炼前 Token 检查完成")
         preflight_open = False
-        reporter.stage("access_token", "success", "已取得可用 AT")
-        if not refresh_started:
+        reporter.stage("access_token", "success", "已取得可用 AT" if preflight_enabled else "已读取数据库最新 AT")
+        if refresh_at_enabled and not refresh_started:
             reporter.stage("refresh_token", "skipped", "现有 AT 有效，无需刷新")
         task_stage = "extract_link"
         reporter.stage("extract_link", "running", "正在创建提炼任务")
-        progress("AT 已确认有效，正在创建提链任务")
+        progress("AT 已确认有效，正在创建提链任务" if preflight_enabled else "已读取数据库 AT，正在创建提链任务")
         _checkpoint(operation_context, "创建提链任务前检查取消状态")
         def mark_remote_create_started() -> None:
             nonlocal remote_boundary
@@ -2686,12 +2709,16 @@ def _handle_provider_operation(context):
             if action == "create":
                 if not db.mark_account_extract_running(account_id):
                     raise RuntimeError("账号提链状态无法转为运行中")
-                state["preflight_status"] = "running"
-                state["message"] = "正在检查账号与 AT"
+                preflight_enabled = _bool_setting("EXTRACT_LINK_PREFLIGHT_ENABLED", True)
+                refresh_at_enabled = preflight_enabled and _bool_setting("EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED", True)
+                state["preflight_status"] = "running" if preflight_enabled else "skipped"
+                state["message"] = "正在检查账号与 AT" if preflight_enabled else "提链前预检已关闭，直接使用数据库 AT"
                 _update_provider_job(context, provider_id, None, state, {})
-                context.report(stage="preflight", state="running", message="正在检查账号与 AT",
+                context.report(stage="preflight", state="running" if preflight_enabled else "skipped", message=state["message"],
                                detail={"provider_id": provider_id, "mode": mode, "request_timeout_seconds": runtime.timeout,
                                        "monitor_timeout_seconds": runtime.event_timeout, "poll_interval_seconds": runtime.poll_interval})
+                if not refresh_at_enabled:
+                    context.report(stage="refresh_token", state="skipped", message="预检刷新 AT 已关闭" if preflight_enabled else "预检已关闭，跳过刷新 AT")
                 latest_token = _ensure_extract_token(
                     account_id=account_id,
                     email=email,
@@ -2700,11 +2727,16 @@ def _handle_provider_operation(context):
                     on_refresh_success=lambda: context.report(stage="refresh_token", state="success", message="AT 刷新成功"),
                     operation_context=context,
                     config_snapshot=context.config_snapshot,
+                    preflight_enabled=preflight_enabled,
+                    refresh_at_enabled=refresh_at_enabled,
                 )
-                state["preflight_status"] = "passed"
-                state["message"] = "账号查活通过，已使用数据库最新 AT"
+                state["preflight_status"] = "passed" if preflight_enabled else "skipped"
+                state["message"] = "账号查活通过，已使用数据库最新 AT" if preflight_enabled else "预检已跳过，已读取数据库最新 AT"
                 _update_provider_job(context, provider_id, None, state, {})
-                context.report(stage="preflight", state="success", message="账号查活通过，已使用数据库最新 AT")
+                if preflight_enabled:
+                    context.report(stage="preflight", state="success", message=state["message"])
+                else:
+                    context.report(stage="access_token", state="success", message=state["message"])
                 if provider_id == "huanguang":
                     leases, proxy_resource_ids = _acquire_huanguang_proxies(context)
                 request_data = ExtractRequest(
@@ -2731,7 +2763,7 @@ def _handle_provider_operation(context):
                 state = _safe_provider_job_state(
                     job,
                     mode=mode,
-                    preflight_status="passed",
+                    preflight_status=state["preflight_status"],
                     plus_status="not_applicable",
                 )
                 if job_id:
@@ -2784,7 +2816,7 @@ def _handle_provider_operation(context):
                     state = _safe_provider_job_state(
                         job,
                         mode=mode,
-                        preflight_status="passed",
+                        preflight_status=state["preflight_status"],
                         plus_status="not_applicable",
                     )
                     _update_provider_job(context, provider_id, job_id, state, job.private_data)
@@ -3020,6 +3052,7 @@ def _handle_provider_operation(context):
         state["message"] = status_message
         if state.get("preflight_status") in {"pending", "running"}:
             state["preflight_status"] = "failed"
+            context.report(stage="preflight", state="failed", message=f"提链前预检失败：{safe_error}")
         if mode == "extract_only" or state.get("payment_state") != "succeeded":
             state["plus_status"] = "not_applicable"
         if provider_id in _PROVIDER_SETTINGS:

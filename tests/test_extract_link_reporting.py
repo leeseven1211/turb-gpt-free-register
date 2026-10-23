@@ -14,7 +14,7 @@ class ExtractLinkReportingTests(unittest.TestCase):
         task_run_log.clear_current_context()
 
     @contextmanager
-    def _scenario(self, *, native, inline_results):
+    def _scenario(self, *, native, inline_results, preflight_enabled=True, refresh_at_enabled=True):
         events = []
 
         def report(*_args, **event):
@@ -39,6 +39,14 @@ class ExtractLinkReportingTests(unittest.TestCase):
             "extract_link_job_id": "fixture-job",
         }
         with ExitStack() as stack:
+            settings = {
+                "EXTRACT_LINK_PREFLIGHT_ENABLED": preflight_enabled,
+                "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED": refresh_at_enabled,
+            }
+            stack.enter_context(patch.object(
+                extract_link_service, "_runtime_setting",
+                side_effect=lambda name, default=None: settings.get(name, default),
+            ))
             stack.enter_context(patch.object(extract_link_service, "db", database))
             stack.enter_context(patch.object(extract_link_service, "logger"))
             stack.enter_context(patch.object(extract_link_service.account_task_store, "start_task"))
@@ -117,6 +125,67 @@ class ExtractLinkReportingTests(unittest.TestCase):
                 self.assertEqual(["running", "success"], self._states(scenario.events, "refresh_token"))
                 self.assertEqual("success", self._states(scenario.events, "preflight")[-1])
                 self.assertEqual(2, scenario.inline.call_count)
+
+    def test_disabled_preflight_skips_both_steps_and_uses_latest_database_token(self):
+        for native in (True, False):
+            for refresh_at_enabled in (True, False):
+                with self.subTest(native=native, refresh_at_enabled=refresh_at_enabled), self._scenario(
+                    native=native, inline_results=[], preflight_enabled=False,
+                    refresh_at_enabled=refresh_at_enabled,
+                ) as scenario:
+                    result = self._run(scenario)
+                    self.assertTrue(result["ok"])
+                    scenario.inline.assert_not_called()
+                    self.assertEqual("fixture-access-value", scenario.create.call_args.kwargs["token"])
+                    self.assertEqual("skipped", self._states(scenario.events, "preflight")[-1])
+                    self.assertNotIn("success", self._states(scenario.events, "preflight"))
+                    self.assertEqual(["skipped"], self._states(scenario.events, "refresh_token"))
+                    snapshot = self._snapshot(scenario, result)
+                    for stage in ("preflight", "refresh_token"):
+                        step = next(step for step in snapshot["main_steps"] if step["id"] == stage)
+                        self.assertEqual("skipped", step["display_status"])
+
+    def test_disabled_refresh_still_checks_live_token_and_creates_job(self):
+        for native in (True, False):
+            with self.subTest(native=native), self._scenario(
+                native=native, inline_results=[self._inline({"ok": True, "status": "live"})],
+                refresh_at_enabled=False,
+            ) as scenario:
+                result = self._run(scenario)
+                self.assertTrue(result["ok"])
+                scenario.inline.assert_called_once()
+                self.assertFalse(scenario.inline.call_args.kwargs["force_refresh"])
+                self.assertEqual("success", self._states(scenario.events, "preflight")[-1])
+                self.assertEqual(["skipped"], self._states(scenario.events, "refresh_token"))
+                self.assertEqual("fixture-access-value", scenario.create.call_args.kwargs["token"])
+
+    def test_disabled_preflight_missing_latest_token_fails_token_step(self):
+        for native in (True, False):
+            with self.subTest(native=native), self._scenario(
+                native=native, inline_results=[], preflight_enabled=False,
+            ) as scenario:
+                scenario.database.get_account.return_value = {"access_token": ""}
+                result = self._run(scenario)
+                self.assertEqual("failed", result["status"])
+                scenario.inline.assert_not_called()
+                scenario.create.assert_not_called()
+                self.assertEqual("skipped", self._states(scenario.events, "preflight")[-1])
+                self.assertEqual(["failed"], self._states(scenario.events, "access_token"))
+
+    def test_disabled_refresh_fails_invalid_token_without_creating_remote_job(self):
+        for native in (True, False):
+            with self.subTest(native=native), self._scenario(
+                native=native,
+                inline_results=[self._inline({"ok": False, "status": "failed", "token_expired": True})],
+                refresh_at_enabled=False,
+            ) as scenario:
+                result = self._run(scenario)
+                self.assertEqual("failed", result["status"])
+                scenario.inline.assert_called_once()
+                self.assertFalse(scenario.inline.call_args.kwargs["force_refresh"])
+                scenario.create.assert_not_called()
+                self.assertEqual("failed", self._states(scenario.events, "preflight")[-1])
+                self.assertEqual(["skipped"], self._states(scenario.events, "refresh_token"))
 
     def test_refresh_failure_closes_preflight_and_keeps_specific_failed_phase(self):
         for native in (True, False):

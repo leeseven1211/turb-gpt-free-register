@@ -110,6 +110,8 @@ test('提链在资源与服务中独立成项，并分为通用与平台页签',
     ]}),
     field('EXTRACT_LINK_DEFAULT_MODE', '提链', {value: 'extract_only'}),
     field('EXTRACT_LINK_BATCH_WORKERS', '提链', {type: 'int', value: 2}),
+    field('EXTRACT_LINK_PREFLIGHT_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED', '提链', {type: 'bool', value: true}),
     field('EXTRACT_LINK_LEGACY_ENABLED', '提链', {type: 'bool', value: true}),
     field('EXTRACT_LINK_LEGACY_EXTRACT_ENABLED', '提链', {type: 'bool', value: true}),
     field('EXTRACT_LINK_API_BASE', '提链', {value: 'https://provider.example.test'}),
@@ -135,6 +137,8 @@ test('提链在资源与服务中独立成项，并分为通用与平台页签',
   assert.match(markup, /data-extract-link-tab="幻光"/);
   assert.match(markup, /data-multi-picker="EXTRACT_LINK_ENABLED_PROVIDERS"/);
   assert.match(markup, /data-multi-values="legacy,lumen_flow"/);
+  assert.match(markup, /data-key="EXTRACT_LINK_PREFLIGHT_ENABLED"/);
+  assert.match(markup, /data-key="EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED"/);
   assert.doesNotMatch(markup, /data-key="EXTRACT_LINK_(?:LEGACY|LUMEN_FLOW|HUANGUANG)_ENABLED"/);
 });
 
