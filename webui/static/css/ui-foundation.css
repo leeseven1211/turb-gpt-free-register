@@ -1081,7 +1081,7 @@ tr:hover td,
   box-shadow: var(--ui-shadow-sm);
 }
 
-#tab-config .config-section-v2-body label.fld {
+#tab-config .config-section-v2-body .config-field-v2 {
   padding: 13px 14px;
   border: 1px solid #edf0f4;
   border-radius: var(--ui-radius-md);
@@ -2585,7 +2585,7 @@ table[data-resizable-table="codex"] {
   padding: 16px 20px 20px;
 }
 
-#tab-config .config-section-v2-body .config-field-v2 {
+#tab-config .config-section-v2-body label.fld {
   display: grid;
   align-content: start;
   gap: 0;

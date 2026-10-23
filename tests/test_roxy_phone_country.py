@@ -185,52 +185,34 @@ class RoxyPhoneCountryTests(unittest.TestCase):
 
         self.assertTrue(_is_totp_login_page(MagicMock(), state))
 
-    def test_saved_password_submits_form_without_clicking_reveal_button(self):
+    def test_saved_password_reuses_shared_hydration_and_submission_flow(self):
         driver = MagicMock()
-        password_input = MagicMock()
-        submitter = MagicMock()
-        driver.execute_script.side_effect = [
-            {"ok": True, "input": password_input, "submitter": submitter},
-            True,
-        ]
-
-        with patch("core.roxy_codex_oauth._human_type_text") as type_text, patch(
-            "core.roxy_codex_oauth._human_click"
-        ) as click, patch("core.roxy_codex_oauth.human_delay"):
-            _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
-
-        type_text.assert_called_once_with(driver, password_input, "StoredPassword!123", clear=True)
-        click.assert_not_called()
-        password_input.send_keys.assert_not_called()
-        self.assertIn("requestSubmit", driver.execute_script.call_args_list[1].args[0])
-        self.assertIs(driver.execute_script.call_args_list[1].args[2], submitter)
-
-    def test_saved_password_reacquires_controls_after_stale_element(self):
-        driver = MagicMock()
-        first_input = MagicMock()
-        first_submitter = MagicMock()
-        second_input = MagicMock()
-        second_submitter = MagicMock()
-        stale = RuntimeError("StaleElementReferenceException: stale element reference")
-
         with (
-            patch(
-                "core.roxy_codex_oauth._login_password_targets",
-                side_effect=[
-                    {"ok": True, "input": first_input, "submitter": first_submitter},
-                    {"ok": True, "input": second_input, "submitter": second_submitter},
-                ],
-            ),
-            patch("core.roxy_codex_oauth._human_type_text", side_effect=[stale, None]) as type_text,
-            patch("core.roxy_codex_oauth.human_delay"),
+            patch.object(roxy_codex_oauth, "_fill_password_page_if_present", return_value="StoredPassword!123") as shared,
+            patch.object(roxy_codex_oauth, "_human_type_text") as type_text,
+            patch.object(roxy_codex_oauth, "_human_click") as click,
         ):
-            driver.execute_script.return_value = True
             _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
 
-        self.assertEqual(type_text.call_count, 2)
-        type_text.assert_any_call(driver, first_input, "StoredPassword!123", clear=True)
-        type_text.assert_any_call(driver, second_input, "StoredPassword!123", clear=True)
-        self.assertIs(driver.execute_script.call_args.args[2], second_submitter)
+        shared.assert_called_once_with(
+            driver, "a@example.com", timeout=60, existing_password="StoredPassword!123",
+            login_rejection_detector=roxy_codex_oauth._is_explicit_password_rejection_state,
+        )
+        type_text.assert_not_called()
+        click.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_saved_password_shared_submission_failure_is_not_replayed(self):
+        driver = MagicMock()
+        error = RuntimeError("request_unknown: 密码提交后仍未确认后续页面")
+        with patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=error) as shared:
+            with self.assertRaises(RuntimeError) as caught:
+                _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
+
+        self.assertIs(caught.exception, error)
+        shared.assert_called_once()
+        driver.refresh.assert_not_called()
+        driver.execute_script.assert_not_called()
 
     def test_login_password_page_without_saved_password_fails_before_phone(self):
         driver = MagicMock()
