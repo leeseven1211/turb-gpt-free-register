@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 from core import record_store
@@ -340,13 +342,63 @@ _WORKBENCH_STATUS_SQL = {
 }
 
 
+_WORKBENCH_TIMESTAMP_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ](0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"([.][0-9]{1,6})?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])?$"
+)
+
+
+def _workbench_timestamp(value: Any) -> datetime | None:
+    """兼容本地无时区快照与显式时区，坏时间不能影响任务列表。"""
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value or "").strip(" ")
+            if not re.fullmatch(_WORKBENCH_TIMESTAMP_PATTERN, text):
+                return None
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return operation_store._legacy_timestamp(parsed)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def independent_plus_is_confirmed(account: dict | None, *, task_created_at: Any) -> bool:
+    """本任务创建后的独立套餐事实只确认到账，不改写平台支付结果。"""
+    if not account or str(account.get("plan_check_status") or "").lower() != "success":
+        return False
+    plan = str(account.get("current_plan_type") or account.get("plan_type") or "").strip(" ").lower()
+    if plan not in {"plus", "pro"}:
+        return False
+    checked_at = _workbench_timestamp(
+        str(account.get("plan_checked_at") or "").strip(" ") or account.get("plan_last_success_at")
+    )
+    created_at = _workbench_timestamp(task_created_at)
+    return checked_at is not None and created_at is not None and checked_at > created_at
+
+
+def _workbench_timestamp_sql(value_sql: str) -> str:
+    # 无时区时间沿用账号快照的进程本地语义，与 Python 的兼容时间解析一致。
+    offset = datetime.now().astimezone().utcoffset()
+    offset_seconds = int(offset.total_seconds()) if offset is not None else 0
+    # PostgreSQL 16 的输入校验会拒绝非法日期，避免合法外形的坏快照使分页报错。
+    return f"""CASE WHEN {value_sql} ~ '{_WORKBENCH_TIMESTAMP_PATTERN}'
+        AND pg_input_is_valid({value_sql}, 'timestamp with time zone')
+        THEN CASE WHEN {value_sql} ~ '(Z|[+-][0-9]{{2}}:[0-9]{{2}})$'
+            THEN {value_sql}::timestamptz
+            ELSE ({value_sql}::timestamp AT TIME ZONE INTERVAL '{offset_seconds} seconds') END
+        ELSE NULL END"""
+
+
 def _workbench_projection_sql(clauses: list[str]) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
     # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
     account_columns = """id, plan_check_status, current_plan_type, plan_type,
+        COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''), NULLIF(BTRIM(plan_last_success_at), '')) AS plan_checked_at,
         COALESCE(data->'has_active_subscription' NOT IN
             ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{}'::jsonb), FALSE) AS subscribed"""
+    checked_at_sql = _workbench_timestamp_sql("COALESCE(by_id.plan_checked_at, by_email.plan_checked_at)")
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode
@@ -362,7 +414,8 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
             AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
         GROUP BY LOWER(fallback_account.email)
     ), raw AS (
-        SELECT t.id AS task_id, COALESCE(r.created_at, t.created_at) AS sort_created_at,
+        SELECT t.id AS task_id, t.created_at AS task_created_at,
+            COALESCE(r.created_at, t.created_at) AS sort_created_at,
             CASE WHEN LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))='attention_required'
                 THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
             COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
@@ -376,7 +429,8 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
             LOWER(COALESCE(by_id.plan_check_status, by_email.plan_check_status, '')) AS plan_check_status,
             LOWER(COALESCE(NULLIF(by_id.current_plan_type, ''), by_id.plan_type,
                 NULLIF(by_email.current_plan_type, ''), by_email.plan_type, '')) AS plan,
-            COALESCE(by_id.subscribed, by_email.subscribed, FALSE) AS subscribed
+            COALESCE(by_id.subscribed, by_email.subscribed, FALSE) AS subscribed,
+            {checked_at_sql} AS plan_checked_at
         FROM filtered_tasks t
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
         LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
@@ -399,7 +453,10 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
                 WHEN payment='unknown' THEN 'request_unknown' ELSE 'pending_payment' END AS payment_status
         FROM raw
     ), projected AS (
-        SELECT *, CASE WHEN payment_status='paid' AND plus IN ('unknown','pending','queued') AND plan_check_status='success'
+        SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
+            AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > task_created_at
+            THEN 'confirmed'
+            WHEN payment_status='paid' AND plus IN ('unknown','pending','queued') AND plan_check_status='success'
             THEN CASE WHEN plan LIKE '%%plus%%' OR plan LIKE '%%pro%%' OR subscribed THEN 'confirmed' ELSE 'not_confirmed' END
             ELSE plus END AS plus_status
         FROM normalized

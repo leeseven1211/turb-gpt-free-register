@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from unittest.mock import patch
 
 from core import account_task_store, db, extract_link_service, record_store
@@ -101,6 +102,90 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
                 self.assertEqual(len(ids), result["total"])
                 self.assertEqual(len(ids), result["counts"][status])
                 self.assertEqual(5, result["counts"]["all"])
+
+    def test_independent_plus_check_is_visible_before_platform_payment_confirmation(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "arrival@example.test", "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": datetime.fromisoformat("2026-10-23T13:01:00+00:00").astimezone().replace(tzinfo=None).isoformat(),
+        }])[0]
+        task = self.task(provider="huanguang", mode="auto_payment", status="attention_required", account_id=account_id,
+                         state={"extraction_state": "succeeded", "payment_state": "unknown", "plus_status": "not_applicable"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at=%s WHERE id=%s",
+                        ("2026-10-23T13:00:00Z", task["id"]))
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET created_at=%s WHERE id=%s",
+                        ("2026-10-23T13:30:00Z", task["run"]["id"]))
+        detail = extract_link_service.extract_workbench_task_detail(task["id"])
+        self.assertEqual("confirmed", detail["item"]["plus_status"])
+        self.assertEqual("request_unknown", detail["item"]["payment_status"])
+        page = extract_link_service.list_workbench_tasks(status="plus_confirmed", page_size=1)
+        self.assertEqual(1, page["total"])
+        self.assertEqual(1, page["counts"]["plus_confirmed"])
+        self.assertEqual(task["id"], page["items"][0]["task_id"])
+        self.assertEqual("confirmed", page["items"][0]["plus_status"])
+        self.assertEqual(0, page["counts"]["payment_succeeded"])
+        self.assertEqual(0, extract_link_service.list_workbench_tasks(status="payment_succeeded")["total"])
+
+    def test_independent_plus_projection_requires_fresh_successful_plus_evidence(self):
+        local_time = datetime.fromisoformat("2026-10-23T13:01:00+00:00").astimezone().replace(tzinfo=None).isoformat()
+        old_time = datetime.fromisoformat("2026-10-23T12:59:59+00:00").astimezone().replace(tzinfo=None).isoformat()
+        cases = [
+            ("local", local_time, "plus", "success", "auto_payment", "succeeded", False, True),
+            ("offset", "2026-10-23T21:01:00+08:00", "pro", "success", "manual_payment", "succeeded", False, True),
+            ("utc", "2026-10-23T13:01:00Z", "plus", "success", "auto_payment", "succeeded", False, True),
+            ("old", old_time, "plus", "success", "auto_payment", "succeeded", False, False),
+            ("equal", "2026-10-23T13:00:00Z", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad", "not-a-time", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad-date", "2026-02-30T21:01:00", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad-month", "2026-99-23T13:01:00Z", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad-hour", "2026-10-23T24:00:00Z", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad-second", "2026-10-23T13:01:60Z", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("bad-zone", "2026-10-23T13:01:00+99:00", "plus", "success", "auto_payment", "succeeded", False, False),
+            ("missing", None, "plus", "success", "auto_payment", "succeeded", False, False),
+            ("failed-check", "2026-10-23T13:01:00Z", "plus", "failed", "auto_payment", "succeeded", True, False),
+            ("go", "2026-10-23T13:01:00Z", "go", "success", "auto_payment", "succeeded", True, False),
+            ("subscription-only", "2026-10-23T13:01:00Z", "free", "success", "auto_payment", "succeeded", True, False),
+            ("extract-only", "2026-10-23T13:01:00Z", "plus", "success", "extract_only", "succeeded", False, False),
+            ("extract-failed", "2026-10-23T13:01:00Z", "plus", "success", "auto_payment", "failed", False, False),
+        ]
+        expected = set()
+        for name, checked_at, plan, check_status, mode, extraction, subscribed, confirmed in cases:
+            account_id = self.seed(record_store.ACCOUNTS, [{
+                "email": f"{name}@example.test", "plan_check_status": check_status, "current_plan_type": plan,
+                "plan_checked_at": checked_at, "has_active_subscription": subscribed,
+            }])[0]
+            task = self.task(provider="huanguang", mode=mode, status="attention_required", account_id=account_id,
+                             state={"extraction_state": extraction, "payment_state": "unknown", "plus_status": "not_applicable"})
+            with operation._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at=%s WHERE id=%s",
+                            ("2026-10-23T13:00:00Z", task["id"]))
+            with self.subTest(name=name):
+                detail = extract_link_service.extract_workbench_task_detail(task["id"])
+                self.assertEqual("confirmed" if confirmed else "not_applicable", detail["item"]["plus_status"])
+                self.assertEqual("unpaid" if mode == "extract_only" else "request_unknown", detail["item"]["payment_status"])
+            if confirmed:
+                expected.add(task["id"])
+        page = extract_link_service.list_workbench_tasks(status="plus_confirmed", page_size=100)
+        self.assertEqual(expected, {item["task_id"] for item in page["items"]})
+        self.assertEqual(3, page["total"])
+        self.assertEqual(3, page["counts"]["plus_confirmed"])
+        self.assertTrue(all(item["plus_status"] == "confirmed" for item in page["items"]))
+
+    def test_independent_plus_check_uses_nonblank_success_timestamp(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "arrival-fallback@example.test", "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": "   ", "plan_last_success_at": "2026-10-23T13:01:00Z",
+        }])[0]
+        task = self.task(provider="huanguang", mode="auto_payment", account_id=account_id,
+                         state={"extraction_state": "succeeded", "payment_state": "unknown", "plus_status": "not_applicable"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at=%s WHERE id=%s",
+                        ("2026-10-23T13:00:00Z", task["id"]))
+        detail = extract_link_service.extract_workbench_task_detail(task["id"])
+        self.assertEqual("confirmed", detail["item"]["plus_status"])
+        page = extract_link_service.list_workbench_tasks(status="plus_confirmed")
+        self.assertEqual(1, page["total"])
+        self.assertEqual("confirmed", page["items"][0]["plus_status"])
 
     def test_plus_filter_falls_back_to_email_and_preserves_matching_legacy_link(self):
         account_id = self.seed(record_store.ACCOUNTS, [{

@@ -725,6 +725,24 @@ test('支付成功待核验、出链成功未支付和提链失败呈现不同�
   assert.equal(api.outcome({task_status:'request_unknown',extraction_status:'failed',payment_status:'unpaid'}).title,'平台结果 · 等待确认');
 });
 
+test('独立套餐已核实的 Plus 到账与平台支付待确认分别展示', () => {
+  const {api} = createView();
+  const task = {task_id:42, mode:'auto_payment', task_status:'request_unknown',
+    extraction_status:'success', payment_status:'request_unknown', plus_status:'confirmed'};
+  const outcome = api.outcome(task);
+  assert.equal(outcome.state, 'Plus 已到账');
+  assert.equal(outcome.title, 'Plus 已到账 · 支付待确认');
+  assert.match(outcome.copy, /本地套餐已核实/);
+  const html = api.renderCard(task);
+  assert.match(html, /Plus 已到账/);
+  assert.match(html, /结果待确认/);
+  assert.doesNotMatch(html, /支付成功/);
+  assert.equal(api.outcome({...task, plus_status:'not_applicable'}).title, '提链成功 · 后续结果待确认');
+  assert.equal(api.outcome({...task, mode:'extract_only'}).title, '提链成功 · 后续结果待确认');
+  assert.equal(api.outcome({...task, payment_status:'failed'}).title, '提链完成 · 支付失败');
+  assert.equal(api.outcome({...task, extraction_status:'failed'}).title, '平台结果 · 等待确认');
+});
+
 test('提链成功事实独立于任务后续失败和待确认，结果区不反写提链失败', () => {
   const {api} = createView();
   for (const [status, title] of [['failed','提链成功 · 后续处理失败'], ['attention_required','提链成功 · 后续结果待确认'], ['request_unknown','提链成功 · 后续结果待确认']]) {

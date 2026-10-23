@@ -1903,6 +1903,10 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         plan = str(account.get("current_plan_type") or account.get("plan_type") or "").lower()
         if check_status == "success":
             plus = "confirmed" if ("plus" in plan or "pro" in plan or bool(account.get("has_active_subscription"))) else "not_confirmed"
+    if mode in {"auto_payment", "manual_payment"} and extraction == "success":
+        from core.storage.extract_link_jobs import independent_plus_is_confirmed
+        if independent_plus_is_confirmed(account, task_created_at=row.get("task_created_at")):
+            plus = "confirmed"
     progress = {
         "label": str(summary.get("current_step") or row.get("progress_stage") or row.get("current_stage") or ""),
         "percent": summary.get("percent"),

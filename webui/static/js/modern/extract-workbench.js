@@ -102,7 +102,7 @@ function renderExtractWorkbenchStage(stage, label, status) {
   const stageLabel = stage === 'extraction' && key === 'success' ? '提链成功'
     : stage === 'preflight' && ['success', 'passed'].includes(key) ? '预检通过'
     : stage === 'payment' && ['success', 'paid'].includes(key) ? '支付成功'
-    : stage === 'plus' && ['success', 'confirmed', 'plus'].includes(key) ? 'Plus 已确认'
+    : stage === 'plus' && ['success', 'confirmed', 'plus'].includes(key) ? 'Plus 已到账'
     : stage === 'plus' && ['pending', 'unknown', 'not_confirmed'].includes(key) ? 'Plus 待确认'
     : extractWorkbenchStatusLabel(status);
   return `<div class="extract-workbench-data-row" data-stage="${stage}">
@@ -131,6 +131,7 @@ function extractWorkbenchOutcome(task) {
   if (paid && confirmed) return {tone:'success', state:'完成', title:'支付成功 · 到账已核实', copy:'平台状态与本地套餐核实分别记录', icon:'check'};
   if (paid) return {tone:'warning', state:'待核实', title:'支付成功 · 到账待核实', copy:'已记录支付成功，等待本地 Plus 到账核验', icon:'dots'};
   if (task?.payment_status === 'failed' && ['success', 'succeeded'].includes(extraction)) return {tone:'danger', state:'支付失败', title:'提链完成 · 支付失败', copy:'提链结果与支付结果分别记录，可查看任务详情', icon:'warning'};
+  if (confirmed && ['auto_payment', 'manual_payment'].includes(task?.mode) && ['success', 'succeeded'].includes(extraction)) return {tone:'success', state:'Plus 已到账', title:'Plus 已到账 · 支付待确认', copy:'本地套餐已核实，平台支付结果仍待确认', icon:'check'};
   if (['success', 'succeeded'].includes(extraction)) {
     if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'提链成功 · 后续结果待确认', copy:'提链结果已保留，请查看后续处理详情', icon:'warning'};
     if (['failed', 'cancelled', 'stopped'].includes(status)) return {tone:'warning', state:'待处理', title:status === 'failed' ? '提链成功 · 后续处理失败' : '提链成功 · 任务已停止', copy:'提链结果已保留，后续处理状态单独记录', icon:'warning'};
