@@ -126,6 +126,21 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertNotIn("extract_link", payload["items"][0])
         self.assertNotIn("internal", payload)
 
+    def test_list_and_detail_preserve_safe_local_payment_confirmation_source(self):
+        item = {"task_id": 11, "payment_status": "paid", "plus_status": "confirmed",
+                "payment_confirmation_source": "local_plan_check", "access_token": "private-marker"}
+        with (
+            patch.object(extract_workbench.extract_link_service, "list_workbench_tasks", return_value={"items": [item], "total": 1}),
+            patch.object(extract_workbench.extract_link_service, "extract_workbench_task_detail", return_value={"item": item, "events": [], "history": []}),
+        ):
+            listed = self.client.get("/api/extract-workbench/tasks")
+            detail = self.client.get("/api/extract-workbench/tasks/11")
+        for response, public in ((listed, listed.get_json()["items"][0]), (detail, detail.get_json()["item"])):
+            with self.subTest(path=response.request.path):
+                self.assertEqual(200, response.status_code)
+                self.assertEqual("local_plan_check", public.get("payment_confirmation_source"))
+                self.assertNotIn("private-marker", response.get_data(as_text=True))
+
     def test_task_list_rejects_invalid_pagination_without_calling_service(self):
         with patch.object(
             extract_workbench.extract_link_service,

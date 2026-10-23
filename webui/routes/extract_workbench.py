@@ -35,7 +35,7 @@ _BATCH_COUNT_FIELDS = (
 )
 _ITEM_FIELDS = (
     "task_id", "run_id", "account_id", "batch_id", "email", "provider_id", "mode", "link_type", "task_status",
-    "preflight_status", "extraction_status", "payment_status", "plus_status",
+    "preflight_status", "extraction_status", "payment_status", "plus_status", "payment_confirmation_source",
     "run_count", "progress", "created_at", "updated_at", "message", "error",
     "has_extract_link", "has_payment_link", "has_payment_entry", "has_qr",
 )
