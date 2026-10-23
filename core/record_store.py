@@ -164,6 +164,36 @@ ACCOUNTS = TableSpec(
         "account_promotion_value": f"""TEXT GENERATED ALWAYS AS (
             {_ACCOUNT_PROMOTION_FILTER_SQL}
         ) STORED""",
+        # 管理列表的 facets 不能再逐行 detoast 大 JSONB；这些只读投影让聚合
+        # 只扫窄列。字段语义必须与 admin_repository 原表达式保持完全一致。
+        "account_status_text": """TEXT GENERATED ALWAYS AS (
+            LOWER(COALESCE(NULLIF(BTRIM(data->>'account_status'), ''), 'active'))
+        ) STORED""",
+        "account_token_expired": """BOOLEAN GENERATED ALWAYS AS (
+            LOWER(COALESCE(data->>'token_expired', 'false')) IN ('true', '1', 'yes')
+        ) STORED""",
+        "account_live_check_http_status": """TEXT GENERATED ALWAYS AS (
+            BTRIM(COALESCE(data->>'live_check_http_status', ''))
+        ) STORED""",
+        "account_twofa_failed": """BOOLEAN GENERATED ALWAYS AS (
+            COALESCE(data->>'extra_json', '') ~
+            '"twofa"[[:space:]]*:[[:space:]]*\\{[^}]*"status"[[:space:]]*:[[:space:]]*"failed"'
+        ) STORED""",
+        # 注册驱动优先取账号自身元数据，缺失时才回退到最新注册任务。
+        # 提升成生成列后，facets 不再为每个账号 detoast 7 KB 的 data。
+        "account_registration_driver": """TEXT GENERATED ALWAYS AS (
+            COALESCE(
+                NULLIF(BTRIM(data->>'registration_driver'), ''),
+                NULLIF(BTRIM(CASE
+                    WHEN jsonb_typeof(data->'extra_json') = 'object'
+                        THEN data #>> '{extra_json,registration_driver}'
+                    WHEN jsonb_typeof(data->'extra_json') = 'string'
+                         AND (data->>'extra_json') IS JSON OBJECT
+                        THEN (data->>'extra_json')::jsonb->>'registration_driver'
+                    ELSE NULL
+                END), '')
+            )
+        ) STORED""",
     },
     unique=("email",),
     indexes=(
@@ -213,7 +243,44 @@ JOBS = TableSpec(
         "parent_job_id": "BIGINT",
     },
     unique=("job_uuid",),
-    indexes=(("status", "id"), ("batch_id",), ("account_id",), ("root_job_id",)),
+    indexes=(
+        ("status", "id"), ("batch_id",), ("account_id",), ("root_job_id",),
+        # 账号 facets 的注册驱动回退会按 account_id 取最新任务；复合索引把
+        # 排序也放进索引，避免每个账号再排一次。
+        ("account_id", "id"),
+        ("batch_id", "job_batch_index", "id"),
+    ),
+    generated={
+        # 任务列表、dashboard 与 facets 都按这些配置判定展示状态。它们原本
+        # 每次从 data 里取，单条任务 data 里的 progress_steps 可达 1 MB，
+        # 8,000 条任务会产生大量 TOAST 解压。生成列把成本移到写入一次。
+        "job_config_password_enabled": """BOOLEAN GENERATED ALWAYS AS (
+            COALESCE((data #>> '{config_snapshot,password_enabled}')::boolean, TRUE)
+        ) STORED""",
+        "job_config_plan_check_enabled": """BOOLEAN GENERATED ALWAYS AS (
+            COALESCE((data #>> '{config_snapshot,plan_check_enabled}')::boolean, TRUE)
+        ) STORED""",
+        "job_config_twofa_enabled": """BOOLEAN GENERATED ALWAYS AS (
+            COALESCE((data #>> '{config_snapshot,twofa_enabled}')::boolean, TRUE)
+        ) STORED""",
+        "job_config_codex_enabled": """BOOLEAN GENERATED ALWAYS AS (
+            COALESCE((data #>> '{config_snapshot,codex_enabled}')::boolean, TRUE)
+        ) STORED""",
+        "job_batch_index": """INTEGER GENERATED ALWAYS AS (
+            CASE WHEN COALESCE(data->>'batch_index', '') ~ '^[0-9]+$'
+                 THEN (data->>'batch_index')::INTEGER ELSE NULL END
+        ) STORED""",
+        "job_retry_attempt": """INTEGER GENERATED ALWAYS AS (
+            CASE WHEN COALESCE(data->>'retry_attempt', '') ~ '^[0-9]+$'
+                 THEN (data->>'retry_attempt')::INTEGER ELSE NULL END
+        ) STORED""",
+        "job_twofa_state": """TEXT GENERATED ALWAYS AS (
+            COALESCE(data#>>'{progress_steps,twofa,state}', '')
+        ) STORED""",
+        "job_email_source": """TEXT GENERATED ALWAYS AS (
+            COALESCE(data->>'email_source', '')
+        ) STORED""",
+    },
 )
 
 # 注册批次内的邮箱领取历史。邮箱池在注册未消费时会回收到 available；如果同一批次
@@ -695,8 +762,32 @@ def init() -> None:
                             f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {_qualified(spec)} ({rendered}) "
                             f"WHERE {predicate}"
                         )
-                    gin = postgres_store.quote_identifier(f"idx_{spec.name}_data_gin")
-                    cur.execute(f"CREATE INDEX IF NOT EXISTS {gin} ON {_qualified(spec)} USING gin(data)")
+                    if spec is PROXY_POOL_RESOURCES:
+                        # 代理池维护/领取只关心活跃状态；历史 failed/retired
+                        # 已有十几万行，全表索引会把这些冷行也带进每个热点扫描。
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS "
+                            f"{postgres_store.quote_identifier('idx_proxy_pool_resources_live_profile')} "
+                            f"ON {_qualified(spec)} (profile_key, state) "
+                            "WHERE state IN ('fetching','checking','ready','leased','shared','rotation_wait')"
+                        )
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS "
+                            f"{postgres_store.quote_identifier('idx_proxy_pool_resources_live_state')} "
+                            f"ON {_qualified(spec)} (state) "
+                            "WHERE state IN ('fetching','checking','ready','leased','shared','rotation_wait')"
+                        )
+        # 日常查询没有使用 jsonb 的 @> / ? 操作符，只有一次性回填会用到 GIN。
+        # 这些索引会随每次账号/任务写入维护，registration_jobs 的一个索引曾占
+        # 56 MB；统一清掉，避免写放大和无效 WAL。
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = %s AND indexname ~ '^idx_.*_data_gin$'",
+                (postgres_store.schema_name(),),
+            )
+            for row in cur.fetchall():
+                cur.execute(f"DROP INDEX IF EXISTS {postgres_store.qualified(row['indexname'])}")
         # Existing deployments may have imported rows with explicit IDs while
         # the identity sequence stayed behind. Repair every table once per
         # process/schema initialization so the next normal insert cannot reuse
@@ -852,15 +943,28 @@ def list_rows(
     offset: int = 0,
     conn=None,
     include_version: bool = False,
+    data_exclude: Iterable[str] = (),
+    exclude_columns: Iterable[str] = (),
 ) -> list[dict]:
     spec = _resolve(table)
     init()
-    selected = "*, xmin::text AS __record_version" if include_version else "*"
+    excluded_data = tuple(dict.fromkeys(str(key) for key in data_exclude if str(key)))
+    excluded_columns = {str(key) for key in exclude_columns if str(key)}
+    if excluded_data or excluded_columns:
+        columns = ["id", *(col for col in spec.promoted if col not in excluded_columns)]
+        selected = ", ".join(postgres_store.quote_identifier(col) for col in columns)
+        selected += ", (data - %s::text[]) AS data"
+        if include_version:
+            selected += ", xmin::text AS __record_version"
+        select_args: list[Any] = [list(excluded_data)]
+    else:
+        selected = "*, xmin::text AS __record_version" if include_version else "*"
+        select_args = []
     sql = f"SELECT {selected} FROM {_qualified(spec)}"
     if where:
         sql += f" WHERE {where}"
     sql += f" ORDER BY {order_by}"
-    args = list(params)
+    args = [*select_args, *params]
     if limit is not None:
         sql += " LIMIT %s"
         args.append(int(limit))

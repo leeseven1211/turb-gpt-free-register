@@ -32,6 +32,10 @@ _PROJECTION_STOP = threading.Event()
 _PROJECTION_WAKE = threading.Event()
 _PROJECTION_WORKER: threading.Thread | None = None
 _READY_KEY = ""
+_PROGRESS_SNAPSHOT_CACHE: dict[int, tuple[float, tuple, dict]] = {}
+_PROGRESS_SNAPSHOT_CACHE_LOCK = threading.RLock()
+_PROGRESS_SNAPSHOT_CACHE_MAX = 2048
+_PROGRESS_SNAPSHOT_CACHE_TTL = 300.0
 logger = logging.getLogger(__name__)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SCHEMA_ENV = "OPERATION_TASK_DB_SCHEMA"
@@ -3252,8 +3256,30 @@ def get_run_progress(task_id: int, run_id: int) -> dict:
     )
 
 
+def _progress_cache_key(run: dict, last_event_id: int) -> tuple:
+    return (
+        str(run.get("run_uuid") or ""),
+        int(run.get("id") or 0),
+        int(last_event_id or 0),
+        str(run.get("status") or ""),
+        str(run.get("progress_stage") or ""),
+        str(run.get("completed_at") or ""),
+    )
+
+
+def clear_progress_snapshot_cache() -> None:
+    """清空终态 Run 的进度快照缓存；测试或外部直接改事件后使用。"""
+    with _PROGRESS_SNAPSHOT_CACHE_LOCK:
+        _PROGRESS_SNAPSHOT_CACHE.clear()
+
+
 def get_registration_progress(job_ids: Iterable[int]) -> dict[int, dict]:
-    """批量读取注册页所需的统一 Run 快照，避免每个卡片分别查询数据库。"""
+    """批量读取注册页所需的统一 Run 快照，避免每个卡片分别查询数据库。
+
+    注册页每 5 秒轮询一次，而终态 Run 的事件不会继续增长。这里只缓存终态
+    Run：活跃 Run 仍每次重算，终态 Run 以 ``最后事件 id + 状态`` 为版本键。
+    这样批次里几百个已完成任务不再被重复解析上万条事件。
+    """
     ids = sorted({int(value) for value in job_ids if int(value) > 0})
     if not ids:
         return {}
@@ -3270,24 +3296,68 @@ def get_registration_progress(job_ids: Iterable[int]) -> dict[int, dict]:
         runs = [_normalize_compatibility_run(_row(dict(row)) or {}) for row in cur.fetchall()]
         if not runs:
             return {}
+        run_ids = [int(run["id"]) for run in runs]
         cur.execute(
-            f"SELECT * FROM {_table('operation_events')} WHERE run_id=ANY(%s) ORDER BY created_at, id",
-            ([int(run["id"]) for run in runs],),
+            f"SELECT run_id, MAX(id) AS last_event_id "
+            f"FROM {_table('operation_events')} WHERE run_id=ANY(%s) GROUP BY run_id",
+            (run_ids,),
         )
+        last_event_ids = {
+            int(row["run_id"]): int(row["last_event_id"] or 0)
+            for row in cur.fetchall()
+        }
+
+        now = time.monotonic()
+        cached: dict[int, dict] = {}
+        pending: list[dict] = []
+        with _PROGRESS_SNAPSHOT_CACHE_LOCK:
+            for run in runs:
+                run_id = int(run["id"])
+                key = _progress_cache_key(run, last_event_ids.get(run_id, 0))
+                entry = _PROGRESS_SNAPSHOT_CACHE.get(run_id)
+                if (
+                    str(run.get("status") or "") in _TERMINAL_STATUSES
+                    and entry is not None
+                    and entry[1] == key
+                    and now - entry[0] <= _PROGRESS_SNAPSHOT_CACHE_TTL
+                ):
+                    cached[run_id] = entry[2]
+                else:
+                    pending.append(run)
+
         by_run: dict[int, list[dict]] = {}
-        for raw in cur.fetchall():
-            event = _normalize_compatibility_event(_read_event(dict(raw)))
-            by_run.setdefault(int(event["run_id"]), []).append(event)
+        pending_ids = [int(run["id"]) for run in pending]
+        if pending_ids:
+            cur.execute(
+                f"SELECT * FROM {_table('operation_events')} "
+                "WHERE run_id=ANY(%s) ORDER BY created_at, id",
+                (pending_ids,),
+            )
+            for raw in cur.fetchall():
+                event = _normalize_compatibility_event(_read_event(dict(raw)))
+                by_run.setdefault(int(event["run_id"]), []).append(event)
+
     result: dict[int, dict] = {}
     for run in runs:
         task_id, run_id = int(run["task_id"]), int(run["id"])
+        if run_id in cached:
+            result[int(run["source_id"])] = cached[run_id]
+            continue
         events = by_run.get(run_id, [])
         events.sort(key=_event_time_sort_key)
-        result[int(run["source_id"])] = {
+        payload = {
             "operation_task_id": task_id,
             "operation_run_id": run_id,
             "progress": build_progress_snapshot(task_id, run_id, str(run["task_type"]), run, events),
         }
+        if str(run.get("status") or "") in _TERMINAL_STATUSES:
+            key = _progress_cache_key(run, last_event_ids.get(run_id, 0))
+            with _PROGRESS_SNAPSHOT_CACHE_LOCK:
+                _PROGRESS_SNAPSHOT_CACHE[run_id] = (now, key, payload)
+                if len(_PROGRESS_SNAPSHOT_CACHE) > _PROGRESS_SNAPSHOT_CACHE_MAX:
+                    oldest = min(_PROGRESS_SNAPSHOT_CACHE, key=lambda item: _PROGRESS_SNAPSHOT_CACHE[item][0])
+                    _PROGRESS_SNAPSHOT_CACHE.pop(oldest, None)
+        result[int(run["source_id"])] = payload
     return result
 
 

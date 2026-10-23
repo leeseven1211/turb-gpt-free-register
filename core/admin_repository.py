@@ -99,11 +99,11 @@ def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
 
 
 _ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
-_ACCOUNT_STATUS = "LOWER(COALESCE(NULLIF(BTRIM(a.data->>'account_status'), ''), 'active'))"
+_ACCOUNT_STATUS = "COALESCE(a.account_status_text, 'active')"
 _ACCOUNT_TOKEN_EXPIRED = f"""(
     {_ACCOUNT_ACCESS_TOKEN_PRESENT}
     AND (
-        LOWER(COALESCE(a.data->>'token_expired', 'false')) IN ('true', '1', 'yes')
+        COALESCE(a.account_token_expired, FALSE)
         OR CASE
             WHEN COALESCE(a.token_expires_at, '') ~
                  '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}'
@@ -119,10 +119,10 @@ _ACCOUNT_TOKEN_LIVE_FAILED = f"""(
 _ACCOUNT_TOKEN_STATE = f"""CASE
     WHEN NOT ({_ACCOUNT_ACCESS_TOKEN_PRESENT}) THEN 'none'
     WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
-         AND BTRIM(COALESCE(a.data->>'live_check_http_status', '')) = '401'
+         AND COALESCE(a.account_live_check_http_status, '') = '401'
       THEN 'invalid_401'
     WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
-         AND BTRIM(COALESCE(a.data->>'live_check_http_status', '')) = '403'
+         AND COALESCE(a.account_live_check_http_status, '') = '403'
       THEN 'invalid_403'
     WHEN {_ACCOUNT_TOKEN_LIVE_FAILED} THEN 'invalid_other'
     WHEN {_ACCOUNT_TOKEN_EXPIRED} THEN 'expired'
@@ -184,15 +184,7 @@ def _account_registration_driver_sql() -> str:
     """只投影注册驱动，兼容账号元数据和历史注册任务快照。"""
     jobs = _q(record_store.JOBS)
     return f"""LOWER(BTRIM(COALESCE(
-        NULLIF(BTRIM(a.data->>'registration_driver'), ''),
-        NULLIF(BTRIM(CASE
-            WHEN jsonb_typeof(a.data->'extra_json') = 'object'
-                THEN a.data #>> '{{extra_json,registration_driver}}'
-            WHEN jsonb_typeof(a.data->'extra_json') = 'string'
-                 AND (a.data->>'extra_json') IS JSON OBJECT
-                THEN (a.data->>'extra_json')::jsonb->>'registration_driver'
-            ELSE NULL
-        END), ''),
+        NULLIF(BTRIM(a.account_registration_driver), ''),
         (SELECT j.data #>> '{{config_snapshot,registration_driver}}'
          FROM {jobs} j WHERE j.account_id = a.id
            AND LOWER(COALESCE(j.job_type, 'registration'))
@@ -486,17 +478,17 @@ def list_account_statuses(
 
 _JOB_PASSWORD_PRESENT = _ACCOUNT_PASSWORD_PRESENT
 _JOB_TOTP_PRESENT = _ACCOUNT_TOTP_PRESENT
-_JOB_PASSWORD_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,password_enabled}')::boolean, TRUE)"
-_JOB_PLAN_CHECK_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,plan_check_enabled}')::boolean, TRUE)"
-_JOB_TWOFA_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,twofa_enabled}')::boolean, TRUE)"
-_JOB_CODEX_REQUIRED = "COALESCE((j.data#>>'{config_snapshot,codex_enabled}')::boolean, TRUE)"
+_JOB_PASSWORD_REQUIRED = "COALESCE(j.job_config_password_enabled, TRUE)"
+_JOB_PLAN_CHECK_REQUIRED = "COALESCE(j.job_config_plan_check_enabled, TRUE)"
+_JOB_TWOFA_REQUIRED = "COALESCE(j.job_config_twofa_enabled, TRUE)"
+_JOB_CODEX_REQUIRED = "COALESCE(j.job_config_codex_enabled, TRUE)"
 _JOB_SETUP_COMPLETE = f"""(
     (NOT {_JOB_PASSWORD_REQUIRED} OR {_JOB_PASSWORD_PRESENT})
     AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
     AND (NOT {_JOB_TWOFA_REQUIRED} OR (
         {_JOB_TOTP_PRESENT}
-        AND COALESCE(j.data#>>'{{progress_steps,twofa,state}}', '') <> 'failed'
-        AND COALESCE(a.data->>'extra_json', '') !~ '"twofa"[[:space:]]*:[[:space:]]*\\{{[^}}]*"status"[[:space:]]*:[[:space:]]*"failed"'
+        AND COALESCE(j.job_twofa_state, '') <> 'failed'
+        AND NOT COALESCE(a.account_twofa_failed, FALSE)
     ))
 )"""
 _JOB_DISPLAY_STATUS = f"""CASE
@@ -505,6 +497,36 @@ _JOB_DISPLAY_STATUS = f"""CASE
            THEN 'success' ELSE 'partial_success' END
     ELSE COALESCE(j.status, '')
 END"""
+
+# 批次进度行只需要表格/按钮用到的字段。progress_steps 单条可达 1 MB，
+# 不能把整段 data 原样搬进 Python 再丢掉。
+_PROGRESS_JOB_COLUMNS = ", ".join(
+    f"j.{postgres_store.quote_identifier(column)}"
+    for column in ("id", *record_store.JOBS.promoted)
+)
+_PROGRESS_BIG_DATA_KEYS = (
+    "ARRAY['plan_check_result_json','plan_last_success_result_json',"
+    "'plan_check_country_results']::text[]"
+)
+
+
+def _progress_data_sql(has_operation_runs: bool) -> str:
+    """返回批次进度行的窄 data 投影；映射到 Run 时保留 codex/twofa 事实。"""
+    if not has_operation_runs:
+        return f"(j.data - {_PROGRESS_BIG_DATA_KEYS})"
+    return f"""CASE WHEN EXISTS (
+        SELECT 1 FROM {postgres_store.qualified('operation_runs')} run
+         WHERE run.source_system = 'registration_jobs'
+           AND run.source_id = j.id::text
+    ) THEN
+        (j.data - {_PROGRESS_BIG_DATA_KEYS} - ARRAY['progress_steps']::text[])
+        || jsonb_build_object('progress_steps', jsonb_build_object(
+            'codex', j.data->'progress_steps'->'codex',
+            'twofa', j.data->'progress_steps'->'twofa'
+        ))
+    ELSE
+        (j.data - {_PROGRESS_BIG_DATA_KEYS})
+    END"""
 
 
 def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
@@ -524,7 +546,7 @@ def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
         params.append(f"%{value}%")
     value = _text(filters.get("email_source")).lower()
     if value:
-        where.append("LOWER(COALESCE(j.data->>'email_source', '')) = %s")
+        where.append("LOWER(COALESCE(j.job_email_source, '')) = %s")
         params.append(value)
     value = _text(filters.get("proxy"))
     if value:
@@ -561,16 +583,23 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
     facets = {}
     progress_rows = []
     progress_batches = []
+    operation_runs_relation = f"{postgres_store.schema_name()}.operation_runs"
     with _connect() as conn, conn.cursor() as cur:
         if view == "batch":
             # 新建批次确认使用全局未完成数，不受表格筛选或所选批次影响。
             cur.execute(
                 f"SELECT COUNT(*) AS total, MAX(updated_at) AS latest, "
-                f"COUNT(*) FILTER (WHERE status IN ('pending','running','stopping')) AS active FROM {jobs}"
+                f"COUNT(*) FILTER (WHERE status IN ('pending','running','stopping')) AS active, "
+                f"(SELECT to_regclass(%s)) AS operation_runs_relation FROM {jobs}",
+                (operation_runs_relation,),
             )
             aggregate = cur.fetchone()
         else:
-            cur.execute(f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest{from_sql}{clause}", params)
+            cur.execute(
+                f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest, "
+                f"(SELECT to_regclass(%s)) AS operation_runs_relation{from_sql}{clause}",
+                (*params, operation_runs_relation),
+            )
             aggregate = cur.fetchone()
             cur.execute(
                 f"SELECT j.*, ({_JOB_DISPLAY_STATUS}) AS projected_display_status{from_sql}{clause} "
@@ -585,29 +614,35 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                 SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
                   {from_sql}{facet_clause} GROUP BY 2
                 UNION ALL
-                SELECT 'email_source', LOWER(COALESCE(j.data->>'email_source', '')), COUNT(*)
+                SELECT 'email_source', LOWER(COALESCE(j.job_email_source, '')), COUNT(*)
                   {from_sql}{facet_clause} GROUP BY 2
                 """,
                 facet_params * 2,
             )
             facets = _facet_dict(cur.fetchall())
         if view != "table":
+            has_operation_runs = bool(aggregate.get("operation_runs_relation"))
+            progress_data = _progress_data_sql(has_operation_runs)
             selected_batch_id = _text(progress_batch_id)
             if selected_batch_id:
                 cur.execute(
                     f"""
-                    SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                    SELECT {_PROGRESS_JOB_COLUMNS},
+                           ({progress_data}) AS data,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
                       FROM {jobs} j
                       LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
                      WHERE COALESCE(root.batch_id, j.batch_id) = %s
-                     ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                     ORDER BY COALESCE(j.job_batch_index, 0), j.id
                     """,
                     (selected_batch_id,),
                 )
             else:
                 cur.execute(
                     f"""
-                    SELECT j.*, COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                    SELECT {_PROGRESS_JOB_COLUMNS},
+                           ({progress_data}) AS data,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
                       FROM {jobs} j
                       LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
                      WHERE COALESCE(root.batch_id, j.batch_id) = (
@@ -617,7 +652,7 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                          WHERE NULLIF(COALESCE(latest_root.batch_id, latest.batch_id), '') IS NOT NULL
                          ORDER BY latest.id DESC LIMIT 1
                      )
-                     ORDER BY COALESCE((j.data->>'batch_index')::int, 0), j.id
+                     ORDER BY COALESCE(j.job_batch_index, 0), j.id
                     """
                 )
             progress_rows = []
@@ -630,7 +665,7 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                 f"""
                 WITH mapped AS (
                     SELECT j.id, j.status,
-                           COALESCE((j.data->>'retry_attempt')::int, 0) AS retry_attempt,
+                           COALESCE(j.job_retry_attempt, 0) AS retry_attempt,
                            COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
                            MAX(j.id) OVER (PARTITION BY COALESCE(root.batch_id, j.batch_id)) AS batch_latest_job_id,
                            BOOL_OR(j.parent_job_id IS NOT NULL) OVER (
@@ -687,7 +722,24 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                 })
     page_rows = [record_store.merge_row(record_store.JOBS, row) for row in raw_page]
     projected = {int(raw["id"]): str(raw.get("projected_display_status") or "") for raw in raw_page}
-    retry_rows = {int(row.get("id") or 0): row for row in [*page_rows, *progress_rows]}
+    # 批次里同一个 root 可能有多次重试；重试按钮只属于当前 slot。历史
+    # attempt 只需要紧凑元数据，不能为 400+ 行全部读取账号和 Attempt。
+    slot_rows: dict[int, list[dict]] = {}
+    for row in progress_rows:
+        root_id = int(row.get("root_job_id") or row.get("id") or 0)
+        slot_rows.setdefault(root_id, []).append(row)
+    current_progress_rows: list[dict] = []
+    for attempts in slot_rows.values():
+        attempts.sort(key=lambda row: (int(row.get("retry_attempt") or 0), int(row.get("id") or 0)))
+        active = [
+            row for row in attempts
+            if str(row.get("status") or "") in {"pending", "running", "stopping"}
+        ]
+        current_progress_rows.append(active[-1] if active else attempts[-1])
+    retry_rows = {
+        int(row.get("id") or 0): row
+        for row in [*page_rows, *current_progress_rows]
+    }
     retry = service.get_retry_info_bulk(list(retry_rows.values()))
     # 列表和批次可能各有同一任务的独立字典；统一计算后更新两处展示对象。
     for row in [*page_rows, *progress_rows]:
@@ -826,7 +878,7 @@ def list_email_pool(request: PageRequest) -> dict:
         cur.execute(
             f"SELECT p.source, p.id, p.email, p.created_at, p.updated_at, p.status, p.used_at, "
             f"p.registered_account_id, ({safe_pool_data}) AS data, "
-            f"a.id AS joined_account_id, COALESCE(NULLIF(a.data->>'account_status', ''), 'active') AS joined_account_status{from_sql}{clause} "
+            f"a.id AS joined_account_id, COALESCE(a.account_status_text, 'active') AS joined_account_status{from_sql}{clause} "
             "ORDER BY COALESCE(p.data->>'imported_at', p.created_at, p.used_at, '') DESC, p.id DESC LIMIT %s OFFSET %s",
             (*params, request.limit, request.offset),
         )

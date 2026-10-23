@@ -54,6 +54,25 @@ class TaskObservationStoreTests(PostgresTestCase):
         listing = operation_task_store.list_tasks(task_id=str(task_id))
         self.assertTrue(all(item.get("label") for item in listing["facets"]["stage"]))
 
+    def test_terminal_registration_progress_snapshot_is_cached_between_polls(self):
+        """注册页 5 秒轮询不能反复重放终态 Run 的全部事件。"""
+        from unittest.mock import patch
+        from core.storage import operation
+
+        job = db.create_job("icloud_hide")
+        db.update_job_progress(job["id"], "email_otp", "success", "验证码已确认")
+        db.update_job(job["id"], status="success")
+        db.finish_job_progress(job["id"], success=True)
+        operation.clear_progress_snapshot_cache()
+        with patch(
+            "core.storage.operation.build_progress_snapshot",
+            wraps=operation.build_progress_snapshot,
+        ) as build:
+            first = operation.get_registration_progress([job["id"]])[job["id"]]
+            second = operation.get_registration_progress([job["id"]])[job["id"]]
+        self.assertEqual(1, build.call_count)
+        self.assertEqual(first["progress"], second["progress"])
+
     def test_registration_transitions_survive_retry_and_share_log_uuid(self):
         job = db.create_job("icloud_hide", batch_id="observation-batch")
         for state in ("running", "failed", "running", "success"):

@@ -4219,12 +4219,24 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
     account_ids = sorted({int(row["account_id"]) for row in rows if row.get("account_id") is not None})
     emails = sorted({str(row.get("email") or "").strip().lower() for row in rows if str(row.get("email") or "").strip()})
     accounts: list[dict] = []
+    # 列表重试投影只需要身份/凭据状态，不需要套餐响应原文；这些 JSONB
+    # 字段单条约 5–15 KB，50 条任务就会多读几百 KB。
+    data_exclude = (
+        "plan_check_result_json",
+        "plan_last_success_result_json",
+        "plan_check_country_results",
+        "account_promotions",
+        "promotion_query_snapshot",
+        "quota_windows",
+    )
     if account_ids:
         accounts.extend(record_store.list_rows(
             record_store.ACCOUNTS,
             where="id = ANY(%s)",
             params=(account_ids,),
             order_by="id DESC",
+            data_exclude=data_exclude,
+            exclude_columns=("chatgpt_session",),
         ))
     # emails 是排序后的 list；用集合差避免已经按 id 找到的账号重复查询。
     found_emails = {str(account.get("email") or "").strip().lower() for account in accounts}
@@ -4235,6 +4247,8 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
             where="lower(email) = ANY(%s)",
             params=(missing_emails,),
             order_by="id DESC",
+            data_exclude=data_exclude,
+            exclude_columns=("chatgpt_session",),
         ))
     decorated = [_decorate_account(account) for account in accounts]
     by_id = {int(account["id"]): account for account in decorated}
