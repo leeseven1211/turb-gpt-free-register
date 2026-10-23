@@ -29,6 +29,8 @@ from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
+_RUNTIME_ENV_LOAD_LOCK = threading.RLock()
+_RUNTIME_ENV_SIGNATURE = None
 
 
 class ExtractCreateRejected(RuntimeError):
@@ -145,11 +147,46 @@ def _checkpoint(context, message: str = "用户手动停止提链任务") -> Non
 def _runtime_setting(name: str, default=None):
     """
     提链配置多数保存在 .env。服务模块会在 WebUI 启动时较早 import，
-    因此每次实际读取时都重新加载 .env，避免“页面已保存但当前进程仍读到空值”。
+    因此首次读取及 .env 变更后重新加载，避免“页面已保存但当前进程仍读到空值”。
     """
+    global _RUNTIME_ENV_SIGNATURE
     try:
-        from config.env_loader import load_env
-        load_env(override=True)
+        from config.env_loader import dotenv_loading_disabled, env_file_lock, env_path, load_env
+
+        path = env_path()
+
+        def current_signature():
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                file_signature = (False,)
+            except OSError:
+                return None
+            else:
+                file_signature = (
+                    stat.st_dev,
+                    stat.st_ino,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                )
+            return file_signature, dotenv_loading_disabled()
+
+        signature = current_signature()
+        if signature is None or signature != _RUNTIME_ENV_SIGNATURE:
+            with _RUNTIME_ENV_LOAD_LOCK:
+                signature = current_signature()
+                if signature is None or signature != _RUNTIME_ENV_SIGNATURE:
+                    try:
+                        with env_file_lock():
+                            before_load = current_signature()
+                            if before_load is None or before_load != _RUNTIME_ENV_SIGNATURE:
+                                load_env(override=True)
+                                after_load = current_signature()
+                                if before_load is not None and after_load == before_load:
+                                    _RUNTIME_ENV_SIGNATURE = after_load
+                    except Exception:
+                        pass
     except Exception:
         pass
     raw = os.getenv(name)
