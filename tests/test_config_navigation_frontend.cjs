@@ -228,6 +228,45 @@ test('幻光页显示入口出口敏感多行代理池并保留明确清空操�
   assert.deepEqual(Array.from(view.pending[exitKey]), []);
 });
 
+test('幻光页区分提链和支付扫码 CDK，清除支付密钥不会修改提链密钥', () => {
+  const extractKey = 'EXTRACT_LINK_HUANGUANG_CDK';
+  const paymentKey = 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK';
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'huanguang', options: [
+      {value: 'huanguang', label: '幻光'},
+    ]}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: true}),
+    field(extractKey, '提链', {label: '幻光提链 CDK', secret: true, configured: true}),
+    field(paymentKey, '提链', {label: '幻光支付扫码 CDK', secret: true, configured: true}),
+  ];
+  const {view} = createConfigView(fields);
+  view.search(paymentKey);
+  const markup = view.renderDomain('提链', fields);
+
+  assert.equal(view.state().extractLink, '幻光');
+  assert.ok(markup.includes('幻光提链 CDK'));
+  assert.ok(markup.includes('幻光支付扫码 CDK'));
+  for (const key of [extractKey, paymentKey]) {
+    assert.ok(markup.includes(`<input type="password" data-key="${key}" value=""`));
+    assert.ok(markup.includes(`data-clear-secret="${key}"`));
+  }
+  const input = (value, clear = false) => ({
+    value, type: 'password', dataset: {key: paymentKey, ...(clear ? {secretClear: 'true'} : {})},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  });
+  view.track({target: input('')});
+  assert.equal(Object.hasOwn(view.pending, paymentKey), false);
+  view.track({target: input('payment-test-secret')});
+  assert.equal(view.pending[paymentKey], 'payment-test-secret');
+  view.track({target: input('', true)});
+  assert.equal(view.pending[paymentKey], '');
+  assert.equal(Object.hasOwn(view.pending, extractKey), false);
+});
+
 test('点击提链平台页签会切换页面内容', () => {
   const {view} = createConfigView([]);
   view.stubLayoutRender();

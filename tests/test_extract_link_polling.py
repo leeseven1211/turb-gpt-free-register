@@ -32,16 +32,16 @@ class ExtractPollingTests(unittest.TestCase):
         self.assertEqual({}, safe_payment_artifact({"qr_image_url_png": "data:image/png;base64,c2NyaXB0"}))
         self.assertEqual({}, safe_payment_artifact({"qr_image_url_svg": "data:image/svg+xml;base64,PHN2Zy8+"}))
 
-    def _monitor(self, jobs, *, budget=10, interval=2):
+    def _monitor(self, jobs, *, budget=10, interval=2, mode="extract_only", provider_id="lumen_flow"):
         clock = [0.0]
         def sleep(seconds): clock[0] += seconds
         context = SimpleNamespace(run_id=99, report=Mock(), checkpoint=Mock())
         provider = SimpleNamespace(get_status=Mock(side_effect=jobs), transport=SimpleNamespace())
         runtime = SimpleNamespace(event_timeout=budget, poll_interval=interval, timeout=30)
         initial = ProviderJob(job_id="synthetic", extraction_state="running", summary={"current_step": "CREATE"})
-        state = service._safe_provider_job_state(initial, mode="extract_only")
+        state = service._safe_provider_job_state(initial, mode=mode)
         with patch.object(service.time, "monotonic", side_effect=lambda: clock[0]), patch.object(service.time, "sleep", side_effect=sleep), patch.object(service, "_update_provider_job"):
-            result = service._monitor_provider_job(context, provider, runtime, initial, state, provider_id="lumen_flow", mode="extract_only", action="create")
+            result = service._monitor_provider_job(context, provider, runtime, initial, state, provider_id=provider_id, mode=mode, action="create")
         return context, provider, result, clock[0]
 
     def test_step_changes_and_failure_are_visible_in_persistent_events(self):
@@ -104,10 +104,21 @@ class ExtractPollingTests(unittest.TestCase):
         self.assertEqual("unknown", merged.payment_state)
 
     def test_huanguang_only_advertises_supported_type_and_modes(self):
-        with patch.object(service, "_runtime_setting", return_value=True):
+        with patch.object(service, "_runtime_setting", side_effect=lambda name, default=None: "" if name == "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK" else True):
             self.assertFalse(service._provider_mode_enabled("huanguang", "auto_payment"))
         with self.assertRaisesRegex(ValueError, "UPI"):
             service._provider_link_type("huanguang", "pix", "upi")
+
+    def test_huanguang_auto_payment_keeps_querying_while_background_order_still_polls(self):
+        context, provider, result, elapsed = self._monitor([
+            ProviderJob(job_id="synthetic", extraction_state="succeeded", payment_state="failed", summary={"remote_polling": True}),
+            ProviderJob(job_id="synthetic", extraction_state="succeeded", payment_state="unknown", summary={
+                "remote_polling": False, "automatic_payment_terminal": True, "automatic_payment_requires_reconcile": True,
+            }),
+        ], mode="auto_payment", provider_id="huanguang")
+        self.assertEqual(2, provider.get_status.call_count)
+        self.assertEqual("unknown", result[1]["payment_state"])
+        self.assertLess(elapsed, 10)
 
     def test_sync_reference_recovers_before_old_empty_failure_without_crossing_jobs(self):
         empty = {"provider_id": "lumen_flow", "job_id": "same-job", "public_state": {"extraction_state": "pending", "preflight_status": "failed"}}

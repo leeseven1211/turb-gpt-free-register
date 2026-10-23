@@ -145,6 +145,91 @@ class HuanguangDocumentContractTests(unittest.TestCase):
         job = self._job({"status": "done", "result": {"chongyun_order_status": "COMPLETED"}})
         self.assertNotEqual("succeeded", job.payment_state)
 
+    def test_scan_refund_and_rejection_are_payment_failures(self):
+        for result in (
+            {"chongyun_status": "refunded"}, {"chongyun_status": "rejected"},
+            {"chongyun_order_status": "FAILED_REFUNDED"},
+        ):
+            with self.subTest(result=result):
+                job = self._job({"status": "done", "result": {
+                    "checkout_url": "https://pay.example.test/page",
+                    "payment_status": "awaiting_payment", **result,
+                }})
+                self.assertEqual("succeeded", job.extraction_state)
+                self.assertEqual("failed", job.payment_state)
+                self.assertTrue(job.summary.get("automatic_payment_terminal"))
+                self.assertFalse(job.summary.get("automatic_payment_requires_reconcile"))
+
+    def test_stopped_scan_without_entitlement_remains_uncertain(self):
+        for result in (
+            {"chongyun_status": "completed", "chongyun_order_status": "COMPLETED"},
+            {"chongyun_status": "unknown"}, {"chongyun_status": "manual_review"},
+            {"chongyun_order_status": "UNKNOWN"},
+            {"chongyun_status": "active", "chongyun_order_status": "WAITING_SCAN"},
+        ):
+            with self.subTest(result=result):
+                job = self._job({"status": "done", "result": {
+                    "checkout_url": "https://pay.example.test/page",
+                    "payment_status": "awaiting_payment", "chongyun_polling": False,
+                    **result,
+                }})
+                self.assertEqual("unknown", job.payment_state)
+                self.assertTrue(job.summary.get("automatic_payment_terminal"))
+                self.assertTrue(job.summary.get("automatic_payment_requires_reconcile"))
+
+    def test_uncertain_scan_keeps_monitoring_while_any_background_work_runs(self):
+        for remote_status, background in (
+            ("done", {"chongyun_polling": True}),
+            ("done", {"payment_check_status": "running"}),
+            ("running", {}),
+        ):
+            for scan_status in ("unknown", "manual_review", "completed"):
+                with self.subTest(remote_status=remote_status, background=background, scan_status=scan_status):
+                    job = self._job({"status": remote_status, "result": {
+                        "checkout_url": "https://pay.example.test/page",
+                        "payment_status": "payment_timeout", "chongyun_status": scan_status,
+                        **background,
+                    }})
+                    self.assertEqual("unknown", job.payment_state)
+                    self.assertTrue(job.summary.get("remote_polling"))
+                    self.assertIs(False, job.summary.get("automatic_payment_terminal"))
+                    self.assertIs(False, job.summary.get("automatic_payment_requires_reconcile"))
+
+    def test_active_scan_without_payment_status_is_pending(self):
+        job = self._job({"status": "done", "result": {
+            "checkout_url": "https://pay.example.test/page", "chongyun_status": "active",
+            "chongyun_order_status": "WAITING_SCAN", "chongyun_polling": True,
+        }})
+        self.assertEqual("pending", job.payment_state)
+        self.assertEqual("WAITING_SCAN", job.summary.get("automatic_payment_status"))
+
+    def test_scan_completion_or_uncertainty_cannot_override_explicit_payment_failure(self):
+        for payment_status in ("failed", "expired"):
+            for scan in (
+                {"chongyun_status": "completed"}, {"chongyun_status": "manual_review"},
+                {"chongyun_status": "unknown"}, {"chongyun_order_status": "COMPLETED"},
+                {"chongyun_order_status": "UNKNOWN"},
+            ):
+                with self.subTest(payment_status=payment_status, scan=scan):
+                    job = self._job({"status": "done", "result": {
+                        "checkout_url": "https://pay.example.test/page",
+                        "payment_status": payment_status, "chongyun_polling": False, **scan,
+                    }})
+                    self.assertEqual("failed", job.payment_state)
+                    self.assertFalse(job.summary.get("automatic_payment_requires_reconcile"))
+
+    def test_inferred_entitlement_cannot_hide_explicit_payment_failure(self):
+        for payment_status in ("failed", "expired"):
+            for scan_status in ("completed", "manual_review", "unknown"):
+                with self.subTest(payment_status=payment_status, scan_status=scan_status):
+                    job = self._job({"status": "done", "result": {
+                        "payment_status": payment_status, "chongyun_status": scan_status,
+                        "entitlement_inferred": True, "entitlement_active": True,
+                        "plan_type": "plus", "has_active_subscription": True,
+                    }})
+                    self.assertEqual("failed", job.payment_state)
+                    self.assertEqual("inferred", job.summary["platform_plus_status"])
+
     def test_progress_retains_stage_queue_and_attempt_counts(self):
         job = self._job({
             "status": "running", "percent": 34, "attempt": 2, "max_attempts": 3,
@@ -271,6 +356,75 @@ class HuanguangDocumentContractTests(unittest.TestCase):
         self.assertEqual("unsupported", error.exception.code)
         self.assertEqual([], transport.calls)
 
+    def test_auto_payment_submits_separate_payment_cdk_only_when_explicitly_enabled(self):
+        transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-private-secret"}])
+        provider = HuanguangProvider(_config(payment_cdk="synthetic-payment-secret", auto_payment=True), transport)
+        created = provider.create_job(ExtractRequest(
+            1, "synthetic-token", "upi", "auto_payment",
+            entry_proxy="http://entry", exit_proxy="http://exit",
+        ))
+        body = transport.calls[0][2]
+        self.assertEqual("synthetic-cdk", body["cdk"])
+        self.assertEqual("chongyun", body.get("scan_provider"))
+        self.assertIs(True, body["chongyun_auto_submit"])
+        self.assertEqual("synthetic-payment-secret", body["chongyun_cdk"])
+        self.assertEqual({"job_secret": "synthetic-private-secret"}, created.private_data)
+        self.assertNotIn("synthetic-payment-secret", repr(created))
+
+    def test_auto_payment_requires_both_capabilities_and_payment_cdk(self):
+        for capabilities, payment_cdk in (
+            ({"extract": True, "payment": True, "auto_payment": False}, "synthetic-payment-secret"),
+            ({"extract": True, "payment": False, "auto_payment": True}, "synthetic-payment-secret"),
+            ({"extract": True, "payment": True, "auto_payment": True}, ""),
+        ):
+            with self.subTest(capabilities=capabilities, payment_cdk=bool(payment_cdk)):
+                transport = _Transport([])
+                provider = HuanguangProvider(_config(payment_cdk=payment_cdk, capabilities=capabilities), transport)
+                with self.assertRaises(ProviderError):
+                    provider.create_job(ExtractRequest(
+                        1, "synthetic-token", "upi", "auto_payment",
+                        entry_proxy="http://entry", exit_proxy="http://exit",
+                    ))
+                self.assertEqual([], transport.calls)
+
+    def test_non_auto_modes_never_submit_scan_despite_config_or_options(self):
+        for mode in ("extract_only", "manual_payment"):
+            with self.subTest(mode=mode):
+                transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-private-secret"}])
+                provider = HuanguangProvider(_config(payment_cdk="synthetic-payment-secret", auto_payment=True), transport)
+                provider.create_job(ExtractRequest(
+                    1, "synthetic-token", "upi", mode,
+                    options={"chongyun_auto_submit": True, "chongyun_cdk": "injected-secret"},
+                    entry_proxy="http://entry", exit_proxy="http://exit",
+                ))
+                self.assertNotIn("chongyun_auto_submit", transport.calls[0][2])
+                self.assertNotIn("chongyun_cdk", transport.calls[0][2])
+                self.assertNotIn("scan_provider", transport.calls[0][2])
+
+    def test_payment_cdk_is_redacted_and_never_resent_during_query(self):
+        transport = _Transport([
+            {"job_id": "synthetic-job", "job_secret": "synthetic-private-secret",
+             "text": "已受理 synthetic-payment-secret"},
+            {"status": "error", "text": "失败 synthetic-payment-secret",
+             "error": "连接失败 synthetic-payment-secret"},
+        ])
+        config = _config(payment_cdk="synthetic-payment-secret", auto_payment=True)
+        provider = HuanguangProvider(config, transport)
+        created = provider.create_job(ExtractRequest(
+            1, "synthetic-token", "upi", "auto_payment",
+            entry_proxy="http://entry", exit_proxy="http://exit",
+        ))
+        job = provider.get_status(created.job_id, private_data=created.private_data)
+        self.assertNotIn("synthetic-payment-secret", repr(config))
+        self.assertNotIn("synthetic-payment-secret", repr(created))
+        self.assertNotIn("synthetic-payment-secret", repr(job))
+        self.assertEqual("GET", transport.calls[1][0])
+        self.assertIsNone(transport.calls[1][2])
+        self.assertNotIn("synthetic-payment-secret", repr(transport.calls[1]))
+        with self.assertRaises(ProviderError):
+            provider.start_payment(created.job_id, {"chongyun_cdk": "synthetic-payment-secret"})
+        self.assertEqual(2, len(transport.calls))
+
     @staticmethod
     def _job(data):
         return HuanguangProvider._job(data, "synthetic-job", "synthetic-private-secret")
@@ -286,5 +440,10 @@ class _Transport:
         return self.responses.pop(0)
 
 
-def _config():
-    return ProviderConfig("huanguang", "https://provider.example.test", "synthetic-cdk", {"extract": True, "payment": True})
+def _config(*, payment_cdk=None, auto_payment=False, capabilities=None):
+    kwargs = {"payment_cdk": payment_cdk} if payment_cdk is not None else {}
+    return ProviderConfig(
+        "huanguang", "https://provider.example.test", "synthetic-cdk",
+        capabilities if capabilities is not None else {"extract": True, "payment": True, "auto_payment": auto_payment},
+        **kwargs,
+    )

@@ -1374,7 +1374,9 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 提链成功后，卡片的“支付入口”按需显示平台返回的支付页面、支付链接、原生二维码图片及可复制的二维码内容；平台没有返回的字段会明确标注，不把普通网页链接生成付款码。平台支付状态、平台 Plus 状态与本地到账核验分别展示。旧任务未保存二维码时，可用“同步状态”读取原远端任务补齐，无需重新提链；打开支付入口本身仅读取本地已保存内容，不触发支付。任务中心按独立提链、支付状态展示结果，后续支付失败或待确认不会把已成功的提链写成失败。
 
-接口契约以[流光文档](https://int31.space/public/checkout-api)和[幻光文档](https://chongyun-link.xiaoliai.shop/static/api-docs.html)为准。流光记录平台步骤、百分比、任务/步骤尝试次数及 `failureCode/failureType`；平台 Plus 验证不能代替本地套餐核验。幻光当前仅开放 UPI，默认类型为 `upi`；出链成功依据有效支付材料判断，顶层任务 `done` 本身不足以证明成功。幻光自动支付暂未接入，配置开关不会额外赋予未实现的能力。
+接口契约以[流光文档](https://int31.space/public/checkout-api)和[幻光文档](https://chongyun-link.xiaoliai.shop/static/api-docs.html)为准。流光记录平台步骤、百分比、任务/步骤尝试次数及 `failureCode/failureType`；平台 Plus 验证不能代替本地套餐核验。幻光当前仅开放 UPI，默认类型为 `upi`；出链成功依据有效支付材料判断，顶层任务 `done` 本身不足以证明成功。
+
+「配置 → 提链 → 幻光」中的“幻光提链 CDK”（`EXTRACT_LINK_HUANGUANG_CDK`）用于创建提链任务，“幻光支付扫码 CDK”（`EXTRACT_LINK_HUANGUANG_PAYMENT_CDK`）用于自动支付扫码，两者分开保存。只有明确选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED`，并已配置支付扫码 CDK 时，请求才携带 `chongyun_auto_submit: true` 和 `chongyun_cdk`。仅提链与手动支付均不携带这两个扫码参数，也不使用支付扫码 CDK。自动支付开关默认关闭，支付扫码 CDK 默认空字符串；密钥仅保存在 `.env`，配置 API 和非敏感快照不返回内容。
 
 幻光入口和出口代理池可在「配置 → 提链 → 幻光」分别填写，对应 `EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES`、`EXTRACT_LINK_HUANGUANG_EXIT_PROXIES`。每行一条完整代理 URL，支持 `http`、`https`、`socks5`、`socks5h` 和认证信息，每侧去重后最多 500 条。填写某侧后，提链请求向平台发送该侧完整候选列表；某侧留空时，才为该侧从统一代理池领取 IN 线路。请提供适用于 UPI 的 IN 代理。两项默认空列表，保存后热加载，对下一次执行或重跑生效；代理地址只保存在 `.env`，配置 API 和非敏感快照不返回内容。已配置时输入框留空不会覆盖旧值，使用“清除”可恢复该侧的统一代理池来源。
 

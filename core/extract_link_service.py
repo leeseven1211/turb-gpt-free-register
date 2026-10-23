@@ -221,7 +221,7 @@ _PROVIDER_SETTINGS = {
         "label": "幻光",
         "prefix": "EXTRACT_LINK_HUANGUANG",
         "concurrency_key": "EXTRACT_LINK_HUANGUANG_CONCURRENCY",
-        "supports": {"extract_only": True, "manual_payment": True, "auto_payment": False},
+        "supports": {"extract_only": True, "manual_payment": True, "auto_payment": True},
     },
 }
 
@@ -262,6 +262,10 @@ def _provider_mode_enabled(provider_id: str, mode: str) -> bool:
     if not provider or not _provider_enabled(provider_id):
         return False
     if not provider["supports"].get(mode, False):
+        return False
+    if provider_id == "huanguang" and mode == "auto_payment" and not str(
+        _runtime_setting("EXTRACT_LINK_HUANGUANG_PAYMENT_CDK", "") or ""
+    ).strip():
         return False
     if mode != "extract_only" and not (
         _bool_setting("EXTRACT_LINK_EXTRACT_ENABLED", True)
@@ -320,6 +324,7 @@ def _provider_configuration(provider_id: str):
             _provider_mode_enabled(provider_id, "manual_payment")
             or _provider_mode_enabled(provider_id, "auto_payment")
         ),
+        "auto_payment": _provider_mode_enabled(provider_id, "auto_payment"),
     }
     config = ProviderConfig(
         provider_id=provider_id,
@@ -328,6 +333,8 @@ def _provider_configuration(provider_id: str):
         capabilities=capabilities,
         concurrency=_int_setting(settings["concurrency_key"], 1, 1, 32),
         timeout=timeout,
+        payment_cdk=(str(_runtime_setting("EXTRACT_LINK_HUANGUANG_PAYMENT_CDK", "") or "").strip()
+                     if provider_id == "huanguang" else ""),
     )
     return SimpleNamespace(
         config=config,
@@ -2533,8 +2540,8 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
             extraction_pending = state["extraction_state"] in {"queued", "running", "unknown"}
             payment_pending = mode == "auto_payment" and state["payment_state"] in {"not_started", "pending", "unknown"}
             payment_pending = payment_pending and not summary.get("automatic_payment_terminal", False)
-            manual_pending = mode == "manual_payment" and summary.get("remote_polling") is True
-            if not (extraction_pending or payment_pending or manual_pending):
+            remote_pending = mode in {"manual_payment", "auto_payment"} and summary.get("remote_polling") is True
+            if not (extraction_pending or payment_pending or remote_pending):
                 break
             if time.monotonic() >= deadline:
                 context.report(stage="extraction", message="本次平台监控等待时间已到，已保留远端任务，可继续同步状态或重跑",
@@ -2886,6 +2893,11 @@ def _handle_provider_operation(context):
                 context, provider, runtime, job, state,
                 provider_id=provider_id, mode=mode, action=action,
             )
+            if (
+                provider_id == "huanguang" and mode == "auto_payment"
+                and state["extraction_state"] == "succeeded" and state["payment_state"] == "not_started"
+            ):
+                state["payment_state"] = "unknown"
             if state["payment_state"] == "succeeded":
                 context.report(stage="payment", state="success", message="平台已确认支付成功")
                 aftercare = state.get("aftercare_status") or "not_started"

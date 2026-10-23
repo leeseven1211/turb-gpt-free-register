@@ -26,6 +26,8 @@ _PAYMENT = {
     "VERIFICATION_UNAVAILABLE": "unknown",
 }
 _PAYMENT_CHECK_STATUSES = {"running", "completed", "failed", "expired", "timeout", "error"}
+_SCAN_STATUSES = {"submitting", "active", "unknown", "completed", "refunded", "rejected", "manual_review"}
+_SCAN_ORDER_STATUSES = {"WAITING_ACCEPTANCE", "WAITING_SCAN", "SCANNED_PENDING_CONFIRMATION", "COMPLETED", "FAILED_REFUNDED", "UNKNOWN"}
 _CDK_STATES = {"queued", "reserved", "consumed", "free_reserved", "reused", "refunded", "pending", "review", "bypassed"}
 _URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi|socks5h?)://[^\s<>\"']+")
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
@@ -87,7 +89,10 @@ class HuanguangProvider:
         if not entry_proxies or not exit_proxies:
             raise ProviderError("幻光提链需要已分配的入口和出口代理")
         if request_data.mode == "auto_payment":
-            raise ProviderUnsupported()
+            require_capability(self.config, "payment")
+            require_capability(self.config, "auto_payment")
+            if not self.config.payment_cdk:
+                raise ProviderError("幻光自动扫码缺少支付扫码 CDK")
         body = {
             "token": request_data.access_token,
             "cdk": self.config.cdk,
@@ -95,6 +100,10 @@ class HuanguangProvider:
             "entry_proxies": list(entry_proxies),
             "exit_proxies": list(exit_proxies),
         }
+        if request_data.mode == "auto_payment":
+            body["scan_provider"] = "chongyun"
+            body["chongyun_auto_submit"] = True
+            body["chongyun_cdk"] = self.config.payment_cdk
         data = request(self.transport, "POST", "/api/checkout", body=body, timeout=self.config.timeout)
         job_id = data.get("job_id")
         secret = data.get("job_secret")
@@ -102,7 +111,7 @@ class HuanguangProvider:
             return ProviderJob(extraction_state="unknown", summary={"outcome": "UNKNOWN"})
         job_id = str(job_id)
         self._secrets[job_id] = secret
-        summary = _progress_summary(data, secrets=(self.config.cdk, request_data.access_token, secret))
+        summary = _progress_summary(data, secrets=(self.config.cdk, self.config.payment_cdk, request_data.access_token, secret))
         summary.update({"remote_status": "QUEUED", "remote_polling": True})
         return ProviderJob(job_id=job_id, extraction_state="queued", private_data={"job_secret": secret}, summary=summary)
 
@@ -116,7 +125,7 @@ class HuanguangProvider:
         headers = {"X-Pay153-Job-Secret": secret}
         path = "/api/checkout-progress?" + urlencode({"job_id": job_id})
         data = request(self.transport, "GET", path, headers=headers, timeout=self.config.timeout)
-        return self._job(data, job_id, secret, secrets=(self.config.cdk,))
+        return self._job(data, job_id, secret, secrets=(self.config.cdk, self.config.payment_cdk))
 
     def start_payment(self, job_ref: str, options: dict) -> ProviderJob:
         require_capability(self.config, "payment")
@@ -173,7 +182,8 @@ class HuanguangProvider:
             payment_state = "succeeded"
             summary["platform_plus_status"] = artifact["platform_plus_status"] = "verified"
         elif result.get("entitlement_inferred") is True:
-            payment_state = "unknown"
+            if payment_state != "failed":
+                payment_state = "unknown"
             summary["platform_plus_status"] = artifact["platform_plus_status"] = "inferred"
         elif payment_status == "completed":
             summary["platform_plus_status"] = artifact["platform_plus_status"] = "unknown"
@@ -184,6 +194,30 @@ class HuanguangProvider:
             remote_status in {"QUEUED", "RUNNING"}
             or any(result.get(name) is True for name in ("chongyun_polling", "xxsyun_polling", "seashore_polling"))
             or (check_status == "running" and remote_status not in {"CANCELLED", "CANCELED"})
+        )
+        scan_status = result.get("chongyun_status")
+        scan_status = scan_status.strip().lower() if isinstance(scan_status, str) else ""
+        scan_status = scan_status if scan_status in _SCAN_STATUSES else ""
+        order_status = result.get("chongyun_order_status")
+        order_status = order_status.strip().upper() if isinstance(order_status, str) else ""
+        order_status = order_status if order_status in _SCAN_ORDER_STATUSES else ""
+        if scan_status or order_status:
+            summary["automatic_payment_status"] = order_status or scan_status.upper()
+            if not directly_verified:
+                if scan_status in {"refunded", "rejected"} or order_status == "FAILED_REFUNDED":
+                    payment_state = "failed"
+                elif payment_state != "failed" and (
+                    scan_status in {"unknown", "manual_review", "completed"} or order_status in {"UNKNOWN", "COMPLETED"}
+                ):
+                    payment_state = "unknown"
+                elif payment_state == "not_started":
+                    payment_state = "pending"
+                if not summary["remote_polling"] and payment_state in {"pending", "not_started"}:
+                    payment_state = "unknown"
+        # 平台扫码结束不等于 Plus 到账；后台仍在查询时保留持续监控。
+        summary["automatic_payment_terminal"] = not summary["remote_polling"]
+        summary["automatic_payment_requires_reconcile"] = (
+            not summary["remote_polling"] and payment_state in {"pending", "unknown"}
         )
         if status == "failed":
             summary["remote_terminal_failure"] = True

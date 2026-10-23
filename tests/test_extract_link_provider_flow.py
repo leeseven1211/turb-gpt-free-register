@@ -870,6 +870,27 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
                 save_job=save_job, save_account=save_account,
             )
 
+    def test_huanguang_auto_payment_without_scan_result_remains_unknown_after_extraction(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        incomplete = ProviderJob(
+            job_id="fixture-job", extraction_state="succeeded", payment_state="not_started",
+            links=("https://checkout.example.test/session",),
+            summary={"remote_polling": False, "automatic_payment_terminal": True},
+        )
+        with self._scenario(failed_job=incomplete) as scenario:
+            scenario.context.run["data"].update({"provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi"})
+            with patch.object(extract_link_service, "_prepare_huanguang_proxies", return_value=({"entry": (), "exit": ()}, [], [])):
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("request_unknown", finished["status"])
+        self.assertEqual("succeeded", finished["result_summary"]["extraction_status"])
+        self.assertEqual("unknown", finished["result_summary"]["payment_status"])
+        self.assertIn("待确认", finished["message"])
+        scenario.provider.start_payment.assert_not_called()
+
     def test_polled_failure_keeps_reason_and_explicit_extraction_stage_without_payment(self):
         from core import extract_link_service
         from core.extract_link_providers.contracts import ProviderJob

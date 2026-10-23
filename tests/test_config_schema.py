@@ -25,6 +25,66 @@ from webui import config_editor
 
 
 class ConfigSchemaTests(unittest.TestCase):
+    def test_huanguang_payment_cdk_is_separate_sensitive_configuration(self):
+        key = "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK"
+        secret = "huanguang-payment-schema-test-secret"
+        self.assertEqual({key: secret}, validate_config_updates({key: secret}))
+        self.assertEqual("", validate_value(key, ""))
+        with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
+            "config.env_loader.read_env_file", return_value={}
+        ), patch.dict(os.environ, {key: secret}, clear=True):
+            metadata = {item["key"]: item for item in effective_config_metadata()}
+            payment = metadata[key]
+            self.assertEqual("幻光支付扫码 CDK", payment["label"])
+            self.assertEqual("幻光提链 CDK", metadata["EXTRACT_LINK_HUANGUANG_CDK"]["label"])
+            self.assertEqual("提链", payment["group"])
+            self.assertEqual("str", payment["type"])
+            self.assertEqual("safe", payment["hot_edit"])
+            self.assertTrue(payment["secret"])
+            self.assertTrue(payment["configured"])
+            self.assertEqual("", payment["value"])
+            self.assertEqual("", payment["configured_value"])
+            self.assertNotIn("default", payment)
+            self.assertNotIn(key, non_sensitive_snapshot().values)
+            self.assertNotIn(secret, json.dumps(metadata, ensure_ascii=False))
+
+    def test_huanguang_payment_cdk_save_and_clear_preserves_extract_cdk(self):
+        from config import extract_link
+
+        extract_key = "EXTRACT_LINK_HUANGUANG_CDK"
+        payment_key = "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK"
+        extract_secret = "huanguang-extract-save-test-secret"
+        payment_secret = "huanguang-payment-save-test-secret"
+        fd, raw_path = tempfile.mkstemp(prefix="turb-config-huanguang-payment-")
+        os.close(fd)
+        path = Path(raw_path)
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+        try:
+            with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                config_schema, "_PUBLISHED_SNAPSHOT", None
+            ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+                saved = config_editor.update_config({extract_key: extract_secret, payment_key: payment_secret})
+                self.assertTrue(saved["reloaded"])
+                self.assertEqual([], saved["restart_required"])
+                self.assertEqual(extract_secret, extract_link.EXTRACT_LINK_HUANGUANG_CDK)
+                self.assertEqual(payment_secret, extract_link.EXTRACT_LINK_HUANGUANG_PAYMENT_CDK)
+                persisted = env_loader.read_env_file()
+                self.assertEqual(payment_secret, persisted[payment_key])
+
+                cleared = config_editor.update_config({payment_key: ""})
+                self.assertTrue(cleared["reloaded"])
+                self.assertEqual("", extract_link.EXTRACT_LINK_HUANGUANG_PAYMENT_CDK)
+                self.assertEqual(extract_secret, extract_link.EXTRACT_LINK_HUANGUANG_CDK)
+                persisted = env_loader.read_env_file()
+                self.assertEqual("", persisted[payment_key])
+                self.assertEqual(extract_secret, persisted[extract_key])
+                metadata = {item["key"]: item for item in config_editor.get_config()}
+                self.assertFalse(metadata[payment_key]["configured"])
+                self.assertTrue(metadata[extract_key]["configured"])
+                self.assertNotIn(payment_key, non_sensitive_snapshot().values)
+        finally:
+            config.reload_all()
+
     def test_huanguang_proxy_candidates_accept_full_urls_and_empty_lists(self):
         candidates = [
             "http://proxy.example.test:8080",

@@ -30,6 +30,7 @@ class ProviderConfig:
     capabilities: dict[str, bool] = field(default_factory=dict)
     concurrency: int = 1
     timeout: float = 30.0
+    payment_cdk: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)
