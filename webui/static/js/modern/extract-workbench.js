@@ -352,6 +352,11 @@ function extractWorkbenchRenderBatches() {
   }
   const summary = extractWorkbenchNode('[data-workbench-batch-summary]');
   const batch = EXTRACT_WORKBENCH_STATE.batchDetail;
+  const deleteButton = extractWorkbenchNode('[data-workbench-delete-batch]');
+  if (deleteButton) {
+    deleteButton.hidden = !batch;
+    deleteButton.disabled = !batch;
+  }
   if (summary) summary.innerHTML = batch
     ? `<strong>${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)}</strong><span>${extractWorkbenchEscape(extractWorkbenchTime(batch.created_at))} · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))} · ${Number.isInteger(batch.workers) && batch.workers >= 1 && batch.workers <= 16 ? `并发 ${batch.workers}` : '沿用平台并发'}</span><span>计划 ${Number(batch.requested_count || 0)} · 入队 ${Number(batch.started_count || 0)} · 跳过 ${Number(batch.skipped_count || 0)} · 提交失败 ${Number(batch.submission_failed_count || 0)}${batch.submission_incomplete ? ' · 本批提交未完整完成，请核对已入队任务' : ''}</span>`
     : '<span>选择批次查看本批进度；全部任务保留历史单独提链记录。</span>';
@@ -963,6 +968,26 @@ function extractWorkbenchApplyFilters(status = EXTRACT_WORKBENCH_STATE.status) {
   void loadExtractWorkbench({force:true});
 }
 
+async function extractWorkbenchDeleteBatch() {
+  const batch = EXTRACT_WORKBENCH_STATE.batchDetail;
+  const batchId = Number(batch?.batch_id || 0);
+  if (!Number.isInteger(batchId) || batchId < 1) return;
+  const title = String(batch?.title || `批次 #${batchId}`);
+  const taskCount = Number(batch?.started_count || 0);
+  if (!window.confirm(`确定从提链工作台删除批次「${title}」？\n\n只隐藏批次记录，关联的 ${taskCount} 条任务和审计历史会保留。执行中的批次不能删除。`)) return;
+  const button = extractWorkbenchNode('[data-workbench-delete-batch]');
+  if (button) button.disabled = true;
+  try {
+    await extractWorkbenchRequest(`/api/extract-workbench/batches/${encodeURIComponent(batchId)}/delete`, {method:'POST'});
+    EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, batch:'', batchInitialized:true, batchDetail:null, page:1};
+    if (typeof showToast === 'function') showToast('批次记录已隐藏，关联任务历史仍保留');
+    await loadExtractWorkbench({force:true});
+  } catch (error) {
+    if (button) button.disabled = false;
+    if (typeof showToast === 'function') showToast(error?.message || '批次删除失败');
+  }
+}
+
 async function extractWorkbenchCopy(taskId, kind) {
   const task = EXTRACT_WORKBENCH_STATE.items.find(item => String(item.task_id) === String(taskId));
   if (!task) return;
@@ -995,6 +1020,8 @@ function extractWorkbenchBindEvents() {
     if (paymentEntry) { void extractWorkbenchShowPaymentEntry(paymentEntry.dataset.workbenchPaymentEntry, paymentEntry); return; }
     const allBatches = event.target.closest('[data-workbench-all-batches]');
     if (allBatches) { void extractWorkbenchSwitchBatch(''); return; }
+    const deleteBatch = event.target.closest('[data-workbench-delete-batch]');
+    if (deleteBatch) { void extractWorkbenchDeleteBatch(); return; }
     const batchPage = event.target.closest('[data-workbench-batch-page]');
     if (batchPage) {
       EXTRACT_WORKBENCH_STATE.batchPage = Math.max(1, EXTRACT_WORKBENCH_STATE.batchPage + (batchPage.dataset.workbenchBatchPage === 'next' ? 1 : -1));

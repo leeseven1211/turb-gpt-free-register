@@ -5,6 +5,7 @@ import json
 import uuid
 from contextlib import nullcontext
 from datetime import date
+from typing import Any
 
 from core import admin_repository, record_store
 from core.storage import operation
@@ -182,7 +183,12 @@ def reserve_submission(*, submission_id: str, title: str, provider_id: str, mode
 def batch_rows(*, page: int = 1, page_size: int = 20, batch_id: int | None = None) -> dict:
     """只读取提链工作台创建的批次，不载入其他业务的批次和任务事件。"""
     operation.init()
-    where = ["b.batch_type='extract_link'", "b.source_system='native_operations'", "b.data->>'workbench_batch'='true'"]
+    where = [
+        "b.batch_type='extract_link'",
+        "b.source_system='native_operations'",
+        "b.data->>'workbench_batch'='true'",
+        "LOWER(COALESCE(b.data->>'deleted_by_user', 'false')) <> 'true'",
+    ]
     params = []
     if batch_id is not None:
         where.append("b.id=%s")
@@ -208,6 +214,54 @@ def batch_rows(*, page: int = 1, page_size: int = 20, batch_id: int | None = Non
         )
         items = [operation._row(dict(row)) or {} for row in cur.fetchall()]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def hide_batch(batch_id: int) -> dict[str, Any]:
+    """从提链批次列表隐藏已结束的批次，保留关联任务与审计记录。"""
+    if isinstance(batch_id, bool) or not isinstance(batch_id, int) or batch_id < 1:
+        return {"deleted": False, "error": "批次不存在"}
+    operation.init()
+    with operation._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT id, status, data FROM {operation._table('operation_batches')} b
+                WHERE b.id=%s AND b.batch_type='extract_link'
+                  AND b.source_system='native_operations'
+                  AND b.data->>'workbench_batch'='true'
+                  AND LOWER(COALESCE(b.data->>'deleted_by_user', 'false')) <> 'true'
+                FOR UPDATE OF b""",
+            (batch_id,),
+        )
+        batch = cur.fetchone()
+        if not batch:
+            return {"deleted": False, "error": "批次不存在"}
+        status = str(batch.get("status") or "").strip().lower()
+        cur.execute(
+            f"""SELECT
+                EXISTS (
+                    SELECT 1 FROM {operation._table('operation_tasks')} task
+                    WHERE task.batch_id=%s AND task.status IN ({operation._ACTIVE_RUN_STATUS_SQL})
+                ) OR EXISTS (
+                    SELECT 1 FROM {operation._table('operation_runs')} run
+                    WHERE run.batch_id=%s AND run.status IN ({operation._ACTIVE_RUN_STATUS_SQL})
+                ) AS active""",
+            (batch_id, batch_id),
+        )
+        has_active_work = bool((cur.fetchone() or {}).get("active"))
+        if status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"} or has_active_work:
+            return {"deleted": False, "error": "批次仍在执行，不能删除"}
+        cur.execute(
+            f"""UPDATE {operation._table('operation_batches')}
+                SET data=COALESCE(data, '{{}}'::jsonb)
+                          || jsonb_build_object('deleted_by_user', true, 'deleted_at', now())
+                WHERE id=%s AND batch_type='extract_link'
+                  AND source_system='native_operations'
+                  AND data->>'workbench_batch'='true'
+                RETURNING id""",
+            (batch_id,),
+        )
+        if not cur.fetchone():
+            return {"deleted": False, "error": "批次不存在"}
+    return {"deleted": True, "batch_id": batch_id}
 
 
 def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
