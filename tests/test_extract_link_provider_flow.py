@@ -829,6 +829,10 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         events = []
 
         def report(**event):
+            from core.task_stages import normalize_step_state
+
+            if event.get("state") is not None and normalize_step_state(event["state"]) is None:
+                raise ValueError(f"不支持的任务步骤状态: {event['state']!r}")
             event = {**event, "id": len(events) + 1, "event_type": f"stage.{event.get('state', 'running')}"}
             events.append(event)
             return event
@@ -840,7 +844,11 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
             report=Mock(side_effect=report), finish=Mock(),
             remote_request_started=Mock(), remote_request_receipt=Mock(),
         )
-        context.lease = contextmanager(lambda **_kwargs: iter([None]))
+        @contextmanager
+        def lease(**_kwargs):
+            yield None
+
+        context.lease = lease
         provider = SimpleNamespace(
             create_job=Mock(return_value=ProviderJob(job_id="fixture-job", extraction_state="running")),
             get_status=Mock(return_value=failed_job, side_effect=poll_error),
@@ -889,6 +897,73 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("succeeded", finished["result_summary"]["extraction_status"])
         self.assertEqual("unknown", finished["result_summary"]["payment_status"])
         self.assertIn("待确认", finished["message"])
+        scenario.provider.start_payment.assert_not_called()
+
+    def test_huanguang_sync_keeps_inferred_payment_unknown_with_valid_pending_step(self):
+        from core import extract_link_service
+        from core.extract_link_providers.huanguang import HuanguangProvider
+
+        inferred = HuanguangProvider._job({
+            "status": "DONE",
+            "result": {
+                "checkout_url": "https://checkout.example.test/session",
+                "payment_status": "completed",
+                "entitlement_active": True,
+                "entitlement_inferred": True,
+                "payment_check_status": "completed",
+                "chongyun_order_status": "WAITING_SCAN",
+            },
+        }, "fixture-job", "fixture-secret")
+        self.assertEqual("unknown", inferred.payment_state)
+        prior = {
+            "job_id": "fixture-job",
+            "private_data": {"job_secret": "fixture-secret"},
+            "public_state": {"extraction_state": "succeeded", "payment_state": "unknown"},
+        }
+        with self._scenario(failed_job=inferred) as scenario:
+            scenario.context.run["data"].update({
+                "provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi",
+                "workbench_action": "sync_status", "provider_job_run_id": 700,
+            })
+            with patch.object(extract_link_service, "_provider_job_for_sync", return_value=prior):
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("request_unknown", finished["status"])
+        self.assertEqual("提链成功，自动支付状态待确认", finished["error"])
+        self.assertTrue(finished["result_summary"]["ok"])
+        self.assertEqual("unknown", finished["result_summary"]["payment_status"])
+        saved = scenario.save_job.call_args.args[3]
+        self.assertEqual("unknown", saved["payment_state"])
+        self.assertEqual("inferred", saved["summary"]["platform_plus_status"])
+        pending = [event for event in scenario.events if event.get("stage") == "payment" and event.get("state") == "pending"]
+        self.assertEqual("unknown", pending[-1]["detail"]["payment_state"])
+        scenario.provider.get_status.assert_called_once_with("fixture-job", private_data=prior["private_data"])
+        scenario.provider.create_job.assert_not_called()
+        scenario.provider.start_payment.assert_not_called()
+
+    def test_paid_auto_payment_without_plan_check_reports_skipped_plus_step(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        paid = ProviderJob(
+            job_id="fixture-job", extraction_state="succeeded", payment_state="succeeded",
+            links=("https://checkout.example.test/session",),
+            summary={"platform_plus_status": "verified"},
+        )
+        with self._scenario(failed_job=paid) as scenario:
+            scenario.context.run["data"]["mode"] = "auto_payment"
+            with patch.object(extract_link_service, "_bool_setting", return_value=False):
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("success", finished["status"])
+        self.assertIsNone(finished["error"])
+        self.assertEqual("succeeded", finished["result_summary"]["payment_status"])
+        self.assertEqual("not_applicable", finished["result_summary"]["plus_status"])
+        plus = [event for event in scenario.events if event.get("stage") == "plus"]
+        self.assertEqual("skipped", plus[-1]["state"])
+        self.assertEqual("not_applicable", plus[-1]["detail"]["plus_status"])
         scenario.provider.start_payment.assert_not_called()
 
     def test_polled_failure_keeps_reason_and_explicit_extraction_stage_without_payment(self):

@@ -2994,7 +2994,10 @@ def _handle_provider_operation(context):
                     state["plus_status"] = "pending"
                 else:
                     state["plus_status"] = "not_applicable"
-                context.report(stage="plus", state=state["plus_status"], message="Plus 权益核验状态已单独记录")
+                context.report(
+                    stage="plus", state="pending" if state["plus_status"] == "pending" else "skipped",
+                    message="Plus 权益核验状态已单独记录", detail={"plus_status": state["plus_status"]},
+                )
             elif mode == "extract_only":
                 state["payment_state"] = "not_started"
                 state["plus_status"] = "not_applicable"
@@ -3036,7 +3039,9 @@ def _handle_provider_operation(context):
             elif payment in {"pending", "not_started"}:
                 context.report(stage="payment", state="pending", message="等待支付或手动付款")
             else:
-                context.report(stage="payment", state="unknown", message="支付状态待确认")
+                # 业务结果保留 unknown，步骤契约用 pending 表示仍需确认。
+                context.report(stage="payment", state="pending", message="支付状态待确认",
+                               detail={"payment_state": state["payment_state"]})
 
             state["message"] = status_message
             _update_provider_job(context, provider_id, job_id or None, state, job.private_data if "job" in locals() else prior_private)
