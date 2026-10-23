@@ -189,6 +189,45 @@ test('搜索提链平台配置时自动切换到对应平台页签', () => {
   assert.equal(view.state().extractLink, '幻光');
 });
 
+test('幻光页显示入口出口敏感多行代理池并保留明确清空操作', () => {
+  const entryKey = 'EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES';
+  const exitKey = 'EXTRACT_LINK_HUANGUANG_EXIT_PROXIES';
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'huanguang', options: [
+      {value: 'huanguang', label: '幻光'},
+    ]}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: true}),
+    field(entryKey, '提链', {type: 'list_str_multiline', secret: true, configured: true}),
+    field(exitKey, '提链', {type: 'list_str_multiline', secret: true, configured: true}),
+  ];
+  const {view} = createConfigView(fields);
+  view.search(entryKey);
+  const markup = view.renderDomain('提链', fields);
+
+  assert.equal(view.state().extractLink, '幻光');
+  for (const key of [entryKey, exitKey]) {
+    assert.ok(markup.includes(`<textarea data-key="${key}" data-secret-input="true"`));
+    assert.ok(markup.includes(`data-clear-secret="${key}"`));
+  }
+
+  const input = (key, value, clear = false) => ({
+    value, type: 'textarea', dataset: {key, ...(clear ? {secretClear: 'true'} : {})},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  });
+  view.track({target: input(entryKey, '')});
+  assert.equal(Object.hasOwn(view.pending, entryKey), false);
+  view.track({target: input(entryKey, 'https://proxy.example.test:443\nsocks5h://proxy.example.test:1080')});
+  assert.deepEqual(Array.from(view.pending[entryKey]), [
+    'https://proxy.example.test:443', 'socks5h://proxy.example.test:1080',
+  ]);
+  view.track({target: input(exitKey, '', true)});
+  assert.deepEqual(Array.from(view.pending[exitKey]), []);
+});
+
 test('点击提链平台页签会切换页面内容', () => {
   const {view} = createConfigView([]);
   view.stubLayoutRender();

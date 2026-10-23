@@ -671,6 +671,98 @@ class ExtractLinkPreflightConfigurationTests(unittest.TestCase):
         return [call.kwargs["state"] for call in scenario.context.report.call_args_list
                 if call.kwargs.get("stage") == stage and call.kwargs.get("state")]
 
+    def test_huanguang_configured_proxy_pools_reach_provider_without_auto_allocation(self):
+        from core import extract_link_service
+
+        entries = ["http://entry-one.example.test:8080", "http://entry-two.example.test:8080"]
+        exits = ["socks5h://fixture-user:fixture-password@exit-one.example.test:1080"]
+        settings = {
+            "EXTRACT_LINK_PREFLIGHT_ENABLED": False,
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES": repr(entries),
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES": "\n".join(exits),
+        }
+        with self._scenario(provider_id="huanguang", preflight_enabled=False, refresh_at_enabled=False, inline_results=[]) as scenario:
+            with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda name, default=None: settings.get(name, default)), patch.object(extract_link_service, "_acquire_huanguang_proxies") as acquire:
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        self.assertEqual("success", scenario.context.finish.call_args.kwargs["status"])
+        acquire.assert_not_called()
+        request = scenario.provider.create_job.call_args.args[0]
+        self.assertEqual(tuple(entries), request.entry_proxies)
+        self.assertEqual(tuple(exits), request.exit_proxies)
+        self.assertNotIn("fixture-password", repr(scenario.context.report.call_args_list))
+        self.assertNotIn("fixture-password", repr(scenario.save_job.call_args_list))
+        self.assertNotIn("fixture-password", repr(scenario.context.finish.call_args_list))
+
+    def test_huanguang_only_allocates_missing_proxy_side(self):
+        from core import extract_link_service
+
+        for configured_side, missing_side in (("entry", "exit"), ("exit", "entry")):
+            with self.subTest(configured_side=configured_side), self._scenario(
+                provider_id="huanguang", preflight_enabled=False, refresh_at_enabled=False, inline_results=[],
+            ) as scenario:
+                configured = [f"http://{configured_side}-manual.example.test:8080"]
+                automatic = "http://automatic.example.test:8080"
+                settings = {
+                    "EXTRACT_LINK_PREFLIGHT_ENABLED": False,
+                    f"EXTRACT_LINK_HUANGUANG_{configured_side.upper()}_PROXIES": configured,
+                }
+                with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda name, default=None: settings.get(name, default)), patch.object(
+                    extract_link_service, "_acquire_huanguang_proxies", return_value=([SimpleNamespace(proxy_url=automatic)], [91]),
+                ) as acquire:
+                    extract_link_service._handle_provider_operation(scenario.context)
+
+                acquire.assert_called_once_with(scenario.context, purposes=(missing_side,))
+                request = scenario.provider.create_job.call_args.args[0]
+                self.assertEqual(tuple(configured), getattr(request, f"{configured_side}_proxies"))
+                self.assertEqual((automatic,), getattr(request, f"{missing_side}_proxies"))
+                self.assertEqual("success", scenario.context.finish.call_args.kwargs["status"])
+
+    def test_huanguang_empty_manual_pools_keep_both_automatic_india_routes(self):
+        from core import extract_link_service
+
+        routes = ("http://entry-auto.example.test:8080", "http://exit-auto.example.test:8080")
+        with self._scenario(provider_id="huanguang", preflight_enabled=False, refresh_at_enabled=False, inline_results=[]) as scenario:
+            with patch.object(extract_link_service, "_acquire_huanguang_proxies", return_value=([SimpleNamespace(proxy_url=value) for value in routes], [91, 92])) as acquire:
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        acquire.assert_called_once_with(scenario.context, purposes=("entry", "exit"))
+        request = scenario.provider.create_job.call_args.args[0]
+        self.assertEqual((routes[0],), request.entry_proxies)
+        self.assertEqual((routes[1],), request.exit_proxies)
+
+    def test_huanguang_invalid_manual_pool_fails_before_remote_submission(self):
+        from core import extract_link_service
+
+        settings = {
+            "EXTRACT_LINK_PREFLIGHT_ENABLED": False,
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES": ["http://fixture-user:fixture-password@invalid.example.test"],
+        }
+        with self._scenario(provider_id="huanguang", preflight_enabled=False, refresh_at_enabled=False, inline_results=[]) as scenario:
+            with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda name, default=None: settings.get(name, default)), patch.object(extract_link_service, "_acquire_huanguang_proxies") as acquire:
+                extract_link_service._handle_provider_operation(scenario.context)
+
+        acquire.assert_not_called()
+        scenario.provider.create_job.assert_not_called()
+        self.assertEqual("failed", scenario.context.finish.call_args.kwargs["status"])
+        self.assertNotIn("fixture-password", repr(scenario.context.finish.call_args_list))
+
+    def test_huanguang_proxy_preparation_returns_leases_before_caller_reports_progress(self):
+        from core import extract_link_service
+
+        context = SimpleNamespace(report=Mock(side_effect=RuntimeError("合成事件写入失败")))
+        leases = [SimpleNamespace(proxy_url="http://entry.example.test:8080"), SimpleNamespace(proxy_url="http://exit.example.test:8080")]
+        with patch.object(extract_link_service, "_runtime_setting", return_value=[]), patch.object(
+            extract_link_service, "_acquire_huanguang_proxies", return_value=(leases, [91, 92]),
+        ):
+            routes, returned_leases, resource_ids = extract_link_service._prepare_huanguang_proxies(context)
+
+        self.assertIs(leases, returned_leases)
+        self.assertEqual([91, 92], resource_ids)
+        self.assertEqual((leases[0].proxy_url,), routes["entry"])
+        self.assertEqual((leases[1].proxy_url,), routes["exit"])
+        context.report.assert_not_called()
+
     def test_all_providers_skip_preflight_and_keep_skipped_after_job_creation(self):
         from core import extract_link_service
 

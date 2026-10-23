@@ -25,6 +25,123 @@ from webui import config_editor
 
 
 class ConfigSchemaTests(unittest.TestCase):
+    def test_huanguang_proxy_candidates_accept_full_urls_and_empty_lists(self):
+        candidates = [
+            "http://proxy.example.test:8080",
+            "https://user:password@secure-proxy.example.test:443",
+            "socks5://proxy.example.test:1080",
+            "socks5h://user:password@remote-dns.example.test:1080",
+        ]
+        for key in (
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual({key: candidates}, validate_config_updates({key: "\n".join(candidates)}))
+                self.assertEqual({key: []}, validate_config_updates({key: ""}))
+                field = CONFIG_SCHEMA[key]
+                self.assertEqual("提链", field.group)
+                self.assertEqual("config.extract_link", field.module)
+                self.assertEqual("list_str_multiline", field.type)
+                self.assertEqual([], field.default)
+                self.assertTrue(field.secret)
+                self.assertEqual("safe", field.hot_edit)
+
+    def test_huanguang_proxy_candidates_report_invalid_line_without_credentials(self):
+        for key in (
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+        ):
+            for invalid_address in (
+                "ftp://secret-user:secret-password@proxy.example.test:8080",
+                "socks5://secret-user:secret-password@proxy.example.test",
+                "http://secret-user:secret-password@proxy.example.test:99999",
+            ):
+                with self.subTest(key=key):
+                    with self.assertRaises(ConfigValidationError) as caught:
+                        validate_config_updates({key: ["https://proxy.example.test:443", invalid_address]})
+                    message = caught.exception.errors[key]
+                    self.assertIn("第 2 条", message)
+                    self.assertIn("协议、主机和有效端口", message)
+                    self.assertNotIn("secret-user", message)
+                    self.assertNotIn("secret-password", message)
+                    self.assertNotIn(invalid_address, message)
+
+    def test_huanguang_proxy_candidates_limit_unique_entries_to_500(self):
+        candidates = [f"https://proxy-{index}.example.test:443" for index in range(500)]
+        for key in (
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(candidates, validate_value(key, candidates + [candidates[0]]))
+                with self.assertRaises(ConfigValidationError) as caught:
+                    validate_value(key, candidates + ["https://extra-proxy.example.test:443"])
+                self.assertIn("500", caught.exception.errors[key])
+                self.assertNotIn("extra-proxy", str(caught.exception))
+
+    def test_huanguang_proxy_candidates_are_hidden_from_metadata_and_snapshots(self):
+        keys = (
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+        )
+        secret = "https://user:huanguang-proxy-test-secret@proxy.example.test:443"
+        values = {key: secret for key in keys}
+        with patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None), patch(
+            "config.env_loader.read_env_file", return_value={}
+        ), patch.dict(os.environ, values, clear=True):
+            metadata = {item["key"]: item for item in effective_config_metadata()}
+            snapshot = non_sensitive_snapshot()
+            for key in keys:
+                self.assertEqual("", metadata[key]["value"])
+                self.assertEqual("", metadata[key]["configured_value"])
+                self.assertTrue(metadata[key]["configured"])
+                self.assertNotIn("default", metadata[key])
+                self.assertNotIn(key, snapshot.values)
+            self.assertNotIn(secret, json.dumps(metadata, ensure_ascii=False))
+            self.assertNotIn(secret, json.dumps(snapshot.as_dict(), ensure_ascii=False))
+
+        empty = config_schema.resolve_config({key: "" for key in keys}, strict=True)
+        for key in keys:
+            self.assertEqual([], empty[key].value)
+            self.assertEqual("env", empty[key].source)
+            self.assertFalse(empty[key].configured)
+
+    def test_huanguang_proxy_candidates_save_clear_and_hot_reload(self):
+        from config import extract_link
+
+        keys = (
+            "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+            "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+        )
+        candidates = ["https://user:save-test-secret@proxy.example.test:443", "socks5h://proxy.example.test:1080"]
+        fd, raw_path = tempfile.mkstemp(prefix="turb-config-huanguang-proxies-")
+        os.close(fd)
+        path = Path(raw_path)
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+        try:
+            with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                config_schema, "_PUBLISHED_SNAPSHOT", None
+            ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+                saved = config_editor.update_config({key: candidates for key in keys})
+                self.assertTrue(saved["reloaded"])
+                self.assertEqual([], saved["restart_required"])
+                for key in keys:
+                    self.assertEqual(candidates, getattr(extract_link, key))
+                    self.assertNotIn(key, non_sensitive_snapshot().values)
+
+                cleared = config_editor.update_config({key: [] for key in keys})
+                self.assertTrue(cleared["reloaded"])
+                persisted = env_loader.read_env_file()
+                metadata = {item["key"]: item for item in config_editor.get_config()}
+                for key in keys:
+                    self.assertEqual("[]", persisted[key])
+                    self.assertEqual([], getattr(extract_link, key))
+                    self.assertFalse(metadata[key]["configured"])
+                    self.assertNotIn(key, non_sensitive_snapshot().values)
+        finally:
+            config.reload_all()
+
     def test_protocol_oss_2_is_an_editable_registration_choice(self):
         self.assertEqual(validate_config_updates({"REGISTRATION_DRIVER": "protocol_oss_2"}), {
             "REGISTRATION_DRIVER": "protocol_oss_2",

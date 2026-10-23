@@ -440,6 +440,8 @@ _DEFAULTS: dict[str, Any] = {
     "EXTRACT_LINK_HUANGUANG_DEFAULT_TYPE": "upi",
     "EXTRACT_LINK_HUANGUANG_API_BASE": "",
     "EXTRACT_LINK_HUANGUANG_CDK": "",
+    "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES": [],
+    "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES": [],
     "EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT": 30,
     "EXTRACT_LINK_HUANGUANG_POLL_INTERVAL": 10,
     "EXTRACT_LINK_HUANGUANG_EVENT_TIMEOUT": 180,
@@ -1515,9 +1517,11 @@ _FIELD_DEFINITIONS = [
     {"key": "EXTRACT_LINK_HUANGUANG_MANUAL_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "huanguang 手动支付", "help": "huanguang 平台的手动支付开关"},
     {"key": "EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "huanguang 自动支付", "help": "高风险能力，默认关闭"},
     {"key": "EXTRACT_LINK_HUANGUANG_CONCURRENCY", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 并发", "help": "huanguang 平台最大并发数，范围 1-32"},
-    {"key": "EXTRACT_LINK_HUANGUANG_DEFAULT_TYPE", "file": "extract_link.py", "type": "str", "group": "提链", "label": "huanguang 提链类型", "help": "当前平台仅开放 upi；入口和出口线路均按 IN 领取"},
+    {"key": "EXTRACT_LINK_HUANGUANG_DEFAULT_TYPE", "file": "extract_link.py", "type": "str", "group": "提链", "label": "huanguang 提链类型", "help": "当前平台仅开放 upi；每侧代理池留空时从统一代理池领取 IN 线路"},
     {"key": "EXTRACT_LINK_HUANGUANG_API_BASE", "file": "extract_link.py", "type": "str", "group": "提链", "label": "huanguang API 地址", "help": "huanguang 服务 API 地址"},
     {"key": "EXTRACT_LINK_HUANGUANG_CDK", "file": "extract_link.py", "type": "str", "group": "提链", "label": "huanguang CDK", "help": "仅保存到 .env", "secret": True},
+    {"key": "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES", "file": "extract_link.py", "type": "list_str_multiline", "group": "提链", "label": "幻光入口代理池", "help": "每行一条完整代理 URL，支持 http、https、socks5、socks5h 及认证信息，去重后最多 500 条；填写后发送完整候选列表，留空才从统一代理池领取 IN 线路；仅保存到 .env", "secret": True},
+    {"key": "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES", "file": "extract_link.py", "type": "list_str_multiline", "group": "提链", "label": "幻光出口代理池", "help": "每行一条完整代理 URL，支持 http、https、socks5、socks5h 及认证信息，去重后最多 500 条；填写后发送完整候选列表，留空才从统一代理池领取 IN 线路；仅保存到 .env", "secret": True},
     {"key": "EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 请求超时（秒）", "help": "HTTP 请求超时，范围 5-300"},
     {"key": "EXTRACT_LINK_HUANGUANG_POLL_INTERVAL", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 轮询间隔（秒）", "help": "任务状态轮询间隔，范围 1-60"},
     {"key": "EXTRACT_LINK_HUANGUANG_EVENT_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 监控等待（秒）", "help": "本次持续查询的预算，范围 30-900；到期保留远端任务，可继续同步，不代表远端失败"},
@@ -1995,8 +1999,13 @@ _SECRET_KEYS = frozenset({
     "ICLOUD_HME_API_TOKEN", "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
     "PROXY_1024_API_URL", "PROXY_711_API_URL", "PLAN_CHECK_PROXY", "ACCOUNT_ACTION_PROXY",
     "EXTRACT_LINK_CDK", "EXTRACT_LINK_LUMEN_FLOW_CDK", "EXTRACT_LINK_HUANGUANG_CDK",
+    "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES", "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
     "SUB2API_API_KEY", "CPA_MANAGEMENT_KEY", "SMS_API_KEY",
     "H_ADMIN_AUTH_CODE", "L_ADMIN_AUTH_CODE", "PROXY_POOL",
+})
+
+_HUANGUANG_PROXY_LIST_KEYS = frozenset({
+    "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES", "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
 })
 
 _PROVIDER_PROXY_KEYS = {
@@ -2257,7 +2266,7 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
             if host not in normalized:
                 normalized.append(host)
         result = normalized
-    if field.key == "PROXY_POOL" and strict:
+    if field.key in {"PROXY_POOL", *_HUANGUANG_PROXY_LIST_KEYS} and strict:
         from urllib.parse import urlsplit
 
         for index, address in enumerate(result, 1):
@@ -2268,7 +2277,10 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
                 valid = False
             if not valid:
                 raise ValueError(f"第 {index} 条代理地址需要完整的协议、主机和有效端口")
-        return list(dict.fromkeys(result))
+        result = list(dict.fromkeys(result))
+        if field.key in _HUANGUANG_PROXY_LIST_KEYS and len(result) > 500:
+            raise ValueError("去重后最多填写 500 条代理地址")
+        return result
     if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
         from config.countries import ISO_3166_ALPHA2
 
@@ -2473,7 +2485,7 @@ def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool
     if raw is None:
         return ConfigResolution(field.clone_default(), "default", configured=False)
     text = str(raw).strip()
-    explicit_empty_list = text == "" and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE", "EMAIL_DERIVATION_SOURCES"}
+    explicit_empty_list = text == "" and field.key in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE", "EMAIL_DERIVATION_SOURCES", *_HUANGUANG_PROXY_LIST_KEYS}
     if not text and not explicit_empty_list:
         return ConfigResolution(field.clone_default(), "default", source_key=source_key, configured=False)
     try:
@@ -2761,7 +2773,7 @@ def apply_env_namespace(namespace: dict[str, Any], explicit_schema: Mapping[str,
         raw, _ = _raw_for_field(field, os.environ)
         if raw is None:
             continue
-        if not str(raw).strip() and field.key not in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE"}:
+        if not str(raw).strip() and field.key not in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE", *_HUANGUANG_PROXY_LIST_KEYS}:
             continue
         try:
             # 兼容旧模块的 protocol_direct 等别名：模块常量保留旧值，API 再公共化。

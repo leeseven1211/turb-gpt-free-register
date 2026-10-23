@@ -27,7 +27,7 @@ _PAYMENT = {
 }
 _PAYMENT_CHECK_STATUSES = {"running", "completed", "failed", "expired", "timeout", "error"}
 _CDK_STATES = {"queued", "reserved", "consumed", "free_reserved", "reused", "refunded", "pending", "review", "bypassed"}
-_URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi)://[^\s<>\"']+")
+_URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi|socks5h?)://[^\s<>\"']+")
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _CREDENTIAL_RE = re.compile(
     r"(?i)\b(cdk|(?:access|refresh)[_ -]?token|token|at|(?:job[_ -]?)?secret|password|authorization|cookie)"
@@ -82,7 +82,9 @@ class HuanguangProvider:
         require_capability(self.config, "extract")
         if request_data.link_type != "upi":
             raise ProviderError("幻光提链仅支持 UPI")
-        if not request_data.entry_proxy or not request_data.exit_proxy:
+        entry_proxies = request_data.entry_proxies or ((request_data.entry_proxy,) if request_data.entry_proxy else ())
+        exit_proxies = request_data.exit_proxies or ((request_data.exit_proxy,) if request_data.exit_proxy else ())
+        if not entry_proxies or not exit_proxies:
             raise ProviderError("幻光提链需要已分配的入口和出口代理")
         if request_data.mode == "auto_payment":
             raise ProviderUnsupported()
@@ -90,8 +92,8 @@ class HuanguangProvider:
             "token": request_data.access_token,
             "cdk": self.config.cdk,
             "link_type": request_data.link_type,
-            "entry_proxies": [request_data.entry_proxy],
-            "exit_proxies": [request_data.exit_proxy],
+            "entry_proxies": list(entry_proxies),
+            "exit_proxies": list(exit_proxies),
         }
         data = request(self.transport, "POST", "/api/checkout", body=body, timeout=self.config.timeout)
         job_id = data.get("job_id")

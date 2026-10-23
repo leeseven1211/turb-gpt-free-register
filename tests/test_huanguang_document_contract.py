@@ -225,6 +225,29 @@ class HuanguangDocumentContractTests(unittest.TestCase):
         self.assertEqual("upi", transport.calls[0][2]["link_type"])
         self.assertNotIn("chongyun_auto_submit", transport.calls[0][2])
 
+    def test_multiple_proxy_candidates_are_submitted_in_full_and_hidden_from_repr(self):
+        entries = ("http://fixture-user:fixture-password@entry-one.example.test:8080", "socks5h://entry-two.example.test:1080")
+        exits = ("http://exit-one.example.test:8080", "http://exit-two.example.test:8080")
+        transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-secret"}])
+        provider = HuanguangProvider(_config(), transport)
+        request = ExtractRequest(1, "synthetic-token", "upi", entry_proxies=entries, exit_proxies=exits)
+
+        provider.create_job(request)
+
+        self.assertEqual(list(entries), transport.calls[0][2]["entry_proxies"])
+        self.assertEqual(list(exits), transport.calls[0][2]["exit_proxies"])
+        for address in (*entries, *exits):
+            self.assertNotIn(address, repr(request))
+        self.assertNotIn("fixture-password", repr(request))
+
+    def test_socks_proxy_echo_is_redacted_from_remote_progress_and_failure(self):
+        address = "socks5h://fixture-user:fixture-password@proxy.example.test:1080"
+        job = self._job({"status": "error", "text": f"代理失败 {address}", "error": f"连接失败 {address}"})
+        self.assertNotIn(address, repr(job))
+        self.assertNotIn("fixture-password", repr(job.summary))
+        self.assertNotIn("fixture-user", repr(job.summary))
+        self.assertIn("代理失败", job.summary["current_step"])
+
     def test_known_cdk_and_job_secret_are_redacted_when_polling(self):
         transport = _Transport([{
             "status": "error", "error": "失败 synthetic-cdk synthetic-private-secret",

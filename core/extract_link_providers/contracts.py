@@ -42,6 +42,8 @@ class ExtractRequest:
     options: dict = field(default_factory=dict, repr=False)
     entry_proxy: str | None = field(default=None, repr=False)
     exit_proxy: str | None = field(default=None, repr=False)
+    entry_proxies: tuple[str, ...] = field(default=(), repr=False)
+    exit_proxies: tuple[str, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)

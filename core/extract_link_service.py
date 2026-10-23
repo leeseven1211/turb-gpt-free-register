@@ -20,7 +20,7 @@ except Exception:  # WebUI 环境未装 curl_cffi 时使用标准库兜底
     curl_requests = None
 
 from config import extract_link as cfg
-from config.schema import get_config_snapshot
+from config.schema import get_config_snapshot, validate_value
 from core import db
 from core.operation_runtime import OperationCancelled
 from core import task_run_log
@@ -2407,13 +2407,13 @@ def _call_if_available(target, name: str, *args, **kwargs):
     return method(*args, **kwargs)
 
 
-def _acquire_huanguang_proxies(context):
+def _acquire_huanguang_proxies(context, *, purposes=("entry", "exit")):
     from core import proxy_pool
 
     leases = []
     resource_ids = []
     try:
-        for purpose in ("entry", "exit"):
+        for purpose in purposes:
             context.checkpoint("正在分配幻光提链线路")
             context.report(stage="network", state="running", message=f"正在申请幻光 {purpose} 印度线路，最多等待 45 秒")
             lease = proxy_pool.acquire_proxy(
@@ -2450,6 +2450,19 @@ def _acquire_huanguang_proxies(context):
                 except Exception:
                     pass
         raise
+
+
+def _prepare_huanguang_proxies(context):
+    """手动候选优先，只有留空的一侧才领取本地印度线路。"""
+    routes = {}
+    for purpose in ("entry", "exit"):
+        key = f"EXTRACT_LINK_HUANGUANG_{purpose.upper()}_PROXIES"
+        routes[purpose] = tuple(validate_value(key, _runtime_setting(key, [])))
+    purposes = tuple(purpose for purpose, candidates in routes.items() if not candidates)
+    leases, resource_ids = _acquire_huanguang_proxies(context, purposes=purposes) if purposes else ([], [])
+    for purpose, lease in zip(purposes, leases):
+        routes[purpose] = (lease.proxy_url,)
+    return routes, leases, resource_ids
 
 
 def _release_huanguang_proxies(context, leases, resource_ids, *, terminal: bool) -> None:
@@ -2737,8 +2750,9 @@ def _handle_provider_operation(context):
                     context.report(stage="preflight", state="success", message=state["message"])
                 else:
                     context.report(stage="access_token", state="success", message=state["message"])
+                proxy_routes = {}
                 if provider_id == "huanguang":
-                    leases, proxy_resource_ids = _acquire_huanguang_proxies(context)
+                    proxy_routes, leases, proxy_resource_ids = _prepare_huanguang_proxies(context)
                 request_data = ExtractRequest(
                     account_id=account_id,
                     access_token=latest_token,
@@ -2746,8 +2760,8 @@ def _handle_provider_operation(context):
                     mode=mode,
                     idempotency_key=f"extract-link:{context.run_id}",
                     options=options,
-                    entry_proxy=getattr(leases[0], "proxy_url", None) if leases else None,
-                    exit_proxy=getattr(leases[1], "proxy_url", None) if len(leases) > 1 else None,
+                    entry_proxies=proxy_routes.get("entry", ()),
+                    exit_proxies=proxy_routes.get("exit", ()),
                 )
                 context.report(stage="extraction", state="running", message=f"正在向 {provider_id} 提交提链任务")
                 request_id = str(uuid.uuid4())
