@@ -65,6 +65,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertFalse(extract_link_config.EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED)
         self.assertFalse(extract_link_config.EXTRACT_LINK_LUMEN_FLOW_ENABLED)
         self.assertFalse(extract_link_config.EXTRACT_LINK_HUANGUANG_ENABLED)
+        self.assertFalse(extract_link_config.EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED)
+        self.assertEqual("", extract_link_config.EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY)
 
     def test_extract_preflight_settings_are_enabled_by_default_and_env_editable(self):
         keys = ("EXTRACT_LINK_PREFLIGHT_ENABLED", "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED")

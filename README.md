@@ -1378,6 +1378,10 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 「配置 → 提链 → 幻光」中的“幻光提链 CDK”（`EXTRACT_LINK_HUANGUANG_CDK`）用于创建提链任务，“幻光支付扫码 CDK”（`EXTRACT_LINK_HUANGUANG_PAYMENT_CDK`）用于自动支付扫码，两者分开保存。只有明确选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED`，并已配置支付扫码 CDK 时，请求才携带 `chongyun_auto_submit: true` 和 `chongyun_cdk`。仅提链与手动支付均不携带这两个扫码参数，也不使用支付扫码 CDK。自动支付开关默认关闭，支付扫码 CDK 默认空字符串；密钥仅保存在 `.env`，配置 API 和非敏感快照不返回内容。
 
+同页可配置“XXSYUN API Key”（`EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY`）和“幻光超时后转 XXSYUN”（`EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED`，默认关闭）。幻光平台本身已实现后台逻辑：先走幻光扫码，90 秒未接单后取消并确认退次，才转 XXSYUN。本客户端仅在新建自动支付任务时透传 `scan_fallback_enabled` 和 `fallback_xxsyun_api_key`，由平台执行后台转单；缺少 Key 时不启用转单，仍先走幻光扫码。
+
+XXSYUN Key 下方的“查询剩余次数”可读取已保存 Key 的次数，也可用尚未保存的非空输入查询；明确清空后查询会提示未配置，不会默用旧 Key。查询不会保存、清除或覆盖配置。剩余次数为零时显示 0，总次数和占用次数未返回时显示未知；剩余次数直接使用接口值，不再扣减占用次数。Key 属于密钥，仅保存在 `.env`，不会进入非敏感快照或任务数据，查询接口不回显 Key；查询失败仅显示固定中文提示。
+
 幻光入口和出口代理池可在「配置 → 提链 → 幻光」分别填写，对应 `EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES`、`EXTRACT_LINK_HUANGUANG_EXIT_PROXIES`。每行一条完整代理 URL，支持 `http`、`https`、`socks5`、`socks5h` 和认证信息，每侧去重后最多 500 条。填写某侧后，提链请求向平台发送该侧完整候选列表；某侧留空时，才为该侧从统一代理池领取 IN 线路。请提供适用于 UPI 的 IN 代理。两项默认空列表，保存后热加载，对下一次执行或重跑生效；代理地址只保存在 `.env`，配置 API 和非敏感快照不返回内容。已配置时输入框留空不会覆盖旧值，使用“清除”可恢复该侧的统一代理池来源。
 
 新平台的 `EVENT_TIMEOUT` 表示本次持续监控的等待预算，不包含前置查活和远端创建，也不是平台任务的最长执行时间。轮询间隔和单次请求均受剩余预算限制；状态/步骤变化会写入任务事件，无变化时每 30 秒记录等待摘要，查询失败按 10/20/30 秒退避。预算到期保留远端任务，可继续同步状态或重跑；同步读取不会重新创建远端任务。幻光轮询默认 10 秒，流光默认 3 秒，均可单独配置。

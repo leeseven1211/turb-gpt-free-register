@@ -335,6 +335,12 @@ def _provider_configuration(provider_id: str):
         timeout=timeout,
         payment_cdk=(str(_runtime_setting("EXTRACT_LINK_HUANGUANG_PAYMENT_CDK", "") or "").strip()
                      if provider_id == "huanguang" else ""),
+        xxsyun_api_key=(str(_runtime_setting("EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY", "") or "").strip()
+                        if provider_id == "huanguang" else ""),
+        scan_fallback_enabled=(
+            provider_id == "huanguang"
+            and _bool_setting("EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED", False)
+        ),
     )
     return SimpleNamespace(
         config=config,
@@ -663,6 +669,43 @@ def query_link_types() -> dict:
             s.close()
         except Exception:
             pass
+
+
+def query_huanguang_xxsyun_quota(api_key: str | None = None) -> dict:
+    """只读查询备用扫码次数；草稿 Key 不写入配置或任务数据。"""
+    from core.extract_link_providers.contracts import request as provider_request
+
+    key = (_runtime_setting("EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY", "")
+           if api_key is None else api_key)
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("XXSYUN API Key 未配置，请先填写")
+    key = key.strip()
+    if len(key) > 512:
+        raise ValueError("XXSYUN API Key 格式无效")
+    base = _valid_provider_base(_runtime_setting("EXTRACT_LINK_HUANGUANG_API_BASE", ""))
+    if not base:
+        raise ValueError("幻光 API 地址未配置")
+    try:
+        payload = provider_request(
+            _ProviderHTTPTransport(SimpleNamespace(api_base=base)), "POST", "/api/xxsyun-quota",
+            body={"api_key": key}, headers={"Content-Type": "application/json"},
+            timeout=_int_setting("EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", 30, 5, 300),
+        )
+        if payload.get("ok") is False:
+            raise ValueError
+        result = {"ok": True}
+        for name in ("remainingUses", "totalUses", "reservedUses"):
+            value = payload.get(name)
+            if name != "remainingUses" and value is None:
+                result[name] = None
+            elif type(value) is int and 0 <= value <= 2**53 - 1:
+                result[name] = value
+            else:
+                raise ValueError
+        return result
+    except Exception:
+        # HTTP 异常或上游正文可能包含 Key；只返回固定中文提示。
+        raise ValueError("查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数") from None
 
 
 def _paypal_options(payment_options: dict | None) -> dict:
@@ -1749,9 +1792,18 @@ def _safe_provider_job_state(
         if type(value) is int and 0 <= value <= 1000000:
             safe_summary[key] = value
     for key in ("automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
-                "entitlement_active", "entitlement_inferred"):
+                "entitlement_active", "entitlement_inferred", "xxsyun_polling", "scan_fallback_polling"):
         if type(summary.get(key)) is bool:
             safe_summary[key] = summary[key]
+    for key, allowed in {
+        "xxsyun_status": {"submitting", "awaiting_worker", "claimed", "verifying", "completed", "failed",
+                          "expired", "cancelled", "rejected", "manual_review", "credentials_required"},
+        "scan_fallback_status": {"checking", "submitting", "submitted", "existing", "unavailable", "skipped", "manual_review"},
+        "scan_fallback_provider": {"xxsyun", "chongyun", "seashore"},
+    }.items():
+        value = summary.get(key)
+        if isinstance(value, str) and value in allowed:
+            safe_summary[key] = value
     remote_status = summary.get("remote_status")
     if remote_status in {"QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "ERROR", "DONE", "AWAITING_BLIK_CODE", "CANCELED", "CANCELLED"}:
         safe_summary["remote_status"] = remote_status
@@ -2521,6 +2573,22 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
                 parts.append(f"{label} {summary[key]}" + ("%" if key == "percent" else ""))
         if mode != "extract_only":
             parts.append(f"支付：{labels.get(state['payment_state'], '待确认')}")
+        if provider_id == "huanguang" and mode == "auto_payment":
+            fallback_label = {
+                "checking": "确认取消与退次", "submitting": "正在提交备用扫码",
+                "submitted": "已转交备用扫码", "existing": "沿用已有备用订单",
+                "unavailable": "备用扫码暂不可用", "skipped": "平台未执行转单", "manual_review": "等待人工核实",
+            }.get(summary.get("scan_fallback_status"))
+            xxsyun_label = {
+                "submitting": "正在提交", "awaiting_worker": "等待接单", "claimed": "已接单",
+                "verifying": "正在核验", "completed": "扫码完成，等待到账核验", "failed": "扫码失败",
+                "expired": "订单已过期", "cancelled": "订单已取消", "rejected": "提交被拒绝",
+                "manual_review": "等待人工核实", "credentials_required": "需要恢复订单查询凭据",
+            }.get(summary.get("xxsyun_status"))
+            if fallback_label:
+                parts.append(f"转单：{fallback_label}")
+            if xxsyun_label:
+                parts.append(f"XXSYUN：{xxsyun_label}")
         parts.append(f"已监控 {int(now - started_at)} 秒，第 {query_count} 次查询")
         detail = {"provider_id": provider_id, "poll_count": query_count, "elapsed_seconds": round(now - started_at, 2),
                   "remaining_seconds": max(0, round(deadline - now, 2)), **summary}

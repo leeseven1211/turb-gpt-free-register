@@ -129,6 +129,25 @@ class ExtractPollingTests(unittest.TestCase):
         with patch("core.storage.extract_link_jobs.get_provider_job_private", side_effect=[empty, other]), patch("core.storage.operation.get_run", return_value={"data": {"workbench_action": "sync_status", "provider_job_run_id": 10}}):
             self.assertEqual(empty, service._provider_job_for_sync(11))
 
+    def test_huanguang_fallback_and_xxsyun_phases_are_readable_in_events(self):
+        context, provider, result, elapsed = self._monitor([
+            ProviderJob(job_id="synthetic", extraction_state="succeeded", payment_state="pending", summary={
+                "scan_fallback_status": "checking", "scan_fallback_polling": True, "remote_polling": True,
+            }),
+            ProviderJob(job_id="synthetic", extraction_state="succeeded", payment_state="pending", summary={
+                "scan_fallback_status": "submitted", "xxsyun_status": "awaiting_worker", "remote_polling": True,
+            }),
+            ProviderJob(job_id="synthetic", extraction_state="succeeded", payment_state="unknown", summary={
+                "xxsyun_status": "completed", "remote_polling": False,
+                "automatic_payment_terminal": True, "automatic_payment_requires_reconcile": True,
+            }),
+        ], mode="auto_payment", provider_id="huanguang")
+        messages = "\n".join(call.kwargs.get("message", "") for call in context.report.call_args_list)
+        self.assertIn("转单：确认取消与退次", messages)
+        self.assertIn("XXSYUN：等待接单", messages)
+        self.assertIn("XXSYUN：扫码完成，等待到账核验", messages)
+        self.assertEqual(3, provider.get_status.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()

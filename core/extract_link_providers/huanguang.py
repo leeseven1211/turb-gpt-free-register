@@ -28,11 +28,13 @@ _PAYMENT = {
 _PAYMENT_CHECK_STATUSES = {"running", "completed", "failed", "expired", "timeout", "error"}
 _SCAN_STATUSES = {"submitting", "active", "unknown", "completed", "refunded", "rejected", "manual_review"}
 _SCAN_ORDER_STATUSES = {"WAITING_ACCEPTANCE", "WAITING_SCAN", "SCANNED_PENDING_CONFIRMATION", "COMPLETED", "FAILED_REFUNDED", "UNKNOWN"}
+_XXSYUN_STATUSES = {"submitting", "awaiting_worker", "claimed", "verifying", "completed", "failed", "expired", "cancelled", "rejected", "manual_review", "credentials_required"}
+_FALLBACK_STATUSES = {"checking", "submitting", "submitted", "existing", "unavailable", "skipped", "manual_review"}
 _CDK_STATES = {"queued", "reserved", "consumed", "free_reserved", "reused", "refunded", "pending", "review", "bypassed"}
 _URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi|socks5h?)://[^\s<>\"']+")
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _CREDENTIAL_RE = re.compile(
-    r"(?i)\b(cdk|(?:access|refresh)[_ -]?token|token|at|(?:job[_ -]?)?secret|password|authorization|cookie)"
+    r"(?i)\b(cdk|(?:access|refresh)[_ -]?token|token|at|(?:job[_ -]?)?secret|password|authorization|cookie|(?:fallback[_ -]?)?(?:xxsyun[_ -]?)?api[_ -]?key)"
     r"[\"']?\s*[:=：]\s*(?:\"[^\"]*\"|'[^']*'|(?:Bearer\s+)?[^\s,;\"'}]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;\"'}]+")
@@ -104,14 +106,21 @@ class HuanguangProvider:
             body["scan_provider"] = "chongyun"
             body["chongyun_auto_submit"] = True
             body["chongyun_cdk"] = self.config.payment_cdk
-        data = request(self.transport, "POST", "/api/checkout", body=body, timeout=self.config.timeout)
+            if self.config.scan_fallback_enabled is True and self.config.xxsyun_api_key.strip():
+                body["scan_fallback_enabled"] = True
+                body["fallback_xxsyun_api_key"] = self.config.xxsyun_api_key.strip()
+        data = request(self.transport, "POST", "/api/checkout", body=body,
+                       headers={"Content-Type": "application/json"}, timeout=self.config.timeout)
         job_id = data.get("job_id")
         secret = data.get("job_secret")
         if not isinstance(job_id, (str, int)) or not str(job_id).strip() or not isinstance(secret, str) or not secret:
             return ProviderJob(extraction_state="unknown", summary={"outcome": "UNKNOWN"})
         job_id = str(job_id)
         self._secrets[job_id] = secret
-        summary = _progress_summary(data, secrets=(self.config.cdk, self.config.payment_cdk, request_data.access_token, secret))
+        summary = _progress_summary(data, secrets=(
+            self.config.cdk, self.config.payment_cdk, self.config.xxsyun_api_key,
+            self.config.xxsyun_api_key.strip(), request_data.access_token, secret,
+        ))
         summary.update({"remote_status": "QUEUED", "remote_polling": True})
         return ProviderJob(job_id=job_id, extraction_state="queued", private_data={"job_secret": secret}, summary=summary)
 
@@ -125,7 +134,26 @@ class HuanguangProvider:
         headers = {"X-Pay153-Job-Secret": secret}
         path = "/api/checkout-progress?" + urlencode({"job_id": job_id})
         data = request(self.transport, "GET", path, headers=headers, timeout=self.config.timeout)
-        return self._job(data, job_id, secret, secrets=(self.config.cdk, self.config.payment_cdk))
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        if result.get("xxsyun_status") == "credentials_required" and self.config.xxsyun_api_key.strip():
+            try:
+                resumed = request(self.transport, "POST", "/api/xxsyun-resume",
+                                  headers={**headers, "Content-Type": "application/json"},
+                                  body={"job_id": job_id, "api_key": self.config.xxsyun_api_key.strip()},
+                                  timeout=self.config.timeout)
+            except ProviderError:
+                pass
+            else:
+                # 恢复只查询同一订单；本次最多补查一次，失败时保留已收到的进度。
+                resumed_result = resumed.get("result") if isinstance(resumed.get("result"), dict) else resumed
+                data = {**data, "result": {**result, **resumed_result}}
+                try:
+                    data = request(self.transport, "GET", path, headers=headers, timeout=self.config.timeout)
+                except ProviderError:
+                    pass
+        return self._job(data, job_id, secret, secrets=(
+            self.config.cdk, self.config.payment_cdk, self.config.xxsyun_api_key, self.config.xxsyun_api_key.strip(),
+        ))
 
     def start_payment(self, job_ref: str, options: dict) -> ProviderJob:
         require_capability(self.config, "payment")
@@ -192,7 +220,7 @@ class HuanguangProvider:
             summary["payment_check_status"] = check_status
         summary["remote_polling"] = (
             remote_status in {"QUEUED", "RUNNING"}
-            or any(result.get(name) is True for name in ("chongyun_polling", "xxsyun_polling", "seashore_polling"))
+            or any(result.get(name) is True for name in ("chongyun_polling", "xxsyun_polling", "seashore_polling", "scan_fallback_polling"))
             or (check_status == "running" and remote_status not in {"CANCELLED", "CANCELED"})
         )
         scan_status = result.get("chongyun_status")
@@ -201,7 +229,41 @@ class HuanguangProvider:
         order_status = result.get("chongyun_order_status")
         order_status = order_status.strip().upper() if isinstance(order_status, str) else ""
         order_status = order_status if order_status in _SCAN_ORDER_STATUSES else ""
-        if scan_status or order_status:
+        xxsyun_status = result.get("xxsyun_status")
+        xxsyun_status = xxsyun_status.strip().lower() if isinstance(xxsyun_status, str) else ""
+        xxsyun_status = xxsyun_status if xxsyun_status in _XXSYUN_STATUSES else ""
+        fallback_status = result.get("scan_fallback_status")
+        fallback_status = fallback_status.strip().lower() if isinstance(fallback_status, str) else ""
+        fallback_status = fallback_status if fallback_status in _FALLBACK_STATUSES else ""
+        if xxsyun_status:
+            summary["xxsyun_status"] = xxsyun_status
+        if fallback_status:
+            summary["scan_fallback_status"] = fallback_status
+        fallback_provider = result.get("scan_fallback_provider")
+        if isinstance(fallback_provider, str) and fallback_provider in {"xxsyun", "seashore"}:
+            summary["scan_fallback_provider"] = fallback_provider
+        for name in ("xxsyun_polling", "scan_fallback_polling"):
+            if type(result.get(name)) is bool:
+                summary[name] = result[name]
+        fallback_active = (
+            bool(xxsyun_status) or fallback_status in {"checking", "submitting", "submitted", "existing", "manual_review"}
+            or result.get("xxsyun_polling") is True or result.get("scan_fallback_polling") is True
+        )
+        if fallback_active:
+            summary["automatic_payment_status"] = (
+                "XXSYUN_" + xxsyun_status.upper() if xxsyun_status
+                else "SCAN_FALLBACK_" + (fallback_status.upper() or "PENDING")
+            )
+            if not directly_verified and payment_state != "failed":
+                if xxsyun_status in {"failed", "expired", "cancelled", "rejected"}:
+                    payment_state = "failed"
+                elif xxsyun_status in {"completed", "manual_review", "credentials_required"} or fallback_status == "manual_review":
+                    payment_state = "unknown"
+                elif payment_state == "not_started":
+                    payment_state = "pending"
+                if not summary["remote_polling"] and payment_state == "pending":
+                    payment_state = "unknown"
+        elif scan_status or order_status:
             summary["automatic_payment_status"] = order_status or scan_status.upper()
             if not directly_verified:
                 if scan_status in {"refunded", "rejected"} or order_status == "FAILED_REFUNDED":

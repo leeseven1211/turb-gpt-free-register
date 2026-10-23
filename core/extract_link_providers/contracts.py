@@ -31,6 +31,8 @@ class ProviderConfig:
     concurrency: int = 1
     timeout: float = 30.0
     payment_cdk: str = field(default="", repr=False)
+    xxsyun_api_key: str = field(default="", repr=False)
+    scan_fallback_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

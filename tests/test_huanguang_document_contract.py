@@ -425,6 +425,230 @@ class HuanguangDocumentContractTests(unittest.TestCase):
             provider.start_payment(created.job_id, {"chongyun_cdk": "synthetic-payment-secret"})
         self.assertEqual(2, len(transport.calls))
 
+    def test_enabled_fallback_is_created_with_platform_fields_and_key_stays_private(self):
+        key = "synthetic-xxsyun-api-key"
+        transport = _Transport([{
+            "job_id": "synthetic-job", "job_secret": "synthetic-private-secret",
+            "text": f"已受理 {key}",
+        }])
+        config = _config(payment_cdk="synthetic-payment-secret", auto_payment=True,
+                         xxsyun_api_key=key, scan_fallback_enabled=True)
+        created = HuanguangProvider(config, transport).create_job(ExtractRequest(
+            1, "synthetic-token", "upi", "auto_payment",
+            entry_proxy="http://entry", exit_proxy="http://exit",
+        ))
+        self.assertIs(True, transport.calls[0][2].get("scan_fallback_enabled"))
+        self.assertEqual(key, transport.calls[0][2].get("fallback_xxsyun_api_key"))
+        self.assertEqual({"Content-Type": "application/json"}, transport.calls[0][3])
+        self.assertNotIn("xxsyun_auto_submit", transport.calls[0][2])
+        self.assertNotIn("xxsyun_api_key", transport.calls[0][2])
+        self.assertEqual({"job_secret": "synthetic-private-secret"}, created.private_data)
+        self.assertNotIn(key, repr(config))
+        self.assertNotIn(key, repr(created))
+        self.assertNotIn(key, repr(created.summary))
+        self.assertNotIn(key, repr(created.private_data))
+
+    def test_missing_or_disabled_fallback_never_blocks_primary_auto_payment(self):
+        for enabled, key in ((False, "synthetic-xxsyun-api-key"), (True, ""), (True, "  ")):
+            with self.subTest(enabled=enabled, key=bool(key.strip())):
+                transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-private-secret"}])
+                provider = HuanguangProvider(_config(
+                    payment_cdk="synthetic-payment-secret", auto_payment=True,
+                    xxsyun_api_key=key, scan_fallback_enabled=enabled,
+                ), transport)
+                created = provider.create_job(ExtractRequest(
+                    1, "synthetic-token", "upi", "auto_payment",
+                    entry_proxy="http://entry", exit_proxy="http://exit",
+                ))
+                self.assertEqual("queued", created.extraction_state)
+                self.assertIs(True, transport.calls[0][2]["chongyun_auto_submit"])
+                self.assertNotIn("scan_fallback_enabled", transport.calls[0][2])
+                self.assertNotIn("fallback_xxsyun_api_key", transport.calls[0][2])
+
+    def test_non_auto_modes_never_submit_fallback_even_with_enabled_config_and_options(self):
+        for mode in ("extract_only", "manual_payment"):
+            with self.subTest(mode=mode):
+                transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-private-secret"}])
+                provider = HuanguangProvider(_config(
+                    payment_cdk="synthetic-payment-secret", auto_payment=True,
+                    xxsyun_api_key="synthetic-xxsyun-api-key", scan_fallback_enabled=True,
+                ), transport)
+                provider.create_job(ExtractRequest(
+                    1, "synthetic-token", "upi", mode,
+                    options={"scan_fallback_enabled": True, "fallback_xxsyun_api_key": "injected-key"},
+                    entry_proxy="http://entry", exit_proxy="http://exit",
+                ))
+                self.assertNotIn("scan_fallback_enabled", transport.calls[0][2])
+                self.assertNotIn("fallback_xxsyun_api_key", transport.calls[0][2])
+
+    def test_fallback_activity_overrides_old_primary_refund_and_continues_polling(self):
+        for result, expected in (
+            ({"scan_fallback_status": "checking", "scan_fallback_polling": True}, "pending"),
+            ({"scan_fallback_status": "submitting", "scan_fallback_polling": True}, "pending"),
+            ({"scan_fallback_status": "submitted", "scan_fallback_provider": "xxsyun",
+              "xxsyun_status": "awaiting_worker", "xxsyun_polling": True}, "pending"),
+            ({"xxsyun_status": "claimed", "xxsyun_polling": True}, "pending"),
+            ({"xxsyun_status": "verifying", "xxsyun_polling": True}, "pending"),
+        ):
+            with self.subTest(result=result):
+                job = self._job({"status": "done", "result": {
+                    "checkout_url": "https://pay.example.test/page",
+                    "chongyun_status": "refunded", "chongyun_order_status": "FAILED_REFUNDED",
+                    "payment_status": "awaiting_payment", **result,
+                }})
+                self.assertEqual(expected, job.payment_state)
+                self.assertTrue(job.summary["remote_polling"])
+                self.assertIs(False, job.summary["automatic_payment_terminal"])
+                for field in ("scan_fallback_status", "scan_fallback_provider", "scan_fallback_polling", "xxsyun_status", "xxsyun_polling"):
+                    if field in result:
+                        self.assertEqual(result[field], job.summary.get(field))
+
+    def test_fallback_platform_completion_remains_unknown_without_plus_evidence(self):
+        job = self._job({"status": "done", "result": {
+            "checkout_url": "https://pay.example.test/page", "payment_status": "awaiting_payment",
+            "chongyun_status": "refunded", "chongyun_order_status": "FAILED_REFUNDED",
+            "scan_fallback_status": "submitted", "scan_fallback_provider": "xxsyun",
+            "xxsyun_status": "completed", "xxsyun_polling": False,
+        }})
+        self.assertEqual("unknown", job.payment_state)
+        self.assertEqual("XXSYUN_COMPLETED", job.summary.get("automatic_payment_status"))
+        self.assertTrue(job.summary["automatic_payment_requires_reconcile"])
+
+    def test_fallback_plus_verification_takes_priority_over_both_platform_failures(self):
+        job = self._job({"status": "done", "result": {
+            "payment_status": "completed", "entitlement_active": True, "plan_type": "plus",
+            "has_active_subscription": True, "entitlement_inferred": False,
+            "chongyun_status": "refunded", "xxsyun_status": "failed",
+            "scan_fallback_status": "submitted", "scan_fallback_provider": "xxsyun",
+        }})
+        self.assertEqual("succeeded", job.payment_state)
+        self.assertEqual("verified", job.summary.get("platform_plus_status"))
+        self.assertEqual("failed", job.summary.get("xxsyun_status"))
+
+    def test_xxsyun_failure_and_uncertainty_states_are_not_primary_refund(self):
+        for phase, expected in (
+            ("failed", "failed"), ("expired", "failed"), ("cancelled", "failed"),
+            ("rejected", "failed"), ("manual_review", "unknown"),
+            ("credentials_required", "unknown"), ("submitting", "unknown"),
+        ):
+            with self.subTest(phase=phase):
+                job = self._job({"status": "done", "result": {
+                    "chongyun_status": "refunded", "xxsyun_status": phase,
+                    "xxsyun_polling": False,
+                }})
+                self.assertEqual(expected, job.payment_state)
+                self.assertEqual(phase, job.summary.get("xxsyun_status"))
+
+    def test_explicit_payment_failure_is_not_hidden_by_pending_fallback(self):
+        for payment_status in ("failed", "expired"):
+            with self.subTest(payment_status=payment_status):
+                job = self._job({"status": "done", "result": {
+                    "payment_status": payment_status, "xxsyun_status": "claimed",
+                    "xxsyun_polling": True, "scan_fallback_status": "submitted",
+                }})
+                self.assertEqual("failed", job.payment_state)
+
+    def test_unknown_fallback_fields_cannot_leak_into_summary(self):
+        job = self._job({"status": "done", "result": {
+            "xxsyun_status": "api_key=synthetic-key", "xxsyun_polling": "true",
+            "scan_fallback_status": "api_key=synthetic-key", "scan_fallback_provider": "private-platform",
+            "scan_fallback_polling": 1, "scan_fallback_message": "api_key=synthetic-key",
+        }})
+        for field in ("xxsyun_status", "xxsyun_polling", "scan_fallback_status", "scan_fallback_provider", "scan_fallback_polling", "scan_fallback_message"):
+            self.assertNotIn(field, job.summary)
+        self.assertNotIn("synthetic-key", repr(job))
+
+    def test_xxsyun_key_is_redacted_from_query_messages_without_resending_it(self):
+        key = "synthetic-xxsyun-api-key"
+        transport = _Transport([{"status": "error", "text": f"失败 {key}", "error": f"失败 {key}"}])
+        job = HuanguangProvider(_config(xxsyun_api_key=key), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertNotIn(key, repr(job))
+        self.assertNotIn(key, repr(job.private_data))
+        self.assertNotIn(key, repr(transport.calls))
+        self.assertEqual("GET", transport.calls[0][0])
+        self.assertIsNone(transport.calls[0][2])
+
+    def test_labeled_api_keys_are_redacted_even_when_not_in_current_config(self):
+        job = self._job({
+            "status": "error", "text": "检查 api_key=synthetic-foreign-key",
+            "error": "失败 fallback_xxsyun_api_key=synthetic-fallback-key xxsyun_api_key=synthetic-primary-key",
+        })
+        for key in ("synthetic-foreign-key", "synthetic-fallback-key", "synthetic-primary-key"):
+            self.assertNotIn(key, repr(job))
+
+    def test_credentials_required_resumes_only_original_order_then_fetches_full_snapshot(self):
+        key = "synthetic-xxsyun-api-key"
+        transport = _Transport([
+            {"status": "done", "result": {"xxsyun_status": "credentials_required"}},
+            {"xxsyun_status": "claimed", "xxsyun_polling": True},
+            {"status": "done", "result": {"xxsyun_status": "claimed", "xxsyun_polling": True,
+             "checkout_url": "https://pay.example.test/page"}},
+        ])
+        job = HuanguangProvider(_config(xxsyun_api_key=key), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertEqual("pending", job.payment_state)
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual(["GET", "POST", "GET"], [call[0] for call in transport.calls])
+        self.assertEqual("/api/xxsyun-resume", transport.calls[1][1])
+        self.assertEqual({"job_id": "synthetic-job", "api_key": key}, transport.calls[1][2])
+        self.assertEqual({
+            "X-Pay153-Job-Secret": "synthetic-private-secret", "Content-Type": "application/json",
+        }, transport.calls[1][3])
+        self.assertEqual(transport.calls[0][1], transport.calls[2][1])
+        self.assertNotIn(key, repr(job))
+        self.assertNotIn(key, repr(job.private_data))
+
+    def test_resume_is_bounded_when_server_still_requires_credentials(self):
+        snapshot = {"status": "done", "result": {"xxsyun_status": "credentials_required"}}
+        transport = _Transport([snapshot, {"xxsyun_status": "credentials_required"}, snapshot])
+        job = HuanguangProvider(_config(xxsyun_api_key="synthetic-xxsyun-api-key"), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertEqual("unknown", job.payment_state)
+        self.assertEqual("credentials_required", job.summary.get("xxsyun_status"))
+        self.assertEqual(["GET", "POST", "GET"], [call[0] for call in transport.calls])
+
+    def test_missing_key_does_not_attempt_to_resume_original_order(self):
+        transport = _Transport([{"status": "done", "result": {"xxsyun_status": "credentials_required"}}])
+        job = HuanguangProvider(_config(), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertEqual("unknown", job.payment_state)
+        self.assertEqual(["GET"], [call[0] for call in transport.calls])
+
+    def test_resume_failure_keeps_original_order_as_unknown_without_new_checkout(self):
+        transport = _Transport([
+            {"status": "done", "result": {"xxsyun_status": "credentials_required",
+             "checkout_url": "https://pay.example.test/page"}},
+            ProviderError("Provider 请求失败"),
+        ])
+        job = HuanguangProvider(_config(xxsyun_api_key="synthetic-xxsyun-api-key"), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertEqual("unknown", job.payment_state)
+        self.assertEqual("credentials_required", job.summary.get("xxsyun_status"))
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual(["GET", "POST"], [call[0] for call in transport.calls])
+
+    def test_post_resume_query_failure_preserves_original_material_and_resumed_progress(self):
+        transport = _Transport([
+            {"status": "done", "result": {"xxsyun_status": "credentials_required",
+             "checkout_url": "https://pay.example.test/page"}},
+            {"xxsyun_status": "claimed", "xxsyun_polling": True},
+            ProviderError("Provider 请求失败"),
+        ])
+        job = HuanguangProvider(_config(xxsyun_api_key="synthetic-xxsyun-api-key"), transport).get_status(
+            "synthetic-job", private_data={"job_secret": "synthetic-private-secret"},
+        )
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual("pending", job.payment_state)
+        self.assertEqual("claimed", job.summary.get("xxsyun_status"))
+        self.assertTrue(job.summary["remote_polling"])
+        self.assertEqual(["GET", "POST", "GET"], [call[0] for call in transport.calls])
+
     @staticmethod
     def _job(data):
         return HuanguangProvider._job(data, "synthetic-job", "synthetic-private-secret")
@@ -437,13 +661,16 @@ class _Transport:
 
     def request(self, method, path, *, json=None, headers=None, timeout=None):
         self.calls.append((method, path, json, headers, timeout))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
-def _config(*, payment_cdk=None, auto_payment=False, capabilities=None):
+def _config(*, payment_cdk=None, auto_payment=False, capabilities=None, **provider_fields):
     kwargs = {"payment_cdk": payment_cdk} if payment_cdk is not None else {}
     return ProviderConfig(
         "huanguang", "https://provider.example.test", "synthetic-cdk",
         capabilities if capabilities is not None else {"extract": True, "payment": True, "auto_payment": auto_payment},
-        **kwargs,
+        **kwargs, **provider_fields,
     )

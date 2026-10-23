@@ -18,14 +18,17 @@ function createConfigView(fields = []) {
   };
   const saveButton = {disabled: false, textContent: ''};
   const layoutListeners = {};
+  const rootListeners = {};
+  const quotaControls = [];
   nodes.set('configSaveBarV2', {hidden: false});
   nodes.set('configDirtyBadge', {hidden: false, textContent: '', setAttribute() {}});
   nodes.set('configNavV2', {dataset: {}, addEventListener(name, callback) { this.listener = callback; }});
   nodes.set('configLayoutV2', {dataset: {}, addEventListener(name, callback) { layoutListeners[name] = callback; }});
-  const root = {addEventListener() {}};
+  const root = {addEventListener(name, callback) { rootListeners[name] = callback; }};
   const context = {
     CONFIG: fields,
     layoutListeners,
+    rootListeners,
     domErrors, saveCopy, saveHint,
     document: {
       getElementById(id) { return nodes.get(id) || null; },
@@ -33,6 +36,8 @@ function createConfigView(fields = []) {
         return selector.includes('data-config-save-hint') ? saveHint : null;
       },
       querySelectorAll(selector) {
+        if (selector.includes('data-query-huanguang-xxsyun-quota')) return quotaControls.map(control => control.button);
+        if (selector.includes('data-huanguang-xxsyun-quota-status')) return quotaControls.map(control => control.status);
         if (selector.includes('data-config-save-state')) return [saveState];
         if (selector.includes('data-save-config-v2')) return [saveButton];
         if (selector.includes('config-field-error-v2')) return domErrors;
@@ -67,6 +72,9 @@ function createConfigView(fields = []) {
         const button = {dataset: {extractLinkTab: section}};
         layoutListeners.click({target: {closest(selector) { return selector === '[data-extract-link-tab]' ? button : null; }}, preventDefault() {}});
       },
+      clickXxsyunQuota(button) {
+        return rootListeners.click({target: {closest(selector) { return selector === '[data-query-huanguang-xxsyun-quota]' ? button : null; }}, preventDefault() {}});
+      },
       pending: CONFIG_PENDING_UPDATES, setPending: setPendingConfigValue,
       forcePending: (key, value) => setPendingConfigValue(key, value, {force: true}),
       errors: CONFIG_FIELD_ERRORS_V2, compositeModes: CONFIG_COMPOSITE_MODES_V2,
@@ -85,10 +93,126 @@ function createConfigView(fields = []) {
       }; },
     };
   `, context);
-  return {view: context.view, context, storage, nodes, domErrors};
+  return {view: context.view, context, storage, nodes, domErrors, quotaControls};
 }
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
+
+const xxsyunKey = 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY';
+function createXxsyunQuotaControl(controls, {value = '', clear = false} = {}) {
+  const status = {textContent: ''};
+  const input = {
+    value, type: 'password', dataset: {key: xxsyunKey, ...(clear ? {secretClear: 'true'} : {})},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  };
+  const control = {
+    input, status,
+    querySelector(selector) {
+      if (selector.includes('data-key') || selector.includes('data-secret-input')) return input;
+      if (selector.includes('data-huanguang-xxsyun-quota-status')) return status;
+      return null;
+    },
+  };
+  control.button = {
+    disabled: false, textContent: '查询剩余次数',
+    closest(selector) { return selector === '[data-huanguang-xxsyun-key]' ? control : null; },
+  };
+  controls.push(control);
+  return control;
+}
+
+test('幻光 XXSYUN Key 复用密码框与清除，并提供剩余次数查询和默认关闭的转单开关', () => {
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'huanguang', options: [{value: 'huanguang', label: '幻光'}]}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: true}),
+    field(xxsyunKey, '提链', {label: 'XXSYUN API Key', secret: true, configured: true}),
+    field('EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED', '提链', {type: 'bool', label: '幻光超时后转 XXSYUN', value: false}),
+  ];
+  const {view} = createConfigView(fields);
+  view.search(xxsyunKey);
+  const markup = view.renderDomain('提链', fields);
+  assert.equal(view.state().extractLink, '幻光');
+  assert.ok(markup.includes(`<input type="password" data-key="${xxsyunKey}" value=""`));
+  assert.ok(markup.includes(`data-clear-secret="${xxsyunKey}"`));
+  assert.ok(markup.includes('data-query-huanguang-xxsyun-quota'));
+  assert.ok(markup.includes('查询剩余次数'));
+  assert.match(markup, /data-huanguang-xxsyun-quota-status[^>]*role="status"/);
+  assert.doesNotMatch(markup, /data-key="EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED" checked/);
+});
+
+test('XXSYUN 次数查询区分已保存 Key、未保存输入和明确清空，不保存配置并保留真实零', async () => {
+  const scenarios = [
+    {input: {}, body: {}, response: {ok: true, remainingUses: 0, totalUses: null, reservedUses: null}, text: '剩余 0 次 · 总次数 未知 · 占用 未知'},
+    {input: {value: 'draft-test-key'}, body: {api_key: 'draft-test-key'}, response: {ok: true, remainingUses: 7, totalUses: 10, reservedUses: 3}, text: '剩余 7 次 · 总次数 10 · 占用 3'},
+    {input: {clear: true}, body: {api_key: ''}, response: {ok: true, remainingUses: 1, totalUses: null, reservedUses: 0}, text: '剩余 1 次 · 总次数 未知 · 占用 0'},
+    {input: {}, pendingClear: true, body: {api_key: ''}, response: {ok: true, remainingUses: 1, totalUses: null, reservedUses: null}, text: '剩余 1 次 · 总次数 未知 · 占用 未知'},
+  ];
+  for (const scenario of scenarios) {
+    const {view, context, quotaControls} = createConfigView([field(xxsyunKey, '提链', {secret: true, configured: true})]);
+    const control = createXxsyunQuotaControl(quotaControls, scenario.input);
+    if (scenario.pendingClear) view.forcePending(xxsyunKey, '');
+    const pendingBefore = JSON.stringify(view.pending);
+    const calls = [];
+    context.api = async (url, options) => {
+      calls.push({url, method: options.method, body: JSON.parse(options.body)});
+      return scenario.response;
+    };
+    await view.clickXxsyunQuota(control.button);
+    assert.deepEqual(calls, [{url: '/api/extract-link/huanguang/xxsyun-quota', method: 'POST', body: scenario.body}]);
+    assert.equal(control.status.textContent, scenario.text);
+    assert.equal(control.button.disabled, false);
+    assert.equal(JSON.stringify(view.pending), pendingBefore);
+  }
+});
+
+test('XXSYUN 查询失败和非法响应只显示固定中文提示', async () => {
+  const responses = [
+    async () => { throw new Error('raw-private-key-and-response'); },
+    async () => ({ok: false, error: 'raw-private-key-and-response'}),
+    async () => ({ok: true, remainingUses: null, totalUses: null, reservedUses: null}),
+    async () => ({ok: true, remainingUses: 1.5, totalUses: null, reservedUses: null}),
+    async () => ({ok: true, remainingUses: 1, totalUses: 2.5, reservedUses: null}),
+    async () => ({ok: true, remainingUses: 1, totalUses: null, reservedUses: 0.5}),
+    async () => ({ok: true, remainingUses: Number.MAX_SAFE_INTEGER + 1, totalUses: null, reservedUses: null}),
+    async () => ({ok: true, remainingUses: 1, totalUses: Number.MAX_SAFE_INTEGER + 1, reservedUses: null}),
+    async () => ({ok: true, remainingUses: 1, totalUses: null, reservedUses: Number.MAX_SAFE_INTEGER + 1}),
+  ];
+  for (const response of responses) {
+    const {view, context, quotaControls} = createConfigView([field(xxsyunKey, '提链', {secret: true})]);
+    const control = createXxsyunQuotaControl(quotaControls);
+    context.api = response;
+    await view.clickXxsyunQuota(control.button);
+    assert.equal(control.status.textContent, '查询失败，请检查 XXSYUN API Key 后重试');
+    assert.equal(control.button.disabled, false);
+  }
+});
+
+test('XXSYUN Key 改变后旧查询不能覆盖新请求的状态和结果', async () => {
+  const {view, context, quotaControls} = createConfigView([field(xxsyunKey, '提链', {secret: true, configured: true})]);
+  const control = createXxsyunQuotaControl(quotaControls);
+  const pending = [];
+  context.api = () => new Promise(resolve => pending.push(resolve));
+  const oldQuery = view.clickXxsyunQuota(control.button);
+  assert.equal(control.button.disabled, true);
+  assert.equal(control.status.textContent, '正在查询剩余次数…');
+  control.input.value = 'new-draft-test-key';
+  view.track({target: control.input});
+  assert.equal(control.status.textContent, '');
+  assert.equal(control.button.disabled, false);
+  const newQuery = view.clickXxsyunQuota(control.button);
+  pending[0]({ok: true, remainingUses: 99, totalUses: 99, reservedUses: 0});
+  await oldQuery;
+  assert.equal(control.button.disabled, true);
+  assert.equal(control.status.textContent, '正在查询剩余次数…');
+  pending[1]({ok: true, remainingUses: 2, totalUses: null, reservedUses: 0});
+  await newQuery;
+  assert.equal(control.status.textContent, '剩余 2 次 · 总次数 未知 · 占用 0');
+  assert.equal(control.button.disabled, false);
+});
 
 test('配置导航包含独立提链菜单，字段只进入一个编辑投影', () => {
   const domains = ['通用配置', '注册主链路', '账号补全', '注册调试', '邮箱 / OTP', '接码平台',

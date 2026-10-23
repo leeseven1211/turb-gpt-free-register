@@ -25,6 +25,49 @@ from webui import config_editor
 
 
 class ConfigSchemaTests(unittest.TestCase):
+    def test_huanguang_xxsyun_configuration_is_reloadable_without_exposing_key(self):
+        from config import extract_link
+
+        api_key = "EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY"
+        fallback_key = "EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED"
+        secret = "xxsyun-config-test-secret"
+        self.assertEqual({api_key: secret, fallback_key: True}, validate_config_updates({
+            api_key: secret, fallback_key: True,
+        }))
+        fd, raw_path = tempfile.mkstemp(prefix="turb-config-xxsyun-")
+        os.close(fd)
+        path = Path(raw_path)
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+        try:
+            with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                config_schema, "_PUBLISHED_SNAPSHOT", None
+            ), patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+                saved = config_editor.update_config({api_key: secret, fallback_key: True})
+                self.assertTrue(saved["reloaded"])
+                self.assertEqual([], saved["restart_required"])
+                self.assertEqual(secret, extract_link.EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY)
+                self.assertTrue(extract_link.EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED)
+                metadata = {item["key"]: item for item in config_editor.get_config()}
+                key_metadata = metadata[api_key]
+                self.assertEqual("XXSYUN API Key", key_metadata["label"])
+                self.assertTrue(key_metadata["configured"])
+                self.assertTrue(key_metadata["secret"])
+                self.assertEqual("", key_metadata["value"])
+                self.assertEqual("", key_metadata["configured_value"])
+                self.assertNotIn("default", key_metadata)
+                self.assertNotIn(secret, json.dumps(metadata, ensure_ascii=False))
+                self.assertNotIn(api_key, non_sensitive_snapshot().values)
+                self.assertTrue(non_sensitive_snapshot()[fallback_key])
+
+                config_editor.update_config({api_key: "", fallback_key: False})
+                self.assertEqual("", extract_link.EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY)
+                self.assertFalse(extract_link.EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED)
+                persisted = env_loader.read_env_file()
+                self.assertEqual("", persisted[api_key])
+                self.assertEqual("False", persisted[fallback_key])
+        finally:
+            config.reload_all()
+
     def test_huanguang_payment_cdk_is_separate_sensitive_configuration(self):
         key = "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK"
         secret = "huanguang-payment-schema-test-secret"

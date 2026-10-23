@@ -61,6 +61,25 @@ def create_integrations_blueprint(context: WebUIContext):
             logger.warning("读取提链类型失败：%s", type(exc).__name__)
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
 
+    @bp.post("/api/extract-link/huanguang/xxsyun-quota")
+    def api_huanguang_xxsyun_quota():
+        """查询幻光备用扫码剩余次数，不保存草稿 Key。"""
+        def response(payload, status=200):
+            result = jsonify(payload)
+            result.status_code = status
+            result.headers["Cache-Control"] = "no-store"
+            return result
+
+        data = request.get_json(silent=True)
+        if (not isinstance(data, dict) or set(data) - {"api_key"}
+                or ("api_key" in data and (not isinstance(data["api_key"], str) or len(data["api_key"]) > 512))):
+            return response({"ok": False, "error": "查询参数无效，请检查 XXSYUN API Key"}, 400)
+        try:
+            return response(extract_link_service.query_huanguang_xxsyun_quota(api_key=data.get("api_key")))
+        except Exception as exc:
+            logger.warning("查询 XXSYUN 剩余次数失败：%s", type(exc).__name__)
+            return response({"ok": False, "error": "查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数"}, 400)
+
     @bp.get("/api/icloud-hme/accounts")
     def api_icloud_hme_accounts():
         """只读已保存连接的账号目录，不同步、创建或领取隐藏邮箱。"""

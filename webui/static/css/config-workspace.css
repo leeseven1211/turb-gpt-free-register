@@ -212,6 +212,22 @@
 
 #tab-config .config-secret-control-v2 input { height: 40px; }
 
+#tab-config [data-huanguang-xxsyun-key] {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+#tab-config [data-huanguang-xxsyun-key] > .btn {
+  justify-self: start;
+}
+
+#tab-config [data-huanguang-xxsyun-quota-status] {
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 #tab-config .config-source-advanced-v2 {
   margin: 12px 20px 0;
 }
