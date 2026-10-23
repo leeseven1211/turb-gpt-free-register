@@ -10,6 +10,28 @@ _PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0
 
 
 class HuanguangDocumentContractTests(unittest.TestCase):
+    def test_per_task_retry_limit_reaches_platform_without_sending_arbitrary_options(self):
+        transport = _Transport([{"job_id": "synthetic-job", "job_secret": "synthetic-private-secret"}])
+        provider = HuanguangProvider(_config(), transport)
+        provider.create_job(ExtractRequest(
+            1, "synthetic-token", "upi", "extract_only", options={"retry_count": 3, "chongyun_auto_submit": True},
+            entry_proxy="http://entry", exit_proxy="http://exit",
+        ))
+        self.assertEqual(3, transport.calls[0][2].get("retry_count"))
+        self.assertNotIn("chongyun_auto_submit", transport.calls[0][2])
+
+    def test_invalid_retry_limit_cannot_be_sent_directly_to_provider(self):
+        for count in (True, 0, -1, 11, 3.0, "3", None):
+            with self.subTest(count=count):
+                transport = _Transport([])
+                provider = HuanguangProvider(_config(), transport)
+                with self.assertRaises(ProviderError):
+                    provider.create_job(ExtractRequest(
+                        1, "synthetic-token", "upi", options={"retry_count": count},
+                        entry_proxy="http://entry", exit_proxy="http://exit",
+                    ))
+                self.assertEqual([], transport.calls)
+
     def test_link_ready_is_extracted_while_remote_detection_is_still_running(self):
         job = self._job({
             "status": "running", "percent": 98,

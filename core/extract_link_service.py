@@ -1702,6 +1702,13 @@ def _provider_request_options(provider_id: str, options: object, *, mode: str, l
     source = options if isinstance(options, dict) else {}
     if provider_id == "legacy":
         return _paypal_options(source)
+    if provider_id == "huanguang":
+        if "retry_count" not in source:
+            return {}
+        count = source["retry_count"]
+        if type(count) is not int or not 1 <= count <= 10:
+            raise ValueError("幻光单任务尝试次数必须是 1 至 10 的整数")
+        return {"retry_count": count}
     if provider_id != "lumen_flow":
         return {}
     allowed = {

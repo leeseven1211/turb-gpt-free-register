@@ -102,6 +102,11 @@ class HuanguangProvider:
             "entry_proxies": list(entry_proxies),
             "exit_proxies": list(exit_proxies),
         }
+        if "retry_count" in request_data.options:
+            count = request_data.options["retry_count"]
+            if type(count) is not int or not 1 <= count <= 10:
+                raise ProviderError("幻光单任务尝试次数必须是 1 至 10 的整数")
+            body["retry_count"] = count
         if request_data.mode == "auto_payment":
             body["scan_provider"] = "chongyun"
             body["chongyun_auto_submit"] = True

@@ -55,3 +55,13 @@ class HuanguangPaymentConfigurationTests(unittest.TestCase):
             "chongyun_auto_submit": True, "chongyun_cdk": "untrusted-payment-key",
         }, mode="extract_only", link_type="upi")
         self.assertEqual({}, options)
+
+    def test_request_options_allow_only_bounded_per_task_retry_count(self):
+        for count in (1, 3, 10):
+            with self.subTest(count=count):
+                self.assertEqual({"retry_count": count}, service._provider_request_options("huanguang", {
+                    "retry_count": count, "chongyun_auto_submit": True, "chongyun_cdk": "untrusted-secret",
+                }, mode="extract_only", link_type="upi"))
+        for count in (True, 0, -1, 11, 3.0, "3", None):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                service._provider_request_options("huanguang", {"retry_count": count}, mode="extract_only", link_type="upi")
