@@ -1621,6 +1621,14 @@ def _safe_provider_job_state(
             safe_summary[key] = max(0, min(100, int(value)))
         elif isinstance(value, str):
             safe_summary[key] = value[:100]
+    remote_status = summary.get("remote_status")
+    if remote_status in {"QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "ERROR", "CANCELED", "CANCELLED"}:
+        safe_summary["remote_status"] = remote_status
+    if extraction_state == "failed" and summary.get("remote_terminal_failure") is True:
+        safe_summary["remote_terminal_failure"] = True
+    failure_message = summary.get("failure_message")
+    if isinstance(failure_message, str) and failure_message.strip():
+        safe_summary["failure_message"] = task_run_log.redact_text(failure_message, 300)
     return {
         "extraction_state": extraction_state,
         "payment_state": payment_state,
@@ -1630,7 +1638,7 @@ def _safe_provider_job_state(
         "links": list(item.links or ()),
         "payment_links": list(item.payment_links or ()),
         "summary": safe_summary,
-        "message": str(message or "")[:300],
+        "message": task_run_log.redact_text(message or safe_summary.get("failure_message") or "", 300),
     }
 
 
@@ -2452,6 +2460,8 @@ def _handle_provider_operation(context):
                             action="extract_link_create",
                             request_id=request_id,
                             detail={
+                                "provider_id": provider_id,
+                                "remote_job_id": job_id,
                                 "remote_result_confirmed": True,
                                 "local_business_writeback_confirmed": True,
                                 "local_readback_confirmed": True,
@@ -2469,8 +2479,13 @@ def _handle_provider_operation(context):
                                 detail={"response_observed": True, "remote_result_confirmed": False},
                             )
                         terminal_status = "failed"
-                        status_message = "平台已明确拒绝提链请求"
-                        raise RuntimeError("平台已明确拒绝提链请求")
+                        failure_message = state.get("summary", {}).get("failure_message")
+                        status_message = "平台已明确拒绝提链请求" + (f"：{failure_message}" if failure_message else "")
+                        context.report(
+                            stage="extraction", state="failed", message=status_message,
+                            detail={"cause_code": "extract_provider_failed", "error_code": "extract_provider_failed"},
+                        )
+                        raise RuntimeError(status_message)
                     if callable(getattr(context, "remote_request_receipt", None)):
                         context.remote_request_receipt(
                             outcome="response_received",
@@ -2593,7 +2608,6 @@ def _handle_provider_operation(context):
             else:
                 state["plus_status"] = "not_applicable"
 
-            _update_provider_job(context, provider_id, job_id or None, state, job.private_data if "job" in locals() else prior_private)
             extraction = state["extraction_state"]
             payment = state["payment_state"]
             terminal_extraction = extraction in {"succeeded", "failed"}
@@ -2610,7 +2624,12 @@ def _handle_provider_operation(context):
                     status_message = "提链成功，等待手动支付"
             elif extraction == "failed":
                 terminal_status = "failed"
-                status_message = "平台提链失败"
+                failure_message = state.get("summary", {}).get("failure_message")
+                status_message = f"平台提链失败：{failure_message}" if failure_message else "平台提链失败，平台未提供失败细项"
+                context.report(
+                    stage="extraction", state="failed", message=status_message,
+                    detail={"cause_code": "extract_provider_failed", "error_code": "extract_provider_failed"},
+                )
             elif terminal_status != "request_unknown":
                 terminal_status = "request_unknown"
                 status_message = "远端任务状态暂未收敛，保留任务以便继续同步"
@@ -2626,6 +2645,27 @@ def _handle_provider_operation(context):
             else:
                 context.report(stage="payment", state="unknown", message="支付状态待确认")
 
+            state["message"] = status_message
+            _update_provider_job(context, provider_id, job_id or None, state, job.private_data if "job" in locals() else prior_private)
+            result_summary = {
+                "provider_id": provider_id,
+                "mode": mode,
+                "extraction_status": extraction,
+                "payment_status": payment,
+                "preflight_status": state.get("preflight_status"),
+                "aftercare_status": state.get("aftercare_status"),
+                "plus_status": state.get("plus_status"),
+                "remote_job_created": bool(job_id),
+                "outcome": state.get("summary", {}).get("outcome"),
+            }
+            if extraction == "failed":
+                result_summary.update({
+                    "cause_code": "extract_provider_failed",
+                    "remote_result_state": "failed",
+                    "remote_terminal_failure": state.get("summary", {}).get("remote_terminal_failure") is True,
+                    "remote_status": state.get("summary", {}).get("remote_status"),
+                    "failure_message": state.get("summary", {}).get("failure_message") or "平台未提供失败细项",
+                })
             result = {
                 "ok": terminal_status == "success" and extraction == "succeeded",
                 "status": "success" if extraction == "succeeded" else "failed",
@@ -2644,17 +2684,7 @@ def _handle_provider_operation(context):
                     status=terminal_status,
                     message=status_message,
                     error=safe_error or (status_message if terminal_status in {"failed", "request_unknown"} else None),
-                    result_summary={
-                        "provider_id": provider_id,
-                        "mode": mode,
-                        "extraction_status": extraction,
-                        "payment_status": payment,
-                        "preflight_status": state.get("preflight_status"),
-                        "aftercare_status": state.get("aftercare_status"),
-                        "plus_status": state.get("plus_status"),
-                        "remote_job_created": bool(job_id),
-                        "outcome": state.get("summary", {}).get("outcome"),
-                    },
+                    result_summary=result_summary,
                 )
         if schedule_plan_check:
             current = db.get_account(account_id) or {}
@@ -2749,6 +2779,7 @@ def _handle_provider_operation(context):
                     "extraction_status": state.get("extraction_state"),
                     "payment_status": state.get("payment_state"),
                     "remote_job_created": bool(job_id),
+                    **({"cause_code": "extract_provider_failed", "remote_result_state": "rejected"} if remote_rejected else {}),
                 },
             )
         return None

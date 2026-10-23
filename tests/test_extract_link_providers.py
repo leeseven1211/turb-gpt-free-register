@@ -76,6 +76,176 @@ class ExtractLinkProviderTests(unittest.TestCase):
         self.assertEqual(status.extraction_state, "unknown")
         self.assertNotIn("private-token", repr(status))
 
+    def test_lumen_terminal_failure_preserves_safe_reason_and_explicit_status(self):
+        from core.extract_link_providers import get_provider
+
+        for remote_status in ("FAILED", "CANCELED"):
+            with self.subTest(remote_status=remote_status):
+                provider = get_provider(
+                    "lumen_flow", config=_config("lumen_flow"),
+                    transport=_Transport([{
+                        "taskId": "task-failed", "status": remote_status,
+                        "error": {"message": "结账链接生成失败", "accessToken": "private-token"},
+                    }]),
+                )
+
+                status = provider.get_status("task-failed")
+
+                self.assertEqual(status.job_id, "task-failed")
+                self.assertEqual(status.extraction_state, "failed")
+                self.assertEqual(status.summary["remote_status"], remote_status)
+                self.assertIs(status.summary["remote_terminal_failure"], True)
+                self.assertEqual(status.summary["failure_message"], "结账链接生成失败")
+                self.assertNotIn("private-token", repr(status))
+
+    def test_lumen_status_requires_matching_remote_task_identity(self):
+        from core.extract_link_providers import get_provider
+
+        for identity in (
+            {"taskId": "task-expected"},
+            {"checkoutTaskId": "task-expected"},
+            {"taskId": "task-expected", "checkoutTaskId": "task-expected"},
+            {},
+            {"taskId": None, "checkoutTaskId": ""},
+        ):
+            with self.subTest(identity=identity):
+                provider = get_provider(
+                    "lumen_flow", config=_config("lumen_flow"),
+                    transport=_Transport([dict(identity, status="FAILED")]),
+                )
+
+                status = provider.get_status("task-expected")
+
+                self.assertEqual(status.job_id, "task-expected")
+                self.assertEqual(status.extraction_state, "failed")
+                self.assertIs(status.summary["remote_terminal_failure"], True)
+
+    def test_lumen_status_rejects_mismatched_or_invalid_remote_identity_safely(self):
+        from core.extract_link_providers import get_provider
+        from core.extract_link_providers.contracts import ProviderError
+
+        for identity in (
+            {"taskId": "other-task-private-token"},
+            {"checkoutTaskId": "other-task-private-token"},
+            {"taskId": "task-expected", "checkoutTaskId": "other-task-private-token"},
+            {"taskId": {"accessToken": "private-token"}},
+        ):
+            with self.subTest(identity=identity):
+                provider = get_provider(
+                    "lumen_flow", config=_config("lumen_flow"),
+                    transport=_Transport([dict(identity, status="FAILED")]),
+                )
+
+                with self.assertRaises(ProviderError) as error:
+                    provider.get_status("task-expected")
+
+                self.assertIn("任务编号", str(error.exception))
+                self.assertNotIn("private-token", str(error.exception))
+                self.assertNotIn("task-expected", str(error.exception))
+
+    def test_lumen_failure_reason_supports_message_fields_without_copying_raw_response(self):
+        from core.extract_link_providers import get_provider
+
+        for reason_field in ("error", "errorMessage", "failureReason", "message", "reason", "detail"):
+            with self.subTest(reason_field=reason_field):
+                provider = get_provider(
+                    "lumen_flow", config=_config("lumen_flow"),
+                    transport=_Transport([{
+                        "taskId": "task-failed", "status": "FAILED",
+                        "result": {reason_field: "平台暂时不可用", "accessToken": "private-token"},
+                        "raw": {"cdk": "private-cdk"},
+                    }]),
+                )
+
+                status = provider.get_status("task-failed")
+
+                self.assertEqual(status.summary["failure_message"], "平台暂时不可用")
+                self.assertNotIn("private-token", repr(status))
+                self.assertNotIn("private-cdk", repr(status))
+
+    def test_lumen_failure_reason_redacts_credentials_urls_and_email(self):
+        from core.extract_link_providers import get_provider
+        from core.extract_link_providers.contracts import ExtractRequest
+
+        reason = (
+            "提链失败 private-token private-cdk，"
+            '"accessToken": "other-token-value", CDK=other-cdk-value; '
+            "https://checkout.example/pay?secret=private-url-token "
+            "account@example.test"
+        )
+        provider = get_provider(
+            "lumen_flow", config=_config("lumen_flow"),
+            transport=_Transport([{"results": [{
+                "outcome": "ACCEPTED",
+                "task": {"taskId": "task-failed", "status": "FAILED", "errorMessage": reason},
+            }]}]),
+        )
+
+        status = provider.create_job(ExtractRequest(7, "private-token"))
+
+        self.assertIn("提链失败", status.summary["failure_message"])
+        for private_value in (
+            "private-token", "private-cdk", "other-token-value", "other-cdk-value",
+            "private-url-token", "checkout.example", "account@example.test",
+        ):
+            self.assertNotIn(private_value, repr(status))
+
+    def test_lumen_rejected_submission_keeps_safe_failure_reason(self):
+        from core.extract_link_providers import get_provider
+        from core.extract_link_providers.contracts import ExtractRequest
+
+        provider = get_provider(
+            "lumen_flow", config=_config("lumen_flow"),
+            transport=_Transport([{"results": [{
+                "outcome": "REJECTED", "errorMessage": "当前提链类型不可用 private-cdk",
+            }]}]),
+        )
+
+        status = provider.create_job(ExtractRequest(7, "private-token"))
+
+        self.assertEqual(status.extraction_state, "failed")
+        self.assertEqual(status.summary["outcome"], "REJECTED")
+        self.assertIn("当前提链类型不可用", status.summary["failure_message"])
+        self.assertNotIn("private-cdk", repr(status))
+        self.assertNotIn("remote_terminal_failure", status.summary)
+
+    def test_lumen_failure_reason_redacts_short_bearer_cookie_and_other_cdk(self):
+        from core.extract_link_providers import get_provider
+
+        reason = (
+            '平台返回错误，Authorization: Bearer abc; "Cookie": "sid=hidden; session=private-cookie"; '
+            "Bearer xyz AAM-0123456789ABCDEF0123456789ABCDEF"
+        )
+        provider = get_provider(
+            "lumen_flow", config=_config("lumen_flow"),
+            transport=_Transport([{"taskId": "task-failed", "status": "FAILED", "error": reason}]),
+        )
+
+        status = provider.get_status("task-failed")
+
+        self.assertIn("平台返回错误", status.summary["failure_message"])
+        for private_value in ("abc", "xyz", "hidden", "private-cookie", "AAM-0123456789ABCDEF0123456789ABCDEF"):
+            self.assertNotIn(private_value, repr(status))
+
+    def test_lumen_unknown_or_running_status_does_not_claim_terminal_failure(self):
+        from core.extract_link_providers import get_provider
+
+        for remote_status in ("RUNNING", "PRIVATE_NEW_STATUS_private-token"):
+            with self.subTest(remote_status=remote_status):
+                provider = get_provider(
+                    "lumen_flow", config=_config("lumen_flow"),
+                    transport=_Transport([{
+                        "taskId": "task-running", "status": remote_status,
+                        "errorMessage": "暂时失败，平台仍在重试 private-token",
+                    }]),
+                )
+
+                status = provider.get_status("task-running")
+
+                self.assertNotIn("remote_terminal_failure", status.summary)
+                self.assertNotIn("failure_message", status.summary)
+                self.assertNotIn("private-token", repr(status))
+
     def test_lumen_checkout_success_does_not_imply_payment_success(self):
         from core.extract_link_providers import get_provider
 

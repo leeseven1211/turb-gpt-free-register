@@ -525,6 +525,55 @@ class TaskErrorClassificationTests(unittest.TestCase):
             classify_task_error("提链创建请求 HTTP 403", task_type="extract_link")["code"],
         )
 
+    def test_confirmed_provider_failure_has_specific_error_without_reconciliation(self):
+        info = classify_task_error(
+            "平台提链失败：必须隐藏的远端细项", stage="extraction", task_type="extract_link",
+            error_code="extract_provider_failed", task_status="failed",
+            result_summary={
+                "cause_code": "extract_provider_failed", "remote_result_state": "failed",
+                "remote_terminal_failure": True,
+            },
+        )
+        self.assertEqual("extract_provider_failed", info["code"])
+        self.assertEqual("extract_provider_failed", info["error_code"])
+        self.assertEqual("LINK-FAILED", info["display_code"])
+        self.assertEqual("平台提链失败", info["summary"])
+        self.assertEqual("extraction", info["stage"])
+        self.assertEqual("external", info["source"])
+        self.assertNotIn("reconcile_required", info)
+        self.assertNotEqual("manual_reconcile", info["next_action"])
+
+    def test_provider_failure_error_code_is_readable_without_summary(self):
+        info = classify_task_error(
+            "远端细项未保存", task_type="extract_link", error_code="extract_provider_failed",
+        )
+        self.assertEqual("extract_provider_failed", info["code"])
+        self.assertEqual("LINK-FAILED", info["display_code"])
+        self.assertEqual("平台提链失败", info["summary"])
+
+    def test_historical_provider_failure_keeps_existing_reconciliation(self):
+        info = classify_task_error(
+            "平台提链失败", task_type="extract_link", stage="payment",
+            error_code="extract_link_receipt_missing", task_status="attention_required",
+            result_summary={"outcome": "request_unknown", "reconcile_required": True},
+        )
+        self.assertEqual("extract_provider_failed", info["code"])
+        self.assertEqual("extract_provider_failed", info["error_code"])
+        self.assertEqual("extract_link_receipt_missing", info["original_error_code"])
+        self.assertEqual("LINK-FAILED", info["display_code"])
+        self.assertEqual("平台提链失败", info["summary"])
+        self.assertTrue(info["reconcile_required"])
+        self.assertEqual("manual_reconcile", info["next_action"])
+
+    def test_historical_provider_failure_only_matches_exact_extract_task_message(self):
+        for message, task_type in (
+            ("平台提链失败", "registration"),
+            ("平台提链失败原因未确认", "extract_link"),
+        ):
+            with self.subTest(message=message, task_type=task_type):
+                info = classify_task_error(message, task_type=task_type)
+                self.assertEqual("unknown.unclassified", info["code"])
+
     def test_email_change_begin_local_prepare_has_specific_code(self):
         info = classify_task_error(
             "邮箱换绑失败: begin 请求本地准备失败", task_type="email_change",

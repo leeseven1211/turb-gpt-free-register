@@ -11,7 +11,12 @@ from core.storage import operation as operation_store
 
 _SUMMARY_FIELDS = frozenset({
     "current_step", "percent", "outcome", "preflight_status", "plus_status",
-    "aftercare_status", "message",
+    "aftercare_status", "message", "remote_status", "remote_terminal_failure",
+    "failure_message",
+})
+_REMOTE_STATUSES = frozenset({
+    "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
+    "CANCELED", "CANCELLED", "DONE", "ERROR",
 })
 
 
@@ -67,6 +72,15 @@ def _public_state(value: Mapping[str, Any]) -> dict:
         safe_summary: dict[str, Any] = {}
         for key in _SUMMARY_FIELDS:
             item = summary.get(key)
+            if key == "remote_status":
+                normalized = item.strip().upper() if isinstance(item, str) else ""
+                if normalized in _REMOTE_STATUSES:
+                    safe_summary[key] = normalized
+                continue
+            if key == "remote_terminal_failure":
+                if type(item) is bool:
+                    safe_summary[key] = item
+                continue
             if isinstance(item, str):
                 safe_summary[key] = item[:160]
             elif isinstance(item, (int, float, bool)) or item is None:

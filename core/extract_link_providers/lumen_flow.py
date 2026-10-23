@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import quote
+
+from core.task_run_log import redact_text
 
 from .contracts import (
     ExtractRequest,
@@ -54,6 +57,46 @@ _OPTION_FIELDS = {
     "apply_promotion": "applyPromotion",
     "promotion_campaign_id": "promotionCampaignId",
 }
+_URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi)://[^\s<>\"']+")
+_EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(cdk|access[_ -]?token|refresh[_ -]?token|token|password|secret|authorization|cookie)"
+    r"[\"']?\s*[:=：]\s*(?:\"[^\"]*\"|'[^']*'|(?:Bearer\s+)?[^\s,;\"'}]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;\"'}]+")
+_CDK_RE = re.compile(r"(?i)\b[A-Z]{3}-[A-F0-9]{32}\b")
+
+
+def _safe_message(value: object, *, secrets: tuple[str, ...] = ()) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value
+    for secret in secrets:
+        if isinstance(secret, str) and secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = _CREDENTIAL_RE.sub(r"\1=[REDACTED]", text)
+    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    text = redact_text(text, len(text))
+    text = _URL_RE.sub("[REDACTED_URL]", text)
+    text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
+    text = _CDK_RE.sub("[REDACTED_CDK]", text)
+    return " ".join(text.split())[:300]
+
+
+def _failure_message(*sources: dict, secrets: tuple[str, ...] = ()) -> str:
+    """只保留失败原因文本，不把完整平台响应带入公开摘要。"""
+    for source in sources:
+        for key in ("error", "errorMessage", "failureReason", "message", "reason", "detail"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                value = next((
+                    value.get(name) for name in ("message", "errorMessage", "reason", "detail", "description")
+                    if isinstance(value.get(name), str) and value.get(name).strip()
+                ), None)
+            message = _safe_message(value, secrets=secrets)
+            if message:
+                return message
+    return ""
 
 
 class LumenFlowProvider:
@@ -86,13 +129,18 @@ class LumenFlowProvider:
         task = row.get("task") if isinstance(row.get("task"), dict) else {}
         if outcome not in {"ACCEPTED", "REUSED"}:
             state = "failed" if outcome == "REJECTED" else "unknown"
-            return ProviderJob(extraction_state=state, summary={"outcome": outcome if outcome in {"REJECTED", "UNKNOWN"} else "UNKNOWN"})
-        return self._job(task)
+            summary = {"outcome": outcome if outcome in {"REJECTED", "UNKNOWN"} else "UNKNOWN"}
+            if state == "failed":
+                message = _failure_message(row, task, secrets=(self.config.cdk, request_data.access_token))
+                if message:
+                    summary["failure_message"] = message
+            return ProviderJob(extraction_state=state, summary=summary)
+        return self._job(task, secrets=(request_data.access_token,))
 
     def get_status(self, job_ref: str, *, private_data: dict | None = None) -> ProviderJob:
         require_capability(self.config, "extract")
         data = request(self.transport, "GET", f"/public/api/checkout/flow/{quote(str(job_ref), safe='')}", timeout=self.config.timeout)
-        return self._job(data)
+        return self._job(data, expected_job_id=str(job_ref))
 
     def start_payment(self, job_ref: str, options: dict) -> ProviderJob:
         require_capability(self.config, "payment")
@@ -123,27 +171,50 @@ class LumenFlowProvider:
             body={"accessToken": access_token},
             timeout=self.config.timeout,
         )
-        return self._job(data)
+        return self._job(data, secrets=(access_token,))
 
-    @staticmethod
-    def _job(data: dict, *, payment_state: str | None = None) -> ProviderJob:
+    def _job(
+        self, data: dict, *, payment_state: str | None = None,
+        secrets: tuple[str, ...] = (), expected_job_id: str | None = None,
+    ) -> ProviderJob:
+        if expected_job_id is not None:
+            for key in ("taskId", "checkoutTaskId"):
+                value = data.get(key)
+                if value is None or value == "":
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (str, int)):
+                    raise ProviderError("流光状态响应的任务编号无效")
+                if str(value) != expected_job_id:
+                    raise ProviderError("流光状态响应的任务编号与请求不一致")
         result = data.get("result") if isinstance(data.get("result"), dict) else {}
         artifact = result.get("paymentArtifact") if isinstance(result.get("paymentArtifact"), dict) else {}
         payment = payment_state or normalize_state(
             data.get("paymentStatus") or result.get("paymentStatus"), _PAYMENT
         )
         summary = {}
+        secrets = (self.config.cdk, *secrets)
+        remote_status = data.get("status")
+        remote_status = remote_status.strip().upper() if isinstance(remote_status, str) else ""
+        if remote_status in _EXTRACTION:
+            summary["remote_status"] = remote_status
+        if remote_status in {"FAILED", "CANCELED"}:
+            summary["remote_terminal_failure"] = True
+        extraction_state = normalize_state(data.get("status"), _EXTRACTION)
+        if extraction_state == "failed" or payment == "failed":
+            message = _failure_message(data, result, secrets=secrets)
+            if message:
+                summary["failure_message"] = message
         for key in ("currentStep", "plusVerificationStatus"):
             value = data.get(key)
             if isinstance(value, str):
-                summary["current_step" if key == "currentStep" else "plus_verification_status"] = value
+                summary["current_step" if key == "currentStep" else "plus_verification_status"] = _safe_message(value, secrets=secrets)
         next_sync_at = data.get("nextPaymentStateSyncAt")
         private_data = {}
         if isinstance(next_sync_at, str) and next_sync_at.strip():
             private_data["next_payment_state_sync_at"] = next_sync_at.strip()[:80]
         return ProviderJob(
-            job_id=str(data.get("taskId") or data.get("checkoutTaskId")) if data.get("taskId") or data.get("checkoutTaskId") else None,
-            extraction_state=normalize_state(data.get("status"), _EXTRACTION),
+            job_id=str(data.get("taskId") or data.get("checkoutTaskId") or expected_job_id) if data.get("taskId") or data.get("checkoutTaskId") or expected_job_id else None,
+            extraction_state=extraction_state,
             payment_state=payment,
             links=safe_links(result.get("paymentUrl"), result.get("checkoutUrl"), result.get("shortLink")),
             payment_links=safe_links(

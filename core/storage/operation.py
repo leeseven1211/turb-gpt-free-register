@@ -6091,6 +6091,73 @@ def release_resource(resource_id: int, *, state: str = "released", detail: dict 
         return cur.rowcount > 0
 
 
+def _confirmed_extract_terminal_failure(cur, run: dict, result_summary: dict) -> bool:
+    """仅对持久化证据一致、没有支付悬置的提链终态允许正常失败收口。"""
+    if (
+        str(run.get("task_type") or "") != "extract_link"
+        or result_summary.get("remote_result_state") != "failed"
+        or result_summary.get("remote_terminal_failure") is not True
+        or result_summary.get("cause_code") != "extract_provider_failed"
+        or result_summary.get("extraction_status") != "failed"
+        or result_summary.get("payment_status") not in ("not_started", "failed")
+        or result_summary.get("reconcile_required") is True
+        or str(result_summary.get("outcome") or "").lower() in {"unknown", "request_unknown"}
+    ):
+        return False
+    data = _decode(run.get("data"))
+    data = data if isinstance(data, dict) else {}
+    intent = _remote_write_checkpoint(data)
+    receipt = data.get("remote_receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    if (
+        intent.get("action") != "extract_link_create"
+        or (intent.get("receipt_state") or intent.get("state")) != "confirmed"
+        or receipt.get("action") != "extract_link_create"
+        or (receipt.get("receipt_state") or receipt.get("outcome")) != "confirmed"
+        or not intent.get("request_id")
+        or receipt.get("request_id") != intent.get("request_id")
+    ):
+        return False
+    intent_detail = intent.get("detail")
+    intent_detail = intent_detail if isinstance(intent_detail, dict) else {}
+    receipt_detail = receipt.get("detail")
+    receipt_detail = receipt_detail if isinstance(receipt_detail, dict) else {}
+    cur.execute(
+        f"""
+        SELECT provider_id, job_id, extraction_state, payment_state, public_state
+        FROM {_table('extract_link_provider_jobs')}
+        WHERE run_id=%s
+        FOR SHARE
+        """,
+        (int(run["id"]),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    job = dict(row)
+    provider_id = str(job.get("provider_id") or "").strip()
+    job_id = str(job.get("job_id") or "").strip()
+    public_state = _decode(job.get("public_state"))
+    public_state = public_state if isinstance(public_state, dict) else {}
+    summary = public_state.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    return bool(
+        provider_id and job_id
+        and provider_id == str(data.get("provider_id") or "")
+        and provider_id == str(result_summary.get("provider_id") or "")
+        and provider_id == str(intent_detail.get("provider_id") or "")
+        and provider_id == str(receipt_detail.get("provider_id") or "")
+        and job_id == str(receipt_detail.get("remote_job_id") or "")
+        and job.get("extraction_state") == "failed"
+        and public_state.get("extraction_state") == "failed"
+        and job.get("payment_state") in {"not_started", "failed"}
+        and public_state.get("payment_state") == job.get("payment_state")
+        and result_summary.get("payment_status") == job.get("payment_state")
+        and summary.get("remote_terminal_failure") is True
+        and summary.get("remote_status") in {"FAILED", "ERROR", "CANCELED", "CANCELLED"}
+    )
+
+
 def finish_run(
     run_id: int,
     *,
@@ -6158,8 +6225,12 @@ def finish_run(
                 and status_value in {"failed", "unsupported"}
                 and str(dependency_result.get("remote_result_state") or "").lower() == "rejected"
             )
+            confirmed_extract_failure = (
+                status_value == "failed"
+                and _confirmed_extract_terminal_failure(cur, found, dependency_result)
+            )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
-                not explicit_remote_rejection
+                not (explicit_remote_rejection or confirmed_extract_failure)
                 and (status_value != "success" or receipt != "confirmed")
             ):
                 # 未确认的远端写入保留在当前 Run，人工重跑会创建新的 Run，

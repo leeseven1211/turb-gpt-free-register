@@ -97,6 +97,8 @@ STAGES: dict[str, dict[str, str]] = {
     "plan_check": {"label": "查询套餐", "group": "account"},
     "access_token": {"label": "校验 Token", "group": "account"},
     "refresh_token": {"label": "刷新 Token", "group": "account"},
+    "extraction": {"label": "平台提链", "group": "account"},
+    "payment": {"label": "支付处理", "group": "account"},
     "account_setup_dispatch": {"label": "提交账号配置任务", "group": "account"},
     "account_setup": {"label": "执行账号配置", "group": "account"},
     "account_status": {"label": "确认账号状态", "group": "account"},
@@ -194,7 +196,7 @@ TASK_TEMPLATES: _FLOW = {
     "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token", depends_on=("preflight",)), _s("credential", "credential_confirm", "credential_persist", depends_on=("refresh_token",))),
     "plan_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("plan_check", depends_on=("network",))),
     "deactivation_mail": _flow(_s("preflight"), _s("mailbox_scan")),
-    "extract_link": _flow(_s("preflight"), _s("access_token"), _s("refresh_token"), _s("extract_link")),
+    "extract_link": _flow(_s("preflight"), _s("access_token"), _s("refresh_token"), _s("extract_link", "extract_link", "extraction")),
     "email_change": _flow(_s("email"), _s("network"), _s("login_password", "login_password", "reauth", "recent_login"), _s("email_otp", "email_otp", "new_email_otp"), _s("submit_email", "submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback")),
 }
 

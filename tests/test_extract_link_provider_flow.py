@@ -536,5 +536,136 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         ))
 
 
+class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
+    @contextmanager
+    def _scenario(self, *, failed_job=None, poll_error=None):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        events = []
+
+        def report(**event):
+            event = {**event, "id": len(events) + 1, "event_type": f"stage.{event.get('state', 'running')}"}
+            events.append(event)
+            return event
+
+        context = SimpleNamespace(
+            account_id=77, email="fixture@example.test", task_id=810, run_id=811,
+            config_snapshot={}, finished=False, checkpoint=Mock(),
+            run={"data": {"provider_id": "lumen_flow", "mode": "extract_only", "link_type": "momo"}},
+            report=Mock(side_effect=report), finish=Mock(),
+            remote_request_started=Mock(), remote_request_receipt=Mock(),
+        )
+        context.lease = contextmanager(lambda **_kwargs: iter([None]))
+        provider = SimpleNamespace(
+            create_job=Mock(return_value=ProviderJob(job_id="fixture-job", extraction_state="running")),
+            get_status=Mock(return_value=failed_job, side_effect=poll_error),
+            start_payment=Mock(),
+        )
+        account = {"id": 77, "email": context.email, "access_token": "fixture-token"}
+        with (
+            patch.object(extract_link_service.db, "get_account", return_value=account),
+            patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
+            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
+            patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-token"),
+            patch.object(extract_link_service, "_provider_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
+                default_type="momo", event_timeout=10, poll_interval=1,
+            )),
+            patch.object(extract_link_service, "_provider", return_value=provider),
+            patch.object(extract_link_service, "_update_provider_job") as save_job,
+            patch.object(extract_link_service.db, "update_account_extract") as save_account,
+            patch.object(extract_link_service.time, "sleep"),
+        ):
+            yield SimpleNamespace(
+                context=context, provider=provider, events=events,
+                save_job=save_job, save_account=save_account,
+            )
+
+    def test_polled_failure_keeps_reason_and_explicit_extraction_stage_without_payment(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+        from core.task_progress import build_progress_snapshot
+
+        failed_job = ProviderJob(
+            job_id="fixture-job", extraction_state="failed",
+            summary={"remote_status": "FAILED", "remote_terminal_failure": True, "failure_message": "当前账号不符合优惠条件"},
+        )
+        with self._scenario(failed_job=failed_job) as scenario:
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("failed", finished["status"])
+        self.assertIn("当前账号不符合优惠条件", finished["message"])
+        self.assertEqual("extract_provider_failed", finished["result_summary"]["cause_code"])
+        self.assertTrue(finished["result_summary"]["remote_terminal_failure"])
+        self.assertIn("当前账号不符合优惠条件", scenario.save_job.call_args.args[3]["message"])
+        self.assertIn("当前账号不符合优惠条件", scenario.save_account.call_args.args[1]["message"])
+        receipt = scenario.context.remote_request_receipt.call_args.kwargs
+        self.assertEqual("confirmed", receipt["outcome"])
+        self.assertEqual("fixture-job", receipt["detail"]["remote_job_id"])
+        self.assertEqual("lumen_flow", receipt["detail"]["provider_id"])
+        scenario.provider.start_payment.assert_not_called()
+        snapshot = build_progress_snapshot(
+            810, 811, "extract_link",
+            {"status": "failed", "error_message": finished["error"], "result_summary": finished["result_summary"]},
+            scenario.events,
+        )
+        self.assertEqual("extraction", snapshot["failure"]["stage"])
+        self.assertEqual("explicit", snapshot["failure"]["evidence"])
+        self.assertEqual("LINK-FAILED", snapshot["failure"]["error_info"]["display_code"])
+
+    def test_terminal_failure_without_reason_does_not_invent_platform_detail(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        with self._scenario(failed_job=ProviderJob(
+            job_id="fixture-job", extraction_state="failed",
+            summary={"remote_status": "FAILED", "remote_terminal_failure": True},
+        )) as scenario:
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("failed", finished["status"])
+        self.assertIn("平台未提供失败细项", finished["message"])
+        self.assertEqual("平台未提供失败细项", finished["result_summary"]["failure_message"])
+
+    def test_poll_transport_error_keeps_unknown_instead_of_platform_failure(self):
+        from core import extract_link_service
+
+        with self._scenario(poll_error=TimeoutError("平台查询超时")) as scenario:
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("request_unknown", finished["status"])
+        self.assertEqual("unknown", finished["result_summary"]["extraction_status"])
+        self.assertNotIn("remote_terminal_failure", finished["result_summary"])
+        self.assertNotIn("cause_code", finished["result_summary"])
+        self.assertFalse(any(event.get("stage") == "extraction" and event.get("state") == "failed" for event in scenario.events))
+        scenario.provider.start_payment.assert_not_called()
+
+    def test_create_rejection_keeps_platform_reason_in_workbench_message(self):
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+
+        with self._scenario() as scenario:
+            scenario.provider.create_job.return_value = ProviderJob(
+                extraction_state="failed",
+                summary={"outcome": "REJECTED", "failure_message": "提链次数不足"},
+            )
+            extract_link_service._handle_provider_operation(scenario.context)
+
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("failed", finished["status"])
+        self.assertEqual("rejected", scenario.context.remote_request_receipt.call_args.kwargs["outcome"])
+        self.assertIn("提链次数不足", scenario.save_job.call_args.args[3]["message"])
+        self.assertIn("提链次数不足", scenario.save_account.call_args.args[1]["message"])
+        self.assertEqual("extract_provider_failed", finished["result_summary"]["cause_code"])
+        scenario.provider.get_status.assert_not_called()
+        scenario.provider.start_payment.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

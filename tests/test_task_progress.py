@@ -953,6 +953,62 @@ def test_failed_run_without_failed_event_uses_inferred_last_activity():
     assert snapshot["failure"]["step_id"] in {"preflight", "result"}
 
 
+def test_historical_extract_only_failure_uses_business_evidence_before_payment_skip():
+    run = _run(
+        "attention_required", failure_stage="payment", error_code="extract_link_receipt_missing",
+        error_message="平台提链失败", result_summary={
+            "mode": "extract_only", "extraction_status": "failed", "payment_status": "not_started",
+            "failure_stage": "payment", "outcome": "request_unknown", "reconcile_required": True,
+        },
+    )
+    events = [
+        _event("extract-start", "extraction", "running", message="开始平台提链"),
+        _event("payment-skip", "payment", "skipped", message="仅提链模式未触发任何支付接口"),
+    ]
+    failure = build_progress_snapshot(1, 2, "extract_link", run, events)["failure"]
+    assert failure["step_id"] == "extract_link"
+    assert failure["stage"] == "extraction"
+    assert failure["label"] == "平台提链"
+    assert failure["message"] == "平台提链失败"
+    assert failure["event_id"] is None
+    assert failure["evidence"] == "inferred"
+    assert failure["reconcile_required"] is True
+    assert failure["error_info"]["display_code"] == "LINK-FAILED"
+    assert failure["error_info"]["reconcile_required"] is True
+    assert run["failure_stage"] == run["result_summary"]["failure_stage"] == "payment"
+
+
+def test_historical_extract_failure_does_not_override_explicit_failure_or_unknown_facts():
+    base_summary = {"mode": "extract_only", "extraction_status": "failed", "payment_status": "not_started"}
+    for summary, message, events in (
+        (base_summary, "平台提链失败", [_event("real-failure", "preflight", "failed", message="配置缺失")]),
+        ({**base_summary, "extraction_status": "running"}, "平台提链失败", []),
+        ({**base_summary, "payment_status": "paid"}, "平台提链失败", []),
+        ({**base_summary, "mode": "extract_and_pay"}, "平台提链失败", []),
+        (base_summary, "平台提链结果待确认", []),
+    ):
+        run = _run("attention_required", failure_stage="payment", error_message=message, result_summary=summary)
+        failure = build_progress_snapshot(1, 2, "extract_link", run, events)["failure"]
+        assert failure["stage"] != "extraction"
+        if events:
+            assert failure["event_id"] == "real-failure"
+            assert failure["evidence"] == "explicit"
+
+
+def test_extract_payment_condition_keeps_chinese_label_without_planning_payment():
+    empty = build_progress_snapshot(1, 2, "extract_link", _run(), [])
+    assert not any("payment" in step["raw_stages"] for step in empty["main_steps"])
+    snapshot = build_progress_snapshot(1, 2, "extract_link", _run("failed"), [
+        _event("payment-skip", "payment", "skipped", message="仅提链模式未触发任何支付接口"),
+        _event("unrecognized", "unrecognized_condition", "skipped"),
+    ])
+    payment = _step(snapshot, "unknown:payment")
+    assert payment["label"] == "支付处理"
+    assert payment["state"] == "skipped"
+    assert payment["evidence"] == "explicit"
+    assert _step(snapshot, "unknown:unrecognized_condition")["label"] == "未知阶段：unrecognized_condition"
+
+
 def test_flow_for_exposes_stable_business_ids_and_raw_stage_projection():
     flow = flow_for("account_setup_retry")
     assert [item["id"] for item in flow] == ["network", "plan_check", "browser", "authenticate", "set_password", "set_twofa", "result"]

@@ -955,6 +955,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "extract_create_missing_job_id": ("OA-EXTRACT-002", "提链创建响应缺少任务 ID"),
     "extract_create_http_unknown": ("OA-EXTRACT-HTTP", "提链创建请求返回 HTTP 错误"),
     "extract_create_transport_error": ("NET-EXTRACT-001", "提链创建网络请求中断"),
+    "extract_provider_failed": ("LINK-FAILED", "平台提链失败"),
     "mfa_code_missing": ("AUTH-MFA-001", "MFA 验证码不可用"),
     "mfa_factor_missing": ("AUTH-MFA-002", "MFA 验证方式不可用"),
     "mfa_issue_challenge_failed": ("AUTH-MFA-003", "MFA 挑战发起失败"),
@@ -1335,6 +1336,11 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
+    if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
+        str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"
+    ):
+        # 历史记录的明确平台失败仍可展示；恢复约束继续由已保存的回执状态决定。
+        cause = _specific_error_cause({"cause_code": "extract_provider_failed"})
     if cause is None:
         # 旧记录可能只把固定原因码写在正文中；只识别整词，不输出任意诊断原文。
         for candidate in sorted(_CAUSE_DETAILS, key=len, reverse=True):

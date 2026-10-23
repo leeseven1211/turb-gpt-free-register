@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from core.task_run_log import redact_text
-from core.task_stages import REGISTRATION_AUTH_STAGES, flow_for, is_task_lifecycle_stage, normalize_stage, normalize_step_state, resolve_step, stage_label
+from core.task_stages import REGISTRATION_AUTH_STAGES, STAGES, flow_for, is_task_lifecycle_stage, normalize_stage, normalize_step_state, resolve_step, stage_label
 
 
 _CHILD_LABELS = {
@@ -299,7 +299,8 @@ def _add_unknown(steps: list[dict[str, Any]], raw: str) -> dict[str, Any]:
     while _find_step(steps, step_id):
         step_id = f"{base}:{suffix}"
         suffix += 1
-    item = _step({"id": step_id, "label": f"未知阶段：{raw or 'event'}", "group": "unknown", "raw_stages": [raw or "event"]}, planned=False)
+    label = stage_label(raw) if normalized in STAGES else f"未知阶段：{raw or 'event'}"
+    item = _step({"id": step_id, "label": label, "group": "unknown", "raw_stages": [raw or "event"]}, planned=False)
     item["reason"] = "模板未定义，保留原始阶段"
     item["evidence"] = "explicit"
     result_index = next((index for index, value in enumerate(steps) if value["id"] == "result"), len(steps))
@@ -462,7 +463,19 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
         saved_stage = run.get("failure_stage") or data.get("failure_stage") or (summary.get("failure_stage") if isinstance(summary, dict) else None)
         saved_event_id = run.get("failure_event_id") or data.get("failure_event_id") or (summary.get("failure_event_id") if isinstance(summary, dict) else None)
         saved_message = run.get("message") or data.get("failure_message") or run.get("error_message")
-        if saved_stage or saved_event_id:
+        if (
+            task_type == "extract_link" and saved_stage == "payment"
+            and summary.get("mode") == "extract_only"
+            and summary.get("extraction_status") == "failed"
+            and summary.get("payment_status") == "not_started"
+            and str(run.get("error_message") or saved_message or "").strip() == "平台提链失败"
+        ):
+            # 旧版仅提链任务把最后的跳过支付记为失败阶段；明确的业务摘要优先于该兜底记录。
+            chosen = {
+                "main_step_id": "extract_link", "raw_stage": "extraction", "label": stage_label("extraction"),
+                "event_id": None, "state": "failed", "message": "平台提链失败", "evidence": "inferred",
+            }
+        elif saved_stage or saved_event_id:
             chosen = {"main_step_id": run.get("failure_step_id") or data.get("failure_step_id") or saved_stage or "result", "raw_stage": saved_stage or run.get("progress_stage") or "result", "event_id": saved_event_id, "state": "failed", "message": _safe_message(saved_message), "evidence": "inferred"}
         else:
             last_activity = next((value for value in reversed(activity) if value.get("main_step_id") != "result"), None)
