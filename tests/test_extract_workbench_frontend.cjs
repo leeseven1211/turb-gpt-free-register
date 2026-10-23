@@ -244,6 +244,9 @@ test('支付入口分别呈现支付页面、平台入口、二维码与平台�
   assert.match(html, /平台显示已开通/);
   assert.match(html, /本地到账以卡片中的/);
   assert.doesNotMatch(html, /onerror=|到账已核实/);
+  const pending = api.renderPaymentEntry({payment_status:'requires_action', platform_plus_status:'WAITING_FOR_PAYMENT'});
+  assert.match(pending, /等待扫码或付款/);
+  assert.match(pending, /等待支付后核验/);
 });
 
 test('只有普通支付页面时不伪造二维码，无图片的二维码内容只呈现原文', () => {

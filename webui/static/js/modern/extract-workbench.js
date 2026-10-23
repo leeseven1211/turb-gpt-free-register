@@ -561,7 +561,7 @@ function extractWorkbenchPaymentQrSources(entry) {
 function extractWorkbenchPaymentStatus(value, {plus = false} = {}) {
   const key = String(value ?? '').toLowerCase();
   const labels = plus
-    ? {true:'平台显示已开通', confirmed:'平台显示已开通', plus:'平台显示已开通', active:'平台显示已开通', activated:'平台显示已开通', success:'平台显示已开通', succeeded:'平台显示已开通', false:'平台尚未确认', pending:'平台待核验', unknown:'平台待核验', not_started:'平台尚未核验', not_confirmed:'平台尚未确认', failed:'平台核验失败', not_applicable:'不适用'}
+    ? {true:'平台显示已开通', confirmed:'平台显示已开通', plus:'平台显示已开通', active:'平台显示已开通', activated:'平台显示已开通', success:'平台显示已开通', succeeded:'平台显示已开通', false:'平台尚未确认', waiting_for_payment:'等待支付后核验', pending:'平台待核验', unknown:'平台待核验', not_started:'平台尚未核验', not_confirmed:'平台尚未确认', failed:'平台核验失败', not_applicable:'不适用'}
     : {paid:'支付成功', succeeded:'支付成功', success:'支付成功', pending:'待支付', unpaid:'未支付', not_started:'未发起支付', pending_payment:'待支付', requires_action:'等待扫码或付款', requires_confirmation:'等待支付确认', requires_payment_method:'需要支付方式', running:'支付处理中', processing:'支付处理中', failed:'支付失败', canceled:'已取消', cancelled:'已取消', expired:'已过期', unknown:'待确认'};
   return labels[key] || (key ? String(value) : '平台未返回');
 }
