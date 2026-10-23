@@ -226,19 +226,23 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
   .extract-workbench-list {
     grid-template-columns: max-content minmax(340px, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
-    column-gap: 8px;
+    column-gap: 12px;
   }
   .extract-workbench-status-tabs {
     grid-column: 1;
     grid-row: 1;
     min-width: 0;
-    gap: 2px;
+    align-self: start;
+    gap: 4px;
     margin-bottom: 0;
+    padding: 0;
   }
   .extract-workbench-status-tabs button { gap: 3px; padding: 0 2px; font-size: 11px; }
   .extract-workbench-filters {
     grid-column: 2;
     grid-row: 1;
+    align-self: start;
+    gap: 8px;
     flex-wrap: wrap;
     margin-bottom: 8px;
   }
