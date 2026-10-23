@@ -342,53 +342,6 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         self.assertEqual(2, extract_link_service.list_workbench_tasks()["total"])
         self.assertEqual(1, extract_link_service.list_workbench_batches()["total"])
 
-    def test_hiding_terminal_batch_keeps_task_history(self):
-        batch = operation.create_runtime_batch(
-            batch_type="extract_link", title="待隐藏批次", requested_count=1,
-            data={"workbench_batch": True},
-        )
-        task = operation.create_runtime_task(
-            task_type="extract_link", account_id=None, email="batch-history@example.test",
-            batch_id=int(batch["id"]), batch_ordinal=1,
-        )
-        with operation._connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE {operation._table('operation_tasks')} SET status='failed', completed_at=now() WHERE id=%s",
-                (int(task["id"]),),
-            )
-            cur.execute(
-                f"UPDATE {operation._table('operation_runs')} SET status='failed', completed_at=now() WHERE task_id=%s",
-                (int(task["id"]),),
-            )
-            cur.execute(
-                f"UPDATE {operation._table('operation_batches')} SET status='partial_success', completed_at=now() WHERE id=%s",
-                (int(batch["id"]),),
-            )
-
-        result = extract_link_batches.hide_batch(int(batch["id"]))
-
-        self.assertTrue(result["deleted"])
-        self.assertIsNone(extract_link_service.workbench_batch_detail(int(batch["id"])))
-        self.assertEqual(0, extract_link_service.list_workbench_batches()["total"])
-        self.assertIsNotNone(operation.get_task(int(task["id"]), include_events=False))
-        self.assertEqual(1, extract_link_service.list_workbench_tasks()["total"])
-
-    def test_hiding_active_batch_is_rejected(self):
-        batch = operation.create_runtime_batch(
-            batch_type="extract_link", title="执行中的批次", requested_count=1,
-            data={"workbench_batch": True},
-        )
-        operation.create_runtime_task(
-            task_type="extract_link", account_id=None, email="active-batch@example.test",
-            batch_id=int(batch["id"]), batch_ordinal=1,
-        )
-
-        result = extract_link_batches.hide_batch(int(batch["id"]))
-
-        self.assertFalse(result["deleted"])
-        self.assertEqual("批次仍在执行，不能删除", result["error"])
-        self.assertIsNotNone(extract_link_service.workbench_batch_detail(int(batch["id"])))
-
     def test_empty_interrupted_batch_is_not_reported_as_permanently_queued(self):
         batch = operation.create_runtime_batch(batch_type="extract_link", title="提交中断", requested_count=10,
                                                data={"workbench_batch": True, "provider_id": "lumen_flow", "mode": "extract_only", "submission_complete": False})

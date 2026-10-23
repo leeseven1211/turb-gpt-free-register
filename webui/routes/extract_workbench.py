@@ -314,20 +314,6 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             return _error("提链批次详情暂不可用", 503)
         return jsonify({"item": item})
 
-    @bp.post("/api/extract-workbench/batches/<int:batch_id>/delete")
-    def delete_extract_workbench_batch(batch_id: int):
-        if batch_id < 1:
-            return _error("batch_id 参数无效", 400)
-        try:
-            result = extract_link_service.hide_workbench_batch(batch_id)
-        except Exception as exc:
-            return _service_error("批次删除", exc)
-        if result.get("deleted") is True:
-            return jsonify({"ok": True, "deleted": True, "batch_id": batch_id})
-        error = str(result.get("error") or "批次未删除")
-        status = 409 if error == "批次仍在执行，不能删除" else 404
-        return _error(error, status)
-
     @bp.post("/api/extract-workbench/batches")
     def create_extract_workbench_batch():
         data, error = _parse_object_body({"title", "provider_id", "mode", "type", "options", "filters", "limit", "submission_id", "workers"})

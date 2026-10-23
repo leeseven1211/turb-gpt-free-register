@@ -2163,12 +2163,6 @@ def workbench_batch_detail(batch_id: int) -> dict | None:
     return _workbench_batch_summary(batches[0], counts.get(int(batch_id), {}))
 
 
-def hide_workbench_batch(batch_id: int) -> dict:
-    from core.storage import extract_link_batches
-
-    return extract_link_batches.hide_batch(batch_id)
-
-
 def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:
     from core.storage import extract_link_jobs, operation
     from core.extract_link_providers.contracts import safe_links, safe_payment_artifact

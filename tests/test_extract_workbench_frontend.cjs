@@ -20,7 +20,6 @@ function createView({timers = null} = {}) {
   const timerApi = timers || {setTimeout, clearTimeout};
   const window = {
     crypto: require('node:crypto').webcrypto,
-    confirm() { return true; },
     __EXTRACT_WORKBENCH_DATA_SOURCE__(endpoint, options = {}) {
       requests.push({endpoint, options});
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
@@ -38,7 +37,6 @@ function createView({timers = null} = {}) {
     listUrl: typeof extractWorkbenchListUrl === 'function' ? extractWorkbenchListUrl : undefined,
     outcome: extractWorkbenchOutcome,
     renderTabs: extractWorkbenchRenderStatusTabs,
-    deleteBatch: extractWorkbenchDeleteBatch,
     renderTasks: extractWorkbenchRenderTasks,
     syncTasks: extractWorkbenchSyncTaskCards,
     openCreate: extractWorkbenchOpenCreate,
@@ -1140,34 +1138,11 @@ test('批次并发空值、非整数和超范围时不发送创建请求', async
 test('批次摘要显示本批并发，历史批次显示沿用平台并发', () => {
   const {api}=createView();
   const summary={innerHTML:''};
-  const deleteButton={hidden:true,disabled:true};
-  api.setRoot({querySelector:selector=>selector==='[data-workbench-batch-summary]' ? summary
-    : selector==='[data-workbench-delete-batch]' ? deleteButton : null});
+  api.setRoot({querySelector:selector=>selector==='[data-workbench-batch-summary]' ? summary : null});
   api.setState({batchDetail:{batch_id:7,title:'当前批次',workers:4}});
   api.renderBatches();
   assert.match(summary.innerHTML,/并发 4/);
-  assert.equal(deleteButton.hidden,false);
-  assert.equal(deleteButton.disabled,false);
   api.setState({batchDetail:{batch_id:6,title:'历史批次',workers:null}});
   api.renderBatches();
   assert.match(summary.innerHTML,/平台并发/);
-});
-
-test('删除批次需确认，隐藏批次但保留关联任务历史', async () => {
-  const {api,requests}=createView();
-  api.setState({batch:'42',batchDetail:{batch_id:42,title:'待隐藏批次',started_count:9}});
-  await api.deleteBatch();
-  assert.equal(requests[0].endpoint,'/api/extract-workbench/batches/42/delete');
-  assert.equal(requests[0].options.method,'POST');
-  assert.equal(api.state().batch,'');
-  assert.equal(api.state().batchDetail,null);
-});
-
-test('取消删除批次确认时不发请求', async () => {
-  const {api,requests,window}=createView();
-  window.confirm=()=>false;
-  api.setState({batch:'42',batchDetail:{batch_id:42,title:'待隐藏批次'}});
-  await api.deleteBatch();
-  assert.equal(requests.length,0);
-  assert.equal(api.state().batch,'42');
 });

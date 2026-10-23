@@ -338,31 +338,6 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             self.assertEqual(400, self.client.get("/api/extract-workbench/batches?page=0").status_code)
             list_batches.assert_not_called()
 
-    def test_batch_delete_route_returns_safe_success_and_conflicts(self):
-        with patch.object(
-            extract_workbench.extract_link_service, "hide_workbench_batch", create=True,
-            return_value={"deleted": True, "batch_id": 7},
-        ) as hide_batch:
-            response = self.client.post("/api/extract-workbench/batches/7/delete")
-        self.assertEqual(200, response.status_code)
-        self.assertEqual({"ok": True, "deleted": True, "batch_id": 7}, response.get_json())
-        hide_batch.assert_called_once_with(7)
-
-        with patch.object(
-            extract_workbench.extract_link_service, "hide_workbench_batch", create=True,
-            return_value={"deleted": False, "error": "批次仍在执行，不能删除"},
-        ):
-            response = self.client.post("/api/extract-workbench/batches/7/delete")
-        self.assertEqual(409, response.status_code)
-        self.assertEqual("批次仍在执行，不能删除", response.get_json()["error"])
-
-        with patch.object(
-            extract_workbench.extract_link_service, "hide_workbench_batch", create=True,
-            return_value={"deleted": False, "error": "批次不存在"},
-        ):
-            response = self.client.post("/api/extract-workbench/batches/7/delete")
-        self.assertEqual(404, response.status_code)
-
     def test_create_rejects_credentials_and_nonpositive_account_ids(self):
         with patch.object(
             extract_workbench.extract_link_service,
