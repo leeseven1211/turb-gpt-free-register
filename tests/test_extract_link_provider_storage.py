@@ -480,6 +480,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             "remote_polling": True, "payment_check_status": "pending", "platform_plus_status": "unknown",
             "entitlement_active": False, "entitlement_inferred": True, "queue_position": 7,
             "max_attempts": 4, "cdk_state": "allocated",
+            "payment_confirmation_source": "local_plan_check", "payment_confirmed_plan_checked_at": "2026-10-23T01:00:00Z",
         }
         run_id = int(task["run"]["id"])
         extract_link_jobs.save_provider_job(run_id, "lumen_flow", "summary-job", {

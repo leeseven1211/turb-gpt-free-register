@@ -1788,12 +1788,15 @@ def _safe_provider_job_state(
     summary = item.summary if isinstance(item.summary, dict) else {}
     safe_summary = {}
     for key in ("current_step", "percent", "outcome", "failure_code", "failure_type", "last_event",
-                "plus_verification_status", "automatic_payment_status", "payment_check_status", "platform_plus_status"):
+                "plus_verification_status", "automatic_payment_status", "payment_check_status", "platform_plus_status",
+                "payment_confirmed_plan_checked_at"):
         value = summary.get(key)
         if key == "percent" and isinstance(value, (int, float)) and not isinstance(value, bool):
             safe_summary[key] = max(0, min(100, int(value)))
         elif isinstance(value, str):
             safe_summary[key] = value[:100]
+    if summary.get("payment_confirmation_source") == "local_plan_check":
+        safe_summary["payment_confirmation_source"] = "local_plan_check"
     for key in ("completed_steps", "total_steps", "run_attempt", "step_attempt", "max_attempts", "queue_position"):
         value = summary.get(key)
         if type(value) is int and 0 <= value <= 1000000:
@@ -1943,6 +1946,9 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "preflight_status": preflight,
         "extraction_status": extraction,
         "payment_status": payment,
+        "payment_confirmation_source": "local_plan_check" if (
+            payment == "paid" and summary.get("payment_confirmation_source") == "local_plan_check"
+        ) else "",
         "plus_status": plus,
         "run_count": int(row.get("run_count") or 0),
         "progress": progress,
@@ -2736,6 +2742,49 @@ def _provider_job_for_sync(run_id: int):
     return job
 
 
+def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
+    """结合原单扫码完成和独立套餐事实确认付款，保留平台推断标记。"""
+    summary = state.get("summary") or {}
+    artifact = state.get("payment_artifact") or {}
+    if not (
+        provider_id == "huanguang" and mode == "auto_payment"
+        and state.get("extraction_state") == "succeeded" and state.get("payment_state") == "unknown"
+        and summary.get("platform_plus_status") == "inferred" and summary.get("entitlement_inferred") is True
+        and summary.get("entitlement_active") is True and summary.get("automatic_payment_status") == "COMPLETED"
+        and summary.get("automatic_payment_terminal") is True and summary.get("remote_polling") is False
+        and summary.get("payment_check_status") == "completed" and artifact.get("payment_status") == "completed"
+        and summary.get("remote_status") == "DONE"
+        and summary.get("remote_terminal_failure") is not True
+    ):
+        return False
+    from core.storage import extract_link_jobs, operation
+
+    task = operation.get_task(int(context.task_id), include_events=False) or {}
+    prior_summary = prior_state.get("summary") or {}
+    prior_confirmed = (
+        prior_state.get("payment_state") == "succeeded" and prior_state.get("plus_status") == "confirmed"
+        and prior_summary.get("payment_confirmation_source") == "local_plan_check"
+    )
+    if prior_confirmed:
+        # 后续查套餐失败不抹掉本任务已经核实的到账事实；远端明确失败仍由上面的状态门槛拦截。
+        account = {
+            "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": prior_summary.get("payment_confirmed_plan_checked_at"),
+        }
+    else:
+        account = db.get_account(int(context.account_id)) or {}
+    if not extract_link_jobs.independent_plus_is_confirmed(account, task_created_at=task.get("created_at")):
+        return False
+    checked_at = str(account.get("plan_checked_at") or "").strip() or str(account.get("plan_last_success_at") or "").strip()
+    state["payment_state"] = "succeeded"
+    state["plus_status"] = "confirmed"
+    summary["payment_confirmation_source"] = "local_plan_check"
+    summary["payment_confirmed_plan_checked_at"] = checked_at
+    summary["automatic_payment_requires_reconcile"] = False
+    state["summary"] = summary
+    return True
+
+
 def _handle_provider_operation(context):
     from core.extract_link_providers.contracts import ExtractRequest, ProviderJob
     from core.storage import extract_link_jobs
@@ -2977,10 +3026,18 @@ def _handle_provider_operation(context):
                 and state["extraction_state"] == "succeeded" and state["payment_state"] == "not_started"
             ):
                 state["payment_state"] = "unknown"
+            local_payment_confirmed = _reconcile_huanguang_automatic_payment(
+                context, state, provider_id=provider_id, mode=mode,
+                prior_state=(prior_job or {}).get("public_state") or {},
+            )
             if state["payment_state"] == "succeeded":
-                context.report(stage="payment", state="success", message="平台已确认支付成功")
+                context.report(
+                    stage="payment", state="success",
+                    message="扫码完成，独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "平台已确认支付成功",
+                    detail={"payment_confirmation_source": "local_plan_check"} if local_payment_confirmed else {},
+                )
                 aftercare = state.get("aftercare_status") or "not_started"
-                if aftercare in {"not_started", "pending"}:
+                if not local_payment_confirmed and aftercare in {"not_started", "pending"}:
                     aftercare_status, latest_token, _ = _payment_aftercare(
                         context, account_id, email, config_snapshot=context.config_snapshot,
                     )
@@ -2993,14 +3050,17 @@ def _handle_provider_operation(context):
                         context.report(stage="aftercare", state="failed", message="支付后 AT 已失效，自动刷新按配置关闭")
                     else:
                         context.report(stage="aftercare", state="failed", message="支付后账号查活未完成")
-                if _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False):
+                if local_payment_confirmed:
+                    state["plus_status"] = "confirmed"
+                elif _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False):
                     schedule_plan_check = True
                     state["plus_status"] = "pending"
                 else:
                     state["plus_status"] = "not_applicable"
                 context.report(
-                    stage="plus", state="pending" if state["plus_status"] == "pending" else "skipped",
-                    message="Plus 权益核验状态已单独记录", detail={"plus_status": state["plus_status"]},
+                    stage="plus", state="success" if local_payment_confirmed else "pending" if state["plus_status"] == "pending" else "skipped",
+                    message="独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "Plus 权益核验状态已单独记录",
+                    detail={"plus_status": state["plus_status"]},
                 )
             elif mode == "extract_only":
                 state["payment_state"] = "not_started"
@@ -3020,6 +3080,8 @@ def _handle_provider_operation(context):
                 if mode == "auto_payment" and payment in {"unknown", "pending"}:
                     terminal_status = "request_unknown" if payment == "unknown" else "partial_success"
                     status_message = "提链成功，自动支付状态待确认"
+                elif local_payment_confirmed:
+                    status_message = "提链并支付成功，独立套餐查询已确认 Plus 到账"
                 elif mode == "manual_payment" and payment not in {"succeeded", "failed"}:
                     status_message = "提链成功，等待手动支付"
             elif extraction == "failed":
@@ -3068,6 +3130,11 @@ def _handle_provider_operation(context):
                 "remote_job_created": bool(job_id),
                 "outcome": state.get("summary", {}).get("outcome"),
             }
+            if local_payment_confirmed:
+                result_summary.update({
+                    "payment_confirmation_source": "local_plan_check",
+                    "payment_confirmed_plan_checked_at": state["summary"]["payment_confirmed_plan_checked_at"],
+                })
             if extraction == "failed":
                 result_summary.update({
                     "cause_code": "extract_provider_failed",

@@ -20,6 +20,7 @@ _SUMMARY_FIELDS = frozenset({
     "failure_type", "last_event", "plus_verification_status", "automatic_payment_status",
     "automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
     "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred",
+    "payment_confirmation_source", "payment_confirmed_plan_checked_at",
     "queue_position", "max_attempts", "cdk_state",
 })
 _REMOTE_STATUSES = frozenset({
@@ -69,6 +70,8 @@ def _public_state(value: Mapping[str, Any]) -> dict:
         safe_summary: dict[str, Any] = {}
         for key in _SUMMARY_FIELDS:
             item = summary.get(key)
+            if key == "payment_confirmation_source" and item != "local_plan_check":
+                continue
             if key == "remote_status":
                 normalized = item.strip().upper() if isinstance(item, str) else ""
                 if normalized in _REMOTE_STATUSES:

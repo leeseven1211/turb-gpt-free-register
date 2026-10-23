@@ -942,6 +942,130 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         scenario.provider.create_job.assert_not_called()
         scenario.provider.start_payment.assert_not_called()
 
+    def _run_huanguang_completed_scan_sync(self, *, result_changes=None, account_changes=None, prior_state=None, remote_status="DONE"):
+        from core import extract_link_service
+        from core.extract_link_providers.huanguang import HuanguangProvider
+
+        result = {
+            "checkout_url": "https://checkout.example.test/session", "payment_status": "completed",
+            "entitlement_active": True, "entitlement_inferred": True, "payment_check_status": "completed",
+            "chongyun_status": "completed", "chongyun_order_status": "COMPLETED",
+        }
+        result.update(result_changes or {})
+        job = HuanguangProvider._job({"status": remote_status, "result": result}, "fixture-job", "fixture-secret")
+        account = {
+            "id": 77, "email": "fixture@example.test", "access_token": "fixture-token",
+            "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": "2026-10-23T01:00:00Z",
+        }
+        account.update(account_changes or {})
+        prior = {
+            "job_id": "fixture-job", "private_data": {"job_secret": "fixture-secret"},
+            "public_state": prior_state or {"extraction_state": "succeeded", "payment_state": "unknown"},
+        }
+        with self._scenario(failed_job=job) as scenario:
+            scenario.context.run.update({"created_at": "2026-10-23T02:00:00Z"})
+            scenario.context.run["data"].update({
+                "provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi",
+                "workbench_action": "sync_status", "provider_job_run_id": 700,
+            })
+            with (
+                patch.object(extract_link_service, "_provider_job_for_sync", return_value=prior),
+                patch.object(extract_link_service.db, "get_account", return_value=account),
+                patch("core.storage.operation.get_task", return_value={"created_at": "2026-10-23T00:00:00Z"}),
+                patch.object(extract_link_service, "_payment_aftercare", return_value=("succeeded", "fixture-token", {})) as aftercare,
+                patch.object(extract_link_service, "_bool_setting", return_value=True),
+                patch("core.plan_check_service.enqueue_account_plan_check", return_value={"accepted": True}) as enqueue,
+            ):
+                extract_link_service._handle_provider_operation(scenario.context)
+        return scenario, aftercare, enqueue
+
+    def test_huanguang_completed_scan_and_fresh_independent_plus_persist_local_payment_confirmation(self):
+        from core import extract_link_service
+        from core.storage.extract_link_jobs import _public_state
+
+        scenario, aftercare, enqueue = self._run_huanguang_completed_scan_sync()
+        finished = scenario.context.finish.call_args.kwargs
+        self.assertEqual("success", finished["status"])
+        self.assertIsNone(finished["error"])
+        self.assertEqual("succeeded", finished["result_summary"]["payment_status"])
+        self.assertEqual("confirmed", finished["result_summary"]["plus_status"])
+        self.assertEqual("local_plan_check", finished["result_summary"]["payment_confirmation_source"])
+        saved = _public_state(scenario.save_job.call_args.args[3])
+        self.assertEqual("succeeded", saved["payment_state"])
+        self.assertEqual("confirmed", saved["plus_status"])
+        self.assertEqual("local_plan_check", saved["summary"]["payment_confirmation_source"])
+        self.assertEqual("2026-10-23T01:00:00Z", saved["summary"]["payment_confirmed_plan_checked_at"])
+        self.assertFalse(saved["summary"]["automatic_payment_requires_reconcile"])
+        self.assertTrue(saved["summary"]["entitlement_inferred"])
+        self.assertEqual("inferred", saved["summary"]["platform_plus_status"])
+        item = extract_link_service._workbench_task_item({
+            "task_id": 810, "task_data": {"provider_id": "huanguang", "mode": "auto_payment"},
+            "public_state": saved,
+        })
+        self.assertEqual("paid", item["payment_status"])
+        self.assertEqual("local_plan_check", item["payment_confirmation_source"])
+        aftercare.assert_not_called()
+        enqueue.assert_not_called()
+        scenario.provider.create_job.assert_not_called()
+        scenario.provider.start_payment.assert_not_called()
+
+    def test_huanguang_local_confirmation_requires_completed_scan_terminal_query_and_fresh_plus(self):
+        cases = [
+            ({"chongyun_order_status": "WAITING_SCAN", "chongyun_status": "awaiting_worker"}, {}),
+            ({"chongyun_order_status": "FAILED_REFUNDED", "chongyun_status": "refunded"}, {}),
+            ({"chongyun_polling": True}, {}),
+            ({"payment_check_status": "running"}, {}),
+            ({"payment_status": "pending"}, {}),
+            ({"payment_status": "failed"}, {}),
+            ({"payment_status": None}, {}),
+            ({"entitlement_active": False}, {}),
+            ({"entitlement_active": None}, {}),
+            ({"entitlement_inferred": False}, {}),
+            ({"entitlement_inferred": None}, {}),
+            ({}, {"plan_check_status": "failed"}),
+            ({}, {"current_plan_type": "free"}),
+            ({}, {"plan_checked_at": "2026-10-22T23:59:59Z"}),
+            ({}, {"plan_checked_at": "bad-time"}),
+        ]
+        for result_changes, account_changes in cases:
+            with self.subTest(result_changes=result_changes, account_changes=account_changes):
+                scenario, aftercare, enqueue = self._run_huanguang_completed_scan_sync(
+                    result_changes=result_changes, account_changes=account_changes,
+                )
+                saved = scenario.save_job.call_args.args[3]
+                self.assertNotEqual("succeeded", saved["payment_state"])
+                self.assertNotIn("payment_confirmation_source", saved["summary"])
+                aftercare.assert_not_called()
+                enqueue.assert_not_called()
+                scenario.provider.create_job.assert_not_called()
+                scenario.provider.start_payment.assert_not_called()
+
+    def test_huanguang_remote_failure_does_not_reconcile_stale_completed_scan_and_plus(self):
+        for status in ("FAILED", "ERROR", "CANCELLED"):
+            with self.subTest(remote_status=status):
+                scenario, _, _ = self._run_huanguang_completed_scan_sync(remote_status=status)
+                self.assertNotEqual("succeeded", scenario.save_job.call_args.args[3]["payment_state"])
+
+    def test_huanguang_repeat_sync_preserves_recorded_local_payment_but_explicit_failure_wins(self):
+        first, _, _ = self._run_huanguang_completed_scan_sync()
+        prior = first.save_job.call_args.args[3]
+        again, aftercare, enqueue = self._run_huanguang_completed_scan_sync(
+            account_changes={"plan_check_status": "failed"}, prior_state=prior,
+        )
+        saved = again.save_job.call_args.args[3]
+        self.assertEqual("succeeded", saved["payment_state"])
+        self.assertEqual("confirmed", saved["plus_status"])
+        self.assertEqual("local_plan_check", saved["summary"]["payment_confirmation_source"])
+        aftercare.assert_not_called()
+        enqueue.assert_not_called()
+        failed, _, _ = self._run_huanguang_completed_scan_sync(
+            result_changes={"chongyun_order_status": "FAILED_REFUNDED", "chongyun_status": "refunded"},
+            prior_state=prior,
+        )
+        self.assertEqual("failed", failed.save_job.call_args.args[3]["payment_state"])
+        self.assertNotIn("payment_confirmation_source", failed.save_job.call_args.args[3]["summary"])
+
     def test_paid_auto_payment_without_plan_check_reports_skipped_plus_step(self):
         from core import extract_link_service
         from core.extract_link_providers.contracts import ProviderJob
