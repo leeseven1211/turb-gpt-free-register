@@ -26,8 +26,9 @@ _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
 _MAX_BATCH_SIZE = 5000
 _MAX_BATCH_WORKERS = 16
-_CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status"}
+_CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
+_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
 _BATCH_COUNT_FIELDS = (
     "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
     "plus_confirmed", "needs_attention",
@@ -119,13 +120,16 @@ def _candidate_filters(value: Any) -> dict[str, str] | None:
     if not isinstance(value, dict) or set(value) - _CANDIDATE_FILTER_FIELDS:
         return None
     result = {}
-    for field, maximum in (("query", 200), ("source", 80), ("date_from", 10), ("date_to", 10), ("extract_status", 20)):
+    for field, maximum in (("query", 200), ("source", 80), ("date_from", 10), ("date_to", 10), ("extract_status", 20), ("promotion", 32)):
         raw = value.get(field, "")
         if not isinstance(raw, str) or len(raw) > maximum:
             return None
         result[field] = raw.strip()
     result["extract_status"] = result["extract_status"] or "not_succeeded"
     if result["extract_status"] not in _EXTRACT_STATUSES:
+        return None
+    result["promotion"] = result["promotion"] or "eligible"
+    if result["promotion"] not in _PROMOTION_FILTERS:
         return None
     for field in ("date_from", "date_to"):
         if result[field]:
@@ -154,18 +158,43 @@ def _public_config(value: Any) -> dict[str, Any] | None:
         modes = provider.get("modes")
         if not isinstance(modes, list):
             modes = []
+        link_types = provider.get("link_types")
+        if not isinstance(link_types, list):
+            link_types = []
         providers.append({
             "id": provider["id"],
             "label": provider.get("label") if isinstance(provider.get("label"), str) else provider["id"],
             "default_type": provider.get("default_type") if isinstance(provider.get("default_type"), str) else "",
+            "link_types": list(dict.fromkeys(
+                value for value in link_types
+                if isinstance(value, str) and value in extract_link_service.SUPPORTED_LINK_TYPES
+            )),
             "modes": [mode for mode in modes if isinstance(mode, str) and mode in _MODES],
         })
+    unavailable_providers = []
+    unavailable = value.get("unavailable_providers")
+    if isinstance(unavailable, list):
+        for provider in unavailable:
+            if not isinstance(provider, dict) or not _valid_identifier(provider.get("id")):
+                continue
+            reason = provider.get("unavailable_reason")
+            if reason not in {
+                "缺少API地址和平台授权信息", "缺少API地址", "缺少平台授权信息", "连接配置无效",
+                "平台配置暂不可用", "未启用可用运行模式",
+            }:
+                reason = "平台配置暂不可用"
+            unavailable_providers.append({
+                "id": provider["id"],
+                "label": provider.get("label") if isinstance(provider.get("label"), str) else provider["id"],
+                "unavailable_reason": reason,
+            })
     default_provider = value.get("default_provider")
     default_mode = value.get("default_mode")
     return {
         "default_provider": default_provider if _valid_identifier(default_provider) else "",
         "default_mode": default_mode if isinstance(default_mode, str) and default_mode in _MODES else "",
         "providers": providers,
+        "unavailable_providers": unavailable_providers,
         "batch_workers_default": value.get("batch_workers_default") if _valid_batch_workers(value.get("batch_workers_default")) else 1,
         "batch_workers_max": _MAX_BATCH_WORKERS,
     }
@@ -234,10 +263,14 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         for item in result["items"]:
             if not isinstance(item, dict) or _safe_count(item.get("account_id")) < 1:
                 continue
-            items.append(_safe_tree({
+            projected = {
                 key: item[key] for key in ("account_id", "email", "created_at", "email_source", "extract_link_status")
                 if key in item
-            }))
+            }
+            promotion = item.get("account_promotion_value")
+            if promotion in {"free_trial", "half_price", "other_discount", "other_promo"}:
+                projected["account_promotion_value"] = promotion
+            items.append(_safe_tree(projected))
         return jsonify({
             "total": _safe_count(result.get("total")),
             "selected_count": _safe_count(result.get("selected_count")),

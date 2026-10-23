@@ -13,6 +13,15 @@ let EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
 let EXTRACT_WORKBENCH_PAYMENT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_PAYMENT_TRIGGER = null;
 const EXTRACT_WORKBENCH_PROVIDER_LABELS = {legacy:'现有提链', lumen_flow:'Lumen Flow', huanguang:'幻光提链'};
+const EXTRACT_WORKBENCH_LINK_TYPE_LABELS = {
+  pix: 'PIX', upi: 'UPI', gopay: 'GoPay', momo: 'MOMO', gcash: 'GCash',
+  paypal: 'PayPal', ideal: 'iDEAL', ideal_short: 'iDEAL Short', kakao_pay: 'Kakao Pay',
+  ph_short: 'PH Short',
+};
+const EXTRACT_WORKBENCH_PROMOTION_LABELS = {
+  eligible: '全部可提链优惠', free_trial: '免费试用', half_price: '半价',
+  other_discount: '其他折扣', other_promo: '其他优惠',
+};
 
 const EXTRACT_WORKBENCH_STATUS_LABELS = {
   pending: '等待执行', queued: '排队中', running: '运行中', success: '已完成', failed: '失败',
@@ -34,14 +43,39 @@ function extractWorkbenchModesForProvider(provider) {
   return Array.isArray(provider?.modes) ? provider.modes.map(String) : [];
 }
 
-function extractWorkbenchCreatePayload(accountIds, providerId, requestedMode) {
+function extractWorkbenchLinkTypesForProvider(provider) {
+  if (!provider) return [];
+  const values = Array.isArray(provider.link_types) ? provider.link_types.map(String).filter(Boolean) : [];
+  // 兼容未返回 link_types 的旧配置，仍允许使用服务端公布的默认类型。
+  return values.length ? [...new Set(values)] : (provider.default_type ? [String(provider.default_type)] : []);
+}
+
+function extractWorkbenchLinkTypeLabel(type) {
+  const value = String(type || '');
+  return EXTRACT_WORKBENCH_LINK_TYPE_LABELS[value] || value;
+}
+
+function extractWorkbenchPromotionLabel(value) {
+  return EXTRACT_WORKBENCH_PROMOTION_LABELS[String(value || 'eligible')] || EXTRACT_WORKBENCH_PROMOTION_LABELS.eligible;
+}
+
+function extractWorkbenchPromotionValue(value) {
+  const candidate = String(value || '');
+  return Object.prototype.hasOwnProperty.call(EXTRACT_WORKBENCH_PROMOTION_LABELS, candidate) ? candidate : 'eligible';
+}
+
+function extractWorkbenchCreatePayload(accountIds, providerId, requestedMode, requestedType) {
   const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
   const allowedModes = extractWorkbenchModesForProvider(provider);
   const mode = allowedModes.includes(requestedMode) ? requestedMode
     : !requestedMode && allowedModes.includes('extract_only') ? 'extract_only' : '';
+  const allowedTypes = extractWorkbenchLinkTypesForProvider(provider);
+  const defaultType = String(provider?.default_type || '');
+  const type = allowedTypes.includes(String(requestedType || '')) ? String(requestedType)
+    : allowedTypes.includes(defaultType) ? defaultType : (allowedTypes[0] || defaultType);
   return {
     account_ids: [...new Set((Array.isArray(accountIds) ? accountIds : []).map(String).filter(Boolean))],
-    provider_id: String(provider?.id || ''), mode, type: String(provider?.default_type || ''),
+    provider_id: String(provider?.id || ''), mode, type,
   };
 }
 
@@ -215,17 +249,20 @@ function extractWorkbenchRenderProviders() {
   extractWorkbenchRenderBatchWorkers();
   const config = EXTRACT_WORKBENCH_CONFIG || {providers: []};
   const providers = Array.isArray(config.providers) ? config.providers : [];
+  const unavailableProviders = Array.isArray(config.unavailable_providers) ? config.unavailable_providers : [];
   const providerSelect = extractWorkbenchNode('[data-workbench-provider]');
   const filterProvider = extractWorkbenchNode('[data-workbench-filter-provider]');
   if (!providerSelect || !filterProvider) return;
   const previous = providerSelect.value;
-  providerSelect.innerHTML = providers.map(provider => `<option value="${extractWorkbenchEscape(provider.id)}">${extractWorkbenchEscape(provider.label || provider.id)}</option>`).join('');
+  providerSelect.innerHTML = providers.map(provider => `<option value="${extractWorkbenchEscape(provider.id)}">${extractWorkbenchEscape(provider.label || provider.id)}</option>`).join('')
+    + unavailableProviders.map(provider => `<option value="${extractWorkbenchEscape(provider.id)}" disabled>${extractWorkbenchEscape(provider.label || provider.id)}（${extractWorkbenchEscape(provider.unavailable_reason || '平台配置暂不可用')}）</option>`).join('');
   const initial = providers.some(provider => provider.id === previous) ? previous
     : providers.some(provider => provider.id === config.default_provider) ? config.default_provider : (providers[0]?.id || '');
   providerSelect.value = initial;
   filterProvider.innerHTML = '<option value="">全部平台</option>' + providers.map(provider => `<option value="${extractWorkbenchEscape(provider.id)}">${extractWorkbenchEscape(provider.label || provider.id)}</option>`).join('');
   filterProvider.value = EXTRACT_WORKBENCH_STATE.provider;
   extractWorkbenchRenderModes();
+  extractWorkbenchRenderLinkTypes();
   const filterMode = extractWorkbenchNode('[data-workbench-filter-mode]');
   if (filterMode) {
     const modes = [...new Set(providers.flatMap(extractWorkbenchModesForProvider))];
@@ -268,6 +305,36 @@ function extractWorkbenchRenderModes() {
   if (createButton) createButton.disabled = EXTRACT_WORKBENCH_STATE.creating || !provider || !modes.includes(modeSelect.value) || count === 0 || extractWorkbenchBatchWorkers() === null;
   const selectedCount = extractWorkbenchNode('[data-workbench-selection-count]');
   if (selectedCount) selectedCount.textContent = `本批计划运行 ${count.toLocaleString('zh-CN')} 个账号`;
+}
+
+function extractWorkbenchRenderLinkTypes() {
+  const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value;
+  const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
+  const typeSelect = extractWorkbenchNode('[data-workbench-type]');
+  if (!typeSelect) return;
+  const types = extractWorkbenchLinkTypesForProvider(provider);
+  const selected = String(typeSelect.value || '');
+  const defaultType = String(provider?.default_type || '');
+  const initial = types.includes(selected) ? selected : types.includes(defaultType) ? defaultType : (types[0] || '');
+  typeSelect.innerHTML = types.length
+    ? types.map(type => `<option value="${extractWorkbenchEscape(type)}">${extractWorkbenchEscape(extractWorkbenchLinkTypeLabel(type))}</option>`).join('')
+    : '<option value="">暂无可用提链类型</option>';
+  typeSelect.value = initial;
+  typeSelect.disabled = !types.length;
+  extractWorkbenchRenderCandidatePromotion();
+  extractWorkbenchRenderModes();
+}
+
+function extractWorkbenchRenderCandidatePromotion() {
+  const promotionNode = extractWorkbenchNode('[data-workbench-promotion]');
+  const promotion = extractWorkbenchPromotionValue(promotionNode?.value);
+  if (promotionNode && promotionNode.value !== promotion) promotionNode.value = promotion;
+  const hint = extractWorkbenchNode('[data-workbench-candidate-hint]');
+  if (!hint) return;
+  const label = extractWorkbenchPromotionLabel(promotion);
+  hint.textContent = promotion === 'eligible'
+    ? '仅匹配活跃、未归档且具备任一可提链优惠的 free 账号；提交前仍会在线查活。'
+    : `仅匹配活跃、未归档且具备「${label}」优惠的 free 账号；提交前仍会在线查活。`;
 }
 
 function extractWorkbenchBatchStatus(status) {
@@ -627,10 +694,12 @@ async function extractWorkbenchLoadAccounts() {
     EXTRACT_WORKBENCH_STATE.previewSignature = signature;
     const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
     if (summary) summary.textContent = `匹配 ${Number(result?.total || 0).toLocaleString('zh-CN')} 个可用账号，本批计划运行 ${Number(result?.selected_count || 0).toLocaleString('zh-CN')} 个；预览前 ${accounts.length} 个。`;
-    target.innerHTML = accounts.length ? `<table><thead><tr><th>账号</th><th>来源</th><th>注册时间</th><th>提链状态</th></tr></thead><tbody>${accounts.map(account => {
+    target.innerHTML = accounts.length ? `<table><thead><tr><th>账号</th><th>来源</th><th>注册时间</th><th>套餐优惠</th><th>提链状态</th></tr></thead><tbody>${accounts.map(account => {
       const email = extractWorkbenchEscape(account.email || '账号未记录');
       const source = extractWorkbenchAccountSources()[account.email_source] || account.email_source || '未记录';
-      return `<tr><td title="${email}">${email}</td><td>${extractWorkbenchEscape(source)}</td><td>${extractWorkbenchEscape(String(account.created_at || '').slice(0, 10) || '—')}</td><td>${extractWorkbenchEscape(account.extract_link_status ? extractWorkbenchStatusLabel(account.extract_link_status) : '尚未提链')}</td></tr>`;
+      const promotion = ['free_trial', 'half_price', 'other_discount', 'other_promo'].includes(String(account.account_promotion_value || ''))
+        ? extractWorkbenchPromotionLabel(account.account_promotion_value) : '—';
+      return `<tr><td title="${email}">${email}</td><td>${extractWorkbenchEscape(source)}</td><td>${extractWorkbenchEscape(String(account.created_at || '').slice(0, 10) || '—')}</td><td>${extractWorkbenchEscape(promotion)}</td><td>${extractWorkbenchEscape(account.extract_link_status ? extractWorkbenchStatusLabel(account.extract_link_status) : '尚未提链')}</td></tr>`;
     }).join('')}</tbody></table>` : '<p class="extract-workbench-empty">没有匹配的可用账号，请调整筛选条件</p>';
     extractWorkbenchRenderModes();
   } catch (error) {
@@ -643,7 +712,8 @@ async function extractWorkbenchLoadAccounts() {
 
 function extractWorkbenchCandidateFilters() {
   const value = selector => extractWorkbenchNode(selector)?.value?.trim() || '';
-  return {query:value('[data-workbench-account-query]'),source:value('[data-workbench-account-source]'),date_from:value('[data-workbench-date-from]'),date_to:value('[data-workbench-date-to]'),extract_status:value('[data-workbench-extract-status]') || 'not_succeeded'};
+  const promotion = extractWorkbenchPromotionValue(value('[data-workbench-promotion]'));
+  return {query:value('[data-workbench-account-query]'),source:value('[data-workbench-account-source]'),date_from:value('[data-workbench-date-from]'),date_to:value('[data-workbench-date-to]'),extract_status:value('[data-workbench-extract-status]') || 'not_succeeded',promotion};
 }
 
 function extractWorkbenchCandidateSignature() {
@@ -656,6 +726,7 @@ function extractWorkbenchInvalidatePreview() {
   EXTRACT_WORKBENCH_STATE.previewSignature = '';
   const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
   if (summary) summary.textContent = '筛选条件已变更，请重新预览匹配账号。';
+  extractWorkbenchRenderCandidatePromotion();
   extractWorkbenchRenderModes();
 }
 
@@ -672,9 +743,10 @@ function extractWorkbenchSubmissionId() {
 async function extractWorkbenchSubmit() {
   const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value || '';
   const requestedMode = extractWorkbenchNode('[data-workbench-mode]')?.value || '';
-  const selected = extractWorkbenchCreatePayload([], providerId, requestedMode);
+  const requestedType = extractWorkbenchNode('[data-workbench-type]')?.value || '';
+  const selected = extractWorkbenchCreatePayload([], providerId, requestedMode, requestedType);
   const count = Number(EXTRACT_WORKBENCH_STATE.preview?.selected_count || 0);
-  if (EXTRACT_WORKBENCH_STATE.creating || !count || !selected.mode || EXTRACT_WORKBENCH_STATE.previewSignature !== extractWorkbenchCandidateSignature()) return;
+  if (EXTRACT_WORKBENCH_STATE.creating || !count || !selected.mode || !selected.type || EXTRACT_WORKBENCH_STATE.previewSignature !== extractWorkbenchCandidateSignature()) return;
   const workers = extractWorkbenchBatchWorkers();
   const feedback = extractWorkbenchNode('[data-workbench-create-feedback]');
   if (workers === null) {
@@ -960,9 +1032,10 @@ function extractWorkbenchBindEvents() {
   });
   root.addEventListener('change', event => {
     if (event.target.matches('[data-workbench-batch-select]')) { void extractWorkbenchSwitchBatch(event.target.value); return; }
-    if (event.target.matches('[data-workbench-account-source], [data-workbench-date-from], [data-workbench-date-to], [data-workbench-extract-status], [data-workbench-batch-limit]')) extractWorkbenchInvalidatePreview();
+    if (event.target.matches('[data-workbench-account-source], [data-workbench-date-from], [data-workbench-date-to], [data-workbench-extract-status], [data-workbench-promotion], [data-workbench-batch-limit]')) extractWorkbenchInvalidatePreview();
     if (event.target.matches('[data-workbench-filter-provider], [data-workbench-filter-mode]')) extractWorkbenchApplyFilters();
-    if (event.target.matches('[data-workbench-provider], [data-workbench-mode]')) extractWorkbenchRenderModes();
+    if (event.target.matches('[data-workbench-provider]')) { extractWorkbenchRenderModes(); extractWorkbenchRenderLinkTypes(); return; }
+    if (event.target.matches('[data-workbench-mode], [data-workbench-type]')) extractWorkbenchRenderModes();
   });
   root.addEventListener('input', event => {
     if (event.target.matches('[data-workbench-batch-workers]')) {
@@ -970,7 +1043,7 @@ function extractWorkbenchBindEvents() {
       extractWorkbenchRenderBatchWorkers();
       extractWorkbenchRenderModes();
     }
-    if (event.target.matches('[data-workbench-account-query], [data-workbench-batch-limit], [data-workbench-date-from], [data-workbench-date-to]')) extractWorkbenchInvalidatePreview();
+    if (event.target.matches('[data-workbench-account-query], [data-workbench-batch-limit], [data-workbench-date-from], [data-workbench-date-to], [data-workbench-promotion]')) extractWorkbenchInvalidatePreview();
     if (event.target.matches('[data-workbench-query]')) {
       clearTimeout(EXTRACT_WORKBENCH_QUERY_TIMER);
       EXTRACT_WORKBENCH_QUERY_TIMER = setTimeout(extractWorkbenchApplyFilters, 300);

@@ -211,7 +211,7 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
 .extract-workbench-create-controls input,
 .extract-workbench-create-controls select { width: 100%; min-width: 0; min-height: 32px; margin: 0; padding: 6px 8px; border: 1px solid #cbd5d1; border-radius: 4px; color: #24313e; background: #fff; font: inherit; font-size: 12px; }
 .extract-workbench-create-controls > .btn { min-height: 38px; }
-.extract-workbench-create-controls.extract-workbench-batch-fields { grid-template-columns: minmax(180px, 1.5fr) repeat(2, minmax(130px, 1fr)) minmax(80px, .5fr); }
+.extract-workbench-create-controls.extract-workbench-batch-fields { grid-template-columns: minmax(180px, 1.5fr) repeat(3, minmax(130px, 1fr)) minmax(80px, .5fr); }
 .extract-workbench-concurrency-hint { margin: 6px 0 0; color: var(--ew-muted); font-size: 11px; line-height: 1.5; }
 .extract-workbench-candidate-section { min-width: 0; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e8e3; }
 .extract-workbench-candidate-head { margin-bottom: 14px; }

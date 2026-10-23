@@ -404,11 +404,39 @@ def _provider(provider_id: str, runtime_config=None):
 def workbench_config() -> dict:
     """返回工作台可选择的平台与模式，不包含密钥或 API 凭据。"""
     providers = []
+    unavailable_providers = []
     if _bool_setting("EXTRACT_LINK_ENABLED", True):
         for provider_id, settings in _PROVIDER_SETTINGS.items():
+            if not _provider_enabled(provider_id):
+                continue
             try:
                 runtime_config = _provider_configuration(provider_id)
-            except (ValueError, TypeError):
+            except ValueError as exc:
+                message = str(exc)
+                if message == "提链平台 API 地址或 CDK 未配置":
+                    config_prefix = settings.get("config_prefix", settings["prefix"])
+                    missing = []
+                    if not _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", "")):
+                        missing.append("API 地址")
+                    if not str(_runtime_setting(f"{config_prefix}_CDK", "") or "").strip():
+                        missing.append("CDK")
+                    if missing == ["API 地址", "CDK"]:
+                        reason = "缺少API地址和平台授权信息"
+                    elif missing == ["API 地址"]:
+                        reason = "缺少API地址"
+                    elif missing == ["CDK"]:
+                        reason = "缺少平台授权信息"
+                    else:
+                        reason = "连接配置无效"
+                else:
+                    reason = "平台配置暂不可用"
+                unavailable_providers.append({
+                    "id": provider_id,
+                    "label": settings["label"],
+                    "unavailable_reason": reason,
+                })
+                continue
+            except TypeError:
                 continue
             modes = [
                 mode for mode in ("extract_only", "manual_payment", "auto_payment")
@@ -417,11 +445,17 @@ def workbench_config() -> dict:
             if provider_id == "lumen_flow" and runtime_config.default_type != "momo":
                 modes = [mode for mode in modes if mode != "auto_payment"]
             if not modes:
+                unavailable_providers.append({
+                    "id": provider_id,
+                    "label": settings["label"],
+                    "unavailable_reason": "未启用可用运行模式",
+                })
                 continue
             providers.append({
                 "id": provider_id,
                 "label": settings["label"],
                 "default_type": runtime_config.default_type,
+                "link_types": _provider_link_types(provider_id),
                 "modes": modes,
             })
     default_provider = str(_runtime_setting("EXTRACT_LINK_DEFAULT_PROVIDER", "legacy") or "legacy").strip()
@@ -438,6 +472,7 @@ def workbench_config() -> dict:
         "default_provider": default_provider,
         "default_mode": default_mode,
         "providers": providers,
+        "unavailable_providers": unavailable_providers,
     }
 
 
@@ -466,6 +501,15 @@ DEFAULT_LINK_TYPE_ORDER = (
     "ideal_short",
     "ph_short",
 )
+
+def _provider_link_types(provider_id: str) -> list[str]:
+    """返回服务端可校验的平台提链类型选项。"""
+    provider_id = str(provider_id or "").strip().lower()
+    if provider_id == "huanguang":
+        return ["upi"]
+    if provider_id == "lumen_flow":
+        return [value for value in DEFAULT_LINK_TYPE_ORDER if value not in {"ideal_short", "ph_short"}]
+    return list(DEFAULT_LINK_TYPE_ORDER)
 
 
 def _link_type(value: str | None = None) -> str:
@@ -1883,7 +1927,7 @@ def create_workbench_tasks(
             skipped += 1
             continue
         try:
-            if not plus_promotion.is_free_trial_record(account):
+            if not plus_promotion.is_extract_link_eligible(account):
                 skipped += 1
                 continue
         except Exception:
@@ -2590,8 +2634,8 @@ def _handle_provider_operation(context):
         context.finish(status="cancelled", message="账号已停用，取消提链", error="账号已停用")
         return None
     from core import plus_promotion
-    if action == "create" and not plus_promotion.is_free_trial_record(account):
-        context.finish(status="failed", message="账号已不符合 Plus 试用资格，未提交提链", error="账号不符合提链资格")
+    if action == "create" and not plus_promotion.is_extract_link_eligible(account):
+        context.finish(status="failed", message="账号已不符合 Plus 优惠资格，未提交提链", error="账号不符合提链资格")
         return None
     if provider_id not in _PROVIDER_SETTINGS or not _provider_enabled(provider_id):
         context.finish(status="failed", message="平台或运行模式已在配置中关闭", error="平台或运行模式未启用")

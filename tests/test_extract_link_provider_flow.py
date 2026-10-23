@@ -188,7 +188,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             patch.object(extract_link_service, "_provider_request_options", return_value={}),
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch("core.plus_promotion.is_extract_link_eligible", return_value=True),
             patch("core.storage.extract_link_jobs.has_unresolved_auto_payment", return_value=True) as unresolved,
             patch.object(extract_link_service.db, "claim_account_extract", return_value=True) as claim,
             patch.object(extract_link_service.db, "update_account_extract"),
@@ -313,6 +313,8 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         lumen = next(provider for provider in config["providers"] if provider["id"] == "lumen_flow")
         self.assertEqual(["extract_only", "manual_payment"], lumen["modes"])
         self.assertEqual("extract_only", config["default_mode"])
+        self.assertTrue(lumen["link_types"])
+        self.assertTrue(all("cdk" not in provider["unavailable_reason"].lower() for provider in config["unavailable_providers"]))
         self.assertNotIn("cdk", repr(config).lower())
         self.assertNotIn("test-cdk", repr(config))
 
@@ -372,7 +374,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         with (
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch("core.plus_promotion.is_extract_link_eligible", return_value=True),
             patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
             patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-live-token"),
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
@@ -448,7 +450,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         with (
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch("core.plus_promotion.is_extract_link_eligible", return_value=True),
             patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
             patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-token"),
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
@@ -648,7 +650,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         with (
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch("core.plus_promotion.is_extract_link_eligible", return_value=True),
             patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
             patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-token"),
             patch.object(extract_link_service, "_provider_enabled", return_value=True),

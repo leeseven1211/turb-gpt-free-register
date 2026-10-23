@@ -7,6 +7,7 @@ from core.plus_promotion import (
     MAX_CAMPAIGNS_PER_PLAN,
     classify_campaign,
     classify_plus_campaign,
+    is_extract_link_eligible,
     normalize_percentage,
     parse_account_promotions,
     primary_plan_promotion,
@@ -65,6 +66,16 @@ class AccountPromotionsTests(unittest.TestCase):
         for value in (float("nan"), "Infinity", True, 101):
             with self.subTest(value=value):
                 self.assertEqual(promotion_kind_from_record({"plus_trial_campaign_id": "plus-free-trial", "plus_trial_discount_percentage": value}), "unknown")
+
+    def test_workbench_accepts_only_confirmed_offers_on_free_accounts(self):
+        for kind, expected in (("free_trial", True), ("discount", True), ("other_promo", True), ("unknown", False), ("none", False)):
+            with self.subTest(kind=kind):
+                self.assertEqual(expected, is_extract_link_eligible({
+                    "current_plan_type": "free", "plus_promo_kind": kind,
+                }))
+        self.assertFalse(is_extract_link_eligible({
+            "current_plan_type": "plus", "plus_promo_kind": "free_trial",
+        }))
 
     def test_partial_metadata_can_still_classify_explicit_free_activity(self):
         promotions, _ = parse_account_promotions({"go": {"id": "go-one-month-free"}}, is_free=True)

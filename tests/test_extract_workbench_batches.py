@@ -17,7 +17,7 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
     def test_invalid_filters_and_quantities_are_rejected(self):
         for filters in ({"access_token": "private"}, {"date_from": "2026-1-01"},
                         {"date_from": "2026-10-22", "date_to": "2026-10-14"},
-                        {"extract_status": "unsupported"}, {"query": 1}):
+                        {"extract_status": "unsupported"}, {"promotion": "unknown"}, {"query": 1}):
             with self.subTest(filters=filters), self.assertRaises(ValueError):
                 extract_link_batches.normalize_filters(filters)
         for limit in (0, 5001, True, "100"):
@@ -50,6 +50,26 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
             result = extract_link_service.workbench_config()
         self.assertEqual(7, result["batch_workers_default"])
         self.assertEqual(16, result["batch_workers_max"])
+
+    def test_workbench_config_explains_enabled_provider_missing_connection_fields(self):
+        def provider_configuration(provider_id):
+            if provider_id == "huanguang":
+                raise ValueError("提链平台 API 地址或 CDK 未配置")
+            return SimpleNamespace(default_type="pix", capabilities={})
+
+        with (
+            patch.object(extract_link_service, "_bool_setting", return_value=True),
+            patch.object(extract_link_service, "_provider_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_configuration", side_effect=provider_configuration),
+            patch.object(extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: default),
+        ):
+            result = extract_link_service.workbench_config()
+        self.assertEqual(["legacy", "lumen_flow"], [provider["id"] for provider in result["providers"]])
+        self.assertEqual(list(extract_link_service.DEFAULT_LINK_TYPE_ORDER), result["providers"][0]["link_types"])
+        self.assertEqual([{
+            "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
+        }], result["unavailable_providers"])
 
     def test_more_than_500_accounts_share_one_batch_and_only_notify_once(self):
         candidates = {"total": 501, "items": [{"account_id": value} for value in range(1, 502)],
@@ -126,18 +146,41 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
     def test_candidate_query_excludes_ineligible_and_busy_accounts_but_keeps_expired_at(self):
         ids = self.accounts([
             {}, {"token_expired": True}, {"archived": True}, {"account_status": "deactivated"},
-            {"plus_promo_kind": "discount"}, {"access_token": ""}, {"extract_link_status": "success"},
+            {"plus_promo_kind": "discount"}, {"plus_promo_kind": "other_promo"},
+            {"plus_promo_kind": "unknown"}, {"access_token": ""}, {"extract_link_status": "success"},
             {"extract_link_status": "running"}, {"plan_type": "plus", "current_plan_type": "plus"},
             {"email_source": "domain"}, {},
         ])
         operation.create_runtime_task(task_type="live_check", account_id=ids[-1], email="busy@example.test")
         result = extract_link_service.preview_workbench_candidates(filters={"source": "icloud_hide", "date_from": "2026-10-14", "date_to": "2026-10-14"}, limit=1)
-        self.assertEqual(2, result["total"])
+        self.assertEqual(4, result["total"])
         self.assertEqual(1, result["selected_count"])
         self.assertEqual(ids[0], result["items"][0]["account_id"])
         self.assertNotIn("test-private-at", repr(result))
         all_result = extract_link_service.preview_workbench_candidates(filters={"source": "icloud_hide", "extract_status": "all"}, limit=100)
-        self.assertEqual({ids[0], ids[1], ids[6]}, {item["account_id"] for item in all_result["items"]})
+        self.assertEqual({ids[0], ids[1], ids[4], ids[5], ids[8]}, {item["account_id"] for item in all_result["items"]})
+
+    def test_candidate_promotion_filter_supports_confirmed_trial_discount_and_other_offer(self):
+        ids = self.accounts([
+            {},
+            {"plus_promo_kind": "discount", "plus_promo_discount_percentage": 50},
+            {"plus_promo_kind": "discount", "plus_promo_discount_percentage": 20},
+            {"plus_promo_kind": "other_promo"},
+            {"plus_promo_kind": "unknown"},
+        ])
+        for promotion, expected in (
+            ("free_trial", ids[0]),
+            ("half_price", ids[1]),
+            ("other_discount", ids[2]),
+            ("other_promo", ids[3]),
+        ):
+            with self.subTest(promotion=promotion):
+                result = extract_link_service.preview_workbench_candidates(
+                    filters={"promotion": promotion}, limit=100,
+                )
+                self.assertEqual([expected], [item["account_id"] for item in result["items"]])
+        all_result = extract_link_service.preview_workbench_candidates(filters={"promotion": "eligible"}, limit=100)
+        self.assertEqual(set(ids[:4]), {item["account_id"] for item in all_result["items"]})
 
     def test_batch_workers_are_persisted_and_old_batches_keep_existing_limits(self):
         self.accounts([{}, {}])

@@ -12,8 +12,9 @@ from core.storage import operation
 
 MAX_BATCH_SIZE = 5000
 MAX_BATCH_WORKERS = 16
-_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status"}
+_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
+_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
 
 
 def normalize_filters(filters: dict | None) -> dict[str, str]:
@@ -33,6 +34,9 @@ def normalize_filters(filters: dict | None) -> dict[str, str]:
     result["extract_status"] = result["extract_status"] or "not_succeeded"
     if result["extract_status"] not in _EXTRACT_STATUSES:
         raise ValueError("提链状态筛选无效")
+    result["promotion"] = result["promotion"] or "eligible"
+    if result["promotion"] not in _PROMOTION_FILTERS:
+        raise ValueError("套餐优惠筛选无效")
     for key in ("date_from", "date_to"):
         if result[key]:
             try:
@@ -71,7 +75,7 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
     where.extend((
         "a.deactivated IS FALSE",
         "a.account_has_access_token IS TRUE",
-        "a.account_promotion_value='free_trial'",
+        "a.account_promotion_value IN ('free_trial', 'half_price', 'other_discount', 'other_promo')",
         "LOWER(COALESCE(a.extract_link_status, '')) NOT IN ('queued', 'running')",
         f"""NOT EXISTS (SELECT 1 FROM {operation._table('operation_runs')} active
             WHERE active.account_id=a.id AND active.resource_family='openai_interactive'
@@ -87,6 +91,9 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
         where.append(f"{status} = ''")
     elif requested_status == "success":
         where.append(f"{status} = 'success'")
+    if selected_filters["promotion"] != "eligible":
+        where.append("a.account_promotion_value=%s")
+        params.append(selected_filters["promotion"])
     accounts = admin_repository._q(record_store.ACCOUNTS)
     clause = " AND ".join(where)
     with (admin_repository._connect() if conn is None else nullcontext(conn)) as selected_conn, selected_conn.cursor() as cur:
@@ -94,7 +101,7 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
         total = int((cur.fetchone() or {}).get("total") or 0)
         cur.execute(
             f"""SELECT a.id AS account_id, a.email, a.created_at, a.email_source,
-                       a.extract_link_status
+                       a.extract_link_status, a.account_promotion_value
                 FROM {accounts} a WHERE {clause} ORDER BY a.id LIMIT %s""",
             (*params, selected_limit),
         )

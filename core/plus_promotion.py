@@ -315,6 +315,13 @@ def is_free_trial_record(record: Mapping[str, Any] | None) -> bool:
     return plan == "free" and promotion_kind_from_record(row) == FREE_TRIAL
 
 
+def is_extract_link_eligible(record: Mapping[str, Any] | None) -> bool:
+    """仅确认有明确 Plus 优惠的 free 账号可进入提链流程。"""
+    row = record or {}
+    plan = _text(row.get("current_plan_type") or row.get("plan_type")).lower()
+    return plan == "free" and promotion_kind_from_record(row) in ELIGIBLE_PROMO_KINDS
+
+
 def promotion_label(record: Mapping[str, Any] | None) -> str:
     """生成适合任务日志和接口摘要的中文优惠文案。"""
     row = record or {}

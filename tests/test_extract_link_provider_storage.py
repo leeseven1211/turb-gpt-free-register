@@ -419,7 +419,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             patch.object(task_run_log, "_TASK_LOG_ROOT", Path(log_dir) / "tasks"),
             patch.object(extract_link_service.db, "get_account", return_value=account),
             patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.plus_promotion.is_free_trial_record", return_value=True),
+            patch("core.plus_promotion.is_extract_link_eligible", return_value=True),
             patch.object(extract_link_service.db, "mark_account_extract_running", return_value=True),
             patch.object(extract_link_service, "_ensure_extract_token", return_value="synthetic-token"),
             patch.object(extract_link_service, "_provider_enabled", return_value=True),

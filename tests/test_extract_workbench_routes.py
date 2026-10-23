@@ -30,8 +30,13 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
                 "id": "lumen_flow",
                 "label": "流光",
                 "default_type": "trial",
+                "link_types": ["momo", "pix", "unsafe type"],
                 "modes": ["extract_only"],
                 "api_base": "https://private.example/api",
+                "cdk": "private-cdk",
+            }],
+            "unavailable_providers": [{
+                "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
                 "cdk": "private-cdk",
             }],
         }
@@ -50,9 +55,12 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual(4, payload["batch_workers_default"])
         self.assertEqual(16, payload["batch_workers_max"])
         self.assertEqual(
-            [{"id": "lumen_flow", "label": "流光", "default_type": "trial", "modes": ["extract_only"]}],
+            [{"id": "lumen_flow", "label": "流光", "default_type": "trial", "link_types": ["momo", "pix"], "modes": ["extract_only"]}],
             payload["providers"],
         )
+        self.assertEqual([{
+            "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
+        }], payload["unavailable_providers"])
         self.assertNotIn("provider-secret", response.get_data(as_text=True))
         self.assertNotIn("private-cdk", response.get_data(as_text=True))
 
@@ -173,26 +181,28 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             return_value={"total": 150, "selected_count": 100, "items": [{
                 "account_id": 77, "email": "candidate@example.test", "created_at": "2026-10-14",
                 "email_source": "icloud_hide", "extract_link_status": "failed", "access_token": "must-not-project",
+                "account_promotion_value": "other_discount",
             }]},
         ) as preview:
             response = self.client.get(
                 "/api/extract-workbench/candidates?query=example&source=icloud_hide"
-                "&date_from=2026-10-14&date_to=2026-10-15&extract_status=failed&limit=100"
+                "&date_from=2026-10-14&date_to=2026-10-15&extract_status=failed&promotion=other_discount&limit=100"
             )
         self.assertEqual(200, response.status_code)
         preview.assert_called_once_with(filters={
             "query": "example", "source": "icloud_hide", "date_from": "2026-10-14",
-            "date_to": "2026-10-15", "extract_status": "failed",
+            "date_to": "2026-10-15", "extract_status": "failed", "promotion": "other_discount",
         }, limit=100)
         self.assertEqual(150, response.get_json()["total"])
         self.assertEqual(100, response.get_json()["selected_count"])
         self.assertEqual(5000, response.get_json()["max_batch_size"])
+        self.assertEqual("other_discount", response.get_json()["items"][0]["account_promotion_value"])
         self.assertNotIn("must-not-project", response.get_data(as_text=True))
 
     def test_candidate_preview_rejects_invalid_filters_before_service(self):
         for query in (
             "date_from=2026-02-30", "date_from=20261014", "date_from=2026-10-15&date_to=2026-10-14",
-            "extract_status=unknown", "limit=0", "limit=5001", "limit=true", "access_token=must-not-return",
+            "extract_status=unknown", "promotion=unknown", "limit=0", "limit=5001", "limit=true", "access_token=must-not-return",
         ):
             with self.subTest(query=query), patch.object(
                 extract_workbench.extract_link_service, "preview_workbench_candidates", create=True,
@@ -216,7 +226,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual({"ok": True, "batch_id": 7, "requested": 100, "started": 98, "skipped": 1, "failed": 1}, response.get_json())
         create_batch.assert_called_once_with(
             title="14号账号提链", provider_id="lumen_flow", mode="extract_only", limit=100, options={},
-            filters={"query": "", "source": "", "date_from": "2026-10-14", "date_to": "2026-10-14", "extract_status": "not_succeeded"},
+            filters={"query": "", "source": "", "date_from": "2026-10-14", "date_to": "2026-10-14", "extract_status": "not_succeeded", "promotion": "eligible"},
             submission_id="44daab12-8f2e-49a9-af4e-d9347a8ef770",
         )
 

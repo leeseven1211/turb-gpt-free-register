@@ -32,6 +32,7 @@ function createView({timers = null} = {}) {
   vm.runInContext(`${source}\n;globalThis.workbench = {
     renderCard: typeof renderExtractWorkbenchTaskCard === 'function' ? renderExtractWorkbenchTaskCard : undefined,
     modes: typeof extractWorkbenchModesForProvider === 'function' ? extractWorkbenchModesForProvider : undefined,
+    linkTypes: typeof extractWorkbenchLinkTypesForProvider === 'function' ? extractWorkbenchLinkTypesForProvider : undefined,
     createPayload: typeof extractWorkbenchCreatePayload === 'function' ? extractWorkbenchCreatePayload : undefined,
     listUrl: typeof extractWorkbenchListUrl === 'function' ? extractWorkbenchListUrl : undefined,
     outcome: extractWorkbenchOutcome,
@@ -47,6 +48,9 @@ function createView({timers = null} = {}) {
     invalidatePreview: extractWorkbenchInvalidatePreview,
     switchBatch: extractWorkbenchSwitchBatch,
     renderBatches: extractWorkbenchRenderBatches,
+    renderProviders: extractWorkbenchRenderProviders,
+    renderLinkTypes: extractWorkbenchRenderLinkTypes,
+    renderCandidatePromotion: extractWorkbenchRenderCandidatePromotion,
     accountSources: extractWorkbenchAccountSources,
     renderPaymentEntry: renderExtractWorkbenchPaymentEntry,
     showPaymentEntry: extractWorkbenchShowPaymentEntry,
@@ -335,6 +339,39 @@ test('批量创建默认 extract_only 且只提交选择的账号 ID', () => {
     account_ids: ['acct-1', 'acct-2'], provider_id: 'lumen', mode: 'extract_only', type: 'plus',
   });
   assert.equal(api.createPayload(['acct-1'], 'lumen', 'auto_payment').mode, 'auto_payment');
+});
+
+test('新建批次按平台公布的提链类型初始化并提交用户选项', () => {
+  const {api} = createView();
+  api.setConfig({providers:[{id:'lumen', default_type:'momo', link_types:['momo','upi'], modes:['extract_only']}]});
+  assert.deepEqual(Array.from(api.linkTypes({id:'lumen', default_type:'momo', link_types:['momo','upi']})), ['momo','upi']);
+  assert.equal(api.createPayload([], 'lumen', 'extract_only').type, 'momo');
+  assert.equal(api.createPayload([], 'lumen', 'extract_only', 'upi').type, 'upi');
+  assert.equal(api.createPayload([], 'lumen', 'extract_only', 'unknown').type, 'momo');
+});
+
+test('新建批次显示不可用平台原因，平台筛选只显示可用平台', () => {
+  const {api} = createView();
+  const provider = {innerHTML:'', value:''};
+  const filter = {innerHTML:'', value:''};
+  api.setConfig({default_provider:'lumen', providers:[{id:'lumen', label:'Lumen Flow', modes:['extract_only'], link_types:['momo']}], unavailable_providers:[{id:'huanguang', label:'幻光提链', unavailable_reason:'缺少平台授权信息'}]});
+  api.setRoot({querySelector:selector => ({'[data-workbench-provider]':provider,'[data-workbench-filter-provider]':filter}[selector] || null)});
+  api.renderProviders();
+  assert.match(provider.innerHTML, /幻光提链（缺少平台授权信息）/);
+  assert.match(provider.innerHTML, /value="huanguang" disabled/);
+  assert.doesNotMatch(filter.innerHTML, /幻光提链/);
+});
+
+test('候选筛选提交套餐优惠并更新资格说明', () => {
+  const {api} = createView();
+  const promotion = {value:'half_price'};
+  const hint = {textContent:''};
+  api.setRoot({querySelector:selector => ({'[data-workbench-promotion]':promotion,'[data-workbench-candidate-hint]':hint}[selector] || null)});
+  assert.equal(api.candidateFilters().promotion, 'half_price');
+  api.renderCandidatePromotion();
+  assert.match(hint.textContent, /半价/);
+  promotion.value = '';
+  assert.equal(api.candidateFilters().promotion, 'eligible');
 });
 
 test('页面刷新查询列表和能力配置，列表不请求敏感链接', async () => {
@@ -965,7 +1002,7 @@ test('筛选条件变更后预览失效，提交不会沿用旧匹配数量', as
   const query={value:'first'};
   const feedback={textContent:''};
   const selectors={'[data-workbench-account-query]':query,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'},'[data-workbench-candidate-summary]':feedback};
-  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}]});
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}]});
   api.setRoot({querySelector:selector=>selectors[selector] || null});
   api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
   query.value='second';
@@ -1018,7 +1055,7 @@ test('创建响应丢失后重试沿用提交标识，改变批次参数才生�
   const {api,window}=createView();
   const title={value:'同一批次'};
   const selectors={'[data-workbench-batch-title]':title,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
-  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}]});
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}]});
   api.setRoot({querySelector:selector=>selectors[selector] || null});
   api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
   const posted=[];
@@ -1066,7 +1103,7 @@ test('提交携带批次并发，连接失败重试保留标识，修改并发�
   const {api,window}=createView();
   const workers={value:'4'};
   const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
-  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}],batch_workers_default:1,batch_workers_max:16});
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:16});
   api.setRoot({querySelector:selector=>selectors[selector] || null});
   api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
   const posted=[];
@@ -1089,7 +1126,7 @@ test('批次并发空值、非整数和超范围时不发送创建请求', async
     const feedback={textContent:''};
     const selectors={'[data-workbench-batch-workers]':{value},'[data-workbench-provider]':{value:'lumen_flow'},
       '[data-workbench-mode]':{value:'extract_only'},'[data-workbench-create-feedback]':feedback};
-    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only']}],batch_workers_default:1,batch_workers_max:16});
+    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:16});
     api.setRoot({querySelector:selector=>selectors[selector] || null});
     api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
     await api.submit();
