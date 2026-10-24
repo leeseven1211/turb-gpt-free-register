@@ -539,6 +539,10 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             ("interrupted", None, {"summary": {"submission_receipt_pending": True}}, {"batch_receipt_pending": True, "batch_receipt_secret": "synthetic"}, True),
             ("attention_required", "running-job", {"extraction_state": "running"}, {}, True),
             ("attention_required", "review-job", {"extraction_state": "succeeded", "payment_state": "unknown", "summary": {"remote_polling": False, "automatic_payment_requires_reconcile": True}}, {}, False),
+            ("interrupted", "plan-query-job", {"extraction_state": "succeeded", "payment_state": "unknown", "plus_status": "pending",
+                "summary": {"local_plan_check_pending": True, "remote_status": "DONE", "automatic_payment_terminal": True}}, {}, True),
+            ("attention_required", "failed-plan-job", {"extraction_state": "succeeded", "payment_state": "unknown", "plus_status": "failed",
+                "summary": {"local_plan_check_pending": False, "remote_status": "DONE", "automatic_payment_terminal": True}}, {}, False),
             ("attention_required", None, {"preflight_status": "failed"}, {}, False),
         ]:
             task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="recover@example.test", data={"provider_id": "huanguang"})
@@ -601,6 +605,9 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         operation.finish_run(original_id, status="attention_required")
         latest = operation.retry_runtime_task(task["id"], data={"provider_id": "huanguang", "workbench_action": "sync_status",
             "provider_job_run_id": original_id, "extract_poll_continuation": True})
+        # 模拟旧版本创建过但未写入当前同步快照的 Run。
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {operation._table('extract_link_provider_jobs')} WHERE run_id=%s", (latest["id"],))
         operation.finish_run(latest["id"], status="interrupted")
         rows = extract_link_jobs.list_recoverable_workbench_jobs()
         row = next(item for item in rows if item["task_id"] == task["id"])
@@ -620,3 +627,106 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         saved = extract_link_jobs.get_provider_job_public(run_id)["public_state"]
         self.assertNotIn("qr_data", saved["payment_artifact"])
         self.assertEqual("https://example.test/parent", saved["payment_artifact"]["payment_page_url"])
+
+    def test_sync_retry_keeps_provider_snapshot_while_new_run_is_queued(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(
+            task_type="extract_link", account_id=None, email="sync-queue@example.test",
+            data={"provider_id": "huanguang", "mode": "auto_payment",
+                  "remote_intent": {"kind": "remote_write", "action": "extract_link_create"},
+                  "remote_receipt": {"outcome": "confirmed"}},
+        )
+        original_id = int(task["run"]["id"])
+        public_state = {
+            "extraction_state": "succeeded", "payment_state": "unknown",
+            "links": ["https://example.test/original-checkout"],
+            "payment_artifact": {"qr_data": "synthetic-original-qr"},
+            "summary": {"preflight_status": "passed", "remote_polling": False},
+        }
+        private_data = {"job_secret": "synthetic-queue-secret", "active_job_id": "original-job"}
+        original_job = extract_link_jobs.save_provider_job(
+            original_id, "huanguang", "original-job", public_state, private_data,
+        )
+        operation.finish_run(original_id, status="attention_required")
+
+        queued = operation.retry_runtime_task(
+            task["id"], data={"workbench_action": "sync_status"},
+        )
+
+        self.assertEqual("queued", queued["status"])
+        self.assertEqual(queued["id"], operation.get_task(task["id"])["last_run_id"])
+        copied_job = extract_link_jobs.get_provider_job_private(queued["id"])
+        self.assertIsNotNone(copied_job)
+        self.assertEqual("original-job", copied_job["job_id"])
+        self.assertEqual(original_job["public_state"], copied_job["public_state"])
+        self.assertEqual(private_data, copied_job["private_data"])
+        self.assertNotIn("remote_intent", queued["data"])
+        self.assertNotIn("remote_receipt", queued["data"])
+        self.assertNotIn("synthetic-queue-secret", repr(operation.get_task(task["id"])))
+        self.assertNotIn("synthetic-queue-secret", repr(extract_link_jobs.get_provider_job_public(queued["id"])))
+
+    def test_sync_retry_uses_explicit_same_task_provider_snapshot(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(
+            task_type="extract_link", account_id=None, email="sync-source@example.test",
+            data={"provider_id": "huanguang", "mode": "auto_payment"},
+        )
+        original_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(
+            original_id, "huanguang", "selected-job", {"extraction_state": "succeeded"},
+            {"job_secret": "synthetic-selected-secret"},
+        )
+        operation.finish_run(original_id, status="attention_required")
+        previous = operation.retry_runtime_task(task["id"], data={"workbench_action": "create"})
+        extract_link_jobs.save_provider_job(
+            previous["id"], "huanguang", "different-job", {"extraction_state": "failed"},
+            {"job_secret": "synthetic-different-secret"},
+        )
+        operation.finish_run(previous["id"], status="failed")
+
+        queued = operation.retry_runtime_task(task["id"], data={
+            "workbench_action": "sync_status", "provider_job_run_id": original_id,
+        })
+
+        copied_job = extract_link_jobs.get_provider_job_private(queued["id"])
+        self.assertIsNotNone(copied_job)
+        self.assertEqual("selected-job", copied_job["job_id"])
+        self.assertEqual("synthetic-selected-secret", copied_job["private_data"]["job_secret"])
+
+    def test_sync_retry_never_copies_an_unrelated_or_missing_provider_snapshot(self):
+        from core.storage import extract_link_jobs
+
+        source = operation.create_runtime_task(
+            task_type="extract_link", account_id=None, email="other-source@example.test",
+            data={"provider_id": "huanguang"},
+        )
+        source_id = int(source["run"]["id"])
+        extract_link_jobs.save_provider_job(
+            source_id, "huanguang", "unrelated-job", {"extraction_state": "succeeded"},
+            {"job_secret": "synthetic-unrelated-secret"},
+        )
+        for case, task_type, provider_id, action, explicit_source in (
+            ("other-task", "extract_link", "huanguang", "sync_status", source_id),
+            ("other-provider", "extract_link", "lumen_flow", "sync_status", None),
+            ("create", "extract_link", "huanguang", "create", None),
+            ("other-type", "plan_check", "huanguang", "sync_status", None),
+            ("missing", "extract_link", "huanguang", "sync_status", source_id + 1000),
+        ):
+            with self.subTest(case=case):
+                task = operation.create_runtime_task(
+                    task_type=task_type, account_id=None, email="unrelated@example.test",
+                    data={"provider_id": provider_id},
+                )
+                run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(
+                    run_id, "huanguang", "own-job", {"extraction_state": "succeeded"},
+                    {"job_secret": "synthetic-own-secret"},
+                )
+                operation.finish_run(run_id, status="attention_required")
+                data = {"workbench_action": action}
+                if explicit_source is not None:
+                    data["provider_job_run_id"] = explicit_source
+                queued = operation.retry_runtime_task(task["id"], data=data)
+                self.assertIsNone(extract_link_jobs.get_provider_job_private(queued["id"]))

@@ -362,3 +362,16 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         result = extract_link_service.list_workbench_tasks(provider_id="lumen_flow", status="plus_confirmed")
         self.assertEqual(1, result["total"])
         self.assertEqual(task["id"], result["items"][0]["task_id"])
+
+    def test_child_pending_keeps_ever_extracted_fact_in_sql_filters(self):
+        from core import extract_link_service
+        task = self.task(status="queued", provider="huanguang", mode="auto_payment", state={
+            "extraction_state": "queued", "payment_state": "pending", "preflight_status": "passed",
+            "summary": {"extraction_ever_succeeded": True}, "links": [], "payment_artifact": {},
+        })
+        result = extract_link_service.list_workbench_tasks(status="extraction_succeeded")
+        self.assertIn(task["id"], {item["task_id"] for item in result["items"]})
+        item = next(item for item in result["items"] if item["task_id"] == task["id"])
+        self.assertEqual("success", item["extraction_status"])
+        self.assertFalse(item["has_payment_entry"])
+        self.assertEqual(1, result["counts"]["extraction_succeeded"])

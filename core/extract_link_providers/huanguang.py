@@ -39,6 +39,7 @@ _PRE_ACCEPTANCE_REJECTIONS = {400, 402, 403, 413, 429}
 _AUTO_RELINK_ACTIVE = {"checking_payment", "starting"}
 _AUTO_RELINK_STATUSES = _AUTO_RELINK_ACTIVE | {"started", "submitted", "failed", "skipped", "completed", "unavailable"}
 _MAX_CHAIN_JOBS = 20
+_MISSING_MATERIAL_MESSAGE = "幻光任务已结束，但未返回有效支付材料"
 _CHILD_JOB_ID = re.compile(r"^[a-f0-9]{16}$", re.IGNORECASE)
 _URL_RE = re.compile(r"(?i)\b(?:https?|wss?|upi|socks5h?)://[^\s<>\"']+")
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
@@ -255,10 +256,13 @@ class HuanguangProvider:
             raise ProviderError("幻光任务凭证不可用")
         private = dict(private_data or {})
         private["job_secret"] = secret
+        previous_public_state = private.pop("previous_public_state", None)
         chain = private.get("job_chain")
         chain = [dict(node) for node in chain] if isinstance(chain, list) and all(isinstance(node, dict) for node in chain) else []
         if not chain:
             chain = [{"job_id": job_id, "parent_job_id": None}]
+            if isinstance(previous_public_state, dict):
+                chain[0]["state"] = self._seed_job_snapshot(previous_public_state)
         chain_error = self._chain_error(chain, job_id)
         if chain_error:
             return self._chain_job(job_id, private, chain[:_MAX_CHAIN_JOBS], error=chain_error)
@@ -300,13 +304,18 @@ class HuanguangProvider:
             ))
             previous = self._node_job(node)
             previous_artifact = safe_payment_artifact(previous.payment_artifact)
-            material_keys = ("payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg")
-            had_material = bool(previous.links or previous.payment_links or any(previous_artifact.get(key) for key in material_keys))
+            retained_material = previous.extraction_state == "succeeded" and self._has_material(previous)
+            summary = dict(job.summary)
+            if (retained_material and summary.get("remote_status") == "DONE" and job.payment_state != "failed"
+                    and summary.get("failure_message") == _MISSING_MATERIAL_MESSAGE):
+                # 同单已有材料时，省略材料的完成响应不能再产生“未出链”的合成失败。
+                summary.pop("remote_terminal_failure", None)
+                summary.pop("failure_message", None)
             job = replace(
-                job, extraction_state="succeeded" if previous.extraction_state == "succeeded" and had_material else job.extraction_state,
+                job, extraction_state="succeeded" if retained_material else job.extraction_state,
                 links=tuple(dict.fromkeys((*previous.links, *job.links))),
                 payment_links=tuple(dict.fromkeys((*previous.payment_links, *job.payment_links))),
-                payment_artifact={**previous_artifact, **job.payment_artifact},
+                payment_artifact={**previous_artifact, **job.payment_artifact}, summary=summary,
             )
             node["state"] = self._job_snapshot(job)
             if child_id in (None, ""):
@@ -360,6 +369,54 @@ class HuanguangProvider:
             "payment_artifact": dict(job.payment_artifact), "summary": dict(job.summary),
         }
 
+    @classmethod
+    def _seed_job_snapshot(cls, value):
+        """旧单首查只恢复公开材料与规范状态，不保存任意响应字段。"""
+        extraction = value.get("extraction_state")
+        payment = value.get("payment_state")
+        extraction = extraction if isinstance(extraction, str) and extraction in {
+            "queued", "running", "succeeded", "failed", "pending", "unknown", "not_started",
+        } else "unknown"
+        payment = payment if isinstance(payment, str) and payment in {
+            "not_started", "pending", "succeeded", "failed", "unknown",
+        } else "not_started"
+        raw_summary = value.get("summary") if isinstance(value.get("summary"), dict) else {}
+        summary = {}
+        for key in ("remote_polling", "automatic_payment_terminal", "automatic_payment_requires_reconcile",
+                    "entitlement_active", "entitlement_inferred", "xxsyun_polling", "scan_fallback_polling"):
+            if type(raw_summary.get(key)) is bool:
+                summary[key] = raw_summary[key]
+        for key, allowed in {
+            "remote_status": set(_EXTRACTION) | {"UNKNOWN"},
+            "platform_plus_status": {"verified", "inferred", "unknown"},
+            "payment_check_status": _PAYMENT_CHECK_STATUSES,
+            "auto_relink_status": _AUTO_RELINK_STATUSES,
+            "xxsyun_status": _XXSYUN_STATUSES,
+            "scan_fallback_status": _FALLBACK_STATUSES,
+            "scan_fallback_provider": {"xxsyun", "chongyun", "seashore"},
+            "automatic_payment_status": _SCAN_ORDER_STATUSES | {status.upper() for status in _SCAN_STATUSES}
+                | {"XXSYUN_" + status.upper() for status in _XXSYUN_STATUSES}
+                | {"SCAN_FALLBACK_" + status.upper() for status in _FALLBACK_STATUSES | {"pending"}},
+        }.items():
+            item = raw_summary.get(key)
+            if isinstance(item, str) and item in allowed:
+                summary[key] = item
+        links = value.get("links")
+        payment_links = value.get("payment_links")
+        return cls._job_snapshot(ProviderJob(
+            extraction_state=extraction, payment_state=payment,
+            links=safe_links(*links) if isinstance(links, (list, tuple)) else (),
+            payment_links=safe_links(*payment_links) if isinstance(payment_links, (list, tuple)) else (),
+            payment_artifact=safe_payment_artifact(value.get("payment_artifact")), summary=summary,
+        ))
+
+    @staticmethod
+    def _has_material(job):
+        artifact = safe_payment_artifact(job.payment_artifact)
+        return bool(safe_links(*job.links, *job.payment_links) or any(artifact.get(key) for key in (
+            "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+        )))
+
     @staticmethod
     def _node_job(node):
         state = node.get("state") if isinstance(node.get("state"), dict) else {}
@@ -392,7 +449,10 @@ class HuanguangProvider:
                 payment = "failed"
             elif not polling and any(state.payment_state == "pending" for state in states):
                 payment = "unknown"
-        summary = {**selected.summary, "remote_chain_length": len(chain)}
+        summary = {
+            **selected.summary, "remote_chain_length": len(chain),
+            "extraction_ever_succeeded": any(state.extraction_state == "succeeded" and self._has_material(state) for state in states),
+        }
         for key in ("auto_relink_status", "auto_relink_attempt"):
             value = next((state.summary[key] for state in reversed(states) if key in state.summary), None)
             if value is not None:
@@ -581,7 +641,7 @@ class HuanguangProvider:
                         break
                 if message:
                     break
-            summary["failure_message"] = message or "幻光任务已结束，但未返回有效支付材料"
+            summary["failure_message"] = message or _MISSING_MATERIAL_MESSAGE
         return ProviderJob(
             job_id=str(data.get("id") or fallback_id),
             extraction_state=status,

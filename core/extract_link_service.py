@@ -1803,7 +1803,8 @@ def _safe_provider_job_state(
         if type(value) is int and 0 <= value <= 1000000:
             safe_summary[key] = value
     for key in ("automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
-                "entitlement_active", "entitlement_inferred", "xxsyun_polling", "scan_fallback_polling", "submission_receipt_pending"):
+                "entitlement_active", "entitlement_inferred", "xxsyun_polling", "scan_fallback_polling", "submission_receipt_pending",
+                "extraction_ever_succeeded", "local_plan_check_pending"):
         if type(summary.get(key)) is bool:
             safe_summary[key] = summary[key]
     for key, allowed in {
@@ -1853,6 +1854,20 @@ def _provider_has_reference(job) -> bool:
         return False
     summary = (job.get("public_state") or {}).get("summary") or {}
     return bool(job.get("job_id") or summary.get("submission_receipt_pending") is True)
+
+
+def _provider_resume_private(provider_id, private, state):
+    """旧幻光原单迁入节点链时，传递已保存的同单材料。"""
+    if provider_id != "huanguang" or private.get("job_chain"):
+        return private
+    from core.extract_link_providers.contracts import safe_payment_artifact
+
+    artifact = safe_payment_artifact(state.get("payment_artifact"))
+    if not (state.get("links") or state.get("payment_links") or any(artifact.get(key) for key in (
+        "payment_page_url", "payment_url", "qr_data", "qr_image_url_png", "qr_image_url_svg",
+    ))):
+        return private
+    return {**private, "previous_public_state": state}
 
 
 def _huanguang_needs_continuation(state: dict) -> bool:
@@ -1916,6 +1931,8 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     if task_status == "attention_required":
         task_status = "request_unknown"
     extraction_value = state.get("extraction_state") or run_summary.get("extraction_status")
+    if provider_id == "huanguang" and summary.get("extraction_ever_succeeded") is True:
+        extraction_value = "succeeded"
     if not extraction_value and provider_id == "legacy":
         if task_status == "success" and (run_summary.get("has_link") or run_summary.get("remote_job_id")):
             extraction_value = "success"
@@ -2707,7 +2724,7 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
             try:
                 phase = "query"
                 private_data = job.private_data
-                status_job = provider.get_status(job.job_id, private_data=private_data)
+                status_job = provider.get_status(job.job_id, private_data=_provider_resume_private(provider_id, private_data, state))
                 saved = ProviderJob(extraction_state=job.extraction_state, links=job.links, payment_links=job.payment_links,
                                     payment_artifact=job.payment_artifact, private_data=private_data)
                 if mode == "auto_payment" and callable(getattr(provider, "get_automatic_payment_status", None)):
@@ -2802,21 +2819,35 @@ def _provider_job_for_sync(run_id: int):
     return job
 
 
-def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
-    """结合原单扫码完成和独立套餐事实确认付款，保留平台推断标记。"""
+def _huanguang_scan_completed(state: dict) -> bool:
+    """原单已结束扫码，具备发起独立套餐核验的条件。"""
     summary = state.get("summary") or {}
     artifact = state.get("payment_artifact") or {}
-    if not (
-        provider_id == "huanguang" and mode == "auto_payment"
-        and state.get("extraction_state") == "succeeded" and state.get("payment_state") == "unknown"
-        and summary.get("platform_plus_status") == "inferred" and summary.get("entitlement_inferred") is True
-        and summary.get("entitlement_active") is True and summary.get("automatic_payment_status") == "COMPLETED"
+    completed = (
+        state.get("extraction_state") == "succeeded" and state.get("payment_state") == "unknown"
         and summary.get("automatic_payment_terminal") is True and summary.get("remote_polling") is False
-        and summary.get("payment_check_status") == "completed" and artifact.get("payment_status") == "completed"
         and summary.get("remote_status") == "DONE"
         and summary.get("remote_terminal_failure") is not True
-    ):
+        and not summary.get("remote_chain_error")
+    )
+    inferred_complete = (
+        artifact.get("payment_status") == "completed" and summary.get("automatic_payment_status") == "COMPLETED"
+        and summary.get("platform_plus_status") == "inferred" and summary.get("entitlement_inferred") is True
+        and summary.get("entitlement_active") is True and summary.get("payment_check_status") == "completed"
+    )
+    fallback_complete = (
+        summary.get("automatic_payment_status") == "XXSYUN_COMPLETED"
+        and summary.get("xxsyun_status") == "completed"
+        and artifact.get("payment_status") in {"completed", "verification_unavailable", "payment_check_error"}
+    )
+    return bool(completed and (inferred_complete or fallback_complete))
+
+
+def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
+    """结合原单扫码完成和独立套餐事实确认付款，保留平台推断标记。"""
+    if not (provider_id == "huanguang" and mode == "auto_payment" and _huanguang_scan_completed(state)):
         return False
+    summary = state.get("summary") or {}
     from core.storage import extract_link_jobs, operation
 
     task = operation.get_task(int(context.task_id), include_events=False) or {}
@@ -3052,7 +3083,7 @@ def _handle_provider_operation(context):
                 # 首次恢复可能引用旧 Run；在任何网络读取前落盘当前 Run 的恢复引用。
                 _update_provider_job(context, provider_id, job_id or None, state, prior_private)
                 context.report(stage="extraction", message=f"正在读取已有远端任务状态，本次请求最多等待 {runtime.timeout} 秒")
-                job = provider.get_status(job_id, private_data=prior_private)
+                job = provider.get_status(job_id, private_data=_provider_resume_private(provider_id, prior_private, state))
                 context.checkpoint()
                 job_id = str(job.job_id or job_id or "").strip()
                 saved_state = prior_job.get("public_state") if isinstance(prior_job.get("public_state"), dict) else {}
@@ -3135,10 +3166,15 @@ def _handle_provider_operation(context):
                 _release_huanguang_proxies(context, leases, proxy_resource_ids, terminal=False)
                 _defer_huanguang_job(context, runtime, state)
                 return None
-            if state["payment_state"] == "succeeded":
+            scan_awaiting_verification = (
+                provider_id == "huanguang" and mode == "auto_payment" and _huanguang_scan_completed(state)
+                and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False)
+            )
+            if state["payment_state"] == "succeeded" or scan_awaiting_verification:
                 context.report(
-                    stage="payment", state="success",
-                    message="扫码完成，独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "平台已确认支付成功",
+                    stage="payment", state="pending" if scan_awaiting_verification else "success",
+                    message=("扫码已完成，等待独立套餐核验" if scan_awaiting_verification else
+                             "扫码完成，独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "平台已确认支付成功"),
                     detail={"payment_confirmation_source": "local_plan_check"} if local_payment_confirmed else {},
                 )
                 aftercare = state.get("aftercare_status") or "not_started"
@@ -3155,16 +3191,50 @@ def _handle_provider_operation(context):
                         context.report(stage="aftercare", state="failed", message="支付后 AT 已失效，自动刷新按配置关闭")
                     else:
                         context.report(stage="aftercare", state="failed", message="支付后账号查活未完成")
+                if scan_awaiting_verification:
+                    from core import plan_check_service
+                    state["plus_status"] = "pending"
+                    state["summary"]["local_plan_check_pending"] = True
+                    state["message"] = "扫码已完成，正在独立核验 Plus 套餐"
+                    _update_provider_job(context, provider_id, job_id or None, state, job.private_data or prior_private)
+                    current = db.get_account(account_id) or {}
+                    token = str(current.get("access_token") or latest_token or "").strip()
+                    try:
+                        checked = plan_check_service.run_account_plan_check_inline(
+                            account_id=account_id, email=email, access_token=token,
+                            trigger="extract_post_payment", operation_context=context,
+                        )
+                    except (account_task_store.OperationLeaseLost, OperationCancelled):
+                        raise
+                    except Exception as exc:
+                        logger.warning("[提链] 内联套餐核验未完成: run_id=%s error=%s", context.run_id,
+                                       task_run_log.redact_text(str(exc), 300))
+                        checked = {"accepted": False}
+                    context.checkpoint()
+                    state["summary"]["local_plan_check_pending"] = False
+                    checked_result = checked.get("result") if isinstance(checked, dict) else None
+                    checked_result = checked_result if isinstance(checked_result, dict) else {}
+                    if checked_result.get("status") == "cancelled" or checked_result.get("cancelled") is True:
+                        raise OperationCancelled("独立套餐核验已取消")
+                    local_payment_confirmed = _reconcile_huanguang_automatic_payment(
+                        context, state, provider_id=provider_id, mode=mode,
+                        prior_state=(prior_job or {}).get("public_state") or {},
+                    )
+                    if not local_payment_confirmed:
+                        state["plus_status"] = "not_confirmed" if checked_result.get("ok") else "failed"
                 if local_payment_confirmed:
                     state["plus_status"] = "confirmed"
-                elif _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False):
+                elif not scan_awaiting_verification and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False):
                     schedule_plan_check = True
                     state["plus_status"] = "pending"
-                else:
+                elif not scan_awaiting_verification:
                     state["plus_status"] = "not_applicable"
                 context.report(
-                    stage="plus", state="success" if local_payment_confirmed else "pending" if state["plus_status"] == "pending" else "skipped",
-                    message="独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "Plus 权益核验状态已单独记录",
+                    stage="plus", state=("success" if local_payment_confirmed else "pending" if state["plus_status"] == "pending"
+                                        else "failed" if state["plus_status"] in {"failed", "not_confirmed"} else "skipped"),
+                    message=("独立套餐查询已确认 Plus 到账" if local_payment_confirmed else
+                             "独立套餐查询尚未确认 Plus 到账" if state["plus_status"] == "not_confirmed" else
+                             "独立套餐核验失败，可同步原单重查" if state["plus_status"] == "failed" else "Plus 权益核验状态已单独记录"),
                     detail={"plus_status": state["plus_status"]},
                 )
             elif mode == "extract_only":
@@ -3286,10 +3356,10 @@ def _handle_provider_operation(context):
                         state["plus_status"] = "pending"
                     else:
                         state["plus_status"] = "failed"
-                        state["message"] = "支付已成功，但 Plus 套餐核验未能排队"
+                        state["message"] = "扫码已完成，但 Plus 套餐核验未能排队"
                 else:
                     state["plus_status"] = "failed"
-                    state["message"] = "支付已成功，但数据库没有可用 AT 供套餐核验"
+                    state["message"] = "扫码已完成，但数据库没有可用 AT 供套餐核验"
                 extract_link_jobs.update_provider_job_state(context.run_id, state)
             return None
         except account_task_store.OperationLeaseLost:

@@ -995,6 +995,89 @@ class HuanguangAutoRelinkTests(unittest.TestCase):
         self.assertEqual("upi://pay?pa=synthetic", second.payment_artifact.get("qr_data"))
         self.assertEqual("INR", second.payment_artifact.get("currency"))
 
+    def test_legacy_root_seed_keeps_existing_link_when_first_progress_omits_material(self):
+        transport = _Transport([{"status": "done", "result": {"payment_status": "payment_check_error"}}])
+        job = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data={
+            "job_secret": "synthetic-job-secret", "previous_public_state": {
+                "extraction_state": "succeeded", "payment_state": "unknown",
+                "links": ["https://pay.example.test/existing"],
+                "payment_artifact": {"payment_page_url": "https://pay.example.test/existing", "qr_data": "upi://pay?pa=synthetic"},
+            },
+        })
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual(("https://pay.example.test/existing",), job.links)
+        self.assertEqual("upi://pay?pa=synthetic", job.payment_artifact.get("qr_data"))
+        self.assertEqual("unknown", job.payment_state)
+        self.assertIs(True, job.summary.get("extraction_ever_succeeded"))
+        self.assertNotIn("remote_terminal_failure", job.summary)
+        self.assertNotIn("failure_message", job.summary)
+        self.assertNotIn("previous_public_state", job.private_data)
+
+    def test_legacy_root_seed_keeps_explicit_remote_failure_with_existing_material(self):
+        for status, payment_status, error, expected_payment in (
+            ("error", "payment_check_error", "平台明确失败", "unknown"),
+            ("cancelled", "payment_check_error", "平台明确失败", "unknown"),
+            ("canceled", "payment_check_error", "平台明确失败", "unknown"),
+            ("done", "payment_check_error", "平台明确失败", "unknown"),
+            ("done", "failed", "", "failed"),
+        ):
+            with self.subTest(status=status, payment_status=payment_status):
+                job = HuanguangProvider(_config(), _Transport([{
+                    "status": status, "error": error,
+                    "result": {"payment_status": payment_status},
+                }])).get_status(self.root_id, private_data={
+                    "job_secret": "synthetic-job-secret", "previous_public_state": {
+                        "extraction_state": "succeeded", "payment_state": "unknown",
+                        "links": ["https://pay.example.test/existing"],
+                    },
+                })
+                self.assertEqual("succeeded", job.extraction_state)
+                self.assertEqual(expected_payment, job.payment_state)
+                self.assertIs(True, job.summary.get("remote_terminal_failure"))
+                self.assertEqual(error or "幻光任务已结束，但未返回有效支付材料", job.summary.get("failure_message"))
+
+    def test_legacy_root_seed_keeps_only_validated_snapshot_fields(self):
+        job = HuanguangProvider(_config(), _Transport([TimeoutError()])).get_status(self.root_id, private_data={
+            "job_secret": "synthetic-job-secret", "previous_public_state": {
+                "extraction_state": "succeeded", "payment_state": "unknown",
+                "links": ["javascript:alert(1)", "https://pay.example.test/existing"],
+                "payment_links": ["https://pay.example.test/existing", {"raw": "synthetic-raw"}],
+                "payment_artifact": {"payment_page_url": "https://pay.example.test/existing", "raw": "synthetic-raw"},
+                "summary": {"remote_status": "RUNNING", "remote_polling": True, "raw": "synthetic-raw",
+                            "extraction_ever_succeeded": True},
+                "private_data": {"access_token": "synthetic-raw"}, "raw": "synthetic-raw",
+            },
+        })
+        state = job.private_data["job_chain"][0]["state"]
+        self.assertEqual(["https://pay.example.test/existing"], state["links"])
+        self.assertEqual(["https://pay.example.test/existing"], state["payment_links"])
+        self.assertIs(True, job.summary.get("remote_polling"))
+        self.assertNotIn("synthetic-raw", repr(job.private_data))
+        self.assertNotIn("previous_public_state", job.private_data)
+
+    def test_existing_chain_does_not_accept_root_seed_as_child_material(self):
+        root = HuanguangProvider(_config(), _Transport([self._parent()])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        private = {**root.private_data, "previous_public_state": {
+            "extraction_state": "succeeded", "links": ["https://pay.example.test/root-only"],
+        }}
+        child = HuanguangProvider(_config(), _Transport([{"status": "running"}])).get_status(self.root_id, private_data=private)
+        self.assertEqual("running", child.extraction_state)
+        self.assertEqual((), child.links)
+        self.assertIs(False, child.summary.get("extraction_ever_succeeded"))
+        self.assertNotIn("previous_public_state", child.private_data)
+
+    def test_extraction_fact_requires_material_and_ignores_untrusted_seed_summary(self):
+        job = HuanguangProvider(_config(), _Transport([{"status": "done"}])).get_status(self.root_id, private_data={
+            "job_secret": "synthetic-job-secret", "previous_public_state": {
+                "extraction_state": "succeeded", "links": ["javascript:alert(1)"],
+                "summary": {"extraction_ever_succeeded": True},
+            },
+        })
+        self.assertEqual("failed", job.extraction_state)
+        self.assertIs(False, job.summary.get("extraction_ever_succeeded"))
+
     def test_new_child_never_inherits_parent_material(self):
         data = self._parent()
         data["result"]["checkout_url"] = "https://pay.example.test/expired-parent"
@@ -1003,6 +1086,7 @@ class HuanguangAutoRelinkTests(unittest.TestCase):
         self.assertNotIn("payment_page_url", parent.payment_artifact)
         self.assertEqual("queued", parent.extraction_state)
         self.assertEqual(["https://pay.example.test/expired-parent"], parent.private_data["job_chain"][0]["state"]["links"])
+        self.assertIs(True, parent.summary.get("extraction_ever_succeeded"))
 
     def test_pending_parent_queries_rotate_and_never_exceed_two_progress_gets(self):
         ids = [f"{index:016x}" for index in range(1, 21)]

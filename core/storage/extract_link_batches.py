@@ -223,8 +223,9 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
                     COALESCE(NULLIF(task.data->>'provider_id', ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
                     COALESCE(NULLIF(task.data->>'mode', ''), 'extract_only') AS mode,
-                    LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
-                        NULLIF(run.result_summary->>'extraction_status', ''), '')) AS extraction,
+                    CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
+                        THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
+                            NULLIF(run.result_summary->>'extraction_status', ''), '')) END AS extraction,
                     LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
                         NULLIF(run.result_summary->>'payment_status', ''), 'not_started')) AS payment,
                     LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''),

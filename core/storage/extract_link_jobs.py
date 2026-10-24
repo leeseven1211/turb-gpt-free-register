@@ -23,6 +23,7 @@ _SUMMARY_FIELDS = frozenset({
     "payment_confirmation_source", "payment_confirmed_plan_checked_at",
     "queue_position", "max_attempts", "cdk_state",
     "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
+    "extraction_ever_succeeded", "local_plan_check_pending",
 })
 _REMOTE_STATUSES = frozenset({
     "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
@@ -290,6 +291,11 @@ def list_recoverable_workbench_jobs() -> list[dict]:
                       OR (NULLIF(BTRIM(job.job_id), '') IS NOT NULL
                           AND COALESCE(job.public_state->'summary'->>'remote_chain_error', '')=''
                           AND (job.public_state->'summary'->>'remote_polling'='true'
+                               OR (job.public_state->'summary'->>'local_plan_check_pending'='true'
+                                   AND job.extraction_state='succeeded'
+                                   AND job.public_state->>'plus_status'='pending'
+                                   AND job.public_state->'summary'->>'remote_status'='DONE'
+                                   AND job.public_state->'summary'->>'automatic_payment_terminal'='true')
                                OR (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
                                    AND COALESCE(job.public_state->'summary'->>'automatic_payment_requires_reconcile', '')<>'true'
                                    AND COALESCE(job.public_state->'summary'->>'remote_terminal_failure', '')<>'true')))
@@ -466,7 +472,9 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
                 THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
             COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
             COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
-            LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''), NULLIF(r.result_summary->>'extraction_status', ''), '')) AS extraction,
+            CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
+                THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
+                    NULLIF(r.result_summary->>'extraction_status', ''), '')) END AS extraction,
             LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) AS payment,
             LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
             COALESCE(r.result_summary->'has_link' NOT IN

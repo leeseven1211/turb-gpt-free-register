@@ -4248,7 +4248,7 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         merged_data["retry_trigger"] = str(trigger or "manual_retry")
         cur.execute(
             f"""
-            SELECT status, resource_family, batch_id, data, result_summary
+            SELECT id, status, resource_family, batch_id, data, result_summary
             FROM {_table('operation_runs')}
             WHERE task_id=%s ORDER BY run_no DESC, id DESC LIMIT 1
             """,
@@ -4338,6 +4338,33 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             resource_family=str(previous_run.get("resource_family") or "openai_interactive"),
             data=merged_data,
         )
+        if (
+            task_type == "extract_link"
+            and str(task.get("source_system") or "") == "native_operations"
+            and str(merged_data.get("workbench_action") or "") == "sync_status"
+        ):
+            try:
+                source_run_id = int(merged_data.get("provider_job_run_id") or previous_run.get("id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                source_run_id = 0
+            provider_id = str(merged_data.get("provider_id") or "").strip()
+            if source_run_id > 0 and provider_id:
+                # 同步排队即切换最新 Run，因此必须同时复制原单快照，保留已取得的提链事实。
+                # 只复制同一任务、同一平台的 Provider 记录；凭据仍留在私有列中。
+                cur.execute(
+                    f"""
+                    INSERT INTO {_table('extract_link_provider_jobs')} (
+                        run_id, provider_id, job_id, extraction_state, payment_state,
+                        public_state, private_data
+                    )
+                    SELECT %s, job.provider_id, job.job_id, job.extraction_state,
+                           job.payment_state, job.public_state, job.private_data
+                    FROM {_table('extract_link_provider_jobs')} job
+                    JOIN {_table('operation_runs')} source_run ON source_run.id=job.run_id
+                    WHERE source_run.id=%s AND source_run.task_id=%s AND job.provider_id=%s
+                    """,
+                    (int(run["id"]), source_run_id, int(task_id), provider_id),
+                )
         cur.execute(
             f"""
             UPDATE {_table('operation_tasks')}

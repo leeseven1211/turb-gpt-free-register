@@ -1916,6 +1916,29 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
                 "已修复 %s 个底层已结束但统一任务仍显示活动的兼容投影",
                 repaired_compatibility_projections,
             )
+        # 原提链 Run 会内联查活和查询套餐，先恢复旧状态，再启动原单续查和调度。
+        live_check_recovery = _legacy_recovery_exclusions(
+            {"live_check", "token_refresh", "account_inspection"}, legacy_source_systems=(),
+        )
+        if not live_check_recovery["skip_all"]:
+            recovered_live_checks = db.recover_interrupted_live_checks(
+                excluded_account_ids=live_check_recovery["account_ids"],
+            )
+            if recovered_live_checks:
+                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的查活状态", recovered_live_checks)
+        else:
+            active_logger.info("无法安全读取 durable live_check 行级排除项，跳过旧查活恢复")
+        plan_check_recovery = _legacy_recovery_exclusions(
+            {"plan_check"}, legacy_source_systems=(),
+        )
+        if not plan_check_recovery["skip_all"]:
+            recovered_plan_checks = db.recover_interrupted_plan_checks(
+                excluded_account_ids=plan_check_recovery["account_ids"],
+            )
+            if recovered_plan_checks:
+                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
+        else:
+            active_logger.info("无法安全读取 durable plan_check 行级排除项，跳过旧套餐查询恢复")
         try:
             resumed_extract_jobs = extract_link_service.resume_known_remote_jobs()
             if resumed_extract_jobs:
@@ -1988,17 +2011,6 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             active_logger.exception("注册调试产物过期清理失败；不影响 WebUI 启动")
 
         sms_provider.start_cancel_worker()
-        plan_check_recovery = _legacy_recovery_exclusions(
-            {"plan_check"}, legacy_source_systems=(),
-        )
-        if not plan_check_recovery["skip_all"]:
-            recovered_plan_checks = db.recover_interrupted_plan_checks(
-                excluded_account_ids=plan_check_recovery["account_ids"],
-            )
-            if recovered_plan_checks:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
-        else:
-            active_logger.info("无法安全读取 durable plan_check 行级排除项，跳过旧套餐查询恢复")
         extract_link_recovery = _legacy_recovery_exclusions(
             {"extract_link"}, legacy_source_systems=(),
         )
@@ -2010,17 +2022,6 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
                 active_logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
         else:
             active_logger.info("无法安全读取 durable extract_link 行级排除项，跳过旧提链恢复")
-        live_check_recovery = _legacy_recovery_exclusions(
-            {"live_check", "token_refresh", "account_inspection"}, legacy_source_systems=(),
-        )
-        if not live_check_recovery["skip_all"]:
-            recovered_live_checks = db.recover_interrupted_live_checks(
-                excluded_account_ids=live_check_recovery["account_ids"],
-            )
-            if recovered_live_checks:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的查活状态", recovered_live_checks)
-        else:
-            active_logger.info("无法安全读取 durable live_check 行级排除项，跳过旧查活恢复")
         backfilled_proxy_context = db.backfill_account_registration_proxy_context()
         if backfilled_proxy_context:
             active_logger.info("已为 %s 个历史账号补齐注册代理来源/国家", backfilled_proxy_context)

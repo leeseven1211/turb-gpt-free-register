@@ -112,9 +112,10 @@ def _captured_proxy_source(purpose: str) -> str | None:
 class _ReporterAdapter:
     """Route the established reporter calls to a native operation context."""
 
-    def __init__(self, task_id: int | None, context=None):
+    def __init__(self, task_id: int | None, context=None, *, finish_operation: bool = True):
         self._legacy = TaskReporter(task_id) if context is None else None
         self._context = context
+        self._finish_operation = finish_operation
 
     def start(self, message: str = "开始执行") -> None:
         if self._context is None:
@@ -158,6 +159,12 @@ class _ReporterAdapter:
             self._native_report(stage, message=message, event_type=event_type, **kwargs)
 
     def finish(self, *, status: str, message: str, **kwargs) -> None:
+        if not self._finish_operation:
+            self.stage(
+                "plan_check", "success" if status in {"success", "partial_success"} else "failed",
+                message, detail={"status": status, **dict(kwargs.get("result_summary") or {})},
+            )
+            return
         if self._context is None:
             self._legacy.finish(status=status, message=message, **kwargs)
             return
@@ -602,10 +609,11 @@ def _run_plan_check(
     config_snapshot: dict | None = None,
     proxy_source: str | None = None,
     countries: list[str] | None = None,
+    finish_operation: bool = True,
 ) -> dict:
     account_route = None
     result = None
-    reporter = _ReporterAdapter(task_id, operation_context)
+    reporter = _ReporterAdapter(task_id, operation_context, finish_operation=finish_operation)
     preflight_open = True
     failure_stage = "preflight"
     multi_country = bool(countries) and not str(trigger).startswith("registration")
@@ -781,6 +789,43 @@ def _run_plan_check(
                 account_route.release(reason=f"plan-check-{account_id}")
         if release_queue_slot:
             _QUEUE_SLOTS.release()
+
+
+def run_account_plan_check_inline(
+    *, account_id: int, email: str, access_token: str, trigger: str,
+    operation_context, timezone_offset_min: str = "-",
+) -> dict:
+    """在持有账号租约的父 Run 内查询套餐，只结束套餐子步骤。"""
+    account_id = int(account_id)
+    if operation_context is None or int(getattr(operation_context, "account_id", 0) or 0) != account_id:
+        return {"accepted": False, "error": "套餐核验与父任务账号不匹配"}
+    _checkpoint(operation_context, "内联套餐查询前检查父任务状态")
+    token = str(access_token or "").strip()
+    if not token:
+        return {"accepted": False, "error": "账号缺少 access_token"}
+    account = db.get_account(account_id)
+    if not account:
+        return {"accepted": False, "error": "账号不存在"}
+    if db.account_is_deactivated(account):
+        return {"accepted": False, "deactivated": True, "error": "账号已废号，不能查询套餐"}
+    # 提链快照只包含提链配置；套餐国家、超时和重试必须独立捕获。
+    snapshot = get_config_snapshot()
+    config_snapshot = account_task_store.normalize_config_snapshot(snapshot, allowlist=PLAN_CONFIG_ALLOWLIST)
+    from config.countries import normalize_plan_check_countries
+    countries = normalize_plan_check_countries(config_snapshot.get("countries", []))
+    proxy_source = _country_proxy_source(snapshot)
+    if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
+        return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
+    result = _run_plan_check(
+        account_id=account_id, email=str(email or "").strip(), access_token=token,
+        trigger=str(trigger or "manual"), proxy=None,
+        timezone_offset_min=str(timezone_offset_min or "-"),
+        task_id=int(operation_context.task_id), operation_context=operation_context,
+        finish_operation=False, config_snapshot=config_snapshot,
+        proxy_source=proxy_source, countries=countries,
+    )
+    return {"accepted": True, "busy": False, "account_id": account_id,
+            "task_id": int(operation_context.task_id), "result": result}
 
 
 def check_registration_account_plan(

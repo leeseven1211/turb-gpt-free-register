@@ -81,6 +81,7 @@ class WebUIRuntimeTests(unittest.TestCase):
                 patch.object(runtime.account_task_store, "start_dispatcher")
             )
             register_handlers = stack.enter_context(patch.object(runtime, "_register_runtime_handlers"))
+            resume_extract = stack.enter_context(patch("core.extract_link_service.resume_known_remote_jobs", return_value=0))
             cleanup_roxy = stack.enter_context(
                 patch("core.roxybrowser_client.cleanup_orphaned_profiles", return_value={"found": 0})
             )
@@ -124,8 +125,17 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_task_center_cleanup = stack.enter_context(
                 patch("core.task_center_retention.start_periodic_cleanup")
             )
+            startup_order = []
+            recover_plans.side_effect = lambda **_kwargs: startup_order.append("recover_plans") or 4
+            recover_live.side_effect = lambda **_kwargs: startup_order.append("recover_live") or 6
+            start_dispatcher.side_effect = lambda: startup_order.append("start_dispatcher")
+            resume_extract.side_effect = lambda: startup_order.append("resume_extract") or 0
             self.assertTrue(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
             self.assertFalse(runtime.start_runtime(logging.getLogger("test-webui-runtime")))
+            self.assertLess(startup_order.index("recover_plans"), startup_order.index("start_dispatcher"))
+            self.assertLess(startup_order.index("recover_live"), startup_order.index("start_dispatcher"))
+            self.assertLess(startup_order.index("recover_live"), startup_order.index("resume_extract"))
+            self.assertLess(startup_order.index("recover_plans"), startup_order.index("resume_extract"))
 
         for mock in (
             recover_jobs,

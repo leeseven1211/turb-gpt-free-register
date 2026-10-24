@@ -975,16 +975,17 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
                 patch("core.storage.operation.get_task", return_value={"created_at": "2026-10-23T00:00:00Z"}),
                 patch.object(extract_link_service, "_payment_aftercare", return_value=("succeeded", "fixture-token", {})) as aftercare,
                 patch.object(extract_link_service, "_bool_setting", return_value=True),
-                patch("core.plan_check_service.enqueue_account_plan_check", return_value={"accepted": True}) as enqueue,
+                patch("core.plan_check_service.run_account_plan_check_inline",
+                      return_value={"accepted": True, "result": {"ok": False}}) as inline,
             ):
                 extract_link_service._handle_provider_operation(scenario.context)
-        return scenario, aftercare, enqueue
+        return scenario, aftercare, inline
 
     def test_huanguang_completed_scan_and_fresh_independent_plus_persist_local_payment_confirmation(self):
         from core import extract_link_service
         from core.storage.extract_link_jobs import _public_state
 
-        scenario, aftercare, enqueue = self._run_huanguang_completed_scan_sync()
+        scenario, aftercare, inline = self._run_huanguang_completed_scan_sync()
         finished = scenario.context.finish.call_args.kwargs
         self.assertEqual("success", finished["status"])
         self.assertIsNone(finished["error"])
@@ -1006,7 +1007,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("paid", item["payment_status"])
         self.assertEqual("local_plan_check", item["payment_confirmation_source"])
         aftercare.assert_not_called()
-        enqueue.assert_not_called()
+        inline.assert_not_called()
         scenario.provider.create_job.assert_not_called()
         scenario.provider.start_payment.assert_not_called()
 
@@ -1030,14 +1031,19 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         ]
         for result_changes, account_changes in cases:
             with self.subTest(result_changes=result_changes, account_changes=account_changes):
-                scenario, aftercare, enqueue = self._run_huanguang_completed_scan_sync(
+                scenario, aftercare, inline = self._run_huanguang_completed_scan_sync(
                     result_changes=result_changes, account_changes=account_changes,
                 )
                 saved = scenario.save_job.call_args.args[3]
                 self.assertNotEqual("succeeded", saved["payment_state"])
                 self.assertNotIn("payment_confirmation_source", saved["summary"])
-                aftercare.assert_not_called()
-                enqueue.assert_not_called()
+                if account_changes:
+                    # 扫码已完成但本地证据不足时，补查套餐，不能形成等待支付确认的循环。
+                    aftercare.assert_called_once()
+                    inline.assert_called_once()
+                else:
+                    aftercare.assert_not_called()
+                    inline.assert_not_called()
                 scenario.provider.create_job.assert_not_called()
                 scenario.provider.start_payment.assert_not_called()
 
@@ -1050,7 +1056,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
     def test_huanguang_repeat_sync_preserves_recorded_local_payment_but_explicit_failure_wins(self):
         first, _, _ = self._run_huanguang_completed_scan_sync()
         prior = first.save_job.call_args.args[3]
-        again, aftercare, enqueue = self._run_huanguang_completed_scan_sync(
+        again, aftercare, inline = self._run_huanguang_completed_scan_sync(
             account_changes={"plan_check_status": "failed"}, prior_state=prior,
         )
         saved = again.save_job.call_args.args[3]
@@ -1058,7 +1064,7 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("confirmed", saved["plus_status"])
         self.assertEqual("local_plan_check", saved["summary"]["payment_confirmation_source"])
         aftercare.assert_not_called()
-        enqueue.assert_not_called()
+        inline.assert_not_called()
         failed, _, _ = self._run_huanguang_completed_scan_sync(
             result_changes={"chongyun_order_status": "FAILED_REFUNDED", "chongyun_status": "refunded"},
             prior_state=prior,
