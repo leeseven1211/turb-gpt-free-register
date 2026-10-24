@@ -2451,17 +2451,15 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
         if _provider_has_reference(prior_job) and str(prior_state.get("extraction_state") or "") not in {"failed"}:
             workbench_action = "sync_status"
         else:
-            if not _provider_mode_enabled(provider_id, "extract_only"):
+            if not _provider_mode_enabled(provider_id, mode):
                 return {"accepted": False}
             workbench_action = "create"
-            if mode == "auto_payment":
-                mode = "extract_only"
-                run_data["mode"] = mode
             run_data.update({
                 "provider_id": provider_id,
                 "mode": mode,
                 "link_type": data.get("link_type"),
                 "options": data.get("options") if isinstance(data.get("options"), dict) else {},
+                "extract_poll_continuation": False,
             })
     elif requested_action in {"sync_status", "manual_payment", "auto_payment"}:
         expected_mode = {

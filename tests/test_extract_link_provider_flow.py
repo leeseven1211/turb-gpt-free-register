@@ -551,7 +551,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         claim.assert_not_called()
         notify.assert_called_once()
 
-    def test_auto_payment_retry_without_order_retries_extraction_only(self):
+    def test_auto_payment_retry_without_order_preserves_original_mode_and_options(self):
         from core import extract_link_service
 
         task = {
@@ -560,7 +560,9 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             "source_system": "native_operations",
             "status": "attention_required",
             "account_id": 78,
-            "data": {"provider_id": "lumen_flow", "mode": "auto_payment", "link_type": "momo"},
+            "batch_id": 303,
+            "data": {"provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi",
+                     "options": {"retry_count": 3}},
             "runs": [{"id": 23, "run_no": 1}],
             "last_run_id": 23,
         }
@@ -581,9 +583,75 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         self.assertEqual(34, result["run_id"])
         payload = retry.call_args.kwargs["data"]
         self.assertEqual("create", payload["workbench_action"])
-        self.assertEqual("extract_only", payload["mode"])
+        self.assertEqual("auto_payment", payload["mode"])
+        self.assertEqual({"retry_count": 3}, payload["options"])
+        self.assertIs(False, payload["extract_poll_continuation"])
         self.assertIsNone(payload["provider_job_run_id"])
-        claim.assert_called_once_with(78, trigger="extract_workbench_retry", link_type="momo")
+        self.assertEqual((12,), retry.call_args.args)
+        self.assertNotIn("batch_id", retry.call_args.kwargs)
+        claim.assert_called_once_with(78, trigger="extract_workbench_retry", link_type="upi")
+
+    def test_failed_huanguang_auto_payment_retry_clears_old_poll_continuation(self):
+        from core import extract_link_service
+
+        task = {
+            "id": 12, "task_type": "extract_link", "source_system": "native_operations",
+            "status": "failed", "account_id": 78, "batch_id": 303,
+            "data": {"provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi",
+                     "options": {"retry_count": 3}, "extract_poll_continuation": True,
+                     "workbench_action": "sync_status", "provider_job_run_id": 23},
+            "runs": [{"id": 23, "run_no": 2}], "last_run_id": 23,
+        }
+        with (
+            patch("core.storage.operation.get_task", return_value=task),
+            patch("core.storage.extract_link_jobs.get_provider_job_public", return_value={
+                "job_id": "failed-original-order",
+                "public_state": {"extraction_state": "failed", "payment_state": "not_started"},
+            }),
+            patch("core.storage.operation.retry_runtime_task", return_value={"id": 34}) as retry,
+            patch.object(extract_link_service.account_task_store, "notify_dispatch"),
+            patch.object(extract_link_service.db, "claim_account_extract", return_value=True),
+            patch.object(extract_link_service, "_provider_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True) as mode_enabled,
+            patch.object(extract_link_service, "_bool_setting", return_value=True),
+        ):
+            result = extract_link_service.perform_extract_workbench_action(12, "retry")
+
+        self.assertTrue(result["accepted"])
+        payload = retry.call_args.kwargs["data"]
+        self.assertEqual("create", payload["workbench_action"])
+        self.assertIs(False, payload["extract_poll_continuation"])
+        self.assertIsNone(payload["provider_job_run_id"])
+        self.assertEqual("auto_payment", payload["mode"])
+        self.assertEqual({"retry_count": 3}, payload["options"])
+        mode_enabled.assert_called_once_with("huanguang", "auto_payment")
+
+    def test_auto_payment_retry_rejects_when_original_mode_is_disabled(self):
+        from core import extract_link_service
+
+        task = {
+            "id": 12, "task_type": "extract_link", "source_system": "native_operations",
+            "status": "failed", "account_id": 78,
+            "data": {"provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi"},
+            "runs": [{"id": 23, "run_no": 1}], "last_run_id": 23,
+        }
+        with (
+            patch("core.storage.operation.get_task", return_value=task),
+            patch("core.storage.extract_link_jobs.get_provider_job_public", return_value=None),
+            patch("core.storage.operation.retry_runtime_task") as retry,
+            patch.object(extract_link_service.account_task_store, "notify_dispatch") as notify,
+            patch.object(extract_link_service.db, "claim_account_extract") as claim,
+            patch.object(extract_link_service, "_provider_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_mode_enabled",
+                         side_effect=lambda provider_id, mode: mode == "extract_only"),
+            patch.object(extract_link_service, "_bool_setting", return_value=True),
+        ):
+            result = extract_link_service.perform_extract_workbench_action(12, "retry")
+
+        self.assertFalse(result["accepted"])
+        retry.assert_not_called()
+        claim.assert_not_called()
+        notify.assert_not_called()
 
     def test_provider_concurrency_limit_uses_each_platform_config_key(self):
         from core import extract_link_service
