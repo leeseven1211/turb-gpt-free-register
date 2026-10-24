@@ -293,6 +293,65 @@ class HuanguangDocumentContractTests(unittest.TestCase):
             for secret in ("synthetic-token", "CDK-ABCD-1234-ABCD-1234", "user@example.test", "pay.example.test", "proxy-password", "synthetic-private-secret"):
                 self.assertNotIn(secret, message)
 
+    def test_terminal_cdk_error_text_is_not_hidden_by_generic_failure(self):
+        for status in ("error", "failed", "cancelled", "canceled"):
+            with self.subTest(status=status):
+                job = self._job({
+                    "status": status, "error": "任务处理失败",
+                    "text": "提链 CDK 次数已用完，任务未执行",
+                })
+                self.assertEqual("failed", job.extraction_state)
+                self.assertEqual("提链 CDK 次数已用完，任务未执行", job.summary.get("failure_message"))
+
+    def test_specific_result_error_is_not_hidden_by_generic_outer_error(self):
+        job = self._job({
+            "status": "error", "error": "任务处理失败", "text": "正在创建支付请求",
+            "result": {"error": "代理隧道连接失败，HTTP 403"},
+        })
+        self.assertEqual("代理隧道连接失败，HTTP 403", job.summary.get("failure_message"))
+
+    def test_specific_result_error_is_not_hidden_by_outer_running_message(self):
+        job = self._job({
+            "status": "error", "message": "正在创建支付请求",
+            "result": {"error": "代理隧道连接失败，HTTP 403"},
+        })
+        self.assertEqual("代理隧道连接失败，HTTP 403", job.summary.get("failure_message"))
+
+    def test_explicit_error_keeps_priority_even_when_it_describes_running_stage(self):
+        job = self._job({
+            "status": "error", "error": "正在创建支付请求时代理认证失败",
+            "result": {"error": "代理隧道连接失败，HTTP 403"},
+        })
+        self.assertEqual("正在创建支付请求时代理认证失败", job.summary.get("failure_message"))
+
+    def test_specific_error_is_preserved_instead_of_previous_progress(self):
+        for error in ("代理隧道连接失败，HTTP 403", "任务处理失败"):
+            with self.subTest(error=error):
+                job = self._job({
+                    "status": "error", "error": error, "text": "正在创建支付请求",
+                })
+                self.assertEqual(error, job.summary.get("failure_message"))
+
+    def test_done_without_material_keeps_synthetic_failure_contract(self):
+        job = self._job({
+            "status": "done", "error": "任务处理失败",
+            "text": "提链 CDK 次数已用完，任务未执行",
+        })
+        self.assertEqual("任务处理失败", job.summary.get("failure_message"))
+        empty = self._job({"status": "done", "result": {}})
+        self.assertEqual("幻光任务已结束，但未返回有效支付材料", empty.summary.get("failure_message"))
+
+    def test_selected_terminal_error_text_remains_redacted_and_bounded(self):
+        job = self._job({
+            "status": "error", "error": "任务处理失败",
+            "text": "提链失败 cdk=CDK-ABCD-1234-ABCD-1234 secret=synthetic-private-secret user@example.test https://proxy-user:proxy-password@proxy.example.test:8080 " + "错误" * 200,
+        })
+        message = job.summary["failure_message"]
+        self.assertTrue(message.startswith("提链失败"))
+        self.assertLessEqual(len(message), 300)
+        for secret in ("CDK-ABCD-1234-ABCD-1234", "synthetic-private-secret", "user@example.test", "proxy-password", "proxy.example.test"):
+            self.assertNotIn(secret, message)
+
     def test_done_still_requests_monitoring_while_payment_checker_runs(self):
         for result in ({"payment_check_status": "running"}, {"chongyun_polling": True}, {"xxsyun_polling": True}, {"seashore_polling": True}):
             with self.subTest(result=result):

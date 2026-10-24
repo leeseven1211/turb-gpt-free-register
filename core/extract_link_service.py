@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -1920,6 +1921,38 @@ def _provider_payment_sync_due(private_data: object, *, now: datetime | None = N
     return current >= due_at
 
 
+def _generic_workbench_failure(value: str) -> bool:
+    text = value.strip().rstrip("。.!！:： ").lower()
+    if text.startswith("平台提链失败：") or text.startswith("平台提链失败:"):
+        text = text[7:].strip()
+    return text in {
+        "", "任务处理失败", "任务失败", "处理失败", "提链失败", "平台提链失败", "请求失败",
+        "error", "failed", "task failed", "task processing failed", "unknown error",
+    }
+
+
+def _workbench_failure_detail(summary: dict) -> str:
+    # 旧记录的通用错误仅用已保存的明确失败原因补全，不触发远端查询或业务重跑。
+    for key in ("failure_message", "current_step"):
+        detail = summary.get(key)
+        if not isinstance(detail, str) or _generic_workbench_failure(detail):
+            continue
+        detail = detail.strip()
+        if detail.startswith(("正在", "等待", "排队", "准备")):
+            continue
+        if key == "current_step" and not re.search(
+            r"失败|错误|异常|无效|不足|已用完|用尽|耗尽|未执行|取消|拒绝|超时|不可用|无法|"
+            r"\b(?:error|failed|invalid|exhausted|insufficient|timeout|denied|cancelled|canceled)\b",
+            detail, re.IGNORECASE,
+        ):
+            continue
+        detail = task_run_log.redact_text(detail, len(detail))
+        detail = re.sub(r"(?i)\b(?:https?|socks5h?)://[^\s<>]+", "[REDACTED_URL]", detail)
+        detail = re.sub(r"[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}", "[REDACTED_EMAIL]", detail)
+        return " ".join(detail.split())[:300]
+    return ""
+
+
 def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     data = row.get("task_data") if isinstance(row.get("task_data"), dict) else {}
     state = row.get("public_state") if isinstance(row.get("public_state"), dict) else {}
@@ -1980,6 +2013,14 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         ))
     )
     message = str(state.get("message") or run_summary.get("message") or error or "")
+    if provider_id == "huanguang" and extraction == "failed" and _generic_workbench_failure(error):
+        detail = _workbench_failure_detail(summary) if _generic_workbench_failure(message) else (
+            _workbench_failure_detail({"current_step": message})
+        )
+        if detail:
+            error = detail if detail.startswith("平台提链失败") else f"平台提链失败：{detail}"
+            if _generic_workbench_failure(message):
+                message = error
     created_at = row.get("run_created_at") or row.get("task_created_at")
     updated_at = row.get("job_updated_at") or row.get("task_updated_at") or row.get("run_completed_at") or created_at
     return {

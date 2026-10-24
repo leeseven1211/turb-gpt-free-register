@@ -1376,6 +1376,8 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 接口契约以[流光文档](https://int31.space/public/checkout-api)和[幻光文档](https://chongyun-link.xiaoliai.shop/static/api-docs.html)为准。流光记录平台步骤、百分比、任务/步骤尝试次数及 `failureCode/failureType`；平台 Plus 验证不能代替本地套餐核验。幻光当前仅开放 UPI，默认类型为 `upi`；出链成功依据有效支付材料判断，顶层任务 `done` 本身不足以证明成功。
 
+幻光提链失败时，卡片优先显示平台返回的具体错误、失败阶段和原因；例如“提链 CDK 次数已用完，任务未执行”，不会被通用的“任务处理失败”覆盖。旧任务也会从已经保存的失败信息中补全显示，无需同步或重跑；没有具体记录时保留原错误，不推测原因。
+
 幻光创建任务或批次时可在 `options.retry_count` 指定单个远端任务内部的提链尝试次数，接受 1 至 10 的整数。例如 `{"retry_count":3}` 表示每个账号在该远端任务中最多尝试 3 次；省略时沿用平台默认值。该参数随任务保存，重新创建提链时继续使用，不影响扫码订单提交次数或仅查询原任务的行为。
 
 「配置 → 提链 → 幻光」中的“幻光提链 CDK”（`EXTRACT_LINK_HUANGUANG_CDK`）用于创建提链任务，“幻光支付扫码 CDK”（`EXTRACT_LINK_HUANGUANG_PAYMENT_CDK`）用于自动支付扫码，两者分开保存。只有明确选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED`，并已配置支付扫码 CDK 时，请求才携带 `chongyun_auto_submit: true` 和 `chongyun_cdk`。仅提链与手动支付均不携带这两个扫码参数，也不使用支付扫码 CDK。自动支付开关默认关闭，支付扫码 CDK 默认空字符串；密钥仅保存在 `.env`，配置 API 和非敏感快照不返回内容。

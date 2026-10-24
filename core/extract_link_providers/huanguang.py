@@ -22,7 +22,7 @@ from .contracts import (
 )
 
 
-_EXTRACTION = {"QUEUED": "queued", "RUNNING": "running", "DONE": "failed", "ERROR": "failed", "CANCELLED": "failed", "CANCELED": "failed"}
+_EXTRACTION = {"QUEUED": "queued", "RUNNING": "running", "DONE": "failed", "ERROR": "failed", "FAILED": "failed", "CANCELLED": "failed", "CANCELED": "failed"}
 _PAYMENT = {
     "AWAITING_PAYMENT": "pending", "ACTIVATION_PENDING": "pending",
     "COMPLETED": "unknown", "FAILED": "failed", "EXPIRED": "failed",
@@ -49,6 +49,11 @@ _CREDENTIAL_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s,;\"'}]+")
 _CDK_RE = re.compile(r"(?i)\b(?:CDK(?:-[A-Z0-9]{4}){4}|[A-Z]{3}-[A-F0-9]{32})\b")
+_GENERIC_FAILURE_MESSAGES = {
+    "任务处理失败", "任务失败", "处理失败", "提链失败", "平台提链失败", "请求失败",
+    "error", "failed", "task failed", "task processing failed", "unknown error",
+}
+_FAILURE_TEXT_RE = re.compile(r"失败|错误|异常|无效|不足|已用完|用尽|耗尽|未执行|取消|拒绝|超时|不可用|无法|\b(?:error|failed|invalid|exhausted|insufficient|timeout|denied|cancelled|canceled)\b", re.IGNORECASE)
 
 
 def _safe_message(value: object, *, secrets: tuple[str, ...]) -> str:
@@ -83,6 +88,29 @@ def _progress_summary(data: dict, *, secrets: tuple[str, ...]) -> dict:
     if isinstance(cdk_state, str) and cdk_state in _CDK_STATES:
         summary["cdk_state"] = cdk_state
     return summary
+
+
+def _failure_message(data: dict, result: dict, remote_status: str, *, secrets: tuple[str, ...]) -> str:
+    def generic(value: str) -> bool:
+        return value.rstrip("。.!！:： ").lower() in _GENERIC_FAILURE_MESSAGES
+
+    messages = [
+        (name, _safe_message(source.get(name), secrets=secrets))
+        for source in (data, result) for name in ("error", "message", "detail", "text")
+    ]
+    field, message = next(((name, value) for name, value in messages if value), ("", ""))
+    running_message = field != "error" and message.startswith(("正在", "等待", "排队", "准备"))
+    # DONE 缺材料的合成失败保留原契约；真实失败终态跳过通用错误和旧运行进度。
+    if remote_status not in {"ERROR", "FAILED", "CANCELLED", "CANCELED"} or not (generic(message) or running_message):
+        return message
+    for name in ("error", "detail", "message", "text"):
+        for source in (result, data):
+            detail = _safe_message(source.get(name), secrets=secrets)
+            if not detail or generic(detail) or (name != "error" and detail.startswith(("正在", "等待", "排队", "准备"))):
+                continue
+            if name != "text" or _FAILURE_TEXT_RE.search(detail):
+                return detail
+    return message
 
 
 class HuanguangProvider:
@@ -633,14 +661,7 @@ class HuanguangProvider:
         )
         if status == "failed":
             summary["remote_terminal_failure"] = True
-            message = ""
-            for source in (data, result):
-                for name in ("error", "message", "detail", "text"):
-                    message = _safe_message(source.get(name), secrets=secrets)
-                    if message:
-                        break
-                if message:
-                    break
+            message = _failure_message(data, result, remote_status, secrets=secrets)
             summary["failure_message"] = message or _MISSING_MATERIAL_MESSAGE
         return ProviderJob(
             job_id=str(data.get("id") or fallback_id),
