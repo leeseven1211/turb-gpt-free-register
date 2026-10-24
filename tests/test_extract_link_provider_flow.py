@@ -722,7 +722,13 @@ class ExtractLinkPreflightConfigurationTests(unittest.TestCase):
             inline = stack.enter_context(patch("core.live_check_service.run_account_live_check_inline", side_effect=inline_results))
             stack.enter_context(patch.object(extract_link_service, "_provider_enabled", return_value=True))
             stack.enter_context(patch.object(extract_link_service, "_provider_mode_enabled", return_value=True))
+            stack.enter_context(patch.object(extract_link_service, "query_huanguang_cdk_quota", create=True, return_value={
+                "ok": True,
+                "extraction": {"required": True, "remaining": 100, "reserved": 0, "active": True},
+                "payment": {"required": True, "remaining": 100, "reserved": 0, "active": True},
+            }))
             stack.enter_context(patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
+                config=SimpleNamespace(api_base="https://huanguang.example.test", cdk="fixture-extract-cdk", payment_cdk="fixture-payment-cdk"),
                 default_type="pix", event_timeout=10, poll_interval=1, timeout=30,
             )))
             stack.enter_context(patch.object(extract_link_service, "_provider_link_type", return_value="pix"))
@@ -932,7 +938,13 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
             patch.object(extract_link_service, "_ensure_extract_token", return_value="fresh-token"),
             patch.object(extract_link_service, "_provider_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
+            patch.object(extract_link_service, "query_huanguang_cdk_quota", create=True, return_value={
+                "ok": True,
+                "extraction": {"required": True, "remaining": 100, "reserved": 0, "active": True},
+                "payment": {"required": True, "remaining": 100, "reserved": 0, "active": True},
+            }),
             patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
+                config=SimpleNamespace(api_base="https://huanguang.example.test", cdk="fixture-extract-cdk", payment_cdk="fixture-payment-cdk"),
                 default_type="momo", event_timeout=10, poll_interval=1, timeout=30,
             )),
             patch.object(extract_link_service, "_provider", return_value=provider),

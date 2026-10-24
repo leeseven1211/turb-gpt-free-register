@@ -61,6 +61,26 @@ def create_integrations_blueprint(context: WebUIContext):
             logger.warning("读取提链类型失败：%s", type(exc).__name__)
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
 
+    @bp.get("/api/extract-link/huanguang/cdk-quota")
+    def api_huanguang_cdk_quota():
+        """只读查询已保存的提链和扫码 CDK，不接受草稿密钥。"""
+        def response(payload, status=200):
+            result = jsonify(payload)
+            result.status_code = status
+            result.headers["Cache-Control"] = "no-store"
+            return result
+
+        if request.args or request.content_length:
+            return response({"ok": False, "error": "此接口仅查询已保存的 CDK，不接受查询参数或草稿密钥"}, 400)
+        try:
+            quota = extract_link_service.query_huanguang_cdk_quota()
+            if not isinstance(quota, dict) or quota.get("ok") is not True:
+                raise ValueError("额度结果未确认")
+            return response(quota)
+        except Exception as exc:
+            logger.warning("查询幻光 CDK 剩余次数失败：%s", type(exc).__name__)
+            return response({"ok": False, "error": "无法确认幻光 CDK 剩余次数，请检查已保存的 CDK 或稍后重试"}, 503)
+
     @bp.post("/api/extract-link/huanguang/xxsyun-quota")
     def api_huanguang_xxsyun_quota():
         """查询幻光备用扫码剩余次数，不保存草稿 Key。"""

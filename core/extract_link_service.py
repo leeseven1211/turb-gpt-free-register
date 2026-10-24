@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -32,6 +34,18 @@ from core.task_reporter import TaskReporter
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_LOAD_LOCK = threading.RLock()
 _RUNTIME_ENV_SIGNATURE = None
+_HUANGUANG_QUOTA_LOCK = threading.RLock()
+_HUANGUANG_QUOTA_BLOCKS = {}
+_HUANGUANG_QUOTA_INFLIGHT = {}
+_HUANGUANG_QUOTA_ADMITTED = {}
+_HUANGUANG_QUOTA_STAGES = {
+    "quota_extraction_exhausted": "提链 CDK 次数已用完，等待补充额度",
+    "quota_payment_exhausted": "支付扫码 CDK 次数已用完，等待补充额度",
+    "quota_extraction_disabled": "提链 CDK 已停用，等待更新配置",
+    "quota_payment_disabled": "支付扫码 CDK 已停用，等待更新配置",
+    "quota_unavailable": "CDK 额度暂无法确认，等待重新查询",
+    "quota_local_reserved": "CDK 可用次数已分配给正在提交的任务，等待额度释放",
+}
 
 
 class ExtractCreateRejected(RuntimeError):
@@ -707,6 +721,104 @@ def query_huanguang_xxsyun_quota(api_key: str | None = None) -> dict:
     except Exception:
         # HTTP 异常或上游正文可能包含 Key；只返回固定中文提示。
         raise ValueError("查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数") from None
+
+
+def query_huanguang_cdk_quota(*, include_payment: bool = True, runtime=None) -> dict:
+    """查询已配置的双 CDK；查询不查账号、不扣次，未知额度保持未知。"""
+    runtime = runtime or _provider_configuration("huanguang")
+    provider = _provider("huanguang", runtime)
+    extraction = provider.query_cdk_quota(runtime.config.cdk)
+    payment = provider.query_cdk_quota(runtime.config.payment_cdk, payment=True) if include_payment else {
+        "required": False, "remaining": None, "reserved": None, "active": None,
+    }
+    return {"ok": True, "extraction": extraction, "payment": payment}
+
+
+def _huanguang_quota_keys(runtime, mode: str) -> tuple:
+    def key(kind, secret):
+        value = f"{runtime.config.api_base}\0{secret}".encode()
+        return kind, hashlib.sha256(value).hexdigest()
+    return (key("extraction", runtime.config.cdk),) + (
+        (key("payment", runtime.config.payment_cdk),) if mode == "auto_payment" else ()
+    )
+
+
+@contextmanager
+def _huanguang_create_quota(context, runtime, *, provider_id: str, mode: str, action: str):
+    """新提链先检查额度；无额度同 Run 延期，原单续查不受影响。"""
+    if provider_id != "huanguang" or action != "create":
+        yield True
+        return
+    keys = _huanguang_quota_keys(runtime, mode)
+    stage = ""
+    from_cache = False
+    with _HUANGUANG_QUOTA_LOCK:
+        observed = {key: _HUANGUANG_QUOTA_ADMITTED.get(key, 0) for key in keys}
+        cached = _HUANGUANG_QUOTA_BLOCKS.get(keys)
+        if cached and cached[0] > time.monotonic():
+            stage = cached[1]
+            from_cache = True
+    quotas = None
+    if not stage:
+        try:
+            # HTTP 查询不持预算锁，避免其他 worker 持账号租约排队等待网络超时。
+            quotas = query_huanguang_cdk_quota(include_payment=mode == "auto_payment", runtime=runtime)
+        except Exception:
+            stage = "quota_unavailable"
+    with _HUANGUANG_QUOTA_LOCK:
+        if quotas is not None:
+            try:
+                for key in keys:
+                    kind = key[0]
+                    quota = quotas[kind]
+                    if quota.get("required") is False:
+                        continue
+                    if quota.get("active") is False:
+                        stage = f"quota_{kind}_disabled"
+                    elif quota.get("active") is not True or type(quota.get("remaining")) is not int:
+                        stage = "quota_unavailable"
+                    elif quota["remaining"] <= 0:
+                        stage = f"quota_{kind}_exhausted"
+                    elif quota["remaining"] <= max(
+                        _HUANGUANG_QUOTA_INFLIGHT.get(key, 0),
+                        _HUANGUANG_QUOTA_ADMITTED.get(key, 0) - observed[key],
+                    ):
+                        stage = "quota_local_reserved"
+                    if stage:
+                        break
+            except Exception:
+                stage = "quota_unavailable"
+        if stage and not from_cache:
+            if len(_HUANGUANG_QUOTA_BLOCKS) >= 32:
+                _HUANGUANG_QUOTA_BLOCKS.clear()
+            _HUANGUANG_QUOTA_BLOCKS[keys] = (time.monotonic() + 15, stage)
+        if not stage:
+            # 正额度不缓存；本机待提交任务先占预算，避免并发共同消费最后一次。
+            for key in keys:
+                _HUANGUANG_QUOTA_INFLIGHT[key] = _HUANGUANG_QUOTA_INFLIGHT.get(key, 0) + 1
+                _HUANGUANG_QUOTA_ADMITTED[key] = _HUANGUANG_QUOTA_ADMITTED.get(key, 0) + 1
+    if stage:
+        context.defer(delay_seconds=60, reason=_HUANGUANG_QUOTA_STAGES[stage], stage=stage)
+        yield False
+        return
+    released = False
+
+    def release():
+        nonlocal released
+        with _HUANGUANG_QUOTA_LOCK:
+            if released:
+                return
+            released = True
+            for key in keys:
+                remaining = _HUANGUANG_QUOTA_INFLIGHT.get(key, 1) - 1
+                if remaining:
+                    _HUANGUANG_QUOTA_INFLIGHT[key] = remaining
+                else:
+                    _HUANGUANG_QUOTA_INFLIGHT.pop(key, None)
+    try:
+        yield release
+    finally:
+        release()
 
 
 def _paypal_options(payment_options: dict | None) -> dict:
@@ -2013,7 +2125,13 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         ))
     )
     message = str(state.get("message") or run_summary.get("message") or error or "")
-    if provider_id == "huanguang" and extraction == "failed" and _generic_workbench_failure(error):
+    quota_stage = str(row.get("progress_stage") or row.get("current_stage") or "")
+    if provider_id == "huanguang" and task_status == "queued" and quota_stage in _HUANGUANG_QUOTA_STAGES:
+        message = _HUANGUANG_QUOTA_STAGES[quota_stage]
+        progress["label"] = message
+        progress["percent"] = None
+        error = ""
+    elif provider_id == "huanguang" and extraction == "failed" and _generic_workbench_failure(error):
         detail = _workbench_failure_detail(summary) if _generic_workbench_failure(message) else (
             _workbench_failure_detail({"current_step": message})
         )
@@ -2986,7 +3104,11 @@ def _handle_provider_operation(context):
     status_message = "提链失败"
     safe_error = ""
 
-    with context.lease(resource_family="openai_interactive"):
+    with context.lease(resource_family="openai_interactive"), _huanguang_create_quota(
+        context, runtime, provider_id=provider_id, mode=mode, action=action,
+    ) as quota_ready:
+        if not quota_ready:
+            return None
         try:
             context.checkpoint()
             if action == "create":
@@ -3054,6 +3176,8 @@ def _handle_provider_operation(context):
                     )
                 remote_write_started = True
                 job = provider.create_job(request_data)
+                if callable(quota_ready):
+                    quota_ready()
                 job_id = str(job.job_id or "").strip()
                 state = _safe_provider_job_state(
                     job,

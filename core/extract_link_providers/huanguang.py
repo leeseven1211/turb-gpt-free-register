@@ -120,6 +120,43 @@ class HuanguangProvider:
         self.config, self.transport = config, transport
         self._secrets: dict[str, str] = {}
 
+    def query_cdk_quota(self, cdk: str, *, payment: bool = False) -> dict:
+        """只读查询提链或扫码额度；仅返回次数和可用状态，不返回凭据或上游正文。"""
+        label = "支付扫码" if payment else "提链"
+        if not isinstance(cdk, str) or not cdk.strip() or len(cdk) > 512:
+            raise ProviderError(f"幻光{label} CDK 未配置或格式无效")
+        try:
+            data = request(
+                self.transport, "POST", "/api/chongyun-cdk-status" if payment else "/api/cdk-status",
+                body={"cdk": cdk.strip()},
+                headers={"Content-Type": "application/json", "Cache-Control": "no-store"},
+                timeout=min(self.config.timeout, 10),
+            )
+            if data.get("ok") is False:
+                raise ValueError
+            if not payment:
+                if data.get("ok") is not True or ("required" in data and type(data["required"]) is not bool):
+                    raise ValueError
+                if data.get("required") is False:
+                    return {"required": False, "remaining": None, "reserved": None, "active": True}
+            remaining = data.get("remainingUses" if payment else "remaining_uses")
+            reserved = None if payment else data.get("reserved_uses")
+            if type(remaining) is not int or not 0 <= remaining <= 2**53 - 1:
+                raise ValueError
+            if reserved is not None and (type(reserved) is not int or not 0 <= reserved <= 2**53 - 1):
+                raise ValueError
+            if payment:
+                status = data.get("status")
+                active = {"ACTIVE": True, "DISABLED": False}.get(status) if isinstance(status, str) else None
+            else:
+                active = data.get("enabled")
+                if active is not None and type(active) is not bool:
+                    raise ValueError
+            return {"required": True, "remaining": remaining, "reserved": reserved, "active": active}
+        except Exception:
+            # 网络异常和远端拒绝可能包含 CDK；额度未知不能伪装成零，也不回显正文。
+            raise ProviderError(f"幻光{label} CDK 额度查询失败，请核对配置或稍后重试") from None
+
     def create_job(self, request_data: ExtractRequest) -> ProviderJob:
         require_capability(self.config, "extract")
         if request_data.link_type != "upi":
