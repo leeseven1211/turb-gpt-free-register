@@ -29,6 +29,7 @@ const EXTRACT_WORKBENCH_STATUS_LABELS = {
   skipped: '已跳过', paid: '支付成功', unpaid: '未支付', pending_payment: '待支付',
   confirmed: 'Plus 已确认', plus: 'Plus 已确认', not_confirmed: 'Plus 未确认',
   unknown: '待确认', request_unknown: '结果待确认', unavailable: '未启用', not_applicable: '不适用',
+  query_stopped: '已停止查询', waiting_sync: '等待平台同步',
 };
 const EXTRACT_WORKBENCH_FILTERS = [
   ['', '全部任务'], ['processing', '只看处理中'], ['running', '只看运行中'], ['extraction_succeeded', '成功出链'],
@@ -138,10 +139,22 @@ function extractWorkbenchOutcome(task) {
     if (task?.mode !== 'extract_only' && ['running', 'queued', 'pending_payment'].includes(task?.payment_status)) return {tone:'active', state:'支付中', title:'支付处理中', copy:'出链完成与支付结果分开统计', icon:'dots'};
     return {tone:'success', state:'完成', title:'提链成功', copy:task?.mode === 'extract_only' ? '仅提链已完成，未发起支付' : '支付链接已生成，等待完成支付', icon:'check'};
   }
+  const syncState = extractWorkbenchSyncState(task);
+  if (syncState === 'query_stopped') return {tone:'warning', state:'等待同步', title:'已停止查询 · 等待同步', copy:'远端任务已保留，可继续同步原任务状态', icon:'dots'};
+  if (syncState === 'waiting_sync') return {tone:'muted', state:'等待同步', title:'等待平台同步', copy:'原任务已保留，到期后继续查询平台结果', icon:'dots'};
   if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'平台结果 · 等待确认', copy:'请查看任务详情或同步原任务状态', icon:'warning'};
   if (['failed', 'cancelled', 'stopped'].includes(status) || extraction === 'failed') return {tone:'danger', state:status === 'cancelled' ? '已取消' : '失败', title:status === 'cancelled' ? '任务已取消' : '提链未完成', copy:'保留本次运行记录，可查看原因后重跑', icon:'warning'};
   if (status === 'queued' || status === 'waiting') return {tone:'muted', state:'排队中', title:'等待开始提链', copy:'执行前会在线查活并检查 AT', icon:'dots'};
   return {tone:'active', state:'运行中', title:'正在获取支付链接', copy:'出链完成后将显示对应平台结果', icon:'dots'};
+}
+
+function extractWorkbenchSyncState(task) {
+  const status = String(task?.task_status || 'queued');
+  const extraction = String(task?.extraction_status || 'pending');
+  if (['request_unknown', 'attention_required'].includes(status) && ['queued', 'running'].includes(extraction)) return 'query_stopped';
+  if (['queued', 'waiting'].includes(status) && ['passed', 'success', 'skipped'].includes(task?.preflight_status)
+      && ['pending', 'queued', 'running', 'unknown'].includes(extraction)) return 'waiting_sync';
+  return '';
 }
 
 function extractWorkbenchTime(value) {
@@ -159,6 +172,7 @@ function renderExtractWorkbenchTaskCard(task) {
   const mode = String(task?.mode || 'extract_only');
   const runCount = Math.max(1, Number(task?.run_count || 1));
   const outcome = extractWorkbenchOutcome(task);
+  const extractionStatus = extractWorkbenchSyncState(task) || task?.extraction_status;
   const rawPercent = task?.progress?.percent;
   const hasPercent = rawPercent !== null && rawPercent !== undefined && rawPercent !== '' && Number.isFinite(Number(rawPercent));
   const finished = ['success', 'failed', 'cancelled', 'stopped'].includes(task?.task_status);
@@ -177,7 +191,7 @@ function renderExtractWorkbenchTaskCard(task) {
     <div class="extract-workbench-data-rows">
       <div class="extract-workbench-data-row"><span class="extract-workbench-data-label">提链平台</span><span class="extract-workbench-data-value extract-workbench-provider-mark"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}" aria-hidden="true"></i>${extractWorkbenchEscape(providerLabel)}${linkType}</span></div>
       ${renderExtractWorkbenchStage('preflight', '账号 / AT 预检', task?.preflight_status)}
-      ${renderExtractWorkbenchStage('extraction', '提链', task?.extraction_status)}
+      ${renderExtractWorkbenchStage('extraction', '提链', extractionStatus)}
       ${renderExtractWorkbenchStage('payment', '支付', task?.payment_status)}
       ${renderExtractWorkbenchStage('plus', 'Plus 到账核验', task?.plus_status)}
       <div class="extract-workbench-data-row"><span class="extract-workbench-data-label">最后更新</span><time class="extract-workbench-data-value">${extractWorkbenchEscape(extractWorkbenchTime(task?.updated_at || task?.created_at))}</time></div>

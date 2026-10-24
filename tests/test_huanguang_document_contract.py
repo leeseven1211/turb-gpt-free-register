@@ -1,6 +1,9 @@
 """幻光公开文档中的任务、二维码及到账证据契约。"""
 
 import unittest
+import time
+from copy import deepcopy
+from types import SimpleNamespace
 
 from core.extract_link_providers.contracts import ExtractRequest, ProviderConfig, ProviderError
 from core.extract_link_providers.huanguang import HuanguangProvider
@@ -674,6 +677,401 @@ class HuanguangDocumentContractTests(unittest.TestCase):
     @staticmethod
     def _job(data):
         return HuanguangProvider._job(data, "synthetic-job", "synthetic-private-secret")
+
+
+class HuanguangSubmissionReceiptTests(unittest.TestCase):
+    def test_checkpoint_callable_is_hidden_from_request_repr(self):
+        class PrivateCheckpoint:
+            def __call__(self, private):
+                return None
+
+            def __repr__(self):
+                return "synthetic-callback-secret"
+
+        self.assertNotIn("synthetic-callback-secret", repr(self._request(PrivateCheckpoint())))
+
+    def test_checkpoint_precedes_single_account_batch_post_and_keeps_retry_count(self):
+        transport = _Transport([{"batch_receipts": True}, self._accepted()])
+        saved = []
+
+        def checkpoint(private):
+            self.assertEqual([("GET", "/api/config")], [call[:2] for call in transport.calls])
+            saved.append(deepcopy(private))
+
+        job = HuanguangProvider(_config(), transport).create_job(self._request(checkpoint))
+
+        self.assertEqual("0123456789abcdef", job.job_id)
+        self.assertEqual(1, len(saved))
+        secret = saved[0]["batch_receipt_secret"]
+        self.assertRegex(secret, r"^[a-f0-9]{64}$")
+        self.assertIs(True, saved[0]["batch_receipt_pending"])
+        method, path, body, headers, _ = transport.calls[1]
+        self.assertEqual(("POST", "/api/checkout-batch"), (method, path))
+        self.assertEqual(["synthetic-token"], body.get("sessions"))
+        self.assertNotIn("token", body)
+        self.assertEqual(3, body.get("retry_count"))
+        self.assertEqual(secret, headers.get("X-Pay153-Batch-Secret"))
+        self.assertEqual(secret, job.private_data.get("batch_receipt_secret"))
+        self.assertIs(False, job.private_data.get("batch_receipt_pending"))
+        self.assertNotIn(secret, repr(job))
+
+    def test_checkpoint_failure_prevents_remote_post(self):
+        transport = _Transport([{"batch_receipts": True}])
+
+        def checkpoint(_private):
+            raise RuntimeError("私有回执保存失败")
+
+        with self.assertRaisesRegex(RuntimeError, "私有回执保存失败"):
+            HuanguangProvider(_config(), transport).create_job(self._request(checkpoint))
+        self.assertEqual([("GET", "/api/config")], [call[:2] for call in transport.calls])
+
+    def test_unsupported_or_unavailable_capability_retains_legacy_endpoint(self):
+        for config in ({"batch_receipts": False}, {"batch_receipts": "true"}, ProviderError("暂不可用")):
+            with self.subTest(config=config):
+                transport = _Transport([config, {"job_id": "synthetic-job", "job_secret": "synthetic-secret"}])
+                saved = []
+                job = HuanguangProvider(_config(), transport).create_job(self._request(saved.append))
+                self.assertEqual("synthetic-job", job.job_id)
+                self.assertEqual([], saved)
+                self.assertEqual(("POST", "/api/checkout"), transport.calls[1][:2])
+
+    def test_lost_post_response_recovers_original_receipt_without_another_post(self):
+        transport = _Transport([
+            {"batch_receipts": True}, TimeoutError("synthetic response lost"),
+            {"state": "complete", "status": 200, "body": self._accepted()},
+        ])
+        saved = []
+        job = HuanguangProvider(_config(), transport).create_job(self._request(saved.append))
+        self.assertEqual("0123456789abcdef", job.job_id)
+        self.assertEqual(["GET", "POST", "GET"], [call[0] for call in transport.calls])
+        self.assertEqual("/api/checkout-batch-receipt", transport.calls[2][1])
+        self.assertEqual(saved[0]["batch_receipt_secret"], transport.calls[2][3].get("X-Pay153-Batch-Secret"))
+
+    def test_pending_receipt_survives_lost_response_and_recovers_after_restart(self):
+        transport = _Transport([{"batch_receipts": True}, TimeoutError(), {"state": "unknown"}])
+        job = HuanguangProvider(_config(), transport).create_job(self._request(lambda _private: None))
+        self.assertIsNone(job.job_id)
+        self.assertIs(True, job.summary.get("submission_receipt_pending"))
+        self.assertIs(True, job.summary.get("remote_polling"))
+        self.assertIs(True, job.private_data.get("batch_receipt_pending"))
+        resumed_transport = _Transport([{"state": "complete", "status": 200, "body": self._accepted()}])
+        resumed = HuanguangProvider(_config(), resumed_transport).get_status("", private_data=job.private_data)
+        self.assertEqual("0123456789abcdef", resumed.job_id)
+        self.assertEqual([("GET", "/api/checkout-batch-receipt")], [call[:2] for call in resumed_transport.calls])
+        self.assertIs(False, resumed.private_data.get("batch_receipt_pending"))
+
+    def test_receipt_query_failure_retains_private_recovery_fields(self):
+        private = {"batch_receipt_secret": "synthetic-batch-secret", "batch_receipt_pending": True}
+        for response in (TimeoutError(), {"state": "processing"}, {"state": "unknown"},
+                         SimpleNamespace(status_code=404, json=lambda: {"error": "任务不存在"})):
+            with self.subTest(response=response):
+                transport = _Transport([response])
+                job = HuanguangProvider(_config(), transport).get_status("", private_data=private)
+                self.assertEqual(private, job.private_data)
+                self.assertIsNone(job.job_id)
+                self.assertIs(True, job.summary.get("submission_receipt_pending"))
+                self.assertEqual(["GET"], [call[0] for call in transport.calls])
+
+    def test_malformed_single_row_receipts_remain_unknown(self):
+        accepted = self._accepted()["jobs"][0]
+        malformed = (
+            {}, {"jobs": [], "rejected": []}, {"jobs": [accepted, accepted], "rejected": []},
+            {"jobs": [{**accepted, "row": True}], "rejected": []},
+            {"jobs": [{**accepted, "row": 2}], "rejected": []},
+            {"jobs": [{"row": 1, "job_id": accepted["job_id"]}], "rejected": []},
+            {"jobs": [accepted], "rejected": [{"row": 1, "error": "拒绝"}]},
+            {"jobs": "invalid", "rejected": []},
+        )
+        for receipt in malformed:
+            with self.subTest(receipt=receipt):
+                transport = _Transport([{"state": "complete", "status": 200, "body": receipt}])
+                job = HuanguangProvider(_config(), transport).get_status("", private_data={
+                    "batch_receipt_secret": "synthetic-batch-secret", "batch_receipt_pending": True,
+                })
+                self.assertIsNone(job.job_id)
+                self.assertIs(True, job.private_data.get("batch_receipt_pending"))
+
+    def test_explicit_single_row_rejection_is_safe_and_does_not_remain_pending(self):
+        for response in (
+            {"state": "complete", "status": 200, "body": {"jobs": [], "rejected": [{
+                "row": 1, "error": "CDK=synthetic-cdk token=synthetic-token",
+            }]}},
+            {"state": "complete", "status": 403, "body": {"error": "secret=synthetic-batch-secret"}},
+        ):
+            with self.subTest(response=response):
+                transport = _Transport([response])
+                job = HuanguangProvider(_config(), transport).get_status("", private_data={
+                    "batch_receipt_secret": "synthetic-batch-secret", "batch_receipt_pending": True,
+                })
+                self.assertEqual("REJECTED", job.summary.get("outcome"))
+                self.assertIs(False, job.private_data.get("batch_receipt_pending"))
+                self.assertIs(False, job.summary.get("remote_polling"))
+                self.assertNotIn("synthetic-cdk", repr(job))
+                self.assertNotIn("synthetic-token", repr(job))
+                self.assertNotIn("synthetic-batch-secret", repr(job))
+
+    def test_ambiguous_http_and_invalid_json_recover_receipt_but_rejection_does_not(self):
+        def invalid_json():
+            raise ValueError("secret=synthetic-json-secret")
+
+        for response in (
+            SimpleNamespace(status_code=502, json=lambda: {"error": "暂不可用"}),
+            SimpleNamespace(status_code=200, json=invalid_json),
+        ):
+            with self.subTest(response=response):
+                transport = _Transport([{"batch_receipts": True}, response, {
+                    "state": "complete", "status": 200, "body": self._accepted(),
+                }])
+                job = HuanguangProvider(_config(), transport).create_job(self._request(lambda _private: None))
+                self.assertEqual("0123456789abcdef", job.job_id)
+                self.assertEqual(["GET", "POST", "GET"], [call[0] for call in transport.calls])
+        transport = _Transport([{"batch_receipts": True}, SimpleNamespace(status_code=403, json=lambda: {"error": "拒绝"})])
+        rejected = HuanguangProvider(_config(), transport).create_job(self._request(lambda _private: None))
+        self.assertEqual("REJECTED", rejected.summary.get("outcome"))
+        self.assertEqual(["GET", "POST"], [call[0] for call in transport.calls])
+
+    @staticmethod
+    def _request(checkpoint):
+        return ExtractRequest(
+            account_id=1, access_token="synthetic-token", link_type="upi", mode="extract_only",
+            options={"retry_count": 3}, entry_proxy="http://entry", exit_proxy="http://exit",
+            entry_proxies=(), exit_proxies=(), submission_checkpoint=checkpoint,
+        )
+
+    @staticmethod
+    def _accepted():
+        return {"jobs": [{"row": 1, "job_id": "0123456789abcdef", "job_secret": "synthetic-job-secret"}], "rejected": []}
+
+
+class HuanguangAutoRelinkTests(unittest.TestCase):
+    root_id = "0123456789abcdef"
+    child_id = "fedcba9876543210"
+    grandchild_id = "1111111111111111"
+
+    def test_auto_relink_starting_keeps_terminal_parent_polling(self):
+        for status in ("checking_payment", "starting"):
+            with self.subTest(status=status):
+                job = HuanguangProvider._job({"status": "done", "result": {
+                    "auto_relink_status": status, "auto_relink_attempt": 1,
+                }}, self.root_id, "synthetic-job-secret")
+                self.assertIs(True, job.summary.get("remote_polling"))
+                self.assertIs(False, job.summary.get("automatic_payment_terminal"))
+                self.assertEqual(status, job.summary.get("auto_relink_status"))
+
+    def test_child_uses_original_secret_and_root_reference_survives_restart(self):
+        first_transport = _Transport([self._parent()])
+        parent = HuanguangProvider(_config(), first_transport).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        self.assertEqual(self.root_id, parent.job_id)
+        self.assertEqual(self.child_id, parent.private_data.get("active_job_id"))
+        self.assertEqual(self.child_id, parent.private_data.get("material_job_id"))
+        self.assertEqual(2, parent.summary.get("remote_chain_length"))
+        self.assertIs(True, parent.summary.get("remote_polling"))
+        self.assertEqual("pending", parent.payment_state)
+        second_transport = _Transport([{"id": self.child_id, "status": "done", "result": {
+            "checkout_url": "https://pay.example.test/child", "payment_status": "completed",
+            "entitlement_active": True, "plan_type": "plus", "has_active_subscription": True,
+            "entitlement_inferred": False,
+        }}])
+        child = HuanguangProvider(_config(), second_transport).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual(self.root_id, child.job_id)
+        self.assertEqual("succeeded", child.payment_state)
+        self.assertEqual(self.child_id, child.private_data.get("material_job_id"))
+        self.assertIs(False, child.summary.get("remote_polling"))
+        self.assertEqual("/api/checkout-progress?job_id=" + self.child_id, second_transport.calls[0][1])
+        self.assertEqual("synthetic-job-secret", second_transport.calls[0][3].get("X-Pay153-Job-Secret"))
+        self.assertEqual(2, len(child.private_data["job_chain"]))
+        for private in (self.root_id, self.child_id, "synthetic-job-secret"):
+            self.assertNotIn(private, repr(child.summary))
+
+    def test_parent_unknown_is_not_erased_by_child_failure(self):
+        transport = _Transport([self._parent(payment_status="payment_timeout")])
+        parent = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        child = HuanguangProvider(_config(), _Transport([{"status": "error", "result": {
+            "payment_status": "failed",
+        }}])).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual("unknown", child.payment_state)
+        self.assertIs(True, child.summary.get("automatic_payment_requires_reconcile"))
+
+    def test_all_chain_failures_are_terminal_without_inheriting_parent_payment_into_child(self):
+        parent = HuanguangProvider(_config(), _Transport([self._parent()])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        child = HuanguangProvider(_config(), _Transport([{"status": "error", "result": {"payment_status": "failed"}}])).get_status(
+            self.root_id, private_data=parent.private_data,
+        )
+        self.assertEqual("failed", child.payment_state)
+        self.assertIs(False, child.summary.get("remote_polling"))
+        self.assertEqual("failed", child.private_data["job_chain"][0]["state"]["payment_state"])
+        self.assertEqual("failed", child.private_data["job_chain"][1]["state"]["payment_state"])
+
+    def test_parent_and_child_cannot_combine_incomplete_plus_evidence(self):
+        parent_data = self._parent(payment_status="completed")
+        parent_data["result"].update({"entitlement_active": True, "entitlement_inferred": False})
+        parent = HuanguangProvider(_config(), _Transport([parent_data])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        child = HuanguangProvider(_config(), _Transport([{"status": "done", "result": {
+            "payment_status": "completed", "plan_type": "plus", "has_active_subscription": True,
+        }}])).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual("unknown", child.payment_state)
+        self.assertNotEqual("verified", child.summary.get("platform_plus_status"))
+
+    def test_each_query_discovers_at_most_one_child(self):
+        parent = HuanguangProvider(_config(), _Transport([self._parent()])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        transport = _Transport([self._parent(child_id=self.grandchild_id)])
+        child = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual(3, child.summary.get("remote_chain_length"))
+        self.assertEqual(1, len(transport.calls))
+        self.assertEqual(self.grandchild_id, child.private_data.get("active_job_id"))
+
+    def test_known_parent_child_reference_is_not_mistaken_for_cycle(self):
+        data = self._parent()
+        data["result"]["auto_relink_status"] = "starting"
+        parent = HuanguangProvider(_config(), _Transport([data])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        transport = _Transport([{"status": "running", "result": {}}, data])
+        child = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual(2, child.summary.get("remote_chain_length"))
+        self.assertNotIn("remote_chain_error", child.summary)
+        self.assertIs(True, child.summary.get("remote_polling"))
+
+    def test_bad_child_ids_self_links_and_cycles_stop_without_new_submissions(self):
+        for child_id, expected in (("bad/child", "invalid_child_id"), (self.root_id, "cycle")):
+            with self.subTest(child_id=child_id):
+                transport = _Transport([self._parent(child_id=child_id)])
+                job = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+                self.assertEqual(expected, job.summary.get("remote_chain_error"))
+                self.assertEqual("unknown", job.payment_state)
+                self.assertIs(False, job.summary.get("remote_polling"))
+                self.assertEqual(["GET"], [call[0] for call in transport.calls])
+        parent = HuanguangProvider(_config(), _Transport([self._parent()])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"},
+        )
+        transport = _Transport([self._parent(child_id=self.root_id)])
+        cycle = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual("cycle", cycle.summary.get("remote_chain_error"))
+        self.assertEqual(2, len(cycle.private_data["job_chain"]))
+
+    def test_chain_limit_preserves_twenty_existing_nodes(self):
+        ids = [f"{index:016x}" for index in range(1, 21)]
+        private = {
+            "job_secret": "synthetic-job-secret", "root_job_id": ids[0], "active_job_id": ids[-1],
+            "job_chain": [{"job_id": job_id, "parent_job_id": ids[index - 1] if index else None, "state": {
+                "extraction_state": "failed", "payment_state": "failed", "summary": {"remote_polling": False},
+            }} for index, job_id in enumerate(ids)],
+        }
+        transport = _Transport([self._parent(child_id="0000000000000015")])
+        job = HuanguangProvider(_config(), transport).get_status(ids[0], private_data=private)
+        self.assertEqual("chain_limit", job.summary.get("remote_chain_error"))
+        self.assertEqual(20, len(job.private_data["job_chain"]))
+        self.assertEqual("unknown", job.payment_state)
+        self.assertEqual(["GET"], [call[0] for call in transport.calls])
+
+    def test_child_network_failure_keeps_discovered_reference_and_private_receipt(self):
+        parent = HuanguangProvider(_config(), _Transport([self._parent()])).get_status(self.root_id, private_data={
+            "job_secret": "synthetic-job-secret", "batch_receipt_secret": "synthetic-batch-secret", "batch_receipt_pending": False,
+        })
+        transport = _Transport([TimeoutError()])
+        job = HuanguangProvider(_config(), transport).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual(self.child_id, job.private_data.get("active_job_id"))
+        self.assertEqual("synthetic-batch-secret", job.private_data.get("batch_receipt_secret"))
+        self.assertIs(True, job.summary.get("remote_polling"))
+        self.assertEqual("pending", job.payment_state)
+
+    def test_same_node_keeps_payment_material_during_partial_progress(self):
+        transport = _Transport([{"status": "running", "result": {
+            "checkout_url": "https://pay.example.test/child", "qr_data": "upi://pay?pa=synthetic",
+        }}, {"status": "running", "result": {"currency": "INR"}}])
+        provider = HuanguangProvider(_config(), transport)
+        first = provider.get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        second = provider.get_status(self.root_id, private_data=first.private_data)
+        self.assertEqual("succeeded", second.extraction_state)
+        self.assertEqual(("https://pay.example.test/child",), second.links)
+        self.assertEqual("upi://pay?pa=synthetic", second.payment_artifact.get("qr_data"))
+        self.assertEqual("INR", second.payment_artifact.get("currency"))
+
+    def test_new_child_never_inherits_parent_material(self):
+        data = self._parent()
+        data["result"]["checkout_url"] = "https://pay.example.test/expired-parent"
+        parent = HuanguangProvider(_config(), _Transport([data])).get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        self.assertEqual((), parent.links)
+        self.assertNotIn("payment_page_url", parent.payment_artifact)
+        self.assertEqual("queued", parent.extraction_state)
+        self.assertEqual(["https://pay.example.test/expired-parent"], parent.private_data["job_chain"][0]["state"]["links"])
+
+    def test_pending_parent_queries_rotate_and_never_exceed_two_progress_gets(self):
+        ids = [f"{index:016x}" for index in range(1, 21)]
+        private = {"job_secret": "synthetic-job-secret", "job_chain": [
+            {"job_id": job_id, "parent_job_id": ids[index - 1] if index else None, "state": {
+                "extraction_state": "running", "payment_state": "pending", "summary": {"remote_polling": True},
+            }} for index, job_id in enumerate(ids)
+        ]}
+        for parent_id in ids[:2]:
+            transport = _Transport([{"status": "running"}, {"status": "running"}])
+            job = HuanguangProvider(_config(), transport).get_status(ids[0], private_data=private)
+            self.assertEqual([
+                "/api/checkout-progress?job_id=" + ids[-1], "/api/checkout-progress?job_id=" + parent_id,
+            ], [call[1] for call in transport.calls])
+            private = job.private_data
+
+    def test_status_call_has_one_total_deadline_and_restores_transport_deadline(self):
+        observed = []
+
+        class DeadlineTransport(_Transport):
+            def request(self, *args, **kwargs):
+                observed.append(self.deadline)
+                return super().request(*args, **kwargs)
+
+        transport = DeadlineTransport([{"status": "running"}])
+        original = time.monotonic() + 100
+        transport.deadline = original
+        HuanguangProvider(_config(timeout=2), transport).get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        self.assertEqual(original, transport.deadline)
+        self.assertLess(observed[0], original)
+        self.assertLessEqual(observed[0] - time.monotonic(), 2)
+
+    def test_relink_metadata_and_private_ids_are_safe_when_remote_text_echoes_them(self):
+        data = self._parent()
+        data["text"] = "自动重提 " + self.child_id + " 原任务 " + self.root_id
+        job = HuanguangProvider(_config(), _Transport([data])).get_status(self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        self.assertEqual(1, job.summary.get("auto_relink_attempt"))
+        for node in job.private_data["job_chain"]:
+            self.assertNotIn(self.root_id, repr(node["state"]["summary"]))
+            self.assertNotIn(self.child_id, repr(node["state"]["summary"]))
+
+    def test_malformed_relink_status_is_ignored_without_stopping_progress(self):
+        for value in ({"status": "starting"}, ["starting"], True):
+            with self.subTest(value=value):
+                job = HuanguangProvider._job({"status": "running", "result": {"auto_relink_status": value}}, self.root_id, "synthetic-job-secret")
+                self.assertIs(True, job.summary.get("remote_polling"))
+                self.assertNotIn("auto_relink_status", job.summary)
+
+    def test_late_parent_verification_switches_material_owner_without_switching_active_child(self):
+        data = self._parent(payment_status="pending")
+        data["result"]["auto_relink_status"] = "starting"
+        parent = HuanguangProvider(_config(), _Transport([data])).get_status(
+            self.root_id, private_data={"job_secret": "synthetic-job-secret"})
+        result = HuanguangProvider(_config(), _Transport([
+            {"status": "running", "result": {"qr_data": "child-qr"}},
+            {"status": "done", "result": {"payment_status": "completed", "entitlement_active": True,
+                "entitlement_inferred": False, "plan_type": "plus", "has_active_subscription": True,
+                "checkout_url": "https://pay.example.test/parent"}},
+        ])).get_status(self.root_id, private_data=parent.private_data)
+        self.assertEqual(self.child_id, result.private_data["active_job_id"])
+        self.assertEqual(self.root_id, result.private_data["material_job_id"])
+        self.assertEqual(("https://pay.example.test/parent",), result.links)
+        self.assertNotIn("qr_data", result.payment_artifact)
+
+    def _parent(self, *, payment_status="failed", child_id=None):
+        return {"status": "done", "result": {
+            "payment_status": payment_status, "auto_relink_job_id": child_id or self.child_id,
+            "auto_relink_attempt": 1,
+        }}
 
 
 class _Transport:

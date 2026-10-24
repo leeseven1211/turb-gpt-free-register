@@ -264,17 +264,15 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
             )
             SELECT batch_id, COUNT(*) AS all,
                 COUNT(*) FILTER (WHERE task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-                    OR extraction_status IN ('queued','running')
                     OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
                     OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued'))) AS processing,
-                COUNT(*) FILTER (WHERE task_status IN ('running','cancelling','settling','stopping')
-                    OR extraction_status='running') AS running,
+                COUNT(*) FILTER (WHERE task_status IN ('running','cancelling','settling','stopping')) AS running,
                 COUNT(*) FILTER (WHERE extraction_status='success') AS extraction_succeeded,
                 COUNT(*) FILTER (WHERE payment_status='paid') AS payment_succeeded,
                 COUNT(*) FILTER (WHERE plus_status='confirmed') AS plus_confirmed,
                 COUNT(*) FILTER (WHERE task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
                     OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
-                    OR plus_status IN ('unknown','failed','not_confirmed')) AS needs_attention,
+                    OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')) AS needs_attention,
                 COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded,
                 COUNT(*) FILTER (WHERE task_status='queued') AS task_queued
             FROM projected GROUP BY batch_id""",

@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -4738,6 +4739,7 @@ def list_dispatchable_runs(
     limit: int = 500,
     task_types: Iterable[str] | None = None,
     source_systems: Iterable[str] | None = None,
+    prioritize_continuations: bool = False,
 ) -> list[dict]:
     """List current queued runs for gateway-registered task handlers.
 
@@ -4769,19 +4771,47 @@ def list_dispatchable_runs(
     if source_values is not None:
         clauses.append("t.source_system = ANY(%s)")
         params.append(source_values)
-    params.append(max(1, min(5000, int(limit or 500))))
+    scan_limit = max(1, min(5000, int(limit or 500)))
+    continuation = """(t.task_type='extract_link'
+        AND r.data->>'provider_id'='huanguang'
+        AND r.data->'extract_poll_continuation'='true'::jsonb)"""
+    base_query = f"""
+        SELECT r.*, t.email_snapshot, t.task_type, t.source_system,
+               {_extract_batch_workers_sql()} AS batch_workers
+        FROM {_table('operation_runs')} r
+        JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+        LEFT JOIN {_table('operation_batches')} b ON b.id=r.batch_id
+        WHERE {' AND '.join(clauses)}
+    """
+    # 两类各取有限候选，超过一整页的旧续查不能遮住新任务。
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT r.*, t.email_snapshot, t.task_type, t.source_system,
-                   {_extract_batch_workers_sql()} AS batch_workers
-            FROM {_table('operation_runs')} r
-            JOIN {_table('operation_tasks')} t ON t.id=r.task_id
-            LEFT JOIN {_table('operation_batches')} b ON b.id=r.batch_id
-            WHERE {' AND '.join(clauses)}
-            ORDER BY r.created_at, r.id LIMIT %s
+            WITH candidates AS (
+                ({base_query} AND COALESCE({continuation}, false)
+                 ORDER BY r.next_attempt_at ASC NULLS FIRST, r.created_at, r.id LIMIT %s)
+                UNION ALL
+                ({base_query} AND NOT COALESCE({continuation}, false)
+                 ORDER BY r.created_at, r.id LIMIT %s)
+            ), ranked AS (
+                SELECT candidates.*, ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(task_type='extract_link'
+                        AND data->>'provider_id'='huanguang'
+                        AND data->'extract_poll_continuation'='true'::jsonb, false)
+                    ORDER BY CASE WHEN task_type='extract_link' AND data->>'provider_id'='huanguang'
+                        AND data->'extract_poll_continuation'='true'::jsonb THEN next_attempt_at END
+                        ASC NULLS FIRST, created_at, id
+                ) AS dispatch_position
+                FROM candidates
+            )
+            SELECT * FROM ranked
+            ORDER BY dispatch_position,
+                (COALESCE(task_type='extract_link' AND data->>'provider_id'='huanguang'
+                 AND data->'extract_poll_continuation'='true'::jsonb, false) = %s) DESC,
+                created_at, id
+            LIMIT %s
             """,
-            tuple(params),
+            (*params, scan_limit, *params, scan_limit, bool(prioritize_continuations), scan_limit),
         )
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
@@ -4944,6 +4974,67 @@ def claim_next_queued_run(
     return result
 
 
+def _requeue_stale_extract_continuations(cur, stale_seconds: int) -> list[dict]:
+    """只恢复已有原单的只读续查，保持同 Run 和原请求回执。"""
+    cur.execute(
+        f"""
+        SELECT run.* FROM {_table('operation_runs')} run
+        JOIN {_table('operation_tasks')} task ON task.id=run.task_id AND task.last_run_id=run.id
+        WHERE task.task_type='extract_link' AND task.source_system='native_operations'
+          AND run.data->>'provider_id'='huanguang'
+          AND run.data->'extract_poll_continuation'='true'::jsonb
+          AND EXISTS (
+              SELECT 1 FROM {_table('operation_runs')} source_run
+              JOIN {_table('extract_link_provider_jobs')} job ON job.run_id=source_run.id
+              WHERE source_run.task_id=run.task_id AND job.provider_id='huanguang'
+                AND (source_run.id=run.id OR source_run.id=CASE
+                    WHEN run.data->>'provider_job_run_id' ~ '^[0-9]{{1,19}}$'
+                    THEN (run.data->>'provider_job_run_id')::numeric END)
+                AND (NULLIF(BTRIM(job.job_id), '') IS NOT NULL OR (
+                    job.private_data->'batch_receipt_pending'='true'::jsonb
+                    AND NULLIF(BTRIM(job.private_data->>'batch_receipt_secret'), '') IS NOT NULL
+                ))
+          )
+          AND run.status='running' AND run.cancel_requested_at IS NULL
+          AND (run.heartbeat_at IS NULL OR run.heartbeat_at < now() - (%s * interval '1 second'))
+          AND NOT EXISTS (
+              SELECT 1 FROM {_table('account_operation_leases')} lease
+              WHERE lease.run_id=run.id AND lease.expires_at > now()
+          )
+        FOR UPDATE OF run SKIP LOCKED
+        """,
+        (stale_seconds,),
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    for run in rows:
+        run_id = int(run['id'])
+        cur.execute(
+            f"""UPDATE {_table('operation_runs')}
+                SET status='queued', execution_id=NULL, worker_pid=NULL,
+                    heartbeat_at=now(), next_attempt_at=now(), progress_stage='remote_sync',
+                    completed_at=NULL
+                WHERE id=%s""",
+            (run_id,),
+        )
+        cur.execute(
+            f"""UPDATE {_table('operation_tasks')}
+                SET status='queued', current_stage='remote_sync', updated_at=now(), completed_at=NULL
+                WHERE id=%s AND last_run_id=%s""",
+            (int(run['task_id']), run_id),
+        )
+        cur.execute(f"DELETE FROM {_table('account_operation_leases')} WHERE run_id=%s", (run_id,))
+        event_uuid = uuid.uuid4().hex
+        cur.execute(
+            f"""INSERT INTO {_table('operation_events')} (
+                event_uuid, task_id, run_id, source_system, source_id,
+                level, stage, event_type, message, detail
+            ) VALUES (%s,%s,%s,%s,%s,'INFO','remote_sync','run.requeued',%s,%s::jsonb)""",
+            (event_uuid, int(run['task_id']), run_id, str(run.get('source_system') or 'native_operations'),
+             event_uuid, '续查进程已中断，原单已重新排队同步', _json({'reason': 'worker_restart'})),
+        )
+    return rows
+
+
 def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> int:
     """收口真正失去 worker 的 attempt；有效租约和新鲜心跳均保留。
 
@@ -4955,6 +5046,7 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
     stale_seconds = max(1, min(7 * 24 * 60 * 60, int(stale_after_seconds or 0)))
     ready_dependencies: list[dict] = []
     with _connect() as conn, conn.cursor() as cur:
+        requeued_continuations = _requeue_stale_extract_continuations(cur, stale_seconds)
         cur.execute(
             f"""
             UPDATE {_table('operation_runs')} AS run
@@ -5192,13 +5284,13 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                     datetime.now().isoformat(timespec="seconds"), account_number,
                 ),
             )
-        _refresh_batches(cur, [row.get("batch_id") for row in recovered])
+        _refresh_batches(cur, [row.get("batch_id") for row in recovered + requeued_continuations])
     if ready_dependencies:
         from core.operations import task_gateway
 
         for dependency in ready_dependencies:
             task_gateway.notify_dependency_ready(dependency)
-    return len(task_ids)
+    return len(task_ids) + len(requeued_continuations)
 
 
 def refresh_runtime_batches(batch_ids: Iterable[int] | None = None) -> None:
@@ -5355,6 +5447,9 @@ def requeue_claimed_run(
     execution_id: str,
     reason: str,
     delay_seconds: float = 1.0,
+    data: Mapping[str, Any] | None = None,
+    stage: str = "queued",
+    lease_token: str | None = None,
 ) -> dict | None:
     """Return a claimed run to the durable queue without creating an attempt.
 
@@ -5365,6 +5460,11 @@ def requeue_claimed_run(
     """
     init()
     delay = max(0.0, min(300.0, float(delay_seconds or 0.0)))
+    patch = dict(data or {})
+    if any(key in patch for key in ("remote_intent", "remote_receipt")):
+        raise ValueError("延期数据不能覆盖远端请求回执")
+    patch.update({"last_requeue_reason": _text(reason, 500), "next_attempt_delay_seconds": delay})
+    stage_value = _text(stage, 100).strip() or "queued"
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
@@ -5379,18 +5479,28 @@ def requeue_claimed_run(
         found = cur.fetchone()
         if not found:
             raise LookupError("执行实例不存在")
-        if (
-            str(found.get("status") or "") not in {"running", "cancelling"}
-            or str(found.get("execution_id") or "") != str(execution_id)
-            or found.get("cancel_requested_at") is not None
-        ):
+        if found.get("cancel_requested_at") is not None:
             return None
+        if str(found.get("status") or "") not in {"running", "cancelling"}:
+            return None
+        if str(found.get("execution_id") or "") != str(execution_id):
+            raise PermissionError("延期执行的 execution fence 不匹配")
+        cur.execute(
+            f"SELECT lease_token FROM {_table('account_operation_leases')} WHERE run_id=%s",
+            (int(run_id),),
+        )
+        owned_lease = cur.fetchone()
+        if lease_token is not None or owned_lease or (found.get("account_id") is not None and data is not None):
+            _remote_checkpoint_fence(
+                cur, int(run_id), execution_id=str(execution_id),
+                lease_token=lease_token, require_lease=True,
+            )
         cur.execute(
             f"""
             UPDATE {_table('operation_runs')}
             SET status='queued', execution_id=NULL, worker_pid=NULL,
-                heartbeat_at=now(), progress_stage='queued',
-                started_at=NULL,
+                heartbeat_at=now(), progress_stage=%s,
+                started_at=CASE WHEN %s THEN started_at ELSE NULL END,
                 next_attempt_at=now() + (%s * interval '1 second'),
                 data=data || %s::jsonb
             WHERE id=%s AND status IN ('running','cancelling')
@@ -5398,11 +5508,9 @@ def requeue_claimed_run(
             RETURNING *
             """,
             (
+                stage_value, data is not None or stage_value != "queued",
                 delay,
-                _json({
-                    "last_requeue_reason": _text(reason, 500),
-                    "next_attempt_delay_seconds": delay,
-                }),
+                _json(patch),
                 int(run_id), str(execution_id),
             ),
         )
@@ -5413,23 +5521,29 @@ def requeue_claimed_run(
         cur.execute(
             f"""
             UPDATE {_table('operation_tasks')}
-            SET status='queued', current_stage='queued', updated_at=now(),
+            SET status='queued', current_stage=%s, updated_at=now(),
                 error_category=NULL, error_code=NULL, error_message=NULL
             WHERE id=%s AND last_run_id=%s
             """,
-            (int(run["task_id"]), int(run_id)),
+            (stage_value, int(run["task_id"]), int(run_id)),
         )
+        if owned_lease:
+            cur.execute(
+                f"DELETE FROM {_table('account_operation_leases')} WHERE run_id=%s AND lease_token=%s",
+                (int(run_id), str(lease_token)),
+            )
         event_uuid = uuid.uuid4().hex
         cur.execute(
             f"""
             INSERT INTO {_table('operation_events')} (
                 event_uuid, task_id, run_id, source_system, source_id,
                 level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,%s,%s,'INFO','queued','run.requeued',%s,%s::jsonb)
+            ) VALUES (%s,%s,%s,%s,%s,'INFO',%s,'run.requeued',%s,%s::jsonb)
             """,
             (
                 event_uuid, int(run["task_id"]), int(run_id),
                 str(run.get("source_system") or "native_operations"), event_uuid,
+                stage_value,
                 _text(f"任务暂回数据库队列：{reason}", 1400),
                 _json({"delay_seconds": delay}),
             ),
@@ -5437,7 +5551,7 @@ def requeue_claimed_run(
         result = _row(run) or {}
     task_run_log.append(
         result.get("log_file"), level="INFO", message=f"任务暂回数据库队列：{reason}",
-        task_id=int(result["task_id"]), run_id=int(run_id), stage="queued",
+        task_id=int(result["task_id"]), run_id=int(run_id), stage=stage_value,
         event_type="run.requeued",
     )
     return result

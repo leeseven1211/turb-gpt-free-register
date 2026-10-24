@@ -494,3 +494,129 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertNotIn("summary-private-marker", repr(public))
         self.assertNotIn("private-resume-marker", repr(public))
         self.assertEqual("private-resume-marker", extract_link_jobs.get_provider_job_private(run_id)["private_data"]["job_secret"])
+
+    def test_expired_provider_writer_cannot_replace_private_receipt_or_state(self):
+        from core.operations.task_gateway import OperationLeaseLost
+        from core.storage import extract_link_jobs
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {"email": "fence@example.test", "access_token": "synthetic"})
+        task = operation.create_runtime_task(task_type="extract_link", account_id=account_id, email="fence@example.test",
+                                             data={"provider_id": "huanguang"})
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="current-worker", worker_pid=123)
+        token = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        fence = {"run_id": run_id, "execution_id": "current-worker", "lease_token": token}
+        extract_link_jobs.save_provider_job(run_id, "huanguang", None, {"extraction_state": "unknown"},
+            {"batch_receipt_secret": "original-private-receipt"}, execution_fence=fence)
+        with self.assertRaises(OperationLeaseLost):
+            extract_link_jobs.save_provider_job(run_id, "huanguang", "stale-job", {"extraction_state": "failed"},
+                {"batch_receipt_secret": "stale-private-receipt"}, execution_fence={**fence, "execution_id": "expired-worker"})
+        saved = extract_link_jobs.get_provider_job_private(run_id)
+        self.assertIsNone(saved["job_id"])
+        self.assertEqual("original-private-receipt", saved["private_data"]["batch_receipt_secret"])
+        self.assertEqual("unknown", saved["extraction_state"])
+
+    def test_child_transition_removes_parent_payment_materials(self):
+        from core.storage import extract_link_jobs
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="chain@example.test", data={"provider_id": "huanguang"})
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "root-job", {
+            "extraction_state": "succeeded", "links": ["https://example.test/parent"],
+            "payment_links": ["https://example.test/pay-parent"], "payment_artifact": {"qr_data": "parent-qr"},
+            "summary": {"remote_chain_length": 1}}, {"active_job_id": "root-job"})
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "root-job", {
+            "extraction_state": "queued", "links": [], "payment_links": [], "payment_artifact": {},
+            "summary": {"remote_chain_length": 2}}, {"active_job_id": "child-job"})
+        saved = extract_link_jobs.get_provider_job_public(run_id)["public_state"]
+        self.assertEqual([], saved["links"])
+        self.assertEqual([], saved["payment_links"])
+        self.assertEqual({}, saved["payment_artifact"])
+        self.assertEqual(2, saved["summary"]["remote_chain_length"])
+
+    def test_recovery_includes_interrupted_receipt_but_excludes_terminal_review_and_auth_unknown(self):
+        from core.storage import extract_link_jobs
+        expected = []
+        for status, job_id, public, private, recover in [
+            ("interrupted", None, {"summary": {"submission_receipt_pending": True}}, {"batch_receipt_pending": True, "batch_receipt_secret": "synthetic"}, True),
+            ("attention_required", "running-job", {"extraction_state": "running"}, {}, True),
+            ("attention_required", "review-job", {"extraction_state": "succeeded", "payment_state": "unknown", "summary": {"remote_polling": False, "automatic_payment_requires_reconcile": True}}, {}, False),
+            ("attention_required", None, {"preflight_status": "failed"}, {}, False),
+        ]:
+            task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="recover@example.test", data={"provider_id": "huanguang"})
+            run_id = int(task["run"]["id"])
+            extract_link_jobs.save_provider_job(run_id, "huanguang", job_id, public, private)
+            operation.finish_run(run_id, status=status)
+            if recover:
+                expected.append(run_id)
+        rows = extract_link_jobs.list_recoverable_workbench_jobs()
+        self.assertEqual(expected, [row["run_id"] for row in rows if row["run_id"] in expected or row["provider_id"] == "huanguang"])
+        self.assertNotIn("synthetic", repr(rows))
+
+    def test_delayed_receipt_recovery_finishes_same_run_without_unknown_fence(self):
+        from contextlib import ExitStack
+        from core import extract_link_service
+        from core.extract_link_providers.contracts import ProviderJob
+        from core.operations.task_gateway import OperationHandlerContext
+        from core.storage import extract_link_jobs
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {"email": "delayed@example.test", "access_token": "synthetic"})
+        task = operation.create_runtime_task(task_type="extract_link", account_id=account_id, email="delayed@example.test",
+            data={"provider_id": "huanguang", "mode": "extract_only", "link_type": "upi"})
+        run_id = int(task["run"]["id"])
+        claimed = operation.claim_run(run_id, execution_id="first", worker_pid=123)
+        first = OperationHandlerContext(claimed, execution_id="first")
+        with first.lease():
+            first.remote_request_started("extract_link_create", request_id="original-request", detail={"provider_id": "huanguang"})
+            extract_link_jobs.save_provider_job(run_id, "huanguang", None, {"extraction_state": "unknown", "preflight_status": "passed",
+                "summary": {"submission_receipt_pending": True, "remote_polling": True}},
+                {"batch_receipt_pending": True, "batch_receipt_secret": "synthetic-receipt"}, execution_fence=first.execution_fence)
+            first.remote_request_receipt(outcome="response_received", action="extract_link_create", request_id="original-request")
+            first.defer(delay_seconds=0, reason="等待回执", data={"extract_poll_continuation": True,
+                "workbench_action": "sync_status", "provider_job_run_id": run_id})
+        claimed = operation.claim_run(run_id, execution_id="second", worker_pid=124)
+        second = OperationHandlerContext(claimed, execution_id="second")
+        provider = SimpleNamespace(get_status=Mock(return_value=ProviderJob(job_id="recovered-job", extraction_state="failed",
+            summary={"remote_status": "FAILED", "remote_terminal_failure": True, "remote_polling": False},
+            private_data={"job_secret": "synthetic-job-secret", "batch_receipt_pending": False})), create_job=Mock())
+        with ExitStack() as stack:
+            for name, value in (("_provider_enabled", True), ("_provider_mode_enabled", True), ("_bool_setting", False)):
+                stack.enter_context(patch.object(extract_link_service, name, return_value=value))
+            stack.enter_context(patch.object(extract_link_service, "_provider", return_value=provider))
+            stack.enter_context(patch.object(extract_link_service, "_provider_configuration", return_value=SimpleNamespace(
+                default_type="upi", event_timeout=30, poll_interval=10, timeout=30)))
+            stack.enter_context(patch.object(extract_link_service.db, "update_account_extract"))
+            extract_link_service._handle_provider_operation(second)
+        final = operation.get_run(run_id)
+        self.assertEqual("failed", final["status"])
+        self.assertEqual("confirmed", final["data"]["remote_receipt"]["outcome"])
+        self.assertEqual("original-request", final["data"]["remote_receipt"]["request_id"])
+        self.assertEqual(1, len(operation.get_task(task["id"])["runs"]))
+        provider.get_status.assert_called_once()
+        provider.create_job.assert_not_called()
+
+    def test_recoverable_sync_without_current_job_keeps_actual_source_run(self):
+        from core.storage import extract_link_jobs
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="old-ref@example.test",
+            data={"provider_id": "huanguang", "mode": "extract_only"})
+        original_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(original_id, "huanguang", "original-job", {"extraction_state": "running"}, {"job_secret": "synthetic"})
+        operation.finish_run(original_id, status="attention_required")
+        latest = operation.retry_runtime_task(task["id"], data={"provider_id": "huanguang", "workbench_action": "sync_status",
+            "provider_job_run_id": original_id, "extract_poll_continuation": True})
+        operation.finish_run(latest["id"], status="interrupted")
+        rows = extract_link_jobs.list_recoverable_workbench_jobs()
+        row = next(item for item in rows if item["task_id"] == task["id"])
+        self.assertEqual(latest["id"], row["run_id"])
+        self.assertEqual(original_id, row["provider_job_run_id"])
+
+    def test_verified_parent_material_switch_does_not_merge_child_qr(self):
+        from core.storage import extract_link_jobs
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="material-owner@example.test", data={"provider_id": "huanguang"})
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "root-job", {
+            "extraction_state": "succeeded", "payment_artifact": {"qr_data": "child-qr"},
+            "links": ["https://example.test/child"]}, {"active_job_id": "child-job", "material_job_id": "child-job"})
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "root-job", {
+            "extraction_state": "succeeded", "payment_artifact": {"payment_page_url": "https://example.test/parent"},
+            "links": ["https://example.test/parent"]}, {"active_job_id": "child-job", "material_job_id": "root-job"})
+        saved = extract_link_jobs.get_provider_job_public(run_id)["public_state"]
+        self.assertNotIn("qr_data", saved["payment_artifact"])
+        self.assertEqual("https://example.test/parent", saved["payment_artifact"]["payment_page_url"])

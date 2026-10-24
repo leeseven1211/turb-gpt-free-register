@@ -743,6 +743,38 @@ test('独立套餐已核实的 Plus 到账与平台支付待确认分别展示',
   assert.equal(api.outcome({...task, extraction_status:'failed'}).title, '平台结果 · 等待确认');
 });
 
+test('停止查询的远端运行快照不再显示本地运行中', () => {
+  const {api} = createView();
+  const task = {task_id:42, provider_id:'huanguang', mode:'extract_only', task_status:'request_unknown',
+    preflight_status:'passed', extraction_status:'running', payment_status:'unpaid', plus_status:'unknown'};
+  const html = api.renderCard(task);
+  assert.equal(api.outcome(task).title, '已停止查询 · 等待同步');
+  assert.match(html, /已停止查询/);
+  assert.match(html, /等待同步/);
+  assert.doesNotMatch(html, /运行中|正在获取支付链接/);
+});
+
+test('同 Run 续查排队显示等待平台同步并保留已有结果', () => {
+  const {api} = createView();
+  const task = {task_id:42, provider_id:'huanguang', mode:'extract_only', task_status:'queued',
+    preflight_status:'passed', extraction_status:'running', payment_status:'unpaid', plus_status:'unknown'};
+  for (const extraction_status of ['pending', 'queued', 'running', 'unknown']) {
+    const pending = {...task, extraction_status};
+    assert.equal(api.outcome(pending).title, '等待平台同步');
+    assert.match(api.renderCard(pending), /等待平台同步/);
+    assert.doesNotMatch(api.renderCard(pending), /等待开始提链|执行前会在线查活/);
+  }
+  const fresh = {...task, preflight_status:'pending', extraction_status:'pending'};
+  assert.equal(api.outcome(fresh).title, '等待开始提链');
+  const completed = {...task, mode:'auto_payment', extraction_status:'success', payment_status:'paid', plus_status:'confirmed', has_extract_link:true};
+  const html = api.renderCard(completed);
+  assert.match(html, /提链成功/);
+  assert.match(html, /支付成功 · 到账已核实/);
+  assert.match(html, /Plus 已到账/);
+  assert.doesNotMatch(html, /等待开始提链|正在获取支付链接/);
+  assert.match(html, /data-workbench-link="extract" data-task-id="42">/);
+});
+
 test('扫码完成与独立套餐联合确认后显示支付成功及核验来源', () => {
   const {api} = createView();
   const task = {task_id:42, mode:'auto_payment', task_status:'success',

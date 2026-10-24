@@ -161,6 +161,139 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
         self.assertEqual("operation-dependency-dispatcher", status["claim_owner"])
         self.assertTrue(task_gateway.stop_dependency_dispatcher(timeout=2))
 
+    def test_single_slot_rotates_initial_and_huanguang_continuation(self):
+        from core.operations import task_gateway
+
+        submitted, callbacks = [], []
+        rows = [
+            {"id": 7301, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "huanguang"}},
+            {"id": 7302, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "huanguang", "extract_poll_continuation": True}},
+        ]
+
+        class Future:
+            def add_done_callback(self, callback):
+                callbacks.append(callback)
+
+        class Executor:
+            def available_slots(self):
+                return 1
+
+            def try_submit(self, _handler, run_id):
+                submitted.append(run_id)
+                return Future()
+
+        def list_runs(**kwargs):
+            return sorted(rows, key=lambda row: row["data"].get("extract_poll_continuation", False)
+                          != kwargs.get("prioritize_continuations", False))
+
+        with (
+            patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
+            patch.object(task_gateway, "_executor", return_value=Executor()),
+        ):
+            previous = task_gateway._run_handler_snapshot()[0].get("extract_link")
+            previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
+            try:
+                task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
+                    dispatch_capacity_key=lambda _run: "huanguang", dispatch_capacity_limit=lambda _key: 1)
+                for _ in range(4):
+                    self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+                    callbacks[-1](None)
+            finally:
+                task_gateway.unregister_dispatch_handler("extract_link")
+                if previous:
+                    task_gateway.register_dispatch_handler("extract_link", previous[0], source_systems=previous[1],
+                        dispatch_capacity_key=previous_capacity[0] if previous_capacity else None,
+                        dispatch_capacity_limit=previous_capacity[1] if previous_capacity else None)
+                for row in rows:
+                    task_gateway.release_dispatch(row["id"])
+        self.assertEqual({7301, 7302}, set(submitted[:2]))
+        self.assertEqual([submitted[0], submitted[1], submitted[0], submitted[1]], submitted)
+
+    def test_deferred_handler_returns_without_terminal_finish(self):
+        from core.operations import task_gateway
+
+        queued = {"id": 7350, "task_id": 7351, "task_type": "maintenance_deferred_test", "data": {}}
+
+        def requeue(_run_id, **kwargs):
+            queued.update(status="queued", data=kwargs.get("data") or {})
+            return queued
+
+        def fail_terminal(*_args, **_kwargs):
+            self.fail("延期执行不能写入终态")
+
+        operation = SimpleNamespace(claim_run=lambda *_args, **_kwargs: queued,
+            is_run_cancel_requested=lambda *_args: False, requeue_claimed_run=requeue,
+            finish_run=fail_terminal)
+
+        def handler(context):
+            self.assertFalse(context.deferred)
+            context.defer(delay_seconds=5, reason="等待远端状态", data={"extract_poll_continuation": True})
+            self.assertTrue(context.deferred)
+
+        try:
+            with patch.object(task_gateway, "_operation", return_value=operation):
+                task_gateway.register_operation_handler("maintenance_deferred_test", handler)
+                result = task_gateway._execute_operation_handler("maintenance_deferred_test", 7350)
+        finally:
+            task_gateway.unregister_operation_handler("maintenance_deferred_test")
+        self.assertEqual("deferred", result["status"])
+        self.assertEqual("queued", queued["status"])
+        self.assertTrue(queued["data"]["extract_poll_continuation"])
+
+    def test_continuations_use_two_slots_without_hiding_initial_work(self):
+        from core.operations import task_gateway
+
+        submitted, callbacks = [], []
+        rows = [
+            {"id": number, "task_type": "extract_link", "source_system": "native_operations", "data": {
+                "provider_id": "huanguang", "extract_poll_continuation": number < 7490}}
+            for number in range(7400, 7500)
+        ]
+
+        class Future:
+            def add_done_callback(self, callback):
+                callbacks.append(callback)
+
+        class Executor:
+            def available_slots(self):
+                return 10
+
+            def try_submit(self, _handler, run_id):
+                submitted.append(run_id)
+                return Future()
+
+        def list_runs(**kwargs):
+            continuation, initial = rows[:90], rows[90:]
+            if not kwargs.get("prioritize_continuations", False):
+                continuation, initial = initial, continuation
+            mixed = [row for pair in zip(continuation, initial) for row in pair]
+            mixed.extend(continuation[len(initial):])
+            return mixed[:kwargs["limit"]]
+
+        previous = task_gateway._run_handler_snapshot()[0].get("extract_link")
+        previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
+        try:
+            with (
+                patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
+                patch.object(task_gateway, "_executor", return_value=Executor()),
+            ):
+                task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
+                    dispatch_capacity_key=lambda _run: {"huanguang": 10, "batch:1": 10},
+                    dispatch_capacity_limit=lambda _key: 10)
+                self.assertEqual(10, task_gateway.dispatch_registered_once(limit=64))
+                self.assertEqual(2, sum(run_id < 7490 for run_id in submitted))
+                self.assertEqual(8, sum(run_id >= 7490 for run_id in submitted))
+        finally:
+            for callback in callbacks:
+                callback(None)
+            task_gateway.unregister_dispatch_handler("extract_link")
+            if previous:
+                task_gateway.register_dispatch_handler("extract_link", previous[0], source_systems=previous[1],
+                    dispatch_capacity_key=previous_capacity[0] if previous_capacity else None,
+                    dispatch_capacity_limit=previous_capacity[1] if previous_capacity else None)
+            for row in rows:
+                task_gateway.release_dispatch(row["id"])
+
     def test_schema_config_snapshot_object_is_consumed_without_defining_config(self):
         from core import codex_operation_service
         from config import schema

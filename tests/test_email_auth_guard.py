@@ -77,7 +77,7 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
                 result = task_gateway.OperationResult.success()
                 context = SimpleNamespace(
                     email=email, resource_family=family, cancellation=None, report=Mock(), checkpoint=Mock(),
-                    finished=True, last_result=result, release_lease=Mock(),
+                    finished=True, deferred=False, last_result=result, release_lease=Mock(),
                 )
                 session = SimpleNamespace(set_result=Mock())
                 handler = Mock(return_value=result)

@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from core import account_task_store, db, extract_link_service, record_store
-from core.storage import extract_link_jobs, operation
+from core.storage import extract_link_batches, extract_link_jobs, operation
 from tests.support_pg import PostgresTestCase
 
 
@@ -93,7 +93,7 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
             "extraction_succeeded": {legacy["id"], paid_plus["id"], extract_only["id"]},
             "payment_succeeded": {paid_plus["id"], paid_free["id"]},
             "plus_confirmed": {paid_plus["id"], extract_only["id"]},
-            "needs_attention": {legacy["id"], paid_free["id"], pending["id"]},
+            "needs_attention": {paid_free["id"], pending["id"]},
         }
         for status, ids in expected.items():
             with self.subTest(status=status):
@@ -102,6 +102,47 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
                 self.assertEqual(len(ids), result["total"])
                 self.assertEqual(len(ids), result["counts"][status])
                 self.assertEqual(5, result["counts"]["all"])
+
+    def test_old_remote_running_snapshot_does_not_count_as_local_execution(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="同步统计测试", requested_count=10)
+        tasks = {status: self.task(provider="huanguang", status=status, batch_id=batch["id"], state={
+            "preflight_status": "passed", "extraction_state": "running",
+            "payment_state": "not_started", "plus_status": "not_applicable",
+        }) for status in ("queued", "running", "waiting", "cancelling", "settling", "stopping",
+                         "request_unknown", "failed", "cancelled", "stopped")}
+        expected = {
+            "processing": {tasks[status]["id"] for status in ("queued", "running", "waiting", "cancelling", "settling", "stopping")},
+            "running": {tasks[status]["id"] for status in ("running", "cancelling", "settling", "stopping")},
+            "needs_attention": {tasks[status]["id"] for status in ("request_unknown", "failed", "cancelled", "stopped")},
+        }
+        batch_counts = extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]
+        all_items = extract_link_service.list_workbench_tasks(batch_id=batch["id"])["items"]
+        for status, ids in expected.items():
+            with self.subTest(status=status):
+                page = extract_link_service.list_workbench_tasks(status=status, batch_id=batch["id"])
+                self.assertEqual(ids, {item["task_id"] for item in page["items"]})
+                self.assertEqual(len(ids), page["counts"][status])
+                self.assertEqual(len(ids), batch_counts[status])
+                self.assertEqual(ids, {item["task_id"] for item in all_items
+                                       if extract_link_service._workbench_status_matches(item, status)})
+
+    def test_new_queue_plus_unknown_is_not_attention_but_paid_unknown_is(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="到账统计测试", requested_count=3)
+        queued = self.task(provider="huanguang", status="queued", batch_id=batch["id"])
+        paid_unknown = self.task(provider="huanguang", status="success", mode="auto_payment", batch_id=batch["id"], state={
+            "extraction_state": "succeeded", "payment_state": "paid", "plus_status": "unknown",
+        })
+        paid_unconfirmed = self.task(provider="huanguang", status="success", mode="auto_payment", batch_id=batch["id"], state={
+            "extraction_state": "succeeded", "payment_state": "paid", "plus_status": "not_confirmed",
+        })
+        page = extract_link_service.list_workbench_tasks(status="needs_attention", batch_id=batch["id"])
+        self.assertEqual({paid_unknown["id"], paid_unconfirmed["id"]}, {item["task_id"] for item in page["items"]})
+        self.assertEqual(2, page["counts"]["needs_attention"])
+        self.assertEqual(2, extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]["needs_attention"])
+        self.assertFalse(extract_link_service._workbench_status_matches(
+            extract_link_service.extract_workbench_task_detail(queued["id"])["item"], "needs_attention"))
+        queued_page = extract_link_service.list_workbench_tasks(status="processing", batch_id=batch["id"])
+        self.assertIn(queued["id"], {item["task_id"] for item in queued_page["items"]})
 
     def test_independent_plus_check_is_visible_before_platform_payment_confirmation(self):
         account_id = self.seed(record_store.ACCOUNTS, [{

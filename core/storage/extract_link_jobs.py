@@ -22,6 +22,7 @@ _SUMMARY_FIELDS = frozenset({
     "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred",
     "payment_confirmation_source", "payment_confirmed_plan_checked_at",
     "queue_position", "max_attempts", "cdk_state",
+    "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
 })
 _REMOTE_STATUSES = frozenset({
     "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
@@ -106,6 +107,8 @@ def save_provider_job(
     job_id: str | None,
     public_state: Mapping[str, Any],
     private_data: Mapping[str, Any],
+    *,
+    execution_fence: dict | None = None,
 ) -> dict:
     """保存远端任务；公开摘要与只供 worker 恢复的凭据分列存放。"""
     operation_store.init()
@@ -118,7 +121,21 @@ def save_provider_job(
     extraction_state = public_value.get("extraction_state", "unknown")
     payment_state = public_value.get("payment_state", "not_started")
     job_value = str(job_id).strip() if job_id not in (None, "") else None
+    material_changed = """COALESCE(NULLIF(EXCLUDED.private_data->>'material_job_id', ''),
+            NULLIF(EXCLUDED.private_data->>'active_job_id', '')) IS NOT NULL
+        AND COALESCE(NULLIF(EXCLUDED.private_data->>'material_job_id', ''),
+            NULLIF(EXCLUDED.private_data->>'active_job_id', '')) IS DISTINCT FROM
+            COALESCE(NULLIF(stored.private_data->>'material_job_id', ''),
+                NULLIF(stored.private_data->>'active_job_id', ''), stored.job_id)"""
     with operation_store._connect() as conn, conn.cursor() as cur:
+        if execution_fence is not None:
+            from core.operations.task_gateway import OperationLeaseLost
+            try:
+                if int(execution_fence.get("run_id") or 0) != run_value:
+                    raise PermissionError("执行围栏与远端任务不匹配")
+                operation_store.fence_execution(cur, **execution_fence)
+            except (PermissionError, LookupError) as exc:
+                raise OperationLeaseLost("当前执行或租约失效，平台状态未写入") from exc
         cur.execute(
             f"""
             INSERT INTO {operation_store._table('extract_link_provider_jobs')} AS stored (
@@ -131,11 +148,14 @@ def save_provider_job(
                 extraction_state=EXCLUDED.extraction_state,
                 payment_state=EXCLUDED.payment_state,
                 public_state=EXCLUDED.public_state || jsonb_build_object(
-                    'links', COALESCE(EXCLUDED.public_state->'links', stored.public_state->'links', '[]'::jsonb),
-                    'payment_links', COALESCE(EXCLUDED.public_state->'payment_links', stored.public_state->'payment_links', '[]'::jsonb),
+                    'links', CASE WHEN {material_changed} THEN COALESCE(EXCLUDED.public_state->'links', '[]'::jsonb)
+                        ELSE COALESCE(EXCLUDED.public_state->'links', stored.public_state->'links', '[]'::jsonb) END,
+                    'payment_links', CASE WHEN {material_changed} THEN COALESCE(EXCLUDED.public_state->'payment_links', '[]'::jsonb)
+                        ELSE COALESCE(EXCLUDED.public_state->'payment_links', stored.public_state->'payment_links', '[]'::jsonb) END,
                     'payment_artifact',
-                    COALESCE(stored.public_state->'payment_artifact', '{{}}'::jsonb)
-                    || COALESCE(EXCLUDED.public_state->'payment_artifact', '{{}}'::jsonb)
+                    CASE WHEN {material_changed} THEN COALESCE(EXCLUDED.public_state->'payment_artifact', '{{}}'::jsonb)
+                        ELSE COALESCE(stored.public_state->'payment_artifact', '{{}}'::jsonb)
+                        || COALESCE(EXCLUDED.public_state->'payment_artifact', '{{}}'::jsonb) END
                 ),
                 private_data=stored.private_data || EXCLUDED.private_data,
                 updated_at=now()
@@ -242,15 +262,39 @@ def list_recoverable_workbench_jobs() -> list[dict]:
             f"""
             SELECT task.id AS task_id,
                    run.id AS run_id,
+                   job.run_id AS provider_job_run_id,
                    COALESCE(job.provider_id, run.data->>'provider_id', task.data->>'provider_id', 'legacy') AS provider_id,
                    COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') AS mode
             FROM {operation_store._table('operation_tasks')} task
             JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
-            JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+            JOIN LATERAL (
+                SELECT original.* FROM {operation_store._table('extract_link_provider_jobs')} original
+                JOIN {operation_store._table('operation_runs')} source_run
+                  ON source_run.id=original.run_id AND source_run.task_id=task.id
+                WHERE original.run_id=run.id OR (
+                    run.data->>'workbench_action'='sync_status'
+                    AND original.run_id=CASE WHEN run.data->>'provider_job_run_id' ~ '^[0-9]{{1,18}}$'
+                        THEN (run.data->>'provider_job_run_id')::bigint END
+                )
+                ORDER BY (original.run_id=run.id) DESC LIMIT 1
+            ) job ON true
             WHERE task.task_type='extract_link'
               AND task.source_system='native_operations'
-              AND run.status='attention_required'
-              AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL
+              AND run.status IN ('attention_required', 'interrupted')
+              AND run.cancel_requested_at IS NULL
+              AND (
+                  (job.provider_id<>'huanguang' AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL)
+                  OR (job.provider_id='huanguang' AND (
+                      (job.private_data->>'batch_receipt_pending'='true'
+                       AND NULLIF(job.private_data->>'batch_receipt_secret', '') IS NOT NULL)
+                      OR (NULLIF(BTRIM(job.job_id), '') IS NOT NULL
+                          AND COALESCE(job.public_state->'summary'->>'remote_chain_error', '')=''
+                          AND (job.public_state->'summary'->>'remote_polling'='true'
+                               OR (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
+                                   AND COALESCE(job.public_state->'summary'->>'automatic_payment_requires_reconcile', '')<>'true'
+                                   AND COALESCE(job.public_state->'summary'->>'remote_terminal_failure', '')<>'true')))
+                  ))
+              )
             ORDER BY job.updated_at, run.id
             """
         )
@@ -332,16 +376,15 @@ def list_workbench_rows(
 
 _WORKBENCH_STATUS_SQL = {
     "processing": """task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-        OR extraction_status IN ('queued','running')
         OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
         OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued'))""",
-    "running": "task_status IN ('running','cancelling','settling','stopping') OR extraction_status='running'",
+    "running": "task_status IN ('running','cancelling','settling','stopping')",
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
     "needs_attention": """task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
         OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
-        OR plus_status IN ('unknown','failed','not_confirmed')""",
+        OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",
 }
 
 

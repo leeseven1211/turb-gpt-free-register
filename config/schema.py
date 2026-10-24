@@ -1530,7 +1530,7 @@ _FIELD_DEFINITIONS = [
     {"key": "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES", "file": "extract_link.py", "type": "list_str_multiline", "group": "提链", "label": "幻光出口代理池", "help": "每行一条完整代理 URL，支持 http、https、socks5、socks5h 及认证信息，去重后最多 500 条；填写后发送完整候选列表，留空才从统一代理池领取 IN 线路；仅保存到 .env", "secret": True},
     {"key": "EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 请求超时（秒）", "help": "HTTP 请求超时，范围 5-300"},
     {"key": "EXTRACT_LINK_HUANGUANG_POLL_INTERVAL", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 轮询间隔（秒）", "help": "任务状态轮询间隔，范围 1-60"},
-    {"key": "EXTRACT_LINK_HUANGUANG_EVENT_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 监控等待（秒）", "help": "本次持续查询的预算，范围 30-900；到期保留远端任务，可继续同步，不代表远端失败"},
+    {"key": "EXTRACT_LINK_HUANGUANG_EVENT_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "huanguang 首轮监控等待（秒）", "help": "首次持续查询的预算，范围 30-900；到期后释放执行槽并定时续查原单，不重复提交提链或支付"},
     # ---- Codex 配置 ----
     {
         "key": "SUB2API_API_BASE", "file": "sub2api.py", "type": "str", "group": "Codex",

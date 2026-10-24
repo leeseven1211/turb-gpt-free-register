@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import base64
@@ -47,6 +47,7 @@ class ExtractRequest:
     exit_proxy: str | None = field(default=None, repr=False)
     entry_proxies: tuple[str, ...] = field(default=(), repr=False)
     exit_proxies: tuple[str, ...] = field(default=(), repr=False)
+    submission_checkpoint: Callable[[dict], None] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

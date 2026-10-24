@@ -454,7 +454,25 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                 task_counts = extract_link_service.list_workbench_tasks(batch_id=batch_id)["counts"]
                 self.assertEqual(task_counts, detail["counts"])
                 self.assertEqual(1, detail["counts"]["processing"])
-                self.assertEqual("running", detail["status"])
+                self.assertEqual(0, detail["counts"]["running"])
+                self.assertEqual("waiting", detail["status"])
+
+    def test_queued_continuation_with_link_keeps_batch_queued(self):
+        account_id = self.accounts([{"plan_check_status": "queued"}])[0]
+        batch_id = self.state_batch(account_id=account_id, provider_id="huanguang", task_status="queued",
+            state={"preflight_status": "passed", "extraction_state": "succeeded",
+                   "payment_state": "pending", "plus_status": "not_applicable"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_runs')} SET data=data || %s::jsonb, next_attempt_at=now() + interval '30 seconds' WHERE task_id IN (SELECT id FROM {operation._table('operation_tasks')} WHERE batch_id=%s)",
+                ('{"extract_poll_continuation": true}', batch_id),
+            )
+        detail = extract_link_service.workbench_batch_detail(batch_id)
+        self.assertEqual("queued", detail["status"])
+        self.assertEqual(1, detail["counts"]["processing"])
+        self.assertEqual(0, detail["counts"]["running"])
+        self.assertEqual(1, detail["counts"]["extraction_succeeded"])
+        self.assertEqual(extract_link_service.list_workbench_tasks(batch_id=batch_id)["counts"], detail["counts"])
 
     def test_summary_aggregate_matches_task_semantics_without_full_account_or_run_projection(self):
         scenarios = [

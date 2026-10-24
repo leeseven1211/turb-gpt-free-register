@@ -1071,8 +1071,200 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=121.0))
                 self.assertEqual(2, reconcile.call_count)
                 self.assertEqual(2, resume_extract.call_count)
+                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 0
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=182.0))
+                self.assertEqual(3, resume_extract.call_count)
+                self.assertTrue(all(call.kwargs == {"continuous_only": True} for call in resume_extract.call_args_list))
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=200.0))
+                self.assertEqual(3, resume_extract.call_count)
         finally:
             task_gateway._LAST_RUNTIME_RECOVERY_AT = previous
+
+    def test_defer_reuses_run_preserves_remote_intent_and_releases_lease(self):
+        account_id = self._runtime_account("deferred@example.test")
+        seen = {}
+
+        def handler(context):
+            with context.lease():
+                context.remote_request_started("extract_link_create")
+                context.defer(delay_seconds=30, reason="等待原单", data={
+                    "extract_poll_continuation": True,
+                    "workbench_action": "sync_status",
+                    "provider_job_run_id": context.run_id,
+                    "job_secret": "不得写入公开运行数据",
+                })
+                seen["deferred"] = context.deferred
+
+        self._register("synthetic_defer", handler)
+        submitted = task_gateway.submit_durable_operation(
+            task_type="synthetic_defer", account_id=account_id,
+            email="deferred@example.test", dispatch=False,
+        )
+        run_id = int(submitted["run_id"])
+        result = task_gateway._execute_operation_handler("synthetic_defer", run_id)
+        run = operation.get_run(run_id)
+        task = operation.get_task(int(submitted["task_id"]))
+        self.assertEqual("deferred", result["status"])
+        self.assertTrue(seen["deferred"])
+        self.assertEqual("queued", run["status"])
+        self.assertIsNone(run["completed_at"])
+        self.assertEqual("remote_sync", run["progress_stage"])
+        self.assertEqual("extract_link_create", run["data"]["remote_intent"]["action"])
+        self.assertTrue(run["data"]["extract_poll_continuation"])
+        self.assertNotIn("job_secret", run["data"])
+        self.assertEqual(run_id, task["last_run_id"])
+        self.assertEqual(1, len(task["runs"]))
+        self.assertIsNone(operation.claim_run(run_id, execution_id="too-early", worker_pid=90))
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM {operation._table('account_operation_leases')} WHERE run_id=%s", (run_id,))
+            self.assertEqual(0, cur.fetchone()["n"])
+
+    def test_defer_does_not_report_a_terminal_email_auth_result(self):
+        from contextlib import contextmanager
+
+        results = []
+
+        @contextmanager
+        def auth_session(_email):
+            yield type("Session", (), {"set_result": lambda _self, result: results.append(result)})()
+
+        def handler(context):
+            context.defer(delay_seconds=1, reason="等待续查")
+
+        self._register("synthetic_defer_auth", handler)
+        submitted = task_gateway.submit_durable_operation(
+            task_type="synthetic_defer_auth", account_id=None,
+            email="deferred-auth@example.test", dispatch=False,
+        )
+        with patch("core.email_auth_guard.email_auth_session", auth_session):
+            result = task_gateway._execute_operation_handler("synthetic_defer_auth", int(submitted["run_id"]))
+        self.assertEqual("deferred", result["status"])
+        self.assertEqual([], results)
+
+    def test_defer_rejects_expired_lease_and_cancel_wins(self):
+        account_id = self._runtime_account("deferred-fence@example.test")
+        task = operation.create_runtime_task(task_type="synthetic_defer_fence", account_id=account_id,
+                                            email="deferred-fence@example.test")
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="current", worker_pid=91)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="old", lease_token=lease,
+                                         reason="过期执行", data={"extract_poll_continuation": True})
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", reason="缺少租约",
+                                         data={"extract_poll_continuation": True})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('account_operation_leases')} SET expires_at=now()-interval '1 minute' WHERE run_id=%s", (run_id,))
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", lease_token=lease,
+                                         reason="过期租约", data={"extract_poll_continuation": True})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {operation._table('account_operation_leases')} WHERE run_id=%s", (run_id,))
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", reason="丢失租约",
+                                         data={"extract_poll_continuation": True})
+        operation.request_run_cancel(run_id)
+        self.assertIsNone(operation.requeue_claimed_run(
+            run_id, execution_id="current", lease_token=lease, reason="取消优先",
+            data={"extract_poll_continuation": True},
+        ))
+        self.assertEqual("cancelling", operation.get_run(run_id)["status"])
+
+    def test_dispatch_candidates_include_both_lanes_beyond_scan_limit(self):
+        for number in range(70):
+            operation.create_runtime_task(task_type="extract_link", account_id=None, email=f"poll-{number}@example.test", data={
+                "provider_id": "huanguang", "extract_poll_continuation": True,
+            })
+        initial = operation.create_runtime_task(task_type="extract_link", account_id=None, email="initial@example.test",
+                                                data={"provider_id": "huanguang"})
+        initial_id = int(initial["run"]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=False)
+        self.assertEqual(initial_id, rows[0]["id"])
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=True)
+        self.assertTrue(rows[0]["data"].get("extract_poll_continuation"))
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
+
+    def test_crashed_huanguang_continuation_requeues_same_known_job(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="recover-poll@example.test", data={
+            "provider_id": "huanguang", "extract_poll_continuation": True,
+            "workbench_action": "sync_status",
+        })
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "existing-original",
+                                            {"extraction_state": "running"}, {"job_secret": "private"})
+        operation.claim_run(run_id, execution_id="crashed-poll", worker_pid=92)
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        run = operation.get_run(run_id)
+        self.assertEqual("queued", run["status"])
+        self.assertIsNone(run["completed_at"])
+        self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+        self.assertIsNotNone(operation.claim_run(run_id, execution_id="restarted-poll", worker_pid=93))
+
+    def test_crashed_huanguang_receipt_continuation_reuses_original_submission(self):
+        from core.storage import extract_link_jobs
+
+        for pending, secret, expected in ((True, "receipt-only", "queued"),
+                                           (False, "receipt-only", "interrupted"),
+                                           (True, "", "interrupted")):
+            with self.subTest(pending=pending, has_secret=bool(secret)):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"receipt-{pending}-{bool(secret)}@example.test", data={
+                        "provider_id": "huanguang", "extract_poll_continuation": True,
+                        "workbench_action": "sync_status",
+                    })
+                run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(run_id, "huanguang", None,
+                    {"extraction_state": "unknown"},
+                    {"batch_receipt_pending": pending, "batch_receipt_secret": secret})
+                operation.claim_run(run_id, execution_id=f"receipt-{run_id}", worker_pid=94)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual(expected, operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+
+    def test_continuation_lane_orders_by_due_time_before_creation(self):
+        tasks = [operation.create_runtime_task(task_type="extract_link", account_id=None,
+            email=f"due-{number}@example.test", data={
+                "provider_id": "huanguang", "extract_poll_continuation": True,
+            }) for number in range(2)]
+        old_id, due_first_id = [int(task["run"]["id"]) for task in tasks]
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET next_attempt_at=now()-interval '1 second' WHERE id=%s", (old_id,))
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET next_attempt_at=now()-interval '1 minute' WHERE id=%s", (due_first_id,))
+        rows = operation.list_dispatchable_runs(limit=2, prioritize_continuations=True)
+        self.assertEqual([due_first_id, old_id], [row["id"] for row in rows])
+
+    def test_crashed_continuation_recovers_same_task_prior_provider_reference(self):
+        from core.storage import extract_link_jobs
+
+        for has_job in (True, False):
+            with self.subTest(has_job=has_job):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"prior-ref-{has_job}@example.test", data={"provider_id": "huanguang"})
+                prior_run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(prior_run_id, "huanguang", "original" if has_job else None,
+                    {"extraction_state": "running"},
+                    {} if has_job else {"batch_receipt_pending": True, "batch_receipt_secret": "private-receipt"})
+                operation.finish_run(prior_run_id, status="attention_required")
+                retry = operation.retry_runtime_task(int(task["id"]), data={
+                    "extract_poll_continuation": True, "workbench_action": "sync_status",
+                    "provider_job_run_id": prior_run_id,
+                })
+                run_id = int(retry["id"])
+                self.assertIsNone(extract_link_jobs.get_provider_job_private(run_id))
+                operation.claim_run(run_id, execution_id=f"ref-crash-{run_id}", worker_pid=95)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual("queued", operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
 
 
 if __name__ == "__main__":

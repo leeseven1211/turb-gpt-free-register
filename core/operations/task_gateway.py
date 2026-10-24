@@ -63,6 +63,7 @@ _RUN_DISPATCH_INTERVAL_SECONDS = 0.5
 _RUN_DISPATCH_BATCH_SIZE = 32
 _RUNTIME_RECOVERY_INTERVAL_SECONDS = 60.0
 _LAST_RUNTIME_RECOVERY_AT = 0.0
+_PREFER_EXTRACT_CONTINUATIONS = False
 
 
 _MISSING = object()
@@ -356,11 +357,49 @@ class OperationHandlerContext:
         )
         self._lease: OperationLease | None = None
         self._finished = False
+        self._deferred_result: dict[str, Any] | None = None
         self._last_result: OperationResult | None = None
 
     @property
     def finished(self) -> bool:
         return self._finished
+
+    @property
+    def deferred(self) -> bool:
+        return self._deferred_result is not None
+
+    def defer(
+        self,
+        *,
+        delay_seconds: float,
+        reason: str,
+        data: Mapping[str, Any] | None = None,
+        stage: str = "remote_sync",
+    ) -> dict[str, Any]:
+        """同 Run 持久延期；调用后 handler 应立即返回，不再写入业务结果。"""
+        if self.finished or self.deferred:
+            raise RuntimeError("已结束或已延期的执行不能再次延期")
+        self.checkpoint()
+        lease_token = None
+        if self.account_id is not None:
+            lease_token = self.execution_fence["lease_token"]
+        row = _operation().requeue_claimed_run(
+            self.run_id, execution_id=self.execution_id, lease_token=lease_token,
+            reason=reason, delay_seconds=delay_seconds,
+            data=dict(data) if data is not None else None, stage=stage,
+        )
+        if row is None:
+            if self.is_cancel_requested(force=True):
+                raise OperationCancelled("任务在延期前收到取消请求")
+            raise PermissionError("当前执行已失去延期资格")
+        self._deferred_result = {
+            "status": "deferred", "ok": False, "database_status": "queued",
+            "task_id": self.task_id, "run_id": self.run_id,
+            "source_system": self.source_system, "reason": str(reason),
+        }
+        self.release_lease()
+        notify_dispatch()
+        return dict(self._deferred_result)
 
     @property
     def cancellation(self) -> CancellationToken:
@@ -500,6 +539,8 @@ class OperationHandlerContext:
         result_summary: Mapping[str, Any] | None = None,
         error: str | None = None,
     ) -> dict:
+        if self.deferred:
+            raise RuntimeError("已延期的执行不能写入终态")
         normalized = _coerce_operation_result(
             result, status=status, message=message,
             result_summary=result_summary, error=error,
@@ -1097,8 +1138,10 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
             with operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
                 context.checkpoint()
                 returned = handler(context)
-                if auth_session is not None:
+                if auth_session is not None and not context.deferred:
                     auth_session.set_result(context.last_result if context.finished else returned)
+            if context.deferred:
+                return dict(context._deferred_result)
             if not context.finished:
                 if returned is None:
                     raise RuntimeError("durable operation handler 未报告 terminal result")
@@ -1189,6 +1232,8 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
             }
         except Exception as exc:
             logger.exception("durable operation handler 执行失败：task_type=%s run_id=%s", task_type, run_id)
+            if context.deferred:
+                return dict(context._deferred_result)
             result = OperationResult.failed(f"{type(exc).__name__}: {exc}")
             if not context.finished:
                 context.finish(result)
@@ -1510,6 +1555,8 @@ def _reserve_dispatch_capacity(
             requirements = {key: max(0, int(limit_fn(key)))}
         if not requirements or any(not key for key in requirements):
             raise ValueError("容量 key 不能为空")
+        if _is_huanguang_continuation(run):
+            requirements["huanguang:continuation"] = min(2, min(requirements.values()))
     except (TypeError, ValueError, KeyError):
         logger.warning("durable operation 容量配置无效：task_type=%s", task_type)
         return False, None
@@ -1537,8 +1584,19 @@ def _release_dispatch_capacity(tokens: tuple[tuple[str, str], ...] | None) -> No
                 _DISPATCH_CAPACITY_COUNTS[token] = active - 1
 
 
+def _is_huanguang_continuation(run: Mapping[str, Any]) -> bool:
+    data = run.get("data")
+    return bool(
+        str(run.get("task_type") or "") == "extract_link"
+        and isinstance(data, Mapping)
+        and data.get("provider_id") == "huanguang"
+        and data.get("extract_poll_continuation") is True
+    )
+
+
 def dispatch_registered_once(*, limit: int | None = None) -> int:
     """Submit a finite batch of registered durable runs through the budget."""
+    global _PREFER_EXTRACT_CONTINUATIONS
     handlers, capacity_handlers = _run_handler_snapshot()
     if not handlers:
         return 0
@@ -1556,11 +1614,14 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
         return 0
     requested_limit = int(limit or (_RUN_DISPATCH_BATCH_SIZE * 2))
     scan_limit = max(slots, min(5000, requested_limit))
+    with _RUN_DISPATCH_LOCK:
+        prefer_continuations = _PREFER_EXTRACT_CONTINUATIONS
     try:
         runs = _operation().list_dispatchable_runs(
             limit=scan_limit,
             task_types=tuple(handlers),
             source_systems=None if accepts_all_sources else tuple(sorted(source_systems)),
+            prioritize_continuations=prefer_continuations,
         )
     except (AttributeError, TypeError):
         # Compatibility with an older storage wrapper during a rolling update.
@@ -1602,6 +1663,10 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
             _release_dispatch_capacity(capacity_token)
             break
         submitted += 1
+        data = run.get("data")
+        if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") == "huanguang":
+            with _RUN_DISPATCH_LOCK:
+                _PREFER_EXTRACT_CONTINUATIONS = not _is_huanguang_continuation(run)
         try:
             future.add_done_callback(
                 lambda _completed, run_id=int(run["id"]), token=capacity_token: (
@@ -1645,13 +1710,12 @@ def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
         logger.exception("周期性恢复中断 Run 失败")
         return 0
     _reconcile_recovered_projections()
-    if recovered:
-        try:
-            from core import extract_link_service
+    try:
+        from core import extract_link_service
 
-            extract_link_service.resume_known_remote_jobs()
-        except Exception:
-            logger.exception("恢复中断的提链远端状态同步失败")
+        extract_link_service.resume_known_remote_jobs(continuous_only=True)
+    except Exception:
+        logger.exception("恢复中断的提链远端状态同步失败")
     return recovered
 
 
