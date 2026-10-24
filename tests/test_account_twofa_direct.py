@@ -10,6 +10,7 @@ from core import codex_retry_service
 from core.account_export import (
     TwofaEnrollmentAuthRequired,
     TwofaProtocolHTTPError,
+    TwofaProtocolStepError,
     TwofaProtocolTransportError,
 )
 
@@ -519,6 +520,26 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             browser_fallback_enabled=True,
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_reauth_page_and_dispatch_failures_allow_browser_recovery(self):
+        account = {
+            "id": 9, "email": "a@example.com", "access_token": "saved-chatgpt-token",
+            "totp_secret": "", "extra_json": "{}",
+        }
+        for error in (
+            TwofaProtocolStepError("reauth_authorize", "unexpected_auth_page:password"),
+            TwofaProtocolStepError("reauth_otp_send", "email_otp_send_rejected"),
+        ):
+            with self.subTest(operation=error.operation), patch.object(
+                codex_retry_service, "_build_roxy_account_setup", return_value=Mock()
+            ):
+                result, _route, _db, _events, _setup, _reauth, _session, run_browser, _action = self._run_worker(
+                    account=account, fallback_enabled=True, protocol_side_effect=error,
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["twofa_driver"], "browser_fallback")
+            self.assertTrue(result["browser_opened"])
+            run_browser.assert_called_once()
 
     def test_enroll_401_uses_protocol_reauth_and_persists_fresh_at(self):
         account = {

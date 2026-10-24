@@ -14,7 +14,7 @@ import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import pyotp
 
@@ -301,7 +301,7 @@ def _run_reauth_step_with_retry(
                     operation, attempt, max_attempts, retryable,
                     type(exc).__name__, status or "-",
                 )
-                if isinstance(exc, TwofaProtocolHTTPError):
+                if isinstance(exc, (TwofaProtocolHTTPError, TwofaProtocolStepError)):
                     raise exc from None
                 if response is not None and status:
                     raise _twofa_http_error(operation, response) from None
@@ -394,8 +394,8 @@ def fetch_session(session: BrowserSession, *, timeout: float | None = None) -> d
 
 def _trigger_reauth(session: BrowserSession, email: str) -> str:
     """
-    步骤2-3: 发起密码重认证，返回 OpenAI authorize URL。
-    重定向链会自动触发邮箱发送一份新的 OTP（用于 2FA 重认证）。
+    步骤2-3: 发起重认证，返回 OpenAI authorize URL。
+    后续须确认实际认证页面，再显式请求本次邮箱验证码。
     """
     # 重新拿一次 csrf（旧的可能已过期）
     csrf_url = "https://chatgpt.com/api/auth/csrf"
@@ -435,15 +435,34 @@ def _trigger_reauth(session: BrowserSession, email: str) -> str:
 
 def _follow_reauth(session: BrowserSession, auth_url: str) -> str:
     """
-    步骤3: 跟随 authorize URL 触发邮箱 OTP 发送。
-    auth.openai.com 会重定向到 /email-verification 页面，期间发送 OTP 邮件。
+    步骤3: 跟随 authorize URL，确认已进入邮箱验证码页。
+    页面就绪不代表已经发码，调用方必须单独确认发码后再收取邮件。
     """
     headers = session.get_auth_navigate_headers(referer="https://chatgpt.com/")
-    logger.info("[2FA] 跟随 authorize URL，触发 OTP 发送...")
+    logger.info("[2FA] 跟随 authorize URL，确认认证落点...")
     resp = session.get(auth_url, headers=headers, allow_redirects=True)
     _raise_twofa_http_response("reauth_authorize", resp)
+    final_url = str(getattr(resp, "url", "") or "")
+    try:
+        parsed = urlparse(final_url)
+        expected_origin = (
+            parsed.scheme == "https" and parsed.hostname == "auth.openai.com"
+            and parsed.port in (None, 443) and not parsed.username and not parsed.password
+        )
+        path = parsed.path.rstrip("/")
+    except ValueError:
+        expected_origin, path = False, ""
+    if not expected_origin or path != "/email-verification":
+        page_type = {
+            "/log-in/password": "password",
+            "/create-account/password": "password",
+            "/log-in": "login",
+            "/error": "error",
+        }.get(path, "unknown") if expected_origin else "unexpected_origin"
+        logger.warning("[2FA] 重认证未进入邮箱验证码页，页面类型=%s，交给调用方恢复认证", page_type)
+        raise TwofaProtocolStepError("reauth_authorize", f"unexpected_auth_page:{page_type}")
     logger.info("[2FA] 已到达邮箱验证页面（落点 URL 原值不写日志）")
-    return str(getattr(resp, "url", "") or auth_url)
+    return final_url
 
 
 def _trigger_reauth_with_retry(session: BrowserSession, email: str) -> str:
@@ -728,7 +747,7 @@ def setup_2fa(
     """
     完整的 2FA 设置流程。
     会触发再发一份邮箱验证码：
-        - USE_EMAIL_SERVICE=True 时自动从 Outlook 账号池拉取
+        - USE_EMAIL_SERVICE=True 时按账号绑定的邮箱来源自动拉取
         - 否则需要用户手动输入
 
     Args:
@@ -749,13 +768,23 @@ def setup_2fa(
     logger.info("=" * 60)
 
     # 阶段一：重认证
-    reauth_otp_after_ts = time.time()
     auth_url = _trigger_reauth_with_retry(session, email)
     human_delay("api")
     _follow_reauth_with_retry(session, auth_url)
     human_delay("navigate")
 
     if otp_code is None:
+        from core.openai_auth import EmailOtpSendError, send_email_otp
+
+        # 使用本次发码前的时间，既排除旧邮件，也不漏掉请求期间即刻送达的新邮件。
+        reauth_otp_after_ts = time.time()
+        try:
+            send_email_otp(session)
+        except EmailOtpSendError as exc:
+            raise TwofaProtocolStepError("reauth_otp_send", f"email_otp_send_{exc.reason}") from None
+        except Exception as exc:
+            # 发码结果未知时本次不重放请求，交由既有兜底或后续任务重跑恢复。
+            raise TwofaProtocolStepError("reauth_otp_send", type(exc).__name__) from None
         if _email_cfg.USE_EMAIL_SERVICE:
             from core.email_provider import wait_for_otp
             logger.info("[2FA] 自动等待邮箱重认证 OTP...")
