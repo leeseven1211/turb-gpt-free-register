@@ -1255,6 +1255,9 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
     init()
     record_store.init()
     with _connect() as conn, conn.cursor() as cur:
+        from core.storage.email_validity import facts_for_address, lock_email_validity
+
+        lock_email_validity(conn, shared=True)
         cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
         raw = cur.fetchone()
         attempt = _row(raw)
@@ -1279,10 +1282,14 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
             extra.update({"account_password": password, "registration_checkpoint": "email_verification_pending",
                           "registration_pending_reason": "email_otp_pending"})
             payload = {**dict(account), "email": email, "access_token": "", "extra_json": json.dumps(extra, ensure_ascii=False)}
+            for key in list(payload):
+                if key == "email_invalid" or key.startswith("email_invalid_"):
+                    payload.pop(key)
             if existing:
                 account_id = int(existing["id"])
                 record_store.patch_row(record_store.ACCOUNTS, account_id, payload, conn=conn)
             else:
+                payload.update(facts_for_address(email, source=str(payload.get("email_source") or ""), conn=conn))
                 account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", payload, conn=conn)
         checkpoint = {"prepared": "auth_started", "started": "password_request_started", "confirmed": "password_confirmed"}[state]
         current = str(attempt.get("checkpoint") or "created")
@@ -1511,11 +1518,17 @@ def persist_core_account(
         raise ValueError("核心账号落库需要 access_token")
     init()
     payload = dict(account or {})
+    for key in list(payload):
+        if key == "email_invalid" or key.startswith("email_invalid_"):
+            payload.pop(key)
     if isinstance(payload.get("chatgpt_session"), dict):
         payload["chatgpt_session"] = json.dumps(
             payload["chatgpt_session"], ensure_ascii=False,
         )
     with _connect() as conn, conn.cursor() as cur:
+        from core.storage.email_validity import facts_for_address, lock_email_validity
+
+        lock_email_validity(conn, shared=True)
         cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
         attempt = _row(cur.fetchone())
         if attempt is None:
@@ -1533,6 +1546,7 @@ def persist_core_account(
             _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
         payload["email"] = email
         payload["access_token"] = token
+        record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
         account_id = payload.get("id") or attempt.get("account_id")
         if recovering_terminal:
             # 失败终态不是已完成注册的证据。仅允许当前续跑以原身份拿到 Token
@@ -1571,6 +1585,7 @@ def persist_core_account(
                     raise ValueError("原账号缺失、邮箱不匹配或已停用，不能确认注册成功")
             if existing is None:
                 payload["id"] = int(account_id)
+                payload.update(facts_for_address(email, source=str(payload.get("email_source") or ""), conn=conn))
                 account_id = record_store.insert_row(record_store.ACCOUNTS, payload, conn=conn)
             else:
                 if "extra_json" in payload:
@@ -1580,7 +1595,13 @@ def persist_core_account(
                     payload["extra_json"] = json.dumps(previous_extra, ensure_ascii=False)
                 record_store.patch_row(record_store.ACCOUNTS, int(account_id), payload, conn=conn)
         else:
-            account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", payload, conn=conn)
+            existing = record_store.get_row_by(record_store.ACCOUNTS, "email", email, conn=conn, lower=True, for_update=True)
+            if existing is None:
+                payload.update(facts_for_address(email, source=str(payload.get("email_source") or ""), conn=conn))
+                account_id = record_store.upsert_row_by(record_store.ACCOUNTS, "email", payload, conn=conn)
+            else:
+                account_id = int(existing["id"])
+                record_store.patch_row(record_store.ACCOUNTS, account_id, payload, conn=conn)
         now = _now()
         cur.execute(
             f"""

@@ -428,6 +428,8 @@
             </div>
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">资产管理</span>
+              <button type="button" class="jobs-tb-btn" id="btnMarkSelectedEmailInvalidV2" disabled title="为选中账号标记邮箱失效，不修改 OpenAI 账号状态">标记邮箱失效</button>
+              <button type="button" class="jobs-tb-btn" id="btnClearSelectedEmailInvalidV2" disabled title="仅清除本地邮箱失效标记，邮箱可用性仍需确认">解除邮箱失效</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnDownloadSelectedCpaV2" disabled title="从 CPA auth-files 下载选中账号的 Codex JSON，并打包 ZIP">下载 CPA</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnUploadSelectedCodexSub2V2" disabled title="把选中账号已通过的 Codex OAuth 凭证上传到 sub2api">上传 sub2</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止 Codex</button>
@@ -437,6 +439,7 @@
           </div>
         </details>
         <div class="list-toolbar-utilities">
+          <label class="account-email-status-filter" for="accountEmailStatusFilterV2">邮箱状态<select id="accountEmailStatusFilterV2"><option value="">全部</option><option value="invalid">邮箱失效</option><option value="unmarked">未标记失效</option></select></label>
           <div class="account-search-control">
             <div class="account-advanced-search">
               <label for="accountAdvancedSearchV2">高级搜索</label>

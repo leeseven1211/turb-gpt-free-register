@@ -289,6 +289,7 @@ def capacity_summary(source: str) -> dict:
     conditions = ["COALESCE(p.status, 'available') IN ('available', 'used', 'replaced', 'reserved')",
                   "COALESCE(p.data->>'remote_active', 'true') <> 'false'",
                   "COALESCE(p.data->>'archived', 'false') <> 'true'",
+                  "COALESCE(p.data->>'email_invalid', 'false') <> 'true'",
                   "COALESCE(p.data->>'disabled_reason', '') NOT IN ('remote_inactive', 'remote_missing', 'manual_disabled')",
                   "COALESCE(p.data->'derivation_policy'->>'enabled', 'true') <> 'false'",
                   "position('+' in split_part(p.email, '@', 1)) = 0",
@@ -350,7 +351,7 @@ def public_summary(source: str | None = None) -> dict:
             spec = tables.get(parent_source)
             ids = [int(row["parent_id"]) for row in groups if row["source"] == parent_source]
             if spec and ids:
-                cur.execute(f"SELECT id, email, data->'derivation_policy' AS policy FROM {postgres_store.qualified(spec.name)} WHERE id = ANY(%s)", (ids,))
+                cur.execute(f"SELECT id, email, data->'derivation_policy' AS policy, COALESCE(data->>'email_invalid', 'false') = 'true' AS email_invalid FROM {postgres_store.qualified(spec.name)} WHERE id = ANY(%s)", (ids,))
                 parent_rows.update({(parent_source, int(row["id"])): row for row in cur.fetchall()})
     parents = []
     summary = {"total": 0, "parent_count": len(groups), "reserved": 0, "used": 0, "replaced": 0, "retired": 0}
@@ -361,7 +362,7 @@ def public_summary(source: str | None = None) -> dict:
         child_count = int(group["issued"])
         parents.append({"source": key[0], "parent_id": key[1], "parent_email": parent.get("email", ""),
                         "child_count": child_count, "max_children": max_children,
-                        "remaining": max(0, max_children - child_count)})
+                        "remaining": 0 if parent.get("email_invalid") else max(0, max_children - child_count)})
         summary["total"] += child_count
         for state in ("reserved", "used", "replaced", "retired"):
             summary[state] += int(group[state])

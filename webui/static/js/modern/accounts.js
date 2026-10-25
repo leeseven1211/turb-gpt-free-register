@@ -6,6 +6,7 @@ let planStatusLoading = false;
 let planStatusRevision = '';
 let ACCOUNT_BATCH_WORKERS = 3;
 let emailChangeReturnFocus = null;
+const ACCOUNT_SELECTED_EMAILS = new Map();
 const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
 Object.assign(ACCOUNT_TASK_TYPE_LABELS, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次'});
 const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
@@ -1159,6 +1160,7 @@ function accountListQueryParams() {
   const accountFilters = {
     id: 'accountIdFilterV2', source: 'accountSourceFilterV2', registration_driver: 'accountRegistrationDriverFilterV2', token: 'accountTokenFilterV2',
     password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
+    email_status: 'accountEmailStatusFilterV2',
   };
   Object.entries(accountFilters).forEach(([key, id]) => params.set(key, columnFilterValue(document.getElementById(id))));
   return params;
@@ -2229,6 +2231,7 @@ function _accountsV2MoreMenu(r) {
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
     accountIsDeactivated(r) ? `<button type="button" data-account-restore="${esc(r.id)}" title="已确认 OpenAI 恢复访问权限后，解除本地停用标记">已解封，恢复账号</button>` : '',
+    `<button type="button" data-account-email-invalid="${esc(r.id)}" data-invalid="${r.email_invalid === true ? '0' : '1'}" title="仅更新独立邮箱失效标记，不修改 OpenAI 账号状态">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
     _planAction(r),
     _extractLinkAction(r),
@@ -2359,6 +2362,7 @@ function _accountDetailMarkup(r) {
     <div class="account-detail-grid">
       ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `${tokenDisplay.key === 'invalid' ? 'JWT 标称到期' : '到期'} ${_fmtPlanTime(r.token_expires_at)}` : '')}
       ${_accountDetailState('在线状态', liveState, liveTone, r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '')}
+      ${_accountDetailState('邮箱状态', r.email_invalid === true ? '邮箱失效' : '未标记失效', r.email_invalid === true ? 'danger' : 'neutral', r.email_invalid === true ? [r.email_invalid_reason, r.email_invalid_at ? `标记于 ${_fmtPlanTime(r.email_invalid_at)}` : ''].filter(Boolean).join('；') : '未标记不代表已验证邮箱可用')}
       ${_accountDetailState('账号密码', r.has_account_password ? '已设置' : '未设置', r.has_account_password ? 'success' : 'neutral')}
       ${_accountDetailState('Authenticator 2FA', r.totp_enabled ? '已启用' : '未启用', r.totp_enabled ? 'success' : 'neutral')}
       ${_accountDetailState('封号邮件', risk, riskTone)}
@@ -2648,6 +2652,11 @@ function accountRegistrationDriverLabel(value) {
     protocol_oss_2: 'proto-sso',
   })[String(value || '').trim().toLowerCase()] || '未记录';
 }
+function _accountEmailInvalidBadge(r) {
+  if (r.email_invalid !== true) return '';
+  const detail = [r.email_invalid_reason || '该账号关联邮箱已标记失效', r.email_invalid_at ? `标记时间：${r.email_invalid_at}` : ''].filter(Boolean).join('；');
+  return `<span class="pill status-failed account-email-invalid-badge" title="${esc(detail)}">邮箱失效</span>`;
+}
 function renderAccounts() {
   const openMoreId = getOpenAccountsV2MoreId();
   const total = ACCOUNTS_TOTAL;
@@ -2663,7 +2672,7 @@ function renderAccounts() {
         <button type="button" class="acc-v2-email-link account-cell-line" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
           <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
         </button>
-        <div class="acc-v2-sub account-cell-line account-cell-line--sub">${esc(r.user_name || '-')}</div>
+        <div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span class="account-email-name">${esc(r.user_name || '-')}</span>${_accountEmailInvalidBadge(r)}</div>
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
@@ -2721,6 +2730,9 @@ function updateAccountRowDensity() {
 })();
 
 function updateAccountSelectionUi(pageRows = null) {
+  for (const id of ACCOUNT_SELECTED_EMAILS.keys()) {
+    if (!ACCOUNT_SELECTED.has(id)) ACCOUNT_SELECTED_EMAILS.delete(id);
+  }
   const none = ACCOUNT_SELECTED.size === 0;
   const hintV2 = $('#accountsSelectedHintV2');
   const toolbarV2 = $('#accountsToolbarV2');
@@ -2736,6 +2748,7 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnCopySelectedExtractLinksV2',
     'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
     'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
+    'btnMarkSelectedEmailInvalidV2', 'btnClearSelectedEmailInvalidV2',
   ];
   v2Ids.forEach(id => {
     const el = document.getElementById(id);
@@ -2964,6 +2977,12 @@ async function onAccountsBodyClick(e) {
     return;
   }
 
+  const emailInvalidBtn = e.target.closest('[data-account-email-invalid]');
+  if (emailInvalidBtn) {
+    await setAccountsEmailInvalid([Number(emailInvalidBtn.dataset.accountEmailInvalid)], emailInvalidBtn.dataset.invalid === '1', emailInvalidBtn);
+    return;
+  }
+
   const extractBtn = e.target.closest('[data-extract-link]');
   if (extractBtn) {
     await extractOneLink(Number(extractBtn.dataset.extractLink), extractBtn);
@@ -3034,14 +3053,20 @@ function onAccountsBodyChange(e) {
   const cb = e.target.closest('.account-row-check');
   if (!cb) return;
   const id = Number(cb.dataset.accountId);
-  if (cb.checked) ACCOUNT_SELECTED.add(id);
-  else ACCOUNT_SELECTED.delete(id);
+  if (cb.checked) {
+    ACCOUNT_SELECTED.add(id);
+    const account = ACCOUNTS.find(item => Number(item.id) === id);
+    if (account?.email) ACCOUNT_SELECTED_EMAILS.set(id, account.email);
+  } else {
+    ACCOUNT_SELECTED.delete(id);
+    ACCOUNT_SELECTED_EMAILS.delete(id);
+  }
   updateAccountSelectionUi();
 }
 function syncAccountsSelectAll(checked) {
   const pageRows = ACCOUNTS;
-  if (checked) pageRows.forEach(r => ACCOUNT_SELECTED.add(Number(r.id)));
-  else pageRows.forEach(r => ACCOUNT_SELECTED.delete(Number(r.id)));
+  if (checked) pageRows.forEach(r => { ACCOUNT_SELECTED.add(Number(r.id)); ACCOUNT_SELECTED_EMAILS.set(Number(r.id), r.email); });
+  else pageRows.forEach(r => { ACCOUNT_SELECTED.delete(Number(r.id)); ACCOUNT_SELECTED_EMAILS.delete(Number(r.id)); });
   renderAccounts();
 }
 (function bindAccountsV2Events() {
@@ -3149,7 +3174,7 @@ async function refreshAccountsList(btn) {
   ['accountIdFilterV2','qAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', reload);
   });
-  ['accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+  ['accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountEmailStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', reload);
   });
 
@@ -3160,7 +3185,7 @@ async function refreshAccountsList(btn) {
   const refreshV2 = $('#btnRefreshAccountsV2');
   if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
   $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
+    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountEmailStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
       setColumnFilterValue(document.getElementById(id), '');
     });
     syncSearch(); refreshColumnFilterStates(); apply();
@@ -3729,6 +3754,42 @@ async function deleteAccount(id, email, btn) {
   }
 }
 
+async function setAccountsEmailInvalid(idsArg = null, invalid = true, btn = null) {
+  if (btn?.disabled) return;
+  const ids = [...new Set((idsArg || Array.from(ACCOUNT_SELECTED)).map(Number))];
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  if (ids.length > 500) { showToast('单次最多操作 500 个账号'); return; }
+  const expectedEmails = {};
+  for (const id of ids) {
+    const email = ACCOUNTS.find(item => Number(item.id) === id)?.email || ACCOUNT_SELECTED_EMAILS.get(id);
+    if (!email) { showToast('部分账号缺少邮箱快照，请重新勾选后操作'); return; }
+    expectedEmails[id] = email;
+  }
+  let reason = '';
+  if (invalid) {
+    const input = prompt(`为 ${ids.length} 个账号标记邮箱失效，请填写原因（最多 300 字）`, '用户确认邮箱失效');
+    if (input === null) return;
+    reason = input.trim() || '用户确认邮箱失效';
+    if (reason.length > 300) { showToast('邮箱失效原因最多 300 字'); return; }
+  } else if (!confirm(`确定解除 ${ids.length} 个账号的邮箱失效标记？\n\n仅清除本地标记，邮箱可用性仍需确认。`)) return;
+  const old = btn?.textContent || '';
+  if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+  try {
+    const result = await api('/api/accounts/email-invalid-bulk', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_ids: ids, invalid, reason, expected_emails: expectedEmails}),
+    });
+    const skipped = (result.skipped || []).length;
+    showToast(`${invalid ? '已标记邮箱失效' : '已清除本地邮箱失效标记'} ${Number(result.updated_count || 0)} 个${skipped ? `，跳过 ${skipped} 个（邮箱可能已变更）` : ''}`);
+    await loadAccounts();
+  } catch (error) {
+    showToast('更新邮箱失效标记失败: ' + error.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+    updateAccountSelectionUi();
+  }
+}
+
 async function restoreDeactivatedAccount(id, btn) {
   if (btn?.disabled) return;
   const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
@@ -3999,6 +4060,8 @@ async function copySelectedAccountTokens() {
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
+  bind('btnMarkSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, true, event.currentTarget));
+  bind('btnClearSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, false, event.currentTarget));
 })();
 
 // 巡检使用原生 dialog 的焦点约束；阅读原始 Run 快照，不覆盖任务中心重跑历史。

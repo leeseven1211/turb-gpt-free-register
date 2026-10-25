@@ -107,6 +107,8 @@ ACCOUNTS = TableSpec(
         "updated_at": "TEXT NOT NULL",
         "archived": "BOOLEAN NOT NULL DEFAULT FALSE",
         "email_source": "TEXT",
+        # 邮箱收件能力与 OpenAI/Codex 账号状态相互独立。
+        "email_invalid": "BOOLEAN NOT NULL DEFAULT FALSE",
         "plan_type": "TEXT",
         "current_plan_type": "TEXT",
         "plus_trial_eligible": "BOOLEAN",

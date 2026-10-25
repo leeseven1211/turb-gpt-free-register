@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from core import db, record_store
 from core.account_credentials import get_account_login_credentials
+from core.storage.email_validity import facts_for_address, lock_email_validity
 
 DEFAULT_SYNC_PROXY_REGION = "US"
 _HTTP_STATUS_RE = re.compile(r"(?:HTTP\s*)?\(?\b([45]\d{2})\b\)?", re.IGNORECASE)
@@ -189,6 +190,7 @@ def sync_sub2api_records(
             email = _email(raw, credentials)
             key = email.lower()
             with record_store.transaction() as conn:
+                lock_email_validity(conn, shared=True)
                 record_store.advisory_xact_lock(conn, f"registered-account:{key}")
                 existing = record_store.get_row_by(
                     record_store.ACCOUNTS, "email", email,
@@ -202,6 +204,9 @@ def sync_sub2api_records(
                 extra = account_payload.pop("extra")
                 account_payload["extra_json"] = json.dumps(extra, ensure_ascii=False)
                 if existing is None:
+                    account_payload.update(facts_for_address(
+                        email, source=account_payload["email_source"], conn=conn,
+                    ))
                     account_id = record_store.insert_row(record_store.ACCOUNTS, account_payload, conn=conn)
                 else:
                     account_id = int(existing["id"])

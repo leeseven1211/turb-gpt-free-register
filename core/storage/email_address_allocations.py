@@ -299,6 +299,7 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
         conditions = ["COALESCE(status, 'available') IN ('available', 'used', 'replaced', 'reserved')",
                       "COALESCE(data->>'remote_active', 'true') <> 'false'",
                       "COALESCE(data->>'archived', 'false') <> 'true'",
+                      "COALESCE(data->>'email_invalid', 'false') <> 'true'",
                       "COALESCE(data->>'disabled_reason', '') NOT IN ('remote_inactive', 'remote_missing', 'manual_disabled')",
                       "COALESCE(data->'derivation_policy'->>'enabled', 'true') <> 'false'",
                       "position('+' in split_part(p.email, '@', 1)) = 0"]
@@ -338,6 +339,9 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
                 break
             candidate_id = last_id = int(selected["id"])
             parent = record_store.get_row(table, candidate_id, conn=current)
+            # 等待母资源行锁期间可能刚被标记失效，取得锁后再次确认。
+            if parent.get("email_invalid"):
+                continue
             policy = dict(parent.get("derivation_policy") or {})
             ceiling = int(policy.get("max_children", max_children))
             count = record_store.count_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS, where="source = %s AND parent_id = %s", params=(source, candidate_id), conn=current)

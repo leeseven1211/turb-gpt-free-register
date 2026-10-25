@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from core import compat_export, postgres_store, record_store, task_run_log
 from core.plus_promotion import DISCOUNT, ELIGIBLE_PROMO_KINDS, FREE_TRIAL, promotion_kind_from_record
@@ -528,6 +528,18 @@ def _locked_row_by_email(conn, spec, email: str) -> dict | None:
 # registered_accounts
 # ============================================================
 
+def set_accounts_email_invalid(
+    account_ids=None, *, invalid: bool, reason: str = "",
+    expected_emails: Mapping[int, str] | None = None,
+    icloud_account_id: str | None = None, source: str = "manual",
+) -> dict:
+    """统一邮箱失效命令，不改变 OpenAI、Codex 或 Token 状态。"""
+    from core.storage.email_validity import set_accounts_email_invalid as update
+
+    return update(account_ids, invalid=invalid, reason=reason, expected_emails=expected_emails,
+                  icloud_account_id=icloud_account_id, source=source)
+
+
 def insert_account(
     *,
     email: str,
@@ -556,6 +568,9 @@ def insert_account(
     account_changed = False
     outlook_changed = False
     with record_store.transaction() as conn:
+        from core.storage.email_validity import facts_for_address, lock_email_validity
+
+        lock_email_validity(conn, shared=True)
         record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email.lower()}")
         existing = _locked_row_by_email(conn, record_store.ACCOUNTS, normalized_email)
         outlook_row = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, normalized_email)
@@ -620,6 +635,9 @@ def insert_account(
             })
 
         if existing is None:
+            email_facts = facts_for_address(normalized_email, source=str(email_source or ""), conn=conn)
+            if email_facts["email_invalid"]:
+                changes.update(email_facts)
             account_payload = {"email": normalized_email, "created_at": now, **changes}
             row_id = record_store.insert_row(record_store.ACCOUNTS, account_payload, conn=conn)
             account_changed = True
@@ -2157,6 +2175,9 @@ def finish_account_email_change(
     now = _now()
     table = postgres_store.qualified(record_store.ACCOUNTS.name)
     with record_store.transaction() as conn:
+        from core.storage.email_validity import facts_for_address, lock_email_validity
+
+        lock_email_validity(conn, shared=True)
         row = _locked_account_by_id(conn, int(acc_id))
         if row is None:
             return False
@@ -2223,6 +2244,8 @@ def finish_account_email_change(
 
         target_binding_id = mark_registered(target, int(acc_id), conn=conn)
         changes["email_address_id"] = target_binding_id
+        if target.lower() != old_email.lower():
+            changes.update(facts_for_address(target, source=str(source or ""), conn=conn))
         record_store.patch_row(record_store.ACCOUNTS, int(acc_id), changes, conn=conn)
         old_binding = email_address_allocations.find_allocation(address=old_email, conn=conn) if old_email else None
         if old_binding is not None and old_email.lower() != target.lower():
@@ -2487,11 +2510,14 @@ def _pool_summary(spec, statuses: tuple[str, ...]) -> dict:
     from psycopg.rows import dict_row
     record_store.init()
     with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COALESCE(status, 'available') AS status, COUNT(*) AS count FROM {table} GROUP BY 1")
+        cur.execute(f"SELECT COALESCE(status, 'available') AS status, COUNT(*) AS count, "
+                    "COUNT(*) FILTER (WHERE data->>'email_invalid' = 'true') AS invalid_count "
+                    f"FROM {table} GROUP BY 1")
         rows = cur.fetchall()
     for row in rows:
-        result[str(row["status"])] = int(row["count"])
+        result[str(row["status"])] = int(row["count"]) - (int(row["invalid_count"]) if row["status"] == "available" else 0)
     result["total"] = sum(int(row["count"]) for row in rows)
+    result["email_invalid_count"] = sum(int(row["invalid_count"]) for row in rows)
     return result
 
 
@@ -2582,6 +2608,9 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
     accounts_changed = outlook_changed = generic_changed = False
     import_note = "导入为已注册账号，用于 Codex 授权"
     with record_store.transaction() as conn:
+        from core.storage.email_validity import facts_for_address, lock_email_validity
+
+        lock_email_validity(conn, shared=True)
         for raw in records:
             email = (raw.get("email") or "").strip()
             if not email:
@@ -2678,6 +2707,9 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                     "client_id": pool_row.get("client_id"),
                     "refresh_token": pool_row.get("refresh_token"),
                 })
+            email_facts = facts_for_address(email, source=source, conn=conn)
+            if email_facts["email_invalid"]:
+                account.update(email_facts)
             account_id = record_store.insert_row(record_store.ACCOUNTS, account, conn=conn)
 
             pool_changes.update({
@@ -2704,7 +2736,7 @@ def claim_next_outlook() -> dict | None:
     row = record_store.claim_next_row(
         record_store.OUTLOOK_POOL,
         changes={"status": "used", "used_at": _now(), "note": None},
-        where="status = %s",
+        where="status = %s AND COALESCE(data->>'email_invalid', 'false') <> 'true'",
         params=("available",),
     )
     return _decorate_outlook(row) if row else None
@@ -2815,7 +2847,7 @@ def claim_next_generic_api_email() -> dict | None:
     row = record_store.claim_next_row(
         record_store.GENERIC_API_POOL,
         changes={"status": "used", "used_at": _now(), "note": None},
-        where="status = %s",
+        where="status = %s AND COALESCE(data->>'email_invalid', 'false') <> 'true'",
         params=("available",),
     )
     if row:
@@ -4442,18 +4474,25 @@ def _find_domain_email(rows: list[dict], email: str) -> dict | None:
 def claim_next_domain_email(email: str) -> dict:
     """记录一个新生成的域名邮箱地址，并立即标记为当前任务已领取。"""
     target = str(email or "").strip()
-    existing = _pool_row_by_email(record_store.DOMAIN_POOL, target)
-    if existing:
-        return existing
-    row_id = record_store.upsert_row_by(record_store.DOMAIN_POOL, "email", {
-        "email": target,
-        "status": "used",
-        "used_at": _now(),
-        "note": None,
-        "created_at": _now(),
-    })
+    with record_store.transaction() as conn:
+        from core.storage.email_validity import lock_email_validity
+
+        lock_email_validity(conn, shared=True)
+        existing = _locked_row_by_email(conn, record_store.DOMAIN_POOL, target)
+        if existing:
+            if existing.get("email_invalid") is True:
+                raise ValueError("邮箱已标记失效，不能作为新任务的领取地址")
+            return existing
+        row_id = record_store.upsert_row_by(record_store.DOMAIN_POOL, "email", {
+            "email": target,
+            "status": "used",
+            "used_at": _now(),
+            "note": None,
+            "created_at": _now(),
+        }, conn=conn)
+        row = record_store.get_row(record_store.DOMAIN_POOL, row_id, conn=conn) or {}
     compat_export.schedule("domain_emails")
-    return record_store.get_row(record_store.DOMAIN_POOL, row_id) or {}
+    return row
 
 
 def release_domain_email(email: str, status: str = "available", note: str | None = None) -> bool:
@@ -4532,6 +4571,20 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
     inserted = updated = disabled = 0
     remote_emails: set[str] = set()
     with record_store.transaction() as conn:
+        from core.storage.email_validity import lock_email_validity
+
+        lock_email_validity(conn, shared=True)
+        group_scope_key = f"icloud_account:{account_key}"
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT data->'email_invalid_scopes'->%s AS scope "
+                f"FROM {postgres_store.qualified(record_store.ICLOUD_HIDE_POOL.name)} "
+                "WHERE account_id=%s AND data->>'email_invalid'='true' "
+                "AND data->'email_invalid_scopes' ? %s ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (group_scope_key, account_key, group_scope_key),
+            )
+            group_row = cur.fetchone()
+        group_scope = (group_row or {}).get("scope")
         for raw in aliases or []:
             email = str(raw.get("email") or "").strip()
             if not email or "@" not in email:
@@ -4562,6 +4615,16 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                     "remote_active": active,
                     "synced_at": now,
                 }
+                # 只继承副号整体失效依据，单账号标记不向同副号新别名扩散。
+                if isinstance(group_scope, dict):
+                    payload.update({
+                        "email_invalid": True,
+                        "email_invalid_reason": group_scope.get("reason") or "",
+                        "email_invalid_source": group_scope.get("source") or "manual",
+                        "email_invalid_at": group_scope.get("at") or now,
+                        "email_invalid_email": email,
+                        "email_invalid_scopes": {group_scope_key: dict(group_scope)},
+                    })
                 row_id = record_store.insert_row(
                     record_store.ICLOUD_HIDE_POOL, payload, conn=conn,
                 )
@@ -4665,7 +4728,8 @@ def claim_next_icloud_hide_email(
             return None
     else:
         normalized_ids = None
-    where = ["status = %s", "COALESCE(data->>'remote_active', 'true') <> 'false'"]
+    where = ["status = %s", "COALESCE(data->>'remote_active', 'true') <> 'false'",
+             "COALESCE(data->>'email_invalid', 'false') <> 'true'"]
     params: list[Any] = ["available"]
     if account_id:
         where.append("account_id = %s")
@@ -4831,7 +4895,8 @@ def icloud_hide_email_pool_summary_by_account(account_ids: list[str] | None = No
         cur.execute(
             f'''SELECT COALESCE("account_id", '') AS account_id,
                        COALESCE(status, 'available') AS status,
-                       COUNT(*) AS count
+                       COUNT(*) AS count,
+                       COUNT(*) FILTER (WHERE data->>'email_invalid' = 'true') AS invalid_count
                   FROM {table}{where}
                  GROUP BY 1, 2
                  ORDER BY 1, 2''',
@@ -4845,14 +4910,16 @@ def icloud_hide_email_pool_summary_by_account(account_ids: list[str] | None = No
         account_key = str(row["account_id"] or "")
         item = grouped.setdefault(
             account_key,
-            {"account_id": account_key, **{status: 0 for status in statuses}, "total": 0},
+            {"account_id": account_key, **{status: 0 for status in statuses}, "total": 0, "email_invalid_count": 0},
         )
         status = str(row["status"] or "available")
         count = int(row["count"] or 0)
         if status not in item:
             item[status] = 0
-        item[status] += count
+        invalid_count = int(row["invalid_count"] or 0)
+        item[status] += count - (invalid_count if status == "available" else 0)
         item["total"] += count
+        item["email_invalid_count"] += invalid_count
     return [grouped[key] for key in sorted(grouped)]
 
 

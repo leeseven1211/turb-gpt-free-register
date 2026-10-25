@@ -100,6 +100,7 @@ def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
 
 _ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
 _ACCOUNT_STATUS = "COALESCE(a.account_status_text, 'active')"
+_ACCOUNT_EMAIL_STATUS = "CASE WHEN COALESCE(a.email_invalid, FALSE) THEN 'invalid' ELSE 'unmarked' END"
 _ACCOUNT_TOKEN_EXPIRED = f"""(
     {_ACCOUNT_ACCESS_TOKEN_PRESENT}
     AND (
@@ -279,6 +280,7 @@ def _account_where(
         "risk": _ACCOUNT_RISK_VALUE,
         "codex": "LOWER(COALESCE(a.codex_status, ''))",
         "account_status": _ACCOUNT_STATUS,
+        "email_status": _ACCOUNT_EMAIL_STATUS,
     }
     for key, expression in enum_filters.items():
         values = _filter_values(filters.get(key))
@@ -403,7 +405,7 @@ def list_account_statuses(
     )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     fields = (
-        "id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible",
+        "id", "email", "archived", "email_invalid", "plan_type", "current_plan_type", "plus_trial_eligible",
         "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
         "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
         "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
@@ -457,6 +459,10 @@ def list_account_statuses(
         row = db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, raw))
         item = {key: value for key, value in row.items() if key in wanted | {"id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible"} and value not in (None, "")}
         item["has_access_token"] = bool(_text(row.get("has_access_token")))
+        item["email_invalid"] = row.get("email_invalid") is True
+        # 显式清除值，确保轮询合并不会残留旧邮箱失效原因和时间。
+        for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):
+            item[key] = row.get(key) if item["email_invalid"] else None
         if "plan_check_country_results" in item:
             from core.plan_check_countries import public_country_results
             item["plan_check_country_results"] = public_country_results(item["plan_check_country_results"])

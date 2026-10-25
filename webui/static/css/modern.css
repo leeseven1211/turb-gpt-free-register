@@ -1410,6 +1410,11 @@
       overflow: hidden; text-overflow: clip; white-space: nowrap;
     }
     .accounts-table-v2 .acc-v2-muted { color: #c0c4cc; }
+    .accounts-table-v2 .account-email-meta { display: flex; align-items: center; gap: 6px; }
+    .accounts-table-v2 .account-email-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .accounts-table-v2 .pill.account-email-invalid-badge { flex: 0 0 auto; height: 18px; padding: 0 5px; font-size: 11px; }
+    .account-email-status-filter { display: inline-flex; align-items: center; gap: 6px; color: #606266; font-size: 12px; white-space: nowrap; }
+    .account-email-status-filter select { width: auto; min-height: 32px; margin: 0; padding: 0 6px; font: inherit; }
     .accounts-table-v2 .pill {
       display: inline-flex; align-items: center; justify-content: center;
       height: 26px; padding: 0 10px; border-radius: 4px;

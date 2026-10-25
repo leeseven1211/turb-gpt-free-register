@@ -65,6 +65,21 @@ class EmailAddressAllocationTests(PostgresTestCase):
         self.assertEqual(len(issued), 3)
         self.assertEqual(len({row["address"] for row in issued}), 3)
 
+    def test_email_invalid_parent_blocks_new_addresses_but_keeps_original_identity(self):
+        original = self.allocate("original-identity")
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent_id, {
+            "email_invalid": True, "email_invalid_reason": "已确认无法收件",
+        })
+
+        self.assertIsNone(self.allocate("new-identity"))
+        resumed = self.allocate("original-identity")
+        self.assertEqual(resumed["id"], original["id"])
+        self.assertEqual(resumed["state"], "reserved")
+        self.assertEqual(record_store.get_row(record_store.ICLOUD_HIDE_POOL, self.parent_id)["status"], "used")
+
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent_id, {"email_invalid": False})
+        self.assertIsNotNone(self.allocate("new-identity"))
+
     def test_first_parent_is_filled_before_next_and_filters_are_respected(self):
         other = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
             "email": "second@icloud.test", "status": "replaced", "account_id": "second-apple",

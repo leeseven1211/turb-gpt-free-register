@@ -217,7 +217,7 @@ def create_accounts_blueprint(context: WebUIContext):
         search_terms = parse_account_search(q)
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
+            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status", "email_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip() or None
         date_to = str(request.args.get("date_to", default="") or "").strip() or None
@@ -292,7 +292,7 @@ def create_accounts_blueprint(context: WebUIContext):
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
             key: str(request.args.get(key, default="") or "").strip().lower()
-            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status")
+            for key in ("id", "email", "source", "registration_driver", "token", "password", "promotion", "trial", "totp", "risk", "codex", "account_status", "email_status")
         }
         date_from = str(request.args.get("date_from", default="") or "").strip()
         date_to = str(request.args.get("date_to", default="") or "").strip()
@@ -680,6 +680,74 @@ def create_accounts_blueprint(context: WebUIContext):
             else:
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "值为空"})
         return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+
+    @bp.post("/api/accounts/email-invalid-bulk")
+    def api_accounts_email_invalid_bulk():
+        """独立标记邮箱失效，不修改 OpenAI 账号状态或任务重跑资格。"""
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or type(data.get("invalid")) is not bool:
+            return jsonify({"ok": False, "error": "invalid 必须为布尔值"}), 400
+        invalid = data["invalid"]
+        reason = data.get("reason", "")
+        if not isinstance(reason, str) or len(reason.strip()) > 300:
+            return jsonify({"ok": False, "error": "原因必须为不超过 300 字的文字"}), 400
+        has_ids = "account_ids" in data or "ids" in data
+        has_group = "icloud_account_id" in data
+        if has_ids == has_group or ("account_ids" in data and "ids" in data):
+            return jsonify({"ok": False, "error": "请仅指定账号 ID 数组或 iCloud 副号"}), 400
+        account_ids = None
+        group = None
+        if has_group:
+            raw_group = data["icloud_account_id"]
+            if not isinstance(raw_group, str) or not 1 <= len(raw_group.strip()) <= 200:
+                return jsonify({"ok": False, "error": "icloud_account_id 必须为有效副号标识"}), 400
+            group = raw_group.strip()
+        else:
+            raw_ids = data.get("account_ids", data.get("ids"))
+            if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 500:
+                return jsonify({"ok": False, "error": "账号 ID 必须为非空数组，单次最多 500 个"}), 400
+            if any(type(value) is not int or not 1 <= value <= 9223372036854775807 for value in raw_ids):
+                return jsonify({"ok": False, "error": "账号 ID 必须为正整数"}), 400
+            account_ids = list(dict.fromkeys(raw_ids))
+        expected_emails = None
+        if "expected_emails" in data:
+            raw_expected = data["expected_emails"]
+            if has_group or not isinstance(raw_expected, dict):
+                return jsonify({"ok": False, "error": "expected_emails 仅接受账号 ID 到邮箱的映射"}), 400
+            expected_emails = {}
+            for key, email in raw_expected.items():
+                if not key.isascii() or not key.isdecimal() or len(key) > 19 or not isinstance(email, str):
+                    return jsonify({"ok": False, "error": "expected_emails 包含无效映射"}), 400
+                if not 1 <= int(key) <= 9223372036854775807:
+                    return jsonify({"ok": False, "error": "expected_emails 包含无效映射"}), 400
+                email = email.strip()
+                if not email or len(email) > 320 or email.count("@") != 1 or any(char.isspace() for char in email):
+                    return jsonify({"ok": False, "error": "expected_emails 必须包含完整邮箱"}), 400
+                local, domain = email.rsplit("@", 1)
+                if not local or not domain:
+                    return jsonify({"ok": False, "error": "expected_emails 必须包含完整邮箱"}), 400
+                expected_emails[int(key)] = email
+            if set(expected_emails) != set(account_ids):
+                return jsonify({"ok": False, "error": "expected_emails 必须完整对应本次账号 ID"}), 400
+        try:
+            result = db.set_accounts_email_invalid(
+                account_ids=account_ids, invalid=invalid, reason=reason.strip(),
+                expected_emails=expected_emails, icloud_account_id=group,
+                source="manual_icloud_account_group" if has_group else "manual",
+            )
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        counts = {
+            key: int(result.get(key) or 0) for key in (
+                "updated_count", "pool_updated_count", "allocation_updated_count",
+                "matched_account_count", "matched_pool_count", "matched_allocation_count",
+            )
+        }
+        return jsonify({
+            "ok": True, **counts, "account_ids": result.get("account_ids") or [],
+            "skipped": [{"id": item.get("id"), "reason": item.get("reason")} for item in result.get("skipped") or []],
+            "message": "已标记邮箱失效" if invalid else "已清除本地邮箱失效标记，邮箱可用性仍需确认",
+        })
 
     @bp.post("/api/accounts/<int:acc_id>/restore")
     def api_account_restore(acc_id: int):

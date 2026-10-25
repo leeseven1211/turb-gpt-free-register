@@ -16,6 +16,7 @@ _NAMES = {
     "update_account_roxy_profile", "update_account_roxy_profile_window_name",
     "backfill_account_registration_proxy_context", "update_account_deactivation_mail", "update_account_liveness",
     "mark_account_deactivated", "restore_account_after_deactivation",
+    "set_accounts_email_invalid",
     "claim_account_email_change", "mark_account_email_change_running",
     "finish_account_email_change",
     "account_is_deactivated", "claim_account_live_check", "recover_interrupted_live_checks",

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -144,6 +146,137 @@ class Sub2ApiSyncMappingTests(unittest.TestCase):
 
 
 class Sub2ApiSyncStorageTests(PostgresTestCase):
+    def _sync_record(self, email, **extra):
+        return {
+            "name": email, "platform": "openai", "type": "oauth",
+            "credentials": {"email": email, "access_token": "synthetic-sync-token", "plan_type": "free"},
+            **extra,
+        }
+
+    def test_new_sync_accounts_inherit_parent_and_full_address_ledger_failures(self):
+        from core.sub2api_sync import sync_sub2api_records
+
+        parent_id = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": "invalid-parent@example.test", "account_id": "test-subaccount",
+            "status": "used", "email_invalid": True, "email_invalid_reason": "母邮箱失效",
+            "email_invalid_source": "manual", "email_invalid_at": "2026-10-25T10:00:00Z",
+        })
+        child = "valid-parent+invalid-child@example.test"
+        record_store.insert_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, {
+            "address": child, "address_norm": child, "source": "icloud_hide",
+            "parent_kind": record_store.ICLOUD_HIDE_POOL.name, "parent_id": parent_id,
+            "parent_address": "invalid-parent@example.test", "inbox_profile_id": 1,
+            "strategy": "plus_tag", "tag": "invalid-child", "acquisition_id": "test-sync-ledger",
+            "owner_kind": "registration_root", "owner_id": "test-sync-root", "state": "used",
+            "email_invalid": True, "email_invalid_reason": "完整地址失效",
+            "email_invalid_source": "manual", "email_invalid_at": "2026-10-25T11:00:00Z",
+        })
+        with patch("core.sub2api_sync.db.list_codex_accounts", return_value=[]):
+            result = sync_sub2api_records([
+                self._sync_record("invalid-parent@example.test", email_invalid=False),
+                self._sync_record(child, email_invalid=False),
+            ], email_source="icloud_hide", sync_codex=False)
+        self.assertEqual(0, result["failed_count"])
+        self.assertEqual(2, result["accounts_created"])
+        for email, reason in (("invalid-parent@example.test", "母邮箱失效"), (child, "完整地址失效")):
+            with self.subTest(email=email):
+                row = record_store.get_row_by(record_store.ACCOUNTS, "email", email)
+                self.assertIs(row["email_invalid"], True)
+                self.assertEqual(reason, row["email_invalid_reason"])
+                self.assertEqual(email, row["email_invalid_email"])
+
+    def test_sync_existing_account_preserves_local_email_fact_and_ignores_external_marker(self):
+        from core.sub2api_sync import sync_sub2api_records
+
+        for invalid in (False, True):
+            email = f"existing-{invalid}@example.test"
+            record_store.insert_row(record_store.ACCOUNTS, {
+                "email": email, "email_source": "outlook", "email_invalid": invalid,
+                "email_invalid_reason": "本地依据" if invalid else None,
+                "email_invalid_source": "manual", "email_invalid_at": "2026-10-25T10:00:00Z",
+                "email_invalid_email": email,
+            })
+            with patch("core.sub2api_sync.db.list_codex_accounts", return_value=[]):
+                result = sync_sub2api_records([
+                    self._sync_record(email, email_invalid=not invalid, email_invalid_reason="外部字段"),
+                ], email_source="icloud_hide", sync_codex=False)
+            self.assertEqual(0, result["failed_count"])
+            self.assertEqual(1, result["accounts_updated"])
+            row = record_store.get_row_by(record_store.ACCOUNTS, "email", email)
+            self.assertIs(row["email_invalid"], invalid)
+            self.assertEqual("本地依据" if invalid else None, row.get("email_invalid_reason"))
+            self.assertEqual("outlook", row["email_source"])
+
+    def test_new_sync_uses_actual_email_source_and_ignores_untrusted_external_marker(self):
+        from core.sub2api_sync import sync_sub2api_records
+
+        email = "different-source@example.test"
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": email, "status": "used", "email_invalid": True,
+        })
+        with patch("core.sub2api_sync.db.list_codex_accounts", return_value=[]):
+            result = sync_sub2api_records([
+                self._sync_record(email, email_invalid=True, email_invalid_reason="外部字段"),
+            ], email_source="email_butler", sync_codex=False)
+        self.assertEqual(0, result["failed_count"])
+        row = record_store.get_row_by(record_store.ACCOUNTS, "email", email)
+        self.assertIs(row["email_invalid"], False)
+        self.assertNotEqual("外部字段", row.get("email_invalid_reason"))
+
+    def test_sync_waits_for_email_facts_before_taking_account_lock_and_inherits_commit(self):
+        from core.storage.email_validity import lock_email_validity
+        from core.sub2api_sync import sync_sub2api_records
+
+        email = "locked-sync@example.test"
+        parent_id = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": email, "status": "used",
+        })
+        results, failures = [], []
+
+        def synchronize():
+            try:
+                results.append(sync_sub2api_records([self._sync_record(email)], email_source="icloud_hide", sync_codex=False))
+            except BaseException as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=synchronize, daemon=True)
+        observed_wait = False
+        with patch("core.sub2api_sync.db.list_codex_accounts", return_value=[]):
+            try:
+                with record_store.transaction() as blocker, blocker.cursor() as cur:
+                    lock_email_validity(blocker)
+                    cur.execute("SELECT pg_backend_pid() AS pid")
+                    blocker_pid = cur.fetchone()["pid"]
+                    worker.start()
+                    with record_store._connect() as observer, observer.cursor() as poll:
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline and worker.is_alive():
+                            poll.execute(
+                                "SELECT count(*) AS n FROM pg_locks WHERE NOT granted "
+                                "AND %s=ANY(pg_blocking_pids(pid))", (blocker_pid,),
+                            )
+                            if poll.fetchone()["n"]:
+                                observed_wait = True
+                                break
+                            time.sleep(0.01)
+                    cur.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS acquired", (f"registered-account:{email}",))
+                    account_lock_available = cur.fetchone()["acquired"]
+                    record_store.patch_row(record_store.ICLOUD_HIDE_POOL, parent_id, {
+                        "email_invalid": True, "email_invalid_reason": "事务内确认失效",
+                    }, conn=blocker)
+                worker.join(10)
+            finally:
+                if worker.ident is not None:
+                    worker.join(10)
+        self.assertTrue(observed_wait, "同步绕过邮箱事实共享锁")
+        self.assertTrue(account_lock_available, "等待邮箱事实时已提前取得账号锁")
+        self.assertFalse(worker.is_alive())
+        self.assertEqual([], failures)
+        self.assertEqual(0, results[0]["failed_count"])
+        row = record_store.get_row_by(record_store.ACCOUNTS, "email", email)
+        self.assertIs(row["email_invalid"], True)
+        self.assertEqual("事务内确认失效", row["email_invalid_reason"])
+
     def test_sync_repairs_identity_sequence_before_inserting_new_account(self):
         self.seed(record_store.ACCOUNTS, [{
             "id": 455,

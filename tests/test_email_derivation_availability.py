@@ -42,6 +42,23 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         self.assertEqual(capacity["parent_count"], 1)
         self.assertTrue(readiness["enabled"])
 
+    def test_email_invalid_mothers_are_excluded_from_capacity_for_both_sources(self):
+        self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 3)
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent, {"email_invalid": True})
+        self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 0)
+        self.assertEqual(service.capacity_summary("icloud_hide")["parent_count"], 0)
+
+        outlook = record_store.insert_row(record_store.OUTLOOK_POOL, {
+            "email": "invalid-parent@example.test", "status": "used",
+            "client_id": "synthetic-client", "refresh_token": "synthetic-refresh",
+        })
+        self.assertEqual(service.capacity_summary("outlook")["remaining"], 3)
+        record_store.patch_row(record_store.OUTLOOK_POOL, outlook, {"email_invalid": True})
+        self.assertEqual(service.capacity_summary("outlook")["remaining"], 0)
+
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent, {"email_invalid": False})
+        self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 3)
+
     def test_terminal_children_consume_quota_and_increasing_limit_exposes_only_new_slots(self):
         children = [self.allocate(number) for number in range(1, 4)]
         store.mark_allocation_state(children[0]["id"], "used")
@@ -54,6 +71,17 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         store.configure_parent("icloud_hide", self.parent, max_children=4)
         with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 10):
             self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 1)
+
+    def test_invalid_parent_keeps_address_history_without_available_derivation_slots(self):
+        child = self.allocate(1)
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent, {"email_invalid": True})
+
+        summary = service.public_summary("icloud_hide")
+
+        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["parent_count"], 1)
+        self.assertEqual(summary["parents"][0]["remaining"], 0)
+        self.assertEqual(store.find_allocation(address=child["address"])["state"], "reserved")
 
     def test_capacity_excludes_disabled_archived_inactive_tagged_and_missing_account_mothers(self):
         examples = [

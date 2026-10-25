@@ -215,7 +215,10 @@ def _compact_account_for_list(row: dict) -> dict:
         "has_access_token": bool(row.get("has_access_token")) or bool(str(row.get("access_token") or "").strip()),
         "has_account_password": bool(row.get("has_account_password")) or bool(_account_password(row)),
         "totp_enabled": bool(row.get("totp_enabled")) or bool(row.get("totp_secret")),
+        "email_invalid": row.get("email_invalid") is True,
     }
+    for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):
+        out[key] = row.get(key) if out["email_invalid"] else None
 
     # 这些是列表固定列直接展示字段。
     for key in (

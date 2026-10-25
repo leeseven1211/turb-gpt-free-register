@@ -473,6 +473,57 @@ class RegistrationFactsTests(PostgresTestCase):
         self.assertEqual(record_store.count_rows(record_store.ACCOUNTS), 1)
         self.assertEqual(registration.get_attempt(int(attempt["id"]))["local_account_state"], "persisted")
 
+    def test_core_registration_inherits_invalid_mailbox_and_token_update_keeps_marker(self):
+        email = "invalid-core@icloud.test"
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": email, "account_id": "invalid-apple", "status": "used",
+        })
+        db.set_accounts_email_invalid(invalid=True, icloud_account_id="invalid-apple", reason="副号失效")
+        attempt = registration.create_attempt(email)
+
+        result = registration.persist_core_account(
+            int(attempt["id"]), access_token="synthetic-first", account={"email_source": "icloud_hide"},
+        )
+
+        self.assertIs(result["account"]["email_invalid"], True)
+        self.assertEqual(result["account"]["email_invalid_reason"], "副号失效")
+        again = registration.persist_core_account(
+            int(attempt["id"]), access_token="synthetic-next",
+            account={"email_invalid": False, "email_invalid_reason": "旧快照"},
+        )
+        self.assertIs(again["account"]["email_invalid"], True)
+        self.assertEqual(again["account"]["email_invalid_reason"], "副号失效")
+
+    def test_confirmed_password_checkpoint_inherits_invalid_mailbox(self):
+        email = "invalid-checkpoint@icloud.test"
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": email, "account_id": "invalid-apple", "status": "used",
+        })
+        db.set_accounts_email_invalid(invalid=True, icloud_account_id="invalid-apple", reason="副号失效")
+        attempt = registration.create_attempt(email)
+        run = registration.start_run(int(attempt["id"]), execution_id="invalid-mailbox-run", initial_status="running")
+
+        result = registration.save_password_checkpoint(
+            int(attempt["id"]), email=email, password="SyntheticPassword!", state="confirmed",
+            run_id=int(run["id"]), execution_id="invalid-mailbox-run",
+            account={"email_source": "icloud_hide", "email_invalid": False},
+        )
+
+        saved = record_store.get_row(record_store.ACCOUNTS, int(result["account_id"]))
+        self.assertIs(saved["email_invalid"], True)
+        self.assertEqual(saved["email_invalid_reason"], "副号失效")
+
+    def test_core_registration_keeps_existing_case_insensitive_mailbox_marker(self):
+        existing_id = db.insert_account(email="MixedCase@icloud.test", access_token="synthetic-old")
+        db.set_accounts_email_invalid([existing_id], invalid=True, reason="邮箱失效")
+        attempt = registration.create_attempt("mixedcase@icloud.test")
+
+        result = registration.persist_core_account(int(attempt["id"]), access_token="synthetic-next")
+
+        self.assertEqual(result["account_id"], existing_id)
+        self.assertIs(result["account"]["email_invalid"], True)
+        self.assertEqual(record_store.count_rows(record_store.ACCOUNTS), 1)
+
     def test_backfill_and_verify_are_idempotent(self):
         self._job("one@example.test")
         self._job("two@example.test")
