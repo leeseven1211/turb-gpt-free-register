@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlencode, urlsplit
@@ -1917,9 +1917,13 @@ def _safe_provider_job_state(
             safe_summary[key] = value
     for key in ("automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
                 "entitlement_active", "entitlement_inferred", "xxsyun_polling", "scan_fallback_polling", "submission_receipt_pending",
-                "extraction_ever_succeeded", "local_plan_check_pending"):
+                "extraction_ever_succeeded", "local_plan_check_pending", "local_reconcile_halted"):
         if type(summary.get(key)) is bool:
             safe_summary[key] = summary[key]
+    if summary.get("local_reconcile_reason") in {"remote_not_found", "query_failures", "timeout", "no_progress"}:
+        safe_summary["local_reconcile_reason"] = summary["local_reconcile_reason"]
+    if isinstance(summary.get("local_reconcile_halted_at"), str):
+        safe_summary["local_reconcile_halted_at"] = summary["local_reconcile_halted_at"][:80]
     for key, allowed in {
         "xxsyun_status": {"submitting", "awaiting_worker", "claimed", "verifying", "completed", "failed",
                           "expired", "cancelled", "rejected", "manual_review", "credentials_required"},
@@ -1986,6 +1990,8 @@ def _provider_resume_private(provider_id, private, state):
 def _huanguang_needs_continuation(state: dict) -> bool:
     """只续查仍在执行的原单；明确结束或人工核对不无限占用队列。"""
     summary = state.get("summary") or {}
+    if summary.get("local_reconcile_halted") is True:
+        return False
     if summary.get("remote_chain_error") or summary.get("outcome") == "REJECTED":
         return False
     if summary.get("submission_receipt_pending") is True or summary.get("remote_polling") is True:
@@ -1993,6 +1999,73 @@ def _huanguang_needs_continuation(state: dict) -> bool:
     if summary.get("automatic_payment_requires_reconcile") is True or summary.get("remote_terminal_failure") is True:
         return False
     return state.get("extraction_state") in {"queued", "running", "pending", "unknown"}
+
+
+_HUANGUANG_RECONCILE_MESSAGES = {
+    "remote_not_found": "原单连续查询返回 HTTP 404，已停止自动续查，待核验",
+    "query_failures": "原单连续查询失败达到上限，已停止自动续查，待核验",
+    "timeout": "原单自动续查已超过总时限，已停止自动续查，待核验",
+    "no_progress": "原单长时间没有有效进展，已停止自动续查，待核验",
+}
+
+
+def _record_huanguang_reconcile(context, private, state, *, succeeded=None, http_status=None, started_at=None):
+    from core.extract_link_reconcile_policy import record_reconcile
+
+    private = dict(private or {})
+    if succeeded is True and private.get("latest_query_failed") is True:
+        succeeded = False
+        http_status = private.get("latest_query_http_status")
+    private["local_reconcile"] = record_reconcile(
+        private.get("local_reconcile"), state, now=datetime.now(timezone.utc),
+        started_at=started_at or context.run.get("created_at"),
+        query_succeeded=succeeded, http_status=http_status,
+    )
+    return private
+
+
+def _huanguang_reconcile_halt_reason(private) -> str:
+    from core.extract_link_reconcile_policy import halt_reason
+
+    return halt_reason(
+        (private or {}).get("local_reconcile"), now=datetime.now(timezone.utc),
+        total_timeout=_int_setting("EXTRACT_LINK_HUANGUANG_RECONCILE_TIMEOUT", 3600, 60, 86400),
+        no_progress_timeout=_int_setting("EXTRACT_LINK_HUANGUANG_NO_PROGRESS_TIMEOUT", 900, 60, 86400),
+        max_query_failures=_int_setting("EXTRACT_LINK_HUANGUANG_MAX_QUERY_FAILURES", 12, 3, 100),
+    )
+
+
+def _halt_huanguang_reconcile(context, state, private, *, job_id, mode, reason, leases, proxy_resource_ids):
+    """只停止本地查询，保留原单及材料，不推断远端失败或取消付款。"""
+    message = _HUANGUANG_RECONCILE_MESSAGES[reason]
+    private = dict(private or {})
+    metadata = dict(private.get("local_reconcile") or {})
+    halted_at = metadata.get("halted_at") or datetime.now(timezone.utc).isoformat()
+    metadata.update(halted_reason=reason, halted_at=halted_at)
+    private["local_reconcile"] = metadata
+    summary = state.setdefault("summary", {})
+    summary.update(local_reconcile_halted=True, local_reconcile_reason=reason,
+                   local_reconcile_halted_at=halted_at, current_step=message, percent=None)
+    if state.get("extraction_state") != "succeeded" and summary.get("extraction_ever_succeeded") is not True:
+        state["extraction_state"] = "unknown"
+    if mode != "extract_only" and state.get("payment_state") not in {"succeeded", "failed"}:
+        state["payment_state"] = "unknown"
+    state["message"] = message
+    _update_provider_job(context, "huanguang", job_id or None, state, private)
+    context.report(stage="remote_sync", level="warning", message=message,
+                   detail={"cause_code": "extract_reconcile_halted", "local_reconcile_reason": reason})
+    _release_huanguang_proxies(context, leases, proxy_resource_ids, terminal=False)
+    extracted = state.get("extraction_state") == "succeeded" or summary.get("extraction_ever_succeeded") is True
+    db.update_account_extract(int(context.account_id), {
+        "status": "success" if extracted else "request_unknown", "ok": extracted,
+        "job_id": job_id or None, "message": message, "error": message,
+    })
+    context.finish(status="request_unknown", message=message, error=message, result_summary={
+        "provider_id": "huanguang", "mode": mode, "extraction_status": state.get("extraction_state"),
+        "payment_status": state.get("payment_state"), "plus_status": state.get("plus_status"),
+        "remote_job_created": bool(job_id), "cause_code": "extract_reconcile_halted",
+        "local_reconcile_halted": True, "local_reconcile_reason": reason,
+    })
 
 
 def _defer_huanguang_job(context, runtime, state, *, reason="等待平台原单同步"):
@@ -2168,6 +2241,7 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "has_payment_link": bool(artifact.get("payment_url") or artifact.get("payment_page_url") or state.get("payment_links") or state.get("links") or legacy_has_link),
         "has_payment_entry": has_payment_entry,
         "has_qr": bool(artifact.get("qr_data") or artifact.get("qr_image_url_png") or artifact.get("qr_image_url_svg")),
+        "local_reconcile_halted": provider_id == "huanguang" and summary.get("local_reconcile_halted") is True,
     }
 
 
@@ -2178,6 +2252,8 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     extraction = str(item.get("extraction_status") or "")
     payment = str(item.get("payment_status") or "")
     plus = str(item.get("plus_status") or "")
+    if item.get("local_reconcile_halted") is True and status in {"processing", "running", "needs_attention"}:
+        return status == "needs_attention"
     if status == "processing":
         return (
             task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
@@ -2607,7 +2683,8 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
     workbench_action = requested_action
     run_data = {"provider_id": provider_id, "mode": mode}
     if requested_action == "retry":
-        if _provider_has_reference(prior_job) and str(prior_state.get("extraction_state") or "") not in {"failed"}:
+        halted = provider_id == "huanguang" and (prior_state.get("summary") or {}).get("local_reconcile_halted") is True
+        if not halted and _provider_has_reference(prior_job) and str(prior_state.get("extraction_state") or "") not in {"failed"}:
             workbench_action = "sync_status"
         else:
             if not _provider_mode_enabled(provider_id, mode):
@@ -2643,6 +2720,7 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
             "provider_id": provider_id,
             "mode": mode,
             "provider_job_run_id": latest_run_id,
+            **({"extract_poll_continuation": False} if provider_id == "huanguang" else {}),
         })
     else:
         run_data["provider_job_run_id"] = latest_run_id if workbench_action == "sync_status" else None
@@ -2891,6 +2969,10 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
                 state = _safe_provider_job_state(job, mode=mode,
                     preflight_status=state.get("preflight_status", "passed"), plus_status=state.get("plus_status", "not_applicable"),
                     aftercare_status=state.get("aftercare_status", "not_started"))
+                if provider_id == "huanguang":
+                    from dataclasses import replace
+                    private = _record_huanguang_reconcile(context, job.private_data, state, succeeded=True)
+                    job = replace(job, private_data=private)
                 request_seconds = time.monotonic() - request_started
                 logger.info("[提链] 已收到平台状态：run_id=%s provider=%s query=%s 耗时=%.2f秒 提链=%s 支付=%s，正在保存状态",
                             context.run_id, provider_id, query_count, request_seconds, state["extraction_state"], state["payment_state"])
@@ -2900,6 +2982,8 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
                             context.run_id, query_count, time.monotonic() - request_started - request_seconds)
                 report_snapshot(request_seconds=request_seconds)
                 errors, next_wait, safe_error = 0, runtime.poll_interval, ""
+                if provider_id == "huanguang" and _huanguang_reconcile_halt_reason(job.private_data):
+                    break
             except (OperationCancelled, account_task_store.OperationLeaseLost):
                 raise
             except Exception as exc:
@@ -2909,6 +2993,15 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
                 context.report(stage="extraction", level="warning",
                     message=f"第 {query_count} 次平台状态查询失败，保留上次有效结果，将在 {next_wait} 秒后重试：{safe_error}",
                     detail={"poll_count": query_count, "request_seconds": round(time.monotonic() - request_started, 2)})
+                if provider_id == "huanguang" and phase == "query":
+                    from dataclasses import replace
+                    private = _record_huanguang_reconcile(
+                        context, job.private_data, state, succeeded=False, http_status=getattr(exc, "http_status", None),
+                    )
+                    job = replace(job, private_data=private)
+                    _update_provider_job(context, provider_id, job.job_id, state, private)
+                    if _huanguang_reconcile_halt_reason(private):
+                        break
         return job, state, safe_error
     finally:
         if transport is not None:
@@ -3093,6 +3186,12 @@ def _handle_provider_operation(context):
         ), mode=mode, preflight_status=prior_state.get("preflight_status", "passed"),
             plus_status=prior_state.get("plus_status", "not_applicable"),
             aftercare_status=prior_state.get("aftercare_status", "not_started"))
+    if provider_id == "huanguang" and action == "sync_status" and prior_job:
+        prior_private = _record_huanguang_reconcile(
+            context, prior_private, state, started_at=prior_job.get("created_at") or context.run.get("created_at"),
+        )
+        if state.get("summary", {}).get("local_reconcile_halted") is True:
+            prior_private["local_reconcile"]["halted_reason"] = state["summary"].get("local_reconcile_reason") or "timeout"
     leases = []
     proxy_resource_ids = []
     if provider_id == "huanguang" and prior_private:
@@ -3111,6 +3210,12 @@ def _handle_provider_operation(context):
             return None
         try:
             context.checkpoint()
+            if (provider_id == "huanguang" and continuation
+                    and state.get("summary", {}).get("local_reconcile_halted") is True):
+                reason = state["summary"].get("local_reconcile_reason") or "timeout"
+                _halt_huanguang_reconcile(context, state, prior_private, job_id=job_id, mode=mode, reason=reason,
+                                         leases=leases, proxy_resource_ids=proxy_resource_ids)
+                return None
             if action == "create":
                 if not db.mark_account_extract_running(account_id):
                     raise RuntimeError("账号提链状态无法转为运行中")
@@ -3185,6 +3290,13 @@ def _handle_provider_operation(context):
                     preflight_status=state["preflight_status"],
                     plus_status="not_applicable",
                 )
+                if provider_id == "huanguang":
+                    from dataclasses import replace
+                    private = _record_huanguang_reconcile(
+                        context, {**prior_private, **job.private_data}, state,
+                        succeeded=True, started_at=datetime.now(timezone.utc),
+                    )
+                    job = replace(job, private_data=private)
                 if job_id:
                     _update_provider_job(context, provider_id, job_id, state, job.private_data)
                     if callable(getattr(context, "remote_request_receipt", None)):
@@ -3312,6 +3424,24 @@ def _handle_provider_operation(context):
                 context, provider, runtime, job, state,
                 provider_id=provider_id, mode=mode, action=action,
             )
+            if provider_id == "huanguang":
+                from dataclasses import replace
+                private = _record_huanguang_reconcile(
+                    context, {**prior_private, **job.private_data}, state,
+                    succeeded=True if action == "sync_status" else None,
+                )
+                job = replace(job, private_data=private)
+                if _huanguang_needs_continuation(state):
+                    reason = _huanguang_reconcile_halt_reason(private)
+                    if reason:
+                        _halt_huanguang_reconcile(context, state, private, job_id=job_id, mode=mode, reason=reason,
+                                                 leases=leases, proxy_resource_ids=proxy_resource_ids)
+                        return None
+                else:
+                    # 手动核对已取得终态时清除本地收口标记，保留新的平台终态。
+                    private["local_reconcile"].pop("halted_reason", None)
+                    private["local_reconcile"].pop("halted_at", None)
+                    state["summary"]["local_reconcile_halted"] = False
             if (
                 provider_id == "huanguang" and mode == "auto_payment"
                 and state["extraction_state"] == "succeeded" and state["payment_state"] == "not_started"
@@ -3554,6 +3684,14 @@ def _handle_provider_operation(context):
             if (provider_id == "huanguang" and action == "sync_status"
                     and _provider_has_reference(prior_job) and callable(getattr(context, "defer", None))):
                 context.checkpoint()
+                prior_private = _record_huanguang_reconcile(
+                    context, prior_private, state, succeeded=False, http_status=getattr(exc, "http_status", None),
+                )
+                reason = _huanguang_reconcile_halt_reason(prior_private)
+                if reason:
+                    _halt_huanguang_reconcile(context, state, prior_private, job_id=job_id, mode=mode, reason=reason,
+                                             leases=leases, proxy_resource_ids=proxy_resource_ids)
+                    return None
                 state["message"] = "原单查询暂时失败，等待重试"
                 _update_provider_job(context, provider_id, job_id or None, state, prior_private)
                 context.report(stage="extraction", level="warning", message=f"原单查询暂时失败，保留上次结果并稍后续查：{safe_error}")

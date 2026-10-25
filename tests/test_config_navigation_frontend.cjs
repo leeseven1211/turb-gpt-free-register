@@ -352,6 +352,32 @@ test('幻光页显示入口出口敏感多行代理池并保留明确清空操�
   assert.deepEqual(Array.from(view.pending[exitKey]), []);
 });
 
+test('幻光自动续查限额归属幻光页并使用可编辑数字控件', () => {
+  const limits = [
+    ['EXTRACT_LINK_HUANGUANG_RECONCILE_TIMEOUT', 3600],
+    ['EXTRACT_LINK_HUANGUANG_NO_PROGRESS_TIMEOUT', 900],
+    ['EXTRACT_LINK_HUANGUANG_MAX_QUERY_FAILURES', 12],
+  ];
+  const fields = [
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'huanguang', options: [
+      {value: 'huanguang', label: '幻光'},
+    ]}),
+    field('EXTRACT_LINK_HUANGUANG_ENABLED', '提链', {type: 'bool', value: true}),
+    ...limits.map(([key, value]) => field(key, '提链', {type: 'int', value})),
+  ];
+  const {view} = createConfigView(fields);
+  const common = view.renderDomain('提链', fields);
+  for (const [key] of limits) assert.ok(!common.includes(`data-key="${key}"`));
+
+  view.search(limits[0][0]);
+  const markup = view.renderDomain('提链', fields);
+  assert.equal(view.state().extractLink, '幻光');
+  for (const [key, value] of limits) {
+    assert.ok(markup.includes(`<input type="number" data-key="${key}"`));
+    assert.ok(markup.includes(`value="${value}"`));
+  }
+});
+
 test('幻光页区分提链和支付扫码 CDK，清除支付密钥不会修改提链密钥', () => {
   const extractKey = 'EXTRACT_LINK_HUANGUANG_CDK';
   const paymentKey = 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK';

@@ -11,6 +11,7 @@ from core.task_run_log import redact_text
 from .contracts import (
     ExtractRequest,
     ProviderError,
+    ProviderHTTPError,
     ProviderJob,
     ProviderUnsupported,
     normalize_state,
@@ -280,21 +281,24 @@ class HuanguangProvider:
         })
 
     def _recover_receipt(self, private):
+        private = {**private, "latest_query_failed": False, "latest_query_http_status": None}
         try:
-            status, receipt = self._response("GET", "/api/checkout-batch-receipt", headers={
+            receipt = request(self.transport, "GET", "/api/checkout-batch-receipt", headers={
                 "X-Pay153-Batch-Secret": private["batch_receipt_secret"], "Cache-Control": "no-store",
-            })
-            if 200 <= status < 300 and receipt.get("state") == "complete" and type(receipt.get("status")) is int:
+            }, timeout=self.config.timeout)
+            if receipt.get("state") == "complete" and type(receipt.get("status")) is int:
                 body = receipt.get("body")
                 if isinstance(body, dict):
                     job = self._batch_result(receipt["status"], body, private)
                     if job is not None:
                         return job
-        except ProviderError:
-            pass
+        except ProviderError as exc:
+            private.update(latest_query_failed=True,
+                           latest_query_http_status=exc.http_status if isinstance(exc, ProviderHTTPError) else None)
         return self._pending_receipt(private)
 
     def get_status(self, job_ref: str, *, private_data: dict | None = None) -> ProviderJob:
+        private_data = {**(private_data or {}), "latest_query_failed": False, "latest_query_http_status": None}
         original_deadline = getattr(self.transport, "deadline", None)
         had_deadline = hasattr(self.transport, "deadline")
         deadline = time.monotonic() + float(self.config.timeout)
@@ -354,9 +358,13 @@ class HuanguangProvider:
             remaining_gets -= 1
             try:
                 data, extra_get = self._get_job_data(node["job_id"], secret, requery=remaining_gets > 0)
-            except ProviderError:
+            except ProviderError as exc:
                 if len(chain) == 1 and not isinstance(node.get("state"), dict):
                     raise
+                # 只统计最新节点的查询故障，父节点补查失败不抹掉本轮最新有效状态。
+                if index == indices[0]:
+                    private.update(latest_query_failed=True,
+                                   latest_query_http_status=exc.http_status if isinstance(exc, ProviderHTTPError) else None)
                 query_failed = True
                 continue
             remaining_gets -= extra_get

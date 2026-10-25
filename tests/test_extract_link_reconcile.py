@@ -42,7 +42,8 @@ class ExtractReconcileFlowTests(unittest.TestCase):
         case.context.finish.assert_not_called()
         case.context.defer.assert_called_once()
         self.assertEqual("running", case.save_job.call_args.args[3]["extraction_state"])
-        self.assertEqual({"job_secret": "fixture-secret"}, case.save_job.call_args.args[4])
+        self.assertEqual("fixture-secret", case.save_job.call_args.args[4]["job_secret"])
+        self.assertEqual(1, case.save_job.call_args.args[4]["local_reconcile"]["consecutive_failures"])
         case.provider.create_job.assert_not_called()
 
     def test_pending_receipt_with_empty_job_id_is_queried_and_retained(self):
@@ -50,7 +51,10 @@ class ExtractReconcileFlowTests(unittest.TestCase):
                               summary={"remote_polling": True, "submission_receipt_pending": True})
         with self.continuation(pending, receipt=True) as case:
             service._handle_provider_operation(case.context)
-        case.provider.get_status.assert_called_once_with("", private_data=pending.private_data)
+        case.provider.get_status.assert_called_once()
+        self.assertEqual(("",), case.provider.get_status.call_args.args)
+        for key, value in pending.private_data.items():
+            self.assertEqual(value, case.provider.get_status.call_args.kwargs["private_data"][key])
         case.context.defer.assert_called_once()
         case.context.finish.assert_not_called()
         case.provider.create_job.assert_not_called()

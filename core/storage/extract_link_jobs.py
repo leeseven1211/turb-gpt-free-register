@@ -24,6 +24,7 @@ _SUMMARY_FIELDS = frozenset({
     "queue_position", "max_attempts", "cdk_state",
     "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
     "extraction_ever_succeeded", "local_plan_check_pending",
+    "local_reconcile_halted", "local_reconcile_reason", "local_reconcile_halted_at",
 })
 _REMOTE_STATUSES = frozenset({
     "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
@@ -79,9 +80,22 @@ def _public_state(value: Mapping[str, Any]) -> dict:
                 if normalized in _REMOTE_STATUSES:
                     safe_summary[key] = normalized
                 continue
-            if key == "remote_terminal_failure":
+            if key in {"remote_terminal_failure", "local_reconcile_halted"}:
                 if type(item) is bool:
                     safe_summary[key] = item
+                continue
+            if key == "local_reconcile_reason":
+                if isinstance(item, str) and item in {"remote_not_found", "query_failures", "timeout", "no_progress"}:
+                    safe_summary[key] = item
+                continue
+            if key == "local_reconcile_halted_at":
+                if isinstance(item, str) and len(item) <= 64:
+                    try:
+                        parsed = datetime.fromisoformat(item.replace("Z", "+00:00"))
+                        if parsed.tzinfo is not None:
+                            safe_summary[key] = item
+                    except ValueError:
+                        pass
                 continue
             if isinstance(item, str):
                 safe_summary[key] = item[:160]
@@ -283,6 +297,8 @@ def list_recoverable_workbench_jobs() -> list[dict]:
               AND task.source_system='native_operations'
               AND run.status IN ('attention_required', 'interrupted')
               AND run.cancel_requested_at IS NULL
+              AND (job.provider_id<>'huanguang'
+                   OR job.public_state->'summary'->'local_reconcile_halted' IS DISTINCT FROM 'true'::jsonb)
               AND (
                   (job.provider_id<>'huanguang' AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL)
                   OR (job.provider_id='huanguang' AND (
@@ -381,14 +397,14 @@ def list_workbench_rows(
 
 
 _WORKBENCH_STATUS_SQL = {
-    "processing": """task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+    "processing": """NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
         OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
-        OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued'))""",
-    "running": "task_status IN ('running','cancelling','settling','stopping')",
+        OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))""",
+    "running": "NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')",
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
-    "needs_attention": """task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
+    "needs_attention": """local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
         OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
         OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",
 }
@@ -472,6 +488,8 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
                 THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
             COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
             COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
+            COALESCE(job.provider_id='huanguang'
+                AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
             CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                 THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
                     NULLIF(r.result_summary->>'extraction_status', ''), '')) END AS extraction,

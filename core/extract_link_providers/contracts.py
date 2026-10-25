@@ -8,11 +8,22 @@ import binascii
 import math
 import re
 from typing import Literal, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 
 class ProviderError(RuntimeError):
     """安全的 Provider 错误，不包含远端响应正文或凭据。"""
+
+
+class ProviderHTTPError(ProviderError):
+    """只保留 HTTP 状态码，供原单续查区分失联和临时故障。"""
+
+    def __init__(self, http_status: int):
+        if type(http_status) is not int or not 100 <= http_status <= 599:
+            raise ValueError("HTTP 状态码无效")
+        self.http_status = http_status
+        super().__init__(f"平台请求失败（HTTP {http_status}）")
 
 
 class ProviderUnsupported(ProviderError):
@@ -155,12 +166,42 @@ def response_dict(response: object) -> dict:
     return data
 
 
+def _http_status(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        status = int(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return status if 100 <= status <= 599 else None
+
+
 def request(transport, method: str, path: str, *, body=None, headers=None, timeout=30):
+    transport_failed = False
+    transport_status = None
     try:
         result = transport.request(method, path, json=body, headers=headers or {}, timeout=timeout)
+    except ProviderError:
+        raise
+    except HTTPError as exc:
+        transport_failed = True
+        transport_status = _http_status(exc.code)
+    except Exception as exc:
+        transport_failed = True
+        transport_status = _http_status(getattr(getattr(exc, "response", None), "status_code", None))
+    # 在异常处理块外抛出安全错误，避免保留可能带 URL 或响应正文的原异常链。
+    if transport_failed:
+        if transport_status is not None and not 200 <= transport_status < 300:
+            raise ProviderHTTPError(transport_status)
+        raise ProviderError("Provider 请求失败")
+    try:
         status_code = getattr(result, "status_code", None)
-        if status_code is not None and not 200 <= int(status_code) < 300:
-            raise ProviderError(f"Provider 请求失败（HTTP {int(status_code)}）")
+        if status_code is not None:
+            status = _http_status(status_code)
+            if status is None:
+                raise ProviderError("Provider 请求失败")
+            if not 200 <= status < 300:
+                raise ProviderHTTPError(status)
         return response_dict(result)
     except ProviderError:
         raise

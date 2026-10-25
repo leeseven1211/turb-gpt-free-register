@@ -1018,7 +1018,9 @@ class ExtractLinkTerminalFailureFlowTests(unittest.TestCase):
         self.assertEqual("inferred", saved["summary"]["platform_plus_status"])
         pending = [event for event in scenario.events if event.get("stage") == "payment" and event.get("state") == "pending"]
         self.assertEqual("unknown", pending[-1]["detail"]["payment_state"])
-        scenario.provider.get_status.assert_called_once_with("fixture-job", private_data=prior["private_data"])
+        scenario.provider.get_status.assert_called_once()
+        self.assertEqual(("fixture-job",), scenario.provider.get_status.call_args.args)
+        self.assertEqual("fixture-secret", scenario.provider.get_status.call_args.kwargs["private_data"]["job_secret"])
         scenario.provider.create_job.assert_not_called()
         scenario.provider.start_payment.assert_not_called()
 

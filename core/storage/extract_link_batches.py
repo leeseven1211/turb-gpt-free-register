@@ -223,6 +223,8 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
                     COALESCE(NULLIF(task.data->>'provider_id', ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
                     COALESCE(NULLIF(task.data->>'mode', ''), 'extract_only') AS mode,
+                    COALESCE(job.provider_id='huanguang'
+                        AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
                     CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                         THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
                             NULLIF(run.result_summary->>'extraction_status', ''), '')) END AS extraction,
@@ -264,14 +266,14 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                 FROM normalized
             )
             SELECT batch_id, COUNT(*) AS all,
-                COUNT(*) FILTER (WHERE task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+                COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
                     OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
-                    OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued'))) AS processing,
-                COUNT(*) FILTER (WHERE task_status IN ('running','cancelling','settling','stopping')) AS running,
+                    OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))) AS processing,
+                COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')) AS running,
                 COUNT(*) FILTER (WHERE extraction_status='success') AS extraction_succeeded,
                 COUNT(*) FILTER (WHERE payment_status='paid') AS payment_succeeded,
                 COUNT(*) FILTER (WHERE plus_status='confirmed') AS plus_confirmed,
-                COUNT(*) FILTER (WHERE task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
+                COUNT(*) FILTER (WHERE local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
                     OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
                     OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')) AS needs_attention,
                 COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded,

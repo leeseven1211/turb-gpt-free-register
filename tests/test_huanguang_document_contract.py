@@ -826,7 +826,7 @@ class HuanguangSubmissionReceiptTests(unittest.TestCase):
             with self.subTest(response=response):
                 transport = _Transport([response])
                 job = HuanguangProvider(_config(), transport).get_status("", private_data=private)
-                self.assertEqual(private, job.private_data)
+                self.assertEqual(private, {key: job.private_data.get(key) for key in private})
                 self.assertIsNone(job.job_id)
                 self.assertIs(True, job.summary.get("submission_receipt_pending"))
                 self.assertEqual(["GET"], [call[0] for call in transport.calls])
