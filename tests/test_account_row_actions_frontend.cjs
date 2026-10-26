@@ -133,6 +133,7 @@ function operationContext(name, response) {
     ACCOUNTS: [{id: 306, email: 'old@example.com', account_status: 'deactivated'}],
     getAccountOperationWorkers: () => 3,
     configuredLiveCheckDriver: () => 'protocol',
+    loadAccountAtRefreshUiSettings: async () => ({description: '使用协议重新登录并保存最新 accessToken。', debugDescription: ''}),
     confirm: () => true,
     api: async (url, options) => { calls.requests.push({url, options}); return response; },
     showToast: message => calls.toasts.push(message),
@@ -148,6 +149,7 @@ function operationContext(name, response) {
 test('仅已停用账号的更多菜单提供已解封恢复入口，并保留正常账号动作保护', () => {
   const context = loadFunctions(['accountIsDeactivated', '_accountsV2MoreMenu'], {
     esc: value => String(value ?? ''),
+    accountAtRefreshUiSettings: () => ({title: '使用已保存的刷新驱动重新登录'}),
     _planAction: () => '', _extractLinkAction: () => '', _codexAction: () => '',
   });
   const deactivated = context._accountsV2MoreMenu({id: 306, account_status: 'deactivated'});

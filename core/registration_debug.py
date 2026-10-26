@@ -1815,7 +1815,9 @@ def pause_current_failure(driver: Any, reason: str) -> str:
 def capture_current_failure(reason: str, driver: Any = None) -> str:
     """普通模式失败收口入口；调试模式由原有暂停逻辑负责，不重复保留现场。"""
     session = current_session()
-    if session is None or session.capture_mode != "failure_only" or session.failure_captured:
+    if session is None or session.failure_captured or (
+        session.capture_mode != "failure_only" and not getattr(session, "capture_without_pause", False)
+    ):
         return "disabled"
     return session.pause_failure(driver, reason)
 

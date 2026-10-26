@@ -1049,7 +1049,11 @@ def create_accounts_blueprint(context: WebUIContext):
                 force_refresh=True,
             )
             if queued.get("accepted"):
-                started.append({"id": acc_id, "email": email, "status": "queued"})
+                started.append({
+                    "id": acc_id, "email": email, "status": "queued",
+                    "task_id": queued.get("task_id"), "run_id": queued.get("run_id"),
+                    "refresh_driver": queued.get("token_refresh_driver"),
+                })
             elif queued.get("busy"):
                 busy_count += 1
                 skipped.append({"id": acc_id, "email": email, "reason": queued.get("error") or "账号操作进行中"})

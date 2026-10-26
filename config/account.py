@@ -50,6 +50,10 @@ ACCOUNT_LIVE_CHECK_DRIVER = schema_default("ACCOUNT_LIVE_CHECK_DRIVER")
 # Roxy 旧 AT probe 默认关闭；本地明确开启 gate 后才允许使用。
 ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = schema_default("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED")
 
+# 刷新 AT 的驱动与协议版本独立；调试开关仅作用于实际使用 Roxy 的刷新任务。
+ACCOUNT_AT_REFRESH_DRIVER = schema_default("ACCOUNT_AT_REFRESH_DRIVER")
+ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED = schema_default("ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED")
+
 # 旧刷新配置仅为历史 .env 兼容保留；新的协议版本统一配置位于
 # config.openai_protocol.OPENAI_PROTOCOL_VERSION。只有刷新 AT 同时支持 v1/v2，
 # 才会按该配置选择；其他步骤会忽略它并使用自己的唯一实现。
@@ -82,6 +86,8 @@ def completion_settings() -> dict[str, object]:
         "twofa_enabled": bool(ACCOUNT_COMPLETION_2FA_ENABLED),
         "codex_enabled": bool(ACCOUNT_COMPLETION_CODEX_ENABLED),
         "refresh_at_enabled": bool(ACCOUNT_COMPLETION_REFRESH_AT_ENABLED),
+        "at_refresh_driver": str(ACCOUNT_AT_REFRESH_DRIVER or "protocol").strip().lower() or "protocol",
+        "at_refresh_roxy_debug_enabled": bool(ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED),
         "password_reset_enabled": bool(ACCOUNT_PASSWORD_RESET_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",

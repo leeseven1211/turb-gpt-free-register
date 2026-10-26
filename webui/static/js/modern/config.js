@@ -810,9 +810,6 @@ function renderAccountCompletionSectionV2(fields) {
     'ACCOUNT_PLAN_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
-    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
-    'OPENAI_PROTOCOL_VERSION',
-    'ACCOUNT_TOKEN_REFRESH_DRIVER',
     'ACCOUNT_AUTH_V2_ENABLED',
     'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
     'ACCOUNT_AUTH_PROFILE_MODE',
@@ -823,9 +820,16 @@ function renderAccountCompletionSectionV2(fields) {
     'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
     'ACCOUNT_CODEX_DRIVER',
   ];
+  const refreshKeys = [
+    'ACCOUNT_AT_REFRESH_DRIVER',
+    'OPENAI_PROTOCOL_VERSION',
+    'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',
+    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
+  ];
   const completion = orderedConfigFieldsV2(fields, completionKeys);
   const strategies = orderedConfigFieldsV2(fields, strategyKeys);
-  const known = new Set([...completionKeys, ...strategyKeys]);
+  const refresh = orderedConfigFieldsV2(fields, refreshKeys);
+  const known = new Set([...completionKeys, ...strategyKeys, ...refreshKeys]);
   const extra = fields.filter(f => !known.has(f.key));
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('账号补全'))}" data-config-section="账号补全">
@@ -833,6 +837,7 @@ function renderAccountCompletionSectionV2(fields) {
       <div class="config-section-v2-subhelp">先选择需要补全的能力，再在下方调整对应的执行策略。</div>
       ${renderConfigSettingGroupV2('补全项目', completion)}
       ${renderConfigSettingGroupV2('账号处理策略', strategies, renderAccountCompletionRowV2)}
+      ${renderConfigSettingGroupV2('刷新 AT 策略', refresh)}
       ${renderConfigSettingGroupV2('其他账号参数', extra, renderAccountCompletionRowV2)}
       ${renderConfigSaveActions()}
     </section>

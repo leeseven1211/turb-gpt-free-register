@@ -1047,9 +1047,13 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 账号列表的“查活”请求会把当前配置驱动显式传给后端，后端在领代理/创建 Roxy Profile 前校验；任务结果同时保留 configured/effective driver。也可以在测试账号上通过批量接口的 `driver` 字段做单次 override，该 override 不会写回全局配置。
 
-协议步骤统一使用一个版本配置。只有同时实现 v1/v2 的步骤才读取它；单版本步骤会忽略该配置并使用自己的唯一实现。当前能力矩阵是：刷新 AT 支持 v1/v2，注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权均只有 v1。默认 v1，保持现有刷新流程：
+在「配置 → 注册与账号 → 账号补全 → 刷新 AT 策略」选择 `ACCOUNT_AT_REFRESH_DRIVER`：默认 `protocol` 使用协议刷新，`browser_roxy` 直接使用 Roxy 指纹浏览器重新登录，不先尝试协议。单号、批量和后台刷新使用同一驱动配置，任务入队后固定本次驱动。
+
+`OPENAI_PROTOCOL_VERSION` 仅为协议刷新选择 v1/v2，默认 v1；直接 Roxy 刷新不读取它。注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权继续使用各自的唯一实现：
 
 ```dotenv
+ACCOUNT_AT_REFRESH_DRIVER=protocol
+ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED=False
 OPENAI_PROTOCOL_VERSION=v1
 ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK=False
 ACCOUNT_PASSWORD_RESET_ENABLED=False
@@ -1059,7 +1063,9 @@ ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=30
 LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 ```
 
-设置为 `OPENAI_PROTOCOL_VERSION=v1` 时刷新 AT 使用现有协议邮箱 OTP → Roxy 兜底；设置为 `v2` 时，刷新 AT 才尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。账号没有保存密码时不会伪造密码提交，而是沿用邮箱认证；密码页/返回结果无法识别时会停止并记录明确失败，不盲点按钮。密码明确错误默认不发送邮箱验证码；打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 后最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”，不会重复提交密码。普通查活不会触达这条认证链。
+协议刷新设置为 `OPENAI_PROTOCOL_VERSION=v1` 时使用现有邮箱 OTP 登录，并按 `LIVE_CHECK_ROXY_FALLBACK_ENABLED` 决定是否使用 Roxy 兜底；设置为 `v2` 时优先尝试保存的 OpenAI 账号密码，并按远端响应进入直接回调、TOTP MFA 或邮箱验证码。邮箱已失效的账号优先使用支持密码和 TOTP 的登录路径。账号没有保存密码时不会伪造密码提交；邮箱仍有效时沿用邮箱认证，邮箱已失效时明确报告缺少密码。密码页/返回结果无法识别时记录明确失败。密码明确错误默认不发送邮箱验证码；仅邮箱有效且打开 `ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK` 时，最多另起一次会话走邮箱 OTP，结果仍保留“密码被拒绝”。普通查活不会触达这条认证链。
+
+开启 `ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED`（Roxy 刷新调试）后，实际使用 Roxy 刷新 AT 时会显示浏览器窗口并全程抓包；失败后保留窗口，可在任务日志的“资源与产物”中查看失败截图、下载完整页面现场与 HAR。该开关默认关闭，只作用于实际 Roxy 刷新，不改变协议请求或普通查活。
 账号补全遇到“本地没有 OpenAI 密码、远端显示登录密码页”时，只有明确打开 `ACCOUNT_PASSWORD_RESET_ENABLED=True` 才会执行：点击多语言“忘记密码”链接 → 在重置页点击继续 → 等待该次请求之后的新邮箱验证码 → 提交验证码 → 填写并提交新密码。新密码提交后立即写入账号的 `extra_json.account_password` 检查点；若远端结果无法确认，任务会失败但保留检查点，后续重试使用该密码，不会再次盲发重置邮件。该流程只属于账号补全，不影响注册恢复、普通查活或刷新 AT。
 补密码的首次邮箱登录和重置后重新登录分别使用有界的邮箱确认流程，调用结束后恢复临时预算与提交回调；同一次邮箱阶段内仍共享截止时间。已保存密码登录复用共享密码表单的就绪检查、一次提交回执和密码跳转确认预算；明确拒绝时按账号补全配置决定是否重置，结果未确认时保留密码与回执。任务进度按实际边界记录分配网络、启动浏览器、登录验证和设置密码；外层“执行账号配置”保留在执行记录中，缺少历史记录的步骤按计划位置展示“记录不完整”。
 `ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有实际使用 v2 协议刷新且明确改为 `account_stable` 时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。

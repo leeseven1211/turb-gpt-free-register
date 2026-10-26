@@ -38,6 +38,8 @@ LIVE_CONFIG_ALLOWLIST = {
     "live_check_driver": "ACCOUNT_LIVE_CHECK_DRIVER",
     "browser_enabled": "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED",
     "refresh_protocol_version": "OPENAI_PROTOCOL_VERSION",
+    "refresh_driver": "ACCOUNT_AT_REFRESH_DRIVER",
+    "refresh_roxy_debug_enabled": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
     "live_check_proxy_mode": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
     "refresh_at_proxy_mode": "ACCOUNT_REFRESH_AT_PROXY_MODE",
     "roxy_fallback_enabled": "LIVE_CHECK_ROXY_FALLBACK_ENABLED",
@@ -168,11 +170,15 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "passwordless_fallback_unavailable", "protocol_network_error",
     "protocol_v2_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
     "refresh_cancelled", "refresh_local_commit_failed", "remote_response_missing",
+    "roxy_not_configured", "roxy_profile_open_failed", "roxy_driver_attach_failed",
+    "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
+    "roxy_authenticated_callback_failed", "email_submit_unconfirmed", "email_otp_no_mail",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
     "network_preflight", "password_email_fallback", "password_verify", "password_sentinel", "password_login",
     "protocol_v2_auth",
+    "roxy_open", "roxy_driver", "roxy_navigation", "roxy_login", "roxy_email_otp", "roxy_session", "roxy_callback",
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
     "fallback_failed", "http_error", "imap_error", "invalid_code", "manual_timeout",
@@ -534,16 +540,24 @@ def _acquire_account_proxy_with_retries(
                 time.sleep(delay)
 
 
-def _resolve_refresh_driver(requested: str | None = None) -> str:
+def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: dict | None = None) -> str:
     """Resolve and freeze the explicit AT-refresh implementation for one task."""
     from config import account as account_config
     from core.protocol_version import resolve_protocol_version
 
     value = None if requested is None else str(requested or "").strip().lower()
+    if value in {"browser_roxy", "roxy"}:
+        return "browser_roxy"
+    if value is None and str(_snapshot_value(
+        config_snapshot, "refresh_driver", getattr(account_config, "ACCOUNT_AT_REFRESH_DRIVER", "protocol"),
+    ) or "protocol").strip().lower() == "browser_roxy":
+        return "browser_roxy"
     legacy_v2_alias = value == "protocol_v2"
     if value is None:
         try:
-            version = resolve_protocol_version("refresh_at")
+            version = resolve_protocol_version(
+                "refresh_at", requested=_snapshot_value(config_snapshot, "refresh_protocol_version"),
+            )
         except ValueError as exc:
             logger.warning("[查活] 协议版本配置无效，刷新 AT 回落 v1：%s", exc)
             version = "v1"
@@ -570,9 +584,14 @@ def _resolve_refresh_driver(requested: str | None = None) -> str:
 
 def _refresh_protocol_version(refresh_driver: str | None) -> str | None:
     """Expose the stable public version for a legacy internal driver value."""
-    if refresh_driver is None:
+    if refresh_driver is None or str(refresh_driver).strip().lower() == "browser_roxy":
         return None
     return "v2" if str(refresh_driver).strip().lower() == "protocol_v2" else "v1"
+
+
+def _refresh_driver_request(refresh_driver: str | None) -> str | None:
+    """保留浏览器驱动，同时兼容旧任务使用的协议版本字段。"""
+    return "browser_roxy" if refresh_driver == "browser_roxy" else _refresh_protocol_version(refresh_driver)
 
 
 def _resolve_protocol_identity(
@@ -727,6 +746,8 @@ def _run_live_check(
     preflight_open = True
     network_open = False
     network_started = False
+    debug_activation = None
+    debug_cancelled = False
     try:
         _checkpoint(operation_context)
         with _LOCK:
@@ -747,9 +768,18 @@ def _run_live_check(
             or resolve_driver()
         )
         selected_refresh_driver = _resolve_refresh_driver(
-            refresh_driver
-            or _snapshot_value(config_snapshot, "refresh_protocol_version")
+            refresh_driver, config_snapshot=config_snapshot,
         ) if force_refresh else None
+        if selected_refresh_driver == "browser_roxy" and operation_context is not None:
+            from config import account as account_config
+
+            if bool(_snapshot_value(
+                config_snapshot, "refresh_roxy_debug_enabled",
+                getattr(account_config, "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", False),
+            )):
+                from core import operation_debug
+
+                debug_activation = operation_debug.activate(operation_context)
         reporter.stage("preflight", "success", "查活配置预检通过", detail={
             "force_refresh": bool(force_refresh),
             "live_check_driver": selected_live_check_driver,
@@ -765,7 +795,8 @@ def _run_live_check(
         if selected_refresh_driver:
             reporter.note(
                 stage="login_password",
-                message=f"刷新 AT 协议版本：{_refresh_protocol_version(selected_refresh_driver)}",
+                message=("刷新 AT 使用 Roxy 浏览器登录" if selected_refresh_driver == "browser_roxy"
+                         else f"刷新 AT 协议版本：{_refresh_protocol_version(selected_refresh_driver)}"),
                 detail={
                     "protocol_version": _refresh_protocol_version(selected_refresh_driver),
                     "token_refresh_driver": selected_refresh_driver,
@@ -867,7 +898,7 @@ def _run_live_check(
         # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
         # - 刷新 AT（force_refresh=True）才跳过旧 AT，按账号可用凭据重新登录。
         account = db.get_account(account_id) or {}
-        if force_refresh and account.get("email_invalid") is True:
+        if force_refresh and account.get("email_invalid") is True and selected_refresh_driver != "browser_roxy":
             selected_refresh_driver = "protocol_v2"
             reporter.note(
                 stage="login_password",
@@ -878,7 +909,7 @@ def _run_live_check(
             account_id, selected_refresh_driver, config_snapshot,
         )
         auth_context_recorder = None
-        if selected_refresh_driver == "protocol_v2" or selected_live_check_driver in {"protocol_current", "browser_roxy"}:
+        if selected_refresh_driver in {"protocol_v2", "browser_roxy"} or selected_live_check_driver in {"protocol_current", "browser_roxy"}:
             from config import account as account_config
 
             if bool(_snapshot_value(
@@ -891,7 +922,7 @@ def _run_live_check(
                 recorder_kwargs = {
                     "account_id": account_id,
                     "protocol_identity": protocol_identity,
-                    "action": "token_refresh" if selected_refresh_driver == "protocol_v2" else "live_check",
+                    "action": "token_refresh" if force_refresh else "live_check",
                     "driver": selected_refresh_driver or selected_live_check_driver or "unknown",
                 }
                 if operation_context is not None:
@@ -1187,7 +1218,26 @@ def _run_live_check(
         if not force_refresh and result is not None:
             result.setdefault("live_check_driver", selected_live_check_driver)
 
-        if result is None and proxy is None:
+        if result is None and selected_refresh_driver == "browser_roxy":
+            from core.roxy_liveness import refresh_access_token
+
+            selected_proxy = acquire_retry_route(1) if proxy is None else acquire_explicit_route()
+            _append_log(email, "[查活][Roxy] 开始浏览器登录刷新 AT")
+            _checkpoint(operation_context, "Roxy 登录刷新 AT 前检查取消状态")
+            result = invoke_refresh(
+                lambda on_remote_request_started: refresh_access_token(
+                    email,
+                    proxy=selected_proxy,
+                    **({"context_recorder": auth_context_recorder} if auth_context_recorder is not None else {}),
+                    on_remote_request_started=on_remote_request_started,
+                    **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+                ),
+                driver_name="browser_roxy",
+            )
+            if isinstance(result, dict):
+                result.setdefault("live_check_driver", "browser_roxy")
+                result.setdefault("auth_method", "roxy_browser")
+        elif result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
             if selected_refresh_driver == "protocol_v2":
@@ -1268,11 +1318,21 @@ def _run_live_check(
             )
             and bool(saved_access_token)
             and force_refresh
+            and selected_refresh_driver != "browser_roxy"
             and _roxy_fallback_enabled(config_snapshot)
             and result.get("roxy_fallback_allowed", True)
         ):
             from core.roxy_liveness import available as roxy_available, refresh_access_token
             if roxy_available():
+                if debug_activation is None and operation_context is not None:
+                    from config import account as account_config
+                    from core import operation_debug
+
+                    if bool(_snapshot_value(
+                        config_snapshot, "refresh_roxy_debug_enabled",
+                        getattr(account_config, "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", False),
+                    )):
+                        debug_activation = operation_debug.activate(operation_context)
                 reporter.note(
                     stage="roxy_fallback",
                     level="WARNING",
@@ -1411,7 +1471,16 @@ def _run_live_check(
                 except Exception:
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
-            if selected_refresh_driver == "protocol_v2":
+            if selected_refresh_driver == "browser_roxy":
+                reporter.stage(
+                    "authenticate", "success" if result.get("ok") else "failed",
+                    "Roxy 浏览器登录已完成" if result.get("ok") else "Roxy 浏览器登录未完成",
+                    level="INFO" if result.get("ok") else "ERROR",
+                    detail={"auth_method": result.get("auth_method"), "error": result.get("error")},
+                )
+                if result.get("ok"):
+                    reporter.stage("token", "success", "最新 AT 已获取并保存")
+            elif selected_refresh_driver == "protocol_v2":
                 _report_protocol_v2_refresh(reporter, result)
             elif result.get("ok"):
                 reporter.stage("login_password", "success", "邮箱登录已完成")
@@ -1464,6 +1533,7 @@ def _run_live_check(
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
                 "fallback_used": result.get("fallback_used"),
+                "debug_browser_kept": bool(result.get("debug_browser_kept")),
                 "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),
                 "fingerprint": result.get("fingerprint"),
                 "token_expired": result.get("token_expired"),
@@ -1476,8 +1546,10 @@ def _run_live_check(
     except account_task_store.OperationLeaseLost:
         # The gateway owns lease-loss fencing and request-unknown conversion.
         # Do not turn a lost native fence into an ordinary service failure.
+        debug_cancelled = True
         raise
     except OperationCancelled as exc:
+        debug_cancelled = True
         receipt_outcome = str((refresh_boundary or {}).get("receipt_outcome") or "")
         remote_unknown = bool(
             force_refresh
@@ -1617,6 +1689,13 @@ def _run_live_check(
             _RUNNING.discard(int(account_id))
         if release_queue_slot:
             _QUEUE_SLOTS.release()
+        if debug_activation is not None:
+            from core import operation_debug
+
+            operation_debug.deactivate(
+                debug_activation,
+                status="cancelled" if debug_cancelled else "success" if (result or {}).get("ok") else "failed",
+            )
 
 
 def _numeric_batch_id(value: str | int | None) -> int | None:
@@ -1827,9 +1906,7 @@ def run_account_live_check_inline(
         except LiveCheckDriverError as exc:
             return {"accepted": False, "busy": False, "error": str(exc)}
     else:
-        effective_refresh_driver = _resolve_refresh_driver(
-            _snapshot_value(config_snapshot, "refresh_protocol_version")
-        )
+        effective_refresh_driver = _resolve_refresh_driver(driver, config_snapshot=config_snapshot)
 
     account = db.get_account(account_id)
     if not account:
@@ -1845,7 +1922,7 @@ def run_account_live_check_inline(
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
 
-    if force_refresh and account.get("email_invalid") is True:
+    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver != "browser_roxy":
         effective_refresh_driver = "protocol_v2"
 
     native_inline = operation_context is not None
@@ -1874,7 +1951,7 @@ def run_account_live_check_inline(
             task_id=task_id,
             force_refresh=bool(force_refresh),
             driver=effective_live_check_driver,
-            refresh_driver=_refresh_protocol_version(effective_refresh_driver),
+            refresh_driver=_refresh_driver_request(effective_refresh_driver),
             release_queue_slot=False,
             operation_context=operation_context,
             finish_operation=not native_inline,
@@ -1938,7 +2015,7 @@ def enqueue_account_live_check(
         except LiveCheckDriverError as exc:
             return {"accepted": False, "busy": False, "error": str(exc)}
     else:
-        effective_refresh_driver = _resolve_refresh_driver()
+        effective_refresh_driver = _resolve_refresh_driver(driver)
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
@@ -1953,7 +2030,7 @@ def enqueue_account_live_check(
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
 
-    if force_refresh and account.get("email_invalid") is True:
+    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver != "browser_roxy":
         effective_refresh_driver = "protocol_v2"
 
     task_type = "token_refresh" if force_refresh else "live_check"
@@ -1967,7 +2044,7 @@ def enqueue_account_live_check(
         submitted = _submit_native_live(
             account_id=account_id, email=email, trigger=trigger, task_type=task_type,
             force_refresh=force_refresh, driver=effective_live_check_driver,
-            refresh_driver=_refresh_protocol_version(effective_refresh_driver),
+            refresh_driver=_refresh_driver_request(effective_refresh_driver),
             explicit_proxy_requested=proxy is not None,
             batch_id=batch_id, idempotency_key=key,
             resource_family=resource_family,

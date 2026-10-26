@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from contextlib import ExitStack
 
 from core import browser_flow_policy, roxy_liveness
@@ -82,6 +82,7 @@ class RoxyLivenessFlowPolicyTests(unittest.TestCase):
             profile_id="profile-1",
             proxy_url="proxy",
             data_saver_flow="token_refresh",
+            stop_checker=ANY,
         )
         recorder.open_roxy_profile.assert_called_once_with(
             opened,
@@ -123,7 +124,7 @@ class RoxyLivenessFlowPolicyTests(unittest.TestCase):
         recorder.finish_roxy_profile.assert_called_once_with(
             opened,
             status="failed",
-            result_code="failed",
+            result_code="roxy_session_fetch_failed",
         )
         saver.stop.assert_called_once_with()
 

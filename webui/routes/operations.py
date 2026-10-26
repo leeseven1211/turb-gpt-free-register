@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pyotp
-from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
+from flask import Response, jsonify, make_response, redirect, render_template, request, send_file, url_for
 
 from core import (
     account_task_store,
@@ -270,7 +270,47 @@ def create_operations_blueprint(context: WebUIContext):
                     result_summary=run.get("result_summary"),
                     task_status=str(run.get("status") or ""),
                 )
+            if task.get("source_system") == "native_operations":
+                from core import operation_debug
+
+                debug = operation_debug.describe(task, run)
+                if debug["available"]:
+                    base = f"/api/operations/{task_id}/runs/{int(run['id'])}/debug"
+                    debug["har_url"] = f"{base}/har"
+                    debug["page_state_url"] = f"{base}/page-state" if debug["page_state_available"] else ""
+                    debug["screenshot_url"] = f"{base}/screenshot" if debug["screenshot_available"] else ""
+                    run["debug_artifacts"] = debug
         return jsonify({"ok": True, "task": task})
+
+    @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/debug/<artifact>")
+    def api_operation_debug_artifact(task_id: int, run_id: int, artifact: str):
+        """通过任务归属校验读取对应 Run 的诊断，不接受任意文件路径。"""
+        from core import operation_debug, registration_debug
+
+        task = operation_task_store.get_task(task_id, include_events=False)
+        if not task or task.get("source_system") != "native_operations":
+            return jsonify({"ok": False, "error": "刷新 AT 调试任务不存在"}), 404
+        run = next((item for item in task.get("runs") or [] if int(item["id"]) == run_id), None)
+        if run is None or artifact not in {"har", "page-state", "screenshot"}:
+            return jsonify({"ok": False, "error": "调试运行或产物不存在"}), 404
+        debug = operation_debug.describe(task, run)
+        if not debug["available"]:
+            return jsonify({"ok": False, "error": "该次运行未生成调试产物"}), 404
+        job = operation_debug.artifact_job(task, run)
+        if artifact == "screenshot":
+            screenshot = registration_debug.screenshot_path(job)
+            if screenshot is None:
+                return jsonify({"ok": False, "error": "该次运行没有失败截图"}), 404
+            response = send_file(screenshot, mimetype="image/png", max_age=0)
+        else:
+            if artifact == "page-state" and not debug["page_state_available"]:
+                return jsonify({"ok": False, "error": "该次运行没有页面现场"}), 404
+            payload = registration_debug.build_har(job) if artifact == "har" else registration_debug.read_page_state(job)
+            response = jsonify(payload)
+            extension = "har" if artifact == "har" else "json"
+            response.headers["Content-Disposition"] = f'attachment; filename="at-refresh-{task_id}-{run_id}.{extension}"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/progress")
     def api_operation_run_progress(task_id: int, run_id: int):

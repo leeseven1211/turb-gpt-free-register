@@ -279,6 +279,9 @@ _PROTOCOL_FAILURE_CODES = {
     "refresh_driver_exception", "refresh_result_invalid", "refresh_local_commit_failed",
     "remote_response_missing", "auth_failed", "auth_result_missing",
     "password_login_unavailable", "email_verification_required",
+    "roxy_not_configured", "roxy_profile_open_failed", "roxy_driver_attach_failed",
+    "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
+    "roxy_authenticated_callback_failed", "email_submit_unconfirmed", "email_otp_no_mail",
 }
 _SAFE_STATUS_VALUES = {item.value for item in AuthStatus}
 

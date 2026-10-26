@@ -42,6 +42,7 @@ test('独立邮箱状态筛选进入列表和轮询共用查询参数', () => {
 test('更多菜单提供独立标记和解除入口且保留邮箱失效账号的原有操作', () => {
   const context = load(['accountIsDeactivated', '_accountsV2MoreMenu'], {
     esc: escape, _planAction: () => '', _extractLinkAction: () => '', _codexAction: () => '',
+    accountAtRefreshUiSettings: () => ({title: '使用已保存的刷新驱动重新登录'}),
   });
   const marked = context._accountsV2MoreMenu({id: 7, email_invalid: true, account_status: 'active'});
   assert.match(marked, /data-account-email-invalid="7"[^>]*data-invalid="0"[^>]*>解除邮箱失效<\/button>/);

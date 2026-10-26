@@ -191,6 +191,8 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_EMAIL_CHANGE_PROXY_MODE": "registration",
     "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": False,
+    "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
+    "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": False,
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
     "ACCOUNT_AUTH_PROFILE_MODE": "current",
     "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED": False,
@@ -540,8 +542,16 @@ _FIELD_DEFINITIONS = [
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
     {
+        "key": "ACCOUNT_AT_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录并保存最新 AT。普通查活保持独立。",
+    },
+    {
         "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "账号补全",
-        "label": "刷新 AT 协议版本", "help": "仅用于账号补全中的刷新 AT；v1/v2 选择对应协议实现，注册、2FA、套餐、普通查活等步骤不读取此配置。",
+        "label": "刷新 AT 协议版本", "help": "仅在刷新 AT 驱动为协议时选择 v1/v2；Roxy 指纹浏览器刷新、注册、2FA、套餐和普通查活不读取此配置。",
+    },
+    {
+        "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "Roxy 刷新调试", "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。仅影响 Roxy 刷新，默认关闭。",
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
@@ -686,7 +696,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED", "file": "proxy.py", "type": "bool", "group": "账号补全",
-        "label": "刷新 Roxy 兜底", "help": "仅控制 v1 协议刷新 AT 失败后的既有 Roxy 登录兜底；不影响普通查活，也不允许普通查活登录或发送 OTP",
+        "label": "刷新 Roxy 兜底", "help": "控制协议刷新 AT 失败后是否使用 Roxy 登录兜底；直接选择 Roxy 指纹浏览器刷新时不读取此开关。普通查活不登录、不发送 OTP。",
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -1684,6 +1694,10 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "ACCOUNT_LIVE_CHECK_DRIVER": _options(
         ("protocol_current", "现有协议（保持现状）"),
         ("browser_roxy", "Roxy 浏览器（旧 AT probe）"),
+    ),
+    "ACCOUNT_AT_REFRESH_DRIVER": _options(
+        ("protocol", "协议刷新"),
+        ("browser_roxy", "Roxy 指纹浏览器"),
     ),
     "ACCOUNT_AUTH_PROFILE_MODE": _options(
         ("current", "当前会话画像（保持现状）"),

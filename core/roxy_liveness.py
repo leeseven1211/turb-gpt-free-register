@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from functools import wraps
 from urllib.parse import urlparse
 
 from config import roxybrowser as cfg
@@ -16,6 +17,9 @@ from core.email_auth_guard import serialize_email_auth
 from core.email_provider import wait_for_otp
 from core.account_credentials import account_email_is_invalid
 from core.openai_auth import AccountUnusableError, detect_account_unusable_text
+from core.auth_challenge import AuthCancelledError
+from core.operation_runtime import OperationCancelled, check_cancelled
+from core.operations.task_gateway import OperationLeaseLost
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
     center_browser_window as _center_browser_window,
@@ -42,6 +46,33 @@ from core.roxybrowser_client import RoxyBrowserClient
 
 logger = logging.getLogger(__name__)
 
+_ROXY_STAGE_CAUSES = {
+    "open": ("roxy_profile_open_failed", "browser"),
+    "driver": ("roxy_driver_attach_failed", "browser"),
+    "navigation": ("roxy_navigation_failed", "network"),
+    "login": ("roxy_login_failed", "auth"),
+    "email_otp": ("email_otp_failed", "email"),
+    "session": ("roxy_session_fetch_failed", "response"),
+    "callback": ("roxy_authenticated_callback_failed", "runtime"),
+}
+
+
+def _refresh_failure_cause(exc: Exception, stage: str) -> tuple[str, str]:
+    """先保留认证异常的明确原因，再按实际失败阶段分类并保留异常原文。"""
+    code = str(getattr(exc, "code", "") or "")
+    if code in {"password_rejected", "password_result_unknown", "mfa_secret_missing", "mfa_rejected"}:
+        return code, "auth"
+    text = str(exc).lower()
+    if type(exc).__name__ == "_EmailSubmissionUnknown":
+        return "email_submit_unconfirmed", "auth"
+    if type(exc).__name__ == "ForwardIMAPNoMailTimeout" or "等待新的邮箱验证码超时" in text:
+        return "email_otp_no_mail", "email"
+    if "totp" in text and any(marker in text for marker in ("未通过", "不正确", "invalid")):
+        return "mfa_rejected", "auth"
+    if "totp" in text and any(marker in text for marker in ("缺少", "没有", "missing")):
+        return "mfa_secret_missing", "configuration"
+    return _ROXY_STAGE_CAUSES[stage]
+
 
 class _EmailInvalidLoginError(RuntimeError):
     """失效邮箱登录的已知失败，只携带固定原因和明确的提交事实。"""
@@ -58,10 +89,8 @@ class _EmailInvalidLoginError(RuntimeError):
 
 
 def available() -> bool:
-    driver = str(getattr(cfg, "REGISTRATION_DRIVER", "") or "").strip().lower()
     return (
-        driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}
-        and bool(str(getattr(cfg, "ROXY_API_BASE", "") or "").strip())
+        bool(str(getattr(cfg, "ROXY_API_BASE", "") or "").strip())
         and bool(str(getattr(cfg, "ROXY_API_TOKEN", "") or "").strip())
         and bool(str(getattr(cfg, "ROXY_WORKSPACE_ID", "") or "").strip())
     )
@@ -223,6 +252,8 @@ def _enter_existing_account_otp(
                 if not password_submitted():
                     try:
                         opened_password = _open_standard_password_login(driver)
+                    except (OperationCancelled, AuthCancelledError, OperationLeaseLost):
+                        raise
                     except Exception as exc:
                         raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True) from exc
                     if not opened_password:
@@ -284,35 +315,108 @@ def _complete_otp(
     raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
 
 
+def _authenticated_browser_session(driver, proxy: str | None):
+    """为既有成功回调提供同线路、同 Cookie 的协议会话，不把 Selenium 当作 HTTP 会话。"""
+    from core.session import BrowserSession
+
+    session = BrowserSession(proxy=str(proxy or ""), detect_exit_geo=False)
+    try:
+        for cookie in driver.get_cookies():
+            domain = str(cookie.get("domain") or "").lstrip(".").lower()
+            if domain not in {"chatgpt.com", "auth.openai.com"}:
+                continue
+            name = str(cookie.get("name") or "")
+            if not name:
+                continue
+            value = str(cookie.get("value") or "")
+            session.session.cookies.set(name, value, domain=str(cookie["domain"]), path=str(cookie.get("path") or "/"))
+            if name == "oai-did" and value:
+                session.device_id = value
+        for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+            session.session.cookies.set("oai-did", session.device_id, domain=domain, path="/")
+        user_agent = driver.execute_script("return navigator.userAgent;")
+        if isinstance(user_agent, str) and user_agent.strip():
+            session.session.headers["User-Agent"] = user_agent
+        return session
+    except BaseException:
+        session.session.close()
+        raise
+
+
+def _with_refresh_execution_context(function):
+    """把原生任务取消信号传给共享 Selenium 的每个等待检查点。"""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        from core.operation_runtime import current_token
+        from core.registration.auth_context import AuthExecutionContext, execution_context
+
+        token = current_token()
+        if token is None:
+            return function(*args, **kwargs)
+        with execution_context(AuthExecutionContext(
+            cancellation=lambda: bool(token.requested()),
+            cancellation_error=lambda: OperationCancelled("用户手动停止刷新 AT"),
+        )):
+            return function(*args, **kwargs)
+    return wrapped
+
+
 @serialize_email_auth
+@_with_refresh_execution_context
 def refresh_access_token(
     email: str,
     *,
     proxy: str | None = None,
     context_recorder=None,
+    on_remote_request_started=None,
+    on_authenticated=None,
 ) -> dict:
     """复用账号绑定的 Roxy Profile 登录并返回刷新后的 Session/AT。"""
     checked_at = _now()
     if not available():
-        return {"ok": False, "status": "failed", "checked_at": checked_at, "error": "Roxy 浏览器兜底未配置"}
-    client = RoxyBrowserClient()
+        return {"ok": False, "status": "failed", "checked_at": checked_at,
+                "error": "Roxy 浏览器连接未配置", "error_code": "roxy_not_configured",
+                "error_category": "configuration", "remote_request_started": False,
+                "mutation_submitted": False, "action_dispatched": False,
+                "live_check_driver": "browser_roxy", "auth_method": "roxy_browser"}
+    from core import registration_debug
+
+    debug_session = registration_debug.current_session()
+    full_debug = bool(debug_session is not None and debug_session.capture_mode == "full")
+    client = None
     opened = None
     driver = None
     data_saver = None
     asset_cache = None
     refresh_result = None
+    callback_session = None
+    cancelled = False
+    remote_started = False
+    failure_stage = "open"
+
+    def stage(value: str) -> None:
+        nonlocal failure_stage
+        failure_stage = value
+        if callable(getattr(debug_session, "update_stage", None)):
+            debug_session.update_stage({"open": "browser", "driver": "browser", "navigation": "browser",
+                                        "login": "login_password", "session": "token", "callback": "token"}.get(value, value))
+
     try:
+        check_cancelled("用户手动停止刷新 AT")
+        client = RoxyBrowserClient()
         from core.roxy_profile_binding import (
             account_profile_id_by_email,
             persist_account_profile_id,
         )
 
         bound_profile_id = account_profile_id_by_email(email, strict=True)
-        logger.info("[查活][Roxy] 协议登录未通过，打开或创建账号指纹浏览器环境：%s", email)
+        logger.info("[查活][Roxy] 打开或创建账号指纹浏览器环境")
         opened = client.open_profile_for_account(
             profile_id=bound_profile_id or None,
             proxy_url=proxy,
             data_saver_flow="token_refresh",
+            stop_checker=lambda: check_cancelled("用户手动停止刷新 AT"),
+            **({"headless": False} if full_debug else {}),
         )
         profile_reused = bool(
             bound_profile_id
@@ -339,7 +443,10 @@ def refresh_access_token(
             except Exception:
                 logger.exception("[浏览器流量] 关联刷新 AT 上下文失败；刷新继续")
         effective_proxy = None if profile_reused else proxy
+        stage("driver")
         driver = _build_driver(opened)
+        if debug_session is not None:
+            registration_debug.attach_current_roxy(getattr(opened, "debugger_address", None))
         from core import browser_asset_policy
 
         asset_cache = browser_asset_policy.start_auth_asset_cache(opened, driver, flow="token_refresh")
@@ -358,6 +465,8 @@ def refresh_access_token(
             driver.set_script_timeout(15)
         except Exception:
             pass
+        check_cancelled("用户手动停止刷新 AT")
+        stage("navigation")
         _safe_get(
             driver,
             "https://chatgpt.com/auth/login",
@@ -381,6 +490,11 @@ def refresh_access_token(
 
         password, totp_secret = _account_login_credentials(email)
         otp_after_ts = time.time()
+        check_cancelled("用户手动停止刷新 AT")
+        if callable(on_remote_request_started):
+            on_remote_request_started()
+        remote_started = True
+        stage("login")
         state = _enter_existing_account_otp(
             driver,
             email,
@@ -388,6 +502,7 @@ def refresh_access_token(
             totp_secret=totp_secret,
         )
         if state == "otp":
+            stage("email_otp")
             _complete_otp(driver, email, otp_after_ts, totp_secret=totp_secret)
         code = _page_account_unusable_code(driver)
         if code:
@@ -399,6 +514,7 @@ def refresh_access_token(
                 "validation_method": "roxy_email_otp",
             }
             return refresh_result
+        stage("session")
         session_info = _fetch_chatgpt_session(driver, timeout=120)
         access_token = str(session_info.get("accessToken") or "").strip()
         if not access_token:
@@ -411,8 +527,21 @@ def refresh_access_token(
             "session": session_info,
             "proxy_used": effective_proxy or None,
             "validation_method": "roxy_email_otp",
+            "live_check_driver": "browser_roxy",
+            "auth_method": "roxy_browser",
+            "remote_request_started": remote_started,
         }
+        if callable(on_authenticated):
+            stage("callback")
+            callback_session = _authenticated_browser_session(driver, proxy)
+            refresh_result = on_authenticated(refresh_result, callback_session)
         return refresh_result
+    except (OperationCancelled, OperationLeaseLost):
+        cancelled = True
+        raise
+    except AuthCancelledError as exc:
+        cancelled = True
+        raise OperationCancelled(str(exc) or "用户手动停止刷新 AT") from exc
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
@@ -444,17 +573,46 @@ def refresh_access_token(
             refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
             return refresh_result
         logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, str(exc)[:260])
+        cause_code, category = _refresh_failure_cause(exc, failure_stage)
         refresh_result = {
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
             "error": f"Roxy {type(exc).__name__}: {str(exc)[:500]}",
+            "error_code": cause_code,
+            "error_category": category,
+            "failure_stage": failure_stage,
+            "auth_diagnostics": {"operation": f"roxy_{failure_stage}", "failure_kind": "runtime_exception",
+                                 "exception_type": type(exc).__name__},
             "validation_method": "roxy_email_otp",
         }
+        if not remote_started:
+            refresh_result.update({"remote_request_started": False, "mutation_submitted": False, "action_dispatched": False})
         return refresh_result
     finally:
         from core import browser_asset_policy, browser_traffic
 
+        if isinstance(refresh_result, dict):
+            refresh_result.setdefault("live_check_driver", "browser_roxy")
+            refresh_result.setdefault("auth_method", "roxy_browser")
+            refresh_result.setdefault("remote_request_started", remote_started)
+        failed = bool(refresh_result is not None and not refresh_result.get("ok"))
+        if failed and not cancelled:
+            try:
+                if isinstance(getattr(debug_session, "job", None), dict):
+                    debug_session.job["error_code"] = refresh_result.get("error_code") or ""
+                registration_debug.capture_current_failure(
+                    str(refresh_result.get("error") or "Roxy 登录刷新 AT 未完成"), driver,
+                )
+            except Exception:
+                logger.exception("[查活][Roxy] 保存失败现场时发生异常")
+        keep_browser = not cancelled and (
+            bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)) or (full_debug and failed)
+        )
+        if full_debug and failed and driver is not None and not cancelled:
+            refresh_result["debug_browser_kept"] = True
+        if callback_session is not None:
+            callback_session.session.close()
         browser_asset_policy.stop_asset_cache(asset_cache)
         if data_saver is not None:
             try:
@@ -471,7 +629,8 @@ def refresh_access_token(
                         "authenticated"
                         if succeeded
                         else str(
-                            (refresh_result or {}).get("error_category")
+                            (refresh_result or {}).get("error_code")
+                            or (refresh_result or {}).get("error_category")
                             or (refresh_result or {}).get("status")
                             or "refresh_failed"
                         )[:160]
@@ -481,9 +640,9 @@ def refresh_access_token(
                 logger.exception("[浏览器流量] 收口刷新 AT 上下文失败；刷新结果保持不变")
         if opened is not None:
             browser_traffic.finish_roxy_capture(opened)
-        if driver is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
+        if driver is not None and not keep_browser:
             _quit_driver(driver)
-        if opened is not None and not bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
+        if opened is not None and not keep_browser:
             try:
                 client.cleanup_profile(opened)
             except Exception:

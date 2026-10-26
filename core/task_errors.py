@@ -985,6 +985,13 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
     "refresh_driver_exception": ("SYS-REFRESH-001", "AT 刷新执行异常"),
+    "roxy_not_configured": ("ROXY-REFRESH-000", "Roxy 连接配置不完整"),
+    "roxy_profile_open_failed": ("ROXY-REFRESH-001", "Roxy 环境创建或启动失败"),
+    "roxy_driver_attach_failed": ("ROXY-REFRESH-002", "连接 Roxy 浏览器调试端口失败"),
+    "roxy_navigation_failed": ("ROXY-REFRESH-003", "Roxy 登录页面加载失败"),
+    "roxy_login_failed": ("ROXY-REFRESH-004", "Roxy 登录挑战未完成"),
+    "roxy_session_fetch_failed": ("ROXY-REFRESH-005", "Roxy 登录后读取会话失败"),
+    "roxy_authenticated_callback_failed": ("ROXY-REFRESH-006", "Roxy 登录成功后的账号处理失败"),
     "refresh_result_invalid": ("SYS-REFRESH-RESULT", "AT 刷新驱动返回结果无效"),
     "refresh_cancelled": ("USR-REFRESH-001", "AT 刷新已取消"),
     "refresh_local_commit_failed": ("SYS-REFRESH-WRITEBACK", "AT 刷新本地写回或读回未完成"),
@@ -1338,6 +1345,8 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
+    if cause is None and str(error_code).startswith("roxy_"):
+        cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
         str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"
     ):

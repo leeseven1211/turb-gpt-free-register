@@ -86,6 +86,9 @@ EXTRACT_CONFIG_ALLOWLIST = {
     "link_type": "EXTRACT_LINK_TYPE",
     "request_timeout": "EXTRACT_LINK_REQUEST_TIMEOUT",
     "event_timeout": "EXTRACT_LINK_EVENT_TIMEOUT",
+    "refresh_driver": "ACCOUNT_AT_REFRESH_DRIVER",
+    "refresh_protocol_version": "OPENAI_PROTOCOL_VERSION",
+    "refresh_roxy_debug_enabled": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
 }
 
 

@@ -692,7 +692,11 @@ function renderAccountTaskArtifacts(task) {
   const panel = $('#accountTaskArtifactContent');
   if (!panel) return;
   const resources = (task?.resources || []).filter(item => !activeAccountTaskRunId || String(item.run_id || '') === String(activeAccountTaskRunId));
-  panel.innerHTML = resources.map(item => `<div class="account-task-artifact"><strong>${esc(item.resource_type || '运行资源')}</strong><div>${esc(item.provider || item.state || '-')}</div><small>${esc(formatDateTime(item.acquired_at || item.created_at))}</small></div>`).join('') || '<div class="account-task-empty">当前 Run 没有诊断资源或产物</div>';
+  const run = (task?.runs || []).find(item => Number(item.id) === Number(activeAccountTaskRunId));
+  const debug = run?.debug_artifacts;
+  const browserKept = run?.result_summary?.debug_browser_kept === true;
+  const diagnostic = debug?.available ? `<div class="account-task-artifact"><strong>Roxy 刷新调试</strong><div>${debug.state === 'recording' ? '正在抓包' : '诊断已保存'} · 请求 ${esc(debug.summary?.request_count || 0)} 条${browserKept ? ' · 失败窗口已保留，可在 Roxy 中查看' : ''}</div><div class="task-row-actions"><a href="${esc(debug.har_url)}" download>下载 HAR</a>${debug.page_state_url ? `<a href="${esc(debug.page_state_url)}" download>下载页面现场</a>` : ''}${debug.screenshot_url ? `<a href="${esc(debug.screenshot_url)}" target="_blank" rel="noopener">查看失败截图</a>` : ''}</div></div>` : '';
+  panel.innerHTML = diagnostic + resources.map(item => `<div class="account-task-artifact"><strong>${esc(item.resource_type || '运行资源')}</strong><div>${esc(item.provider || item.state || '-')}</div><small>${esc(formatDateTime(item.acquired_at || item.created_at))}</small></div>`).join('') || '<div class="account-task-empty">当前 Run 没有诊断资源或产物</div>';
 }
 
 function setAccountTaskDetailView(view) {
@@ -1141,6 +1145,26 @@ function configuredLiveCheckDriver() {
   const configured = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_DRIVER');
   const value = String(configured?.value ?? '').trim().toLowerCase();
   return value || null;
+}
+function accountAtRefreshUiSettings(fields = CONFIG) {
+  const items = Array.isArray(fields) ? fields : [];
+  const driverField = items.find(item => item.key === 'ACCOUNT_AT_REFRESH_DRIVER');
+  const driver = String(driverField?.value || 'protocol').trim().toLowerCase() === 'browser_roxy' ? 'browser_roxy' : 'protocol';
+  const debugValue = items.find(item => item.key === 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED')?.value;
+  const debugEnabled = debugValue === true || String(debugValue).trim().toLowerCase() === 'true';
+  const version = String(items.find(item => item.key === 'OPENAI_PROTOCOL_VERSION')?.value || 'v1').trim().toLowerCase() === 'v2' ? 'v2' : 'v1';
+  const label = driverField ? (driver === 'browser_roxy' ? 'Roxy 指纹浏览器' : `协议刷新（${version}）`) : '已保存的刷新驱动';
+  const description = `使用${label}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`;
+  const debugDescription = debugEnabled ? 'Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。' : '';
+  return {driver, debugEnabled, label, description, debugDescription, title: description + (debugEnabled ? ' Roxy 调试已开启，失败保留窗口。' : '')};
+}
+async function loadAccountAtRefreshUiSettings() {
+  try {
+    const fields = await apiCached('/api/config', {}, 30000);
+    return accountAtRefreshUiSettings(fields);
+  } catch (error) {
+    return accountAtRefreshUiSettings();
+  }
 }
 async function loadRuntimeUiSettings() {
   try {
@@ -2225,7 +2249,7 @@ function _accountsV2MoreMenu(r) {
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新AT</button>`,
+    accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="${esc(accountAtRefreshUiSettings().title)}">刷新AT</button>`,
     accountIsDeactivated(r) ? `<button type="button" data-account-restore="${esc(r.id)}" title="已确认 OpenAI 恢复访问权限后，解除本地停用标记">已解封，恢复账号</button>` : '',
     `<button type="button" data-account-email-invalid="${esc(r.id)}" data-invalid="${r.email_invalid === true ? '0' : '1'}" title="仅更新独立邮箱失效标记，不修改 OpenAI 账号状态">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>`,
     `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
@@ -3711,12 +3735,16 @@ async function refreshSelectedToken(idsArg = null, btnArg = null) {
   const ids = idsArg || Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getAccountOperationWorkers();
-  const msg = idsArg ? `确定刷新这个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。` : `确定刷新选中的 ${ids.length} 个账号的 AT 吗？\n\n会通过邮箱 OTP 重新登录并保存最新 accessToken。\n\n并发线程数：${workers}`;
-  if (!confirm(msg)) return;
   const btn = btnArg || $('#btnRefreshSelectedTokenV2');
+  if (btn?.disabled) return;
   const old = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '刷新中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '读取配置…'; }
   try {
+    const settings = await loadAccountAtRefreshUiSettings();
+    const scope = ids.length === 1 ? '这个账号' : `选中的 ${ids.length} 个账号`;
+    const msg = `确定刷新${scope}的 AT 吗？\n\n${settings.description}${settings.debugDescription ? `\n\n${settings.debugDescription}` : ''}${ids.length > 1 ? `\n\n并发线程数：${workers}` : ''}`;
+    if (!confirm(msg)) return;
+    if (btn) btn.textContent = '刷新中…';
     const r = await api('/api/accounts/refresh-token-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -3725,7 +3753,8 @@ async function refreshSelectedToken(idsArg = null, btnArg = null) {
     const skipped = (r.skipped || []).length;
     showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}${accountBulkQueueReasons(r)}`);
     const firstStarted = (r.started || [])[0];
-    if (firstStarted?.email) openLiveLog(firstStarted.email);
+    if (firstStarted?.task_id) openAccountTaskLog(firstStarted.task_id, firstStarted.run_id || null);
+    else if (firstStarted?.email) openLiveLog(firstStarted.email);
     await loadAccounts();
     loadSummary();
   } catch(err) {
