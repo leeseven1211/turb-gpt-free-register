@@ -2257,7 +2257,7 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     if status == "processing":
         return (
             task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
-            or (item.get("mode") == "auto_payment" and payment in {"pending_payment", "request_unknown"})
+            or (item.get("mode") == "auto_payment" and payment == "pending_payment")
             or (payment == "paid" and plus in {"unknown", "pending", "queued"})
         )
     if status == "running":

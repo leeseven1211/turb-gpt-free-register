@@ -91,7 +91,7 @@ class ExtractReconcileHaltedStorageTests(PostgresTestCase):
     def test_halted_waiting_payments_leave_processing_but_keep_payment_facts(self):
         batch = operation.create_runtime_batch(batch_type="extract_link", title="续查收口", requested_count=4)
         halted = self.task(batch_id=batch["id"], summary={"local_reconcile_halted": True, "remote_polling": True})
-        unhalted = self.task(batch_id=batch["id"], summary={"local_reconcile_halted": False, "remote_polling": True})
+        unhalted = self.task(batch_id=batch["id"], status="queued", summary={"local_reconcile_halted": False, "remote_polling": True})
         paid = self.task(batch_id=batch["id"], summary={"local_reconcile_halted": True, "extraction_ever_succeeded": True},
                          extraction="succeeded", payment="succeeded", plus="confirmed",
                          artifact={"qr_data": "upi://pay?pa=fixture", "payment_page_url": "https://checkout.example.test/retained"})
@@ -116,7 +116,7 @@ class ExtractReconcileHaltedStorageTests(PostgresTestCase):
         self.assertEqual(1, counts["plus_confirmed"])
 
     def test_halt_marker_does_not_change_other_provider_processing(self):
-        task = self.task(provider="lumen_flow", summary={"local_reconcile_halted": True})
+        task = self.task(provider="lumen_flow", payment="pending", summary={"local_reconcile_halted": True})
         processing = extract_link_jobs.list_workbench_page(status="processing")
         self.assertEqual([task["id"]], [row["task_id"] for row in processing["items"]])
         self.assertEqual(1, processing["counts"]["processing"])

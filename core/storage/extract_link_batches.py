@@ -267,7 +267,7 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
             )
             SELECT batch_id, COUNT(*) AS all,
                 COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-                    OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
+                    OR (mode='auto_payment' AND payment_status='pending_payment')
                     OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))) AS processing,
                 COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')) AS running,
                 COUNT(*) FILTER (WHERE extraction_status='success') AS extraction_succeeded,

@@ -398,7 +398,7 @@ def list_workbench_rows(
 
 _WORKBENCH_STATUS_SQL = {
     "processing": """NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-        OR (mode='auto_payment' AND payment_status IN ('pending_payment','request_unknown'))
+        OR (mode='auto_payment' AND payment_status='pending_payment')
         OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))""",
     "running": "NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')",
     "extraction_succeeded": "extraction_status='success'",

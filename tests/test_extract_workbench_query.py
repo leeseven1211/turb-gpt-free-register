@@ -88,7 +88,7 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
             "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "confirmed",
         })
         expected = {
-            "processing": {pending["id"]},
+            "processing": set(),
             "running": set(),
             "extraction_succeeded": {legacy["id"], paid_plus["id"], extract_only["id"]},
             "payment_succeeded": {paid_plus["id"], paid_free["id"]},
@@ -102,6 +102,31 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
                 self.assertEqual(len(ids), result["total"])
                 self.assertEqual(len(ids), result["counts"][status])
                 self.assertEqual(5, result["counts"]["all"])
+
+    def test_unknown_payment_requires_an_active_run_to_remain_processing(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="待确认统计测试", requested_count=12)
+        active_ids = set()
+        all_ids = set()
+        for has_provider_job in (False, True):
+            for task_status in ("request_unknown", "attention_required", "failed", "partial_success", "queued", "running"):
+                state = {"extraction_state": "pending", "payment_state": "unknown", "plus_status": "not_applicable"}
+                task = self.task(provider="huanguang", mode="auto_payment", status=task_status,
+                    batch_id=batch["id"], state=state if has_provider_job else None,
+                    summary={"extraction_status": "pending", "payment_status": "unknown", "plus_status": "not_applicable"})
+                all_ids.add(task["id"])
+                if task_status in {"queued", "running"}:
+                    active_ids.add(task["id"])
+        processing = extract_link_jobs.list_workbench_page(status="processing", batch_id=batch["id"])
+        self.assertEqual(active_ids, {row["task_id"] for row in processing["items"]})
+        self.assertEqual(len(active_ids), processing["total"])
+        self.assertEqual(len(active_ids), processing["counts"]["processing"])
+        self.assertEqual(2, processing["counts"]["running"])
+        attention = extract_link_jobs.list_workbench_page(status="needs_attention", batch_id=batch["id"])
+        self.assertEqual(all_ids, {row["task_id"] for row in attention["items"]})
+        batch_counts = extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]
+        self.assertEqual(len(active_ids), batch_counts["processing"])
+        self.assertEqual(2, batch_counts["running"])
+        self.assertEqual(len(all_ids), batch_counts["needs_attention"])
 
     def test_old_remote_running_snapshot_does_not_count_as_local_execution(self):
         batch = operation.create_runtime_batch(batch_type="extract_link", title="同步统计测试", requested_count=10)

@@ -438,24 +438,26 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
             extract_link_jobs.save_provider_job(task["run"]["id"], provider_id, "test-job", state, {"job_secret": "must-not-be-projected"})
         return int(batch["id"])
 
-    def test_pending_unknown_and_plan_verification_remain_processing(self):
+    def test_pending_payment_and_plan_verification_remain_processing_but_unknown_does_not(self):
         scenarios = [
-            ("partial_success", "pending", "not_applicable"),
-            ("attention_required", "unknown", "not_applicable"),
-            ("success", "succeeded", "pending"),
-            ("success", "succeeded", "unknown"),
+            ("partial_success", "pending", "not_applicable", 1, "waiting"),
+            ("attention_required", "unknown", "not_applicable", 0, "partial_success"),
+            ("success", "succeeded", "pending", 1, "waiting"),
+            ("success", "succeeded", "unknown", 1, "waiting"),
         ]
         ids = self.accounts([{"plan_check_status": "queued"} for _ in scenarios])
-        for account_id, (task_status, payment, plus) in zip(ids, scenarios):
+        for account_id, (task_status, payment, plus, processing, status) in zip(ids, scenarios):
             with self.subTest(payment=payment, plus=plus):
                 batch_id = self.state_batch(account_id=account_id, task_status=task_status,
                     state={"extraction_state": "succeeded", "payment_state": payment, "plus_status": plus})
                 detail = extract_link_service.workbench_batch_detail(batch_id)
                 task_counts = extract_link_service.list_workbench_tasks(batch_id=batch_id)["counts"]
                 self.assertEqual(task_counts, detail["counts"])
-                self.assertEqual(1, detail["counts"]["processing"])
+                self.assertEqual(processing, detail["counts"]["processing"])
                 self.assertEqual(0, detail["counts"]["running"])
-                self.assertEqual("waiting", detail["status"])
+                self.assertEqual(status, detail["status"])
+                if payment == "unknown":
+                    self.assertEqual(1, detail["counts"]["needs_attention"])
 
     def test_queued_continuation_with_link_keeps_batch_queued(self):
         account_id = self.accounts([{"plan_check_status": "queued"}])[0]
