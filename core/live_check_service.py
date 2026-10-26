@@ -173,6 +173,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "roxy_not_configured", "roxy_profile_open_failed", "roxy_driver_attach_failed",
     "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
     "roxy_authenticated_callback_failed", "email_submit_unconfirmed", "email_otp_no_mail",
+    "roxy_proxy_tunnel_failed",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",

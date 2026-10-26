@@ -1299,6 +1299,13 @@
     .account-task-log-detail pre { margin:5px 0 0; max-height:220px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
     .account-task-artifacts { display:grid; gap:8px; white-space:normal; }
     .account-task-artifact { padding:9px 10px; border:1px solid #26344a; border-radius:6px; background:#111a2c; }
+    .account-task-artifact-links { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .account-task-artifact-links a {
+      display:inline-flex; align-items:center; min-height:32px; padding:4px 10px;
+      border:1px solid #41618d; border-radius:5px; color:#bfdbfe; text-decoration:none;
+    }
+    .account-task-artifact-links a:hover { background:#1e3552; color:#fff; }
+    .account-task-artifact-links a:focus-visible { outline:2px solid #93c5fd; outline-offset:2px; }
     .account-task-empty { padding:28px 12px; color:#8491a8; text-align:center; white-space:normal; }
     .account-task-new-events {
       position:absolute; right:28px; bottom:24px; z-index:2; min-height:30px; padding:0 10px;

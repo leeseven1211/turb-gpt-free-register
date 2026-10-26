@@ -992,6 +992,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "roxy_login_failed": ("ROXY-REFRESH-004", "Roxy 登录挑战未完成"),
     "roxy_session_fetch_failed": ("ROXY-REFRESH-005", "Roxy 登录后读取会话失败"),
     "roxy_authenticated_callback_failed": ("ROXY-REFRESH-006", "Roxy 登录成功后的账号处理失败"),
+    "roxy_proxy_tunnel_failed": ("NET-ROXY-001", "Roxy 代理隧道连接失败"),
     "refresh_result_invalid": ("SYS-REFRESH-RESULT", "AT 刷新驱动返回结果无效"),
     "refresh_cancelled": ("USR-REFRESH-001", "AT 刷新已取消"),
     "refresh_local_commit_failed": ("SYS-REFRESH-WRITEBACK", "AT 刷新本地写回或读回未完成"),

@@ -57,11 +57,29 @@ _ROXY_STAGE_CAUSES = {
 }
 
 
-def _refresh_failure_cause(exc: Exception, stage: str) -> tuple[str, str]:
+_PROXY_BROWSER_ERRORS = ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")
+
+
+def _browser_proxy_error(driver) -> str:
+    """只读取浏览器自身错误页上的固定网络码，不回传页面正文。"""
+    if driver is None:
+        return ""
+    try:
+        if not str(driver.current_url or "").startswith("chrome-error://"):
+            return ""
+        text = str(driver.execute_script("return document.body ? document.body.innerText : '';"))
+        return next((code for code in _PROXY_BROWSER_ERRORS if code in text), "")
+    except Exception:
+        return ""
+
+
+def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") -> tuple[str, str]:
     """先保留认证异常的明确原因，再按实际失败阶段分类并保留异常原文。"""
     code = str(getattr(exc, "code", "") or "")
     if code in {"password_rejected", "password_result_unknown", "mfa_secret_missing", "mfa_rejected"}:
         return code, "auth"
+    if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
+        return "roxy_proxy_tunnel_failed", "network"
     text = str(exc).lower()
     if type(exc).__name__ == "_EmailSubmissionUnknown":
         return "email_submit_unconfirmed", "auth"
@@ -573,12 +591,13 @@ def refresh_access_token(
             refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
             return refresh_result
         logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, str(exc)[:260])
-        cause_code, category = _refresh_failure_cause(exc, failure_stage)
+        browser_error = _browser_proxy_error(driver)
+        cause_code, category = _refresh_failure_cause(exc, failure_stage, browser_error)
         refresh_result = {
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
-            "error": f"Roxy {type(exc).__name__}: {str(exc)[:500]}",
+            "error": f"Roxy {type(exc).__name__}: {str(exc)[:500]}" + (f"；浏览器错误：{browser_error}" if browser_error else ""),
             "error_code": cause_code,
             "error_category": category,
             "failure_stage": failure_stage,

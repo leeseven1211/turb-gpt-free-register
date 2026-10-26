@@ -212,6 +212,23 @@ class RoxyRefreshHookTests(unittest.TestCase):
         self.assertEqual("mfa_secret_missing", result.get("error_code"))
         self.assertIn("本地没有 2FA 密钥", result["error"])
 
+    def test_browser_proxy_error_is_reported_without_losing_unknown_submission(self):
+        from core.task_errors import classify_task_error
+
+        driver, _, _, _, _, _ = self._context(failure=RuntimeError("request_unknown: 密码提交结果未确认"))
+        driver.current_url = "chrome-error://chromewebdata/"
+        driver.execute_script.return_value = "このサイトにアクセスできません ERR_TUNNEL_CONNECTION_FAILED"
+        result = roxy_liveness.refresh_access_token(EMAIL, context_recorder=MagicMock())
+
+        self.assertEqual("roxy_proxy_tunnel_failed", result.get("error_code"))
+        self.assertEqual("network", result.get("error_category"))
+        self.assertIn("ERR_TUNNEL_CONNECTION_FAILED", result["error"])
+        self.assertIn("request_unknown", result["error"])
+        self.assertTrue(service._refresh_result_is_unknown(result))
+        info = classify_task_error(result["error"], task_type="token_refresh", error_code=result["error_code"])
+        self.assertEqual("NET-ROXY-001", info["display_code"])
+        self.assertEqual("网络 / 上游服务", info["source_label"])
+
     def test_cancelled_debug_run_is_cleaned_without_failure_capture(self):
         _, _, client, events, _, capture = self._context(mode="full")
         with patch.object(roxy_liveness, "_enter_existing_account_otp", side_effect=OperationCancelled("模拟取消")), \
