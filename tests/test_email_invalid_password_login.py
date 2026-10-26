@@ -347,12 +347,32 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
         self.assertEqual("logged_in", result)
         challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45)
 
-    def test_browser_unmarked_email_keeps_initial_otp_flow(self):
+    def test_browser_unmarked_email_uses_offered_saved_password_before_waiting_for_mail(self):
         driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False)
 
         result = roxy_liveness._enter_existing_account_otp(
             driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
         )
+
+        self.assertEqual("logged_in", result)
+        challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45)
+        roxy_liveness._open_standard_password_login.assert_not_called()
+
+    def test_browser_unmarked_email_returns_to_mail_if_shared_challenge_still_requires_it(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False, challenge_state="email_otp")
+
+        result = roxy_liveness._enter_existing_account_otp(
+            driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+        )
+
+        self.assertEqual("otp", result)
+        challenge.assert_called_once()
+        roxy_liveness._open_standard_password_login.assert_not_called()
+
+    def test_browser_unmarked_email_without_password_keeps_mail_flow(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False)
+
+        result = roxy_liveness._enter_existing_account_otp(driver, EMAIL)
 
         self.assertEqual("otp", result)
         challenge.assert_not_called()

@@ -151,5 +151,54 @@ class RoxyLivenessFlowPolicyTests(unittest.TestCase):
         saver.stop.assert_called_once_with()
 
 
+class RoxyEmailOtpConfirmationTests(unittest.TestCase):
+    def _otp_context(self, *, outcome):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        baseline = {"url": "https://auth.openai.com/email-verification", "errors": ["无法发送验证码"]}
+        fetch = stack.enter_context(patch.object(roxy_liveness, "wait_for_otp", return_value="123456"))
+        stack.enter_context(patch.object(roxy_liveness, "_email_otp_page_state", create=True, return_value=baseline))
+        stack.enter_context(patch.object(roxy_liveness, "_clear_otp_inputs"))
+        stack.enter_context(patch.object(roxy_liveness, "_type_otp"))
+        click = stack.enter_context(patch.object(roxy_liveness, "_click_continue"))
+        wait = stack.enter_context(patch.object(roxy_liveness, "_wait_after_email_otp_submit", return_value=outcome))
+        resend = stack.enter_context(patch.object(roxy_liveness, "_click_resend_email_otp", return_value={"requested_after_ts": 200.0}))
+        return baseline, fetch, click, wait, resend
+
+    def test_unconfirmed_or_expired_submission_does_not_start_another_mail_wait(self):
+        for outcome in ("stuck", "session_expired"):
+            with self.subTest(outcome=outcome):
+                baseline, fetch, _click, wait, resend = self._otp_context(outcome=outcome)
+                with self.assertRaisesRegex(RuntimeError, "email_submit_unconfirmed"):
+                    roxy_liveness._complete_otp(MagicMock(), "account@example.test", 100.0)
+                self.assertEqual(1, fetch.call_count)
+                self.assertEqual(baseline, wait.call_args.kwargs.get("baseline_state"))
+                resend.assert_not_called()
+
+    def test_verified_page_and_auto_submit_click_error_finish_without_resend(self):
+        _baseline, fetch, click, _wait, resend = self._otp_context(outcome="email_verified")
+        click.side_effect = RuntimeError("自动提交后原按钮已卸载")
+        roxy_liveness._complete_otp(MagicMock(), "account@example.test", 100.0)
+        self.assertEqual(1, fetch.call_count)
+        resend.assert_not_called()
+
+    def test_cancel_during_click_is_not_swallowed(self):
+        from core.operation_runtime import OperationCancelled
+
+        _baseline, _fetch, click, wait, resend = self._otp_context(outcome="accepted")
+        click.side_effect = OperationCancelled("用户停止")
+        with self.assertRaises(OperationCancelled):
+            roxy_liveness._complete_otp(MagicMock(), "account@example.test", 100.0)
+        wait.assert_not_called()
+        resend.assert_not_called()
+
+    def test_explicit_invalid_code_resends_once_and_uses_new_request_time(self):
+        _baseline, fetch, _click, wait, resend = self._otp_context(outcome="accepted")
+        wait.side_effect = ["invalid", "accepted"]
+        roxy_liveness._complete_otp(MagicMock(), "account@example.test", 100.0)
+        resend.assert_called_once()
+        self.assertEqual([100.0, 200.0], [call.kwargs["after_ts"] for call in fetch.call_args_list])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,10 +15,11 @@ from urllib.parse import urlparse
 from config import roxybrowser as cfg
 from core.email_auth_guard import serialize_email_auth
 from core.email_provider import wait_for_otp
+from core.forward_imap_client import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.account_credentials import account_email_is_invalid
 from core.openai_auth import AccountUnusableError, detect_account_unusable_text
 from core.auth_challenge import AuthCancelledError
-from core.operation_runtime import OperationCancelled, check_cancelled
+from core.operation_runtime import OperationCancelled, check_cancelled, current_token, report_stage
 from core.operations.task_gateway import OperationLeaseLost
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
@@ -26,6 +27,7 @@ from core.registration.selenium_auth import (
     clear_otp_inputs as _clear_otp_inputs,
     click_continue as _click_continue,
     click_resend_email_otp as _click_resend_email_otp,
+    email_otp_page_state as _email_otp_page_state,
     fetch_chatgpt_session as _fetch_chatgpt_session,
     find_any as _find_any,
     has_access_token as _has_access_token,
@@ -76,7 +78,7 @@ def _browser_proxy_error(driver) -> str:
 def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") -> tuple[str, str]:
     """先保留认证异常的明确原因，再按实际失败阶段分类并保留异常原文。"""
     code = str(getattr(exc, "code", "") or "")
-    if code in {"password_rejected", "password_result_unknown", "mfa_secret_missing", "mfa_rejected"}:
+    if code in {"password_rejected", "password_result_unknown", "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed"}:
         return code, "auth"
     if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
         return "roxy_proxy_tunnel_failed", "network"
@@ -104,6 +106,12 @@ class _EmailInvalidLoginError(RuntimeError):
             "email_verification_required": "邮箱已失效，密码登录后仍需邮箱验证",
         }[code]
         super().__init__(f"{code}: {message}")
+
+
+class _RoxyOtpSubmissionUnknown(RuntimeError):
+    """邮箱验证码的本次提交尚未确认，保留现场供同一账号手动重跑。"""
+
+    code = "email_submit_unconfirmed"
 
 
 def available() -> bool:
@@ -240,7 +248,8 @@ def _enter_existing_account_otp(
             return "otp"
         raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
     if state == "otp" or _is_email_verification_page(driver):
-        if account_email_is_invalid(email):
+        email_invalid = account_email_is_invalid(email)
+        if email_invalid or password:
             from core.roxy_codex_oauth import complete_openai_login_challenge
 
             if not password:
@@ -265,6 +274,8 @@ def _enter_existing_account_otp(
             if challenge_state == "advanced":
                 return "logged_in"
             if challenge_state == "email_otp":
+                if not email_invalid:
+                    return "otp"
                 # 公共状态机找不到页面提供的密码入口时会直接返回邮箱分支；
                 # 只有本轮产生密码提交回执，才把它描述为密码后的邮箱挑战。
                 if not password_submitted():
@@ -303,14 +314,20 @@ def _complete_otp(
     for attempt in range(1, 4):
         if current_otp is None:
             current_otp = wait_for_otp(email, after_ts=after_ts)
+        baseline = _email_otp_page_state(driver)
         _clear_otp_inputs(driver)
         _type_otp(driver, current_otp)
         try:
             _click_continue(driver)
+        except (OperationCancelled, AuthCancelledError, OperationLeaseLost):
+            raise
         except Exception:
+            # 输入最后一位可能已触发自动提交，原按钮卸载后继续观察原结果。
             pass
-        outcome = _wait_after_email_otp_submit(driver, timeout=35)
-        if outcome == "accepted":
+        outcome = _wait_after_email_otp_submit(
+            driver, timeout=35, baseline_state=baseline, expected_email=email,
+        )
+        if outcome in {"accepted", "email_verified"}:
             return
         if outcome == "totp_required":
             from core.roxy_codex_oauth import complete_openai_login_challenge
@@ -325,10 +342,14 @@ def _complete_otp(
             if challenge_state == "advanced":
                 return
             raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={challenge_state}")
+        if outcome != "invalid":
+            reason = "认证会话已失效" if outcome == "session_expired" else "验证码提交结果未确认"
+            raise _RoxyOtpSubmissionUnknown(f"email_submit_unconfirmed: {reason}，state={outcome}")
         if attempt >= 3:
             break
-        after_ts = time.time()
-        _click_resend_email_otp(driver, timeout=25)
+        requested_at = time.time()
+        resend = _click_resend_email_otp(driver, timeout=25)
+        after_ts = float(resend.get("requested_after_ts") or requested_at) if isinstance(resend, dict) else requested_at
         current_otp = None
     raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
 
@@ -417,7 +438,17 @@ def refresh_access_token(
         failure_stage = value
         if callable(getattr(debug_session, "update_stage", None)):
             debug_session.update_stage({"open": "browser", "driver": "browser", "navigation": "browser",
-                                        "login": "login_password", "session": "token", "callback": "token"}.get(value, value))
+                                        "login": "login", "session": "token", "callback": "token"}.get(value, value))
+        if current_token() is not None:
+            visible_stage, message = {
+                "driver": ("login", "正在连接 Roxy 浏览器"),
+                "navigation": ("login", "正在加载 ChatGPT 登录页"),
+                "login": ("login", "正在登录账号，优先使用页面提供的已保存密码入口"),
+                "email_otp": ("email_otp", "服务端仍要求邮箱验证，正在查收邮箱验证码"),
+                "session": ("refresh_token", "登录验证已完成，正在读取会话和 AT"),
+                "callback": ("token", "正在处理已取得的登录会话"),
+            }[value]
+            report_stage(visible_stage, message)
 
     try:
         check_cancelled("用户手动停止刷新 AT")
@@ -593,6 +624,9 @@ def refresh_access_token(
         logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, str(exc)[:260])
         browser_error = _browser_proxy_error(driver)
         cause_code, category = _refresh_failure_cause(exc, failure_stage, browser_error)
+        failure_kind = ("no_mail" if isinstance(exc, ForwardIMAPNoMailTimeout)
+                        else "imap_error" if isinstance(exc, ForwardIMAPError)
+                        else "runtime_exception")
         refresh_result = {
             "ok": False,
             "status": "failed",
@@ -601,7 +635,7 @@ def refresh_access_token(
             "error_code": cause_code,
             "error_category": category,
             "failure_stage": failure_stage,
-            "auth_diagnostics": {"operation": f"roxy_{failure_stage}", "failure_kind": "runtime_exception",
+            "auth_diagnostics": {"operation": f"roxy_{failure_stage}", "failure_kind": failure_kind,
                                  "exception_type": type(exc).__name__},
             "validation_method": "roxy_email_otp",
         }

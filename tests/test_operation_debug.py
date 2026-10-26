@@ -58,6 +58,24 @@ class OperationDebugTests(unittest.TestCase):
         app.register_blueprint(operations.create_operations_blueprint(context))
         return app.test_client()
 
+    def test_imap_deadline_is_classified_as_mail_service_instead_of_unknown_or_browser_network(self):
+        session = operation_debug.OperationDebugSession(
+            operation_debug.artifact_job(self.task, self.task["runs"][0]), capture_mode="full",
+        )
+        category = session._failure_category(
+            "Roxy ForwardIMAPError: 本机 Gmail IMAP 等待验证码超时（>240s）；读取阶段耗尽总预算",
+            {"url": "https://auth.openai.com/email-verification", "dom": {"input_count": 1}},
+        )
+        self.assertEqual("mail_service", category)
+        self.assertEqual("邮箱收码服务", session._failure_category_label(category))
+
+    def test_unconfirmed_email_submission_preserves_auth_diagnostic_category(self):
+        category = operation_debug.OperationDebugSession._failure_category(
+            "email_submit_unconfirmed: 验证码提交结果未确认，state=stuck", {},
+        )
+        self.assertEqual("auth_submission_unconfirmed", category)
+        self.assertEqual("认证提交未确认", operation_debug.OperationDebugSession._failure_category_label(category))
+
     def test_download_rejects_run_from_another_task_and_unrelated_task_type(self):
         client = self._client()
         with patch.object(operations.operation_task_store, "get_task", return_value=self.task):

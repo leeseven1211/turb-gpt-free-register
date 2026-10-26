@@ -33,6 +33,23 @@ class OperationDebugSession(registration_debug.RegistrationDebugSession):
 
     capture_without_pause = True
 
+    @staticmethod
+    def _failure_category(reason: str, state: dict, network: list[dict] | None = None) -> str:
+        text = str(reason or "").lower()
+        if "email_submit_unconfirmed" in text:
+            return "auth_submission_unconfirmed"
+        if "forwardimap" in text:
+            return "mail_service"
+        return registration_debug.RegistrationDebugSession._failure_category(reason, state, network)
+
+    @staticmethod
+    def _failure_category_label(category: str) -> str:
+        if category == "mail_service":
+            return "邮箱收码服务"
+        if category == "auth_submission_unconfirmed":
+            return "认证提交未确认"
+        return registration_debug.RegistrationDebugSession._failure_category_label(category)
+
     def _patch_job(self, **changes: Any) -> None:
         self.job.update(changes)
 
@@ -86,6 +103,7 @@ def activate(context) -> Activation | None:
     with _LOCK:
         _ACTIVE[key] = session
     token = registration_debug._CURRENT_SESSION.set(session)
+    logger.info("[账号操作调试] Roxy 刷新调试已开启：全程抓包，失败保存现场；入口为任务日志的诊断资源")
     return Activation(session, token, key)
 
 

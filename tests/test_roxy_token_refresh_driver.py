@@ -181,6 +181,38 @@ class RoxyRefreshHookTests(unittest.TestCase):
         self.assertNotIn("quit", events)
         client.cleanup_profile.assert_not_called()
 
+    def test_email_wait_reports_actual_stage_and_imap_timeout_cause(self):
+        from core.forward_imap_client import ForwardIMAPError
+        from core.operation_runtime import CancellationToken, operation_context
+        from core.task_errors import classify_task_error
+        from core import task_run_log
+
+        self._context(mode="full")
+        events = []
+        token = CancellationToken(9, "fixture", lambda *_args: False)
+        stages_at_wait = []
+
+        def fail_mail_wait(*_args, **_kwargs):
+            stages_at_wait.append(task_run_log.current_context().get("stage"))
+            raise ForwardIMAPError("本机 Gmail IMAP 等待验证码超时（>240s）；读取阶段耗尽总预算")
+
+        with (
+            patch.object(roxy_liveness, "_enter_existing_account_otp", return_value="otp"),
+            patch.object(roxy_liveness, "_complete_otp", side_effect=fail_mail_wait),
+            operation_context(token, reporter=lambda **event: events.append(event)),
+        ):
+            result = roxy_liveness.refresh_access_token(EMAIL)
+
+        self.assertEqual(["email_otp"], stages_at_wait)
+        self.assertTrue(any(event["stage"] == "email_otp" and event["state"] == "running" for event in events))
+        self.assertEqual("email_otp_failed", result["error_code"])
+        self.assertEqual("imap_error", result["auth_diagnostics"]["failure_kind"])
+        info = classify_task_error(
+            result["error"], task_type="token_refresh", error_code=result["error_code"],
+            result_summary={**result, "cause_code": result["error_code"]},
+        )
+        self.assertEqual("MAIL-IMAP-001", info["display_code"])
+
     def test_failure_only_capture_precedes_cleanup_without_retaining_browser(self):
         _, _, client, events, _, capture = self._context(mode="failure_only", failure=RuntimeError("fixture-failure"))
 
