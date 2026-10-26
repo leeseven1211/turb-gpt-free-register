@@ -164,13 +164,14 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "password_rejected", "password_rejected_email_fallback_failed",
     "password_result_unknown", "password_sentinel_failed",
     "password_verify_failed", "password_verify_invalid_response",
+    "password_login_unavailable", "email_verification_required",
     "passwordless_fallback_unavailable", "protocol_network_error",
     "protocol_v2_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
     "refresh_cancelled", "refresh_local_commit_failed", "remote_response_missing",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
-    "network_preflight", "password_email_fallback", "password_verify", "password_sentinel",
+    "network_preflight", "password_email_fallback", "password_verify", "password_sentinel", "password_login",
     "protocol_v2_auth",
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
@@ -320,6 +321,7 @@ def _refresh_result_is_rejected(result: dict | None) -> bool:
         "account_deactivated",
         "password_rejected",
         "passwordless_fallback_unavailable",
+        "email_verification_required",
     )
     return any(code in markers for code in codes if code)
 
@@ -618,6 +620,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         or result.get("error") in {
             "password_rejected_email_fallback_failed",
             "passwordless_fallback_unavailable",
+            "email_verification_required",
         }
     )
     uses_mfa = "mfa" in auth_method
@@ -830,7 +833,7 @@ def _run_live_check(
             })
             network_open = False
             if force_refresh:
-                reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
+                reporter.stage("login_password", "running", "正在重新登录刷新 AT")
             return account_route.proxy_url
 
         def acquire_explicit_route() -> str:
@@ -857,13 +860,20 @@ def _run_live_check(
                 reporter.stage("network", "success", "网络线路已就绪")
                 network_open = False
                 if force_refresh:
-                    reporter.stage("login_password", "running", "正在通过邮箱登录刷新 AT")
+                    reporter.stage("login_password", "running", "正在重新登录刷新 AT")
             return account_route.proxy_url
 
         # 查活和刷新 AT 是两个不同动作：
         # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
-        # - 刷新 AT（force_refresh=True）才跳过旧 AT，执行邮箱 OTP 重登录。
+        # - 刷新 AT（force_refresh=True）才跳过旧 AT，按账号可用凭据重新登录。
         account = db.get_account(account_id) or {}
+        if force_refresh and account.get("email_invalid") is True:
+            selected_refresh_driver = "protocol_v2"
+            reporter.note(
+                stage="login_password",
+                message="邮箱已失效，优先使用保存的密码及 2FA 登录",
+                detail={"protocol_version": "v2", "token_refresh_driver": selected_refresh_driver},
+            )
         protocol_identity = _resolve_protocol_identity(
             account_id, selected_refresh_driver, config_snapshot,
         )
@@ -1168,7 +1178,7 @@ def _run_live_check(
             reporter.note(
                 stage="reauth",
                 message=(
-                    "AT 即将过期，按计划转邮箱 OTP 登录刷新"
+                    "按账号可用凭据重新登录刷新 AT"
                     if force_refresh
                     else "查活未通过；如需获取新 AT，请单独点击“刷新AT”"
                 ),
@@ -1416,7 +1426,7 @@ def _run_live_check(
             if result.get("validation_method") == "access_token":
                 _append_log(email, "[查活] 完成：账号正常，现有 accessToken 已通过在线验证")
             else:
-                _append_log(email, "[查活] 完成：账号正常，已通过邮箱登录刷新 accessToken")
+                _append_log(email, "[查活] 完成：账号正常，已重新登录刷新 accessToken")
         elif result.get("status") == "deactivated":
             _append_log(email, f"[查活] 完成：账号已废 {result.get('error') or ''}")
         else:
@@ -1430,7 +1440,7 @@ def _run_live_check(
             message=(
                 "账号正常，AT 在线验证成功"
                 if result.get("ok") and result.get("validation_method") == "access_token"
-                else "账号正常，已通过邮箱登录刷新 AT"
+                else "账号正常，已重新登录刷新 AT"
                 if result.get("ok")
                 else "账号已确认停用"
                 if final_status == "deactivated"
@@ -1835,6 +1845,9 @@ def run_account_live_check_inline(
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
 
+    if force_refresh and account.get("email_invalid") is True:
+        effective_refresh_driver = "protocol_v2"
+
     native_inline = operation_context is not None
     if not native_inline and not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "queue_full": True, "error": "查活队列已满，请稍后重试"}
@@ -1939,6 +1952,9 @@ def enqueue_account_live_check(
             "accepted": False, "busy": False, "not_registered": True,
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
+
+    if force_refresh and account.get("email_invalid") is True:
+        effective_refresh_driver = "protocol_v2"
 
     task_type = "token_refresh" if force_refresh else "live_check"
     claimed = False

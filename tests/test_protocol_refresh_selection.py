@@ -9,6 +9,28 @@ from core.twofa_flow import plan_twofa_context
 
 
 class ProtocolRefreshSelectionTests(unittest.TestCase):
+    def test_invalid_email_freezes_password_capable_driver_even_with_v1_default(self):
+        from core import live_check_service as service
+
+        account = {"id": 7, "email": "fixture@example.test", "access_token": "fixture-at", "email_invalid": True}
+        with (
+            patch.object(openai_protocol, "OPENAI_PROTOCOL_VERSION", "v1"),
+            patch.object(service.db, "get_account", return_value=account),
+            patch.object(service.db, "account_is_deactivated", return_value=False),
+            patch.object(service.db, "claim_account_live_check", return_value=True),
+            patch.object(service, "_append_log"),
+            patch.object(service.account_task_store, "submit_durable_operation", return_value={
+                "accepted": True, "task_id": 101, "run_id": 1001, "status": "queued",
+            }) as submit,
+        ):
+            result = service.enqueue_account_live_check(
+                account_id=7, email=account["email"], trigger="token_refresh_manual", force_refresh=True,
+            )
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("protocol_v2", result["token_refresh_driver"])
+        self.assertEqual("v2", submit.call_args.kwargs["data"]["refresh_driver"])
+
     def test_twofa_protocol_reauth_is_context_source_not_refresh_driver(self):
         plan = plan_twofa_context(
             "auto",

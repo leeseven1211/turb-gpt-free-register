@@ -258,6 +258,7 @@ _NO_FALLBACK_CODES = {
     "password_result_unknown",
     "password_rejected_email_fallback_failed",
     "passwordless_fallback_unavailable",
+    "email_verification_required",
     "mfa_rejected",
     "mfa_secret_missing",
     "account_deactivated",
@@ -277,6 +278,7 @@ _PROTOCOL_FAILURE_CODES = {
     "password_verify_failed", "password_verify_invalid_response", "protocol_v2_unknown_error",
     "refresh_driver_exception", "refresh_result_invalid", "refresh_local_commit_failed",
     "remote_response_missing", "auth_failed", "auth_result_missing",
+    "password_login_unavailable", "email_verification_required",
 }
 _SAFE_STATUS_VALUES = {item.value for item in AuthStatus}
 

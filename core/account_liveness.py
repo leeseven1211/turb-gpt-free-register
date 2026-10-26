@@ -23,6 +23,7 @@ from core.openai_auth import (
 )
 from core.account_export import follow_oauth_callback, fetch_session
 from core.email_provider import wait_for_otp
+from core.account_credentials import account_email_is_invalid
 from core.humanize import delay as human_delay
 
 logger = logging.getLogger(__name__)
@@ -436,6 +437,16 @@ def check_account_liveness(
     email = str(email or "").strip()
     if not email:
         raise ValueError("email 不能为空")
+
+    if account_email_is_invalid(email):
+        from core.protocol_v2_liveness import refresh_access_token
+
+        logger.info("[查活] 邮箱已失效，改用保存的密码及 2FA 刷新 AT")
+        return refresh_access_token(
+            email, proxy=proxy, proxy_supplier=proxy_supplier,
+            on_remote_request_started=on_remote_request_started,
+            **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+        )
 
     checked_at = _now()
     key = email.lower()

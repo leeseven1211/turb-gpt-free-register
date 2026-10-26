@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """使用 Roxy 指纹浏览器为已注册账号刷新 ChatGPT accessToken。
 
-该流程只允许进入“已有账号登录 → 邮箱 OTP”；一旦识别为新账号密码/资料页会
+该流程处理已有账号的密码、TOTP 和邮箱 OTP；一旦识别为新账号密码/资料页会
 立即停止，避免查活意外创建账号。
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ from datetime import datetime
 from config import roxybrowser as cfg
 from core.email_auth_guard import serialize_email_auth
 from core.email_provider import wait_for_otp
+from core.account_credentials import account_email_is_invalid
 from core.openai_auth import AccountUnusableError, detect_account_unusable_text
 from core.registration.selenium_auth import (
     build_driver as _build_driver,
@@ -38,6 +39,20 @@ from core.registration.selenium_auth import (
 from core.roxybrowser_client import RoxyBrowserClient
 
 logger = logging.getLogger(__name__)
+
+
+class _EmailInvalidLoginError(RuntimeError):
+    """失效邮箱登录的已知失败，只携带固定原因和明确的提交事实。"""
+
+    def __init__(self, code: str, *, not_submitted: bool = False):
+        self.code = code
+        self.not_submitted = bool(not_submitted)
+        message = {
+            "password_missing": "邮箱已失效，且未保存 OpenAI 登录密码",
+            "password_login_unavailable": "邮箱已失效，当前认证页未提供密码登录入口",
+            "email_verification_required": "邮箱已失效，密码登录后仍需邮箱验证",
+        }[code]
+        super().__init__(f"{code}: {message}")
 
 
 def available() -> bool:
@@ -135,6 +150,8 @@ def _enter_existing_account_otp(
         # such refresh before trying the saved password/TOTP.
         from core.roxy_codex_oauth import complete_openai_login_challenge
 
+        if account_email_is_invalid(email) and not password:
+            raise _EmailInvalidLoginError("password_missing", not_submitted=True)
         challenge_state = complete_openai_login_challenge(
             driver,
             email,
@@ -145,9 +162,30 @@ def _enter_existing_account_otp(
         if challenge_state == "advanced":
             return "logged_in"
         if challenge_state == "email_otp":
+            if account_email_is_invalid(email):
+                raise _EmailInvalidLoginError("email_verification_required")
             return "otp"
         raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
     if state == "otp" or _is_email_verification_page(driver):
+        if account_email_is_invalid(email):
+            from core.roxy_codex_oauth import complete_openai_login_challenge
+
+            if not password:
+                raise _EmailInvalidLoginError("password_missing", not_submitted=True)
+            initial_receipt = getattr(driver, "_browser_submission_receipt", None)
+            challenge_state = complete_openai_login_challenge(
+                driver, email, password, totp_secret, timeout=45,
+            )
+            if challenge_state == "advanced":
+                return "logged_in"
+            if challenge_state == "email_otp":
+                receipt = getattr(driver, "_browser_submission_receipt", None)
+                # 公共状态机找不到页面提供的密码入口时会直接返回邮箱分支；
+                # 只有本轮产生密码提交回执，才把它描述为密码后的邮箱挑战。
+                if receipt is initial_receipt or getattr(receipt, "endpoint_kind", "") != "password_submit":
+                    raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                raise _EmailInvalidLoginError("email_verification_required")
+            raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
         return "otp"
     raise RuntimeError(f"浏览器登录未进入已有账号 OTP，最后状态={state}")
 
@@ -325,6 +363,27 @@ def refresh_access_token(
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
+        return refresh_result
+    except _EmailInvalidLoginError as exc:
+        logger.warning("[查活][Roxy] 失效邮箱登录未完成：%s", str(exc))
+        refresh_result = {
+            "ok": False,
+            "status": "failed",
+            "checked_at": checked_at,
+            "error": str(exc),
+            "error_code": exc.code,
+            "error_category": {
+                "password_missing": "configuration",
+                "password_login_unavailable": "auth",
+                "email_verification_required": "email",
+            }[exc.code],
+            "roxy_fallback_allowed": False,
+            "validation_method": "roxy_email_otp",
+        }
+        if exc.not_submitted:
+            refresh_result.update({"mutation_submitted": False, "action_dispatched": False})
+        else:
+            refresh_result.update({"response_observed": True, "remote_response_received": True})
         return refresh_result
     except Exception as exc:
         code = detect_account_unusable_text(str(exc))

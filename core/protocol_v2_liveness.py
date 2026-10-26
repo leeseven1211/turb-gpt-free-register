@@ -16,8 +16,9 @@ import logging
 import re
 import time
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import pyotp
 
@@ -41,7 +42,7 @@ from core.openai_auth import (
     request_sentinel_token,
     send_email_otp,
 )
-from core.account_credentials import get_account_login_credentials
+from core.account_credentials import account_email_is_invalid, get_account_login_credentials
 from core.auth_fingerprint import build_safe_fingerprint_summary
 from core.auth_challenge import auth_result_for_operation
 
@@ -521,6 +522,72 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
         raise
 
 
+def _open_offered_password_login(session, final_url: str) -> str:
+    """邮箱失效时沿用当前会话，只访问认证页实际提供的密码登录入口。"""
+    def trusted_path(url: str, path: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            parsed.scheme == "https" and parsed.netloc.lower() == "auth.openai.com"
+            and parsed.path.rstrip("/") == path
+        )
+
+    def unavailable() -> ProtocolV2AuthError:
+        error = ProtocolV2AuthError(
+            "password_login_unavailable", category="auth", roxy_fallback_allowed=True,
+        )
+        error.mutation_submitted = False
+        error.action_dispatched = False
+        return error
+
+    def navigate(url: str, referer: str):
+        try:
+            response = session.get(
+                url, headers=session.get_auth_navigate_headers(referer=referer),
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+            return response
+        except Exception as exc:
+            error = unavailable()
+            error.category = "network"
+            error.diagnostics = _request_diagnostics(
+                exc, operation="password_login",
+                response_observed=_response_status(getattr(exc, "response", None)) is not None,
+            )
+            raise error from exc
+
+    if not trusted_path(final_url, "/email-verification"):
+        raise unavailable()
+    response = navigate(final_url, _EMAIL_PATH)
+    current_url = str(getattr(response, "url", "") or final_url)
+    if trusted_path(current_url, "/log-in/password"):
+        return current_url
+    if not trusted_path(current_url, "/email-verification"):
+        raise unavailable()
+
+    class PasswordLinkParser(HTMLParser):
+        target = ""
+
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() != "a" or self.target:
+                return
+            href = dict(attrs).get("href") or ""
+            target = urljoin(current_url, href)
+            if trusted_path(target, "/log-in/password"):
+                self.target = target
+
+    parser = PasswordLinkParser()
+    parser.feed(str(getattr(response, "text", "") or ""))
+    if not parser.target:
+        raise unavailable()
+    response = navigate(parser.target, current_url)
+    password_url = str(getattr(response, "url", "") or "")
+    if not trusted_path(password_url, "/log-in/password"):
+        raise unavailable()
+    logger.info("[查活][Protocol v2] 邮箱已失效，已切换到页面提供的密码登录入口")
+    return password_url
+
+
 def _refresh_with_password(
     email: str,
     proxy: str | None,
@@ -539,7 +606,15 @@ def _refresh_with_password(
     fallback_session = None
     checked_at = _now()
     password, totp_secret = get_account_login_credentials(email)
+    email_invalid = account_email_is_invalid(email)
     if not password:
+        if email_invalid:
+            error = ProtocolV2AuthError(
+                "password_missing", category="configuration", roxy_fallback_allowed=False,
+            )
+            error.mutation_submitted = False
+            error.action_dispatched = False
+            raise error
         # The v2 adapter does not invent a different no-password flow.  Keep
         # the established email/re-auth implementation as a compatibility
         # adapter and label the result so the task UI remains truthful.
@@ -575,6 +650,13 @@ def _refresh_with_password(
             raise ProtocolV2AuthError("account_deactivated", category="account", roxy_fallback_allowed=False)
 
         parsed_final_url = urlparse(str(final_url or ""))
+        if (
+            email_invalid and parsed_final_url.hostname == "auth.openai.com"
+            and parsed_final_url.path.rstrip("/") == "/email-verification"
+        ):
+            auth_method = "password"
+            final_url = _open_offered_password_login(session, str(final_url))
+            parsed_final_url = urlparse(final_url)
         final_host = (parsed_final_url.hostname or "").lower()
         final_path = parsed_final_url.path.lower()
         if final_host == "auth.openai.com" and final_path == "/email-verification":
@@ -659,7 +741,7 @@ def _refresh_with_password(
         except ProtocolV2AuthError as exc:
             if exc.code != "password_rejected":
                 raise
-            if not bool(getattr(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", False)):
+            if email_invalid or not bool(getattr(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", False)):
                 raise
             # Do not reuse the rejected session.  The fallback starts a fresh
             # cookie jar, while keeping the original selected proxy.
@@ -751,6 +833,12 @@ def _refresh_with_password(
             session_info, auth_method = _complete_mfa(session, password_result, continue_url, totp_secret)
             password_auth_status = "verified"
         elif _is_email_otp(password_result, continue_url):
+            if email_invalid:
+                password_auth_status = "verified"
+                raise ProtocolV2AuthError(
+                    "email_verification_required", category="email", roxy_fallback_allowed=False,
+                    response_observed=True,
+                )
             email_result, auth_method = _complete_email_otp(
                 session,
                 email,

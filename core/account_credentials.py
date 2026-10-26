@@ -10,6 +10,17 @@ from __future__ import annotations
 import json
 
 
+def account_email_is_invalid(email: str) -> bool:
+    """读取账号独立的邮箱失效标记，不据认证错误推断邮箱状态。"""
+    try:
+        from core import db
+
+        account = db.get_account_by_email(email) or {}
+    except Exception:
+        return False
+    return account.get("email_invalid") is True
+
+
 def get_account_login_credentials(email: str) -> tuple[str, str]:
     """Return ``(OpenAI password, TOTP secret)`` without logging either value."""
     try:
