@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -668,6 +669,106 @@ class MaintenanceDurableGatewayTests(PostgresTestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual("queued", db.get_account(account_id)["live_check_status"])
+
+    def test_token_refresh_retry_captures_current_driver_and_debug_without_changing_old_runs(self):
+        account_id = self._account("token-refresh-retry-config@example.test")
+        old_snapshot = task_gateway.normalize_config_snapshot(_ConfigSnapshot({
+            "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
+            "OPENAI_PROTOCOL_VERSION": "v2",
+            "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": False,
+            "ACCOUNT_REFRESH_AT_PROXY_MODE": "direct",
+        }, revision=801), allowlist=live_check_service.LIVE_CONFIG_ALLOWLIST)
+        task = operation.create_runtime_task(
+            task_type="token_refresh", account_id=account_id,
+            email="token-refresh-retry-config@example.test", source_system="native_operations",
+            source_id="token-refresh-retry-config", data={
+                "force_refresh": True, "driver": None, "refresh_driver": "v2",
+                "proxy_source": "direct", "config_snapshot": old_snapshot,
+            },
+        )
+        operation.finish_run(int(task["run"]["id"]), status="failed", error="fixture failure")
+        previous_data = {int(task["run"]["id"]): deepcopy(operation.get_run(task["run"]["id"])["data"])}
+        retry_task = {
+            "id": task["id"], "task_type": "token_refresh", "account_id": account_id,
+            "email_snapshot": "token-refresh-retry-config@example.test",
+            "status": "failed", "source_system": "native_operations",
+        }
+        retry = task_gateway.operation_action("token_refresh", "retry", source_system="native_operations")
+        self.assertIsNotNone(retry)
+
+        for revision, driver, version, debug in (
+            (802, "browser_roxy", "v2", True),
+            (803, "protocol", "v1", False),
+            (804, "protocol", "v2", False),
+        ):
+            with (
+                patch.object(live_check_service, "get_config_snapshot", return_value=_ConfigSnapshot({
+                    "ACCOUNT_AT_REFRESH_DRIVER": driver,
+                    "OPENAI_PROTOCOL_VERSION": version,
+                    "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": debug,
+                    "ACCOUNT_REFRESH_AT_PROXY_MODE": "direct",
+                }, revision=revision)),
+                patch.object(task_gateway, "notify_dispatch"),
+            ):
+                result = retry(retry_task)
+
+            self.assertTrue(result["accepted"])
+            run = operation.get_run(result["run_id"])
+            self.assertEqual(int(task["id"]), run["task_id"])
+            snapshot = run["data"]["config_snapshot"]
+            self.assertEqual(driver if driver == "browser_roxy" else version, run["data"]["refresh_driver"])
+            self.assertEqual(driver, snapshot["refresh_driver"])
+            self.assertIs(debug, snapshot["refresh_roxy_debug_enabled"])
+            self.assertEqual(version, snapshot["refresh_protocol_version"])
+            self.assertEqual(revision, snapshot["config_snapshot_revision"])
+            for old_run_id, data in previous_data.items():
+                self.assertEqual(data, operation.get_run(old_run_id)["data"])
+            operation.finish_run(int(run["id"]), status="failed", error="fixture failure")
+            previous_data[int(run["id"])] = deepcopy(operation.get_run(run["id"])["data"])
+
+    def test_plain_live_check_retry_keeps_original_driver_snapshot(self):
+        account_id = self._account("live-check-retry-config@example.test")
+        old_snapshot = task_gateway.normalize_config_snapshot(_ConfigSnapshot({
+            "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
+            "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
+            "OPENAI_PROTOCOL_VERSION": "v2",
+            "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": False,
+        }, revision=811), allowlist=live_check_service.LIVE_CONFIG_ALLOWLIST)
+        task = operation.create_runtime_task(
+            task_type="live_check", account_id=account_id,
+            email="live-check-retry-config@example.test", source_system="native_operations",
+            source_id="live-check-retry-config", data={
+                "force_refresh": False, "driver": "protocol_current", "refresh_driver": None,
+                "proxy_source": "direct", "config_snapshot": old_snapshot,
+            },
+        )
+        old_run_id = int(task["run"]["id"])
+        operation.finish_run(old_run_id, status="failed", error="fixture failure")
+        old_data = deepcopy(operation.get_run(old_run_id)["data"])
+        retry_task = {
+            "id": task["id"], "task_type": "live_check", "account_id": account_id,
+            "email_snapshot": "live-check-retry-config@example.test",
+            "status": "failed", "source_system": "native_operations",
+        }
+        retry = task_gateway.operation_action("live_check", "retry", source_system="native_operations")
+        self.assertIsNotNone(retry)
+        with (
+            patch.object(live_check_service, "get_config_snapshot", return_value=_ConfigSnapshot({
+                "ACCOUNT_LIVE_CHECK_DRIVER": "browser_roxy",
+                "ACCOUNT_AT_REFRESH_DRIVER": "browser_roxy",
+                "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": True,
+            }, revision=812)),
+            patch.object(task_gateway, "notify_dispatch"),
+        ):
+            result = retry(retry_task)
+
+        self.assertTrue(result["accepted"])
+        run = operation.get_run(result["run_id"])
+        self.assertEqual(int(task["id"]), run["task_id"])
+        self.assertEqual("protocol_current", run["data"]["driver"])
+        self.assertIsNone(run["data"]["refresh_driver"])
+        self.assertEqual(old_snapshot, run["data"]["config_snapshot"])
+        self.assertEqual(old_data, operation.get_run(old_run_id)["data"])
 
     def test_force_refresh_uses_token_refresh_native_task_type_for_any_trigger(self):
         account_id = self._account("refresh-at-trigger@example.test")

@@ -1047,7 +1047,7 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 账号列表的“查活”请求会把当前配置驱动显式传给后端，后端在领代理/创建 Roxy Profile 前校验；任务结果同时保留 configured/effective driver。也可以在测试账号上通过批量接口的 `driver` 字段做单次 override，该 override 不会写回全局配置。
 
-在「配置 → 注册与账号 → 账号补全 → 刷新 AT 策略」选择 `ACCOUNT_AT_REFRESH_DRIVER`：默认 `protocol` 使用协议刷新，`browser_roxy` 直接使用 Roxy 指纹浏览器重新登录，不先尝试协议。单号、批量和后台刷新使用同一驱动配置，任务入队后固定本次驱动。
+在「配置 → 注册与账号 → 账号补全 → 刷新 AT 策略」选择 `ACCOUNT_AT_REFRESH_DRIVER`：默认 `protocol` 使用协议刷新，`browser_roxy` 直接使用 Roxy 指纹浏览器重新登录，不先尝试协议。单号、批量和后台刷新使用同一驱动配置，任务入队后固定本次驱动。任务中心重跑 AT 刷新时，新 Run 重新读取并固定当前刷新配置，包括驱动、协议版本和 Roxy 调试开关；历史 Run 继续保留原配置和执行证据。
 
 `OPENAI_PROTOCOL_VERSION` 仅为协议刷新选择 v1/v2，默认 v1；直接 Roxy 刷新不读取它。注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权继续使用各自的唯一实现：
 

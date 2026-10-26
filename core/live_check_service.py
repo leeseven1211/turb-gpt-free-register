@@ -1779,6 +1779,48 @@ def _handle_live_operation(context):
     return None
 
 
+def _retry_token_refresh_operation(task: dict) -> dict:
+    """重跑刷新 AT 时固定当前配置，历史 Run 仍保留原驱动和请求证据。"""
+    from core.storage import operation
+
+    if account_task_store.operation_is_deactivated(task):
+        return {"accepted": False, "busy": False, "deactivated": True, "error": "账号已废号，不能重跑"}
+    if str(task.get("status") or "").strip().lower() in {
+        "queued", "running", "cancelling", "settling", "stopping", "waiting",
+    }:
+        return {"accepted": False, "busy": True, "error": "任务仍在执行"}
+    task_id = int(task.get("id") or 0)
+    if not task_id:
+        return {"accepted": False, "busy": False, "error": "任务缺少 id"}
+    snapshot = account_task_store.normalize_config_snapshot(
+        get_config_snapshot(), allowlist=LIVE_CONFIG_ALLOWLIST,
+    )
+    refresh_driver = _resolve_refresh_driver(config_snapshot=snapshot)
+    try:
+        run = operation.retry_runtime_task(
+            task_id, trigger="manual_retry",
+            data={
+                "retry_action": "manual_retry", "force_refresh": True,
+                "refresh_driver": _refresh_driver_request(refresh_driver),
+                "config_snapshot": snapshot,
+                "proxy_source": snapshot.get("refresh_at_proxy_mode") or "",
+            },
+        )
+    except (LookupError, ValueError) as exc:
+        return {
+            "accepted": False, "busy": False, "error": str(exc),
+            "deactivated": "账号已废号" in str(exc),
+        }
+    account_task_store.notify_dispatch()
+    return {
+        "accepted": True, "busy": False, "reused": False,
+        "task_id": task_id, "run_id": int(run["id"]),
+        "account_id": int(task.get("account_id") or 0) or None,
+        "email": str(task.get("email_snapshot") or ""),
+        "status": "queued", "source_system": "native_operations",
+    }
+
+
 def register_operation_handlers() -> bool:
     """Register maintenance handlers; runtime owns starting the one dispatcher."""
     register = getattr(account_task_store, "register_operation_handler", None)
@@ -1795,6 +1837,7 @@ def register_operation_handlers() -> bool:
         _handle_live_operation,
         source_systems=("native_operations",),
         config_allowlist=LIVE_CONFIG_ALLOWLIST,
+        retry_handler=_retry_token_refresh_operation,
     )
     return True
 
