@@ -2093,10 +2093,6 @@ function _extractLinkCell(r) {
     const typ = (r.extract_link_type || '').toUpperCase();
     return `<div class="extract-link-cell"><span class="pill status-success" title="${title || '提炼成功，可在更多菜单复制地址'}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span></div>`;
   }
-  if (s === 'failed') {
-    const reason = err || msg || '未知原因';
-    return `<div class="extract-link-cell"><span class="pill status-failed" title="提炼失败：${esc(reason)}">失败</span><div class="extract-link-error" title="${esc(reason)}">${esc(reason)}</div></div>`;
-  }
   return '';
 }
 function _extractLinkAction(r) {
