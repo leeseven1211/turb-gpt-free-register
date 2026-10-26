@@ -975,7 +975,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_verify_failed": ("AUTH-PWD-006", "密码验证请求未完成"),
     "password_verify_invalid_response": ("AUTH-PWD-007", "密码验证响应无效"),
     "passwordless_fallback_unavailable": ("AUTH-PWD-008", "邮箱免密兜底不可用"),
-    "password_login_unavailable": ("AUTH-PWD-009", "邮箱已失效，当前认证页未提供密码登录入口"),
+    "password_login_unavailable": ("AUTH-PWD-009", "邮箱已失效，服务端未提供可用的密码登录流程"),
     "email_verification_required": ("AUTH-PWD-010", "邮箱已失效，密码登录后仍需邮箱验证"),
     "password_entry_navigation_timeout": ("FLOW-PWD-005", "创建密码页跳转超时"),
     "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),

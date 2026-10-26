@@ -523,7 +523,7 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
 
 
 def _open_offered_password_login(session, final_url: str) -> str:
-    """邮箱失效时沿用当前会话，只访问认证页实际提供的密码登录入口。"""
+    """邮箱失效时沿用当前会话，优先页面入口，再尝试标准密码登录页。"""
     def trusted_path(url: str, path: str) -> bool:
         parsed = urlparse(url)
         return (
@@ -578,13 +578,12 @@ def _open_offered_password_login(session, final_url: str) -> str:
 
     parser = PasswordLinkParser()
     parser.feed(str(getattr(response, "text", "") or ""))
-    if not parser.target:
-        raise unavailable()
-    response = navigate(parser.target, current_url)
+    # 标准密码页是既有登录路由；只做导航，并以服务端真实落点决定能否提交密码。
+    response = navigate(parser.target or _PASSWORD_PATH, current_url)
     password_url = str(getattr(response, "url", "") or "")
     if not trusted_path(password_url, "/log-in/password"):
         raise unavailable()
-    logger.info("[查活][Protocol v2] 邮箱已失效，已切换到页面提供的密码登录入口")
+    logger.info("[查活][Protocol v2] 邮箱已失效，服务端已允许进入密码登录页")
     return password_url
 
 

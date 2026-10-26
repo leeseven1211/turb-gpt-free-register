@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 from config import roxybrowser as cfg
 from core.email_auth_guard import serialize_email_auth
@@ -22,6 +23,7 @@ from core.registration.selenium_auth import (
     click_continue as _click_continue,
     click_resend_email_otp as _click_resend_email_otp,
     fetch_chatgpt_session as _fetch_chatgpt_session,
+    find_any as _find_any,
     has_access_token as _has_access_token,
     is_email_verification_page as _is_email_verification_page,
     is_login_password_page as _is_login_password_page,
@@ -49,7 +51,7 @@ class _EmailInvalidLoginError(RuntimeError):
         self.not_submitted = bool(not_submitted)
         message = {
             "password_missing": "邮箱已失效，且未保存 OpenAI 登录密码",
-            "password_login_unavailable": "邮箱已失效，当前认证页未提供密码登录入口",
+            "password_login_unavailable": "邮箱已失效，服务端未提供可用的密码登录流程",
             "email_verification_required": "邮箱已失效，密码登录后仍需邮箱验证",
         }[code]
         super().__init__(f"{code}: {message}")
@@ -84,6 +86,30 @@ def _page_account_unusable_code(driver) -> str:
     except Exception:
         text = ""
     return detect_account_unusable_text("\n".join((url, title, text)))
+
+
+def _open_standard_password_login(driver) -> bool:
+    """只读尝试一次既有密码页，确认可信地址和可见密码框后才交给认证状态机。"""
+    def trusted_password_page() -> bool:
+        parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
+        return (
+            parsed.scheme == "https" and parsed.netloc.lower() in {"auth.openai.com", "auth.openai.com:443"}
+            and parsed.path.rstrip("/") == "/log-in/password"
+        )
+
+    _safe_get(
+        driver, "https://auth.openai.com/log-in/password",
+        timeout=10, attempts=1, accept_hosts=("auth.openai.com",),
+    )
+    if not trusted_password_page():
+        return False
+    try:
+        _find_any(driver, ["input[type='password']"], timeout=8)
+    except RuntimeError as exc:
+        if str(exc).startswith("找不到页面元素:"):
+            return False
+        raise
+    return trusted_password_page()
 
 
 def _enter_existing_account_otp(
@@ -173,18 +199,45 @@ def _enter_existing_account_otp(
             if not password:
                 raise _EmailInvalidLoginError("password_missing", not_submitted=True)
             initial_receipt = getattr(driver, "_browser_submission_receipt", None)
+            initial_history = getattr(driver, "_browser_submission_receipts", None)
+            initial_receipts = {id(item) for item in initial_history} if isinstance(initial_history, list) else set()
+
+            def password_submitted() -> bool:
+                receipt = getattr(driver, "_browser_submission_receipt", None)
+                if receipt is not initial_receipt and getattr(receipt, "endpoint_kind", "") == "password_submit":
+                    return True
+                history = getattr(driver, "_browser_submission_receipts", None)
+                return isinstance(history, list) and any(
+                    id(item) not in initial_receipts and getattr(item, "endpoint_kind", "") == "password_submit"
+                    for item in history
+                )
+
             challenge_state = complete_openai_login_challenge(
                 driver, email, password, totp_secret, timeout=45,
             )
             if challenge_state == "advanced":
                 return "logged_in"
             if challenge_state == "email_otp":
-                receipt = getattr(driver, "_browser_submission_receipt", None)
                 # 公共状态机找不到页面提供的密码入口时会直接返回邮箱分支；
                 # 只有本轮产生密码提交回执，才把它描述为密码后的邮箱挑战。
-                if receipt is initial_receipt or getattr(receipt, "endpoint_kind", "") != "password_submit":
-                    raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
-                raise _EmailInvalidLoginError("email_verification_required")
+                if not password_submitted():
+                    try:
+                        opened_password = _open_standard_password_login(driver)
+                    except Exception as exc:
+                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True) from exc
+                    if not opened_password:
+                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                    challenge_state = complete_openai_login_challenge(
+                        driver, email, password, totp_secret, timeout=45,
+                    )
+                    if challenge_state == "advanced":
+                        return "logged_in"
+                    if challenge_state == "email_otp":
+                        if not password_submitted():
+                            raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                        raise _EmailInvalidLoginError("email_verification_required")
+                else:
+                    raise _EmailInvalidLoginError("email_verification_required")
             raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
         return "otp"
     raise RuntimeError(f"浏览器登录未进入已有账号 OTP，最后状态={state}")

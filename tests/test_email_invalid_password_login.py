@@ -72,7 +72,7 @@ class OfferedPasswordLoginTests(unittest.TestCase):
         self.assertEqual(target, result)
         self.assertEqual([OTP_URL, target], [call.args[0] for call in session.get.call_args_list])
 
-    def test_unoffered_or_untrusted_links_never_navigate_to_password(self):
+    def test_unoffered_or_untrusted_links_only_try_standard_login_route(self):
         from core import protocol_v2_liveness as v2
 
         for html in (
@@ -83,13 +83,20 @@ class OfferedPasswordLoginTests(unittest.TestCase):
             '<a href="/create-account/password">创建密码</a>',
             '<a href="javascript:location.href=\'/log-in/password\'">使用密码</a>',
         ):
-            with self.subTest(html=html):
-                session = _Session()
-                session.get.return_value = _Response(OTP_URL, html)
-                with self.assertRaises(v2.ProtocolV2AuthError) as caught:
-                    v2._open_offered_password_login(session, OTP_URL)
-                self.assertEqual("password_login_unavailable", caught.exception.code)
-                self.assertEqual([OTP_URL], [call.args[0] for call in session.get.call_args_list])
+            for final_url in (PASSWORD_URL, OTP_URL):
+                with self.subTest(html=html, final_url=final_url):
+                    session = _Session()
+                    session.get.side_effect = [_Response(OTP_URL, html), _Response(final_url)]
+                    if final_url == PASSWORD_URL:
+                        self.assertEqual(PASSWORD_URL, v2._open_offered_password_login(session, OTP_URL))
+                    else:
+                        with self.assertRaises(v2.ProtocolV2AuthError) as caught:
+                            v2._open_offered_password_login(session, OTP_URL)
+                        self.assertEqual("password_login_unavailable", caught.exception.code)
+                        self.assertIs(caught.exception.mutation_submitted, False)
+                        self.assertIs(caught.exception.action_dispatched, False)
+                        self.assertFalse(caught.exception.reconcile_required)
+                    self.assertEqual([OTP_URL, PASSWORD_URL], [call.args[0] for call in session.get.call_args_list])
 
     def test_password_link_must_finish_on_trusted_login_page(self):
         from core import protocol_v2_liveness as v2
@@ -314,6 +321,7 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
         self.addCleanup(stack.close)
         stack.enter_context(patch("core.account_credentials.account_email_is_invalid", return_value=invalid, create=True))
         stack.enter_context(patch.object(roxy_liveness, "account_email_is_invalid", return_value=invalid, create=True))
+        stack.enter_context(patch.object(roxy_liveness, "_open_standard_password_login", return_value=False))
         for name, value in (
             ("_page_account_unusable_code", ""),
             ("_type_email_address", None),
@@ -348,6 +356,99 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
 
         self.assertEqual("otp", result)
         challenge.assert_not_called()
+        roxy_liveness._open_standard_password_login.assert_not_called()
+
+    def test_browser_without_offered_link_tries_standard_password_route_once(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=True)
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        challenge.side_effect = ["email_otp", "advanced"]
+        roxy_liveness._open_standard_password_login.return_value = True
+
+        result = roxy_liveness._enter_existing_account_otp(
+            driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+        )
+
+        self.assertEqual("logged_in", result)
+        roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
+        self.assertEqual(2, challenge.call_count)
+
+    def test_browser_standard_password_route_still_requiring_otp_does_not_loop(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=True, challenge_state="email_otp")
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        roxy_liveness._open_standard_password_login.return_value = True
+
+        with self.assertRaises(RuntimeError) as caught:
+            roxy_liveness._enter_existing_account_otp(
+                driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+            )
+
+        self.assertEqual("password_login_unavailable", caught.exception.code)
+        self.assertIs(caught.exception.not_submitted, True)
+        roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
+        self.assertEqual(2, challenge.call_count)
+
+    def test_browser_does_not_reopen_password_route_after_password_was_submitted(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=True)
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+
+        def password_then_email(*_args, **_kwargs):
+            driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="password_submit")
+            return "email_otp"
+
+        challenge.side_effect = password_then_email
+        with self.assertRaises(RuntimeError) as caught:
+            roxy_liveness._enter_existing_account_otp(
+                driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+            )
+
+        self.assertEqual("email_verification_required", caught.exception.code)
+        roxy_liveness._open_standard_password_login.assert_not_called()
+        challenge.assert_called_once()
+
+    def test_browser_standard_password_navigation_timeout_remains_not_submitted(self):
+        from core import roxy_liveness as roxy_module
+
+        open_standard = roxy_module._open_standard_password_login
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=True, challenge_state="email_otp")
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        roxy_liveness._open_standard_password_login.side_effect = open_standard
+        with patch.object(roxy_liveness, "_safe_get", side_effect=TimeoutError("fixture-private-navigation")) as navigate:
+            with self.assertRaises(RuntimeError) as caught:
+                roxy_liveness._enter_existing_account_otp(
+                    driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+                )
+
+        self.assertEqual("password_login_unavailable", caught.exception.code)
+        self.assertIs(caught.exception.not_submitted, True)
+        self.assertNotIn("fixture-private-navigation", str(caught.exception))
+        navigate.assert_called_once()
+        roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
+        challenge.assert_called_once()
+
+    def test_browser_history_preserves_password_submission_after_otp_receipt_overwrites_current(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=True)
+        initial = SimpleNamespace(endpoint_kind="email_submit")
+        driver._browser_submission_receipt = initial
+        driver._browser_submission_receipts = [initial]
+
+        def password_then_otp(*_args, **_kwargs):
+            # 当前回执可能被后续 OTP 覆盖，本轮历史仍能证明密码已经提交。
+            password_receipt = SimpleNamespace(endpoint_kind="password_submit")
+            otp_receipt = SimpleNamespace(endpoint_kind="otp_submit")
+            driver._browser_submission_receipts.extend([password_receipt, otp_receipt])
+            driver._browser_submission_receipt = otp_receipt
+            return "email_otp"
+
+        challenge.side_effect = password_then_otp
+        with self.assertRaises(RuntimeError) as caught:
+            roxy_liveness._enter_existing_account_otp(
+                driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+            )
+
+        self.assertEqual("email_verification_required", caught.exception.code)
+        self.assertIs(caught.exception.not_submitted, False)
+        roxy_liveness._open_standard_password_login.assert_not_called()
+        challenge.assert_called_once()
 
     def test_browser_refresh_returns_fixed_code_without_password_or_when_mail_is_still_required(self):
         for password, initial_state, submitted_password, expected_code in (
