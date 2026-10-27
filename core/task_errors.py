@@ -946,6 +946,10 @@ _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
 
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     **_BUTLER_RECIPIENT_CAUSES,
+    "email_cutover_target_invalid": ("MAIL-ROUTE-001", "Butler 迁移目标配置或回执无效"),
+    "email_cutover_route_changed": ("MAIL-ROUTE-002", "收件路由已变化，请重新预览后重跑"),
+    "icloud_result_conflict": ("MAIL-REPORT-001", "相同操作的 HME 上报结果发生冲突"),
+    "icloud_identity_not_found": ("MAIL-REPORT-002", "Butler 未找到原完整 HME 身份"),
     "email_derivation_inventory_empty": ("MAIL-STOCK-001", "可领取子地址库存不足，请先生成补充"),
     "email_derivation_identity_conflict": ("MAIL-STOCK-002", "子地址领取身份与原业务归属不一致"),
     "email_derivation_source_unsupported": ("MAIL-STOCK-003", "邮箱来源不支持子地址库存"),

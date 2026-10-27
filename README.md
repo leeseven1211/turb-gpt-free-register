@@ -369,7 +369,33 @@ EMAIL_DERIVATION_TAG_LENGTH=6
 
 #### iCloud Hide My Email（`icloud_hide`）
 
-先在本机启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址，账号 ID 留空即可自动发现全部 active 账号；保存后点击“连接并同步”。推荐配置：
+统一 Email Butler 时，新任务只启用 `EMAIL_SOURCE=email_butler`，Apple 账号和 HME 库存由 Butler 管理。新 `provider=icloud_hme` 租约要求严格收件声明，使用完整目标地址、最终邮箱、时间窗口及原始投递证据从 `/inbound/code` 取码。同一领取意图传递 `owner_kind`、`owner_id`、`acquisition_id`，重跑保持原地址。
+
+历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
+
+```dotenv
+EMAIL_SOURCE=email_butler
+ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True
+ICLOUD_HME_INBOX_MODE=forward_butler
+ICLOUD_HME_AUTO_CREATE=False
+EMAIL_BUTLER_API_BASE=https://你的入口/email-butler/v1
+EMAIL_BUTLER_API_KEY=专用客户端Key
+ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
+```
+
+桥接默认关闭。启用前先将完整历史身份导入 Butler，再运行受控迁移工具；工具默认只读预览，不初始化表、不写密钥。显式执行只改变原固定 IMAP profile 的引用，保留旧 profile 和版本化密钥，母资源和子地址的所有业务状态保持不变：
+
+```bash
+python tools/migrate_hme_inbox_to_butler.py
+python tools/migrate_hme_inbox_to_butler.py --apply --receipt run/hme-butler-cutover.json
+# 只读预览回滚；加 --apply 才恢复回执中的原路由
+python tools/migrate_hme_inbox_to_butler.py --rollback run/hme-butler-cutover.json
+python tools/migrate_hme_inbox_to_butler.py --apply --rollback run/hme-butler-cutover.json
+```
+
+迁移需按项目数据库保护规则在短暂停任务后执行，不能借测试放行生产库。预览后路由发生变化会明确报 `email_cutover_route_changed`，重新预览即可重跑。回滚时恢复原路由回执、关闭桥接开关并恢复原收件服务；仅关闭桥接不会撤销数据库中的 profile 迁移。固定 Butler profile 保存 API 地址、最终收件箱和版本化 Key 引用，后续全局配置变化不会改变历史取码目标。
+
+以下为保留的本机 sidecar 调试与回滚方式。先启动 `icloud-hme` sidecar，再到 WebUI「配置 → 邮箱 / OTP → iCloud 隐藏邮箱」填写服务地址，账号 ID 留空即可自动发现全部 active 账号；保存后点击“连接并同步”：
 
 ```dotenv
 USE_EMAIL_SERVICE=True
@@ -397,8 +423,7 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
 ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
-- `forward_butler` 仍表示 Oracle 接收 Gmail 后写入 Email Butler PG；生产切换时再单独配置该模式。
-- 严格 Butler 邮箱链路已在独立准备分支实现，迁移顺序和验收边界见 [Oracle 邮箱准备说明](docs/deployment/oracle-mail-preparation.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。原有固定 IMAP profile 保留，后续新建 profile 才能显式绑定 Butler。
+- `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [Oracle 邮箱准备说明](docs/deployment/oracle-mail-preparation.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
 - `forward_imap` 的 Gmail 应用专用密码只保存在本机 `.env`，不会写入仓库或日志。
 - 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - 真实 IMAP 连接使用 UID 搜索和读取，避免邮件删除引起序号漂移；批量封号邮件扫描每次最多读取 20 封并按响应 UID 归属，收码仍逐封读取并在取得有效码后立即结束。日期月份固定为英文，不受本机语言影响。
@@ -757,7 +782,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 #### 邮件验证码
 
 - iCloud 隐藏邮箱转发到 Gmail 时，本机可使用 `Gmail IMAP → turb` 直接取码；生产 `forward_butler` 链路仍是 `Gmail IMAP IDLE → Email Butler PostgreSQL → turb HTTP API`。
-- 当前本机配置使用 `ICLOUD_HME_INBOX_MODE=forward_imap`，OTP 直接读取本机 Gmail；`forward_butler` 保留为生产 Email Butler 链路。
+- 统一 Email Butler 的生产配置使用 `EMAIL_SOURCE=email_butler`；历史 `icloud_hide` 通过显式桥接及固定 profile 继续取码，本机 IMAP 仅保留为调试或回滚方式。
 - turb 的账号、邮箱池、注册任务和账号操作任务均以本机 PostgreSQL 为主存储；JSON/TXT 只作为兼容导出或输入文件。项目运行时不再使用 SQLite。
 - OTP 查询必须携带任务开始时间并按目标别名精确匹配，避免并发任务互相拿错验证码。轮询间隔由 `OTP_POLL_INTERVAL` 控制，Butler 已经接收到邮件时只做轻量查询。
 
@@ -945,26 +970,27 @@ PROXY_POOL_CHECK_INTERVAL=60
 PROXY_POOL_MAX_IDLE=300
 PROXY_POOL_WORKERS=2
 
-# WebUI 启用 Email Butler 与 iCloud 两个可选邮箱来源；本地通过 HTTPS 直连生产 Butler，不需要 SSH 隧道
+# 新任务统一 Email Butler；本地通过 HTTPS 直连生产 Butler
 USE_EMAIL_SERVICE=True
-EMAIL_SOURCE=email_butler,icloud_hide
+EMAIL_SOURCE=email_butler
 OTP_POLL_INTERVAL=3
 OTP_MAX_WAIT=240
 EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
 EMAIL_BUTLER_API_KEY=请从生产客户端配置安全同步，禁止提交
 EMAIL_BUTLER_REQUEST_TIMEOUT=20
 
-# iCloud 隐藏邮箱（在注册页手动选择时使用，不作为 Butler 失败后的自动回退）
+# 历史 iCloud 隐藏邮箱：先导入历史身份并迁移固定 profile，再启用桥接
+ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True
 ICLOUD_HME_API_BASE=http://127.0.0.1:8081
 ICLOUD_HME_ACCOUNT_ID=请留空以自动发现全部 active 账号
 ICLOUD_HME_API_TOKEN=
 ICLOUD_HME_REQUEST_TIMEOUT=45
 ICLOUD_HME_SYNC_TTL=300
-ICLOUD_HME_INBOX_MODE=forward_imap
+ICLOUD_HME_INBOX_MODE=forward_butler
 ICLOUD_HME_FORWARD_IMAP_SERVER=imap.gmail.com
 ICLOUD_HME_FORWARD_IMAP_PORT=993
 ICLOUD_HME_FORWARD_IMAP_EMAIL=请替换为实际转发_Gmail
-ICLOUD_HME_FORWARD_IMAP_PASSWORD=请填写Gmail应用专用密码
+ICLOUD_HME_FORWARD_IMAP_PASSWORD=保留原版本供回滚，无需新增
 ICLOUD_HME_AUTO_CREATE=False
 ICLOUD_HME_CREATE_LABEL_PREFIX=turb
 ```
@@ -1448,7 +1474,7 @@ WebUI 配置页保存后会热加载。Codex 补跑线程启动前也会重新�
 
 配置页分为「注册与账号、代理与网络、邮箱与验证码、浏览器、服务集成、系统与维护」六组，常用参数优先展示，高级参数折叠。字段使用统一高度和对齐规则；枚举单选、国家和有序列表多选、数字范围校验复用统一交互。详细说明、配置键和来源收进可点击帮助，搜索仍可定位隐藏或高级配置。切换分类和保存失败时保留未保存值。
 
-密钥只显示是否配置，留空未修改不会覆盖旧值，明确清除后才删除配置值。`EMAIL_SOURCE` 是邮箱启用的唯一开关：自动模式至少启用一个来源，手动模式可为空。邮箱资源页默认只显示已启用来源和收码依赖；iCloud 使用 `forward_butler` 时始终保留 Email Butler 入口。停用服务的配置、库存和历史不删除，可通过“显示未启用”查看；已注册账号的取码仍按账号保存的来源恢复。
+密钥只显示是否配置，留空未修改不会覆盖旧值，明确清除后才删除配置值。`EMAIL_SOURCE` 控制新任务可领取的邮箱来源：自动模式至少启用一个来源，手动模式可为空。邮箱资源页默认只显示已启用来源和收码依赖；iCloud 使用 `forward_butler` 时保留 Email Butler 入口，历史桥接开启时保留 iCloud 配置。停用服务的配置、库存和历史不删除，可通过“显示未启用”查看；已注册账号的取码仍按账号保存的来源恢复。
 
 AT 刷新窗口、单轮上限、封号扫描首次延迟/回看天数、Outlook 远端地址和提链超时现在都由 schema、`.env.example` 和配置页统一维护。标记“需重启”的字段会写入 `.env`，但当前进程中的既有 worker 不会伪装成已切换，重启后才开始使用新值。
 

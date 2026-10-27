@@ -8,7 +8,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 from urllib.parse import quote
@@ -54,6 +54,10 @@ class EmailButlerAccount:
     leased_until: str = ""
     provider: str = ""
     mailbox_email: str = ""
+    recipient_mode: str = ""
+    strict_family: bool = False
+    api_base: str | None = None
+    api_key: str | None = field(default=None, repr=False)
 
 
 _CONTEXT_CACHE: dict[str, EmailButlerAccount] = {}
@@ -144,6 +148,8 @@ def _request(
     if response.status_code >= 400:
         message = payload.get("message") if isinstance(payload, dict) else str(payload)
         error_code = str(payload.get("error_code") or "") if isinstance(payload, dict) else ""
+        if path == "/identities/report" and response.status_code == 404 and not error_code:
+            error_code = "icloud_identity_not_found"
         raise EmailButlerClientError(
             f"Email Butler 请求失败 ({path}): HTTP {response.status_code}; {error_code}; {str(message)[:220]}"
         )
@@ -206,22 +212,38 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
     }
 
 
-def pick_account() -> EmailButlerAccount:
+def _mailbox_account(mailbox: dict, *, api_base: str | None = None, api_key: str | None = None) -> EmailButlerAccount:
+    """统一核对 HME 租约的严格收件声明，不能用普通邮箱响应代替。"""
+    account = EmailButlerAccount(
+        email=str(mailbox.get("email") or "").strip(), mailbox_id=str(mailbox.get("id") or "").strip(),
+        lease_id=str(mailbox.get("lease_id") or ""), leased_until=str(mailbox.get("leased_until") or ""),
+        provider=str(mailbox.get("provider") or ""), mailbox_email=str(mailbox.get("mailbox_email") or mailbox.get("email") or ""),
+        recipient_mode=str(mailbox.get("recipient_mode") or ""), strict_family=mailbox.get("strict_family") is True,
+        api_base=api_base if api_base is not None else (str(getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or "").strip().rstrip("/") or None),
+        api_key=api_key if api_key is not None else (str(getattr(_email_cfg, "EMAIL_BUTLER_API_KEY", "") or "").strip() or None),
+    )
+    if account.provider == "icloud_hme":
+        if account.recipient_mode != _RECIPIENT_MODE or not account.strict_family:
+            raise EmailButlerClientError("recipient_contract_unsupported: HME 租约缺少严格收件声明")
+        if not str(mailbox.get("mailbox_email") or "").partition("@")[2]:
+            raise EmailButlerClientError("mailbox_mismatch: HME 租约缺少最终收件箱")
+    return account
+
+
+def pick_account(*, owner_kind: str | None = None, owner_id=None, acquisition_id: str | None = None) -> EmailButlerAccount:
     """按 API Key 策略租用一个邮箱身份，并缓存租约上下文。"""
-    payload = _request("POST", "/mailboxes", json={})
+    intent = {}
+    if acquisition_id:
+        if not owner_kind or owner_id is None:
+            raise EmailButlerClientError("email_derivation_identity_conflict: Butler 领取缺少完整业务意图")
+        intent = {"owner_kind": str(owner_kind), "owner_id": str(owner_id), "acquisition_id": str(acquisition_id)}
+    payload = _request("POST", "/mailboxes", json=intent)
     mailbox = payload.get("mailbox") if isinstance(payload.get("mailbox"), dict) else {}
     email = str(mailbox.get("email") or "").strip()
     mailbox_id = str(mailbox.get("id") or "").strip()
     if not email or "@" not in email or not mailbox_id:
         raise EmailButlerClientError("Email Butler 发号响应缺少 mailbox.id/email")
-    account = EmailButlerAccount(
-        email=email,
-        mailbox_id=mailbox_id,
-        lease_id=str(mailbox.get("lease_id") or ""),
-        leased_until=str(mailbox.get("leased_until") or ""),
-        provider=str(mailbox.get("provider") or ""),
-        mailbox_email=str(mailbox.get("mailbox_email") or email),
-    )
+    account = _mailbox_account(mailbox)
     _CONTEXT_CACHE[_cache_key(email)] = account
     logger.info("[EmailButler] 已租用邮箱: %s provider=%s", email, account.provider or "?")
     return account
@@ -246,30 +268,28 @@ def active_mailbox_leases() -> list[dict]:
     ]
 
 
-def restore_account_context(email: str, *, purpose: str = "live-check") -> EmailButlerAccount:
+def restore_account_context(email: str, *, purpose: str = "live-check", api_base: str | None = None,
+                            api_key: str | None = None) -> EmailButlerAccount:
     """按邮箱从 Butler 精确租用并恢复进程内上下文。"""
     key = _cache_key(email)
     cached = _CONTEXT_CACHE.get(key)
-    if cached:
+    if cached and (api_base is None or cached.api_base == api_base) and (api_key is None or cached.api_key == api_key):
         return cached
+    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
     payload = _request(
         "POST",
         "/mailboxes",
         json={"requested_email": email, "purpose": purpose},
+        **connection,
     )
     mailbox = payload.get("mailbox") if isinstance(payload.get("mailbox"), dict) else {}
     mailbox_id = str(mailbox.get("id") or "").strip()
     mailbox_email = str(mailbox.get("email") or "").strip()
     if not mailbox_id or not mailbox_email or "@" not in mailbox_email:
         raise EmailButlerClientError("Email Butler 按邮箱恢复上下文失败: " + email)
-    account = EmailButlerAccount(
-        email=mailbox_email,
-        mailbox_id=mailbox_id,
-        lease_id=str(mailbox.get("lease_id") or ""),
-        leased_until=str(mailbox.get("leased_until") or ""),
-        provider=str(mailbox.get("provider") or ""),
-        mailbox_email=str(mailbox.get("mailbox_email") or mailbox_email),
-    )
+    if _cache_key(mailbox_email) != key:
+        raise EmailButlerClientError("recipient_mismatch: Butler 恢复返回的完整邮箱与原身份不一致")
+    account = _mailbox_account(mailbox, api_base=api_base, api_key=api_key)
     _CONTEXT_CACHE[key] = account
     logger.info("[EmailButler] 已按邮箱恢复上下文: %s", email)
     return account
@@ -296,6 +316,7 @@ def release_account(email: str, status: str = "available", note: str | None = No
             "POST",
             f"/mailboxes/{quote(account.mailbox_id, safe='')}/release",
             json={"outcome": _outcome_for_status(status), "message": str(note or "")[:300]},
+            **{name: value for name, value in {"api_base": account.api_base, "api_key": account.api_key}.items() if value is not None},
         )
     finally:
         _CONTEXT_CACHE.pop(key, None)
@@ -520,8 +541,15 @@ def fetch_latest_otp(
     if not account:
         try:
             account = restore_account_context(email)
-        except EmailButlerClientError:
-            raise EmailButlerClientError(f"Email Butler 邮箱租约上下文不存在: {email}")
+        except EmailButlerClientError as exc:
+            raise EmailButlerClientError(f"Email Butler 邮箱租约上下文恢复失败: {email}; {exc}") from exc
+
+    if account.provider == "icloud_hme":
+        return fetch_inbound_otp(
+            email, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval, settle_seconds=settle_seconds,
+            require_recipient_evidence=True, strict_family=True, mailbox_email=account.mailbox_email,
+            api_base=account.api_base, api_key=account.api_key,
+        )
 
     wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
     interval = max(1, int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL))

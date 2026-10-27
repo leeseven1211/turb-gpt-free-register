@@ -210,7 +210,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual("账号补全", fields["OPENAI_PROTOCOL_VERSION"]["group"])
         self.assertEqual("str", fields["OPENAI_PROTOCOL_VERSION"]["type"])
         self.assertEqual("刷新 AT 协议版本", fields["OPENAI_PROTOCOL_VERSION"]["label"])
-        self.assertIn("仅用于账号补全中的刷新 AT", fields["OPENAI_PROTOCOL_VERSION"]["help"])
+        self.assertIn("仅在刷新 AT 驱动为协议时选择 v1/v2", fields["OPENAI_PROTOCOL_VERSION"]["help"])
         self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", fields)
         self.assertNotIn("ACCOUNT_AUTH_V2_ENABLED", fields)
         self.assertEqual("v1", openai_protocol_config.OPENAI_PROTOCOL_VERSION)
@@ -642,6 +642,7 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             "ICLOUD_HME_API_BASE", "ICLOUD_HME_ACCOUNT_ID", "ICLOUD_HME_API_TOKEN",
             "ICLOUD_HME_REQUEST_TIMEOUT", "ICLOUD_HME_SYNC_TTL",
             "ICLOUD_HME_INBOX_MODE", "ICLOUD_HME_FORWARD_IMAP_SERVER",
+            "ICLOUD_HME_BUTLER_BRIDGE_ENABLED",
             "ICLOUD_HME_FORWARD_IMAP_PORT", "ICLOUD_HME_FORWARD_IMAP_EMAIL",
             "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
             "ICLOUD_HME_AUTO_CREATE", "ICLOUD_HME_CREATE_LABEL_PREFIX",

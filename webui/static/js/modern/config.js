@@ -287,6 +287,12 @@ function emailConfigSectionForKey(key) {
 
 function emailSectionEnabledV2(section) {
   if (section === '通用邮箱 / OTP' || section === '邮箱子地址') return true;
+  if (section === 'iCloud 隐藏邮箱') {
+    const bridge = CONFIG.find(field => field.key === 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED');
+    const active = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED')
+      ? CONFIG_PENDING_UPDATES.ICLOUD_HME_BUTLER_BRIDGE_ENABLED : bridge?.value;
+    if (active === true || String(active).toLowerCase() === 'true') return true;
+  }
   const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
   const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EMAIL_SOURCE')
     ? CONFIG_PENDING_UPDATES.EMAIL_SOURCE : source?.value;
@@ -1740,6 +1746,11 @@ function bindCloudMailToolsV2() {
   }
 }
 function renderICloudHMEToolsV2() {
+  const bridge = configOverviewValue('ICLOUD_HME_BUTLER_BRIDGE_ENABLED');
+  if (bridge === true || String(bridge).toLowerCase() === 'true') {
+    return `<div class="config-tool-panel-v2 roxy-workspace-box"><b>历史 iCloud 隐藏邮箱</b>
+      <div class="hint">已启用 Email Butler 桥接。账号和库存由 Email Butler 管理，历史账号继续使用原完整邮箱取码；连接检测请使用 Email Butler 配置页。</div></div>`;
+  }
   return `
     <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
@@ -2345,6 +2356,7 @@ function trackConfigFieldChange(e) {
   renderConfigOverviewCards();
   if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'
     || f.key === 'EMAIL_SOURCE' || f.key === 'ICLOUD_HME_INBOX_MODE'
+    || f.key === 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED'
     || f.key === 'PROXY_POOL_SOURCE' || f.key === 'PROXY_POOL_DEFAULT_COUNTRY') renderConfigLayoutV2();
   updateConfigSaveUi();
 }

@@ -317,6 +317,7 @@ _DEFAULTS: dict[str, Any] = {
     "ICLOUD_HME_REQUEST_TIMEOUT": 35,
     "ICLOUD_HME_SYNC_TTL": 300,
     "ICLOUD_HME_INBOX_MODE": "sidecar",
+    "ICLOUD_HME_BUTLER_BRIDGE_ENABLED": False,
     "ICLOUD_HME_FORWARD_IMAP_SERVER": "imap.gmail.com",
     "ICLOUD_HME_FORWARD_IMAP_PORT": 993,
     "ICLOUD_HME_FORWARD_IMAP_EMAIL": "",
@@ -1199,6 +1200,10 @@ _FIELD_DEFINITIONS = [
         "label": "隐藏邮箱收件模式", "help": "sidecar=iCloud IMAP；forward_imap=本机直接读取 Gmail；forward_butler=Oracle 接收 Gmail 并从 Email Butler PG 缓存取码",
     },
     {
+        "key": "ICLOUD_HME_BUTLER_BRIDGE_ENABLED", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
+        "label": "历史隐藏邮箱桥接 Butler", "help": "显式启用后，历史 icloud_hide 地址通过 Butler 严格取码和上报结果；保留原完整地址及归属，不申请新租约。启用前先导入历史身份并迁移收件 profile；回滚须同时恢复原 profile",
+    },
+    {
         "key": "ICLOUD_HME_FORWARD_IMAP_SERVER", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "转发 IMAP 服务器", "help": "Gmail 填 imap.gmail.com",
     },
@@ -1208,7 +1213,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ICLOUD_HME_FORWARD_IMAP_EMAIL", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "隐藏邮箱转发到", "help": "Apple HME 的 forwardToEmail；必须与实际 Gmail 地址完全一致",
+        "label": "隐藏邮箱最终收件箱", "help": "实际接收隐藏邮箱邮件的最终 Gmail；允许 Apple 先转发到中转邮箱，Butler 严格核对最终投递证据",
         "storage": "env",
     },
     {

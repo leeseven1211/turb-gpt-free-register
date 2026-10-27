@@ -82,6 +82,7 @@ function createConfigView(fields = []) {
       saveUi: updateConfigSaveUi, domErrors, ui: {saveCopy, saveHint},
       proxySection: key => proxyConfigSectionForKey(key)[0],
       emailVisible: emailSectionEnabledV2,
+      hmeTools: renderICloudHMEToolsV2,
       control: renderConfigControlMarkupV2,
       search(query, menu) { CONFIG_NAV_QUERY_V2 = query; selectConfigSearchDestinationV2(menu); },
       fields(value) { CONFIG = value; },
@@ -622,6 +623,28 @@ test('iCloud forward_butler 才会让 Email Butler 作为依赖可见', () => {
   view.setPending('EMAIL_SOURCE', 'icloud_hme');
   view.setPending('ICLOUD_HME_INBOX_MODE', 'forward_butler');
   assert.equal(view.emailVisible('Email Butler'), true);
+});
+
+test('仅新 Butler 来源时仍显示已启用的历史 HME 桥接配置', () => {
+  const {view} = createConfigView([
+    field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'email_butler'}),
+    field('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', '邮箱 / OTP', {type: 'bool', value: false}),
+  ]);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), false);
+  view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', true);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), true);
+  view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', false);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), false);
+});
+
+test('历史 HME 桥接启用时配置页提示 Butler 管理入口', () => {
+  const {view} = createConfigView([
+    field('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', '邮箱 / OTP', {type: 'bool', value: true}),
+  ]);
+  assert.match(view.hmeTools(), /Email Butler/);
+  assert.doesNotMatch(view.hmeTools(), /btnTestICloudHMEV2|btnLoadICloudHMEAccountsV2/);
+  view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', false);
+  assert.match(view.hmeTools(), /btnTestICloudHMEV2/);
 });
 
 test('跨菜单草稿统一保存，失败时保留待保存值', async () => {

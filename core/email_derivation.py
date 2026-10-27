@@ -375,6 +375,9 @@ def fetch_bound_otp(address: str, *, after_ts: float, **kwargs) -> str:
     if route is None:
         raise RuntimeError("完整子地址没有持久收件绑定")
     profile = route["profile"]
+    from core import email_butler_bridge
+    if route["binding"]["source"] == "icloud_hide" and email_butler_bridge.enabled():
+        return email_butler_bridge.fetch_otp(address, after_ts=after_ts, profile=profile, **kwargs)
     if profile["connector"] in {"forward_imap", "forward_butler"}:
         from core.forward_imap_client import fetch_latest_otp, use_inbox_profile
 

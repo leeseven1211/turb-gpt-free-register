@@ -167,6 +167,10 @@ def restore_email_context(
     if not address:
         raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
     selected = remember_email_source(address, source)
+    from core import email_butler_bridge
+    if selected == "icloud_hide" and email_butler_bridge.enabled():
+        email_butler_bridge.restore_context(address, purpose=purpose)
+        return selected
     from core.email_derivation import restore_address
 
     if restore_address(address, source=selected) is not None:
@@ -301,6 +305,11 @@ def _pick_from_source(
     legacy_remail_compatibility: bool = False,
 ) -> str:
     from core import email_derivation
+    from core import email_butler_bridge
+
+    if source == "icloud_hide" and email_butler_bridge.enabled():
+        return email_butler_bridge.pick_account(owner_kind=owner_kind, owner_id=owner_id,
+            acquisition_id=acquisition_id).email
 
     if email_derivation.enabled_for(source) or (
         acquisition_id and email_derivation.store.find_allocation(acquisition_id=acquisition_id)
@@ -317,7 +326,7 @@ def _pick_from_source(
         return pick_account().email
     if source == "email_butler":
         from core.email_butler_client import pick_account
-        return pick_account().email
+        return pick_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id).email
     if source == "cloudflare_domain":
         from core.qqmail_client import pick_domain_email
         return pick_domain_email()
@@ -619,6 +628,11 @@ def release_email(
 ) -> str:
     """按已确认或解析出的邮箱来源回收状态，返回来源名。"""
     selected = remember_email_source(email, source) if source else resolve_email_source(email)
+    from core import email_butler_bridge
+    if selected == "icloud_hide" and email_butler_bridge.enabled():
+        from core.icloud_hme_client import release_account
+        release_account(email, status=status, note=note)
+        return selected
     from core.email_derivation import release_address
 
     if release_address(email, status=status, note=note):

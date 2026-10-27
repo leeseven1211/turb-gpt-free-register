@@ -5,6 +5,13 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_butler_cutover_and_report_failures_are_classified(self):
+        for code in ("email_cutover_target_invalid", "email_cutover_route_changed", "icloud_result_conflict", "icloud_identity_not_found"):
+            with self.subTest(code=code):
+                info = classify_task_error(f"Butler 操作失败: {code}")
+                self.assertEqual(info["code"], code)
+                self.assertNotEqual(info["display_code"], "UNK-000")
+
     def test_butler_recipient_failures_have_specific_causes_for_raw_and_structured_errors(self):
         codes = ("recipient_contract_unsupported", "recipient_evidence_missing", "recipient_ambiguous",
                  "recipient_mismatch", "mailbox_mismatch", "inbound_code_timeout")

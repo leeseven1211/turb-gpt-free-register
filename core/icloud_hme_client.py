@@ -396,7 +396,14 @@ def pick_account(
     *,
     batch_id: str | None = None,
     job_id: int | None = None,
+    owner_kind: str | None = None,
+    owner_id: str | int | None = None,
+    acquisition_id: str | None = None,
 ) -> ICloudHMEAccount:
+    from core import email_butler_bridge
+    if email_butler_bridge.enabled():
+        account = email_butler_bridge.pick_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
+        return ICloudHMEAccount(email=account.email, account_id="", forward_to_email=account.mailbox_email)
     from core import db
 
     def _claim(**filters):
@@ -465,6 +472,11 @@ def _validate_forward_route(email: str) -> None:
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
+    from core import email_butler_bridge
+    if email_butler_bridge.enabled():
+        if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
+            return
+        email_butler_bridge.release(email, status=status, note=note)
     from core import db
     from core.email_derivation import release_address
 
@@ -503,6 +515,10 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
+    from core import email_butler_bridge
+    if email_butler_bridge.enabled():
+        return email_butler_bridge.fetch_otp(email, after_ts=after_ts, max_wait=max_wait,
+            poll_interval=poll_interval, settle_seconds=settle_seconds)
     from core.email_derivation import find_binding, fetch_bound_otp
 
     if find_binding(email) is not None:
