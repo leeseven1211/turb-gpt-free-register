@@ -230,6 +230,13 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120,
     target = str(email or "").strip().lower()
     if not target or "@" not in target:
         raise EmailButlerClientError("待扫描邮箱地址无效")
+    if not strict_family:
+        context = get_account_context(target)
+        if context is None:
+            context = _restore_hme_context(target)
+        if context is not None and context.provider == "icloud_hme":
+            api_base, api_key = context.api_base, context.api_key
+            mailbox_email, strict_family = context.mailbox_email, True
     mailbox = _cache_key(mailbox_email)
     request_data = _signal_request(lookback_days=lookback_days, strict_family=strict_family, mailbox_email=mailbox)
     request_data["email"] = target

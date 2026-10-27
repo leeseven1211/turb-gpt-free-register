@@ -104,6 +104,34 @@ class ButlerHMEProviderTests(PostgresTestCase):
         self.assertEqual(request.call_args.kwargs["api_base"], "https://test.example/v1")
         self.assertEqual(request.call_args.kwargs["api_key"], "test-key")
 
+    def test_new_hme_scan_restores_strict_fixed_context_without_a_new_lease(self):
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="scan-intent")
+        butler._CONTEXT_CACHE.clear()
+        result = {**answer(), "signal": {"detected": False}}
+        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE="", EMAIL_BUTLER_API_KEY=""), patch.object(
+            butler, "_request", return_value=result
+        ) as request:
+            scanned = butler.scan_openai_deactivation(PARENT)
+        self.assertTrue(scanned["ok"])
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[1], "/signals/scan")
+        self.assertEqual(request.call_args.kwargs["api_base"], "https://test.example/v1")
+        self.assertEqual(request.call_args.kwargs["api_key"], "test-key")
+        self.assertEqual(request.call_args.kwargs["json"]["mailbox_email"], MAILBOX)
+        self.assertTrue(request.call_args.kwargs["json"]["strict_family"])
+
+    def test_cached_hme_scan_uses_its_fixed_connection_without_profile_or_reallocation(self):
+        context = butler.EmailButlerAccount(PARENT, "lease-hme", provider="icloud_hme", mailbox_email=MAILBOX,
+            api_base="https://cached.test/v1", api_key="cached-key", strict_family=True)
+        butler._CONTEXT_CACHE[PARENT] = context
+        with patch.object(butler, "_restore_hme_context", side_effect=AssertionError("cached fixed identity already available")), patch.object(
+            butler, "_request", return_value={**answer(), "signal": {"detected": False}}
+        ) as request:
+            self.assertTrue(butler.scan_openai_deactivation(PARENT)["ok"])
+        self.assertEqual(request.call_args.kwargs.get("api_base"), "https://cached.test/v1")
+        self.assertEqual(request.call_args.kwargs["api_key"], "cached-key")
+
     def test_completed_hme_registration_retries_real_report_after_network_failure(self):
         from core.registration_service import _mark_completed_registration_email
         with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
