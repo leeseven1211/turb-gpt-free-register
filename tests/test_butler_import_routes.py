@@ -64,6 +64,7 @@ class ButlerImportRoutesTests(unittest.TestCase):
 
     def test_expected_error_status_and_unexpected_error_redaction(self):
         for error, status in ((ValueError('invalid_count: 数量无效'), 400),
+                              (ValueError('secret-token-and-upstream-body'), 400),
                               (LookupError('batch_missing: 批次不存在'), 404),
                               (RemoteError('butler_unavailable: Butler 暂不可用'), 502),
                               (RuntimeError('secret-token-and-upstream-body'), 500)):

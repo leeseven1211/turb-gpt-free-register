@@ -340,6 +340,24 @@ def create_email_pool_blueprint(context: WebUIContext):
         """Keep import failures safe; remote credentials never reach the browser."""
         from core import butler_manual_import as service
 
+        messages = {
+            'invalid_request_id': '导入请求编号无效，请重新预览。',
+            'invalid_preview_token': '预览编号无效，请重新预览。',
+            'invalid_batch_id': '导入批次编号无效。',
+            'invalid_import_count': '每批导入数量须为 1–200 的整数。',
+            'unsupported_import_type': '请选择当前支持的邮箱类型。',
+            'invalid_import_domain': '请检查域名筛选。',
+            'invalid_import_group': '请检查分组筛选。',
+            'butler_configuration_required': '请先配置 Butler 连接与最终转发收件箱。',
+            'handoff_contract_unsupported': '当前 Butler 连接不支持永久归属或精确收件，请检查连接配置。',
+            'import_preview_not_found': '预览不存在，请重新预览。',
+            'import_preview_expired': '预览已过期，请重新预览。',
+            'import_preview_empty': '本次预览没有可导入的邮箱。',
+            'import_snapshot_conflict': '连接配置已变化，请重新预览。',
+            'import_request_conflict': '原请求已关联其他预览，请保留原编号恢复。',
+            'import_batch_not_found': '找不到原导入批次，请保留编号核对。',
+        }
+
         if body:
             data = request.get_json(silent=True)
             if not isinstance(data, dict):
@@ -349,14 +367,16 @@ def create_email_pool_blueprint(context: WebUIContext):
             result = getattr(service, action)(*args)
             return jsonify({"ok": True, "batch": result} if batch else result), status
         except service.RemoteError as exc:
-            return jsonify({"ok": False, "error": str(exc), "code": "butler_unavailable", "error_code": "butler_unavailable"}), 502
+            return jsonify({"ok": False, "error": "暂时无法读取 Butler，请稍后重试。", "code": "butler_unavailable", "error_code": "butler_unavailable"}), 502
         except LookupError as exc:
             code = str(exc).partition(':')[0]
-            return jsonify({"ok": False, "error": str(exc), "code": code, "error_code": code}), 404
+            code = code if code in messages else 'import_not_found'
+            return jsonify({"ok": False, "error": messages.get(code, '找不到原导入记录，请保留编号核对。'), "code": code, "error_code": code}), 404
         except ValueError as exc:
             code = str(exc).partition(':')[0]
+            code = code if code in messages else 'import_invalid_request'
             conflict = code in {"import_request_conflict", "import_snapshot_conflict"}
-            return jsonify({"ok": False, "error": str(exc), "code": code, "error_code": code}), 409 if conflict else 400
+            return jsonify({"ok": False, "error": messages.get(code, '导入条件无效，请检查选项或重新预览。'), "code": code, "error_code": code}), 409 if conflict else 400
         except Exception as exc:
             logger.error("Butler manual import action %s failed (%s)", action, type(exc).__name__)
             return jsonify({"ok": False, "error": "导入操作暂未确认，请保留当前批次后重试", "code": "import_internal_error", "error_code": "import_internal_error"}), 500
