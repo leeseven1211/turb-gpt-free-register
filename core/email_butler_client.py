@@ -368,7 +368,16 @@ def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool,
 
     if not candidate_match(target, {"recipient_evidence": evidence}, forwarded=True, strict_family=strict_family):
         originals = {_cache_key(value) for value in evidence.get("original_recipients", [])}
-        error_code = "recipient_ambiguous" if target in originals else "recipient_mismatch"
+        family = target.partition("@")[0].split("+", 1)[0] + "@" + target.partition("@")[2]
+
+        def same_family(address: str) -> bool:
+            return address.partition("@")[0].split("+", 1)[0] + "@" + address.partition("@")[2] == family
+
+        displayed = {_cache_key(value) for value in evidence.get("displayed_recipients", []) if same_family(_cache_key(value))}
+        # 严格母地址只有显示母地址时，无法排除被改写的子地址，统一归为歧义。
+        ambiguous_parent = (strict_family and "+" not in target.partition("@")[0]
+                            and not any(same_family(value) for value in originals) and displayed == {target})
+        error_code = "recipient_ambiguous" if target in originals or ambiguous_parent else "recipient_mismatch"
         raise EmailButlerClientError(f"{error_code}: 原始收件证据无法唯一匹配完整地址")
 
 

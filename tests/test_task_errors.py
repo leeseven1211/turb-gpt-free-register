@@ -25,6 +25,13 @@ class TaskErrorClassificationTests(unittest.TestCase):
                     self.assertTrue(info["display_code"].startswith("MAIL-"))
                     self.assertEqual(info["retryability"], "conditional")
 
+    def test_unsupported_mailbox_scan_connector_has_specific_retryable_cause(self):
+        info = classify_task_error("原收件配置不支持扫描", task_type="deactivation_mail",
+            error_code="email_scan_connector_unsupported")
+        self.assertEqual(info["code"], "email_scan_connector_unsupported")
+        self.assertEqual(info["display_code"], "MAIL-SCAN-001")
+        self.assertEqual(info["retryability"], "conditional")
+
     def test_subaddress_inventory_shortage_is_specific_and_retryable(self):
         for task_type in ('registration', 'email_change'):
             info = classify_task_error(

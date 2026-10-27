@@ -107,6 +107,15 @@ class ButlerRecipientContractTests(unittest.TestCase):
                 mailbox_email=MAILBOX, local_probe=local, api_base=BASE + "/parent"), "654321")
         local.assert_not_called()
 
+    def test_strict_parent_with_only_displayed_parent_is_ambiguous(self):
+        payload = {**receipt(PARENT, strict=True), "recipient_evidence": {
+            "original_recipients": [], "displayed_recipients": [PARENT], "hme_recipients": [PARENT]}}
+        with patch.object(client, "_request", side_effect=lambda _m, path, **_kw:
+                {"code": 200, "capabilities": ["inbound.recipient_evidence.v1"]} if path == "/me" else payload):
+            with self.assertRaisesRegex(client.EmailButlerClientError, "recipient_ambiguous"):
+                client.fetch_inbound_otp(PARENT, max_wait=1, strict_family=True,
+                    mailbox_email=MAILBOX, api_base=BASE + "/ambiguous-parent")
+
     def test_strict_timeout_preserves_remote_classification_without_imap_probe(self):
         local = Mock(return_value="111111")
         payload = {"code": 200, "error_code": "recipient_evidence_missing", "message": "邮件缺少完整收件证据"}

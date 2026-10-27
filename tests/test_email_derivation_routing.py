@@ -236,9 +236,31 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
 
     def test_unsupported_connector_never_falls_back_to_global(self):
         with patch("core.email_derivation.inbox_profiles_for_addresses", return_value={CHILD_A: {"connector": "outlook"}}), patch.object(forward, "_connect") as connect:
-            with self.assertRaisesRegex(forward.ForwardIMAPError, "不能改读"):
-                forward.scan_openai_deactivation_bulk([CHILD_A])
+            result = forward.scan_openai_deactivation_bulk([CHILD_A])[CHILD_A]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "email_scan_connector_unsupported")
+        self.assertIn("不能改读", result["error"])
         connect.assert_not_called()
+
+    def test_butler_profile_only_fails_own_item_and_keeps_historical_imap_scan(self):
+        profiles = {CHILD_A: self.profile(1, "historical@example.test"), CHILD_B: {
+            "connector": "forward_butler", "id": 2, "api_base": "https://butler.example.test/v1",
+            "mailbox_email": "final@example.test", "api_key": "test-key"}}
+        inboxes = []
+
+        def connect():
+            inboxes.append(forward._settings()[2])
+            return Mock()
+
+        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value=profiles), patch.object(
+                forward, "_connect", side_effect=connect), patch.object(forward, "_messages_for_recipients",
+                side_effect=lambda _mail, targets, _since: {target: [] for target in targets}):
+            results = forward.scan_openai_deactivation_bulk([CHILD_A, CHILD_B])
+        self.assertEqual(inboxes, ["historical@example.test"])
+        self.assertTrue(results[CHILD_A]["ok"])
+        self.assertFalse(results[CHILD_A]["detected"])
+        self.assertFalse(results[CHILD_B]["ok"])
+        self.assertEqual(results[CHILD_B]["error_code"], "email_scan_connector_unsupported")
 
     def test_single_scan_uses_same_bulk_profile_resolution(self):
         with patch.object(forward, "scan_openai_deactivation_bulk", return_value={CHILD_A: {"detected": False}}) as bulk:

@@ -773,10 +773,15 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
     profiles = inbox_profiles_for_addresses(sorted(targets))
     active_profile = _INBOX_PROFILE.get()
     groups: dict[tuple | None, dict] = {}
+    results = {}
     for target in sorted(targets):
         profile = profiles.get(target, active_profile)
         if target in profiles and str(profile.get("connector") or "") != "forward_imap":
-            raise ForwardIMAPError("原邮箱收件配置不支持 IMAP 封号邮件扫描，不能改读当前全局邮箱")
+            results[target] = {
+                "ok": False, "error_code": "email_scan_connector_unsupported",
+                "error": "email_scan_connector_unsupported: 原邮箱收件配置不支持 IMAP 封号邮件扫描，不能改读当前全局邮箱",
+            }
+            continue
         key = _scan_profile_key(profile)
         if key not in groups:
             groups[key] = {"profile": dict(profile) if profile is not None else None, "targets": set(), "strict": {}}
@@ -785,7 +790,6 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
         groups[key]["strict"][target] = bool(strict_rules.get(target, (profile or {}).get("strict_family")))
     lookback = max(1, min(int(lookback_days or 120), 365))
     since_ts = time.time() - lookback * 86400
-    results = {}
     for group in groups.values():
         profile = group["profile"]
         if profile is not None:
