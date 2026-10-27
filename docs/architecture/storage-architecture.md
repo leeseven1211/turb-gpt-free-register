@@ -59,13 +59,13 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 
 ### 通用邮箱子地址
 
-母邮箱继续保存在原邮箱池中，`email_address_allocations` 单独保存完整子地址，不把子地址写回 Apple 别名库存。当前接入 HME `forward_imap` 和 Outlook 精确收件路径。在管理页人工预生成 `+` 后接六位小写字母数字，每母资源默认累计最多 3 个；提高额度只增加可生成数量。`used/replaced` 母资源仍可生成，明确停用、归档或远端失效的资源不参与新生成或领取。
+母邮箱继续保存在原邮箱池中，`email_address_allocations` 单独保存完整子地址，不把子地址写回 Apple 别名库存。当前接入 HME `forward_imap`、严格契约的 `forward_butler` 和 Outlook 精确收件路径。在管理页人工预生成 `+` 后接六位小写字母数字，每母资源默认累计最多 3 个；提高额度只增加可生成数量。`used/replaced` 母资源仍可生成，明确停用、归档或远端失效的资源不参与新生成或领取。
 
 预生成库存使用 `available/disabled`，未领取时 `acquisition_id/owner_kind/owner_id` 为 NULL；`generation_key` 唯一记录生成请求内的序号，领取后仍保留。初始化对旧表幂等解除这三列的 NOT NULL 约束，历史行及身份保持不变。`email_address_generation_requests` 保存稳定请求身份、来源、数量、母资源范围及结果，包括零结果和部分生成；重复请求恢复原结果，参数冲突明确拒绝。生成通过母记录行锁、完整地址锁和历史累计检查防止重复与超额，请求结果与库存同事务提交。
 
 领取使用稳定 `acquisition_id`，通过事务级业务锁与行锁原子将合格库存从 `available` 改为 `reserved`，不在领取时同步上游、创建 profile 或生成后缀。地址与原 job、Attempt、批次领取记录使用同一个 PostgreSQL 连接提交；成功账号的 `email_address_id`、地址状态和账号引用也在账号写回事务内更新。失败、重启中断和结果不明保留原 root/Attempt 与地址，沿原身份重跑；全部状态均占用历史生成额度，已领取地址不回收给其他意图。注册容量统计仅计入母资源健康且固定 profile 有效的可领取库存。删除有子地址引用的母资源改为归档停用，检查与删除共用母记录锁。
 
-`email_inbox_profiles` 固定实际收件身份、连接器、版本和 `credential_ref`。母资源首次成功派生后固定该版本，后续全局 Gmail 配置变化不会隐式切换同母子地址和母账号的恢复链路。Gmail 应用密码使用版本化引用留在 `.env`；Outlook 凭据沿用原母资源受保护字段。历史绑定和其凭据不能因关闭派生或保存新配置而删除。WebUI 配置回滚与 profile 密钥写入共享可重入的文件锁，避免跨线程、跨进程覆盖。
+`email_inbox_profiles` 固定实际收件身份、连接器、版本和 `credential_ref`。母资源首次成功派生后固定该版本，后续全局 Gmail 配置变化不会隐式切换同母子地址和母账号的恢复链路。Butler profile 固定 API 根地址和最终收件邮箱，API Key 使用版本化 `EMAIL_DERIVATION_BUTLER_SECRET_*` 引用留在 `.env`；Gmail 应用密码同样使用版本化引用；Outlook 凭据沿用原母资源受保护字段。历史绑定和其凭据不能因关闭派生或保存新配置而删除。WebUI 配置回滚与 profile 密钥写入共享可重入的文件锁，避免跨线程、跨进程覆盖。现有 IMAP profile 不会因全局模式改为 Butler 而改写；库存资格、恢复与取码均以固定 profile 为准。
 
 `email_otp_requests` 对已入账的完整派生地址协调认证执行；不同子地址可并发，同地址的活跃执行受租约与递增 fence 保护。请求分别保留 challenge、发码代次、候选消息 ID、收件证据、cursor 和提交状态；取到候选仅记为 `offered`，不等于远端确认。超时可重新取得执行资格，旧 fence 不能覆盖新事实，未知提交保留原记录。邮件原文和裸验证码不进入子地址事实表；普通历史原地址仍沿原收件入口读取。
 

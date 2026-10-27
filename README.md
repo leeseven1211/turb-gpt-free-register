@@ -398,11 +398,12 @@ ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
 - `forward_butler` 仍表示 Oracle 接收 Gmail 后写入 Email Butler PG；生产切换时再单独配置该模式。
+- 严格 Butler 邮箱链路已在独立准备分支实现，迁移顺序和验收边界见 [Oracle 邮箱准备说明](docs/deployment/oracle-mail-preparation.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。原有固定 IMAP profile 保留，后续新建 profile 才能显式绑定 Butler。
 - `forward_imap` 的 Gmail 应用专用密码只保存在本机 `.env`，不会写入仓库或日志。
 - 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - 真实 IMAP 连接使用 UID 搜索和读取，避免邮件删除引起序号漂移；批量封号邮件扫描每次最多读取 20 封并按响应 UID 归属，收码仍逐封读取并在取得有效码后立即结束。日期月份固定为英文，不受本机语言影响。
 - Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
-- 新版 sidecar 会在别名列表返回 `forwardToEmail`。turb 同步时只启用与当前收件模式匹配的别名，避免把验证码发到 Gmail 却轮询 iCloud IMAP 的假成功。
+- 新版 sidecar 会在别名列表返回 `forwardToEmail`。`forward_imap` 和 `forward_butler` 支持 Apple 先转发到中转邮箱再送到最终 Gmail，不要求直接目标等于最终邮箱；同步只检查转发拓扑，真正取码仍需核对完整目标地址。`sidecar` 继续要求 iCloud IMAP 能接收该邮件。
 - 连接测试在 `forward_imap` 下应返回 `inbox_method=local_forward_imap`；在 `forward_butler` 下才返回 `email_butler_pg`。两种模式都要确认同步结果的 `forward_incompatible=0`。
 - iCloud 创建别名有频率/数量限制。批量运行建议预先同步库存并保持 `ICLOUD_HME_AUTO_CREATE=False`，不要在遇到限流后高频重试。
 
