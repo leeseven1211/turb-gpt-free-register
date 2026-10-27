@@ -1347,6 +1347,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'outlook') {
     const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
     if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
+    else if (view === 'derivations') loadEmailDerivationResources();
     else ensureViewLoaded('outlook:list', loadOutlook);
   }
   if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
@@ -1369,6 +1370,7 @@ const MODULE_VIEW_META = {
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
     list: '查询、导入和批量维护邮箱资源',
+    derivations: '查看邮箱子地址、母邮箱归属和关联账号任务',
   },
   'proxy-traffic': {
     pool: '查看独立代理池库存、容量和线路状态',
@@ -1390,9 +1392,11 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
   if (module === 'register') refreshJobs({coalesce: true});
   if (module === 'codex') ensureViewLoaded('codex', loadCodex);
-  if (module === 'outlook') view === 'overview'
-    ? ensureViewLoaded('outlook:overview', loadMailResources)
-    : ensureViewLoaded('outlook:list', loadOutlook);
+  if (module === 'outlook') {
+    if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
+    else if (view === 'derivations') loadEmailDerivationResources();
+    else ensureViewLoaded('outlook:list', loadOutlook);
+  }
   if (module === 'proxy-traffic') {
     const dialog = document.getElementById('proxyTrafficDetailDialog');
     if (view === 'pool' && dialog?.open) dialog.close();

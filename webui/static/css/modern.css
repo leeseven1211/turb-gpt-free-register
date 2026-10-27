@@ -3131,8 +3131,9 @@
     #tab-register[data-module-view="launch"] .module-tasks-only { display: none !important; }
     #tab-register[data-module-view="tasks"] .module-launch-only { display: none !important; }
     #tab-register[data-module-view="tasks"] #jobsToolbarV2 { display: none; }
-    #tab-outlook[data-module-view="overview"] #outlookPanelV2 { display: none; }
-    #tab-outlook[data-module-view="list"] .mail-resource-overview { display: none; }
+    #tab-outlook:not([data-module-view="list"]) #outlookPanelV2 { display: none; }
+    #tab-outlook:not([data-module-view="overview"]) .mail-resource-overview { display: none; }
+    #tab-outlook:not([data-module-view="derivations"]) #emailDerivationPanel { display: none; }
     .task-records-command-deck {
       position: sticky; top: calc(var(--topbar-height) + var(--module-subnav-height) + 10px); z-index: 42;
       display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; padding: 10px 20px;
@@ -3361,11 +3362,10 @@
 
     /* 子地址台账沿用邮箱池视觉，并在小屏转换为逐条卡片。 */
     .email-derivation-panel { margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface, #fff); }
-    .email-derivation-panel > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 48px; padding: 12px 16px; cursor: pointer; font-weight: 700; }
-    .email-derivation-panel > summary::before { content: '+'; width: 16px; color: var(--muted); }
-    .email-derivation-panel[open] > summary::before { content: '−'; }
-    .email-derivation-panel > summary small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
-    .email-derivation-panel > summary:focus-visible, .pool-derivation-open:focus-visible { outline: 2px solid var(--primary, #5b5ce2); outline-offset: 2px; }
+    .email-derivation-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 48px; padding: 12px 16px; }
+    .email-derivation-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
+    .email-derivation-head small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+    .pool-derivation-open:focus-visible { outline: 2px solid var(--primary, #5b5ce2); outline-offset: 2px; }
     .email-derivation-content { min-width: 0; padding: 0 16px 16px; }
     .email-derivation-toolbar, .email-derivation-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; font-size: 12px; }
     .email-derivation-toolbar select { min-height: 36px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; color: inherit; background: var(--surface, #fff); font: inherit; }
@@ -3383,8 +3383,8 @@
     .pool-derivation-meta { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .pool-derivation-open { min-height: 28px; padding: 2px 0; border: 0; color: var(--primary, #5b5ce2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
     @media (max-width: 720px) {
-      .email-derivation-panel > summary { align-items: flex-start; }
-      .email-derivation-panel > summary small { flex-basis: 100%; padding-left: 24px; }
+      .email-derivation-head { align-items: flex-start; }
+      .email-derivation-head small { flex-basis: 100%; }
       .email-derivation-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
       .email-derivation-table tbody { display: grid; gap: 10px; }
       .email-derivation-table tr { display: grid; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }

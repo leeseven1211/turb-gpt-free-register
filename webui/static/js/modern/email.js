@@ -39,6 +39,14 @@ function renderEmailDerivationAllocations(result) {
   document.getElementById('btnDerivationPrev').disabled = state.page <= 1;
   document.getElementById('btnDerivationNext').disabled = state.page >= pages;
 }
+async function loadEmailDerivationSummary() {
+  try {
+    renderEmailDerivationSummary(await api('/api/email-derivation/summary?source=all'));
+  } catch (error) {
+    const node = document.getElementById('emailDerivationSummary');
+    if (node) node.textContent = '子地址概况加载失败，请刷新重试。';
+  }
+}
 async function loadEmailDerivationResources() {
   const panel = document.getElementById('emailDerivationPanel');
   if (!panel) return;
@@ -53,17 +61,17 @@ async function loadEmailDerivationResources() {
   document.getElementById('emailDerivationParentFilter').textContent = state.parentId ? `母邮箱：${state.parentEmail || `#${state.parentId}`}` : '';
   document.getElementById('btnClearDerivationParent').hidden = !state.parentId;
   const wrap = document.getElementById('emailDerivationTableWrap');
-  if (wrap) wrap.setAttribute('aria-busy', panel.open ? 'true' : 'false');
+  if (wrap) wrap.setAttribute('aria-busy', 'true');
   const refresh = document.getElementById('btnRefreshEmailDerivation');
   if (refresh) refresh.disabled = true;
   const status = document.getElementById('emailDerivationListStatus');
-  if (panel.open && status) status.textContent = '正在读取子地址归属…';
+  if (status) status.textContent = '正在读取子地址归属…';
   document.getElementById('btnDerivationPrev').disabled = true;
   document.getElementById('btnDerivationNext').disabled = true;
   try {
     const [summary, allocations] = await Promise.all([
       api(`/api/email-derivation/summary?${params.toString()}`),
-      panel.open ? api(`/api/email-derivation/allocations?${listParams.toString()}`) : Promise.resolve(null),
+      api(`/api/email-derivation/allocations?${listParams.toString()}`),
     ]);
     if (generation !== state.generation) return;
     renderEmailDerivationSummary(summary);
@@ -88,13 +96,9 @@ function showEmailDerivationParent(button) {
   state.page = 1;
   const panel = document.getElementById('emailDerivationPanel');
   if (!panel) return;
-  if (panel.open) loadEmailDerivationResources();
-  else panel.open = true;
+  setModuleView('outlook', 'derivations');
   panel.scrollIntoView({block: 'nearest'});
 }
-document.getElementById('emailDerivationPanel')?.addEventListener('toggle', event => {
-  if (event.currentTarget.open) loadEmailDerivationResources();
-});
 document.getElementById('emailDerivationSource')?.addEventListener('change', event => {
   Object.assign(EMAIL_DERIVATION_VIEW, {source: event.currentTarget.value, parentId: null, parentEmail: '', page: 1});
   loadEmailDerivationResources();
@@ -255,7 +259,6 @@ function renderButlerLeases(items) {
   </div>`).join('') || '<div class="butler-lease-empty">当前进程没有手动或注册中租约</div>';
 }
 async function loadMailResources() {
-  loadEmailDerivationResources();
   try {
     const [dashboard, leases] = await Promise.all([
       apiCached('/api/dashboard', {}, 5000),
@@ -321,7 +324,7 @@ async function loadOutlook() {
     const totalPages = Math.max(1, Math.ceil(OUTLOOK_TOTAL / p.size));
     if (p.page > totalPages) { p.page = totalPages; return loadOutlook(); }
     renderOutlook();
-    loadEmailDerivationResources();
+    loadEmailDerivationSummary();
     markViewReady('outlook:list');
   } catch(e) {
     if (!OUTLOOK.length) $('#outlookBodyV2').innerHTML = renderTableStateRow(9, '邮箱资源加载失败', '请检查服务状态后刷新列表。', 'error');

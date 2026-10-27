@@ -76,6 +76,7 @@
       <div class="sidebar-subnav" data-module-subnav="outlook" aria-label="邮箱资源池子菜单">
         <button type="button" class="is-active" data-view="overview">资源总览</button>
         <button type="button" data-view="list">邮箱列表</button>
+        <button type="button" data-view="derivations">邮箱子地址</button>
       </div>
     </div>
     <div class="sidebar-module" data-sidebar-module="proxy-traffic">
@@ -694,8 +695,8 @@
         <div class="butler-lease-list" id="butlerLeaseList"></div>
       </div>
     </section>
-    <details class="email-derivation-panel" id="emailDerivationPanel">
-      <summary><span>邮箱子地址</span><small id="emailDerivationSummary">正在读取子地址概况</small></summary>
+    <section class="email-derivation-panel" id="emailDerivationPanel" aria-labelledby="emailDerivationTitle">
+      <header class="email-derivation-head"><h2 id="emailDerivationTitle">邮箱子地址</h2><small id="emailDerivationSummary">正在读取子地址概况</small></header>
       <div class="email-derivation-content">
         <p class="hint">每个母邮箱按额度生成独立子地址，失败与重跑保持原地址。提高配置额度后可继续生成。</p>
         <div class="email-derivation-toolbar">
@@ -708,7 +709,7 @@
         <div class="email-derivation-table-wrap" id="emailDerivationTableWrap" aria-busy="false">
           <table class="email-derivation-table">
             <thead><tr><th scope="col">派生地址</th><th scope="col">母邮箱 / 来源</th><th scope="col">使用状态</th><th scope="col">关联账号 / 任务</th><th scope="col">生成时间</th></tr></thead>
-            <tbody id="emailDerivationBody"><tr><td colspan="5">展开后读取子地址列表</td></tr></tbody>
+            <tbody id="emailDerivationBody"><tr><td colspan="5">正在读取子地址列表</td></tr></tbody>
           </table>
         </div>
         <div class="email-derivation-pager">
@@ -717,7 +718,7 @@
           <button type="button" class="jobs-tb-btn" id="btnDerivationNext" disabled>下一页</button>
         </div>
       </div>
-    </details>
+    </section>
     <section class="outlook-panel-v2" id="outlookPanelV2" aria-label="邮箱池">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="outlookToolbarV2">
         <span class="list-selection-hint" id="outlookSelectedHintV2">选择邮箱后批量操作</span>
