@@ -11,6 +11,60 @@ import os
 import uuid
 
 
+def verify_client(who: dict, *, client_id: str = '') -> str:
+    required = {'mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1'}
+    policy = who.get('policy') or {}
+    if (not required.issubset(set(who.get('capabilities') or []))
+            or not who.get('id') or not policy.get('consumer') or policy.get('service') != 'openai'
+            or client_id and str(who['id']) != client_id):
+        raise ValueError('handoff_contract_unsupported: Butler 持久归属或原消费身份不可用')
+    return str(who['id'])
+
+
+def ownership_for_import(address: str, api_base: str, client_id: str, consumer_id: str) -> dict:
+    digest = hashlib.sha256(f'{consumer_id}:{api_base}:{client_id}:{address}'.encode()).hexdigest()
+    return {'owner_kind': 'local_inventory', 'owner_id': consumer_id, 'acquisition_id': 'turb-import:' + digest}
+
+
+def validate_candidate(item: dict, *, mailbox: str) -> dict:
+    """Accept a complete permanent HME identity; never infer missing route fields."""
+    from core.storage.local_email_imports import butler_forward_address
+    if not isinstance(item, dict):
+        raise ValueError('handoff_identity_mismatch: Butler 完整身份缺失')
+    address = butler_forward_address(item.get('email'))
+    parent = address.partition('@')[0].split('+', 1)[0] + '@icloud.com'
+    identity_type = str(item.get('identity_type') or '')
+    if (item.get('provider') != 'icloud_hme' or item.get('recipient_mode') != 'forwarded_exact_v1'
+            or item.get('strict_family') is not True
+            or str(item.get('mailbox_email') or '').strip().lower() != mailbox
+            or not str(item.get('identity_id') or '').strip()
+            or str(item.get('parent_email') or '').strip().lower() != parent
+            or identity_type not in {'primary', 'plus_alias', 'plus_tag'}
+            or ('+' in address.partition('@')[0]) != (identity_type != 'primary')):
+        raise ValueError('handoff_identity_mismatch: Butler 未确认完整邮箱及固定收件身份')
+    return {key: (address if key == 'email' else item[key]) for key in
+            ('email', 'provider', 'identity_type', 'identity_id', 'parent_email',
+             'mailbox_email', 'recipient_mode', 'strict_family')}
+
+
+def handoff_selected(candidate: dict, profile: dict, *, ownership: dict, client_id: str) -> dict:
+    """Replay one frozen candidate and ownership, without selecting or resolving."""
+    from core import email_butler_client as client
+    from core.email_derivation import _profile_credentials
+    if profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
+        raise ValueError('fixed_route_unavailable: 原固定收件配置不可用')
+    connection = _profile_credentials(profile)
+    original = validate_candidate(candidate, mailbox=connection['mailbox_email'])
+    payload = client._request('POST', '/mailboxes', json={
+        'requested_email': original['email'], 'provider': 'icloud_hme', **ownership},
+        api_base=connection['api_base'], api_key=connection['api_key'])
+    received = validate_candidate(payload.get('mailbox'), mailbox=connection['mailbox_email'])
+    if received != original or not (payload.get('mailbox') or {}).get('lease_id'):
+        raise ValueError('handoff_identity_mismatch: Butler 交接未确认原固定身份')
+    return {**ownership, 'client_id': client_id, 'identity_id': original['identity_id'],
+            'parent_email': original['parent_email'], 'state': 'issued', 'version': 1}
+
+
 def _consumer_instance() -> str:
     from config.env_loader import env_file_lock, read_env_file, write_env_values
 

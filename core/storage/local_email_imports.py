@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from contextlib import nullcontext
 import hashlib
 import re
 from urllib.parse import urlsplit
@@ -19,14 +20,19 @@ def butler_forward_address(value) -> str:
     return address
 
 
-def _fixed_butler_profile(conn) -> dict:
+def _fixed_butler_profile(conn, *, _connection=None) -> dict:
     from config import email as config
     from core.email_derivation import _save_profile_secret
     from core.storage.email_address_allocations import create_inbox_profile
 
-    base = str(getattr(config, 'EMAIL_BUTLER_API_BASE', '') or '').strip().rstrip('/')
-    key = str(getattr(config, 'EMAIL_BUTLER_API_KEY', '') or '').strip()
-    mailbox = str(getattr(config, 'ICLOUD_HME_FORWARD_IMAP_EMAIL', '') or '').strip().lower()
+    selected = _connection if _connection is not None else {
+        'api_base': getattr(config, 'EMAIL_BUTLER_API_BASE', ''),
+        'api_key': getattr(config, 'EMAIL_BUTLER_API_KEY', ''),
+        'mailbox_email': getattr(config, 'ICLOUD_HME_FORWARD_IMAP_EMAIL', ''),
+    }
+    base = str(selected.get('api_base') or '').strip().rstrip('/')
+    key = str(selected.get('api_key') or '').strip()
+    mailbox = str(selected.get('mailbox_email') or '').strip().lower()
     try:
         parsed = urlsplit(base)
         valid = (parsed.scheme in {'http', 'https'} and parsed.hostname and not parsed.username
@@ -45,7 +51,8 @@ def _fixed_butler_profile(conn) -> dict:
         data={'require_recipient_evidence': True}, conn=conn)
 
 
-def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
+def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
+                     _handoffs=None, _manual_item_id=None, _conn=None) -> tuple[int, int]:
     """Insert only never-seen full addresses, with one cross-source lock per address."""
     from core.local_email_inventory import TABLES, import_conflict
     from core.email_resource_lifetime import normalize_expiry
@@ -53,8 +60,8 @@ def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
     if source not in {'outlook', 'generic_api', 'email_butler'}:
         raise ValueError('不支持的手动邮箱导入来源')
     inserted = skipped = 0
-    profile = None
-    with record_store.transaction() as conn:
+    profile = _fixed_profile
+    with (nullcontext(_conn) if _conn is not None else record_store.transaction()) as conn:
         # 同一批事务会持有所有地址锁；各来源使用相同顺序，避免相反输入批次互等。
         for raw in sorted(records, key=lambda item: str(item.get('email') or '').strip().lower()):
             email = str(raw.get('email') or '').strip().lower()
@@ -72,6 +79,14 @@ def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
             if import_conflict(email, conn=conn):
                 skipped += 1
                 continue
+            # A pending manual batch owns its fixed candidate even before the
+            # remote result is known. Paste imports cannot race that intent.
+            reserved = record_store.list_rows(record_store.EMAIL_BUTLER_IMPORT_ITEMS,
+                where="address_norm = %s AND status <> 'skipped'" + (" AND id <> %s" if _manual_item_id else ''),
+                params=(email, _manual_item_id) if _manual_item_id else (email,), limit=1, conn=conn)
+            if reserved:
+                skipped += 1
+                continue
             payload = {'email': email, 'status': 'available', 'used_at': None, 'note': None,
                        'imported_at': datetime.now().isoformat(timespec='seconds'), **lifetime}
             if source == 'email_butler':
@@ -82,7 +97,12 @@ def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
                     mailbox_email=profile['inbox_locator']['mailbox_email'],
                     recipient_mode='forwarded_exact_v1', strict_family=True)
                 from core.butler_inventory_handoff import handoff_for_import
-                handoff = handoff_for_import(email, profile, conn=conn)
+                handoff = (_handoffs[email] if _handoffs is not None
+                           else handoff_for_import(email, profile, conn=conn))
+                if (_handoffs is not None and (handoff.get('state') != 'issued'
+                        or handoff.get('owner_kind') != 'local_inventory' or handoff.get('version') != 1
+                        or not all(handoff.get(key) for key in ('acquisition_id', 'owner_id', 'identity_id')))):
+                    raise ValueError('handoff_identity_mismatch: 未确认完整交接身份')
                 payload.update(butler_handoff=handoff, identity_id=handoff['identity_id'],
                                parent_email=handoff['parent_email'])
             elif source == 'generic_api':

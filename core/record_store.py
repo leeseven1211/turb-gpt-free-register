@@ -397,6 +397,32 @@ EMAIL_BUTLER_CLAIM_INTENTS = TableSpec(
     indexes=(("address_norm",), ("owner_kind", "owner_id"), ("status",)),
 )
 
+EMAIL_BUTLER_IMPORT_PREVIEWS = TableSpec(
+    name="email_butler_import_previews",
+    promoted={"preview_token": "TEXT NOT NULL", "expires_at": "TIMESTAMPTZ NOT NULL",
+              "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL"},
+    unique=("preview_token",),
+    indexes=(("expires_at",),),
+)
+
+EMAIL_BUTLER_IMPORT_BATCHES = TableSpec(
+    name="email_butler_import_batches",
+    promoted={"batch_id": "TEXT NOT NULL", "request_id": "TEXT NOT NULL",
+              "preview_token": "TEXT NOT NULL", "status": "TEXT NOT NULL",
+              "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL"},
+    unique=("batch_id", "request_id"),
+    indexes=(("status", "id"),),
+)
+
+EMAIL_BUTLER_IMPORT_ITEMS = TableSpec(
+    name="email_butler_import_items",
+    promoted={"batch_id": "TEXT NOT NULL", "position": "BIGINT NOT NULL",
+              "address_norm": "TEXT NOT NULL", "acquisition_id": "TEXT NOT NULL",
+              "status": "TEXT NOT NULL", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL"},
+    indexes=(("batch_id", "position"), ("address_norm", "status")),
+    partial_unique=((("batch_id", "position"), "TRUE"),),
+)
+
 EMAIL_INBOX_PROFILES = TableSpec(
     name="email_inbox_profiles",
     promoted={
@@ -577,6 +603,9 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     EMAIL_ADDRESS_ALLOCATIONS,
     EMAIL_ADDRESS_GENERATION_REQUESTS,
     EMAIL_BUTLER_CLAIM_INTENTS,
+    EMAIL_BUTLER_IMPORT_PREVIEWS,
+    EMAIL_BUTLER_IMPORT_BATCHES,
+    EMAIL_BUTLER_IMPORT_ITEMS,
     EMAIL_INBOX_PROFILES,
     EMAIL_USAGE_REPORTS,
     EMAIL_OTP_REQUESTS,
