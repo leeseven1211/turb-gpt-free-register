@@ -767,19 +767,21 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
         raise ForwardIMAPError("待扫描隐藏邮箱地址无效")
     if not targets:
         return {}
-    from core.email_derivation import inbox_profiles_for_addresses
     from core import email_butler_bridge, email_butler_client
 
     # 一次批量解析，不能为数千个待扫描账号逐个连接 PostgreSQL。
     default_butler = str(getattr(_email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_butler"
-    profiles = (email_butler_bridge.inbox_profiles_for_addresses(sorted(targets))
-        if default_butler or email_butler_bridge.enabled() else inbox_profiles_for_addresses(sorted(targets)))
+    profiles = email_butler_bridge.inbox_profiles_for_addresses(sorted(targets))
     active_profile = _INBOX_PROFILE.get()
     groups: dict[tuple | None, dict] = {}
     butler_groups: dict[tuple, dict] = {}
     results = {}
     for target in sorted(targets):
         profile = profiles.get(target, active_profile)
+        if (profile or {}).get("error_code"):
+            results[target] = {"ok": False, "error_code": profile["error_code"],
+                "error": str(profile.get("error") or profile["error_code"])}
+            continue
         connector = str((profile or {}).get("connector") or "")
         if connector == "forward_butler" or profile is None and default_butler:
             connection = {

@@ -78,23 +78,45 @@ def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:
     from core import email_derivation, record_store
 
     targets = sorted({str(value or "").strip().lower() for value in addresses if str(value or "").strip()})
-    profiles = email_derivation.inbox_profiles_for_addresses(targets)
+    profiles = {}
     if not targets:
         return profiles
+    loaded = {}
+
+    def credentials(profile_id):
+        key = None
+        try:
+            key = int(profile_id)
+            if key not in loaded:
+                profile = email_derivation.store.get_inbox_profile(key)
+                if not profile or profile.get("state") != "active" or profile.get("connector") not in {"forward_imap", "forward_butler"}:
+                    raise butler.EmailButlerClientError("原固定收件配置不可用")
+                loaded[key] = email_derivation._profile_credentials(profile)
+            return dict(loaded[key])
+        except (RuntimeError, TypeError, ValueError) as exc:
+            # 保留失败目标，防止批量调用把缺失的固定配置降级为当前全局邮箱。
+            failure = {"error_code": "email_derivation_profile_unavailable",
+                "error": f"email_derivation_profile_unavailable: {str(exc)[:300]}"}
+            if key is not None:
+                loaded[key] = failure
+            return dict(failure)
+
+    rows = record_store.list_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS,
+        where="source = %s AND (address_norm = ANY(%s) OR LOWER(parent_address) = ANY(%s))",
+        params=("icloud_hide", targets, targets), order_by="id DESC")
+    for row in rows:
+        route = credentials(row["inbox_profile_id"])
+        child, parent = str(row["address_norm"]), str(row["parent_address"]).lower()
+        if child in targets:
+            profiles[child] = dict(route)
+        if parent in targets and parent not in profiles:
+            profiles[parent] = {**route, "strict_family": True}
     parents = record_store.list_rows(record_store.ICLOUD_HIDE_POOL,
         where="LOWER(email) = ANY(%s)", params=(targets,))
-    loaded = {}
     for parent in parents:
         profile_id = (parent.get("derivation_policy") or {}).get("inbox_profile_id")
-        if not profile_id:
-            continue
-        key = int(profile_id)
-        if key not in loaded:
-            profile = email_derivation.store.get_inbox_profile(key)
-            if not profile or profile.get("state") != "active" or profile.get("connector") not in {"forward_imap", "forward_butler"}:
-                raise butler.EmailButlerClientError("email_derivation_profile_unavailable: 母地址的原固定收件配置不可用")
-            loaded[key] = email_derivation._profile_credentials(profile)
-        profiles[str(parent["email"]).strip().lower()] = {**loaded[key], "strict_family": True}
+        if profile_id:
+            profiles[str(parent["email"]).strip().lower()] = {**credentials(profile_id), "strict_family": True}
     return profiles
 
 

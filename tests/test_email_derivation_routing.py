@@ -195,7 +195,7 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
         mail = Mail({1: row(1, None), 2: row(2, PARENT), 3: row(3, CHILD_A), 4: row(4, CHILD_B)})
         mailbox = "historical@example.test"
         profiles = {PARENT: self.profile(1, mailbox, strict=True), CHILD_A: self.profile(1, mailbox), CHILD_B: self.profile(1, mailbox)}
-        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value=profiles) as lookup, patch.object(
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses", return_value=profiles) as lookup, patch.object(
             forward, "_connect", return_value=mail
         ) as connect:
             results = forward.scan_openai_deactivation_bulk([PARENT, CHILD_A, CHILD_B, CHILD_A])
@@ -219,7 +219,7 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
         def messages(_mail, targets, _since):
             return {target: [] for target in targets}
 
-        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value=profiles) as lookup, patch.multiple(
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses", return_value=profiles) as lookup, patch.multiple(
             forward._email_cfg, ICLOUD_HME_FORWARD_IMAP_SERVER="imap.current.test", ICLOUD_HME_FORWARD_IMAP_PORT=993,
             ICLOUD_HME_FORWARD_IMAP_EMAIL="global@example.test", ICLOUD_HME_FORWARD_IMAP_PASSWORD="global-password",
         ), patch.object(forward, "_connect", side_effect=connect), patch.object(forward, "_messages_for_recipients", side_effect=messages):
@@ -229,13 +229,13 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
         self.assertEqual(lookup.call_count, 1)
 
     def test_missing_historical_profile_never_falls_back_to_global(self):
-        with patch("core.email_derivation.inbox_profiles_for_addresses", side_effect=RuntimeError("原收件配置缺失")), patch.object(forward, "_connect") as connect:
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses", side_effect=RuntimeError("原收件配置缺失")), patch.object(forward, "_connect") as connect:
             with self.assertRaisesRegex(RuntimeError, "原收件配置缺失"):
                 forward.scan_openai_deactivation_bulk([CHILD_A])
         connect.assert_not_called()
 
     def test_unsupported_connector_never_falls_back_to_global(self):
-        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value={CHILD_A: {"connector": "outlook"}}), patch.object(forward, "_connect") as connect:
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses", return_value={CHILD_A: {"connector": "outlook"}}), patch.object(forward, "_connect") as connect:
             result = forward.scan_openai_deactivation_bulk([CHILD_A])[CHILD_A]
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "email_scan_connector_unsupported")
@@ -252,15 +252,17 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
             inboxes.append(forward._settings()[2])
             return Mock()
 
-        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value=profiles), patch.object(
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses", return_value=profiles), patch.object(
                 forward, "_connect", side_effect=connect), patch.object(forward, "_messages_for_recipients",
-                side_effect=lambda _mail, targets, _since: {target: [] for target in targets}):
+                side_effect=lambda _mail, targets, _since: {target: [] for target in targets}), patch(
+                "core.email_butler_client.scan_openai_deactivation_bulk", return_value={CHILD_B: {
+                    "ok": False, "error_code": "signal_history_incomplete", "error": "信号历史不完整"}}):
             results = forward.scan_openai_deactivation_bulk([CHILD_A, CHILD_B])
         self.assertEqual(inboxes, ["historical@example.test"])
         self.assertTrue(results[CHILD_A]["ok"])
         self.assertFalse(results[CHILD_A]["detected"])
         self.assertFalse(results[CHILD_B]["ok"])
-        self.assertEqual(results[CHILD_B]["error_code"], "email_scan_connector_unsupported")
+        self.assertEqual(results[CHILD_B]["error_code"], "signal_history_incomplete")
 
     def test_single_scan_uses_same_bulk_profile_resolution(self):
         with patch.object(forward, "scan_openai_deactivation_bulk", return_value={CHILD_A: {"detected": False}}) as bulk:
@@ -268,7 +270,7 @@ class ForwardDeactivationProfileRoutingTests(unittest.TestCase):
         bulk.assert_called_once_with([CHILD_A], lookback_days=30)
 
     def test_empty_scan_does_not_query_profiles_or_connect(self):
-        with patch("core.email_derivation.inbox_profiles_for_addresses") as lookup, patch.object(forward, "_connect") as connect:
+        with patch("core.email_butler_bridge.inbox_profiles_for_addresses") as lookup, patch.object(forward, "_connect") as connect:
             self.assertEqual(forward.scan_openai_deactivation_bulk(["", " "]), {})
         lookup.assert_not_called()
         connect.assert_not_called()

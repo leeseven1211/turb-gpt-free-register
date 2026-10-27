@@ -120,6 +120,58 @@ class StrictButlerReceiptTests(unittest.TestCase):
 
 
 class HistoricalScanRouteTests(unittest.TestCase):
+    def test_pinned_parent_butler_survives_global_imap_with_bridge_disabled(self):
+        profile = {"connector": "forward_butler", "api_base": "https://pinned.test/v1", "api_key": "pinned", "mailbox_email": MAILBOX}
+        with patch("core.email_derivation.inbox_profiles_for_addresses", return_value={}), patch(
+            "core.email_butler_bridge.inbox_profiles_for_addresses", return_value={PARENT: profile}
+        ), patch("core.email_butler_bridge.enabled", return_value=False), patch.object(
+            imap._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_imap"
+        ), patch.object(imap, "_connect", side_effect=AssertionError("固定 Butler 母地址不能改扫全局 IMAP")), patch.object(
+            butler, "_request", return_value={"code": 200, "results": {PARENT: receipt(PARENT)}}
+        ):
+            self.assertTrue(imap.scan_openai_deactivation_bulk([PARENT])[PARENT]["detected"])
+
+    def test_unavailable_parent_profile_fails_only_that_target_without_global_fallback(self):
+        from core import email_derivation, email_butler_bridge, record_store
+
+        profile = {"id": 1, "state": "active", "connector": "forward_butler", "credential_ref": "MISSING_TEST_KEY"}
+        good = {"connector": "forward_butler", "api_base": "https://pinned.test/v1", "api_key": "pinned", "mailbox_email": MAILBOX}
+        with patch.object(record_store, "list_rows", side_effect=lambda table, **kwargs:
+                [{"email": PARENT, "derivation_policy": {"inbox_profile_id": 1}}]
+                if table == record_store.ICLOUD_HIDE_POOL else []), patch.object(
+            email_derivation.store, "get_inbox_profile", return_value=profile
+        ), patch.object(email_derivation, "_profile_credentials", side_effect=RuntimeError("原配置密钥缺失")), patch.object(
+            email_derivation, "inbox_profiles_for_addresses", return_value={}
+        ):
+            profiles = email_butler_bridge.inbox_profiles_for_addresses([PARENT])
+        with patch.object(email_butler_bridge, "inbox_profiles_for_addresses", return_value={PARENT: profiles[PARENT], CHILD: good}), patch.object(
+            imap._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_butler"
+        ), patch.object(imap, "_connect", side_effect=AssertionError("错误固定配置不能fallback全局")), patch.object(
+            butler, "_request", return_value={"code": 200, "results": {CHILD: receipt(CHILD)}}
+        ):
+            result = imap.scan_openai_deactivation_bulk([PARENT, CHILD])
+        self.assertFalse(result[PARENT]["ok"])
+        self.assertEqual(result[PARENT]["error_code"], "email_derivation_profile_unavailable")
+        self.assertTrue(result[CHILD]["detected"])
+
+    def test_unavailable_child_profile_is_returned_without_losing_other_parent_route(self):
+        from core import email_derivation, email_butler_bridge, record_store
+
+        def rows(table, **kwargs):
+            if table == record_store.EMAIL_ADDRESS_ALLOCATIONS:
+                return [{"address_norm": CHILD, "parent_address": PARENT, "inbox_profile_id": 1}]
+            return [{"email": "other@icloud.com", "derivation_policy": {"inbox_profile_id": 2}}]
+
+        def profile(profile_id):
+            return {"id": profile_id, "state": "disabled" if profile_id == 1 else "active", "connector": "forward_butler"}
+
+        with patch.object(record_store, "list_rows", side_effect=rows), patch.object(
+            email_derivation.store, "get_inbox_profile", side_effect=profile
+        ), patch.object(email_derivation, "_profile_credentials", return_value={"connector": "forward_butler", "api_key": "valid"}):
+            profiles = email_butler_bridge.inbox_profiles_for_addresses([CHILD, "other@icloud.com"])
+        self.assertEqual(profiles[CHILD]["error_code"], "email_derivation_profile_unavailable")
+        self.assertEqual(profiles["other@icloud.com"]["api_key"], "valid")
+
     def test_pinned_and_global_butler_targets_share_one_remote_batch_without_imap(self):
         profile = {"connector": "forward_butler", "api_base": "https://pinned.test/v1", "api_key": "pinned", "mailbox_email": MAILBOX}
         with patch("core.email_butler_bridge.inbox_profiles_for_addresses", return_value={CHILD: profile}), patch.object(
