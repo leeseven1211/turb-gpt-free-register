@@ -28,10 +28,100 @@ class EmailInboxCutoverTests(PostgresTestCase):
         self.unowned = allocations.allocate_address(source="icloud_hide", parent_id=self.parent,
             inbox_profile_id=self.old["id"], generation_key="free-stock", acquisition_id=None, owner_kind=None, owner_id=None)
 
-    def plan(self):
+    def plan(self, **kwargs):
         from core.storage.email_inbox_cutover import plan_cutover
         return plan_cutover(api_base="https://butler.example.test/v1", mailbox_email="final@example.test",
-            credential_ref="EMAIL_DERIVATION_BUTLER_SECRET_TEST")
+            credential_ref="EMAIL_DERIVATION_BUTLER_SECRET_TEST", **kwargs)
+
+    def test_opt_in_pins_only_unpinned_parents_and_restores_missing_or_null_routes_exactly(self):
+        from core.storage.email_inbox_cutover import apply_cutover, rollback_cutover
+        unpinned = []
+        for index, extra in enumerate(({}, {"derivation_policy": None},
+                {"derivation_policy": {"enabled": False, "max_children": 7}},
+                {"derivation_policy": {"inbox_profile_id": None, "custom": {"keep": [1, 2]}}})):
+            unpinned.append(record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+                "email": f"unprofiled{index}@icloud.com", "status": "used", "account_id": "old-source",
+                "registered_services": ["openai"], "email_invalid": True, "private_metadata": {"keep": True}, **extra}))
+        protected = []
+        for connector in ("forward_butler", "imap"):
+            profile = allocations.create_inbox_profile(inbox_key=f"protected-{connector}", connector=connector,
+                credential_ref="KEEP_KEY", inbox_locator={"email": "keep@example.test"})
+            protected.append(record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+                "email": f"protected-{connector}@icloud.com", "status": "used",
+                "derivation_policy": {"inbox_profile_id": profile["id"], "custom": "keep"}}))
+        before = {row_id: allocations.get_parent("icloud_hide", row_id) for row_id in unpinned + protected}
+        self.assertEqual(self.plan()["parent_count"], 1, "默认不能扩大迁移范围")
+        plan = self.plan(include_unpinned_parents=True)
+        self.assertEqual(plan["parent_count"], 5)
+        self.assertEqual(plan["allocation_count"], 2)
+        self.assertEqual({row["id"] for row in plan["parents"]}, {self.parent, *unpinned})
+        receipt = apply_cutover(plan)
+        for row_id in unpinned:
+            current = allocations.get_parent("icloud_hide", row_id)
+            self.assertEqual(current["derivation_policy"]["inbox_profile_id"], receipt["new_profile_id"])
+            for key, value in before[row_id].items():
+                if key != "derivation_policy":
+                    self.assertEqual(current[key], value, key)
+            old_policy = before[row_id].get("derivation_policy") or {}
+            for key, value in old_policy.items():
+                if key != "inbox_profile_id":
+                    self.assertEqual(current["derivation_policy"][key], value, key)
+        for row_id in protected:
+            self.assertEqual(allocations.get_parent("icloud_hide", row_id), before[row_id])
+        rollback_cutover(receipt)
+        rollback_cutover(receipt)
+        for row_id, value in before.items():
+            self.assertEqual(allocations.get_parent("icloud_hide", row_id), value)
+
+    def test_unpinned_snapshot_rejects_missing_to_null_route_change_before_writing(self):
+        from core.storage.email_inbox_cutover import apply_cutover
+        parent = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": "unpinned@icloud.com", "derivation_policy": {"custom": "keep"}})
+        plan = self.plan(include_unpinned_parents=True)
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, parent,
+            {"derivation_policy": {"custom": "keep", "inbox_profile_id": None}})
+        with self.assertRaisesRegex(RuntimeError, "email_cutover_route_changed"):
+            apply_cutover(plan)
+        self.assertEqual(len(allocations.list_inbox_profiles()), 1)
+        self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], self.old["id"])
+
+    def test_rollback_does_not_remove_concurrent_policy_fields_when_original_policy_was_missing(self):
+        from core.storage.email_inbox_cutover import apply_cutover, rollback_cutover
+        parent = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {"email": "unpinned@icloud.com"})
+        receipt = apply_cutover(self.plan(include_unpinned_parents=True))
+        record_store.patch_row(record_store.ICLOUD_HIDE_POOL, parent,
+            {"derivation_policy": {"inbox_profile_id": receipt["new_profile_id"], "new_setting": True}})
+        with self.assertRaisesRegex(RuntimeError, "email_cutover_route_changed"):
+            rollback_cutover(receipt)
+        self.assertTrue(allocations.get_parent("icloud_hide", parent)["derivation_policy"]["new_setting"])
+        self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], receipt["new_profile_id"])
+
+    def test_cli_unpinned_opt_in_is_read_only_and_preserves_default_scope(self):
+        from config import email as cfg
+        from core import email_derivation
+        from tools.migrate_hme_inbox_to_butler import main
+        parent = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {"email": "unpinned@icloud.com"})
+        before = allocations.get_parent("icloud_hide", parent)
+        output = io.StringIO()
+        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE="https://butler.test/v1", EMAIL_BUTLER_API_KEY="test-key",
+                ICLOUD_HME_FORWARD_IMAP_EMAIL="final@example.test"), patch.object(
+                email_derivation, "_save_profile_secret", side_effect=AssertionError("预览不能写密钥")), patch.object(
+                record_store, "init", side_effect=AssertionError("预览不能初始化表")), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--include-unpinned-parents"]), 0)
+        self.assertEqual(json.loads(output.getvalue()), {"dry_run": True, "allocation_count": 2, "parent_count": 2})
+        self.assertEqual(allocations.get_parent("icloud_hide", parent), before)
+
+    def test_unpinned_receipt_requires_exact_original_route_metadata(self):
+        from core.storage.email_inbox_cutover import apply_cutover, rollback_cutover
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {"email": "unpinned@icloud.com"})
+        receipt = apply_cutover(self.plan(include_unpinned_parents=True))
+        for missing in ("old_policy_state", "old_profile_present", "old_profile_id"):
+            with self.subTest(missing=missing):
+                invalid = json.loads(json.dumps(receipt))
+                del invalid["parents"][-1][missing]
+                with self.assertRaisesRegex(ValueError, "email_cutover_target_invalid"):
+                    rollback_cutover(invalid)
+                self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], receipt["new_profile_id"])
 
     def test_dry_run_makes_no_profile_or_business_changes(self):
         before_profiles = allocations.list_inbox_profiles()
@@ -133,6 +223,8 @@ class EmailInboxCutoverTests(PostgresTestCase):
         environment = dict(os.environ, PYTHON_DOTENV_DISABLED="1", EMAIL_BUTLER_API_BASE="https://butler.test/v1",
             EMAIL_BUTLER_API_KEY="test-key", ICLOUD_HME_FORWARD_IMAP_EMAIL="final@example.test",
             PGOPTIONS=f"-c search_path={self.schema} -c lock_timeout=1500 -c statement_timeout=6000")
+        unpinned = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {"email": "unpinned@icloud.com"})
+        before_unpinned = allocations.get_parent("icloud_hide", unpinned)
         with tempfile.TemporaryDirectory() as directory:
             temporary_env = Path(directory) / "isolated.env"
             receipt = Path(directory) / "receipt.json"
@@ -158,6 +250,15 @@ class EmailInboxCutoverTests(PostgresTestCase):
             self.assertEqual(run("--apply", "--rollback", str(receipt)),
                 {"restored_allocations": 2, "restored_parents": 1})
             self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], self.old["id"])
+            self.assertEqual(run("--include-unpinned-parents"), {"dry_run": True, "allocation_count": 2, "parent_count": 2})
+            self.assertEqual(allocations.get_parent("icloud_hide", unpinned), before_unpinned)
+            receipt_v2 = Path(directory) / "receipt-v2.json"
+            self.assertEqual(run("--include-unpinned-parents", "--apply", "--receipt", str(receipt_v2)),
+                {"dry_run": False, "allocation_count": 2, "parent_count": 2})
+            self.assertEqual(json.loads(receipt_v2.read_text())["version"], 2)
+            self.assertEqual(run("--apply", "--rollback", str(receipt_v2)),
+                {"restored_allocations": 2, "restored_parents": 2})
+            self.assertEqual(allocations.get_parent("icloud_hide", unpinned), before_unpinned)
 
 
 if __name__ == "__main__":

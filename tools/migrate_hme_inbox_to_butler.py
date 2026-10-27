@@ -18,6 +18,7 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true", help="执行已明确授权的路由写入；默认只读")
     parser.add_argument("--receipt", type=Path, help="执行时必填：保存原路由映射；不会输出邮箱或密钥")
     parser.add_argument("--rollback", type=Path, help="按给定回执回滚；仍须 --apply")
+    parser.add_argument("--include-unpinned-parents", action="store_true", help="同时固定尚无 inbox_profile_id 的 HME 母资源；保留已有其他收件配置")
     args = parser.parse_args(argv)
     if args.apply and not args.rollback and not args.receipt:
         parser.error("迁移执行必须指定 --receipt，以便恢复原固定路由")
@@ -48,7 +49,8 @@ def main(argv=None):
     with postgres_store.connect(row_factory=dict_row) as conn:
         if not args.apply:
             conn.execute("SET TRANSACTION READ ONLY")
-        plan = plan_cutover(api_base=base, mailbox_email=mailbox, credential_ref=reference, conn=conn)
+        plan = plan_cutover(api_base=base, mailbox_email=mailbox, credential_ref=reference,
+            include_unpinned_parents=args.include_unpinned_parents, conn=conn)
         if args.apply:
             # 凭据只进入 .env；即使 PG 事务失败也保留此版本，不覆盖旧凭据。
             from core.email_derivation import _save_profile_secret
