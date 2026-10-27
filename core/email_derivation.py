@@ -8,6 +8,7 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit
 
 from config import email as email_config
 from core import record_store
@@ -66,8 +67,23 @@ def _save_profile_secret(reference: str, password: str) -> None:
 
 
 def _forward_profile() -> dict:
+    if str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "sidecar")) == "forward_butler":
+        base = str(getattr(email_config, "EMAIL_BUTLER_API_BASE", "") or "").strip().rstrip("/")
+        mailbox = str(getattr(email_config, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "") or "").strip().lower()
+        key = str(getattr(email_config, "EMAIL_BUTLER_API_KEY", "") or "").strip()
+        if not _butler_locator_valid({"api_base": base, "mailbox_email": mailbox}) or not key:
+            raise RuntimeError("子地址收件链路缺少完整 Butler API 地址、Key 或最终收件箱")
+        identity = hashlib.sha256(f"butler:{base}:{mailbox}".encode()).hexdigest()
+        version = hashlib.sha256(f"{identity}:{key}".encode()).hexdigest()
+        reference = f"EMAIL_DERIVATION_BUTLER_SECRET_{version[:20].upper()}"
+        _save_profile_secret(reference, key)
+        return store.create_inbox_profile(
+            inbox_key=f"butler:{identity}", connector="forward_butler", credential_ref=reference,
+            inbox_locator={"api_base": base, "mailbox_email": mailbox},
+            data={"evidence_rules_version": 1, "require_recipient_evidence": True},
+        )
     if str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "sidecar")) != "forward_imap":
-        raise RuntimeError("当前 iCloud 收件连接器尚未声明子地址隔离能力，请使用已验证的本机 Gmail IMAP 链路")
+        raise RuntimeError("当前 iCloud 收件连接器尚未声明子地址隔离能力，请使用 Gmail IMAP 或严格 Butler 链路")
     server = str(getattr(email_config, "ICLOUD_HME_FORWARD_IMAP_SERVER", "imap.gmail.com") or "").strip()
     try:
         port = int(getattr(email_config, "ICLOUD_HME_FORWARD_IMAP_PORT", 993) or 993)
@@ -266,17 +282,30 @@ def _profile_credentials(profile: dict) -> dict:
     reference = str(profile.get("credential_ref") or "")
     password = str(os.environ.get(reference) or read_env_file().get(reference) or "").strip()
     if not password:
-        raise EmailDerivationError("email_derivation_profile_unavailable", "原收件配置的应用密码引用缺失，不能切换当前全局收件账号")
+        raise EmailDerivationError("email_derivation_profile_unavailable", "原收件配置的凭据引用缺失，不能切换当前全局收件账号")
+    secret_field = "api_key" if profile["connector"] == "forward_butler" else "password"
     return {
-        **dict(profile.get("inbox_locator") or {}), "connector": profile["connector"], "password": password,
+        **dict(profile.get("inbox_locator") or {}), "connector": profile["connector"], secret_field: password,
         "id": profile["id"], "inbox_key": profile["inbox_key"], "revision": profile["revision"],
+        **({"require_recipient_evidence": True} if profile["connector"] == "forward_butler" else {}),
     }
+
+
+def _butler_locator_valid(locator: dict) -> bool:
+    """固定 Butler 路由只接受 HTTP API 地址与完整最终邮箱。"""
+    try:
+        parsed = urlsplit(str(locator.get("api_base") or ""))
+        mailbox = str(locator.get("mailbox_email") or "").strip()
+        return bool(parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.username
+                    and mailbox.partition("@")[0] and mailbox.partition("@")[2])
+    except ValueError:
+        return False
 
 
 def _inventory_profile_usable(profile: dict, source: str, *, secret_cache: dict | None = None) -> bool:
     """新领取只认固定路由及其原密钥引用，不探测网络或当前全局收件账号。"""
-    connector = "forward_imap" if source == "icloud_hide" else "outlook"
-    if not profile or profile.get("state") != "active" or profile.get("connector") != connector:
+    connectors = {"forward_imap", "forward_butler"} if source == "icloud_hide" else {"outlook"}
+    if not profile or profile.get("state") != "active" or profile.get("connector") not in connectors:
         return False
     reference = str(profile.get("credential_ref") or "").strip()
     if not reference:
@@ -284,16 +313,22 @@ def _inventory_profile_usable(profile: dict, source: str, *, secret_cache: dict 
     if source != "icloud_hide":
         return True
     locator = profile.get("inbox_locator") or {}
-    if not isinstance(locator, dict) or not str(locator.get("server") or "").strip():
+    if not isinstance(locator, dict):
         return False
-    email = str(locator.get("email") or "").strip()
-    if not email.partition("@")[0] or not email.partition("@")[2]:
-        return False
-    try:
-        if not 1 <= int(locator.get("port", 993)) <= 65535:
+    if profile["connector"] == "forward_butler":
+        if not _butler_locator_valid(locator):
             return False
-    except (TypeError, ValueError):
-        return False
+    else:
+        if not str(locator.get("server") or "").strip():
+            return False
+        email = str(locator.get("email") or "").strip()
+        if not email.partition("@")[0] or not email.partition("@")[2]:
+            return False
+        try:
+            if not 1 <= int(locator.get("port", 993)) <= 65535:
+                return False
+        except (TypeError, ValueError):
+            return False
     if str(os.environ.get(reference) or "").strip():
         return True
     from config.env_loader import read_env_file
@@ -320,8 +355,8 @@ def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:
         profile_id = int(row["inbox_profile_id"])
         if profile_id not in profiles:
             profile = store.get_inbox_profile(profile_id)
-            if profile is None or profile.get("connector") != "forward_imap":
-                raise RuntimeError("历史子地址的固定 IMAP 收件配置缺失")
+            if profile is None or profile.get("connector") not in {"forward_imap", "forward_butler"}:
+                raise RuntimeError("历史子地址的固定收件配置缺失")
             profiles[profile_id] = _profile_credentials(profile)
         child, parent = str(row["address_norm"]), str(row["parent_address"]).lower()
         if child in targets:
@@ -340,7 +375,7 @@ def fetch_bound_otp(address: str, *, after_ts: float, **kwargs) -> str:
     if route is None:
         raise RuntimeError("完整子地址没有持久收件绑定")
     profile = route["profile"]
-    if profile["connector"] == "forward_imap":
+    if profile["connector"] in {"forward_imap", "forward_butler"}:
         from core.forward_imap_client import fetch_latest_otp, use_inbox_profile
 
         with use_inbox_profile(_profile_credentials(profile)):
@@ -419,17 +454,26 @@ def generation_capacity_summary(source: str) -> dict:
         result["reason"] = "该邮箱连接器尚未声明精确子地址能力"
         return result
     if selected == "icloud_hide":
-        if str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "sidecar")) != "forward_imap":
-            result["reason"] = "iCloud 子地址需要 forward_imap 精确收件链路"
+        mode = str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "sidecar"))
+        if mode not in {"forward_imap", "forward_butler"}:
+            result["reason"] = "iCloud 子地址需要 Gmail IMAP 或严格 Butler 收件链路"
             return result
-        missing = [name for name in ("ICLOUD_HME_API_BASE", "ICLOUD_HME_FORWARD_IMAP_SERVER",
-                                     "ICLOUD_HME_FORWARD_IMAP_EMAIL", "ICLOUD_HME_FORWARD_IMAP_PASSWORD")
+        names = (("ICLOUD_HME_API_BASE", "EMAIL_BUTLER_API_BASE", "EMAIL_BUTLER_API_KEY", "ICLOUD_HME_FORWARD_IMAP_EMAIL")
+                 if mode == "forward_butler" else ("ICLOUD_HME_API_BASE", "ICLOUD_HME_FORWARD_IMAP_SERVER",
+                    "ICLOUD_HME_FORWARD_IMAP_EMAIL", "ICLOUD_HME_FORWARD_IMAP_PASSWORD"))
+        missing = [name for name in names
                    if not str(getattr(email_config, name, "") or "").replace(" ", "").strip()]
         try:
             port_ok = 1 <= int(getattr(email_config, "ICLOUD_HME_FORWARD_IMAP_PORT", 993) or 993) <= 65535
         except (ValueError, TypeError):
             port_ok = False
+        if mode == "forward_butler":
+            port_ok = _butler_locator_valid({"api_base": getattr(email_config, "EMAIL_BUTLER_API_BASE", ""),
+                "mailbox_email": getattr(email_config, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "")})
         if missing or not port_ok:
+            if mode == "forward_butler":
+                result["reason"] = "子地址收件链路缺少完整 Butler API 地址、Key 或最终收件箱"
+                return result
             result["reason"] = "子地址收件链路缺少完整 Gmail IMAP 配置" if not port_ok else "、".join(missing) + " 未配置"
             return result
     table = record_store.ICLOUD_HIDE_POOL if selected == "icloud_hide" else record_store.OUTLOOK_POOL

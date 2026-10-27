@@ -87,8 +87,8 @@ def _prepare_imap_aliases(
     一个中转邮箱，只要邮件最终转发到该 Gmail；最终收件箱中的 To 头仍用于
     精确匹配原始 HME 别名。因此这里不能把“直接目标不是最终邮箱”当成失效。
 
-    ``sidecar`` 仍拒绝明确转发到外部邮箱，因为 sidecar 只能读取 iCloud IMAP；
-    ``forward_butler`` 保持原有的直接目标校验。
+    ``forward_butler`` 同样支持中转，由严格收件回执确认最终收件箱。
+    ``sidecar`` 仍拒绝明确转发到外部邮箱，因为 sidecar 只能读取 iCloud IMAP。
     """
     prepared: list[dict] = []
     known_domains: set[str] = set()
@@ -106,13 +106,9 @@ def _prepare_imap_aliases(
         domain = _forward_domain(forward)
         if domain:
             known_domains.add(domain)
-        if mode == "forward_imap":
-            # The configured IMAP mailbox is the final inbox. A relay target
-            # is valid here because the final mailbox lookup matches the
-            # original HME address in the forwarded To header.
+        if mode in {"forward_imap", "forward_butler"}:
+            # 这里只判断拓扑是否可用；最终取码仍须核对完整地址及收件证据。
             compatible = bool(forward and expected_forward and not _is_icloud_mailbox(forward))
-        elif mode == "forward_butler":
-            compatible = bool(forward and expected_forward and forward.lower() == expected_forward)
         else:
             compatible = not forward or _is_icloud_mailbox(forward)
         if not compatible:
@@ -460,22 +456,12 @@ def get_account_context(email: str) -> ICloudHMEAccount | None:
 
 
 def _validate_forward_route(email: str) -> None:
-    """Fail before OTP polling when a persisted HME route cannot reach IMAP."""
-    # forward_imap intentionally supports an intermediate Gmail relay. The
-    # final IMAP mailbox matches the original HME alias in the message header,
-    # so its Apple-side direct target cannot be compared to this mailbox.
+    """Butler 支持中转链路，最终收件箱由严格取码请求及回执确认。"""
     if _inbox_mode() != "forward_butler":
         return
-    context = get_account_context(str(email or "").strip())
-    if context is None:
-        return
-    actual = str(context.forward_to_email or "").strip().lower()
     expected = _cfg_str("ICLOUD_HME_FORWARD_IMAP_EMAIL").lower()
-    if actual and expected and actual != expected:
-        raise ICloudHMEError(
-            "隐藏邮箱转发目标与当前 IMAP 收件账号不一致；请重新同步 HME 别名，"
-            "或为该 Apple 账号配置对应的转发收件箱"
-        )
+    if not expected.partition("@")[0] or not expected.partition("@")[2]:
+        raise ICloudHMEError("mailbox_mismatch: Email Butler 收件模式缺少最终收件箱")
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:

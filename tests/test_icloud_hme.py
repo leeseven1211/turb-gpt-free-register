@@ -263,7 +263,8 @@ class ICloudHMEClientTests(unittest.TestCase):
         self.assertEqual(routing["remote_usable"], 1)
         self.assertEqual(routing["forward_incompatible"], 0)
 
-    def test_forward_butler_route_mismatch_is_rejected_before_polling(self):
+    @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
+    def test_forward_butler_relay_target_does_not_block_polling(self, fetch):
         with patch.object(client, "_inbox_mode", return_value="forward_butler"), patch.object(
             client._email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "owner@gmail.com"
         ), patch.object(
@@ -271,8 +272,8 @@ class ICloudHMEClientTests(unittest.TestCase):
                 email="alias@icloud.com", account_id="acc-1", forward_to_email="other@gmail.com"
             )
         ):
-            with self.assertRaisesRegex(client.ICloudHMEError, "转发目标与当前 IMAP 收件账号不一致"):
-                client.fetch_latest_otp("alias@icloud.com", max_wait=1)
+            self.assertEqual(client.fetch_latest_otp("alias@icloud.com", max_wait=1), "123456")
+        fetch.assert_called_once()
 
     @patch("core.forward_imap_client.fetch_latest_otp", return_value="123456")
     @patch.object(client, "get_account_context", return_value=client.ICloudHMEAccount(

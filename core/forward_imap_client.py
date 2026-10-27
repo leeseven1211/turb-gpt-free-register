@@ -818,8 +818,25 @@ def fetch_latest_otp(
             poll_interval=poll_interval,
         )
 
-    if "+" in target.partition("@")[0]:
-        raise ForwardIMAPError("当前 Email Butler 取码接口缺少完整子地址投递证据，无法隔离验证码")
+    strict_family = bool(profile.get("strict_family"))
+    require_evidence = bool("+" in target.partition("@")[0] or strict_family or profile.get("require_recipient_evidence"))
+    if require_evidence or connector == "forward_butler":
+        from core.email_butler_client import fetch_inbound_otp
+
+        pinned = connector == "forward_butler"
+        try:
+            return fetch_inbound_otp(
+                target, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval,
+                settle_seconds=settle_seconds, require_recipient_evidence=require_evidence,
+                strict_family=strict_family,
+                mailbox_email=profile.get("mailbox_email") if pinned else getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", ""),
+                api_base=str(profile.get("api_base") or "") if pinned else None,
+                api_key=str(profile.get("api_key") or "") if pinned else None,
+            )
+        except WAIT_INTERRUPTED:
+            raise
+        except Exception as exc:
+            raise ForwardIMAPError(f"Email Butler 严格收件取码失败: {exc}") from exc
 
     mail = None
     try:

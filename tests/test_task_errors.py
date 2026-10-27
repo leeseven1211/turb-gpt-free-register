@@ -5,6 +5,17 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_butler_recipient_failures_have_specific_causes_for_raw_and_structured_errors(self):
+        codes = ("recipient_contract_unsupported", "recipient_evidence_missing", "recipient_ambiguous",
+                 "recipient_mismatch", "mailbox_mismatch", "inbound_code_timeout")
+        for code in codes:
+            for raw, structured in [(f"Email Butler 严格收件取码失败: {code}: 取码失败", ""), ("收件失败", code)]:
+                with self.subTest(code=code, structured=bool(structured)):
+                    info = classify_task_error(raw, task_type="registration", error_code=structured)
+                    self.assertEqual(info["code"], code)
+                    self.assertTrue(info["display_code"].startswith("MAIL-RECIPIENT-"))
+                    self.assertNotEqual(info["retryability"], "not_retryable")
+
     def test_subaddress_inventory_shortage_is_specific_and_retryable(self):
         for task_type in ('registration', 'email_change'):
             info = classify_task_error(

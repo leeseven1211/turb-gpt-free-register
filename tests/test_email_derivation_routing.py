@@ -4,7 +4,6 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from unittest.mock import Mock, patch
 
 from core import forward_imap_client as forward
@@ -109,8 +108,8 @@ class DerivedForwardIMAPTests(unittest.TestCase):
                 forward._settings()
 
     def test_butler_child_cannot_silently_switch_to_direct_imap(self):
-        with patch.object(forward._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_butler"), patch.object(forward, "_fetch_latest_otp_local") as local:
-            with self.assertRaisesRegex(forward.ForwardIMAPError, "投递证据"):
+        with patch.multiple(forward._email_cfg, ICLOUD_HME_INBOX_MODE="forward_butler", ICLOUD_HME_FORWARD_IMAP_EMAIL=""), patch.object(forward, "_fetch_latest_otp_local") as local:
+            with self.assertRaisesRegex(forward.ForwardIMAPError, "mailbox_mismatch"):
                 forward.fetch_latest_otp(CHILD_A, after_ts=0)
         local.assert_not_called()
 

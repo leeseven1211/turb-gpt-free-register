@@ -931,7 +931,18 @@ def _registration_error_projection(
     )
 
 
+_BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
+    "recipient_contract_unsupported": ("MAIL-RECIPIENT-001", "Email Butler 尚未支持严格收件契约"),
+    "recipient_evidence_missing": ("MAIL-RECIPIENT-002", "验证码邮件缺少完整收件证据"),
+    "recipient_ambiguous": ("MAIL-RECIPIENT-003", "验证码邮件存在同母地址收件歧义"),
+    "recipient_mismatch": ("MAIL-RECIPIENT-004", "验证码邮件的完整收件地址不匹配"),
+    "mailbox_mismatch": ("MAIL-RECIPIENT-005", "验证码邮件的最终收件箱不匹配或未配置"),
+    "inbound_code_timeout": ("MAIL-RECIPIENT-006", "等待窗口内未收到符合条件的入站验证码"),
+}
+
+
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+    **_BUTLER_RECIPIENT_CAUSES,
     "email_derivation_inventory_empty": ("MAIL-STOCK-001", "可领取子地址库存不足，请先生成补充"),
     "email_derivation_identity_conflict": ("MAIL-STOCK-002", "子地址领取身份与原业务归属不一致"),
     "email_derivation_source_unsupported": ("MAIL-STOCK-003", "邮箱来源不支持子地址库存"),
@@ -1361,7 +1372,8 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
-    if cause is None and str(error_code).startswith(("roxy_", "email_derivation_")):
+    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_"))
+                          or str(error_code) in _BUTLER_RECIPIENT_CAUSES):
         cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
         str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"

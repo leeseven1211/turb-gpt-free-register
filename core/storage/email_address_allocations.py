@@ -455,8 +455,8 @@ def inventory_eligibility(source: str, *, account_ids: list[str] | None = None) 
         "COALESCE(p.data->>'email_invalid', 'false') <> 'true'",
         "COALESCE(p.data->>'disabled_reason', '') NOT IN ('remote_inactive', 'remote_missing', 'manual_disabled')",
         "COALESCE(p.data->'derivation_policy'->>'enabled', 'true') <> 'false'",
-        "profile.state = 'active'", "profile.connector = %s"]
-    values: list[Any] = [source, "forward_imap" if source == "icloud_hide" else "outlook"]
+        "profile.state = 'active'", "profile.connector = ANY(%s)"]
+    values: list[Any] = [source, ["forward_imap", "forward_butler"] if source == "icloud_hide" else ["outlook"]]
     if source == "icloud_hide":
         conditions.append("NULLIF(BTRIM(p.account_id), '') IS NOT NULL")
         if account_ids is not None:
