@@ -17,6 +17,24 @@ _vendor_logger.addHandler(logging.NullHandler())
 _vendor_logger.propagate = False
 
 
+class _VendorCancelled(BaseException):
+    """Carry cancellation through upstream broad Exception retry handlers."""
+
+    def __init__(self, reason: BaseException):
+        self.reason = reason
+
+
+def _check_stop_requested():
+    from core.registration_service import StopRequested, check_stop_requested
+
+    try:
+        check_stop_requested()
+    except (StopRequested, AuthCancelledError) as exc:
+        if _CONTEXT.get() is None:
+            raise
+        raise _VendorCancelled(exc) from exc
+
+
 class _HeaderOnlyResponse:
     """诊断流式导航时只观察响应头，不读取本来无需下载的正文。"""
 
@@ -44,9 +62,7 @@ class _ObservedSession:
         return getattr(self._transport, name)
 
     def request(self, method, url, **kwargs):
-        from core.registration_service import check_stop_requested
-
-        check_stop_requested()
+        _check_stop_requested()
         context = self._context
         path = urlsplit(url).path
         if method.upper() == "POST" and path.endswith("/create_account"):
@@ -103,6 +119,7 @@ def create_http_session(**kwargs):
     context = _CONTEXT.get()
     if context is None:
         raise RuntimeError("开源protocol-2 缺少注册执行上下文")
+    _check_stop_requested()
     kwargs["proxy"] = context["proxy"]
     transport = _ObservedSession(create(**kwargs), context)
     context["sessions"].append(transport)
@@ -143,7 +160,7 @@ def run_upstream_protocol(
     }
 
     def progress(stage, state, detail):
-        check_stop_requested()
+        _check_stop_requested()
         report_job_progress(stage, state, detail)
 
     class LocalMailbox:
@@ -167,9 +184,12 @@ def run_upstream_protocol(
             if self.code is not None:
                 code, self.code = self.code, None
                 return code
-            return wait_for_otp(
-                email, after_ts=issued_after, max_wait=timeout, email_source=email_source,
-            )
+            try:
+                return wait_for_otp(
+                    email, after_ts=issued_after, max_wait=timeout, email_source=email_source,
+                )
+            except (StopRequested, AuthCancelledError) as exc:
+                raise _VendorCancelled(exc) from exc
 
     class LocalAuthFlow(AuthFlow):
         def register_password(self, address):
@@ -295,6 +315,8 @@ def run_upstream_protocol(
             "remote_identity": "existing" if existing_password or flow._is_existing_account else "new",
             "challenge_chain": ["password", "email_otp"],
         }
+    except _VendorCancelled as exc:
+        raise exc.reason
     except (StopRequested, AuthCancelledError):
         raise
     except Exception as exc:

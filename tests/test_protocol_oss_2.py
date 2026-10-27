@@ -12,6 +12,8 @@ from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
 from core.registration.protocol_oss_2.runtime import run_upstream_protocol
 from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
 
+_VENDOR_WARMUP = AuthFlow.warmup
+
 
 class Transport:
     def __init__(self):
@@ -104,6 +106,89 @@ def test_real_upstream_flow_saves_password_before_write_and_reuses_local_mail(up
     assert session.device_id == "fixture-device"
     assert session.browser_profile["country_code"] == "JP"
     assert transport.closed is False
+
+
+@pytest.mark.parametrize("cancel_type", ["stop", "auth"])
+def test_real_vendor_warmup_does_not_swallow_cancellation_as_a_network_failure(upstream, cancel_type):
+    from core.auth_challenge import AuthCancelledError
+    from core.registration_service import StopRequested
+
+    session, transport, _ = upstream
+    stopped = StopRequested("stopped fixture") if cancel_type == "stop" else AuthCancelledError("auth stop fixture")
+    in_warmup = False
+
+    def warmup(flow):
+        nonlocal in_warmup
+        in_warmup = True
+        return _VENDOR_WARMUP(flow)
+
+    def checkpoint():
+        if in_warmup:
+            raise stopped
+
+    with (
+        patch.object(AuthFlow, "warmup", warmup),
+        patch("core.registration_service.check_stop_requested", side_effect=checkpoint),
+        patch("core.registration.protocol_oss_2.upstream.auth_flow.time.sleep") as backoff,
+        pytest.raises(type(stopped)) as raised,
+    ):
+        run_flow(session)
+    assert raised.value is stopped
+    assert transport.requests == []
+    assert transport.closed is True
+    backoff.assert_not_called()
+
+
+def test_warmup_session_rebuild_checks_stop_before_opening_a_new_transport(upstream):
+    from core.registration_service import StopRequested
+
+    session, transport, _ = upstream
+    stopped = StopRequested("stop during warmup retry")
+    stop_during_backoff = False
+
+    def fail_first_request(*args, **kwargs):
+        transport.requests.append((args, kwargs))
+        raise TimeoutError("ordinary warmup network failure")
+
+    def checkpoint():
+        if stop_during_backoff:
+            raise stopped
+
+    def backoff_stopped(seconds):
+        nonlocal stop_during_backoff
+        stop_during_backoff = True
+
+    with (
+        patch.object(AuthFlow, "warmup", _VENDOR_WARMUP),
+        patch.object(transport, "request", side_effect=fail_first_request),
+        patch("core.registration_service.check_stop_requested", side_effect=checkpoint),
+        patch("core.registration.protocol_oss_2.upstream.auth_flow.time.sleep", side_effect=backoff_stopped) as backoff,
+        patch("core.registration.protocol_oss_2.upstream.http_client_wreq.create_http_session", return_value=transport) as create,
+        pytest.raises(StopRequested) as raised,
+    ):
+        run_flow(session)
+    assert raised.value is stopped
+    assert len(transport.requests) == 1
+    assert create.call_count == 1
+    assert backoff.call_args_list == [((5,), {})]
+    assert transport.closed is True
+
+
+@pytest.mark.parametrize("cancel_type", ["stop", "auth"])
+def test_vendor_otp_retry_does_not_turn_cancellation_into_resend_or_unknown(upstream, cancel_type):
+    from core.auth_challenge import AuthCancelledError
+    from core.registration_service import StopRequested
+
+    session, transport, wait = upstream
+    stopped = StopRequested("mailbox stopped") if cancel_type == "stop" else AuthCancelledError("mailbox auth stopped")
+    wait.side_effect = stopped
+    with pytest.raises(type(stopped)) as raised:
+        run_flow(session)
+    assert raised.value is stopped
+    assert [item["state"] for item in transport.checkpoints] == ["prepared", "started", "confirmed"]
+    assert wait.call_count == 1
+    assert not any("resend" in url for _, url, _ in transport.requests)
+    assert transport.closed is True
 
 
 def test_password_checkpoint_failure_prevents_the_remote_write(upstream):
