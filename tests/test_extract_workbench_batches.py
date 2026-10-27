@@ -324,6 +324,45 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         self.assertFalse(detail["submission_incomplete"])
         self.assertNotIn("test-private-at", repr(detail))
 
+    def test_failed_unpaid_account_with_historical_create_intent_can_enter_new_auto_payment_batch(self):
+        account_id = self.accounts([{"extract_link_status": "failed"}])[0]
+        historical = operation.create_runtime_task(
+            task_type="extract_link", account_id=account_id, email="failed-retry@example.test",
+            data={
+                "provider_id": "lumen_flow", "mode": "auto_payment",
+                "remote_intent": {
+                    "kind": "remote_write", "action": "extract_link_create",
+                    "state": "confirmed", "receipt_state": "confirmed",
+                },
+            },
+        )
+        historical_run_id = int(historical["run"]["id"])
+        extract_link_jobs.save_provider_job(
+            historical_run_id, "lumen_flow", "failed-remote-job",
+            {"preflight_status": "passed", "extraction_state": "failed", "payment_state": "not_started"},
+            {},
+        )
+        finished = operation.finish_run(
+            historical_run_id, status="failed", message="平台提链失败，尚未开始支付",
+            result_summary={"extraction_status": "failed", "payment_status": "not_started"},
+        )
+        # 旧收口规则会把保留创建意向的失败投影为待确认，仍不应永久阻断新批次。
+        self.assertEqual("attention_required", finished["status"])
+
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="auto_payment", workers=5, limit=1,
+                filters={"extract_status": "failed", "promotion": "free_trial"},
+                submission_id=str(uuid.uuid4()),
+            )
+
+        self.assertEqual(1, result["started"])
+        self.assertEqual(1, result["requested"])
+        self.assertEqual(0, result["skipped"])
+        self.assertEqual(0, result["failed"])
+        selected = extract_link_service.list_workbench_tasks(batch_id=result["batch_id"])
+        self.assertEqual([account_id], [item["account_id"] for item in selected["items"]])
+
     def test_batch_summary_counts_latest_attempt_once_and_keeps_historical_tasks(self):
         self.accounts([{}])
         with self.provider_patches():

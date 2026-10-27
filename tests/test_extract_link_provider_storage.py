@@ -270,7 +270,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
     def _finish_provider_failure(
         self, *, provider_state=None, finish_summary=None, receipt_detail=None,
         receipt_state="confirmed", action="extract_link_create", task_type="extract_link",
-        save_job=True, job_provider="lumen_flow", job_id="failed-job",
+        save_job=True, job_provider="lumen_flow", job_id="failed-job", mode="extract_only",
     ):
         from core.storage import extract_link_jobs
 
@@ -281,7 +281,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         }])[0]
         task = operation.create_runtime_task(
             task_type=task_type, account_id=account_id, email=email, trigger="test",
-            data={"provider_id": "lumen_flow", "mode": "extract_only"},
+            data={"provider_id": "lumen_flow", "mode": mode},
         )
         run_id = int(task["run"]["id"])
         execution_id = f"failed-worker-{run_id}"
@@ -291,7 +291,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         fence = {"execution_id": execution_id, "lease_token": lease_token}
         operation.record_remote_intent(
             run_id, **fence, action=action, request_id=f"failed-request-{run_id}",
-            detail={"provider_id": "lumen_flow", "mode": "extract_only", "run_id": run_id},
+            detail={"provider_id": "lumen_flow", "mode": mode, "run_id": run_id},
         )
         state = provider_state if provider_state is not None else {
             "extraction_state": "failed", "payment_state": "not_started",
@@ -311,7 +311,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
                 run_id, **fence, outcome=receipt_state, action=action, detail=detail,
             )
         summary = {
-            "provider_id": "lumen_flow", "mode": "extract_only",
+            "provider_id": "lumen_flow", "mode": mode,
             "extraction_status": "failed", "payment_status": "not_started",
             "remote_result_state": "failed", "remote_terminal_failure": True,
             "cause_code": "extract_provider_failed",
@@ -321,6 +321,66 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             run_id, **fence, status="failed", message="平台提链失败", error="平台提链失败",
             result_summary=summary,
         )
+
+    def test_terminal_auto_payment_create_intent_does_not_block_retry(self):
+        from core.storage import extract_link_jobs
+
+        for receipt, save_job, extraction in (
+            ("confirmed", True, "failed"), ("started", True, "failed"),
+            ("started", False, "failed"), ("unknown", True, "unknown"),
+        ):
+            with self.subTest(receipt=receipt, save_job=save_job, extraction=extraction):
+                finished = self._finish_provider_failure(
+                    mode="auto_payment", receipt_state=receipt, save_job=save_job,
+                    provider_state={
+                        "extraction_state": extraction, "payment_state": "not_started",
+                        "summary": {"remote_status": "FAILED" if extraction == "failed" else "RUNNING",
+                                    "remote_terminal_failure": extraction == "failed"},
+                    },
+                    finish_summary={"extraction_status": extraction, "remote_terminal_failure": extraction == "failed"},
+                )
+                self.assertEqual("failed" if receipt == "confirmed" else "attention_required", finished["status"])
+                self.assertFalse(extract_link_jobs.has_unresolved_auto_payment(finished["account_id"]))
+                saved = operation.get_run(finished["id"])
+                self.assertEqual(receipt, saved["data"]["remote_intent"]["receipt_state"])
+
+    def test_terminal_auto_payment_still_blocks_actual_payment_from_job_or_summary(self):
+        from core.storage import extract_link_jobs
+
+        for source_index, source in enumerate(("job", "summary")):
+            for payment_index, payment in enumerate(("pending", "unknown", "succeeded")):
+                with self.subTest(source=source, payment=payment):
+                    account_id = 77 + source_index * 3 + payment_index
+                    task = operation.create_runtime_task(
+                        task_type="extract_link", account_id=account_id, email="payment@example.test",
+                        data={"provider_id": "huanguang", "mode": "auto_payment"},
+                    )
+                    run_id = int(task["run"]["id"])
+                    if source == "job":
+                        extract_link_jobs.save_provider_job(run_id, "huanguang", "payment-job", {
+                            "extraction_state": "failed", "payment_state": payment,
+                        }, {})
+                    operation.finish_run(run_id, status="failed", result_summary={
+                        "payment_status": payment if source == "summary" else "not_started",
+                    })
+                    self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(account_id))
+
+    def test_active_auto_payment_create_intent_still_blocks_retry(self):
+        from core.storage import extract_link_jobs
+
+        account_id = self.seed(record_store.ACCOUNTS, [{"email": "active@example.test"}])[0]
+        task = operation.create_runtime_task(
+            task_type="extract_link", account_id=account_id, email="active@example.test",
+            data={"provider_id": "huanguang", "mode": "auto_payment"},
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="active-worker", worker_pid=os.getpid())
+        lease_token = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="active-worker", lease_token=lease_token,
+            action="extract_link_create", request_id="active-create",
+        )
+        self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(account_id))
 
     def test_confirmed_matching_provider_terminal_failure_can_finish_failed(self):
         for remote_status in ("FAILED", "ERROR", "CANCELED", "CANCELLED"):

@@ -235,7 +235,7 @@ def get_provider_job_public(run_id: int) -> dict | None:
 
 
 def has_unresolved_auto_payment(account_id: int) -> bool:
-    """检查该账号是否有已成功或尚未收敛的自动付款请求。"""
+    """检查真实付款状态及活动提链意向，终态未付款的历史请求允许重跑。"""
     operation_store.init()
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -253,6 +253,7 @@ def has_unresolved_auto_payment(account_id: int) -> bool:
                       OR run.result_summary->>'payment_status' IN ('pending', 'unknown', 'succeeded')
                       OR (
                           run.data->'remote_intent'->>'action'='extract_link_create'
+                          AND run.status IN ('queued','running','waiting','cancelling','settling','stopping')
                           AND COALESCE(
                               run.data->'remote_intent'->>'receipt_state',
                               run.data->'remote_intent'->>'state', 'started'
