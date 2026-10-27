@@ -10,6 +10,33 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-five-by-two-v3') }}">
+  <style>
+    #butlerImportModal { padding: 0; margin: auto; width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); color: var(--ui-color-text); }
+    #butlerImportModal:not([open]) { display: none; }
+    #butlerImportModal::backdrop { background: rgba(15, 23, 42, .45); }
+    #butlerImportModal .outlook-import-body { min-height: 0; }
+    #butlerImportModal .outlook-import-head, #butlerImportModal .outlook-import-foot { flex-shrink: 0; }
+    #butlerImportModal .outlook-import-head p,
+    #butlerImportModal .outlook-import-hint { color: var(--ui-color-text-secondary); }
+    #butlerImportModal .butler-import-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    #butlerImportModal label { min-width: 0; }
+    #butlerImportModal select, #butlerImportModal input { width: 100%; box-sizing: border-box; min-height: 40px; padding: 8px 12px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; }
+    #butlerImportModal :is(button, input, select, summary):focus-visible { outline: 3px solid var(--ui-color-brand); outline-offset: 3px; }
+    #butlerImportModal :disabled { opacity: .6; cursor: not-allowed; }
+    #butlerImportModal [hidden] { display: none !important; }
+    #butlerImportModal details { border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); padding: 12px; }
+    #butlerImportModal summary { cursor: pointer; color: var(--ui-color-text-secondary); }
+    #butlerImportModal details[open] summary { margin-bottom: 16px; }
+    #butlerImportModal .butler-import-feedback { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+    #butlerImportModal .butler-import-feedback:empty { display: none; }
+    #butlerImportModal #butlerImportError { margin: 0; padding: 12px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); background: var(--ui-color-warning-soft); }
+    #butlerImportModal #butlerImportItems { margin: 0; padding-left: 20px; overflow-wrap: anywhere; color: var(--ui-color-text-secondary); font-size: 12px; }
+    #butlerImportModal .outlook-import-foot { flex-wrap: wrap; }
+    @media (max-width: 480px) {
+      #butlerImportModal .butler-import-fields { grid-template-columns: 1fr; }
+      #butlerImportModal .outlook-import-foot .jobs-tb-btn { flex: 1 1 auto; justify-content: center; }
+    }
+  </style>
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -688,10 +715,11 @@
         <div class="butler-lease-copy">
           <span>Email Butler</span>
           <h3>手动补充本地库存</h3>
-          <p>复制已有 iCloud HME 完整地址后导入本地库存；导入时向 Butler 登记原地址归属，避免重复分配。注册任务仅领取本地库存。</p>
+          <p>从 Butler 选择 iCloud HME 母邮箱或子邮箱导入，也可粘贴已有完整地址。注册任务仅领取本地库存。</p>
         </div>
         <div class="butler-lease-actions">
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportButlerMailboxes">导入 Butler 邮箱</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnOpenButlerImport">从 Butler 导入</button>
+          <button type="button" class="jobs-tb-btn" id="btnImportButlerMailboxes">粘贴导入</button>
         </div>
       </div>
     </section>
@@ -735,6 +763,7 @@
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnDeleteSelectedOutlookV2" disabled title="批量删除选中的邮箱素材">删除选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="copyAllEmailsV2" title="复制当前页全部邮箱资源">复制当前页</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportOutlookV2" title="导入邮箱资源">导入邮箱</button>
+        <button type="button" class="jobs-tb-btn" id="btnOpenButlerImportPool" title="从 Butler 手动补充本地邮箱库存">从 Butler 导入</button>
         <div class="list-toolbar-utilities">
           <button type="button" class="jobs-tb-btn" id="btnResetOutlookColumnsV2" title="恢复邮箱列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshOutlookV2" title="重新加载邮箱列表">刷新</button>
@@ -949,6 +978,59 @@
 </div>
 
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<dialog id="butlerImportModal" class="outlook-import-dialog" aria-labelledby="butlerImportTitle" aria-describedby="butlerImportDescription">
+  <div class="outlook-import-head">
+    <div class="outlook-import-head-main">
+      <h3 id="butlerImportTitle">从 Butler 导入邮箱</h3>
+      <p id="butlerImportDescription">选择已有邮箱补充本地库存。导入开始后可以关闭窗口，再次打开可恢复进度。</p>
+    </div>
+    <button type="button" class="outlook-import-close" id="btnCloseButlerImport" aria-label="关闭 Butler 导入窗口">×</button>
+  </div>
+  <div class="outlook-import-body">
+    <div class="butler-import-fields">
+      <label class="outlook-import-field" for="butlerImportProvider">
+        <span>邮箱类型</span>
+        <select id="butlerImportProvider"><option value="icloud_hme">iCloud HME</option></select>
+      </label>
+      <label class="outlook-import-field" for="butlerImportIdentity">
+        <span>邮箱身份</span>
+        <select id="butlerImportIdentity">
+          <option value="all">全部</option>
+          <option value="primary">母邮箱</option>
+          <option value="plus_alias">子邮箱</option>
+        </select>
+      </label>
+      <label class="outlook-import-field" for="butlerImportCount">
+        <span>导入数量</span>
+        <input id="butlerImportCount" type="number" min="1" max="200" step="1" value="10" inputmode="numeric" aria-describedby="butlerImportCountHint">
+        <small id="butlerImportCountHint" class="outlook-import-hint">每批 1–200 个；先预览，再开始导入。</small>
+      </label>
+    </div>
+    <details>
+      <summary>高级筛选（可选）</summary>
+      <div class="butler-import-fields">
+        <label class="outlook-import-field" for="butlerImportDomain">
+          <span>域名</span><input id="butlerImportDomain" type="text" list="butlerImportDomains" autocomplete="off" placeholder="留空不限"><datalist id="butlerImportDomains"></datalist>
+        </label>
+        <label class="outlook-import-field" for="butlerImportGroup">
+          <span>分组</span><input id="butlerImportGroup" type="text" list="butlerImportGroups" autocomplete="off" placeholder="留空不限"><datalist id="butlerImportGroups"></datalist>
+        </label>
+      </div>
+    </details>
+    <p id="butlerImportError" class="butler-import-feedback" role="alert" hidden></p>
+    <div id="butlerImportPreview" class="butler-import-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
+    <ul id="butlerImportItems" aria-label="预览邮箱，最多显示十个"></ul>
+    <div id="butlerImportProgress" class="butler-import-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
+    <small id="butlerImportBatchId" class="outlook-import-hint"></small>
+  </div>
+  <div class="outlook-import-foot">
+    <button type="button" class="jobs-tb-btn" id="btnCancelButlerImport">关闭</button>
+    <button type="button" class="jobs-tb-btn" id="btnNewButlerImport" hidden>新建导入</button>
+    <button type="button" class="jobs-tb-btn" id="btnPreviewButlerImport">预览可导入邮箱</button>
+    <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnApplyButlerImport" disabled>导入到本地库存</button>
+    <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetryButlerImport" hidden>继续原批次</button>
+  </div>
+</dialog>
 <div id="outlookImportModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="outlookImportTitle">
   <div class="outlook-import-dialog" role="document">
     <div class="outlook-import-head">
@@ -1022,6 +1104,7 @@
 <script src="{{ url_for('static', filename='js/modern/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/accounts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-mail-boundary-v1"></script>
+<script src="{{ url_for('static', filename='js/modern/butler-import.js', v='20261028-manual-import-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}?v=20261027-mail-boundary-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261023-progress-refresh-v1') }}"></script>
