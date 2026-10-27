@@ -275,10 +275,17 @@ def active_mailbox_leases() -> list[dict]:
 
 def restore_account_context(email: str, *, purpose: str = "live-check", api_base: str | None = None,
                             api_key: str | None = None) -> EmailButlerAccount:
-    """按邮箱从 Butler 精确租用并恢复进程内上下文。"""
+    """HME 优先恢复原固定身份，其余邮箱沿用精确租约恢复。"""
     key = _cache_key(email)
     cached = _CONTEXT_CACHE.get(key)
-    if cached and (api_base is None or cached.api_base == api_base) and (api_key is None or cached.api_key == api_key):
+    cache_matches = cached and (api_base is None or cached.api_base == api_base) and (api_key is None or cached.api_key == api_key)
+    if cache_matches and cached.provider != "icloud_hme":
+        return cached
+    fixed = _restore_hme_context(email)
+    if fixed:
+        _CONTEXT_CACHE[key] = fixed
+        return fixed
+    if cache_matches:
         return cached
     connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
     payload = _request(
@@ -319,6 +326,12 @@ def _persist_hme_context(account: EmailButlerAccount) -> None:
     from core.storage import email_address_allocations as store
 
     try:
+        if not account.acquisition_id:
+            original = _restore_hme_context(account.email)
+            if original:
+                account.acquisition_id = original.acquisition_id
+                account.api_base, account.api_key = original.api_base, original.api_key
+                account.mailbox_email = original.mailbox_email
         base, key = _api_base(account.api_base), _api_key(account.api_key)
         identity = hashlib.sha256(f"butler:{base}:{account.mailbox_email}".encode()).hexdigest()
         version = hashlib.sha256(f"{identity}:{key}".encode()).hexdigest()
@@ -365,7 +378,7 @@ def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str |
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
-    """释放租约；成功结果由 Butler Key 策略自动标记 service=openai。"""
+    """HME 幂等上报后收口本地上下文，远端保留原 TTL；其他来源释放租约。"""
     key = _cache_key(email)
     if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
         return
@@ -378,7 +391,12 @@ def release_account(email: str, status: str = "available", note: str | None = No
         logger.info("[EmailButler] 邮箱上下文已不存在，跳过释放: %s", email)
         return
     if account.provider == "icloud_hme":
-        _persist_hme_context(account)
+        fixed = _restore_hme_context(email)
+        if fixed:
+            account = fixed
+            _CONTEXT_CACHE[key] = fixed
+        else:
+            _persist_hme_context(account)
         report_hme_identity(account, status=status, note=note)
         _CONTEXT_CACHE.pop(key, None)
         logger.info("[EmailButler] 已报告 HME 完整身份结果: %s", email)

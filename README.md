@@ -373,6 +373,8 @@ EMAIL_DERIVATION_TAG_LENGTH=6
 
 新 HME 完整身份在领取返回前保存独立固定 profile 和 acquisition metadata，Key 仅保留版本化 `.env` 引用。结果通过幂等 `/identities/report` 收口；网络失败保留可重试上下文，进程重启后也可按原完整地址和固定连接继续报告，不向 Apple 恢复租约。MailCom 等其他 Butler provider 继续使用原租约释放协议。
 
+HME 上报成功后只收口本地进程上下文；远端现有租约保持原 TTL 并自然到期，成功身份的 consumed 状态阻止再次分配。`release_account` 名称为历史接口兼容，不表示 HME 会立即撤销远端租约。未知结果保留上下文且不上报；历史身份报告不会清除同地址的其他活动租约。
+
 历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
 
 ```dotenv

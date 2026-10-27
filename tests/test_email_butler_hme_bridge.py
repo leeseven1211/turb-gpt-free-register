@@ -170,6 +170,54 @@ class ButlerHMEProviderTests(PostgresTestCase):
         self.assertEqual(len(request.call_args_list), 2)
         self.assertEqual(request.call_args_list[0].kwargs["json"]["operation_id"], request.call_args_list[1].kwargs["json"]["operation_id"])
 
+    def test_generic_restore_and_otp_keep_hme_identity_after_success_and_cache_loss(self):
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="original-acquisition")
+        with patch.object(butler, "_request", return_value={"code": 200}) as first:
+            butler.release_account(PARENT, status="used")
+        operation_id = first.call_args.kwargs["json"]["operation_id"]
+        before_profiles = allocations.list_inbox_profiles(inbox_key=butler._hme_profile_key(PARENT))
+
+        def request(method, path, **kwargs):
+            self.assertNotEqual(path, "/mailboxes", "恢复原 HME 不能重新申请租约")
+            self.assertEqual(kwargs.get("api_base"), "https://test.example/v1")
+            self.assertEqual(kwargs.get("api_key"), "test-key")
+            if path == "/me":
+                return {"code": 200, "capabilities": ["inbound.recipient_evidence.v1"]}
+            if path == "/inbound/code":
+                return answer()
+            self.assertEqual(path, "/identities/report", "恢复原 HME 不能重新申请租约")
+            self.assertEqual(kwargs["json"]["operation_id"], operation_id)
+            return {"code": 200}
+
+        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE="https://changed.test/v1", EMAIL_BUTLER_API_KEY="changed"), patch.object(
+                butler, "_request", side_effect=request) as requests:
+            self.assertEqual(email_provider.restore_email_context(PARENT, source="email_butler"), "email_butler")
+            self.assertEqual(butler.get_account_context(PARENT).acquisition_id, "original-acquisition")
+            self.assertEqual(requests.call_count, 0)
+            restored = butler.restore_account_context(PARENT, api_base="https://override.test/v1", api_key="override")
+            self.assertEqual((restored.api_base, restored.api_key, restored.acquisition_id),
+                ("https://test.example/v1", "test-key", "original-acquisition"))
+            butler.release_account(PARENT, status="success")
+            self.assertIsNone(butler.get_account_context(PARENT))
+            self.assertEqual(butler.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), "654321")
+            self.assertEqual(butler.get_account_context(PARENT).acquisition_id, "original-acquisition")
+            butler.release_account(PARENT, status="used")
+        self.assertEqual(allocations.list_inbox_profiles(inbox_key=butler._hme_profile_key(PARENT)), before_profiles)
+
+    def test_hme_report_does_not_replace_persisted_acquisition_with_empty_cached_value(self):
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="persisted-acquisition")
+        before_profiles = allocations.list_inbox_profiles(inbox_key=butler._hme_profile_key(PARENT))
+        cached = butler.get_account_context(PARENT)
+        cached.acquisition_id = ""
+        cached.api_base, cached.api_key = "https://changed.test/v1", "changed"
+        with patch.object(butler, "_request", return_value={"code": 200}) as report:
+            butler.release_account(PARENT, status="used")
+        self.assertEqual(report.call_args.kwargs["api_base"], "https://test.example/v1")
+        self.assertEqual(report.call_args.kwargs["api_key"], "test-key")
+        self.assertEqual(allocations.list_inbox_profiles(inbox_key=butler._hme_profile_key(PARENT)), before_profiles)
+
     def test_mailcom_keeps_original_release_protocol_and_cache_behavior(self):
         other = "mailcom@example.test"
         with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
