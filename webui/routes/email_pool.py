@@ -4,7 +4,6 @@ import io
 import json
 import logging
 import os
-import re
 import threading
 import time
 import uuid
@@ -44,15 +43,12 @@ def _derivation_request_error(message: str):
     return jsonify({"ok": False, "error": message, "reason_code": "email_derivation_invalid_request"}), 400
 
 
-def _derivation_operation_error(exc: Exception, operation: str):
-    """已知库存错误保留原因码，意外异常仅写服务日志。"""
-    code = str(getattr(exc, "code", ""))
-    if re.fullmatch(r"email_derivation_[a-z_]+", code):
-        message = str(exc).removeprefix(code + ":").strip()
-        return jsonify({"ok": False, "error": message, "reason_code": code}), 409
-    logger.exception("子地址%s失败", operation)
-    return jsonify({"ok": False, "error": f"子地址{operation}失败，请检查服务日志后重试。",
-                    "reason_code": "email_derivation_operation_failed"}), 500
+def _derivation_managed_by_butler():
+    return jsonify({
+        "ok": False,
+        "error": "子邮箱生成、策略和库存状态已由 Email Butler 管理，请到 Email Butler 操作；Turb 仅保留历史记录及邮箱导入、领取和使用。",
+        "reason_code": "email_derivation_managed_by_butler",
+    }), 410
 
 
 def _pool_row_for_source(email: str, source: str) -> dict | None:
@@ -226,7 +222,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         result = result if isinstance(result, dict) else {}
         item_keys = {
             "id", "email", "parent_id", "parent_email", "source", "state", "registered_account_id",
-            "root_task_id", "created_at", "updated_at", "used_at", "strategy", "can_disable", "can_restore",
+            "root_task_id", "created_at", "updated_at", "used_at", "strategy",
         }
         items = [
             {key: value for key, value in row.items() if key in item_keys and isinstance(value, (str, int, float, bool, type(None)))}
@@ -236,48 +232,12 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.post("/api/email-derivation/generate")
     def api_email_derivation_generate():
-        """按稳定操作身份预生成库存，重复提交不会重复占用额度。"""
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return _derivation_request_error("请求内容须为 JSON 对象")
-        source, count = data.get("source"), data.get("count")
-        request_id, parent_id = data.get("request_id"), data.get("parent_id")
-        if not isinstance(source, str) or source not in {"icloud_hide", "outlook"}:
-            return _derivation_request_error("请选择支持子地址的邮箱来源")
-        if type(count) is not int or not 1 <= count <= 1000:
-            return _derivation_request_error("生成数量须为 1–1000 的整数")
-        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
-            return _derivation_request_error("生成操作需要有效的稳定请求编号")
-        if parent_id is not None and (type(parent_id) is not int or parent_id < 1):
-            return _derivation_request_error("母资源编号须为正整数")
-        from core import email_derivation
-        try:
-            result = email_derivation.generate_inventory(source=source, count=count, request_id=request_id, parent_id=parent_id)
-        except Exception as exc:
-            return _derivation_operation_error(exc, "生成")
-        keys = {"requested", "created", "reused", "shortfall", "reason_code", "reason"}
-        return jsonify({"ok": True, **{key: value for key, value in result.items() if key in keys}})
+        """旧调用方收到明确迁移提示，不能再修改本地库存。"""
+        return _derivation_managed_by_butler()
 
     @bp.post("/api/email-derivation/status-bulk")
     def api_email_derivation_status_bulk():
-        """只管理从未领取库存，逐条返回不能修改的原因。"""
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return _derivation_request_error("请求内容须为 JSON 对象")
-        ids, state = data.get("ids"), data.get("state")
-        if not isinstance(ids, list) or not 1 <= len(ids) <= 1000 or any(type(value) is not int or value < 1 for value in ids):
-            return _derivation_request_error("请选择 1–1000 个有效的子地址编号")
-        if not isinstance(state, str) or state not in {"available", "disabled"}:
-            return _derivation_request_error("库存状态只支持停用或恢复可领取")
-        from core import email_derivation
-        try:
-            result = email_derivation.update_inventory_status(ids=list(dict.fromkeys(ids)), state=state)
-        except Exception as exc:
-            return _derivation_operation_error(exc, "状态更新")
-        keys = {"id", "ok", "reason_code", "reason"}
-        rows = [{key: value for key, value in row.items() if key in keys} for row in result.get("results", [])]
-        return jsonify({"ok": True, "updated": int(result.get("updated", 0)),
-                        "skipped": int(result.get("skipped", 0)), "results": rows})
+        return _derivation_managed_by_butler()
 
     @bp.get("/api/outlook/secret")
     def api_outlook_secret():

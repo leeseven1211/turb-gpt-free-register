@@ -268,7 +268,7 @@ class ConfigSchemaTests(unittest.TestCase):
         canonical = config_schema._legacy_fields()
         self.assertEqual(len(canonical), len({field["key"] for field in canonical}))
         self.assertEqual(
-            {field.key for field in fields},
+            {field.key for field in CONFIG_SCHEMA.editable_fields},
             {field["key"] for field in config_editor.EDITABLE_FIELDS},
         )
         editor_keys = [field["key"] for field in config_editor.EDITABLE_FIELDS]
@@ -666,9 +666,9 @@ class ConfigSchemaTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
 
-    def test_env_example_covers_every_unique_schema_field(self):
+    def test_env_example_covers_every_editable_schema_field(self):
         example = Path(".env.example").read_text(encoding="utf-8")
-        for field in CONFIG_SCHEMA.fields:
+        for field in CONFIG_SCHEMA.editable_fields:
             with self.subTest(key=field.key):
                 self.assertRegex(example, rf"(?m)^{field.key}=")
 

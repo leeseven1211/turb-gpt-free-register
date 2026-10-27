@@ -20,7 +20,6 @@ def _all_present(values: list[tuple[str, Any]]) -> tuple[bool, str]:
 def _email_source_features() -> dict[str, dict[str, Any]]:
     from config import email as cfg
     from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
-    from core.email_derivation import capacity_summary, enabled_for
 
     configured_value = str(getattr(cfg, "EMAIL_SOURCE", "") or "").strip()
     configured = set(parse_email_sources(configured_value)) if configured_value else set()
@@ -35,11 +34,7 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
             **_feature(enabled, reason),
         }
 
-    if enabled_for("outlook"):
-        capacity = capacity_summary("outlook")
-        add("outlook", capacity["remaining"] > 0, capacity["reason"])
-    else:
-        add("outlook", db.outlook_pool_summary().get("available", 0) > 0, "邮箱池没有可用 Outlook 素材")
+    add("outlook", db.outlook_pool_summary().get("available", 0) > 0, "邮箱池没有可用 Outlook 素材")
     add("generic_api", db.generic_api_email_pool_summary().get("available", 0) > 0, "通用 API 邮箱池为空")
     ok, reason = _all_present([
         ("EMAIL_DOMAIN", getattr(cfg, "EMAIL_DOMAIN", "")),
@@ -91,9 +86,12 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     # An empty account ID is intentional: the HME client discovers all active
     # sidecar accounts and rotates across them. A non-empty ID remains an
     # optional fixed-account override for debugging or rollback.
-    if enabled_for("icloud_hide"):
-        capacity = capacity_summary("icloud_hide")
-        ok, reason = capacity["remaining"] > 0, capacity["reason"]
+    from core import email_butler_bridge
+    if email_butler_bridge.enabled():
+        ok, reason = _all_present([
+            ("EMAIL_BUTLER_API_BASE", getattr(cfg, "EMAIL_BUTLER_API_BASE", "")),
+            ("EMAIL_BUTLER_API_KEY", getattr(cfg, "EMAIL_BUTLER_API_KEY", "")),
+        ])
     else:
         ok, reason = _all_present([
             ("ICLOUD_HME_API_BASE", getattr(cfg, "ICLOUD_HME_API_BASE", "")),

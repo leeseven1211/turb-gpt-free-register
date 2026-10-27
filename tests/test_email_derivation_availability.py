@@ -7,6 +7,7 @@ from config import email as cfg
 from core import email_derivation as service, feature_availability, record_store
 from core.storage import email_address_allocations as store
 from tests.support_pg import PostgresTestCase
+from tests.support_legacy_derivation import seed_legacy_inventory
 
 
 class EmailDerivationAvailabilityTests(PostgresTestCase):
@@ -16,7 +17,7 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
             EMAIL_DERIVATION_ENABLED=True, EMAIL_DERIVATION_SOURCES="icloud_hide,outlook",
             EMAIL_DERIVATION_MAX_CHILDREN=3, EMAIL_DERIVATION_TAG_LENGTH=6,
             ICLOUD_HME_API_BASE="http://127.0.0.1:8081", ICLOUD_HME_ACCOUNT_ID="",
-            ICLOUD_HME_AUTO_CREATE=False, ICLOUD_HME_INBOX_MODE="forward_imap",
+            ICLOUD_HME_AUTO_CREATE=False, ICLOUD_HME_INBOX_MODE="forward_imap", ICLOUD_HME_BUTLER_BRIDGE_ENABLED=False,
             ICLOUD_HME_FORWARD_IMAP_SERVER="imap.example.test", ICLOUD_HME_FORWARD_IMAP_PORT=993,
             ICLOUD_HME_FORWARD_IMAP_EMAIL="sink@example.test", ICLOUD_HME_FORWARD_IMAP_PASSWORD="test-app-password")
         self.scope.start()
@@ -36,30 +37,31 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         return store.allocate_address(source="icloud_hide", acquisition_id=f"test:{number}",
             owner_kind="registration_root", owner_id=number, inbox_profile_id=self.profile["id"], **kwargs)
 
-    def generate_stock(self, count=3, request_id="availability-stock", **kwargs):
-        with patch.object(service, "_forward_profile", return_value=self.profile), patch(
-            "core.icloud_hme_client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
-            return service.generate_inventory("icloud_hide", count, request_id, **kwargs)
+    def seed_stock(self, count=3, request_id="availability-stock", **kwargs):
+        return seed_legacy_inventory("icloud_hide", count, request_id, inbox_profile_id=self.profile["id"], **kwargs)
 
-    def test_used_parent_keeps_source_ready_without_any_original_available_row(self):
-        self.generate_stock()
-        with patch("core.icloud_hme_client.sync_aliases", side_effect=AssertionError("只读容量不能同步")), patch.object(
-            service, "_save_profile_secret", side_effect=AssertionError("只读容量不能保存密钥")), patch.object(
-            store, "create_inbox_profile", side_effect=AssertionError("只读容量不能创建路由")):
-            capacity = service.capacity_summary("icloud_hide")
+    def test_bridge_readiness_uses_butler_even_without_original_or_child_stock(self):
+        with patch.multiple(cfg, ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True,
+            EMAIL_BUTLER_API_BASE="https://butler.example.test/v1", EMAIL_BUTLER_API_KEY="fixture-key",
+            ICLOUD_HME_API_BASE="", ICLOUD_HME_FORWARD_IMAP_EMAIL="", ICLOUD_HME_FORWARD_IMAP_PASSWORD=""), patch(
+            "core.db.icloud_hide_email_pool_summary", side_effect=AssertionError("桥接不读本地库存")
+        ), patch("core.icloud_hme_client.sync_aliases", side_effect=AssertionError("桥接不访问sidecar")):
             readiness = feature_availability.email_source_availability()["icloud_hide"]
-        self.assertEqual(capacity["remaining"], 3)
-        self.assertEqual(capacity["parent_count"], 1)
-        self.assertTrue(readiness["enabled"])
+        self.assertTrue(readiness["enabled"], readiness)
+        self.assertEqual(store.list_allocations(), [])
 
-    def test_fixed_inventory_stays_ready_when_current_sidecar_and_global_imap_are_empty(self):
-        self.generate_stock()
+    def test_fixed_history_route_restores_when_current_sidecar_and_global_imap_are_empty(self):
+        child = self.allocate(1)
         with patch.multiple(cfg, ICLOUD_HME_API_BASE="", ICLOUD_HME_INBOX_MODE="sidecar",
-            ICLOUD_HME_FORWARD_IMAP_EMAIL="", ICLOUD_HME_FORWARD_IMAP_PASSWORD=""):
-            self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 3)
-            self.assertTrue(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
+            ICLOUD_HME_FORWARD_IMAP_EMAIL="", ICLOUD_HME_FORWARD_IMAP_PASSWORD="",
+            EMAIL_DERIVATION_ENABLED=False), patch.object(service, "_forward_profile", side_effect=AssertionError("历史恢复不能重建路由")):
+            route = service.restore_address(child["address"], source="icloud_hide")
+            restored = service.acquire_address("icloud_hide", owner_kind="registration_root", owner_id=1, acquisition_id="test:1")
+        self.assertEqual(route["profile"]["id"], self.profile["id"])
+        self.assertEqual(route["exact_target"], child["address"])
+        self.assertEqual(restored, child["address"])
 
-    def test_email_invalid_mothers_are_excluded_from_capacity_for_both_sources(self):
+    def test_historical_capacity_estimate_excludes_invalid_mothers_for_both_sources(self):
         self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 3)
         record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent, {"email_invalid": True})
         self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 0)
@@ -76,15 +78,16 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         record_store.patch_row(record_store.ICLOUD_HIDE_POOL, self.parent, {"email_invalid": False})
         self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 3)
 
-    def test_terminal_children_consume_quota_and_increasing_limit_exposes_only_new_slots(self):
+    def test_terminal_history_consumes_quota_but_raising_legacy_limit_does_not_reopen_generation(self):
         children = [self.allocate(number) for number in range(1, 4)]
         store.mark_allocation_state(children[0]["id"], "used")
         store.mark_allocation_state(children[1]["id"], "replaced")
         store.mark_allocation_state(children[2]["id"], "retired")
         self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 0)
-        self.assertFalse(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
         with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 5):
             self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 2)
+            with self.assertRaisesRegex(service.EmailDerivationError, "Butler"):
+                service.generate_inventory("icloud_hide", 1, "no-reopen-after-limit-change")
         store.configure_parent("icloud_hide", self.parent, max_children=4)
         with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 10):
             self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 1)
@@ -115,7 +118,7 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         with patch.object(cfg, "ICLOUD_HME_ACCOUNT_ID", "other-apple"):
             self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 0)
 
-    def test_hme_requires_exact_route_configuration_even_if_original_pool_has_capacity(self):
+    def test_legacy_route_capacity_requires_complete_exact_receipt_configuration(self):
         for values in ({"ICLOUD_HME_INBOX_MODE": "sidecar"}, {"ICLOUD_HME_FORWARD_IMAP_PASSWORD": ""},
                        {"ICLOUD_HME_FORWARD_IMAP_EMAIL": ""}, {"ICLOUD_HME_FORWARD_IMAP_SERVER": ""},
                        {"ICLOUD_HME_FORWARD_IMAP_PORT": 70000}):
@@ -123,22 +126,30 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
                 capacity = service.generation_capacity_summary("icloud_hide")
                 self.assertEqual(capacity["remaining"], 0)
                 self.assertTrue(capacity["reason"])
-                self.assertFalse(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
 
-    def test_outlook_exact_adapter_uses_oauth_material_without_password(self):
-        record_store.insert_row(record_store.OUTLOOK_POOL, {
+    def test_outlook_history_uses_original_oauth_and_child_stock_does_not_enable_new_source(self):
+        parent = record_store.insert_row(record_store.OUTLOOK_POOL, {
             "email": "outlook@example.test", "status": "replaced", "client_id": "test-client", "refresh_token": "test-refresh",
         })
         record_store.insert_row(record_store.OUTLOOK_POOL, {"email": "empty@example.test", "status": "used"})
-        capacity = service.generation_capacity_summary("outlook")
-        self.assertEqual(capacity["remaining"], 3)
-        self.assertEqual(capacity["parent_count"], 1)
         child = store.allocate_address(source="outlook", acquisition_id="outlook:test", owner_kind="registration_root", owner_id=1,
                                       profile_factory=service._outlook_profile)
         self.assertTrue(child["address"].startswith("outlook+"))
-        service.generate_inventory("outlook", 2, "outlook-remaining")
-        self.assertTrue(feature_availability.email_source_availability()["outlook"]["enabled"])
+        seed_legacy_inventory("outlook", 2, "outlook-remaining", profile_factory=service._outlook_profile)
         self.assertEqual(service.capacity_summary("outlook")["remaining"], 2)
+        self.assertFalse(feature_availability.email_source_availability()["outlook"]["enabled"])
+
+        def fetch(account, **kwargs):
+            self.assertEqual((account.email, account.client_id, account.refresh_token),
+                ("outlook@example.test", "test-client", "test-refresh"))
+            self.assertEqual(kwargs["target_email"], child["address"])
+            self.assertEqual(kwargs["after_ts"], 10)
+            return "123456"
+
+        with patch("core.outlook_client.fetch_otp_with_account", side_effect=fetch):
+            self.assertEqual(service.fetch_bound_otp(child["address"], after_ts=10), "123456")
+        record_store.patch_row(record_store.OUTLOOK_POOL, parent, {"status": "available"})
+        self.assertTrue(feature_availability.email_source_availability()["outlook"]["enabled"])
 
     def test_legacy_outlook_keys_fallback_when_canonical_values_are_blank(self):
         legacy_id = record_store.insert_row(record_store.OUTLOOK_POOL, {
@@ -158,13 +169,17 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         self.assertEqual(child["parent_id"], legacy_id)
         self.assertEqual(service.generation_capacity_summary("outlook")["remaining"], 2)
 
-    def test_disabled_derivation_preserves_original_readiness_rules(self):
-        with patch.object(cfg, "EMAIL_DERIVATION_ENABLED", False):
-            self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 0)
-            self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 3)
-            self.assertFalse(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
-        with patch.object(cfg, "EMAIL_DERIVATION_SOURCES", "icloud_hide"):
-            self.assertEqual(service.capacity_summary("outlook")["remaining"], 0)
+    def test_legacy_switch_does_not_control_butler_source_readiness(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), patch.multiple(cfg, EMAIL_SOURCE="email_butler,icloud_hide",
+                EMAIL_DERIVATION_ENABLED=enabled, EMAIL_DERIVATION_SOURCES="outlook",
+                ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True, ICLOUD_HME_API_BASE="",
+                EMAIL_BUTLER_API_BASE="https://butler.example.test/v1", EMAIL_BUTLER_API_KEY="fixture-key"):
+                readiness = feature_availability.email_source_availability()
+                self.assertTrue(readiness["email_butler"]["enabled"])
+                self.assertTrue(readiness["icloud_hide"]["enabled"])
+                with self.assertRaisesRegex(service.EmailDerivationError, "Butler"):
+                    service.acquire_address("outlook", owner_kind="registration_root", owner_id="new", acquisition_id="new")
 
     def test_retired_explicit_profile_is_not_counted_for_new_allocations(self):
         store.configure_parent("icloud_hide", self.parent, inbox_profile_id=self.profile["id"])
@@ -197,20 +212,20 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         self.assertEqual(list_rows.call_args.kwargs["limit"], 2)
         self.assertEqual(service.list_allocations("icloud_hide", page=4, page_size=2)["items"], [])
 
-    def test_jobs_warning_uses_local_derivation_capacity_and_keeps_submission_contract(self):
+    def test_jobs_bridge_submission_has_no_local_capacity_or_sidecar_dependency(self):
         from webui.app import create_app
-        self.generate_stock()
+        self.seed_stock()
         client = create_app(auth_code="test-auth").test_client()
-        with patch.object(cfg, "ICLOUD_HME_API_BASE", ""), patch("core.icloud_hme_client.sync_aliases", side_effect=AssertionError("库存注册不应同步")), patch(
-            "webui.app.svc.submit_registration", return_value=[{"id": 1}],
-        ) as submit:
-            response = client.post("/api/jobs", headers={"X-Auth-Code": "test-auth"},
-                json={"count": 3, "workers": 1, "email_source": "icloud_hide"})
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.get_json()["warning"], "")
-            submit.assert_called_once_with(count=3, email_source="icloud_hide", workers=1)
-            submit.reset_mock()
-            response = client.post("/api/jobs", headers={"X-Auth-Code": "test-auth"},
-                json={"count": 4, "workers": 1, "email_source": "icloud_hide"})
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("可领取子地址库存为 3 个", response.get_json()["warning"])
+        with patch.multiple(cfg, ICLOUD_HME_API_BASE="", ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True,
+            EMAIL_BUTLER_API_BASE="https://butler.example.test/v1", EMAIL_BUTLER_API_KEY="fixture-key"), patch(
+            "core.icloud_hme_client.sync_aliases", side_effect=AssertionError("桥接任务不应同步sidecar")
+        ), patch.object(service, "capacity_summary", side_effect=AssertionError("桥接不读取本地子库存")), patch(
+            "core.db.icloud_hide_email_pool_summary", side_effect=AssertionError("桥接不读取本地母库存")
+        ), patch("webui.app.svc.submit_registration", return_value=[{"id": 1}]) as submit:
+            for count in (3, 4):
+                with self.subTest(count=count):
+                    response = client.post("/api/jobs", headers={"X-Auth-Code": "test-auth"},
+                        json={"count": count, "workers": 1, "email_source": "icloud_hide"})
+                    self.assertEqual(response.status_code, 200, response.get_json())
+                    self.assertEqual(response.get_json()["warning"], "")
+                    submit.assert_called_with(count=count, email_source="icloud_hide", workers=1)

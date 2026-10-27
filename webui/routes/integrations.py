@@ -209,16 +209,28 @@ def create_integrations_blueprint(context: WebUIContext):
     @bp.post("/api/email-butler/leases")
     def api_email_butler_lease_create():
         """手动租用一个邮箱，供资源页检查平台供给情况。"""
+        data = request.get_json(silent=True)
+        request_id = data.get("request_id") if isinstance(data, dict) else None
+        try:
+            valid_request_id = isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id
+        except (ValueError, AttributeError):
+            valid_request_id = False
+        if not valid_request_id:
+            return jsonify({"ok": False, "code": "invalid_request_id", "request_unknown": False,
+                            "error": "request_id 必须是浏览器保存的有效 UUID"}), 400
         try:
             from core.email_butler_client import active_mailbox_leases, pick_account
-            account = pick_account()
+            account = pick_account(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
             item = next(
                 (row for row in active_mailbox_leases() if row.get("email") == account.email),
                 {"email": account.email, "mailbox_id": account.mailbox_id},
             )
-            return jsonify({"ok": True, "item": item})
+            return jsonify({"ok": True, "item": item, "request_id": request_id, "request_unknown": False})
         except Exception as exc:
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
+            unknown = bool(getattr(exc, "request_unknown", False))
+            return jsonify({"ok": False, "request_id": request_id, "request_unknown": unknown,
+                            "code": "request_unknown" if unknown else getattr(exc, "error_code", "") or "email_butler_claim_failed",
+                            "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 409 if unknown else 400
 
     @bp.post("/api/email-butler/leases/release")
     def api_email_butler_lease_release():

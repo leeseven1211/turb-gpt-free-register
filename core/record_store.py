@@ -368,6 +368,17 @@ EMAIL_ADDRESS_GENERATION_REQUESTS = TableSpec(
     unique=("request_id",),
 )
 
+EMAIL_BUTLER_CLAIM_INTENTS = TableSpec(
+    name="email_butler_claim_intents",
+    promoted={
+        "acquisition_id": "TEXT NOT NULL", "owner_kind": "TEXT NOT NULL", "owner_id": "TEXT NOT NULL",
+        "status": "TEXT NOT NULL", "address_norm": "TEXT", "api_base": "TEXT NOT NULL",
+        "credential_ref": "TEXT NOT NULL", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("acquisition_id",),
+    indexes=(("address_norm",), ("owner_kind", "owner_id"), ("status",)),
+)
+
 EMAIL_INBOX_PROFILES = TableSpec(
     name="email_inbox_profiles",
     promoted={
@@ -532,6 +543,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     ICLOUD_HIDE_POOL,
     EMAIL_ADDRESS_ALLOCATIONS,
     EMAIL_ADDRESS_GENERATION_REQUESTS,
+    EMAIL_BUTLER_CLAIM_INTENTS,
     EMAIL_INBOX_PROFILES,
     EMAIL_OTP_REQUESTS,
     CODEX_CREDENTIALS,

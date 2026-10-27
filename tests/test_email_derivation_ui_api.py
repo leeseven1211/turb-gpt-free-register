@@ -1,7 +1,6 @@
 """子地址库存管理接口的参数与公开边界。"""
 import logging
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -9,34 +8,37 @@ import pytest
 from flask import Flask
 
 import core
-from config import email as email_config
 from config import schema
 from webui.routes.email_pool import create_email_pool_blueprint
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_derivation_defaults_and_editable_contract_are_consistent():
+def test_derivation_policies_are_legacy_only_but_env_and_snapshot_values_still_parse():
     defaults = {
         "EMAIL_DERIVATION_ENABLED": False,
         "EMAIL_DERIVATION_SOURCES": "icloud_hide",
         "EMAIL_DERIVATION_MAX_CHILDREN": 3,
         "EMAIL_DERIVATION_TAG_LENGTH": 6,
     }
-    template = (ROOT / ".env.example").read_text(encoding="utf-8")
+    editable = {field["key"] for field in schema.CONFIG_SCHEMA.editor_metadata()}
     for key, value in defaults.items():
         assert schema.CONFIG_SCHEMA[key].default == value
-        assert getattr(email_config, key) == value
-        assert schema.CONFIG_SCHEMA[key].group == "邮箱 / OTP"
-        assert f"{key}={value}" in template
-    assert schema.validate_value("EMAIL_DERIVATION_SOURCES", "Outlook,icloud_hide,outlook") == "outlook,icloud_hide"
-    assert set(schema.CONFIG_SCHEMA["EMAIL_DERIVATION_SOURCES"].csv_options) == {"icloud_hide", "outlook"}
-    with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
-        assert schema.validate_config_updates({"EMAIL_DERIVATION_MAX_CHILDREN": 6}) == {"EMAIL_DERIVATION_MAX_CHILDREN": 6}
-    assert schema.resolve_config({"EMAIL_DERIVATION_SOURCES": ""})["EMAIL_DERIVATION_SOURCES"].value == ""
-    with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
+        assert key not in editable
         with pytest.raises(schema.ConfigValidationError):
-            schema.validate_config_updates({"EMAIL_DERIVATION_ENABLED": True, "EMAIL_DERIVATION_SOURCES": ""})
+            schema.validate_config_updates({key: value})
+    historical = {"EMAIL_DERIVATION_ENABLED": "true", "EMAIL_DERIVATION_SOURCES": "Outlook,icloud_hide,outlook",
+                  "EMAIL_DERIVATION_MAX_CHILDREN": "6", "EMAIL_DERIVATION_TAG_LENGTH": "8"}
+    namespace = {"__name__": "config.email", **defaults}
+    with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1", **historical}, clear=True):
+        schema.apply_env_namespace(namespace)
+    assert namespace == {"__name__": "config.email", "EMAIL_DERIVATION_ENABLED": True,
+                         "EMAIL_DERIVATION_SOURCES": "outlook,icloud_hide", "EMAIL_DERIVATION_MAX_CHILDREN": 6,
+                         "EMAIL_DERIVATION_TAG_LENGTH": 8}
+    snapshot = schema.resolve_config(historical)
+    assert snapshot["EMAIL_DERIVATION_MAX_CHILDREN"].value == 6
+    assert snapshot["EMAIL_DERIVATION_ENABLED"].value is True
+    frozen = schema.build_non_sensitive_snapshot(historical, strict=False)
+    assert frozen["EMAIL_DERIVATION_MAX_CHILDREN"] == 6
+    assert frozen["EMAIL_DERIVATION_ENABLED"] is True
+    assert schema.resolve_config({"EMAIL_DERIVATION_SOURCES": ""})["EMAIL_DERIVATION_SOURCES"].value == ""
     for key, value in (("EMAIL_DERIVATION_MAX_CHILDREN", 0), ("EMAIL_DERIVATION_TAG_LENGTH", 25), ("EMAIL_DERIVATION_SOURCES", "generic_api")):
         with pytest.raises(schema.ConfigValidationError):
             schema.validate_value(key, value)
@@ -102,7 +104,7 @@ def test_all_source_is_unfiltered_and_uses_bounded_page(derivation_client):
     service.list_allocations.assert_called_once_with(source=None, parent_id=None, page=1, page_size=50)
 
 
-def test_column_filters_and_inventory_capabilities_are_forwarded(derivation_client):
+def test_column_filters_preserve_history_without_inventory_write_capabilities(derivation_client):
     client, service = derivation_client
     service.list_allocations.return_value = {"items": [{"id": 7, "state": "available", "can_disable": True,
         "can_restore": False, "generation_key": "private-key"}], "total": 1}
@@ -112,7 +114,7 @@ def test_column_filters_and_inventory_capabilities_are_forwarded(derivation_clie
     assert response.status_code == 200
     service.list_allocations.assert_called_once_with(source="outlook", parent_id=None, page=1, page_size=50,
         q="child", parent_q="parent", state="available", related_q="42", created_from="2026-10-01", created_to="2026-10-27")
-    assert response.get_json()["items"] == [{"id": 7, "state": "available", "can_disable": True, "can_restore": False}]
+    assert response.get_json()["items"] == [{"id": 7, "state": "available"}]
 
 
 @pytest.mark.parametrize('query', ['state=bad', 'created_from=2026-02-30', 'created_to=not-date',
@@ -123,61 +125,22 @@ def test_invalid_column_filters_are_rejected(derivation_client, query):
     service.list_allocations.assert_not_called()
 
 
-def test_generation_preserves_stable_request_and_reports_partial_capacity(derivation_client):
+@pytest.mark.parametrize("path,data", [
+    ("generate", {"source": "icloud_hide", "count": 5, "request_id": "stable-request-001", "parent_id": 8}),
+    ("generate", {"source": "outlook", "count": 1, "request_id": "stable-request-002"}),
+    ("generate", {}),
+    ("generate", []),
+    ("status-bulk", {"ids": [1, 2], "state": "disabled"}),
+    ("status-bulk", {"ids": [1], "state": "available"}),
+    ("status-bulk", []),
+])
+def test_local_inventory_writes_are_gone_and_direct_callers_are_sent_to_butler(derivation_client, path, data):
     client, service = derivation_client
-    service.generate_inventory.return_value = {"requested": 5, "created": 3, "reused": 0, "shortfall": 2,
-        "reason_code": "email_derivation_capacity_exhausted", "reason": "母邮箱剩余额度不足", "private": "secret"}
-    response = client.post('/api/email-derivation/generate', json={"source": "icloud_hide", "count": 5,
-        "request_id": "stable-request-001", "parent_id": 8})
-    assert response.status_code == 200
-    service.generate_inventory.assert_called_once_with(source="icloud_hide", count=5,
-        request_id="stable-request-001", parent_id=8)
-    assert response.get_json() == {"ok": True, "requested": 5, "created": 3, "reused": 0, "shortfall": 2,
-        "reason_code": "email_derivation_capacity_exhausted", "reason": "母邮箱剩余额度不足"}
-
-
-@pytest.mark.parametrize('data', [[], {}, {"source": "unknown", "count": 1, "request_id": "request-001"},
-    {"source": "outlook", "count": True, "request_id": "request-001"},
-    {"source": "outlook", "count": 1001, "request_id": "request-001"},
-    {"source": "outlook", "count": 1.5, "request_id": "request-001"},
-    {"source": "outlook", "count": 1, "request_id": ""},
-    {"source": "outlook", "count": 1, "request_id": "request-001", "parent_id": False}])
-def test_invalid_generation_does_not_reach_service(derivation_client, data):
-    client, service = derivation_client
-    response = client.post('/api/email-derivation/generate', json=data)
-    assert response.status_code == 400
-    assert response.get_json()["reason_code"] == "email_derivation_invalid_request"
-    service.generate_inventory.assert_not_called()
-
-
-def test_bulk_inventory_management_reports_immutable_rows(derivation_client):
-    client, service = derivation_client
-    service.update_inventory_status.return_value = {"updated": 1, "skipped": 1, "results": [
-        {"id": 1, "ok": True, "reason_code": "", "reason": "", "private": "secret"},
-        {"id": 2, "ok": False, "reason_code": "email_derivation_already_claimed", "reason": "已分配地址不能重新入库"}]}
-    response = client.post('/api/email-derivation/status-bulk', json={"ids": [1, 2, 1], "state": "disabled"})
-    assert response.status_code == 200
-    service.update_inventory_status.assert_called_once_with(ids=[1, 2], state="disabled")
-    assert response.get_json()["updated"] == 1
-    assert response.get_json()["skipped"] == 1
-    assert "private" not in response.get_data(as_text=True)
-
-
-@pytest.mark.parametrize('data', [{"ids": [1], "state": "reserved"}, {"ids": [True], "state": "disabled"},
-    {"ids": [], "state": "available"}, {"ids": ["1"], "state": "available"}, []])
-def test_invalid_bulk_changes_are_rejected(derivation_client, data):
-    client, service = derivation_client
-    assert client.post('/api/email-derivation/status-bulk', json=data).status_code == 400
-    service.update_inventory_status.assert_not_called()
-
-
-def test_known_generation_errors_keep_specific_reason_code(derivation_client):
-    client, service = derivation_client
-    error = RuntimeError('email_derivation_profile_unavailable: 母邮箱收件配置不可用')
-    error.code = 'email_derivation_profile_unavailable'
-    service.generate_inventory.side_effect = error
-    response = client.post('/api/email-derivation/generate', json={"source": "outlook", "count": 1,
-        "request_id": "request-001"})
-    assert response.status_code == 409
-    assert response.get_json()["reason_code"] == error.code
-    assert response.get_json()["error"] == '母邮箱收件配置不可用'
+    service.generate_inventory.side_effect = AssertionError("local generation must not run")
+    service.update_inventory_status.side_effect = AssertionError("local inventory must not change")
+    response = client.post('/api/email-derivation/' + path, json=data)
+    assert response.status_code == 410
+    result = response.get_json()
+    assert result["ok"] is False
+    assert result["reason_code"] == "email_derivation_managed_by_butler"
+    assert "Email Butler" in result["error"]

@@ -32,7 +32,22 @@ def _binding(email: str) -> dict | None:
         return None
     from core.email_derivation import find_binding
 
-    return find_binding(email)
+    local = find_binding(email)
+    if local is not None:
+        return local
+    from core.email_butler_client import _restore_hme_context, restore_account_context
+
+    remote = _restore_hme_context(email)
+    if remote is None:
+        from core import db
+        account = db.get_account_by_email(email)
+        if (account or {}).get("email_source") == "email_butler":
+            # Imported complete identities must be resolved before any auth
+            # side effect. requested_email is an exact restore, never a claim.
+            remote = restore_account_context(email, purpose="auth-identity")
+    if remote is not None and remote.identity_type != "primary":
+        return {"id": None, "address_norm": email}
+    return None
 
 
 def _owner() -> tuple[str, str, int | None]:
@@ -117,7 +132,7 @@ def _failed_result(result: Any) -> bool:
 @dataclass
 class EmailAuthSession:
     email: str
-    binding_id: int
+    binding_id: int | None
     owner_kind: str
     owner_id: str
     attempt_id: int | None
@@ -279,7 +294,7 @@ def email_auth_session(email: str) -> Iterator[EmailAuthSession | None]:
             _OBSERVER_ADDRESS.reset(address_token)
         return
     kind, owner_id, attempt_id = _owner()
-    session = EmailAuthSession(address, int(binding["id"]), kind, owner_id, attempt_id)
+    session = EmailAuthSession(address, int(binding["id"]) if binding["id"] is not None else None, kind, owner_id, attempt_id)
     token = _SESSIONS.set((*_SESSIONS.get(), session))
     address_token = _OBSERVER_ADDRESS.set(address)
     observer_token = _OBSERVER_REQUEST.set(None)

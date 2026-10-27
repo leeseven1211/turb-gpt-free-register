@@ -617,6 +617,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
 
         prepare_args.assert_called_once_with(
             "icloud_hide", batch_id="original-batch", job_id=2,
+            owner_kind="registration_root", owner_id=1, acquisition_id="registration:1",
         )
         restore_email.assert_not_called()
         self.assertEqual(run_registration.call_args.kwargs["email"], "new@icloud.com")

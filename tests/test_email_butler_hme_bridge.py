@@ -61,7 +61,7 @@ class ButlerHMEProviderTests(PostgresTestCase):
             account = butler.pick_account(owner_kind="registration_root", owner_id="root-17", acquisition_id="intent-17")
             self.assertEqual(account.email, PARENT)
             self.assertEqual(butler.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), "654321")
-        self.assertEqual(calls[0][2]["json"], {"owner_kind": "registration_root", "owner_id": "root-17", "acquisition_id": "intent-17"})
+        self.assertEqual(next(row for row in calls if row[1] == "/mailboxes")[2]["json"], {"owner_kind": "registration_root", "owner_id": "root-17", "acquisition_id": "intent-17"})
         inbound = next(row for row in calls if row[1] == "/inbound/code")
         self.assertEqual(inbound[2]["json"]["mailbox_email"], MAILBOX)
         self.assertTrue(inbound[2]["json"]["strict_family"])
@@ -173,7 +173,8 @@ class ButlerHMEProviderTests(PostgresTestCase):
         self.assertIsNone(butler.get_account_context(PARENT))
         with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}) as second:
             self.assertEqual(butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="persist-retry").email, PARENT)
-        self.assertEqual(first.call_args.kwargs["json"], second.call_args.kwargs["json"])
+        first.assert_not_called()
+        self.assertEqual(second.call_args.kwargs["json"]["acquisition_id"], "persist-retry")
 
     def test_unknown_hme_outcomes_keep_context_and_do_not_report(self):
         account = butler.EmailButlerAccount(email=PARENT, mailbox_id="lease-test", provider="icloud_hme",
@@ -392,8 +393,9 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
             self.assertEqual(hme.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="fresh-intent").email, PARENT)
             self.assertEqual(email_provider.acquire_email("icloud_hide", owner_kind="registration_root",
                 owner_id="history-root", acquisition_id="history-intent"), self.child["address"])
-        self.assertEqual(len(request.call_args_list), 1)
-        self.assertEqual(request.call_args.kwargs["json"]["acquisition_id"], "fresh-intent")
+        acquisitions = [call for call in request.call_args_list if call.args[1] == "/mailboxes"]
+        self.assertEqual(len(acquisitions), 1)
+        self.assertEqual(acquisitions[0].kwargs["json"]["acquisition_id"], "fresh-intent")
 
     def test_flag_disabled_preserves_original_bound_route(self):
         with patch.object(cfg, "ICLOUD_HME_BUTLER_BRIDGE_ENABLED", False), patch.object(

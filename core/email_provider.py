@@ -82,6 +82,14 @@ def validate_email_source(source: str) -> str:
     return selected
 
 
+def requires_acquisition_identity(source: str) -> bool:
+    """Every Butler allocation retains the business intent across retries."""
+    from core import email_butler_bridge
+
+    return (source in {"remail", "mailcode", "xigua", "email_butler"}
+            or source == "icloud_hide" and email_butler_bridge.enabled())
+
+
 def remember_email_source(email: str, source: str) -> str:
     """记录任务已明确选择的邮箱来源，供同一任务链后续恢复使用。"""
     address = str(email or "").strip()
@@ -311,9 +319,7 @@ def _pick_from_source(
         return email_butler_bridge.pick_account(owner_kind=owner_kind, owner_id=owner_id,
             acquisition_id=acquisition_id).email
 
-    if email_derivation.enabled_for(source) or (
-        acquisition_id and email_derivation.store.find_allocation(acquisition_id=acquisition_id)
-    ):
+    if acquisition_id and email_derivation.store.find_allocation(acquisition_id=acquisition_id):
         return email_derivation.acquire_address(
             source, owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
             job_id=job_id,
@@ -394,7 +400,7 @@ def acquire_email(
                 # 付费供应商的普通失败仍可由原任务重跑；本次领取不跨平台重购。
                 raise
             # 邮箱下单结果不明时必须保留核验状态，不能包装成普通失败或换平台。
-            if getattr(exc, "request_unknown", False):
+            if getattr(exc, "request_unknown", False) or getattr(exc, "identity_locked", False):
                 raise
             last_exc = exc
             logger.warning(f"[EmailProvider] 来源 {source} 领取邮箱失败: {type(exc).__name__}: {exc}")
@@ -532,16 +538,16 @@ def wait_for_otp(
 
     source = validate_email_source(email_source) if email_source else resolve_email_source(email)
     from core import email_derivation
+    from core.email_auth_guard import begin_generation, checkpoint, current_session
+    from core.storage.email_address_allocations import StaleOtpFence
+
+    session = current_session()
+    if session is not None and session.email != str(email or "").strip().lower():
+        raise StaleOtpFence("验证码目标与当前完整邮箱认证地址不一致")
+    checkpoint()
+    begin_generation(after_ts)
 
     if email_derivation.find_binding(email) is not None:
-        from core.email_auth_guard import begin_generation, checkpoint, current_session
-        from core.storage.email_address_allocations import StaleOtpFence
-
-        session = current_session()
-        if session is not None and session.email != str(email or "").strip().lower():
-            raise StaleOtpFence("验证码目标与当前完整邮箱认证地址不一致")
-        checkpoint()
-        begin_generation(after_ts)
         code = email_derivation.fetch_bound_otp(email, after_ts=after_ts, **extra_kwargs)
         checkpoint()
         return code
@@ -553,7 +559,9 @@ def wait_for_otp(
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     if source == "email_butler":
         from core.email_butler_client import fetch_latest_otp
-        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+        code = fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+        checkpoint()
+        return code
     if source == "cloudflare_domain":
         from core.qqmail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)

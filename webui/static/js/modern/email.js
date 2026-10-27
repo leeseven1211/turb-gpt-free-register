@@ -1,9 +1,8 @@
 // ---------- 邮箱池 ----------
-// 子地址库存与母资源分开管理，已领取地址始终保留原归属。
+// 历史子地址只读展示；子邮箱生成、策略和库存由 Email Butler 管理。
 const EMAIL_DERIVATION_VIEW = {
   source: 'all', parentId: null, parentEmail: '', total: 0, summary: null, generation: 0,
-  items: [], selected: new Map(), loading: false, updating: false,
-  generationRequest: null, generationParentEmail: '', generating: false, generationFocus: null, restoreGenerationFocus: true,
+  items: [], selected: new Map(), loading: false,
 };
 const EMAIL_DERIVATION_STATE_LABELS = {
   available: '可领取', disabled: '已停用', reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '历史停用',
@@ -15,17 +14,10 @@ const EMAIL_DERIVATION_FILTERS = {
 };
 function _poolDerivationCell(row) {
   const summary = EMAIL_DERIVATION_VIEW.summary;
-  const recorded = (summary?.parents || []).find(item => item.source === row.source && String(item.parent_id) === String(row.id));
-  const enabledSources = Array.isArray(summary?.sources) ? summary.sources : [];
-  const parentPolicy = row.derivation_policy || {};
-  const canShowDefault = summary?.enabled === true && enabledSources.includes(row.source)
-    && ['icloud_hide', 'outlook'].includes(row.source) && Number(row.id) > 0 && parentPolicy.enabled !== false;
-  // 首个子地址生成前没有聚合行，仍使用当前策略展示零用量和查看入口。
-  const parent = recorded || (canShowDefault ? {parent_id: row.id, child_count: 0, max_children: parentPolicy.max_children} : null);
-  if (!parent) return '';
+  const parent = (summary?.parents || []).find(item => item.source === row.source && String(item.parent_id) === String(row.id));
+  if (!parent || Number(parent.child_count || 0) === 0) return '';
   const count = Number(parent.child_count || 0);
-  const maximum = Number(parent.max_children ?? summary.max_children ?? 3);
-  return `<small class="pool-derivation-meta">原地址 · 子地址 ${count}/${maximum}</small><button type="button" class="pool-derivation-open" data-derivation-parent="${attrEsc(parent.parent_id)}" data-source="${attrEsc(row.source)}" data-parent-email="${attrEsc(row.email)}" aria-label="查看 ${attrEsc(row.email)} 的子地址">查看子地址</button>`;
+  return `<small class="pool-derivation-meta">历史子地址 ${count} 个</small><button type="button" class="pool-derivation-open" data-derivation-parent="${attrEsc(parent.parent_id)}" data-source="${attrEsc(row.source)}" data-parent-email="${attrEsc(row.email)}" aria-label="查看 ${attrEsc(row.email)} 的历史子地址">查看历史</button>`;
 }
 function renderEmailDerivationSummary(summary) {
   EMAIL_DERIVATION_VIEW.summary = summary;
@@ -35,7 +27,7 @@ async function loadEmailDerivationSummary() {
   try {
     renderEmailDerivationSummary(await api('/api/email-derivation/summary?source=all'));
   } catch (error) {
-    showToast('子地址额度读取失败：' + error.message);
+    showToast('子地址历史读取失败：' + error.message);
   }
 }
 function updateEmailDerivationSelectionUi() {
@@ -43,17 +35,13 @@ function updateEmailDerivationSelectionUi() {
   const selected = Array.from(state.selected.values());
   const count = selected.length;
   const hint = document.getElementById('emailDerivationSelectedHint');
-  if (hint) hint.textContent = count ? `已选 ${count} 个子邮箱` : '选择子邮箱后批量操作';
+  if (hint) hint.textContent = count ? `已选 ${count} 条历史记录` : '可筛选并复制历史子邮箱';
   document.getElementById('emailDerivationToolbar')?.classList.toggle('has-selection', count > 0);
   const copy = document.getElementById('btnCopyEmailDerivation');
   if (copy) {
     copy.textContent = count ? '复制选中' : '复制当前页';
     copy.disabled = count === 0 && state.items.length === 0;
   }
-  const disable = document.getElementById('btnDisableEmailDerivation');
-  if (disable) disable.disabled = state.updating || !selected.some(item => item.can_disable === true);
-  const restore = document.getElementById('btnRestoreEmailDerivation');
-  if (restore) restore.disabled = state.updating || !selected.some(item => item.can_restore === true);
   const all = document.getElementById('emailDerivationSelectAll');
   if (all) {
     const checked = state.items.filter(item => state.selected.has(Number(item.id))).length;
@@ -77,10 +65,6 @@ function renderEmailDerivationAllocations(result) {
     const task = item.root_task_id ? `任务 #${item.root_task_id}` : '';
     const ownership = [bound, task].filter(Boolean).join(' · ') || (['available', 'disabled'].includes(item.state) ? '尚未领取' : '历史归属');
     const statusClass = item.state === 'available' ? 'is-good' : item.state === 'disabled' ? 'is-bad' : 'is-muted';
-    const actions = [
-      item.can_disable === true ? `<button type="button" class="jobs-tb-btn" data-derivation-id="${id}" data-derivation-state="disabled"${state.updating ? ' disabled' : ''}>停用</button>` : '',
-      item.can_restore === true ? `<button type="button" class="jobs-tb-btn jobs-tb-btn--good" data-derivation-id="${id}" data-derivation-state="available"${state.updating ? ' disabled' : ''}>恢复可领取</button>` : '',
-    ].filter(Boolean).join('');
     return `<tr class="${state.selected.has(id) ? 'is-selected' : ''}">
       <td class="col-check"><input type="checkbox" class="email-derivation-row-check" data-derivation-id="${id}"${state.selected.has(id) ? ' checked' : ''} aria-label="选择 ${attrEsc(item.email)}"></td>
       <td class="col-email" title="${attrEsc(item.email)}"><strong>${esc(item.email || '-')}</strong></td>
@@ -89,9 +73,9 @@ function renderEmailDerivationAllocations(result) {
       <td class="col-status"><span class="pool-usage ${statusClass}">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态待确认')}</span></td>
       <td class="col-related">${esc(ownership)}</td>
       <td class="col-time">${esc(formatDateTime(item.created_at))}</td>
-      <td class="col-actions">${actions || '<span class="sub-cell">—</span>'}</td>
+      <td class="col-actions"><span class="sub-cell">只读</span></td>
     </tr>`;
-  }).join('') || renderTableStateRow(8, '当前筛选下没有子地址', '点击“生成子邮箱”补充可领取库存。');
+  }).join('') || renderTableStateRow(8, '当前筛选下没有历史子地址', '子邮箱生成、策略和库存请到 Email Butler 管理。');
   updateEmailDerivationSelectionUi();
   _renderPager('derivations', state.total);
 }
@@ -120,7 +104,7 @@ async function loadEmailDerivationResources() {
   wrap?.setAttribute('aria-busy', 'true');
   state.loading = true;
   const status = document.getElementById('emailDerivationListStatus');
-  if (status) status.textContent = '正在读取子邮箱库存…';
+  if (status) status.textContent = '正在读取历史子邮箱…';
   try {
     const allocations = await api(`/api/email-derivation/allocations?${params.toString()}`);
     if (generation !== state.generation) return;
@@ -133,8 +117,8 @@ async function loadEmailDerivationResources() {
     if (status) status.textContent = '';
   } catch (error) {
     if (generation !== state.generation) return;
-    if (status) status.textContent = '子邮箱库存加载失败：' + error.message;
-    if (!state.items.length) document.getElementById('emailDerivationBody').innerHTML = renderTableStateRow(8, '子邮箱库存加载失败', '请调整筛选或重新打开本页重试。', 'error');
+    if (status) status.textContent = '子邮箱历史加载失败：' + error.message;
+    if (!state.items.length) document.getElementById('emailDerivationBody').innerHTML = renderTableStateRow(8, '子邮箱历史加载失败', '请调整筛选或重新打开本页重试。', 'error');
   } finally {
     if (generation === state.generation) {
       state.loading = false;
@@ -190,102 +174,6 @@ async function copyEmailDerivationEmails() {
   if (!rows.length) { showToast('当前没有可复制的子邮箱'); return; }
   await copyText(rows.map(row => row.email).filter(Boolean).join('\n'));
 }
-async function updateEmailDerivationStatus(nextState, ids = null) {
-  const state = EMAIL_DERIVATION_VIEW;
-  if (state.updating) return;
-  const chosen = ids || Array.from(state.selected.keys());
-  if (!chosen.length) { showToast('请先选择子邮箱'); return; }
-  state.updating = true;
-  renderEmailDerivationAllocations({items: state.items, total: state.total});
-  const resultNode = document.getElementById('emailDerivationActionResult');
-  if (resultNode) { resultNode.hidden = false; resultNode.textContent = '正在更新子邮箱库存状态…'; }
-  try {
-    const result = await api('/api/email-derivation/status-bulk', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: chosen, state: nextState})});
-    const reasons = (result.results || []).filter(item => item.ok === false).map(item => `#${item.id}：${item.reason || item.reason_code}`);
-    if (resultNode) resultNode.textContent = `已更新 ${Number(result.updated || 0)} 个，跳过 ${Number(result.skipped || 0)} 个${reasons.length ? '。' + reasons.join('；') : '。'}`;
-    state.selected.clear();
-    await loadEmailDerivationResources();
-    loadEmailDerivationSummary();
-  } catch (error) {
-    if (resultNode) resultNode.textContent = '子邮箱状态更新失败：' + error.message;
-  } finally {
-    state.updating = false;
-    renderEmailDerivationAllocations({items: state.items, total: state.total});
-  }
-}
-function updateEmailDerivationGenerateControls() {
-  const state = EMAIL_DERIVATION_VIEW;
-  const fixed = state.generating || Boolean(state.generationRequest);
-  document.getElementById('emailDerivationGenerateSource').disabled = fixed;
-  document.getElementById('emailDerivationGenerateCount').disabled = fixed;
-  const submit = document.getElementById('btnSubmitEmailDerivationGenerate');
-  submit.disabled = state.generating;
-  submit.textContent = state.generating ? '生成中…' : state.generationRequest ? '重试生成' : '生成子邮箱';
-  const dialog = document.getElementById('emailDerivationGenerateDialog');
-  const source = document.getElementById('emailDerivationGenerateSource').value;
-  const scope = document.getElementById('emailDerivationGenerateScope');
-  scope.textContent = dialog.dataset.parentId && source === dialog.dataset.parentSource
-    ? `仅为母邮箱 ${dialog.dataset.parentEmail || `#${dialog.dataset.parentId}`} 生成` : '按所选来源的母邮箱剩余额度生成';
-}
-function openEmailDerivationGenerate() {
-  const state = EMAIL_DERIVATION_VIEW;
-  const dialog = document.getElementById('emailDerivationGenerateDialog');
-  if (!dialog || dialog.open) return;
-  const request = state.generationRequest;
-  const source = request?.source || (['icloud_hide', 'outlook'].includes(state.source) ? state.source : 'icloud_hide');
-  document.getElementById('emailDerivationGenerateSource').value = source;
-  document.getElementById('emailDerivationGenerateCount').value = String(request?.count || 1);
-  dialog.dataset.parentId = String(request?.parent_id || (!request && state.parentId) || '');
-  dialog.dataset.parentSource = request?.source || state.source;
-  dialog.dataset.parentEmail = request ? state.generationParentEmail : state.parentEmail;
-  if (!request) document.getElementById('emailDerivationGenerateResult').textContent = '';
-  state.generationFocus = document.activeElement;
-  state.restoreGenerationFocus = true;
-  updateEmailDerivationGenerateControls();
-  dialog.showModal();
-}
-function closeEmailDerivationGenerate({restoreFocus = true} = {}) {
-  EMAIL_DERIVATION_VIEW.restoreGenerationFocus = restoreFocus;
-  document.getElementById('emailDerivationGenerateDialog')?.close();
-}
-async function submitEmailDerivationGenerate(event) {
-  event.preventDefault();
-  const state = EMAIL_DERIVATION_VIEW;
-  if (state.generating) return;
-  const resultNode = document.getElementById('emailDerivationGenerateResult');
-  const dialog = document.getElementById('emailDerivationGenerateDialog');
-  if (!state.generationRequest) {
-    const source = document.getElementById('emailDerivationGenerateSource').value;
-    const count = Number(document.getElementById('emailDerivationGenerateCount').value);
-    if (!Number.isInteger(count) || count < 1 || count > 1000) {
-      resultNode.textContent = '生成数量须为 1–1000 的整数。';
-      return;
-    }
-    state.generationParentEmail = dialog.dataset.parentEmail || '';
-    state.generationRequest = {source, count, request_id: crypto.randomUUID()};
-    if (dialog.dataset.parentId && source === dialog.dataset.parentSource) state.generationRequest.parent_id = Number(dialog.dataset.parentId);
-  }
-  state.generating = true;
-  resultNode.textContent = '正在生成子邮箱…';
-  updateEmailDerivationGenerateControls();
-  try {
-    const result = await api('/api/email-derivation/generate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(state.generationRequest)});
-    const created = Number(result.created || 0);
-    const reused = Number(result.reused || 0);
-    const shortfall = Number(result.shortfall || 0);
-    const message = `已生成 ${created} 个${reused ? `，已有 ${reused} 个` : ''}${shortfall ? `，缺少 ${shortfall} 个。${result.reason || result.reason_code || '请补充母邮箱额度后继续生成。'}` : '。'}`;
-    state.generationRequest = null;
-    resultNode.textContent = message;
-    if (!shortfall) { closeEmailDerivationGenerate(); showToast(message); }
-    await loadEmailDerivationResources();
-    loadEmailDerivationSummary();
-  } catch (error) {
-    resultNode.textContent = `生成失败：${error.message}。请使用原参数重试。`;
-  } finally {
-    state.generating = false;
-    updateEmailDerivationGenerateControls();
-  }
-}
 (function bindEmailDerivationInventory() {
   const sourceSelect = document.getElementById('emailDerivationSourceFilter');
   if (sourceSelect) {
@@ -323,24 +211,7 @@ async function submitEmailDerivationGenerate(event) {
   document.getElementById('btnResetEmailDerivationFilters')?.addEventListener('click', () => { resetEmailDerivationFilters(); loadEmailDerivationResources(); });
   document.getElementById('emailDerivationSelectAll')?.addEventListener('change', event => syncEmailDerivationSelectAll(event.target.checked));
   document.getElementById('emailDerivationBody')?.addEventListener('change', onEmailDerivationBodyChange);
-  document.getElementById('emailDerivationBody')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-derivation-state]');
-    if (!button || button.disabled) return;
-    updateEmailDerivationStatus(button.dataset.derivationState, [Number(button.dataset.derivationId)]);
-  });
   document.getElementById('btnCopyEmailDerivation')?.addEventListener('click', copyEmailDerivationEmails);
-  document.getElementById('btnDisableEmailDerivation')?.addEventListener('click', () => updateEmailDerivationStatus('disabled'));
-  document.getElementById('btnRestoreEmailDerivation')?.addEventListener('click', () => updateEmailDerivationStatus('available'));
-  document.getElementById('btnGenerateEmailDerivation')?.addEventListener('click', openEmailDerivationGenerate);
-  document.getElementById('emailDerivationGenerateForm')?.addEventListener('submit', submitEmailDerivationGenerate);
-  document.getElementById('btnCloseEmailDerivationGenerate')?.addEventListener('click', () => closeEmailDerivationGenerate());
-  document.getElementById('btnCancelEmailDerivationGenerate')?.addEventListener('click', () => closeEmailDerivationGenerate());
-  document.getElementById('emailDerivationGenerateSource')?.addEventListener('change', updateEmailDerivationGenerateControls);
-  document.getElementById('emailDerivationGenerateDialog')?.addEventListener('close', () => {
-    const state = EMAIL_DERIVATION_VIEW;
-    if (state.restoreGenerationFocus && state.generationFocus?.isConnected) state.generationFocus.focus({preventScroll: true});
-    state.generationFocus = null;
-  });
 })();
 
 function getPoolSource() {
@@ -510,14 +381,47 @@ $('#mailSourceCards')?.addEventListener('keydown', e => {
   setPoolSourceV2(card.dataset.mailSource);
   setModuleView('outlook', 'list');
 });
-$('#btnLeaseButlerMailbox')?.addEventListener('click', async e => {
-  e.currentTarget.disabled = true;
+const BUTLER_MANUAL_REQUEST_KEY = 'turb.emailButler.manualRequestId';
+function _manualButlerRequestId() {
   try {
-    const result = await api('/api/email-butler/leases', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-    showToast(`已租用 ${result.item?.email || '邮箱'}`);
+    let requestId = sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY);
+    if (!requestId) {
+      if (typeof crypto.randomUUID === 'function') requestId = crypto.randomUUID();
+      else {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 15) | 64;
+        bytes[8] = (bytes[8] & 63) | 128;
+        const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        requestId = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+      }
+      sessionStorage.setItem(BUTLER_MANUAL_REQUEST_KEY, requestId);
+    }
+    if (sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY) !== requestId) throw new Error('storage unavailable');
+    return requestId;
+  } catch (_) {
+    throw Object.assign(new Error('无法保存领取意图，请允许页面存储后重试'), {code:'manual_intent_unavailable'});
+  }
+}
+function _updateManualButlerLeaseButton() {
+  const button = $('#btnLeaseButlerMailbox');
+  if (!button) return;
+  try { button.textContent = sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY) ? '继续领取邮箱' : '租用邮箱'; }
+  catch (_) { /* 点击时检查存储，读取失败不能提交领取。 */ }
+}
+_updateManualButlerLeaseButton();
+$('#btnLeaseButlerMailbox')?.addEventListener('click', async e => {
+  const button = e.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const requestId = _manualButlerRequestId();
+    const result = await api('/api/email-butler/leases', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({request_id:requestId})});
+    if (result.ok !== true || !result.item?.email) throw new Error(result.error || '领取结果尚未确认');
+    sessionStorage.removeItem(BUTLER_MANUAL_REQUEST_KEY);
+    showToast(`已租用 ${result.item.email}`);
     await loadMailResources();
-  } catch(err) { showToast('租用失败: ' + err.message); }
-  finally { e.currentTarget.disabled = false; }
+  } catch(err) { showToast(err.code === 'manual_intent_unavailable' ? err.message : '租用未完成，已保留原请求，请继续领取: ' + err.message); }
+  finally { button.disabled = false; _updateManualButlerLeaseButton(); }
 });
 $('#butlerLeaseList')?.addEventListener('click', async e => {
   const btn = e.target.closest('[data-butler-release]');

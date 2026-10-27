@@ -124,9 +124,9 @@ def acquire_address(
     if not owner_kind or owner_id is None or not str(acquisition_id or "").strip():
         raise EmailDerivationError("email_derivation_identity_conflict", "子地址领取缺少持久业务意图")
     previous = store.find_allocation(acquisition_id=str(acquisition_id))
-    selected = dict(policy if isinstance(policy, dict) else (_POLICY.get() or policy_snapshot()))
-    if not previous and not enabled_for(source, policy=selected):
-        raise EmailDerivationError("email_derivation_source_disabled", "当前任务未启用该来源的邮箱子地址库存")
+    if not previous:
+        raise EmailDerivationError("email_derivation_source_disabled",
+            "子邮箱领取已统一到 Email Butler，请使用 Butler 邮箱来源；本地仅恢复历史身份")
     if source not in _SUPPORTED_SOURCES:
         raise EmailDerivationError("email_derivation_source_unsupported", "该邮箱连接器尚未声明子地址的精确取码及持久恢复能力")
     account_id = str(getattr(email_config, "ICLOUD_HME_ACCOUNT_ID", "") or "").strip()
@@ -170,56 +170,8 @@ def generate_inventory(source: str, count: int, request_id: str, parent_id: int 
                 raise EmailDerivationError("email_derivation_request_conflict", "该生成请求已用于不同来源、数量或母资源")
             failure = previous[0].get("generation_result") or {}
             return _generation_result(count, created=0, reused=len(previous), failure=failure)
-        selected = policy_snapshot()
-        kwargs: dict[str, Any] = {}
-        if source == "icloud_hide":
-            from core import email_butler_bridge
-
-            if (email_butler_bridge.enabled()
-                    or str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_butler"):
-                raise EmailDerivationError("email_derivation_source_disabled",
-                    "iCloud HME 已统一到 Email Butler，请在 Butler 库存入口管理；本机不再生成新的 HME 子地址")
-            from core.icloud_hme_client import sync_aliases
-            try:
-                profile = _forward_profile()
-            except RuntimeError as exc:
-                raise EmailDerivationError("email_derivation_profile_unavailable", str(exc)) from exc
-            try:
-                synced = sync_aliases(force=False)
-            except Exception as exc:
-                raise EmailDerivationError("email_derivation_parent_unavailable", "iCloud 母资源同步失败，请恢复服务后重试原生成请求") from exc
-            accounts = [str(value) for value in synced.get("synced_account_ids", []) if str(value)]
-            if not accounts and synced.get("account_id"):
-                accounts = [str(synced["account_id"])]
-            if not accounts:
-                raise EmailDerivationError("email_derivation_parent_unavailable", "没有成功同步的 iCloud 母资源账号")
-            kwargs.update(inbox_profile_id=int(profile["id"]), account_ids=accounts)
-        else:
-            kwargs["profile_factory"] = _outlook_profile
-        created = 0
-        generated_ids = []
-        failure = {}
-        request_key = hashlib.sha256(request_id.encode()).hexdigest()
-        for number in range(count):
-            row = store.allocate_address(source=source, acquisition_id=None, owner_kind=None, owner_id=None,
-                parent_id=parent_id, max_children=selected["max_children"], tag_length=selected["tag_length"],
-                generation_key=f"{request_key}:{number}", generation_request=request, failure=failure,
-                profile_validator=lambda profile: _inventory_profile_usable(profile, source), conn=conn, **kwargs)
-            if row is None:
-                break
-            created += 1
-            generated_ids.append(int(row["id"]))
-        result = _generation_result(count, created=created, reused=0, failure=failure)
-        if generated_ids:
-            record_store.patch_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, generated_ids[0], {
-                "generation_result": {"reason_code": result["reason_code"], "reason": result["reason"]},
-            }, conn=conn)
-        # 零结果也留下事实，重试不能改变生成范围或再次依赖上游准备。
-        record_store.insert_row(record_store.EMAIL_ADDRESS_GENERATION_REQUESTS, {
-            "request_id": request_id, "source": source, "requested": count, "parent_id": parent_id,
-            "result": result,
-        }, conn=conn)
-        return result
+        raise EmailDerivationError("email_derivation_source_disabled",
+            "子邮箱生成和库存管理已统一到 Email Butler，请前往 Butler 管理")
 
 
 def _generation_result(requested: int, *, created: int, reused: int, failure: dict | None = None) -> dict:
@@ -233,7 +185,8 @@ def _generation_result(requested: int, *, created: int, reused: int, failure: di
 def update_inventory_status(ids: list[int], state: str) -> dict:
     if not isinstance(ids, list) or not ids or len(ids) > 1000 or any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in ids):
         raise EmailDerivationError("email_derivation_request_conflict", "请选择 1–1000 个有效子地址编号")
-    return store.update_inventory_status(ids, state)
+    raise EmailDerivationError("email_derivation_source_disabled",
+        "子邮箱库存管理已统一到 Email Butler；本地历史记录只读")
 
 
 def resolve_route(address: str, *, source: str | None = None) -> dict | None:

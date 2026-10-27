@@ -162,6 +162,16 @@ class EmailChangeReportingTests(unittest.TestCase):
                 self.assertEqual(closeout == "failed", any(event.get("level") == "warning" for event in scenario.events))
 
 
+    def test_butler_claim_unknown_preserves_operation_before_openai_boundary(self):
+        from core.email_butler_client import EmailButlerClaimUnknown
+        with self.scenario() as scenario:
+            scenario.provider.acquire_email.side_effect=EmailButlerClaimUnknown('request_unknown')
+            result=service._handle_email_change(scenario.context)
+        self.assertEqual(result.status,'request_unknown')
+        self.assertEqual(scenario.db.finish_account_email_change.call_args.kwargs['outcome'],'request_unknown')
+        scenario.release.assert_not_called()
+
+
 class RecentLoginReportingTests(unittest.TestCase):
     def test_recent_login_failure_or_success_before_second_rejection_has_own_end(self):
         for case in ("error", "missing_token", "missing_session", "reauth_ok"):

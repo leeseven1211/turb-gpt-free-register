@@ -273,7 +273,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
         run_id = 29
         task_id = 30
         email = "old@example.test"
-        run = {"data": {"email_source": "outlook"}, "trigger": "test"}
+        run = {"data": {"email_source": "outlook", "remail_acquisition_id": "change:30"}, "trigger": "test"}
         config_snapshot = {"email_change_enabled": True}
 
         def __init__(self):
@@ -330,6 +330,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
         self.assertIsNone(failure)
         self.assertEqual("fresh@example.test", target)
         self.assertEqual(2, acquire_email.call_count)
+        self.assertEqual([call.kwargs["acquisition_id"] for call in acquire_email.call_args_list], ["change:30", "change:30:duplicate:1"])
         release_email.assert_called_once_with(
             "used@example.test",
             status="used",
@@ -465,7 +466,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
             run_id = 29
             task_id = 30
             email = "old@example.test"
-            run = {"data": {"email_source": "outlook"}, "trigger": "test"}
+            run = {"data": {"email_source": "outlook", "remail_acquisition_id": "change:30"}, "trigger": "test"}
             config_snapshot = {"email_change_enabled": True}
 
             def __init__(self):
@@ -798,7 +799,7 @@ class EmailChangeCloseoutTests(unittest.TestCase):
             run_id = 29
             task_id = 30
             email = "old@example.test"
-            run = {"data": {"email_source": "email_butler"}, "trigger": "test"}
+            run = {"data": {"email_source": "email_butler", "remail_acquisition_id": "change:30"}, "trigger": "test"}
             config_snapshot = {"email_change_enabled": True}
 
             def report(self, **event):

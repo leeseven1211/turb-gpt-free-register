@@ -1298,7 +1298,6 @@ setInterval(updateTopbarClock, 30000);
 
 function closePageDialogsForNavigation() {
   // 离开页面时走完整关闭逻辑，清理轮询、焦点状态和滚动锁。
-  if (document.getElementById('emailDerivationGenerateDialog')?.open && typeof closeEmailDerivationGenerate === 'function') closeEmailDerivationGenerate({restoreFocus:false});
   const dialogs = [
     ['accountTaskLogPanel', typeof closeAccountTaskLogModal === 'function' ? closeAccountTaskLogModal : null],
     ['accountDetailDrawer', typeof closeAccountDetail === 'function' ? closeAccountDetail : null],

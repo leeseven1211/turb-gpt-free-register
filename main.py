@@ -69,9 +69,10 @@ def prepare_registration_inputs(*, email_source: str | None = None,
             if not selected_cli_source:
                 from core.email_provider import parse_email_sources
                 selected_cli_source = parse_email_sources(getattr(_email_cfg, "EMAIL_SOURCE", ""))[0]
-            from core.email_derivation import enabled_for
+            from core.email_provider import requires_acquisition_identity
 
-            if selected_cli_source not in {"remail", "mailcode", "xigua"} and not enabled_for(selected_cli_source):
+            if (not requires_acquisition_identity(selected_cli_source)
+                    and owner_kind is None and owner_id is None and acquisition_id is None):
                 email = acquire_email(email_source) if email_source is not None else acquire_email()
             else:
                 email = acquire_email(
@@ -262,7 +263,8 @@ def run_one_batch_item(
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
         logger.debug("准备阶段错误详情:", exc_info=True)
-        return {"success": False, "error": str(exc)}
+        return {"success": False, "error": str(exc),
+                **({"request_unknown": True, "status": "request_unknown"} if getattr(exc, "request_unknown", False) else {})}
     finally:
         if proxy_lease is not None:
             from core.proxy_provider import release_proxy

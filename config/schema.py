@@ -945,19 +945,23 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "EMAIL_DERIVATION_ENABLED", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
-        "label": "启用邮箱子地址", "help": "新任务从已生成的子地址库存领取；库存不足时先到邮箱子地址页面生成补充，关闭后已有地址仍可续跑、收码和登录",
+        "label": "历史子地址领取开关", "help": "仅兼容历史环境和任务快照；子邮箱现由 Email Butler 管理",
+        "editable": False,
     },
     {
         "key": "EMAIL_DERIVATION_SOURCES", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "子地址来源", "help": "选择注册时使用子地址库存的来源；还需具备精确收码能力，人工生成入口位于邮箱池的邮箱子地址菜单",
+        "label": "历史子地址来源", "help": "仅兼容历史环境和任务快照；子邮箱现由 Email Butler 管理",
+        "editable": False,
     },
     {
         "key": "EMAIL_DERIVATION_MAX_CHILDREN", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "每个母邮箱的子地址额度", "help": "每个母资源累计最多生成几个子地址，默认 3；以后提高额度即可继续生成，失败地址也保留归属",
+        "label": "历史子地址额度", "help": "仅兼容历史环境和任务快照；新生成额度在 Email Butler 管理",
+        "editable": False,
     },
     {
         "key": "EMAIL_DERIVATION_TAG_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "子地址随机后缀长度", "help": "在用户名后增加 +随机小写字母数字，默认 6 位；保留完整地址用于注册和后续恢复",
+        "label": "历史子地址后缀长度", "help": "仅兼容历史环境和任务快照；新子地址后缀在 Email Butler 管理",
+        "editable": False,
     },
     {
         "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -2093,6 +2097,7 @@ def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigFie
             label=str(legacy.get("label") or key),
             help=str(legacy.get("help") or ""),
             storage=str(legacy.get("storage") or "env"),
+            editable=bool(legacy.get("editable", True)),
             options=options,
             min_value=min_value,
             max_value=max_value,
@@ -2541,17 +2546,17 @@ def resolve_config(
     *,
     strict: bool = False,
 ) -> dict[str, ConfigResolution]:
-    """解析所有字段；``strict`` 用于 reload 前的离线候选校验。"""
+    """解析运行字段（含只读历史策略）；``strict`` 用于 reload 前的离线候选校验。"""
     values = dict(env_values) if env_values is not None else _environment_values()
     if not strict:
         return {
             field.key: resolve_field(field, values)
-            for field in CONFIG_SCHEMA.editable_fields
+            for field in CONFIG_SCHEMA.fields
         }
 
     resolutions: dict[str, ConfigResolution] = {}
     errors: dict[str, str] = {}
-    for field in CONFIG_SCHEMA.editable_fields:
+    for field in CONFIG_SCHEMA.fields:
         try:
             resolutions[field.key] = resolve_field(field, values, strict=True)
         except (TypeError, ValueError) as exc:
@@ -2684,16 +2689,16 @@ def build_non_sensitive_snapshot(
     *,
     strict: bool = True,
 ) -> ConfigSnapshot:
-    """离线解析并构建候选快照，不发布到全局引用。"""
+    """离线构建含历史策略的候选快照，不发布到全局引用。"""
     resolutions = resolve_config(env_values, strict=strict)
     values = {
         field.key: field.public_value(resolutions[field.key].value)
-        for field in CONFIG_SCHEMA.editable_fields
+        for field in CONFIG_SCHEMA.fields
         if not field.secret
     }
     sources = {
         field.key: resolutions[field.key].source
-        for field in CONFIG_SCHEMA.editable_fields
+        for field in CONFIG_SCHEMA.fields
     }
     return ConfigSnapshot(values, sources, revision=0)
 

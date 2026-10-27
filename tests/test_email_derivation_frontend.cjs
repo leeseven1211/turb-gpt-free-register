@@ -44,18 +44,18 @@ function createView() {
     api: async (url, options) => { calls.push({url, options}); return url.includes('/summary?') ? summary : allocations; },
   };
   vm.createContext(context);
-  vm.runInContext(`${source}\nglobalThis.view = {state: EMAIL_DERIVATION_VIEW, load: loadEmailDerivationResources, loadSummary: loadEmailDerivationSummary, render: renderEmailDerivationAllocations, parentCell: _poolDerivationCell, showParent: showEmailDerivationParent, selectAll: syncEmailDerivationSelectAll, change: onEmailDerivationBodyChange, copy: copyEmailDerivationEmails, update: updateEmailDerivationStatus, openGenerate: openEmailDerivationGenerate, submitGenerate: submitEmailDerivationGenerate};`, context);
+  vm.runInContext(`${source}\nglobalThis.view = {state: EMAIL_DERIVATION_VIEW, load: loadEmailDerivationResources, loadSummary: loadEmailDerivationSummary, render: renderEmailDerivationAllocations, parentCell: _poolDerivationCell, showParent: showEmailDerivationParent, selectAll: syncEmailDerivationSelectAll, change: onEmailDerivationBodyChange, copy: copyEmailDerivationEmails};`, context);
   return {nodes, element, calls, navigation, copied, toasts, pagers, context, summary, allocations, view: context.view};
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-test('母资源概况仍供邮箱列表使用，库存页保留完整地址、历史归属与能力限定操作', async () => {
+test('历史列表保留完整地址和归属，即使旧响应带能力标记也不渲染库存写操作', async () => {
   const {calls, element, view, pagers} = createView();
   await view.loadSummary();
   assert.equal(calls.length, 1);
   assert.ok(calls[0].url.includes('/summary?'));
-  assert.ok(view.parentCell({source: 'icloud_hide', id: 4, email: 'parent@example.test'}).includes('子地址 2/3'));
+  assert.ok(view.parentCell({source: 'icloud_hide', id: 4, email: 'parent@example.test'}).includes('历史子地址 2 个'));
   await view.load();
   const html = element('emailDerivationBody').innerHTML;
   assert.ok(html.includes('parent+abc123@example.test'));
@@ -63,9 +63,8 @@ test('母资源概况仍供邮箱列表使用，库存页保留完整地址、�
   assert.ok(!html.includes('<script>'));
   assert.ok(html.includes('可领取') && html.includes('归属已保留') && html.includes('已停用'));
   assert.ok(html.includes('账号 #5 · 任务 #root-1'));
-  assert.match(html, /data-derivation-id="1"[^>]*data-derivation-state="disabled"/);
-  assert.match(html, /data-derivation-id="3"[^>]*data-derivation-state="available"/);
-  assert.doesNotMatch(html, /data-derivation-id="2"[^>]*data-derivation-state/);
+  assert.doesNotMatch(html, /data-derivation-state|<button/);
+  assert.equal(calls.filter(call => call.options).length, 0);
   assert.deepEqual(pagers.at(-1), {id: 'derivations', total: 60});
   assert.equal(element('emailDerivationTableWrap').attributes['aria-busy'], 'false');
 });
@@ -129,97 +128,24 @@ test('全选仅作用当前页，半选可见，复制优先选中且跨页保�
   assert.equal(copied.at(-1), allocations.items[0].email);
 });
 
-test('混合选择批量状态更新展示后端逐条跳过原因，失败可重试', async () => {
-  const {calls, element, context, allocations, view} = createView();
-  await view.load();
-  view.selectAll(true);
-  context.api = async (url, options) => {
-    calls.push({url, options});
-    return options ? {updated: 1, skipped: 2, results: [{id: 1, ok: true}, {id: 2, ok: false, reason_code: 'already_acquired', reason: '已经领取，保留原归属'}, {id: 3, ok: false, reason_code: 'state_mismatch', reason: '当前已停用'}]} : allocations;
-  };
-  await view.update('disabled');
-  const request = calls.find(call => call.url.endsWith('/status-bulk'));
-  assert.deepEqual(JSON.parse(request.options.body), {ids: [1, 2, 3], state: 'disabled'});
-  assert.match(element('emailDerivationActionResult').textContent, /已更新 1 个.*跳过 2 个/);
-  assert.match(element('emailDerivationActionResult').textContent, /#2.*已经领取/);
-  assert.match(element('emailDerivationActionResult').textContent, /#3.*当前已停用/);
-  assert.equal(element('emailDerivationSelectAll').checked, false);
-  view.selectAll(true);
-  context.api = async () => { throw new Error('状态更新暂不可用'); };
-  await view.update('disabled');
-  assert.equal(element('btnDisableEmailDerivation').disabled, false);
-  assert.match(element('emailDerivationActionResult').textContent, /状态更新暂不可用/);
-});
-
-test('生成继承母资源范围，失败重试保留请求身份且提交期间不重复发送', async () => {
-  const {calls, element, context, allocations, view} = createView();
-  view.showParent({dataset: {source: 'icloud_hide', derivationParent: '4', parentEmail: 'parent@example.test'}});
-  view.openGenerate();
-  element('emailDerivationGenerateCount').value = '5';
-  let failFirst;
-  context.api = (url, options) => {
-    calls.push({url, options});
-    if (!options) return Promise.resolve(allocations);
-    return new Promise((_resolve, reject) => { failFirst = reject; });
-  };
-  const first = view.submitGenerate({preventDefault() {}});
-  await view.submitGenerate({preventDefault() {}});
-  assert.equal(calls.filter(call => call.options).length, 1);
-  assert.equal(element('btnSubmitEmailDerivationGenerate').disabled, true);
-  failFirst(new Error('网络超时'));
-  await first;
-  const body = JSON.parse(calls.find(call => call.options).options.body);
-  assert.equal(body.source, 'icloud_hide');
-  assert.equal(body.parent_id, 4);
-  assert.equal(body.count, 5);
-  assert.equal(element('emailDerivationGenerateCount').disabled, true);
-  assert.match(element('emailDerivationGenerateResult').textContent, /网络超时.*原参数重试/);
-  context.api = async (url, options) => { calls.push({url, options}); return options ? {requested: 5, created: 3, reused: 2, shortfall: 0, reason_code: '', reason: ''} : allocations; };
-  await view.submitGenerate({preventDefault() {}});
-  const retried = JSON.parse(calls.filter(call => call.options).at(-1).options.body);
-  assert.equal(retried.request_id, body.request_id);
-  assert.equal(element('emailDerivationGenerateDialog').open, false);
-});
-
-test('部分生成在弹窗展示缺口和原因，后续新操作使用新请求身份', async () => {
-  const {calls, element, context, allocations, view} = createView();
-  view.openGenerate();
-  element('emailDerivationGenerateCount').value = '5';
-  context.api = async (url, options) => { calls.push({url, options}); return options ? {requested: 5, created: 2, reused: 0, shortfall: 3, reason_code: 'capacity_exhausted', reason: '母邮箱额度不足'} : allocations; };
-  await view.submitGenerate({preventDefault() {}});
-  assert.equal(element('emailDerivationGenerateDialog').open, true);
-  assert.match(element('emailDerivationGenerateResult').textContent, /生成 2.*缺少 3.*母邮箱额度不足/);
-  assert.equal(element('emailDerivationGenerateCount').disabled, false);
-  const firstKey = JSON.parse(calls.find(call => call.options).options.body).request_id;
-  await view.submitGenerate({preventDefault() {}});
-  assert.notEqual(JSON.parse(calls.filter(call => call.options).at(-1).options.body).request_id, firstKey);
-});
-
-test('生成数量越界不发请求，切换来源不会沿用另一个来源的母资源ID', async () => {
-  const {calls, element, context, allocations, view} = createView();
-  view.showParent({dataset: {source: 'icloud_hide', derivationParent: '4', parentEmail: 'parent@example.test'}});
-  view.openGenerate();
-  element('emailDerivationGenerateCount').value = '1001';
-  await view.submitGenerate({preventDefault() {}});
-  assert.equal(calls.length, 0);
-  element('emailDerivationGenerateCount').value = '1';
-  element('emailDerivationGenerateSource').value = 'outlook';
-  element('emailDerivationGenerateSource').handlers.change();
-  context.api = async (url, options) => { calls.push({url, options}); return options ? {requested: 1, created: 1, reused: 0, shortfall: 0} : allocations; };
-  await view.submitGenerate({preventDefault() {}});
-  assert.equal(JSON.parse(calls.find(call => call.options).options.body).parent_id, undefined);
-});
-
-test('默认零用量只展示启用来源，历史计数与单母额度保留', async () => {
+test('母资源仅显示已存在的子地址历史，不展示生成额度或零用量入口', async () => {
   const {summary, view} = createView();
   summary.parents.push({source: 'outlook', parent_id: 4, child_count: 2, max_children: 8});
   await view.loadSummary();
-  assert.ok(view.parentCell({source: 'outlook', id: 4, email: 'history@example.test'}).includes('子地址 2/8'));
-  assert.ok(view.parentCell({source: 'outlook', id: 15, email: 'fresh@example.test'}).includes('子地址 0/3'));
-  assert.equal(view.parentCell({source: 'outlook', id: 17, derivation_policy: {enabled: false}}), '');
+  assert.match(view.parentCell({source: 'outlook', id: 4, email: 'history@example.test'}), /历史子地址 2 个/);
+  assert.doesNotMatch(view.parentCell({source: 'outlook', id: 4}), /2\/8|生成|data-derivation-state/);
+  assert.equal(view.parentCell({source: 'outlook', id: 15, email: 'fresh@example.test'}), '');
   summary.enabled = false;
   assert.equal(view.parentCell({source: 'icloud_hide', id: 15}), '');
-  assert.ok(view.parentCell({source: 'icloud_hide', id: 4}).includes('子地址 2/3'));
+  assert.match(view.parentCell({source: 'icloud_hide', id: 4}), /历史子地址 2 个/);
+});
+
+test('空历史列表提示到 Email Butler 管理子邮箱', async () => {
+  const {element, context, view} = createView();
+  context.api = async () => ({items: [], total: 0});
+  await view.load();
+  assert.match(element('emailDerivationBody').innerHTML, /Email Butler/);
+  assert.doesNotMatch(element('emailDerivationBody').innerHTML, /点击.*生成/);
 });
 
 test('库存列表注册统一分页，翻页与每页条数驱动库存加载', () => {
@@ -251,25 +177,4 @@ test('没有任务号的历史归属仍不被标为尚未领取，零库存分�
   assert.equal(context.PAGERS.derivations.page, 1);
   assert.equal(element('emailDerivationSelectAll').disabled, true);
   assert.equal(element('btnCopyEmailDerivation').disabled, true);
-});
-
-test('失败后关闭并重开生成弹窗保留原参数与请求身份', async () => {
-  const {calls, element, context, allocations, view} = createView();
-  view.showParent({dataset: {source: 'icloud_hide', derivationParent: '4', parentEmail: 'original@example.test'}});
-  view.openGenerate();
-  element('emailDerivationGenerateCount').value = '7';
-  context.api = async (url, options) => { calls.push({url, options}); throw new Error('网络中断'); };
-  await view.submitGenerate({preventDefault() {}});
-  const first = JSON.parse(calls[0].options.body);
-  element('emailDerivationGenerateDialog').close();
-  element('emailDerivationSourceFilter').value = 'outlook';
-  view.state.source = 'outlook';
-  view.state.parentEmail = 'other@example.test';
-  view.openGenerate();
-  assert.equal(element('emailDerivationGenerateSource').value, first.source);
-  assert.equal(element('emailDerivationGenerateCount').value, '7');
-  assert.match(element('emailDerivationGenerateScope').textContent, /original@example.test/);
-  context.api = async (url, options) => { calls.push({url, options}); return options ? {requested: 7, created: 0, reused: 7, shortfall: 0} : allocations; };
-  await view.submitGenerate({preventDefault() {}});
-  assert.equal(JSON.parse(calls.filter(call => call.options).at(-1).options.body).request_id, first.request_id);
 });

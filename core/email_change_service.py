@@ -737,6 +737,7 @@ def _acquire_email_change_target(
     while True:
         context.checkpoint()
         from core import email_derivation
+        from core.email_provider import requires_acquisition_identity
 
         snapshot = getattr(context, "config_snapshot", None)
         snapshot = snapshot if isinstance(snapshot, Mapping) else {}
@@ -750,9 +751,13 @@ def _acquire_email_change_target(
         }
         run_data = context.run.get("data") if isinstance(context.run, Mapping) and isinstance(context.run.get("data"), Mapping) else {}
         acquisition_id = str(run_data.get("remail_acquisition_id") or "").strip() or None
+        if source == "email_butler" and acquisition_id and duplicate_count:
+            # A positively identified, reported used target may advance to a
+            # deterministic successor. Unknown claims never reach this step.
+            acquisition_id = f"{acquisition_id}:duplicate:{duplicate_count}"
         supported_derivation = str(source or "").strip().lower() in email_derivation._SUPPORTED_SOURCES
         previous = email_derivation.store.find_allocation(acquisition_id=acquisition_id) if acquisition_id and supported_derivation else None
-        if str(source or "").strip().lower() in {"remail", "mailcode", "xigua"} or email_derivation.enabled_for(source, policy=policy) or previous:
+        if requires_acquisition_identity(source) or email_derivation.enabled_for(source, policy=policy) or previous:
             if acquisition_id:
                 with email_derivation.use_policy(policy):
                     target = str(email_provider.acquire_email(
@@ -1278,7 +1283,7 @@ def _handle_email_change(context):
             "邮箱准备失败" if not new_email else "邮箱换绑失败",
             exc,
         )
-        if remote_accepted or writeback_confirmed:
+        if remote_accepted or writeback_confirmed or getattr(exc, "request_unknown", False):
             db.finish_account_email_change(
                 account_id,
                 ok=False,

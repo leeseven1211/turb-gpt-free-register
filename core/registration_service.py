@@ -1003,9 +1003,10 @@ def _prepare_registration_args(
                 }
                 # Remail 付费领取必须有 root owner 与稳定 acquisition_id；
                 # 旧的无身份入口只继续支持非付费邮箱来源，不能静默生成临时 ID。
-                from core.email_derivation import enabled_for
+                from core.email_provider import requires_acquisition_identity
 
-                if str(email_source or "").strip().lower() in {"remail", "mailcode", "xigua"} or enabled_for(str(email_source or "")):
+                if (requires_acquisition_identity(str(email_source or "").strip().lower())
+                        or owner_kind is not None or owner_id is not None or acquisition_id is not None):
                     if not owner_kind or owner_id is None or not str(acquisition_id or "").strip():
                         raise RuntimeError("付费邮箱注册领取缺少稳定 owner/acquisition_id，已停止下单")
                     acquire_kwargs.update({
@@ -1907,14 +1908,14 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     detail="已复用原任务邮箱，不会改领新邮箱",
                 )
             else:
-                from core.email_derivation import enabled_for, use_policy
+                from core.email_derivation import use_policy
 
                 frozen_policy = registration_options_for_job(current).get("email_derivation", {"enabled": False})
                 with use_policy(frozen_policy):
-                    acquisition = ({
+                    acquisition = {
                         "owner_kind": "registration_root", "owner_id": registration_root_id,
                         "acquisition_id": registration_acquisition_id,
-                    } if selected_source in {"remail", "mailcode", "xigua"} or enabled_for(selected_source) else {})
+                    }
                     email, name, birthday = _prepare_registration_args(
                         selected_source, batch_id=batch_id, job_id=job_id, **acquisition,
                     )
@@ -2290,6 +2291,10 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         except Exception:
             logger.exception("[Job %s] 保存失败诊断现场失败", job_id)
         _retain_job_email(email, err_text, source=str(current.get("email_source") or "") or None)
+        if getattr(exc, "request_unknown", False):
+            db.finish_job_progress(job_id, success=False, detail="Butler 邮箱领取结果待核验，保留原领取意图")
+            db.update_job(job_id, status="request_unknown", error=err_text[:500], completed_at=_now_iso())
+            return
         if is_stop_requested(job_id):
             log_logger.warning(f"[Job {job_id}] 停止中捕获异常，按停止处理: {type(exc).__name__}: {exc}")
             db.finish_job_progress(job_id, success=False, detail="用户手动停止", failure_state="stopped")

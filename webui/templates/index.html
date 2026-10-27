@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
   <title>GPT 注册控制台</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}?v=20261027-subaddress-inventory-v1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}?v=20261027-butler-child-history-v2">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
@@ -76,7 +76,7 @@
       <div class="sidebar-subnav" data-module-subnav="outlook" aria-label="邮箱资源池子菜单">
         <button type="button" class="is-active" data-view="overview">资源总览</button>
         <button type="button" data-view="list">邮箱列表</button>
-        <button type="button" data-view="derivations">邮箱子地址</button>
+        <button type="button" data-view="derivations">历史子邮箱</button>
       </div>
     </div>
     <div class="sidebar-module" data-sidebar-module="proxy-traffic">
@@ -695,13 +695,11 @@
         <div class="butler-lease-list" id="butlerLeaseList"></div>
       </div>
     </section>
-    <section class="email-derivation-panel" id="emailDerivationPanel" aria-label="邮箱子地址库存">
+    <section class="email-derivation-panel" id="emailDerivationPanel" aria-label="历史子邮箱">
+      <p class="email-derivation-feedback">子邮箱生成、策略和库存状态由 Email Butler 管理；此处仅展示历史记录，可筛选和复制。</p>
       <div class="jobs-toolbar-v2 list-action-toolbar" id="emailDerivationToolbar">
-        <span class="list-selection-hint" id="emailDerivationSelectedHint">选择子邮箱后批量操作</span>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnGenerateEmailDerivation">生成子邮箱</button>
+        <span class="list-selection-hint" id="emailDerivationSelectedHint">可筛选并复制历史子邮箱</span>
         <button type="button" class="jobs-tb-btn" id="btnCopyEmailDerivation" disabled>复制当前页</button>
-        <button type="button" class="jobs-tb-btn selection-only" id="btnDisableEmailDerivation" disabled>停用选中</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnRestoreEmailDerivation" disabled>恢复可领取</button>
         <div class="list-toolbar-utilities"><button type="button" class="jobs-tb-btn" id="btnResetEmailDerivationColumns" title="恢复子地址列表默认列宽">恢复列宽</button></div>
       </div>
       <div class="column-filter-summary" id="emailDerivationParentScope" hidden>
@@ -709,7 +707,6 @@
         <button type="button" class="column-filter-summary-clear" id="btnClearDerivationParent">清除母邮箱限定</button>
       </div>
       <div class="column-filter-summary" data-filter-summary="derivations" hidden></div>
-      <p class="email-derivation-feedback" id="emailDerivationActionResult" role="status" aria-live="polite" aria-atomic="true" hidden></p>
       <div class="email-derivation-table-wrap" id="emailDerivationTableWrap" aria-busy="false">
         <table class="email-derivation-table" data-resizable-table="derivations">
           <colgroup><col class="col-check"><col class="col-email"><col class="col-parent"><col class="col-source"><col class="col-status"><col class="col-related"><col class="col-time"><col class="col-actions"></colgroup>
@@ -723,23 +720,11 @@
             <th class="col-time column-filter-header" data-column-filter="emailDerivationCreatedFrom" data-filter-end-id="emailDerivationCreatedTo" data-filter-type="date-range" data-filter-label="按生成日期范围筛选">生成时间</th>
             <th class="col-actions"><div class="column-actions-heading"><span>操作</span><button type="button" class="column-filters-reset" id="btnResetEmailDerivationFilters" title="清除全部列筛选">清筛</button></div></th>
           </tr></thead>
-          <tbody id="emailDerivationBody"><tr><td colspan="8">正在读取子邮箱库存</td></tr></tbody>
+          <tbody id="emailDerivationBody"><tr><td colspan="8">正在读取历史子邮箱</td></tr></tbody>
         </table>
       </div>
       <p class="email-derivation-feedback" id="emailDerivationListStatus" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="jobs-v2-pager" id="pager-derivations-v2"></div>
-      <dialog class="proxy-traffic-detail-dialog email-derivation-generate-dialog" id="emailDerivationGenerateDialog" aria-labelledby="emailDerivationGenerateTitle">
-        <div class="modal-header"><h2 id="emailDerivationGenerateTitle">生成子邮箱</h2><button type="button" class="jobs-tb-btn" id="btnCloseEmailDerivationGenerate" aria-label="关闭生成子邮箱">关闭</button></div>
-        <form id="emailDerivationGenerateForm">
-          <label for="emailDerivationGenerateSource">邮箱来源</label>
-          <select id="emailDerivationGenerateSource"><option value="icloud_hide">iCloud 隐藏邮箱</option><option value="outlook">Outlook</option></select>
-          <label for="emailDerivationGenerateCount">生成数量</label>
-          <input id="emailDerivationGenerateCount" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric" required aria-describedby="emailDerivationGenerateScope emailDerivationGenerateResult">
-          <p id="emailDerivationGenerateScope" class="hint"></p>
-          <p id="emailDerivationGenerateResult" role="status" aria-live="polite" aria-atomic="true"></p>
-          <div class="email-derivation-generate-actions"><button type="button" class="jobs-tb-btn" id="btnCancelEmailDerivationGenerate">取消</button><button type="submit" class="jobs-tb-btn jobs-tb-btn--primary" id="btnSubmitEmailDerivationGenerate">生成子邮箱</button></div>
-        </form>
-      </dialog>
     </section>
     <section class="outlook-panel-v2" id="outlookPanelV2" aria-label="邮箱池">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="outlookToolbarV2">
@@ -1026,11 +1011,11 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/modern/common.js') }}?v=20261027-subaddress-inventory-v1"></script>
+<script src="{{ url_for('static', filename='js/modern/common.js') }}?v=20261027-butler-child-history-v2"></script>
 <script src="{{ url_for('static', filename='js/modern/dashboard.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/accounts.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-subaddress-inventory-v1"></script>
+<script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-butler-child-history-v2"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261023-progress-refresh-v1') }}"></script>
