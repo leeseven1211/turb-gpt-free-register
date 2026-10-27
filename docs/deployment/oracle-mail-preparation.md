@@ -1,5 +1,7 @@
 # Oracle 邮箱准备说明
 
+本页保留最初准备阶段的记录。后续已完成[生产切换](2026-10-27-email-butler-production-cutover.md)、[母子收件验收](2026-10-27-hme-receipt-validation.md)和[Butler 子邮箱统一管理部署](2026-10-27-butler-derived-inventory.md)，当前状态以这些验收记录为准。
+
 ## 当前交付边界
 
 本轮完成邮箱链路代码准备与隔离验证，保留在 `codex/oracle-mail-preparation` 分支。没有迁移 iCloud、切换真实配置、推送代码、部署或重启现有服务，也没有创建邮箱或发送验证码。设计见[准备设计](../superpowers/specs/2026-10-27-oracle-mail-preparation-design.md)，执行范围见[实施计划](../superpowers/plans/2026-10-27-oracle-mail-preparation.md)。

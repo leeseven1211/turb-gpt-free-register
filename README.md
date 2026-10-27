@@ -323,6 +323,7 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 #### 子邮箱统一由 Email Butler 管理
 
 子邮箱的生成、累计额度、后缀策略和库存状态统一在 **Email Butler** 管理。
+生产入口：[Email Butler → 子邮箱](https://codex-auth.leeseven.com/email-butler/derived.html)；[部署与验收记录](docs/deployment/2026-10-27-butler-derived-inventory.md)。
 Turb 仅负责导入、领取和使用邮箱；新任务通过 `email_butler` 来源领取完整地址。
 HME 默认每个母地址累计生成 3 个、后缀 6 位，策略在 Butler 调整；Outlook
 子地址也由 Butler 管理，Turb 不再生成任何来源的新子地址。
