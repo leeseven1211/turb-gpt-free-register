@@ -292,6 +292,39 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
             self.assertEqual(hme.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), "654321")
             self.assertEqual(email_derivation.fetch_bound_otp(self.child["address"], after_ts=100, max_wait=1), "654321")
 
+    def test_strict_butler_candidate_is_retained_in_child_authentication_ledger(self):
+        from core.email_auth_guard import email_auth_session
+
+        address = self.child["address"]
+
+        def request(method, path, **kwargs):
+            value = self.request(method, path, **kwargs)
+            return {**value, "message_id": "stable-pg-message"} if path == "/inbound/code" else value
+
+        with email_auth_session(address) as session, patch.object(butler, "_request", side_effect=request):
+            self.assertEqual(email_provider.wait_for_otp(address, after_ts=100, max_wait=1), "654321")
+            saved = allocations.get_otp_request(session.row["id"])
+            self.assertTrue(saved["candidate_message_key"].endswith(":stable-pg-message"))
+            self.assertEqual(saved["candidate_evidence"]["original_recipients"], [address])
+            self.assertEqual(saved["submission_state"], "offered")
+            self.assertNotIn("654321", str(saved))
+
+    def test_bulk_scan_restores_parent_profile_without_any_child_allocation(self):
+        from core import email_butler_bridge
+
+        ref = "EMAIL_DERIVATION_BUTLER_SECRET_PARENT_ONLY"
+        profile = allocations.create_inbox_profile(inbox_key="parent-only-butler", connector="forward_butler", credential_ref=ref,
+            inbox_locator={"api_base": "https://pinned.test/v1", "mailbox_email": MAILBOX})
+        parent = "parent-only@icloud.com"
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            "email": parent, "account_id": "apple-stable", "status": "used",
+            "derivation_policy": {"inbox_profile_id": profile["id"]}})
+        with patch.dict(os.environ, {ref: "pinned-key"}):
+            restored = email_butler_bridge.inbox_profiles_for_addresses([parent])
+        self.assertEqual(restored[parent]["api_base"], "https://pinned.test/v1")
+        self.assertEqual(restored[parent]["api_key"], "pinned-key")
+        self.assertTrue(restored[parent]["strict_family"])
+
     def test_release_updates_remote_and_retains_local_child_identity(self):
         with patch.object(butler, "_request", side_effect=self.request) as request:
             email_provider.release_email(self.child["address"], status="used", source="icloud_hide")

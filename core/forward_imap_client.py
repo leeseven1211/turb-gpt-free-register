@@ -768,14 +768,30 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
     if not targets:
         return {}
     from core.email_derivation import inbox_profiles_for_addresses
+    from core import email_butler_bridge, email_butler_client
 
     # 一次批量解析，不能为数千个待扫描账号逐个连接 PostgreSQL。
-    profiles = inbox_profiles_for_addresses(sorted(targets))
+    default_butler = str(getattr(_email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_butler"
+    profiles = (email_butler_bridge.inbox_profiles_for_addresses(sorted(targets))
+        if default_butler or email_butler_bridge.enabled() else inbox_profiles_for_addresses(sorted(targets)))
     active_profile = _INBOX_PROFILE.get()
     groups: dict[tuple | None, dict] = {}
+    butler_groups: dict[tuple, dict] = {}
     results = {}
     for target in sorted(targets):
         profile = profiles.get(target, active_profile)
+        connector = str((profile or {}).get("connector") or "")
+        if connector == "forward_butler" or profile is None and default_butler:
+            connection = {
+                "api_base": str((profile or {}).get("api_base") or "") if profile is not None else email_butler_client._api_base(),
+                "api_key": str((profile or {}).get("api_key") or "") if profile is not None else email_butler_client._api_key(),
+                "mailbox_email": str((profile or {}).get("mailbox_email") or "") if profile is not None else str(getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "") or ""),
+            }
+            key = (connection["api_base"], hashlib.sha256(connection["api_key"].encode()).hexdigest(), connection["mailbox_email"].lower())
+            if key not in butler_groups:
+                butler_groups[key] = {"connection": connection, "targets": []}
+            butler_groups[key]["targets"].append(target)
+            continue
         if target in profiles and str(profile.get("connector") or "") != "forward_imap":
             results[target] = {
                 "ok": False, "error_code": "email_scan_connector_unsupported",
@@ -789,6 +805,9 @@ def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120
         strict_rules = (profile or {}).get("strict_family_by_address") or {}
         groups[key]["strict"][target] = bool(strict_rules.get(target, (profile or {}).get("strict_family")))
     lookback = max(1, min(int(lookback_days or 120), 365))
+    for group in butler_groups.values():
+        results.update(email_butler_client.scan_openai_deactivation_bulk(
+            group["targets"], lookback_days=lookback, strict_family=True, **group["connection"]))
     since_ts = time.time() - lookback * 86400
     for group in groups.values():
         profile = group["profile"]

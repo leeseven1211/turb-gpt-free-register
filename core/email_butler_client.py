@@ -183,27 +183,24 @@ def test_connection(*, api_base: str | None = None, api_key: str | None = None) 
     }
 
 
-def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
-    """扫描一个 Butler 邮箱中的高置信度 OpenAI 封号通知。"""
-    target = str(email or "").strip().lower()
-    if not target or "@" not in target:
-        raise EmailButlerClientError("待扫描邮箱地址无效")
-    payload = _request(
-        "POST",
-        "/signals/scan",
-        json={
-            "email": target,
-            "signal_type": "openai_account_deactivation",
-            "lookback_days": max(1, min(int(lookback_days or 120), 365)),
-            "folders": ["inbox", "junk"],
-        },
-        # 封号信号是只读查询，连接被网关瞬时断开时可安全重试一次。
-        retry_connection_error=True,
-    )
-    signal = payload.get("signal") if isinstance(payload.get("signal"), dict) else {}
+def _signal_result(payload: dict, target: str, *, strict_family: bool, mailbox_email: str) -> dict:
+    try:
+        code = int(payload.get("code") or 200)
+    except (ValueError, TypeError):
+        raise EmailButlerClientError("signal_receipt_invalid: 邮件信号扫描状态无效") from None
+    if payload.get("ok") is False or code >= 400:
+        error = str(payload.get("error_code") or "signal_scan_failed")
+        raise EmailButlerClientError(f"{error}: {str(payload.get('error') or payload.get('message') or '邮件信号扫描未完成')[:300]}")
+    signal = payload.get("signal")
+    if not isinstance(signal, dict) or not isinstance(signal.get("detected"), bool):
+        raise EmailButlerClientError("signal_receipt_invalid: 邮件信号扫描缺少明确结果")
+    if strict_family:
+        _validate_recipient_match(payload, target, True, mailbox_email)
+        if signal["detected"]:
+            _validate_recipient_receipt(payload, target, True, mailbox_email)
     return {
         "ok": True,
-        "detected": bool(signal.get("detected")),
+        "detected": signal["detected"],
         "checked_at": str(payload.get("checked_at") or ""),
         "received_at": str(signal.get("received_at") or ""),
         "subject": str(signal.get("subject") or "")[:300],
@@ -211,6 +208,77 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120) -> dict:
         "message_id": str(signal.get("message_id") or "")[:300],
         "confidence": str(signal.get("confidence") or "none"),
     }
+
+
+def _signal_request(*, lookback_days: int, strict_family: bool, mailbox_email: str) -> dict:
+    result = {
+        "signal_type": "openai_account_deactivation",
+        "lookback_days": max(1, min(int(lookback_days or 120), 365)),
+        "folders": ["inbox", "junk"],
+    }
+    if strict_family:
+        if not mailbox_email.partition("@")[0] or not mailbox_email.partition("@")[2]:
+            raise EmailButlerClientError("mailbox_mismatch: 严格信号扫描必须指定最终收件箱")
+        result.update(recipient_mode=_RECIPIENT_MODE, strict_family=True, mailbox_email=mailbox_email)
+    return result
+
+
+def scan_openai_deactivation(email: str, *, lookback_days: int = 120,
+                            api_base: str | None = None, api_key: str | None = None,
+                            mailbox_email: str = "", strict_family: bool = False) -> dict:
+    """扫描一个 Butler 邮箱中的高置信度 OpenAI 封号通知。"""
+    target = str(email or "").strip().lower()
+    if not target or "@" not in target:
+        raise EmailButlerClientError("待扫描邮箱地址无效")
+    mailbox = _cache_key(mailbox_email)
+    request_data = _signal_request(lookback_days=lookback_days, strict_family=strict_family, mailbox_email=mailbox)
+    request_data["email"] = target
+    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
+    payload = _request(
+        "POST",
+        "/signals/scan",
+        json=request_data,
+        **connection,
+        **({"timeout": max(_request_timeout(), 55)} if strict_family else {}),
+        # 封号信号是只读查询，连接被网关瞬时断开时可安全重试一次。
+        retry_connection_error=True,
+    )
+    return _signal_result(payload, target, strict_family=strict_family, mailbox_email=mailbox)
+
+
+def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120,
+                                 api_base: str | None = None, api_key: str | None = None,
+                                 mailbox_email: str, strict_family: bool = True) -> dict[str, dict]:
+    """同一固定 Butler 收件箱共享批量扫描；单个地址失败不抹去其他结果。"""
+    targets = sorted({_cache_key(value) for value in emails})
+    if any(not target.partition("@")[0] or not target.partition("@")[2] for target in targets):
+        raise EmailButlerClientError("待扫描邮箱地址无效")
+    mailbox = _cache_key(mailbox_email)
+    data = _signal_request(lookback_days=lookback_days, strict_family=strict_family, mailbox_email=mailbox)
+    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
+    results = {}
+    for offset in range(0, len(targets), 5000):
+        batch = targets[offset:offset + 5000]
+        try:
+            payload = _request("POST", "/signals/scan", json={**data, "emails": batch},
+                **connection, timeout=max(_request_timeout(), 55), retry_connection_error=True)
+            rows = payload.get("results")
+            if not isinstance(rows, dict):
+                raise EmailButlerClientError("signal_receipt_invalid: 批量信号扫描缺少逐地址结果")
+        except EmailButlerClientError as exc:
+            results.update({target: {"ok": False, "error": str(exc), "error_code": "signal_scan_failed"} for target in batch})
+            continue
+        for target in batch:
+            item = rows.get(target)
+            try:
+                if not isinstance(item, dict):
+                    raise EmailButlerClientError("signal_receipt_invalid: 批量信号扫描缺少该完整地址")
+                results[target] = _signal_result(item, target, strict_family=strict_family, mailbox_email=mailbox)
+            except EmailButlerClientError as exc:
+                error_code = item.get("error_code") if isinstance(item, dict) else ""
+                results[target] = {"ok": False, "error": str(exc),
+                    "error_code": str(error_code or str(exc).partition(":")[0])}
+    return results
 
 
 def _mailbox_account(mailbox: dict, *, api_base: str | None = None, api_key: str | None = None) -> EmailButlerAccount:
@@ -459,8 +527,8 @@ def _require_recipient_capability(api_base: str, api_key: str) -> None:
     _RECIPIENT_CAPABILITY_CACHE[identity] = now + 60
 
 
-def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool, mailbox: str) -> None:
-    """严格回执必须证明完整目标、族隔离标志及最终收件箱。"""
+def _validate_recipient_match(payload: dict, target: str, strict_family: bool, mailbox: str) -> None:
+    """正负查询回执都必须声明原完整地址、族隔离和最终收件箱。"""
     if payload.get("recipient_mode") != _RECIPIENT_MODE or not isinstance(payload.get("recipient_match"), dict):
         raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 缺少严格收件回执")
     match = payload["recipient_match"]
@@ -468,6 +536,11 @@ def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool,
         raise EmailButlerClientError("recipient_mismatch: 严格收件回执的完整地址或族隔离标志不一致")
     if _cache_key(match.get("mailbox_email")) != mailbox:
         raise EmailButlerClientError("mailbox_mismatch: 严格收件回执的最终收件箱不一致")
+
+
+def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool, mailbox: str) -> None:
+    """候选邮件还必须有可唯一匹配完整原地址的投递证据。"""
+    _validate_recipient_match(payload, target, strict_family, mailbox)
     evidence = payload.get("recipient_evidence")
     address_fields = ("original_recipients", "displayed_recipients", "forwarding_destinations", "received_for",
                       "hme_recipients", "conflicting_original_families")
@@ -540,7 +613,9 @@ def fetch_inbound_otp(
         1,
         int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT),
     )
-    anchor = float(after_ts if after_ts is not None else time.time()) - 30
+    anchor = float(after_ts if after_ts is not None else time.time())
+    if not strict or after_ts is None:
+        anchor -= 30
     since = datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     interval = max(0, int(poll_interval if poll_interval is not None else 1))
     logger.info("[EmailButler] 等待 PG 入站验证码：%s，最长 %ss", target, wait_seconds)
@@ -573,6 +648,15 @@ def fetch_inbound_otp(
             if otp:
                 if strict:
                     _validate_recipient_receipt(payload, target, bool(strict_family), mailbox)
+                    from core.email_auth_guard import observe_candidate
+
+                    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+                    message_id = str(payload.get("message_id") or message.get("id") or message.get("message_id") or "").strip()
+                    identity = hashlib.sha256(f"{connection['api_base']}:{mailbox}".encode()).hexdigest()[:24]
+                    observe_candidate(f"butler:{identity}:{message_id}" if message_id else "",
+                        evidence=payload["recipient_evidence"],
+                        cursor={"inbox_key": identity, "message_id": message_id,
+                            "message_mapping": "stable_id" if message_id else "unknown"})
                 elapsed = time.monotonic() - started
                 logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
                 return otp

@@ -227,6 +227,10 @@ def _scan(
                 raise ForwardIMAPError(f"批量封号邮件扫描未返回账号结果: {account_id}")
         else:
             result = scan_cloudflare_deactivation(account.get("email") or "", lookback_days=lookback_days)
+        if not isinstance(result, dict):
+            raise ForwardIMAPError("邮件信号扫描未返回有效结果")
+        if result.get("ok", True) is False:
+            raise ForwardIMAPError(str(result.get("error") or result.get("error_code") or "邮件信号扫描未返回有效结果"))
         _checkpoint(operation_context, "邮箱扫描完成后确认取消状态")
         db.update_account_deactivation_mail(account_id, {
             "status": "success",

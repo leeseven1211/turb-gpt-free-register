@@ -73,6 +73,31 @@ def fetch_otp(email: str, *, after_ts: float | None = None, profile: dict | None
         mailbox_email=context.mailbox_email, api_base=context.api_base, api_key=context.api_key, **kwargs)
 
 
+def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:
+    """批量恢复母子固定收件路由，母地址无需已生成子地址也能固定到 Butler。"""
+    from core import email_derivation, record_store
+
+    targets = sorted({str(value or "").strip().lower() for value in addresses if str(value or "").strip()})
+    profiles = email_derivation.inbox_profiles_for_addresses(targets)
+    if not targets:
+        return profiles
+    parents = record_store.list_rows(record_store.ICLOUD_HIDE_POOL,
+        where="LOWER(email) = ANY(%s)", params=(targets,))
+    loaded = {}
+    for parent in parents:
+        profile_id = (parent.get("derivation_policy") or {}).get("inbox_profile_id")
+        if not profile_id:
+            continue
+        key = int(profile_id)
+        if key not in loaded:
+            profile = email_derivation.store.get_inbox_profile(key)
+            if not profile or profile.get("state") != "active" or profile.get("connector") not in {"forward_imap", "forward_butler"}:
+                raise butler.EmailButlerClientError("email_derivation_profile_unavailable: 母地址的原固定收件配置不可用")
+            loaded[key] = email_derivation._profile_credentials(profile)
+        profiles[str(parent["email"]).strip().lower()] = {**loaded[key], "strict_family": True}
+    return profiles
+
+
 def release(email: str, *, status: str, note: str | None = None) -> None:
     """未知结果保留租约；其他结果先更新 Butler，再由原入口更新本地状态。"""
     if str(status or "").lower() in {"request_unknown", "unknown", "running", "reserved"}:
