@@ -343,22 +343,23 @@ def create_email_pool_blueprint(context: WebUIContext):
         if body:
             data = request.get_json(silent=True)
             if not isinstance(data, dict):
-                return jsonify({"ok": False, "error": "请提交 JSON 对象", "error_code": "invalid_body"}), 400
+                return jsonify({"ok": False, "error": "请提交 JSON 对象", "code": "invalid_body", "error_code": "invalid_body"}), 400
             args = (data,)
         try:
             result = getattr(service, action)(*args)
             return jsonify({"ok": True, "batch": result} if batch else result), status
         except service.RemoteError as exc:
-            return jsonify({"ok": False, "error": str(exc), "error_code": "butler_unavailable"}), 502
+            return jsonify({"ok": False, "error": str(exc), "code": "butler_unavailable", "error_code": "butler_unavailable"}), 502
         except LookupError as exc:
-            return jsonify({"ok": False, "error": str(exc), "error_code": "import_not_found"}), 404
+            code = str(exc).partition(':')[0]
+            return jsonify({"ok": False, "error": str(exc), "code": code, "error_code": code}), 404
         except ValueError as exc:
             code = str(exc).partition(':')[0]
             conflict = code in {"import_request_conflict", "import_snapshot_conflict"}
-            return jsonify({"ok": False, "error": str(exc), "error_code": code}), 409 if conflict else 400
+            return jsonify({"ok": False, "error": str(exc), "code": code, "error_code": code}), 409 if conflict else 400
         except Exception as exc:
             logger.error("Butler manual import action %s failed (%s)", action, type(exc).__name__)
-            return jsonify({"ok": False, "error": "导入操作暂未确认，请保留当前批次后重试", "error_code": "import_internal_error"}), 500
+            return jsonify({"ok": False, "error": "导入操作暂未确认，请保留当前批次后重试", "code": "import_internal_error", "error_code": "import_internal_error"}), 500
 
     @bp.get("/api/email-butler/import-options")
     def api_butler_import_options():
