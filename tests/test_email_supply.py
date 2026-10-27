@@ -29,6 +29,8 @@ class EmailSupplyTests(PostgresTestCase):
     def seed(self, email, **changes):
         return record_store.insert_row(record_store.ICLOUD_HIDE_POOL,
             {'email': email, 'status': 'available', 'remote_active': True,
+             'butler_handoff': {'version': 1, 'state': 'issued', 'owner_kind': 'local_inventory',
+                 'owner_id': 'supply-test', 'acquisition_id': 'handoff:' + email, 'identity_id': 'identity:' + email},
              'derivation_policy': {'inbox_profile_id': self.profile['id']}, **changes})
 
     def test_local_hme_is_counted_even_when_old_config_only_mentions_butler(self):

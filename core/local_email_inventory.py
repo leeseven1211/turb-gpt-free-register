@@ -74,6 +74,13 @@ def import_conflict(address: str, *, conn=None) -> str:
     return ''
 
 
+def _profile_reference_sql(reference: str) -> str:
+    """Keep malformed JSON out of bigint casts while retaining the profile PK."""
+    return (f"CASE WHEN {reference} ~ '^[1-9][0-9]{{0,18}}$' THEN "
+            f"CASE WHEN ({reference})::numeric <= 9223372036854775807 "
+            f"THEN ({reference})::bigint END END")
+
+
 def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[str, list]:
     """容量与领取共用同一 SQL 条件，旧占用记录不能被重新导入或重置复用。"""
     _table(source)
@@ -91,15 +98,16 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
                   for field in ('acquisition_id', 'owner_id', 'identity_id')))
     if source == 'email_butler':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
+        profile_id = _profile_reference_sql(f"{alias}.data->>'inbox_profile_id'")
         conditions += [f"{alias}.data->>'provider' = 'icloud_hme'",
             f"{alias}.data->>'recipient_mode' = 'forwarded_exact_v1'",
             f"{alias}.data->>'strict_family' = 'true'",
             confirmed_handoff,
-            f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->>'inbox_profile_id' AND profile.state = 'active' AND profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1)"]
+            f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id = {profile_id} AND profile.state = 'active' AND profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1)"]
     if source == 'icloud_hide':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
-        conditions.append(f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->'derivation_policy'->>'inbox_profile_id' AND profile.state = 'active' AND profile.connector IN ('forward_butler', 'forward_imap') AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND ((profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1) OR (profile.connector = 'forward_imap' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'server'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'email', ''), '@') > 1)))")
-        conditions.append(f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->'derivation_policy'->>'inbox_profile_id' AND (profile.connector = 'forward_imap' OR ({confirmed_handoff})))")
+        profile_id = _profile_reference_sql(f"{alias}.data->'derivation_policy'->>'inbox_profile_id'")
+        conditions.append(f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id = {profile_id} AND profile.state = 'active' AND profile.connector IN ('forward_butler', 'forward_imap') AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND ((profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1 AND ({confirmed_handoff})) OR (profile.connector = 'forward_imap' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'server'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'email', ''), '@') > 1)))")
     for spec, column in ((record_store.ACCOUNTS, 'email'),
                          (record_store.EMAIL_ADDRESS_ALLOCATIONS, 'address_norm'),
                          (record_store.LOCAL_EMAIL_CLAIMS, 'address_norm')):

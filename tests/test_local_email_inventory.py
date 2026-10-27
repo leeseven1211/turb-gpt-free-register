@@ -95,6 +95,29 @@ class LocalEmailInventoryTests(PostgresTestCase):
         self.assertEqual(inv.summary('icloud_hide')['available'], 1)
         self.assertIsNotNone(inv.claim('icloud_hide', owner_kind='test', owner_id='imap', acquisition_id='imap'))
 
+    def test_profile_reference_rejects_malformed_noncanonical_and_overflow_values(self):
+        inv = self.inventory()
+        for source in ['email_butler', 'icloud_hide']:
+            row_id = self.add(source, source + '-profile@icloud.com')
+            row = record_store.get_row(inv.TABLES[source], row_id)
+            profile_id = row['inbox_profile_id'] if source == 'email_butler' else row['derivation_policy']['inbox_profile_id']
+            invalid = [None, '', 0, -1, '0' + str(profile_id), '+' + str(profile_id), str(profile_id) + '.0',
+                       ' ' + str(profile_id), True, [], {}, 9223372036854775808, 10 ** 100]
+            for reference in invalid:
+                with self.subTest(source=source, reference=reference):
+                    changes = ({'inbox_profile_id': reference} if source == 'email_butler'
+                               else {'derivation_policy': {'inbox_profile_id': reference}})
+                    record_store.patch_row(inv.TABLES[source], row_id, changes)
+                    self.assertEqual(inv.summary(source)['available'], 0)
+                    self.assertIsNone(inv.claim(source, owner_kind='test', owner_id=source,
+                                               acquisition_id='malformed:' + source))
+            changes = ({'inbox_profile_id': str(profile_id)} if source == 'email_butler'
+                       else {'derivation_policy': {'inbox_profile_id': str(profile_id)}})
+            record_store.patch_row(inv.TABLES[source], row_id, changes)
+            self.assertEqual(inv.summary(source)['available'], 1)
+            self.assertIsNotNone(inv.claim(source, owner_kind='test', owner_id=source,
+                                          acquisition_id='canonical:' + source))
+
     def test_capacity_and_claim_exclude_registered_invalid_inactive_and_old_remote_claims(self):
         inv = self.inventory()
         self.add('icloud_hide', 'good@example.test')
