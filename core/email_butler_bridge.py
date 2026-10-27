@@ -2,8 +2,6 @@
 """在保留历史 HME 业务身份的前提下，显式桥接到 Butler。"""
 from __future__ import annotations
 
-import hashlib
-
 from config import email as cfg
 from core import email_butler_client as butler
 
@@ -86,10 +84,5 @@ def release(email: str, *, status: str, note: str | None = None) -> None:
     from core.email_derivation import find_binding
 
     binding = find_binding(email) or {}
-    identity = str(binding.get("acquisition_id") or context.email)
-    state = str(status or "").strip().lower()
-    result = "ok" if state in {"used", "success", "succeeded", "registered"} else "disabled" if state in {"disabled", "retired"} else "provider_error"
-    operation_id = hashlib.sha256(f"turb-hme:{identity}:{result}".encode()).hexdigest()
-    butler._request("POST", "/identities/report", json={"email": context.email, "status": result,
-        "service": "openai", "consumer": "turb-gpt-register", "message": str(note or "")[:300],
-        "operation_id": operation_id}, api_base=context.api_base, api_key=context.api_key)
+    context.acquisition_id = str(binding.get("acquisition_id") or "")
+    butler.report_hme_identity(context, status=status, note=note)

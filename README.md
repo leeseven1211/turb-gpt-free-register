@@ -371,6 +371,8 @@ EMAIL_DERIVATION_TAG_LENGTH=6
 
 统一 Email Butler 时，新任务只启用 `EMAIL_SOURCE=email_butler`，Apple 账号和 HME 库存由 Butler 管理。新 `provider=icloud_hme` 租约要求严格收件声明，使用完整目标地址、最终邮箱、时间窗口及原始投递证据从 `/inbound/code` 取码。同一领取意图传递 `owner_kind`、`owner_id`、`acquisition_id`，重跑保持原地址。
 
+新 HME 完整身份在领取返回前保存独立固定 profile 和 acquisition metadata，Key 仅保留版本化 `.env` 引用。结果通过幂等 `/identities/report` 收口；网络失败保留可重试上下文，进程重启后也可按原完整地址和固定连接继续报告，不向 Apple 恢复租约。MailCom 等其他 Butler provider 继续使用原租约释放协议。
+
 历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
 
 ```dotenv

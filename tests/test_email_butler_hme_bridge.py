@@ -27,8 +27,16 @@ def answer(address=PARENT):
         "recipient_evidence": {"original_recipients": [address]}}
 
 
-class ButlerHMEProviderTests(unittest.TestCase):
+class ButlerHMEProviderTests(PostgresTestCase):
     def setUp(self):
+        record_store.init()
+        self.environment = patch.dict(os.environ)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.secrets = patch.object(email_derivation, "_save_profile_secret",
+            side_effect=lambda reference, value: os.environ.__setitem__(reference, value))
+        self.secrets.start()
+        self.addCleanup(self.secrets.stop)
         self.scope = patch.multiple(cfg, EMAIL_BUTLER_API_BASE="https://test.example/v1", EMAIL_BUTLER_API_KEY="test-key")
         self.scope.start()
         self.addCleanup(self.scope.stop)
@@ -96,10 +104,97 @@ class ButlerHMEProviderTests(unittest.TestCase):
         self.assertEqual(request.call_args.kwargs["api_base"], "https://test.example/v1")
         self.assertEqual(request.call_args.kwargs["api_key"], "test-key")
 
+    def test_completed_hme_registration_retries_real_report_after_network_failure(self):
+        from core.registration_service import _mark_completed_registration_email
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="stable-result")
+        with patch.object(butler, "_request", side_effect=[butler.EmailButlerClientError("网络连接中断"), {"code": 200}]) as request:
+            with self.assertLogs("core.registration_service", level="ERROR"):
+                self.assertFalse(_mark_completed_registration_email(PARENT, 1, source="email_butler"))
+            self.assertIsNotNone(butler.get_account_context(PARENT))
+            self.assertTrue(_mark_completed_registration_email(PARENT, 1, source="email_butler"))
+        self.assertEqual(len(request.call_args_list), 2)
+        self.assertEqual([call.args[1] for call in request.call_args_list], ["/identities/report"] * 2)
+        self.assertEqual(request.call_args_list[0].kwargs["json"]["operation_id"], request.call_args_list[1].kwargs["json"]["operation_id"])
+
+    def test_hme_report_recovers_exact_persisted_identity_after_cache_loss(self):
+        from core.registration_service import _mark_completed_registration_email
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="restart-result")
+        with patch.object(butler, "_request", side_effect=butler.EmailButlerClientError("网络连接中断")) as first:
+            with self.assertLogs("core.registration_service", level="ERROR"):
+                self.assertFalse(_mark_completed_registration_email(PARENT, 1, source="email_butler"))
+        operation_id = first.call_args.kwargs["json"].get("operation_id")
+        butler._CONTEXT_CACHE.clear()
+        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE="", EMAIL_BUTLER_API_KEY=""), patch.object(
+                butler, "_request", return_value={"code": 200}) as second:
+            self.assertTrue(_mark_completed_registration_email(PARENT, 1, source="email_butler"))
+        second.assert_called_once()
+        self.assertEqual(second.call_args.args[1], "/identities/report")
+        self.assertEqual(second.call_args.kwargs["api_base"], "https://test.example/v1")
+        self.assertEqual(second.call_args.kwargs["api_key"], "test-key")
+        self.assertEqual(second.call_args.kwargs["json"]["email"], PARENT)
+        self.assertTrue(operation_id)
+        self.assertEqual(second.call_args.kwargs["json"]["operation_id"], operation_id)
+
+    def test_hme_local_persistence_failure_can_retry_same_acquisition(self):
+        with patch.object(email_derivation, "_save_profile_secret", side_effect=OSError("临时写入失败")), patch.object(
+                butler, "_request", return_value={"code": 200, "mailbox": mailbox()}) as first:
+            with self.assertRaisesRegex(butler.EmailButlerClientError, "email_derivation_profile_unavailable"):
+                butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="persist-retry")
+        self.assertIsNone(butler.get_account_context(PARENT))
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}) as second:
+            self.assertEqual(butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="persist-retry").email, PARENT)
+        self.assertEqual(first.call_args.kwargs["json"], second.call_args.kwargs["json"])
+
+    def test_unknown_hme_outcomes_keep_context_and_do_not_report(self):
+        account = butler.EmailButlerAccount(email=PARENT, mailbox_id="lease-test", provider="icloud_hme",
+            mailbox_email=MAILBOX, recipient_mode="forwarded_exact_v1", strict_family=True)
+        butler._CONTEXT_CACHE[PARENT] = account
+        with patch.object(butler, "_request", side_effect=AssertionError("未知结果不能报告或释放")):
+            for status in ("request_unknown", "unknown", "running", "reserved"):
+                butler.release_account(PARENT, status=status)
+                self.assertIs(butler.get_account_context(PARENT), account)
+        butler._CONTEXT_CACHE.clear()
+        with patch.object(butler, "_restore_hme_context", side_effect=AssertionError("未知结果不恢复或改变身份")):
+            for status in ("request_unknown", "unknown", "running", "reserved"):
+                butler.release_account(PARENT, status=status)
+
+    def test_hme_success_aliases_keep_operation_id_after_success_and_cache_loss(self):
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="success-aliases")
+        with patch.object(butler, "_request", return_value={"code": 200}) as request:
+            butler.release_account(PARENT, status="used")
+            self.assertIsNone(butler.get_account_context(PARENT))
+            butler.release_account(PARENT, status="success")
+        self.assertEqual(len(request.call_args_list), 2)
+        self.assertEqual(request.call_args_list[0].kwargs["json"]["operation_id"], request.call_args_list[1].kwargs["json"]["operation_id"])
+
+    def test_mailcom_keeps_original_release_protocol_and_cache_behavior(self):
+        other = "mailcom@example.test"
+        with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
+            butler.pick_account(owner_kind="registration_root", owner_id="root", acquisition_id="shared-final")
+        butler._CONTEXT_CACHE.clear()
+        butler._CONTEXT_CACHE[other] = butler.EmailButlerAccount(email=other, mailbox_id="mailcom-test", provider="mailcom")
+        with patch.object(butler, "_request", side_effect=butler.EmailButlerClientError("网络连接中断")) as request:
+            with self.assertRaises(butler.EmailButlerClientError):
+                butler.release_account(other, status="used")
+        self.assertEqual(request.call_args.args[1], "/mailboxes/mailcom-test/release")
+        self.assertIsNone(butler.get_account_context(other))
+        with patch.object(butler, "_request", side_effect=AssertionError("无缓存 MailCom 保留原行为")):
+            butler.release_account(other, status="used")
+
 
 class HistoricalHMEBridgeTests(PostgresTestCase):
     def setUp(self):
         record_store.init()
+        self.environment = patch.dict(os.environ)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.secrets = patch.object(email_derivation, "_save_profile_secret",
+            side_effect=lambda reference, value: os.environ.__setitem__(reference, value))
+        self.secrets.start()
+        self.addCleanup(self.secrets.stop)
         self.flag = patch.object(cfg, "ICLOUD_HME_BUTLER_BRIDGE_ENABLED", True, create=True)
         self.flag.start()
         self.addCleanup(self.flag.stop)

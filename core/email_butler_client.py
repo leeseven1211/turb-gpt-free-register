@@ -58,6 +58,7 @@ class EmailButlerAccount:
     strict_family: bool = False
     api_base: str | None = None
     api_key: str | None = field(default=None, repr=False)
+    acquisition_id: str = ""
 
 
 _CONTEXT_CACHE: dict[str, EmailButlerAccount] = {}
@@ -244,6 +245,9 @@ def pick_account(*, owner_kind: str | None = None, owner_id=None, acquisition_id
     if not email or "@" not in email or not mailbox_id:
         raise EmailButlerClientError("Email Butler 发号响应缺少 mailbox.id/email")
     account = _mailbox_account(mailbox)
+    account.acquisition_id = str(acquisition_id or "")
+    if account.provider == "icloud_hme":
+        _persist_hme_context(account)
     _CONTEXT_CACHE[_cache_key(email)] = account
     logger.info("[EmailButler] 已租用邮箱: %s provider=%s", email, account.provider or "?")
     return account
@@ -265,6 +269,7 @@ def active_mailbox_leases() -> list[dict]:
             "mailbox_email": account.mailbox_email,
         }
         for account in sorted(_CONTEXT_CACHE.values(), key=lambda item: item.email.lower())
+        if account.mailbox_id
     ]
 
 
@@ -304,12 +309,79 @@ def _outcome_for_status(status: str) -> str:
     return "abandoned"
 
 
+def _hme_profile_key(email: str) -> str:
+    return "butler-hme-identity:" + hashlib.sha256(_cache_key(email).encode()).hexdigest()
+
+
+def _persist_hme_context(account: EmailButlerAccount) -> None:
+    """完整 HME 身份使用独立固定 profile，密钥仅保存版本引用。"""
+    from core.email_derivation import _save_profile_secret
+    from core.storage import email_address_allocations as store
+
+    try:
+        base, key = _api_base(account.api_base), _api_key(account.api_key)
+        identity = hashlib.sha256(f"butler:{base}:{account.mailbox_email}".encode()).hexdigest()
+        version = hashlib.sha256(f"{identity}:{key}".encode()).hexdigest()
+        reference = f"EMAIL_DERIVATION_BUTLER_SECRET_{version[:20].upper()}"
+        _save_profile_secret(reference, key)
+        store.create_inbox_profile(inbox_key=_hme_profile_key(account.email), connector="forward_butler",
+            credential_ref=reference, inbox_locator={"api_base": base, "mailbox_email": account.mailbox_email},
+            data={"require_recipient_evidence": True, "butler_identity": {
+                "email": _cache_key(account.email), "provider": "icloud_hme", "acquisition_id": account.acquisition_id}})
+    except Exception as exc:
+        raise EmailButlerClientError(f"email_derivation_profile_unavailable: HME 固定身份保存失败 ({type(exc).__name__})") from exc
+
+
+def _restore_hme_context(email: str) -> EmailButlerAccount | None:
+    """无进程缓存时只查精确身份 profile，不按共享最终邮箱猜测 provider。"""
+    from core.email_derivation import _profile_credentials
+    from core.storage import email_address_allocations as store
+
+    profiles = store.list_inbox_profiles(inbox_key=_hme_profile_key(email))
+    if not profiles:
+        return None
+    profile = profiles[0]
+    identity = profile.get("butler_identity") or {}
+    if (profile.get("state") != "active" or profile.get("connector") != "forward_butler"
+            or identity.get("provider") != "icloud_hme" or identity.get("email") != _cache_key(email)):
+        raise EmailButlerClientError("email_derivation_profile_unavailable: 原 HME 完整身份的固定配置不可用")
+    connection = _profile_credentials(profile)
+    return EmailButlerAccount(email=_cache_key(email), mailbox_id="", provider="icloud_hme",
+        mailbox_email=connection["mailbox_email"], recipient_mode=_RECIPIENT_MODE, strict_family=True,
+        api_base=connection["api_base"], api_key=connection["api_key"], acquisition_id=str(identity.get("acquisition_id") or ""))
+
+
+def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str | None = None) -> None:
+    """同一完整身份和归一化结果始终使用相同上报编号，可跨重启重试。"""
+    state = str(status or "").strip().lower()
+    if state in {"request_unknown", "unknown", "running", "reserved"}:
+        return
+    result = "ok" if state in {"used", "success", "succeeded", "registered"} else "disabled" if state in {"disabled", "retired"} else "provider_error"
+    identity = account.acquisition_id or _cache_key(account.email)
+    operation_id = hashlib.sha256(f"turb-hme:{identity}:{result}".encode()).hexdigest()
+    _request("POST", "/identities/report", json={"email": _cache_key(account.email), "status": result,
+        "service": "openai", "consumer": "turb-gpt-register", "message": str(note or "")[:300],
+        "operation_id": operation_id}, api_base=account.api_base, api_key=account.api_key)
+
+
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     """释放租约；成功结果由 Butler Key 策略自动标记 service=openai。"""
     key = _cache_key(email)
+    if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
+        return
     account = _CONTEXT_CACHE.get(key)
     if not account:
+        account = _restore_hme_context(email)
+        if account:
+            _CONTEXT_CACHE[key] = account
+    if not account:
         logger.info("[EmailButler] 邮箱上下文已不存在，跳过释放: %s", email)
+        return
+    if account.provider == "icloud_hme":
+        _persist_hme_context(account)
+        report_hme_identity(account, status=status, note=note)
+        _CONTEXT_CACHE.pop(key, None)
+        logger.info("[EmailButler] 已报告 HME 完整身份结果: %s", email)
         return
     try:
         _request(
