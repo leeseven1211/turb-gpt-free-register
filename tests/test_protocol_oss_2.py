@@ -126,6 +126,79 @@ def test_password_transport_failure_retains_original_password_for_retry(upstream
     assert transport.closed is True
 
 
+@pytest.mark.parametrize("response_confirmed", [False, True])
+def test_unknown_registration_result_does_not_invent_a_checkpoint_failure_or_response(upstream, response_confirmed):
+    session, transport, wait = upstream
+    private_error = "private-response-body token=fixture-secret"
+    if response_confirmed:
+        # The password response was received; the later mailbox wait failed.
+        wait.side_effect = RuntimeError(private_error)
+    else:
+        # The password POST was started but no response was received.
+        transport.password_error = TimeoutError(private_error)
+    with (
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.retain_email"),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide",
+        )
+    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["request_unknown"] is True
+    assert result["register_response_confirmed"] is response_confirmed
+    assert result["registration_pending"] is True
+    assert result["core_persisted"] is False
+    assert result["email"] == "protocol2@example.test"
+    assert result["account_id"] is None
+    assert "本地写入失败" not in result["error"]
+    assert "private-response-body" not in result["error"]
+    assert "fixture-secret" not in result["error"]
+    assert "protocol2@example.test" not in result["error"]
+
+
+def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoint_failure(upstream):
+    session, _, _ = upstream
+    with (
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.retain_email"),
+        patch("core.registration_service.persist_registration_core", side_effect=RuntimeError("private-storage-detail")),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide",
+        )
+    assert result["cause_code"] == "registration_checkpoint_failed"
+    assert result["register_response_confirmed"] is True
+    assert result["core_persisted"] is False
+    assert result["account_id"] is None
+    assert "本地写入失败" in result["error"]
+    assert "private-storage-detail" not in result["error"]
+
+
+@pytest.mark.parametrize("password_state, response_confirmed", [("prepared", False), ("started", False), ("confirmed", True)])
+def test_unknown_resume_only_preserves_original_confirmed_password_evidence(upstream, password_state, response_confirmed):
+    session, transport, wait = upstream
+    transport.password_status = 400
+    wait.side_effect = RuntimeError("private-mailbox-failure")
+    with (
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.retain_email"),
+        patch("core.registration_service.registration_fact_context", return_value={"attempt_id": 42}),
+        patch("core.storage.registration.get_private_resume_context", return_value={
+            "password": "original-password", "password_state": password_state,
+        }),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
+        )
+    assert result["request_unknown"] is True
+    assert result["register_response_confirmed"] is response_confirmed
+    assert result["core_persisted"] is False
+    assert result["email"] == "protocol2@example.test"
+
+
 def test_retry_uses_original_password_without_registering_another_password(upstream):
     session, transport, _ = upstream
 

@@ -299,7 +299,10 @@ def run_upstream_protocol(
         raise
     except Exception as exc:
         if existing_password or any(context[key] for key in ("password_started", "password_confirmed", "profile_started", "write_unknown")):
-            raise ProtocolOssRequestUnknown("开源protocol-2 尚未取得完整会话，可重跑原任务继续") from exc
+            raise ProtocolOssRequestUnknown(
+                "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
+                register_response_confirmed=context["password_confirmed"],
+            ) from exc
         raise
     finally:
         _CONTEXT.reset(token)

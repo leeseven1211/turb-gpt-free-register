@@ -50,6 +50,34 @@ def test_protocol_oss_upstream_flow_imports_existing_liveness_module():
         )
 
 
+@pytest.mark.parametrize("response_confirmed", [False, True])
+def test_protocol_oss_unknown_existing_password_needs_an_actual_response(response_confirmed):
+    from core.registration.protocol_oss import ProtocolOssRequestUnknown
+
+    with (
+        patch("core.registration.protocol_oss._openai_auth.network_preflight"),
+        patch("core.registration_service.report_job_progress"),
+        patch("core.registration_service.check_stop_requested"),
+        patch("core.humanize.delay"),
+        patch("core.registration.protocol_oss._upstream_config.CHATGPT_ANON_BOOTSTRAP_ENABLED", False),
+        patch("core.registration.protocol_oss._chatgpt_auth.get_providers"),
+        patch("core.registration.protocol_oss._chatgpt_auth.get_csrf_token", return_value="csrf-fixture"),
+        patch("core.registration.protocol_oss._chatgpt_auth.signin_openai", return_value="https://auth.openai.com/authorize"),
+        patch("core.registration.protocol_oss._openai_auth.follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+        patch("core.registration.protocol._run_protocol_existing_password_stage",
+              return_value={}, side_effect=None if response_confirmed else TimeoutError("private-password-error")),
+        patch("core.registration.protocol._send_protocol_resume_email_otp", side_effect=TimeoutError("private-send-error")),
+        pytest.raises(ProtocolOssRequestUnknown) as raised,
+    ):
+        _run_upstream_protocol(
+            Mock(proxy="http://proxy.example:8080"),
+            email="protocol-oss@example.test", name="Test User", birthday="1990-01-01",
+            otp_code=None, email_source="icloud_hide", existing_password="original-password",
+            existing_totp_secret=None, options={},
+        )
+    assert raised.value.register_response_confirmed is response_confirmed
+
+
 def test_protocol_oss_classifies_existing_new_and_unknown_auth_continuations():
     assert _classify_upstream_continuation(
         "external_url", "https://chatgpt.com/api/auth/callback/openai"

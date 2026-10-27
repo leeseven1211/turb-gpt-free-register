@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 class ProtocolOssRequestUnknown(RuntimeError):
     """上游写请求已发出，但本地尚未确认远端结果。"""
 
+    def __init__(self, message: str, *, register_response_confirmed: bool = False):
+        super().__init__(message)
+        self.register_response_confirmed = register_response_confirmed is True
+
 
 class ProtocolOssManualReconcile(RuntimeError):
     """恢复到已有账号的额外验证，但本地没有可复用的凭据。"""
@@ -119,6 +123,7 @@ def _run_upstream_protocol(
 
     password_request_started = False
     password_register_accepted = bool(existing_password)
+    register_response_confirmed = False
     profile_request_started = False
     challenge_chain: list[str] = []
 
@@ -178,6 +183,7 @@ def _run_upstream_protocol(
             password_result = _run_protocol_existing_password_stage(
                 session, email, registration_password,
             )
+            register_response_confirmed = True
             progress("login_password", "success", "原 Attempt 密码已通过认证")
             password_continue_url = _continue_url(password_result)
             if _is_mfa(password_result, password_continue_url):
@@ -233,6 +239,7 @@ def _run_upstream_protocol(
             )
             password_request_started = False
             password_register_accepted = True
+            register_response_confirmed = True
             password_validated = True
             save_protocol_password_checkpoint(
                 email=email,
@@ -373,12 +380,16 @@ def _run_upstream_protocol(
         raise
     except (AuthCancelledError, StopRequested) as exc:
         if password_request_started or password_register_accepted or profile_request_started:
-            raise ProtocolOssRequestUnknown("上游注册写入已开始，当前结果待同一 Attempt 恢复") from exc
+            raise ProtocolOssRequestUnknown(
+                "上游注册写入已开始，当前结果待同一 Attempt 恢复",
+                register_response_confirmed=register_response_confirmed,
+            ) from exc
         raise
     except Exception as exc:
         if password_request_started or password_register_accepted or profile_request_started:
             raise ProtocolOssRequestUnknown(
                 f"上游写入后未取得确认：{type(exc).__name__}",
+                register_response_confirmed=register_response_confirmed,
             ) from exc
         raise
 
@@ -607,6 +618,7 @@ def run_protocol_oss_registration(
     selected_source = validate_email_source(email_source) if email_source else resolve_email_source(email)
     session = (_session_factory or BrowserSession)(proxy=proxy)
     account_id = None
+    core_persistence_started = False
     flow_result = None
     try:
         report_job_progress("browser", "running", f"正在启动{_label}注册")
@@ -624,6 +636,7 @@ def run_protocol_oss_registration(
         access_token = str(flow_result["access_token"])
         session_info = dict(flow_result["session_info"])
         registration_password = flow_result.get("registration_password")
+        core_persistence_started = True
         account_id = persist_registration_core(
             email=email,
             access_token=access_token,
@@ -694,13 +707,20 @@ def run_protocol_oss_registration(
 
         request_unknown = isinstance(exc, ProtocolOssRequestUnknown)
         manual_reconcile = isinstance(exc, ProtocolOssManualReconcile)
-        cause_code = _protocol_registration_cause_code(
-            exc,
-            str(exc),
-            register_accepted=request_unknown,
-            checkpoint_account_id=account_id,
-            otp_send_in_flight=False,
-        )
+        if request_unknown:
+            # A started write or incomplete session is not evidence of a local
+            # persistence failure, nor of a confirmed registration response.
+            cause_code = "user_register_result_unknown"
+        elif core_persistence_started and account_id is None:
+            cause_code = "registration_checkpoint_failed"
+        else:
+            cause_code = _protocol_registration_cause_code(
+                exc,
+                str(exc),
+                register_accepted=False,
+                checkpoint_account_id=account_id,
+                otp_send_in_flight=False,
+            )
         missing_module = str(getattr(exc, "name", "") or "")
         if isinstance(exc, ModuleNotFoundError) and len(missing_module) <= 160 and re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
@@ -733,7 +753,9 @@ def run_protocol_oss_registration(
             "request_unknown": request_unknown,
             "manual_reconcile": manual_reconcile,
             "registration_pending": bool(request_unknown and flow_result is None),
-            "register_response_confirmed": bool(request_unknown),
+            "register_response_confirmed": core_persistence_started or (
+                request_unknown and exc.register_response_confirmed
+            ),
             "remote_identity": "existing" if manual_reconcile else "unknown",
             "remote_identity_state": "confirmed" if manual_reconcile else "request_unknown" if request_unknown else "not_started",
             "remote_account_state": "confirmed" if manual_reconcile else "request_unknown" if request_unknown else "not_started",
