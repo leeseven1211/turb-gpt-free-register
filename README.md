@@ -387,6 +387,8 @@ EMAIL_BUTLER_API_KEY=专用客户端Key
 ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
 ```
 
+历史来源无需改名；OTP 和封号邮件扫描都遵循原固定 Butler 连接。严格 OTP 保留显式发码时间，避免拿到前一次挑战的旧码；母子完整地址和最终收件箱必须分别匹配。统一模式下旧本机入口禁止新生成 HME 子地址，已有生成请求仍可恢复，新库存由 Butler 管理。
+
 桥接默认关闭。启用前先将完整历史身份导入 Butler，再运行受控迁移工具；工具默认只读预览，不初始化表、不写密钥。显式执行只改变原固定 IMAP profile 的引用，保留旧 profile 和版本化密钥，母资源和子地址的所有业务状态保持不变：
 
 ```bash
@@ -396,6 +398,8 @@ python tools/migrate_hme_inbox_to_butler.py --apply --receipt run/hme-butler-cut
 python tools/migrate_hme_inbox_to_butler.py --rollback run/hme-butler-cutover.json
 python tools/migrate_hme_inbox_to_butler.py --apply --rollback run/hme-butler-cutover.json
 ```
+
+尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。真实母子收码、隔离和性能结果见[生产收件验收](docs/deployment/2026-10-27-hme-receipt-validation.md)。
 
 迁移需按项目数据库保护规则在短暂停任务后执行，不能借测试放行生产库。预览后路由发生变化会明确报 `email_cutover_route_changed`，重新预览即可重跑。回滚时恢复原路由回执、关闭桥接开关并恢复原收件服务；仅关闭桥接不会撤销数据库中的 profile 迁移。固定 Butler profile 保存 API 地址、最终收件箱和版本化 Key 引用，后续全局配置变化不会改变历史取码目标。
 
