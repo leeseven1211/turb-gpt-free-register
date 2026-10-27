@@ -5,6 +5,9 @@ import contextlib
 import io
 import json
 import tempfile
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,9 +116,47 @@ class EmailInboxCutoverTests(PostgresTestCase):
             self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
             current = allocations.get_allocation(self.child["id"])["inbox_profile_id"]
             self.assertNotEqual(current, self.old["id"])
-            self.assertEqual(main(["--rollback", str(receipt)]), 0)
+            with patch.object(record_store, "init", side_effect=AssertionError("回滚预览不能初始化表")):
+                self.assertEqual(main(["--rollback", str(receipt)]), 0)
             self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], current)
             self.assertEqual(main(["--apply", "--rollback", str(receipt)]), 0)
+            self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], self.old["id"])
+
+    def test_cold_cli_process_previews_applies_and_rolls_back_without_self_locking(self):
+        """每次真实 CLI 都是新进程，不能依赖测试进程已预热的 ready 缓存。"""
+        script = Path(__file__).resolve().parents[1] / "tools/migrate_hme_inbox_to_butler.py"
+        runner = (
+            "import runpy,sys; from pathlib import Path; from config import env_loader; "
+            "env_loader._ENV_PATH=Path(sys.argv[1]); sys.argv=sys.argv[2:]; "
+            "runpy.run_path(sys.argv[0],run_name='__main__')"
+        )
+        environment = dict(os.environ, PYTHON_DOTENV_DISABLED="1", EMAIL_BUTLER_API_BASE="https://butler.test/v1",
+            EMAIL_BUTLER_API_KEY="test-key", ICLOUD_HME_FORWARD_IMAP_EMAIL="final@example.test",
+            PGOPTIONS=f"-c search_path={self.schema} -c lock_timeout=1500 -c statement_timeout=6000")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_env = Path(directory) / "isolated.env"
+            receipt = Path(directory) / "receipt.json"
+
+            def run(*arguments):
+                completed = subprocess.run([sys.executable, "-c", runner, str(temporary_env), str(script), *arguments],
+                    cwd=script.parents[1], env=environment, capture_output=True, text=True, timeout=25)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return json.loads(completed.stdout)
+
+            self.assertEqual(run(), {"dry_run": True, "allocation_count": 2, "parent_count": 1})
+            self.assertFalse(temporary_env.exists(), "冷预览不能创建密钥文件")
+            self.assertEqual(len(allocations.list_inbox_profiles()), 1)
+            self.assertEqual(run("--apply", "--receipt", str(receipt)),
+                {"dry_run": False, "allocation_count": 2, "parent_count": 1})
+            self.assertTrue(receipt.exists())
+            self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+            new_profile_id = allocations.get_allocation(self.child["id"])["inbox_profile_id"]
+            self.assertNotEqual(new_profile_id, self.old["id"])
+            self.assertEqual(run("--rollback", str(receipt)),
+                {"dry_run": True, "rollback_allocations": 2, "rollback_parents": 1})
+            self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], new_profile_id)
+            self.assertEqual(run("--apply", "--rollback", str(receipt)),
+                {"restored_allocations": 2, "restored_parents": 1})
             self.assertEqual(allocations.get_allocation(self.child["id"])["inbox_profile_id"], self.old["id"])
 
 

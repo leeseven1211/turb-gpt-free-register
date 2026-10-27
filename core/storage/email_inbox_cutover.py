@@ -73,12 +73,15 @@ def plan_cutover(*, api_base: str, mailbox_email: str, credential_ref: str, conn
 
 
 def apply_cutover(plan: dict, *, conn=None) -> dict:
-    """事务内锁定并核对预览快照；新增 Butler profile，保留原 profile 和全部状态。"""
+    """锁定并核对快照；外部 conn 必须在创建事务及任何读取前完成 record_store.init。"""
     import hashlib
 
     _validate_routes(plan)
     locator = plan.get("locator") or {}
     locator = _validate_target(locator.get("api_base", ""), locator.get("mailbox_email", ""), plan.get("credential_ref", ""))
+    if conn is None:
+        # 自有事务同样先初始化，不能持有读锁/行锁后由另一连接尝试 DDL。
+        record_store.init()
     ledger, _profiles, parents_table = _tables()
     with _connection(conn) as current:
         current.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("hme-butler-route-cutover",))

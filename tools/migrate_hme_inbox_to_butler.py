@@ -22,7 +22,7 @@ def main(argv=None):
     if args.apply and not args.rollback and not args.receipt:
         parser.error("迁移执行必须指定 --receipt，以便恢复原固定路由")
     from config import email as cfg
-    from core import postgres_store
+    from core import postgres_store, record_store
     from core.storage.email_inbox_cutover import apply_cutover, plan_cutover, rollback_cutover
     from psycopg.rows import dict_row
 
@@ -31,6 +31,7 @@ def main(argv=None):
         if not args.apply:
             print(json.dumps({"dry_run": True, "rollback_allocations": receipt["allocation_count"], "rollback_parents": receipt["parent_count"]}))
             return 0
+        record_store.init()
         print(json.dumps(rollback_cutover(receipt), ensure_ascii=False))
         return 0
     base = str(cfg.EMAIL_BUTLER_API_BASE or "").strip().rstrip("/")
@@ -41,6 +42,9 @@ def main(argv=None):
     identity = hashlib.sha256(f"butler:{base}:{mailbox}".encode()).hexdigest()
     version = hashlib.sha256(f"{identity}:{key}".encode()).hexdigest()
     reference = f"EMAIL_DERIVATION_BUTLER_SECRET_{version[:20].upper()}"
+    if args.apply:
+        # 初始化会执行 DDL，必须在预览 SELECT 或迁移行锁的事务之前完成。
+        record_store.init()
     with postgres_store.connect(row_factory=dict_row) as conn:
         if not args.apply:
             conn.execute("SET TRANSACTION READ ONLY")
