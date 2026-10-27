@@ -273,7 +273,11 @@ email----password----clientId----refreshToken
 
 ```text
 email----code_url
+# 可选第三段：带时区的邮箱/取码有效期
+email----code_url----2026-10-28T12:00:00+08:00
 ```
+
+网页导入也可填写批次有效期；每行第三段优先。过期邮箱不计可用、不再领取或取码，原任务保留原邮箱身份。没有提供有效期时兼容旧两段格式，不推测期限。
 
 在 `config/email.py` 设置：
 
@@ -360,9 +364,11 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 
 新注册只从本地邮箱列表领取，注册页可用数也只统计本地合格库存；不查询 Butler 库存、不远端领号、不在注册时同步或创建邮箱。已有 `icloud_hide` 本地未用地址可直接使用。邮箱列表支持 Outlook 四段、通用 API 两段，以及 Butler iCloud 隐藏邮箱的完整地址列表导入。后者固定当前 Butler 连接与最终转发邮箱；其他 Butler provider 不能仅凭邮箱单列推断收码路径。Apple 账号和子邮箱生成仍由 Butler 管理，库存用完后手动导入 Turb。
 
+Butler 手动导入会先解析已有完整身份，再登记永久交接归属，避免同一地址分配给其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱职责审查](docs/deployment/2026-10-27-mail-service-boundary.md)。
+
 本地领取在同一 PostgreSQL 事务中锁定库存、保存稳定 acquisition/owner，并绑定任务完整地址；并发和重跑保持原邮箱。重复导入不会重置已有使用、保留或未知状态。Butler 收码继续使用完整目标地址、最终邮箱、时间窗口和原始收件证据；Key 只保存版本化引用。历史远端领取意图保留恢复路径，结果未知时禁止换号。
 
-HME 上报成功后只收口本地进程上下文；远端现有租约保持原 TTL 并自然到期，成功身份的 consumed 状态阻止再次分配。`release_account` 名称为历史接口兼容，不表示 HME 会立即撤销远端租约。未知结果保留上下文且不上报；历史身份报告不会清除同地址的其他活动租约。
+HME 结果与持久回执队列在同一 PG 事务保存，后台以稳定 `operation_id`、原固定连接及凭据引用报告；网络超时不影响本地注册成功。远端临时读租约保持原 TTL 并自然到期，永久库存交接归属不释放。`release_account` 名称为历史接口兼容，不表示 HME 会撤销远端归属。未知结果保留上下文且不上报成功，晚到失败不能覆盖成功。
 
 历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
 
