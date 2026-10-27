@@ -16,6 +16,15 @@ class TaskErrorClassificationTests(unittest.TestCase):
                     self.assertTrue(info["display_code"].startswith("MAIL-RECIPIENT-"))
                     self.assertNotEqual(info["retryability"], "not_retryable")
 
+    def test_butler_source_failures_are_classified_and_allow_conditional_retry(self):
+        for code in ("source_untrusted", "source_authentication_failed"):
+            for raw, structured in [(f"Email Butler 入站取码失败: {code}", ""), ("来源核验失败", code)]:
+                with self.subTest(code=code, structured=bool(structured)):
+                    info = classify_task_error(raw, task_type="registration", error_code=structured)
+                    self.assertEqual(info["code"], code)
+                    self.assertTrue(info["display_code"].startswith("MAIL-"))
+                    self.assertEqual(info["retryability"], "conditional")
+
     def test_subaddress_inventory_shortage_is_specific_and_retryable(self):
         for task_type in ('registration', 'email_change'):
             info = classify_task_error(

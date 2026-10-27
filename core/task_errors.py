@@ -932,6 +932,8 @@ def _registration_error_projection(
 
 
 _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
+    "source_untrusted": ("MAIL-SOURCE-001", "验证码邮件缺少可信 OpenAI 来源证据"),
+    "source_authentication_failed": ("MAIL-SOURCE-002", "验证码邮件的 OpenAI 来源认证失败或矛盾"),
     "recipient_contract_unsupported": ("MAIL-RECIPIENT-001", "Email Butler 尚未支持严格收件契约"),
     "recipient_evidence_missing": ("MAIL-RECIPIENT-002", "验证码邮件缺少完整收件证据"),
     "recipient_ambiguous": ("MAIL-RECIPIENT-003", "验证码邮件存在同母地址收件歧义"),
