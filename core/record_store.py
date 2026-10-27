@@ -408,6 +408,19 @@ EMAIL_INBOX_PROFILES = TableSpec(
     partial_unique=((("inbox_key", "revision"), "TRUE"),),
 )
 
+EMAIL_USAGE_REPORTS = TableSpec(
+    name="email_usage_reports",
+    promoted={
+        "event_key": "TEXT NOT NULL", "operation_id": "TEXT NOT NULL",
+        "address_norm": "TEXT NOT NULL", "source": "TEXT NOT NULL", "result": "TEXT NOT NULL",
+        "state": "TEXT NOT NULL", "attempts": "INTEGER NOT NULL DEFAULT 0",
+        "next_attempt_at": "TIMESTAMPTZ", "lease_owner": "TEXT", "lease_until": "TIMESTAMPTZ",
+        "delivered_at": "TIMESTAMPTZ", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("event_key",),
+    indexes=(("state", "next_attempt_at"), ("address_norm", "result"), ("lease_until",)),
+)
+
 EMAIL_OTP_REQUESTS = TableSpec(
     name="email_otp_requests",
     promoted={
@@ -565,6 +578,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     EMAIL_ADDRESS_GENERATION_REQUESTS,
     EMAIL_BUTLER_CLAIM_INTENTS,
     EMAIL_INBOX_PROFILES,
+    EMAIL_USAGE_REPORTS,
     EMAIL_OTP_REQUESTS,
     CODEX_CREDENTIALS,
     PROXY_LEASES,

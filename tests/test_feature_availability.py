@@ -8,6 +8,36 @@ from tests.support_pg import PostgresTestCase
 
 
 class FeatureAvailabilityTests(PostgresTestCase):
+    def test_retired_management_capabilities_are_disabled(self):
+        result = feature_availability.feature_availability()
+        for name in ('cloudmail_token', 'cloudmail_domains', 'icloud_hme'):
+            self.assertFalse(result['features'][name]['enabled'])
+            self.assertIn('邮箱服务', result['features'][name]['reason'])
+    def test_existing_mailbox_scan_does_not_require_unused_inventory(self):
+        empty = {name: {'enabled': False, 'available': 0} for name in
+                 ('email_butler', 'cloudflare', 'icloud_hide')}
+        with patch.object(feature_availability, '_email_source_features', return_value=empty), patch.multiple(
+            'config.email', EMAIL_BUTLER_API_BASE='https://butler.example/v1',
+            EMAIL_BUTLER_API_KEY='test-key', ICLOUD_HME_API_BASE='',
+        ):
+            result = feature_availability.feature_availability()
+        self.assertTrue(result['features']['deactivation_mail']['enabled'])
+        self.assertFalse(any(row['enabled'] for row in result['email_sources'].values()))
+
+    def test_fixed_read_profile_keeps_historical_scan_available(self):
+        from core import record_store
+        record_store.insert_row(record_store.EMAIL_INBOX_PROFILES, {
+            'inbox_key': 'historical-only', 'connector': 'forward_butler',
+            'credential_ref': 'HISTORICAL_READ_TEST_KEY', 'revision': 1, 'state': 'active',
+            'inbox_locator': {'api_base': 'https://old.example/v1', 'mailbox_email': 'final@example.test'},
+        })
+        with patch.object(feature_availability, '_email_source_features', return_value={}), patch.multiple(
+            'config.email', EMAIL_BUTLER_API_BASE='', EMAIL_BUTLER_API_KEY='',
+            CLOUDFLARE_API_BASE='', ICLOUD_HME_API_BASE='',
+        ), patch.dict('os.environ', {'HISTORICAL_READ_TEST_KEY': 'test-key'}):
+            result = feature_availability.feature_availability()
+        self.assertTrue(result['features']['deactivation_mail']['enabled'])
+
     def test_open_source_registration_driver_does_not_require_roxy_configuration(self):
         for driver in ("protocol_oss", "protocol_oss_2"):
             with self.subTest(driver=driver), patch("config.roxybrowser.REGISTRATION_DRIVER", driver):

@@ -13,7 +13,7 @@ function emailSupplyValue(supply, key) {
 }
 
 function emailSupplyHint(supply) {
-  return `仅统计本地库存；用完后请手动导入邮箱。Email Butler 仅提供收码连接${supply?.reason ? `；${supply.reason}` : ''}`;
+  return `仅统计本地库存；用完后请手动导入邮箱。邮箱由 Email Butler 等邮箱服务准备${supply?.reason ? `；${supply.reason}` : ''}`;
 }
 
 function renderRegistrationEmailSupply(supply) {

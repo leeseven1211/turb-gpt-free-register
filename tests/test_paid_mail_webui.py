@@ -95,11 +95,11 @@ class PaidMailWebUiTests(PostgresTestCase):
             self.assertTrue(sources[name]["enabled"])
         self.assertNotIn("private-test-key", response.get_data(as_text=True))
 
-    def test_catalog_only_queries_products_and_wallet(self):
+    def test_catalog_is_retired_without_querying_remote_products_or_wallet(self):
         with patch("core.mailcode_client.list_products", return_value=[{"id": "product-test", "stock": 10}]) as products, patch("core.mailcode_client.get_wallet", return_value={"balance": "123"}) as wallet, patch("core.mailcode_client.pick_account") as purchase:
             response = self.client.get("/api/mailcode/catalog")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["wallet"], {"balance": "123"})
-        products.assert_called_once_with()
-        wallet.assert_called_once_with()
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.get_json()["reason_code"], "email_management_managed_by_service")
+        products.assert_not_called()
+        wallet.assert_not_called()
         purchase.assert_not_called()

@@ -880,7 +880,7 @@ def list_email_pool(request: PageRequest) -> dict:
         "p.data - ARRAY['password','client_id','refresh_token','access_token','totp_secret',"
         "'code_url','copy_line','account_copy_line','original_line','api_key','api_base',"
         "'credential_ref','inbox_profile_id','inbox_locator','mailbox','mailbox_id','lease_id',"
-        "'local_inbox_profile_id','local_acquisition_id','local_owner_kind','local_owner_id']::text[] "
+        "'local_inbox_profile_id','local_acquisition_id','local_owner_kind','local_owner_id','butler_handoff']::text[] "
         "|| jsonb_build_object("
         "'has_password', NULLIF(BTRIM(COALESCE(p.data->>'password', '')), '') IS NOT NULL, "
         "'has_client_id', NULLIF(BTRIM(COALESCE(p.data->>'client_id', '')), '') IS NOT NULL, "
@@ -910,7 +910,7 @@ def list_email_pool(request: PageRequest) -> dict:
         "password", "client_id", "refresh_token", "access_token", "totp_secret",
         "code_url", "copy_line", "account_copy_line", "original_line",
         "api_key", "api_base", "credential_ref", "inbox_profile_id", "inbox_locator", "mailbox", "mailbox_id", "lease_id",
-        "local_inbox_profile_id", "local_acquisition_id", "local_owner_kind", "local_owner_id",
+        "local_inbox_profile_id", "local_acquisition_id", "local_owner_kind", "local_owner_id", "butler_handoff",
     }
     items = []
     for raw in raw_rows:

@@ -1840,6 +1840,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 existing_totp_secret = str((resume_account or {}).get("totp_secret") or "").strip()
                 if not email or not existing_password:
                     raise RuntimeError("待邮箱验证账号缺少邮箱或已保存账号密码，无法继续验证")
+                from core.email_provider import require_email_resource_usable
+                require_email_resource_usable(email, source=selected_source)
                 if selected_source == "remail":
                     # registration_resume 也必须恢复根任务的原领取意图；否则
                     # wait_for_otp 会在重启后失去 service token，不能按邮箱猜测新订单。
@@ -1883,11 +1885,8 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     durable_account = coordinator._account_from_intent(intent)
                     if not durable_account and str(intent.get("supplier_identity_ref") or "") != coordinator._supplier_ref():
                         raise RuntimeError("原 Remail 订单供应商身份与当前配置不匹配，不能继续")
-                    account = coordinator.acquire(
-                        owner_kind="registration_root",
-                        owner_id=registration_root_id,
-                        acquisition_id=registration_acquisition_id,
-                    )
+                    from core.email_provider import restore_existing_remail_order
+                    account = restore_existing_remail_order(intent)
                     if str(account.email or "").strip().casefold() != email.casefold():
                         raise RuntimeError("原 Remail 订单邮箱与注册根任务不匹配，不能继续")
                     email = account.email
@@ -2812,11 +2811,8 @@ def _restore_remail_registration_resume_context(
         durable_account = coordinator._account_from_intent(intent)
         if not durable_account and str(intent.get("supplier_identity_ref") or "") != coordinator._supplier_ref():
             raise RuntimeError("原 Remail 订单供应商身份与当前配置不匹配，不能继续验证")
-        account = coordinator.acquire(
-            owner_kind="registration_root",
-            owner_id=registration_root_id,
-            acquisition_id=stable_id,
-        )
+        from core.email_provider import restore_existing_remail_order
+        account = restore_existing_remail_order(intent)
     else:
         # 旧账号没有 remail_order_intents 时，只接受账号私有保存的 token/order_no。
         # restore_account_context 默认禁止按邮箱搜索最新订单。

@@ -354,10 +354,11 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
         self.assertEqual(restored[parent]["api_key"], "pinned-key")
         self.assertTrue(restored[parent]["strict_family"])
 
-    def test_release_updates_remote_and_retains_local_child_identity(self):
+    def test_release_of_fixed_imap_child_retains_identity_without_remote_report(self):
         with patch.object(butler, "_request", side_effect=self.request) as request:
             email_provider.release_email(self.child["address"], status="used", source="icloud_hide")
-        self.assertTrue(any(call.args[1] == "/identities/report" for call in request.call_args_list))
+        request.assert_not_called()
+        self.assertEqual(record_store.list_rows(record_store.EMAIL_USAGE_REPORTS), [])
         saved = allocations.get_allocation(self.child["id"])
         self.assertEqual(saved["state"], "used")
         self.assertEqual(saved["acquisition_id"], "history-intent")
@@ -405,12 +406,18 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
             self.assertEqual(hme.fetch_latest_otp(self.child["address"], after_ts=100, max_wait=1), "123456")
 
     def test_report_operation_id_stays_stable_on_same_outcome_retry(self):
+        from core.storage.email_inbox_cutover import apply_cutover, plan_cutover
+        reference = "EMAIL_DERIVATION_BUTLER_SECRET_REPORT_FIXTURE"
+        apply_cutover(plan_cutover(api_base="https://fixed.example/v1", mailbox_email=MAILBOX, credential_ref=reference))
         with patch.object(butler, "_request", side_effect=self.request) as request:
             hme.release_account(self.child["address"], status="success")
             hme.release_account(self.child["address"], status="used")
-        reports = [call.kwargs["json"] for call in request.call_args_list if call.args[1] == "/identities/report"]
-        self.assertEqual(len(reports), 2)
-        self.assertEqual(reports[0]["operation_id"], reports[1]["operation_id"])
+        request.assert_not_called()
+        reports = record_store.list_rows(record_store.EMAIL_USAGE_REPORTS)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["state"], "pending")
+        self.assertEqual(reports[0]["credential_ref"], reference)
+        self.assertEqual(reports[0]["address_norm"], self.child["address"])
 
 
 if __name__ == "__main__":

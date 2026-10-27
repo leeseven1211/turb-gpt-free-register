@@ -60,6 +60,15 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(info['code'], code)
                 self.assertNotEqual(info['display_code'], 'UNK-000')
 
+    def test_short_lived_mailbox_errors_do_not_offer_verification_resume(self):
+        for code in ('email_resource_expired', 'email_resource_expiry_invalid', 'email_resource_read_failed'):
+            with self.subTest(code=code):
+                info = classify_task_error('邮箱读取失败', stage='email_verification',
+                                           task_type='registration', error_code=code)
+                self.assertEqual(info['code'], code)
+                self.assertTrue(info['display_code'].startswith('MAIL-RESOURCE-'))
+                self.assertNotEqual(info['next_action'], 'resume_email_verification')
+
     def test_existing_account_without_session_keeps_specific_cause_and_unknown_outcome(self):
         info = classify_task_error(
             "request_unknown: 既存账号完整登录态尚未确认",

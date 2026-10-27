@@ -270,14 +270,14 @@ function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
-  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信、释放与封号信号配置'];
+  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', '已导入邮箱的固定收码连接、结果上报与封号信号配置'];
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
-  if (key.startsWith('REMAIL_')) return ['Remail', '按项目领取邮箱、选择服务模式和库存策略，并自动收取验证码'];
-  if (key.startsWith('MAILCODE_')) return ['域名邮箱 MailCode', '官网商品购买、通道准备及原订单自动取码'];
-  if (key.startsWith('XIGUA_')) return ['西瓜邮箱', '指定 Offer 下单，保留原订单与取码记录供重跑'];
-  if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', 'CloudMail 域名随机邮箱、Token 和收信 API 配置'];
-  if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '连接本机 iCloud HME 服务、同步全部 active 账号的 Hide My Email 别名并按实际转发目标自动收码'];
+  if (key.startsWith('REMAIL_')) return ['Remail', '历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入'];
+  if (key.startsWith('MAILCODE_')) return ['域名邮箱 MailCode', '历史 MailCode 原订单收码连接'];
+  if (key.startsWith('XIGUA_')) return ['西瓜邮箱', '历史原订单的固定收码连接与轮询参数'];
+  if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', '历史邮箱收信 API 连接及已有 Token'];
+  if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '已导入与历史隐藏邮箱的固定收件连接；邮箱管理在邮箱服务完成'];
   if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
   if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
   if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
@@ -286,33 +286,7 @@ function emailConfigSectionForKey(key) {
 
 function emailSectionEnabledV2(section) {
   if (section === '通用邮箱 / OTP') return true;
-  if (section === 'iCloud 隐藏邮箱') {
-    const bridge = CONFIG.find(field => field.key === 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED');
-    const active = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED')
-      ? CONFIG_PENDING_UPDATES.ICLOUD_HME_BUTLER_BRIDGE_ENABLED : bridge?.value;
-    if (active === true || String(active).toLowerCase() === 'true') return true;
-  }
-  const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
-  const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EMAIL_SOURCE')
-    ? CONFIG_PENDING_UPDATES.EMAIL_SOURCE : source?.value;
-  const enabled = new Set(configListValuesV2(value, source || {key: 'EMAIL_SOURCE'}).map(item => item.toLowerCase()));
-  const aliases = {
-    'Email Butler': ['email_butler', 'email-butler'],
-    'iCloud 隐藏邮箱': ['icloud_hide', 'icloud_hme'],
-    'GPTMail': ['gptmail'], 'MailNest': ['mailnest'], 'Remail': ['remail'],
-    '域名邮箱 MailCode': ['mailcode'], '西瓜邮箱': ['xigua'],
-    'CloudMail': ['cloudmail'], 'Outlook 邮箱池': ['outlook'],
-    'Cloudflare 临时邮箱': ['cloudflare'], 'Cloudflare 域名邮箱': ['cloudflare_domain'],
-  };
-  const expected = aliases[section] || [];
-  if (expected.some(item => enabled.has(item))) return true;
-  if (section === 'Email Butler' && (enabled.has('icloud_hide') || enabled.has('icloud_hme'))) {
-    const inboxField = CONFIG.find(field => field.key === 'ICLOUD_HME_INBOX_MODE');
-    const inboxMode = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'ICLOUD_HME_INBOX_MODE')
-      ? CONFIG_PENDING_UPDATES.ICLOUD_HME_INBOX_MODE : inboxField?.value;
-    return String(inboxMode || '').trim().toLowerCase() === 'forward_butler';
-  }
-  return false;
+  return CONFIG.some(field => emailConfigSectionForKey(field.key || '')[0] === section);
 }
 
 function proxyConfigSectionForKey(key) {
@@ -971,9 +945,13 @@ const CONFIG_MULTI_VALUE_KEYS_V2 = new Set([
 ]);
 
 function configListValuesV2(value, f = {}) {
-  if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean);
   const separator = ['EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES'].includes(f.key) ? /[,\n]+/ : /[,\n\s]+/;
-  return String(value ?? '').split(separator).map(item => item.trim()).filter(Boolean);
+  const values = (Array.isArray(value) ? value : String(value ?? '').split(separator)).map(item => String(item).trim()).filter(Boolean);
+  if (f.key === 'EMAIL_SOURCE' && Array.isArray(f.options)) {
+    const allowed = new Set(f.options.map(option => option?.value));
+    return values.filter(item => allowed.has(item));
+  }
+  return values;
 }
 
 function configListOptionValuesV2(f) {
@@ -1254,11 +1232,6 @@ function renderConfigControlMarkupV2(f) {
       </select>
       <input type="number" data-price-key="${attrEsc(f.key)}" data-composite-value min="0" step="0.001" value="${attrEsc(displayedPrice)}" placeholder="小数价格" aria-label="短信价格上限"${limited === 'limited' ? '' : ' hidden'}>
     </div>`;
-  } else if (f.key === 'ICLOUD_HME_ACCOUNT_ID') {
-    const current = String(fv ?? '').trim();
-    const options = [{value: '', label: '全部 active 账号'}, ...configSchemaOptions(f)];
-    if (current && !options.some(item => item.value === current)) options.splice(1, 0, {value: current, label: `当前值（${current}），需检查`});
-    control = `<select data-key="${attrEsc(f.key)}" id="configICloudHmeAccountSelectV2" aria-label="${attrEsc(f.label)}">${options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (driverChoices) {
     const raw = String(fv == null ? '' : fv).trim();
     const current = driverChoices.find(item => item.value.toLowerCase() === raw.toLowerCase())?.value ?? raw;
@@ -1541,41 +1514,8 @@ function renderConfigLegacyProxyFieldsV2(fields) {
   return `<div class="config-legacy-list-v2"><p class="config-section-v2-subhelp">这些值只为读取旧任务快照和兼容迁移保留。新任务不会使用它们选择供应商，也不能在这里编辑。</p>${fields.map(field => `<div class="config-legacy-row-v2"><span>${esc(field.label || field.key)}</span><code>${esc(field.key)}</code><span>兼容保留</span></div>`).join('')}</div>`;
 }
 
-async function loadMailCodeCatalog(btn) {
-  const output = btn.nextElementSibling;
-  btn.disabled = true;
-  output.hidden = false;
-  output.textContent = '正在查询官网商品与余额...';
-  try {
-    const result = await api('/api/mailcode/catalog');
-    if (!result.ok) throw new Error(result.error || '查询失败');
-    const products = (result.products || []).map(p => `${p.name} | 商品 ID: ${p.id} | 单价: ${p.price} 积分 | 库存: ${p.stock} | 启用: ${p.enabled}`);
-    output.textContent = `余额: ${result.wallet?.balance ?? '-'} 积分\n${products.join('\n') || '暂无商品'}`;
-  } catch (error) {
-    output.textContent = '查询失败：' + error.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 function renderEmailSourceManagerV2() {
-  const source = CONFIG.find(field => field.key === 'EMAIL_SOURCE');
-  if (!source) return '';
-  const options = configListOptionValuesV2(source);
-  const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, source.key)
-    ? CONFIG_PENDING_UPDATES[source.key] : source.value;
-  const active = new Set(configListValuesV2(value, source).map(item => item.toLowerCase()));
-  const enabledCards = options.filter(option => active.has(option.value.toLowerCase())).map(option => {
-    return `<div class="config-email-source-card-v2 is-enabled" data-email-source-status="${attrEsc(option.value)}"><span><strong>${esc(option.label)}</strong><small>已启用，参与自动领取与收码</small></span><span class="config-email-source-state-v2">已启用</span></div>`;
-  }).join('');
-  const disabledCards = options.filter(option => !active.has(option.value.toLowerCase())).map(option => {
-    return `<div class="config-email-source-card-v2 is-disabled" data-email-source-status="${attrEsc(option.value)}"><span><strong>${esc(option.label)}</strong><small>未启用，配置仍会保留</small></span><span class="config-email-source-state-v2">未启用</span></div>`;
-  }).join('');
-  return `<section class="config-email-source-manager-v2" aria-label="邮箱来源管理">
-    <div class="config-inline-heading-v2"><h4>已启用邮箱来源</h4><span>在上方选择需要使用的来源</span></div>
-    <div class="config-email-source-list-v2">${enabledCards || '<span class="hint">当前没有启用的邮箱来源</span>'}</div>
-    <details class="config-email-source-details-v2"><summary>显示未启用来源与保留的服务配置</summary><p>关闭来源不会清除 API 地址、密钥或已有邮箱；自动模式至少保留一个来源，手动模式可以为空。</p>${disabledCards || '<span class="hint">没有未启用来源</span>'}</details>
-  </section>`;
+  return `<p class="config-section-v2-subhelp">此顺序仅作为 CLI 默认值。WebUI 从所有本地池中明确选择来源；历史收码配置始终保留。邮箱创建、购买和库存管理请在邮箱服务中完成。</p>`;
 }
 
 function proxySourceV2() {
@@ -1636,12 +1576,6 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
   if (name === '邮箱 / OTP' && active === '通用邮箱 / OTP') {
     extra = renderEmailSourceManagerV2();
   }
-  if (name === '邮箱 / OTP' && active === 'CloudMail') {
-    extra = renderCloudMailTokenToolsV2();
-  }
-  if (name === '邮箱 / OTP' && active === '域名邮箱 MailCode') {
-    extra = '<div><button type="button" class="btn" onclick="loadMailCodeCatalog(this)">查询商品与余额（请先保存密钥）</button><pre style="white-space:pre-wrap" hidden></pre></div>';
-  }
   if (name === '邮箱 / OTP' && active === 'Email Butler') {
     extra = renderEmailButlerToolsV2();
   }
@@ -1668,23 +1602,6 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     </section>
   `;
 }
-function renderCloudMailTokenToolsV2() {
-  const hasCloudMail = CONFIG.some(f => String(f.key || '').startsWith('CLOUDMAIL_'));
-  if (!hasCloudMail) return '';
-  return `
-    <div class="config-tool-panel-v2 roxy-workspace-box">
-      <div>
-        <b>CloudMail Token</b>
-        <div class="hint">填写 API 地址、管理员邮箱、密码后，生成 Token；保存配置不会自动生成。</div>
-      </div>
-      <div class="action-cell">
-        <button class="btn primary" type="button" id="btnGenCloudMailTokenV2">生成 CloudMail Token</button>
-        <button class="btn" type="button" id="btnLoadCloudMailDomainsV2">获取 CloudMail 域名</button>
-      </div>
-      <div id="cloudMailTokenStatusV2" class="muted" style="font-size:12px;">未生成</div>
-    </div>
-  `;
-}
 function renderEmailButlerToolsV2() {
   const hasButler = CONFIG.some(f => String(f.key || '').startsWith('EMAIL_BUTLER_'));
   if (!hasButler) return '';
@@ -1692,7 +1609,7 @@ function renderEmailButlerToolsV2() {
     <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>Email Butler 连接</b>
-        <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证客户端策略和发号、收信、释放、信号扫描能力，不会租用邮箱。</div>
+        <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证固定收码连接和账号状态，不会领取或生成邮箱。</div>
       </div>
       <div class="action-cell">
         <button class="btn primary" type="button" id="btnTestEmailButlerV2">测试连接</button>
@@ -1732,99 +1649,9 @@ async function testEmailButlerV2() {
     btn.disabled = false;
   }
 }
-function bindCloudMailToolsV2() {
-  const genBtn = $('#btnGenCloudMailTokenV2');
-  const domainBtn = $('#btnLoadCloudMailDomainsV2');
-  if (genBtn && !genBtn.dataset.bound) {
-    genBtn.dataset.bound = '1';
-    genBtn.addEventListener('click', () => genCloudMailTokenV2());
-  }
-  if (domainBtn && !domainBtn.dataset.bound) {
-    domainBtn.dataset.bound = '1';
-    domainBtn.addEventListener('click', () => loadCloudMailDomainsV2());
-  }
-}
 function renderICloudHMEToolsV2() {
-  const bridge = configOverviewValue('ICLOUD_HME_BUTLER_BRIDGE_ENABLED');
-  if (bridge === true || String(bridge).toLowerCase() === 'true') {
-    return `<div class="config-tool-panel-v2 roxy-workspace-box"><b>历史 iCloud 隐藏邮箱</b>
-      <div class="hint">已启用 Email Butler 桥接。账号和库存由 Email Butler 管理，历史账号继续使用原完整邮箱取码；连接检测请使用 Email Butler 配置页。</div></div>`;
-  }
-  return `
-    <div class="config-tool-panel-v2 roxy-workspace-box">
-      <div>
-        <b>iCloud Hide My Email</b>
-        <div class="hint">连接本机服务后同步 Apple 隐藏邮箱库存，并确认 sidecar 或 Email Butler PG 收件链路。Apple Cookie 不会保存到 turb。</div>
-      </div>
-      <div class="action-cell">
-        <button class="btn" type="button" id="btnLoadICloudHMEAccountsV2">加载账号目录</button>
-        <button class="btn primary" type="button" id="btnTestICloudHMEV2">连接并同步</button>
-      </div>
-      <div id="icloudHMEStatusV2" class="muted" style="font-size:12px;">尚未检测</div>
-    </div>
-  `;
-}
-function bindICloudHMEToolsV2() {
-  const loadBtn = $('#btnLoadICloudHMEAccountsV2');
-  const btn = $('#btnTestICloudHMEV2');
-  if (loadBtn && !loadBtn.dataset.bound) {
-    loadBtn.dataset.bound = '1';
-    loadBtn.addEventListener('click', () => loadICloudHMEAccountsV2());
-  }
-  if (btn && !btn.dataset.bound) {
-    btn.dataset.bound = '1';
-    btn.addEventListener('click', () => testICloudHMEV2());
-  }
-}
-async function loadICloudHMEAccountsV2() {
-  const btn = $('#btnLoadICloudHMEAccountsV2');
-  const status = $('#icloudHMEStatusV2');
-  const select = $('#configICloudHmeAccountSelectV2');
-  if (!btn || !status || !select) return;
-  btn.disabled = true;
-  status.textContent = '正在读取已保存的 iCloud active 账号目录...';
-  const current = select.value;
-  try {
-    const response = await api('/api/icloud-hme/accounts');
-    const items = Array.isArray(response.items) ? response.items : [];
-    const options = [{value: '', label: '全部 active 账号'}, ...items.map(item => ({
-      value: String(item.id || '').trim(),
-      label: String(item.label || item.id || '').trim() || '未命名账号',
-    })).filter(item => item.value)];
-    if (current && !options.some(item => item.value === current)) options.splice(1, 0, {value: current, label: `当前值（${current}），需检查`});
-    select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('');
-    select.value = current;
-    status.textContent = items.length ? `已加载 ${items.length} 个 active 账号；选择后记得保存配置。` : '目录为空，当前选择和草稿值已保留。';
-  } catch (error) {
-    status.textContent = `加载失败：${error.message}。请先保存 iCloud 连接配置。`;
-  } finally {
-    btn.disabled = false;
-  }
-}
-async function testICloudHMEV2() {
-  const btn = $('#btnTestICloudHMEV2');
-  const status = $('#icloudHMEStatusV2');
-  if (!btn || !status) return;
-  btn.disabled = true;
-  status.textContent = '正在连接、同步全部 active 账号的别名并检测实际收件通道...';
-  try {
-    const r = await api('/api/icloud-hme/test', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        api_base: _configValueV2('ICLOUD_HME_API_BASE').trim(),
-        account_id: _configValueV2('ICLOUD_HME_ACCOUNT_ID').trim(),
-        timeout: Number(_configValueV2('ICLOUD_HME_REQUEST_TIMEOUT')) || 35,
-      }),
-    });
-    status.innerHTML = `✅ ${esc(r.message || 'iCloud HME 连接成功')}`;
-    showToast(`已同步 ${Number(r.remote_aliases || 0)} 个 iCloud 隐藏邮箱`);
-    if (typeof loadOutlook === 'function') await loadOutlook();
-  } catch(e) {
-    status.innerHTML = `<span style="color:var(--red);">检测失败：${esc(e.message)}</span>`;
-  } finally {
-    btn.disabled = false;
-  }
+  return `<div class="config-tool-panel-v2 roxy-workspace-box"><b>固定收件连接</b>
+    <div class="hint">邮箱账号、创建和库存由邮箱服务管理。Turb 使用已导入的完整邮箱地址；下方配置保留历史收码链路。使用 Email Butler 时可在其配置页测试连接。</div></div>`;
 }
 function _configValueV2(key) {
   const root = document.querySelector(`#configSectionsV2 [data-key="${CSS.escape(key)}"]`);
@@ -1832,60 +1659,6 @@ function _configValueV2(key) {
   const f = CONFIG.find(x => x.key === key);
   return f ? String(f.value ?? '') : '';
 }
-async function genCloudMailTokenV2() {
-  const btn = $('#btnGenCloudMailTokenV2');
-  const status = $('#cloudMailTokenStatusV2');
-  if (!btn || !status) return;
-  btn.disabled = true;
-  status.textContent = '正在调用 CloudMail /api/public/genToken...';
-  try {
-    const r = await api('/api/cloudmail/gen-token', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        api_base: _configValueV2('CLOUDMAIL_API_BASE').trim(),
-        admin_email: _configValueV2('CLOUDMAIL_ADMIN_EMAIL').trim(),
-        password: _configValueV2('CLOUDMAIL_PASSWORD').trim(),
-        path: _configValueV2('CLOUDMAIL_TOKEN_PATH').trim() || '/api/public/genToken',
-      }),
-    });
-    status.innerHTML = `✅ ${esc(r.message || 'Token 已生成并保存')}`;
-    showToast('CloudMail Token 已生成');
-    await loadConfig();
-  } catch(e) {
-    status.innerHTML = `<span style="color:var(--red);">生成失败：${esc(e.message)}</span>`;
-  } finally {
-    btn.disabled = false;
-  }
-}
-async function loadCloudMailDomainsV2() {
-  const btn = $('#btnLoadCloudMailDomainsV2');
-  const status = $('#cloudMailTokenStatusV2');
-  if (!btn || !status) return;
-  btn.disabled = true;
-  status.textContent = '正在从 CloudMail 平台获取可用域名...';
-  try {
-    const r = await api('/api/cloudmail/domains', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        api_base: _configValueV2('CLOUDMAIL_API_BASE').trim(),
-        admin_email: _configValueV2('CLOUDMAIL_ADMIN_EMAIL').trim(),
-        password: _configValueV2('CLOUDMAIL_PASSWORD').trim(),
-        token: _configValueV2('CLOUDMAIL_AUTH_TOKEN').trim(),
-      }),
-    });
-    const domains = Array.isArray(r.domains) ? r.domains : [];
-    status.innerHTML = `✅ ${esc(r.message || '域名已获取')}：<span class="mono">${esc(domains.join(', '))}</span>`;
-    showToast(`CloudMail 已获取 ${domains.length} 个域名`);
-    await loadConfig();
-  } catch(e) {
-    status.innerHTML = `<span style="color:var(--red);">获取域名失败：${esc(e.message)}</span>`;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 function renderCodexSectionV2(fields) {
   const slug = configGroupSlug('Codex');
   const preferred = ['基础配置', 'CPA配置', 'sub2api'];
@@ -2058,8 +1831,6 @@ function renderConfigLayoutV2() {
   renderConfigOverviewCards();
   bindRoxyWorkspaceToolsV2();
   bindEmailButlerToolsV2();
-  bindCloudMailToolsV2();
-  bindICloudHMEToolsV2();
   bindProxyProviderToolsV2();
   bindConfigCountryPickersV2();
   bindConfigMultiSelectsV2();

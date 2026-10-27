@@ -78,14 +78,18 @@ class RemailConfigTests(unittest.TestCase):
         self.assertNotIn(bait, json.dumps(dict(snapshot.values)))
         self.assertNotIn(key, snapshot.values)
 
-    def test_webui_exposes_all_settings_and_source_from_schema(self):
+    def test_webui_preserves_receive_connection_and_hides_supply_policy(self):
         fields = {item["key"]: item for item in EDITABLE_FIELDS}
         remail = [field for field in CONFIG_SCHEMA.fields if field.key.startswith("REMAIL_")]
         self.assertEqual(len(remail), 8)
         for field in remail:
             with self.subTest(key=field.key):
-                self.assertEqual(fields[field.key]["group"], "邮箱 / OTP")
-        self.assertIn("remail", CONFIG_SCHEMA["EMAIL_SOURCE"].csv_options)
+                if field.key in {"REMAIL_API_BASE", "REMAIL_API_KEY", "REMAIL_REQUEST_TIMEOUT"}:
+                    self.assertEqual(fields[field.key]["group"], "邮箱 / OTP")
+                else:
+                    self.assertNotIn(field.key, fields)
+        source = fields["EMAIL_SOURCE"]
+        self.assertNotIn("remail", source["csv_options"])
         self.assertEqual(
             {option.value for option in CONFIG_SCHEMA["REMAIL_SERVICE_MODE"].options},
             {"purchase", "code"},

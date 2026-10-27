@@ -80,17 +80,15 @@ class RegistrationRemailAcquisitionTests(unittest.TestCase):
              patch("core.remail_order_coordinator.RemailOrderCoordinator") as coordinator_cls:
             coordinator = coordinator_cls.return_value
             coordinator._account_from_intent.return_value = account
-            coordinator.acquire.return_value = account
             result = _restore_remail_registration_resume_context(
                 email="one@remail.test", registration_root_id=42,
                 acquisition_id="registration:42",
             )
 
         self.assertIs(account, result)
-        coordinator.acquire.assert_called_once_with(
-            owner_kind="registration_root", owner_id=42,
-            acquisition_id="registration:42",
-        )
+        coordinator.acquire.assert_not_called()
+        coordinator.verify_original_order.assert_not_called()
+        coordinator._cache.assert_called_once_with(account)
 
     def test_registration_resume_remail_uses_saved_private_context_without_email_search(self):
         from core.registration_service import _restore_remail_registration_resume_context

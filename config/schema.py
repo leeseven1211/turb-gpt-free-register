@@ -111,6 +111,7 @@ class ConfigField:
             out["options"] = [
                 {"value": option.value, "label": option.label}
                 for option in self.options
+                if self.key != "EMAIL_SOURCE" or option.value in _LOCAL_EMAIL_SOURCE_VALUES
             ]
         if self.range:
             out["range"] = self.range
@@ -121,7 +122,8 @@ class ConfigField:
         if self.allow_prefix:
             out["allow_prefix"] = self.allow_prefix
         if self.csv_options:
-            out["csv_options"] = list(self.csv_options)
+            out["csv_options"] = [value for value in self.csv_options
+                                  if self.key != "EMAIL_SOURCE" or value in _LOCAL_EMAIL_SOURCE_VALUES]
         if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
             from config.countries import ISO_3166_ALPHA2
 
@@ -941,7 +943,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "按列表顺序尝试邮箱来源；可多选，当前已选顺序会被保留（保存为逗号分隔），开始注册时仍必须明确选择一个，任务不会跨平台兜底",
+        "label": "CLI 默认本地邮箱顺序", "help": "仅 CLI 未指定来源时按此顺序领取本地库存；WebUI 注册需明确选择本地池。历史收码连接独立保留，不受此列表控制",
     },
     {
         "key": "EMAIL_DERIVATION_ENABLED", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
@@ -1013,6 +1015,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "CLOUDFLARE_PATH_ACCOUNTS", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Cloudflare 创建路径", "help": "默认 /api/new_address；admin 常用 /admin/new_address",
+        "editable": False,
     },
     {
         "key": "CLOUDFLARE_PATH_MESSAGES", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1021,6 +1024,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "CLOUDFLARE_DEFAULT_DOMAINS", "file": "email.py", "type": "list_str_multiline", "group": "邮箱 / OTP",
         "label": "Cloudflare 默认域名", "help": "收信域名，每行一个或逗号分隔；创建时轮询使用，可留空",
+        "editable": False,
     },
     {
         "key": "CLOUDFLARE_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -1029,6 +1033,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "CLOUDFLARE_NAME_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "Cloudflare 随机名前缀长度", "help": "admin 创建时 local-part 长度，默认 10",
+        "editable": False,
     },
     {
         "key": "OUTLOOK_FETCH_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1060,6 +1065,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "MAIL_NEST_PROJECT_CODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "MailNest 项目代码", "help": "项目代码 默认 chatgpt001 获取页面 mailnest.top/buy-email",
+        "editable": False,
     },
     {
         "key": "MAILCODE_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1069,6 +1075,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "MAILCODE_PRODUCT_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "MailCode 商品 ID", "help": "每个任务购买一个指定商品；重跑沿用 PostgreSQL 原订单和幂等键，不切换商品",
+        "editable": False,
     },
     {
         "key": "MAILCODE_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -1077,6 +1084,7 @@ _FIELD_DEFINITIONS = [
     {
         "key": "MAILCODE_CHANNEL_WAIT_SECONDS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "MailCode 通道准备超时(秒)", "help": "购买后等待通道 READY 再注册；失败保留原订单，默认 60 秒",
+        "editable": False,
     },
     {
         "key": "XIGUA_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1090,10 +1098,12 @@ _FIELD_DEFINITIONS = [
     {
         "key": "XIGUA_PROJECT_SLUG", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "西瓜项目标识", "help": "项目说明标识，默认 chatgpt；实际下单只使用指定的 Offer ID",
+        "editable": False,
     },
     {
         "key": "XIGUA_OFFER_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "西瓜 Offer ID", "help": "固定领取此方案，不自动选择其他方案；重跑沿用原订单，不自动取消",
+        "editable": False,
     },
     {
         "key": "XIGUA_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -1120,22 +1130,27 @@ _FIELD_DEFINITIONS = [
     {
         "key": "REMAIL_PROJECT_ID", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "Remail 项目 ID", "help": "用于 ChatGPT/OpenAI 验证码的项目 ID，默认 2；以平台项目列表为准",
+        "editable": False,
     },
     {
         "key": "REMAIL_EMAIL_SUFFIX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Remail 邮箱后缀", "help": "项目下单使用的邮箱后缀，默认 outlook.com",
+        "editable": False,
     },
     {
         "key": "REMAIL_SERVICE_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Remail 服务模式", "help": "purchase 为可重复收件的长效购买；code 为短效接码，后续登录收码受服务有效期限制",
+        "editable": False,
     },
     {
         "key": "REMAIL_SUPPLY_POLICY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "Remail 库存策略", "help": "public_only 只使用公开库存；private_first 优先使用自己的库存",
+        "editable": False,
     },
     {
         "key": "REMAIL_ORDER_WAIT_SECONDS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "Remail 订单等待(秒)", "help": "订单未立即返回收件凭证时，等待订单详情补齐凭证的最长时间，默认 30 秒",
+        "editable": False,
     },
     {
         "key": "REMAIL_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -1149,15 +1164,18 @@ _FIELD_DEFINITIONS = [
         "key": "CLOUDMAIL_ADMIN_EMAIL", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "CloudMail管理员邮箱", "help": "用于生成 Token；域名被平台隐藏时也会用它登录读取域名",
         "storage": "env",
+        "editable": False,
     },
     {
         "key": "CLOUDMAIL_PASSWORD", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "CloudMail 密码", "help": "用于自动获取 Token；保存在 .env",
         "storage": "env", "secret": True,
+        "editable": False,
     },
     {
         "key": "CLOUDMAIL_TOKEN_PATH", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "CloudMail Token路径", "help": "固定使用 /api/public/genToken；如部署版本不同可修改",
+        "editable": False,
     },
     {
         "key": "CLOUDMAIL_AUTH_TOKEN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1167,14 +1185,17 @@ _FIELD_DEFINITIONS = [
     {
         "key": "CLOUDMAIL_DOMAINS", "file": "email.py", "type": "list_str_multiline", "group": "邮箱 / OTP",
         "label": "CloudMail 域名列表", "help": "可留空；运行时会自动从平台获取。也可点“获取 CloudMail 域名”缓存到这里",
+        "editable": False,
     },
     {
         "key": "CLOUDMAIL_AUTO_ADD_USER", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
         "label": "CloudMail自动创建用户", "help": "生成随机邮箱后调用 /api/public/addUser 创建用户",
+        "editable": False,
     },
     {
         "key": "CLOUDMAIL_RANDOM_LOCAL_LENGTH", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "CloudMail随机名前缀长度", "help": "生成邮箱 local-part 的长度，建议 10-16",
+        "editable": False,
     },
     {
         "key": "ICLOUD_HME_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1185,6 +1206,7 @@ _FIELD_DEFINITIONS = [
         "key": "ICLOUD_HME_ACCOUNT_ID", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "iCloud 固定账号 ID", "help": "sidecar 中的固定账号 ID；留空自动发现并同步全部 active 账号",
         "storage": "env",
+        "editable": False,
     },
     {
         "key": "ICLOUD_HME_API_TOKEN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1193,11 +1215,12 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ICLOUD_HME_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "iCloud 请求超时(秒)", "help": "同步别名和 IMAP 拉信的单次请求超时，默认 35",
+        "label": "iCloud 收件请求超时(秒)", "help": "历史邮箱通过固定收件连接拉信的单次请求超时，默认 35",
     },
     {
         "key": "ICLOUD_HME_SYNC_TTL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "iCloud 同步缓存(秒)", "help": "别名池自动同步的缓存时长，默认 300；连接测试会强制同步",
+        "editable": False,
     },
     {
         "key": "ICLOUD_HME_INBOX_MODE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -1228,10 +1251,12 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ICLOUD_HME_AUTO_CREATE", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
         "label": "库存为空自动创建", "help": "关闭时仅使用已同步别名；开启后池为空会向 Apple 申请一个新隐藏邮箱",
+        "editable": False,
     },
     {
         "key": "ICLOUD_HME_CREATE_LABEL_PREFIX", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
         "label": "新别名标签前缀", "help": "自动创建新隐藏邮箱时使用的标签前缀，默认 turb",
+        "editable": False,
     },
     # ---- 浏览器地区画像 ----
     {
@@ -2074,6 +2099,9 @@ def _legacy_fields() -> list[dict[str, Any]]:
     return [copy.deepcopy(field) for field in _FIELD_DEFINITIONS]
 
 
+_LOCAL_EMAIL_SOURCE_VALUES = frozenset({"outlook", "generic_api", "cloudflare_domain", "icloud_hide", "email_butler"})
+
+
 def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigField, ...]:
     fields: list[ConfigField] = []
     seen: set[str] = set()
@@ -2407,8 +2435,6 @@ def _cross_field_errors(
     errors: dict[str, str] = {}
     if values.get("USE_EMAIL_SERVICE") and not str(values.get("EMAIL_SOURCE", "")).strip():
         errors["EMAIL_SOURCE"] = "自动取邮箱模式至少启用一个邮箱来源"
-    if values.get("EMAIL_DERIVATION_ENABLED") and not str(values.get("EMAIL_DERIVATION_SOURCES", "")).strip():
-        errors["EMAIL_DERIVATION_SOURCES"] = "启用子地址时至少选择一个允许派生的来源"
     if (
         values.get("ACCOUNT_LIVE_CHECK_DRIVER") == "browser_roxy"
         and not values.get("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED")
@@ -2464,6 +2490,8 @@ def validate_config_updates(updates: Mapping[str, Any]) -> dict[str, Any]:
             continue
         try:
             normalized[key] = _validate_value(field, value, strict=True)
+            if key == "EMAIL_SOURCE" and any(item not in _LOCAL_EMAIL_SOURCE_VALUES for item in normalized[key].split(",") if item):
+                raise ValueError("CLI 默认来源仅支持本地邮箱池")
         except ValueError as exc:
             errors[key] = str(exc)
 

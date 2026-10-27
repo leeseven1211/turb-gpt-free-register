@@ -1,4 +1,4 @@
-"""Explicit local email imports; importing never asks an upstream for stock."""
+"""Explicit imports; Butler transfers ownership of the exact existing identity."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -48,6 +48,7 @@ def _fixed_butler_profile(conn) -> dict:
 def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
     """Insert only never-seen full addresses, with one cross-source lock per address."""
     from core.local_email_inventory import TABLES, import_conflict
+    from core.email_resource_lifetime import normalize_expiry
 
     if source not in {'outlook', 'generic_api', 'email_butler'}:
         raise ValueError('不支持的手动邮箱导入来源')
@@ -66,12 +67,13 @@ def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
             if source == 'generic_api' and not code_url:
                 skipped += 1
                 continue
+            lifetime = normalize_expiry(raw.get('expires_at'), reject_expired=True)
             record_store.advisory_xact_lock(conn, 'registered-account:' + email)
             if import_conflict(email, conn=conn):
                 skipped += 1
                 continue
             payload = {'email': email, 'status': 'available', 'used_at': None, 'note': None,
-                       'imported_at': datetime.now().isoformat(timespec='seconds')}
+                       'imported_at': datetime.now().isoformat(timespec='seconds'), **lifetime}
             if source == 'email_butler':
                 if profile is None:
                     profile = _fixed_butler_profile(conn)
@@ -79,6 +81,10 @@ def import_resources(records: list[dict], *, source: str) -> tuple[int, int]:
                     identity_type='plus_alias' if '+' in email.partition('@')[0] else 'primary',
                     mailbox_email=profile['inbox_locator']['mailbox_email'],
                     recipient_mode='forwarded_exact_v1', strict_family=True)
+                from core.butler_inventory_handoff import handoff_for_import
+                handoff = handoff_for_import(email, profile, conn=conn)
+                payload.update(butler_handoff=handoff, identity_id=handoff['identity_id'],
+                               parent_email=handoff['parent_email'])
             elif source == 'generic_api':
                 payload.update(code_url=code_url)
             else:

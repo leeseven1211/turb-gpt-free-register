@@ -151,12 +151,47 @@ def _is_configured_manual_email(email: str) -> bool:
 
 
 def _require_retained_local_email(row: dict | None, email: str, source: str) -> None:
+    from core.email_resource_lifetime import require_usable
+    require_usable(row or {})
     status = str((row or {}).get("status") or "").strip().lower()
     if status != "used":
         raise RuntimeError(
             f"原注册邮箱不再处于保留状态（source={source}, status={status or 'unknown'}），"
             "不能改用其他邮箱重跑"
         )
+
+
+def restore_existing_remail_order(intent: dict):
+    """Restore delivered credentials or GET an existing order; never submit one."""
+    from core.remail_order_coordinator import RemailOrderCoordinator
+    from core.remail_client import RemailOrderUncertain
+
+    coordinator = RemailOrderCoordinator()
+    account = coordinator._account_from_intent(intent)
+    if account is not None:
+        coordinator._cache(account)
+        return account
+    status = str(intent.get('status') or '')
+    if status in {'prepared', 'rejected'}:
+        raise RuntimeError('remail_original_order_unavailable: 原领取意图没有可恢复订单，恢复不能新购买')
+    if not str(intent.get('order_no') or '').strip():
+        raise RemailOrderUncertain('原订单结果待核验，禁止恢复时重新购买', operation_phase='reconcile',
+                                  cause_code='remail_order_request_unknown')
+    if str(intent.get('supplier_identity_ref') or '') != coordinator._supplier_ref():
+        raise RuntimeError('原 Remail 订单供应商身份与当前配置不匹配，不能继续')
+    return coordinator.verify_original_order(str(intent.get('acquisition_id') or ''))
+
+
+def require_email_resource_usable(email: str, *, source: str | None = None) -> None:
+    """Check an imported receipt before starting an operation with its address."""
+    from core.local_email_inventory import find_local_email
+    from core.email_resource_lifetime import require_usable
+
+    local = find_local_email(email)
+    if local:
+        if source and local[0] != source:
+            raise RuntimeError('原本地邮箱来源不一致，不能切换收件来源')
+        require_usable(local[1])
 
 
 def restore_email_context(
@@ -172,6 +207,7 @@ def restore_email_context(
     if not address:
         raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
     selected = remember_email_source(address, source)
+    require_email_resource_usable(address, source=selected)
     from core import email_butler_bridge
     if selected == "icloud_hide" and (email_butler_bridge.fixed_context(address) or email_butler_bridge.enabled()):
         email_butler_bridge.restore_context(address, purpose=purpose)
@@ -239,17 +275,12 @@ def restore_email_context(
                 raise RuntimeError("原 Remail 订单取件上下文不可恢复，不能改用其他邮箱重跑")
             return selected
 
-        from core.remail_order_coordinator import RemailOrderCoordinator
         from core.storage import remail_orders
 
         intent = remail_orders.get_intent(stable_id, private=True)
         if not intent:
             raise RuntimeError("原 Remail 领取意图不存在，不能按邮箱猜测订单")
-        account = RemailOrderCoordinator().acquire(
-            owner_kind=str(intent.get("owner_kind") or ""),
-            owner_id=str(intent.get("owner_id") or ""),
-            acquisition_id=stable_id,
-        )
+        account = restore_existing_remail_order(intent)
         if str(account.email or "").strip().casefold() != address.casefold():
             raise RuntimeError("原 Remail 订单邮箱与注册任务不匹配，不能继续")
         return selected

@@ -24,10 +24,15 @@ import requests
 
 from config import email as _email_cfg
 from core.otp_utils import extract_otp
+from core.email_resource_lifetime import EmailResourceLifetimeError, normalize_expiry, require_usable
 
 logger = logging.getLogger(__name__)
 
 _CODE_REGEX = re.compile(r"\b(\d{6})\b")
+_TIME_FIELDS = ('time', 'date', 'received_at', 'receivedAt', 'created_at', 'createdAt', 'timestamp')
+_RECIPIENT_FIELDS = ('to', 'recipient', 'recipients', 'email', 'toAddress', 'to_address',
+                     'recipient_email', 'delivered_to', 'envelope_to', 'original_recipients')
+_SENDER_FIELDS = ('sender', 'from', 'fromAddress', 'from_address')
 _CONTEXT_WORDS = ("code", "verify", "verification", "验证码", "代码", "确认码", "認証", "コード")
 _CONTEXT_CACHE: dict[str, "GenericApiEmailAccount"] = {}
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,20 +52,63 @@ _YANGYANG_OPENAI_SUBJECT_HINTS = (
 
 class GenericApiMailError(RuntimeError):
     """通用 API 取码邮箱错误。"""
+    def __init__(self, message: str, *, error_code: str = 'email_resource_read_failed'):
+        super().__init__(f'{error_code}: {message}')
+        self.error_code = self.cause_code = error_code
+        self.identity_locked = error_code in {'email_resource_expired', 'email_resource_expiry_invalid'}
+        self.request_unknown = False
 
 
 @dataclass
 class GenericApiEmailAccount:
     email: str
     code_url: str
+    expires_at: str | None = None
+    expires_at_epoch: float | None = None
+
+
+def _require_account_usable(account) -> None:
+    try:
+        require_usable(account)
+    except EmailResourceLifetimeError as exc:
+        raise GenericApiMailError('邮箱或取码凭据已过期或有效期无效，保留原地址，不能自动换号', error_code=exc.error_code) from None
+
+
+def _raise_read_status(status: int) -> None:
+    if status == 410:
+        raise GenericApiMailError('取码凭据已过期，保留原领取记录', error_code='email_resource_expired')
+    raise GenericApiMailError(f'取码服务读取失败（HTTP {status}）')
+
+
+def _recipient_matches(data: dict, expected_email: str | None) -> bool:
+    if not expected_email:
+        return True
+    values = [data[key] for key in _RECIPIENT_FIELDS if key in data and data[key] not in (None, '', [])]
+    if not values:
+        return True
+    addresses = set()
+    def collect(value):
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            for key in ('email', 'address'):
+                if key in value:
+                    collect(value[key])
+        elif isinstance(value, str):
+            addresses.update(item.lower() for item in re.findall(r'[A-Za-z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+', value))
+    for value in values:
+        collect(value)
+    return addresses == {expected_email.strip().lower()}
 
 
 def _flatten_json(obj) -> str:
     parts: list[str] = []
     def walk(x):
         if isinstance(x, dict):
-            for v in x.values():
-                walk(v)
+            for key, v in x.items():
+                if key not in (*_TIME_FIELDS, *_RECIPIENT_FIELDS, *_SENDER_FIELDS, 'id', 'token', 'url', 'code_url'):
+                    walk(v)
         elif isinstance(x, list):
             for v in x:
                 walk(v)
@@ -193,16 +241,8 @@ def _parse_yangyang_code_url(code_url: str) -> tuple[str, str, str] | None:
     return origin.rstrip("/"), token, email
 
 
-def _parse_yangyang_ts(value: str | None) -> float | None:
-    if not value:
-        return None
-    raw = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            return datetime.strptime(raw[:19], fmt).timestamp()
-        except Exception:
-            pass
-    return None
+def _parse_yangyang_ts(value) -> float | None:
+    return _parse_generic_api_ts(value)
 
 
 def _parse_generic_api_ts(value) -> float | None:
@@ -239,7 +279,23 @@ def _parse_generic_api_ts(value) -> float | None:
     return None
 
 
-def _extract_structured_api_code(text: str, after_ts: float | None = None) -> tuple[str, dict] | None:
+def _structured_constraints(value, *, after_ts=None, expected_email=None) -> bool:
+    if isinstance(value, list):
+        return all(_structured_constraints(item, after_ts=after_ts, expected_email=expected_email) for item in value)
+    if not isinstance(value, dict):
+        return True
+    if not _recipient_matches(value, expected_email):
+        return False
+    for key in _TIME_FIELDS:
+        if key in value and value[key] not in (None, ''):
+            stamp = _parse_generic_api_ts(value[key])
+            if stamp is None or (after_ts is not None and stamp + 2 < after_ts):
+                return False
+    return all(_structured_constraints(child, after_ts=after_ts, expected_email=expected_email)
+               for key, child in value.items() if key not in _SENDER_FIELDS)
+
+
+def _extract_structured_api_code(text: str, after_ts: float | None = None, expected_email: str | None = None) -> tuple[str, dict] | None:
     """
     兼容 newzoe 这类直接返回 JSON 的取码接口：
       {"code":"784207","from":"...","subject":"Your temporary ChatGPT login code","time":"2026-08-05T01:10:17.000Z"}
@@ -252,7 +308,9 @@ def _extract_structured_api_code(text: str, after_ts: float | None = None) -> tu
         data = json.loads(text)
     except Exception:
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, (dict, list)):
+        return None
+    if not _structured_constraints(data, after_ts=after_ts, expected_email=expected_email):
         return None
 
     # 常见字段优先级：code / otp / verification_code；没有再回退从拉平文本提取。
@@ -263,6 +321,7 @@ def _extract_structured_api_code(text: str, after_ts: float | None = None) -> tu
         or data.get("verificationCode")
         or data.get("email_code")
         or data.get("emailCode")
+        if isinstance(data, dict) else None
     )
     code = None
     if raw_code is not None:
@@ -274,24 +333,13 @@ def _extract_structured_api_code(text: str, after_ts: float | None = None) -> tu
     if not code:
         return None
 
-    ts_raw = (
-        data.get("time")
-        or data.get("date")
-        or data.get("received_at")
-        or data.get("receivedAt")
-        or data.get("created_at")
-        or data.get("createdAt")
-        or data.get("timestamp")
-    )
+    data = data if isinstance(data, dict) else {}
+    ts_raw = next((data[key] for key in _TIME_FIELDS if key in data and data[key] not in (None, '')), None)
     msg_ts = _parse_generic_api_ts(ts_raw)
-    if after_ts and msg_ts and msg_ts + 2 < after_ts:
-        logger.debug(
-            "[GenericAPI] structured API 跳过旧验证码: code=%s ts=%s after=%s subject=%r",
-            code,
-            ts_raw,
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(after_ts)),
-            str(data.get("subject") or "")[:80],
-        )
+    if ts_raw not in (None, '') and msg_ts is None:
+        return None
+    if after_ts and msg_ts is not None and msg_ts + 2 < after_ts:
+        logger.debug('[GenericAPI] structured API 跳过旧验证码')
         return None
 
     return code, {
@@ -308,12 +356,16 @@ def _fetch_yangyang_otp(
     code_url: str,
     headers: dict,
     after_ts: float | None = None,
+    expected_email: str | None = None,
+    check_usable=None,
 ) -> tuple[str, dict] | None:
     """从 yangyang 邮箱页面的列表 API + 详情 API 中抽取最新 6 位验证码。"""
     parsed = _parse_yangyang_code_url(code_url)
     if not parsed:
         return None
     origin, token, email = parsed
+    if expected_email and email.strip().lower() != expected_email.strip().lower():
+        raise GenericApiMailError('取码地址的完整邮箱与原任务不匹配')
     token_q = quote(token, safe="")
     email_q = quote(email, safe="@._+-")
     api_url = f"{origin}/api/messages/{token_q}/{email_q}"
@@ -322,8 +374,12 @@ def _fetch_yangyang_otp(
     cursor: str | None = None
     # 一般第一页足够；保守支持最多翻 5 页。
     for _ in range(5):
+        if check_usable:
+            check_usable()
         url = api_url if not cursor else f"{api_url}?cursor={quote(str(cursor), safe='')}"
-        resp = session.get(url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=False)
+        resp = session.get(url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=True)
+        if check_usable:
+            check_usable()
         if resp.status_code != 200:
             if resp.status_code == 404:
                 # 兼容 mail.ai1998.xyz 这类同样是 /messages/{token}/{email}，
@@ -333,9 +389,9 @@ def _fetch_yangyang_otp(
                     code_url=code_url,
                     headers=headers,
                     after_ts=after_ts,
+                    check_usable=check_usable,
                 )
-            logger.debug(f"[GenericAPI] yangyang 邮件列表 HTTP {resp.status_code}: {resp.text[:160]}")
-            return None
+            _raise_read_status(resp.status_code)
         data = resp.json()
         page_items = data.get("items") or []
         if isinstance(page_items, list):
@@ -349,26 +405,32 @@ def _fetch_yangyang_otp(
     for item in items:
         msg_ts_raw = item.get("received_at") or item.get("receivedAt")
         msg_ts = _parse_yangyang_ts(msg_ts_raw)
-        if after_ts and msg_ts and msg_ts + 2 < after_ts:
-            logger.debug(
-                "[GenericAPI] yangyang 跳过旧邮件: id=%s ts=%s after=%s subject=%r",
-                item.get("id"), msg_ts_raw, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(after_ts)),
-                item.get("subject") or "",
-            )
+        if not _structured_constraints(item, after_ts=after_ts, expected_email=expected_email):
+            logger.debug('[GenericAPI] yangyang 跳过不符合收件或时间条件的邮件')
             continue
         msg_id = item.get("id")
         if not msg_id:
             continue
         detail_url = f"{origin}/message/{quote(str(msg_id), safe='')}/{token_q}/{email_q}"
         try:
-            detail_resp = session.get(detail_url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=False)
+            if check_usable:
+                check_usable()
+            detail_resp = session.get(detail_url, headers={**headers, "Accept": "application/json"}, timeout=bounded_timeout(20), verify=True)
+            if check_usable:
+                check_usable()
             if detail_resp.status_code != 200:
-                continue
+                _raise_read_status(detail_resp.status_code)
             detail = detail_resp.json()
         except WAIT_INTERRUPTED:
             raise
-        except Exception as exc:
-            logger.debug(f"[GenericAPI] yangyang 邮件详情读取失败: {type(exc).__name__}: {exc}")
+        except GenericApiMailError:
+            raise
+        except Exception:
+            raise GenericApiMailError('邮件详情读取失败') from None
+
+        detail_ts_raw = detail.get('receivedAt') or detail.get('received_at')
+        detail_ts = _parse_yangyang_ts(detail_ts_raw)
+        if not _structured_constraints(detail, after_ts=after_ts, expected_email=expected_email):
             continue
 
         raw_body = str(detail.get("body") or "")
@@ -382,10 +444,7 @@ def _fetch_yangyang_otp(
         ])
         code = _extract_yangyang_openai_code(subject, body)
         if code:
-            logger.info(
-                f"[GenericAPI] yangyang 页面提取到 OTP={code}, "
-                f"mail_id={msg_id}, ts={detail.get('receivedAt') or item.get('received_at')}, subject={subject[:80]!r}"
-            )
+            logger.debug('[GenericAPI] yangyang 页面提取到候选验证码')
             return code, {
                 "mail_id": msg_id,
                 "received_at": detail.get("receivedAt") or item.get("received_at"),
@@ -411,24 +470,29 @@ def _fetch_inline_messages_page_otp(
     code_url: str,
     headers: dict,
     after_ts: float | None = None,
+    check_usable=None,
 ) -> tuple[str, dict] | None:
     """解析无 JSON API、直接把邮件卡片渲染在 HTML 里的 /messages 页面。"""
     try:
+        if check_usable:
+            check_usable()
         resp = session.get(
             code_url,
             headers={**headers, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"},
             timeout=bounded_timeout(20),
-            verify=False,
+            verify=True,
         )
+        if check_usable:
+            check_usable()
         if resp.status_code != 200:
-            logger.debug("[GenericAPI] inline messages 页面 HTTP %s: %s", resp.status_code, (resp.text or "")[:160])
-            return None
+            _raise_read_status(resp.status_code)
         html = resp.text or ""
     except WAIT_INTERRUPTED:
         raise
-    except Exception as exc:
-        logger.debug("[GenericAPI] inline messages 页面读取失败: %s: %s", type(exc).__name__, exc)
-        return None
+    except GenericApiMailError:
+        raise
+    except Exception:
+        raise GenericApiMailError('取码页面读取失败') from None
 
     cards = re.findall(r"<article\b[^>]*class=[\"'][^\"']*mail-card[^\"']*[\"'][^>]*>(.*?)</article>", html, flags=re.DOTALL | re.IGNORECASE)
     # 没有 article 时退一步按 details 分块，避免 class 名细微变化。
@@ -461,20 +525,12 @@ def _fetch_inline_messages_page_otp(
     items.sort(key=lambda x: float(x.get("msg_ts") or 0.0), reverse=True)
     for item in items:
         msg_ts = float(item.get("msg_ts") or 0.0)
-        if after_ts and msg_ts and msg_ts + 2 < after_ts:
-            logger.debug(
-                "[GenericAPI] inline messages 跳过旧邮件: id=%s ts=%s after=%s subject=%r",
-                item.get("mail_id"), item.get("received_at"),
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(after_ts)),
-                item.get("subject") or "",
-            )
+        if not _structured_constraints(item, after_ts=after_ts):
+            logger.debug('[GenericAPI] inline messages 跳过不符合时间条件的邮件')
             continue
         code = _extract_yangyang_openai_code(str(item.get("subject") or ""), str(item.get("body") or ""))
         if code:
-            logger.info(
-                "[GenericAPI] inline messages 页面提取到 OTP=%s, mail_id=%s, ts=%s, subject=%r",
-                code, item.get("mail_id"), item.get("received_at"), str(item.get("subject") or "")[:80],
-            )
+            logger.debug('[GenericAPI] inline messages 页面提取到候选验证码')
             return code, {
                 "mail_id": item.get("mail_id"),
                 "received_at": item.get("received_at"),
@@ -492,7 +548,9 @@ def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_i
                 batch_id=batch_id, job_id=job_id)
     if row is None:
         raise GenericApiMailError("local_email_inventory_empty: 本地通用 API 邮箱库存为空，请先手动导入")
-    account = GenericApiEmailAccount(email=row["email"], code_url=str(row.get("code_url") or ""))
+    account = GenericApiEmailAccount(email=row["email"], code_url=str(row.get("code_url") or ""),
+        expires_at=row.get('expires_at'), expires_at_epoch=row.get('expires_at_epoch'))
+    _require_account_usable(account)
     _CONTEXT_CACHE[account.email] = account
     return account
 
@@ -514,18 +572,23 @@ def import_from_file(path: str | Path | None = None) -> tuple[int, int]:
         parts = [x.strip() for x in parts]
         if len(parts) < 2:
             continue
-        records.append({"email": parts[0], "code_url": parts[1]})
+        records.append({"email": parts[0], "code_url": parts[1],
+                        **normalize_expiry(parts[2] if len(parts) > 2 else None, reject_expired=True)})
     return import_generic_api_emails(records)
 
 
 def get_account_context(email: str) -> GenericApiEmailAccount | None:
     if email in _CONTEXT_CACHE:
-        return _CONTEXT_CACHE[email]
+        account = _CONTEXT_CACHE[email]
+        _require_account_usable(account)
+        return account
     from core.db import get_generic_api_email_by_email
     row = get_generic_api_email_by_email(email)
     if row is None:
         return None
-    account = GenericApiEmailAccount(email=row["email"], code_url=row["code_url"])
+    account = GenericApiEmailAccount(email=row["email"], code_url=row["code_url"],
+        expires_at=row.get('expires_at'), expires_at_epoch=row.get('expires_at_epoch'))
+    _require_account_usable(account)
     _CONTEXT_CACHE[email] = account
     return account
 
@@ -546,141 +609,82 @@ def fetch_latest_otp(
     poll_interval: int | None = None,
     settle_seconds: int | None = None,
 ) -> str:
-    """
-    轮询该邮箱配置的 code_url，直到提取到 6 位验证码或超时。
-
-    settle 机制：首次拿到验证码后不立刻返回，而是继续等 OTP_SETTLE_SECONDS 秒。
-    如果期间取码地址返回了不同验证码，则替换候选并重置 settle 倒计时；
-    连续 settle 秒没有变化后才返回，避免取到接口缓存中的旧码。
-    """
+    """Poll the fixed imported receipt, enforcing its expiry and response evidence."""
     account = get_account_context(email)
     if account is None:
-        raise GenericApiMailError(f"通用 API 邮箱不存在或未导入: {email}")
-
-    deadline = time.time() + (max_wait or _email_cfg.OTP_MAX_WAIT)
-    interval = poll_interval or _email_cfg.OTP_POLL_INTERVAL
-    settle = settle_seconds if settle_seconds is not None else _email_cfg.OTP_SETTLE_SECONDS
-    headers = {
-        "Accept": "application/json,text/plain,*/*",
-        "User-Agent": "Mozilla/5.0 (compatible; gpt-register/1.0)",
-    }
-    last_error = ""
-    best_otp: str | None = None
-    best_seen_at: float = 0.0
-    settle_until: float | None = None
-    logger.info(
-        f"[GenericAPI] 开始轮询取码地址: {email}，"
-        f"最长 {max_wait or _email_cfg.OTP_MAX_WAIT}s, settle={settle}s"
-    )
+        raise GenericApiMailError('通用 API 邮箱不存在或未导入')
+    _require_account_usable(account)
+    wait = _email_cfg.OTP_MAX_WAIT if max_wait is None else max_wait
+    interval = max(0.1, _email_cfg.OTP_POLL_INTERVAL if poll_interval is None else poll_interval)
+    settle = max(0, _email_cfg.OTP_SETTLE_SECONDS if settle_seconds is None else settle_seconds)
+    deadline = time.time() + max(0, wait)
+    headers = {'Accept': 'application/json,text/plain,*/*',
+               'User-Agent': 'Mozilla/5.0 (compatible; gpt-register/1.0)'}
+    best_otp = None
+    settle_until = None
+    last_read_failed = False
     is_yangyang = _parse_yangyang_code_url(account.code_url) is not None
-
-    while time.time() < deadline:
-        try:
-            session = requests.Session()
-            yy_result = _fetch_yangyang_otp(session, account.code_url, headers, after_ts=after_ts) if is_yangyang else None
-            if yy_result:
-                code, yy_meta = yy_result
-                now_seen = time.time()
-                if not best_otp:
-                    best_otp = code
-                    best_seen_at = now_seen
-                    settle_until = now_seen + settle
-                    logger.info(
-                        f"[GenericAPI] 首次锁定 OTP={code}, source=yangyang mail_id={yy_meta.get('mail_id')} ts={yy_meta.get('received_at')}, "
-                        f"等 {settle}s 看取码接口是否出现更新验证码..."
-                    )
-                elif code != best_otp:
-                    logger.info(
-                        f"[GenericAPI] 发现更新 OTP={code}, source=yangyang mail_id={yy_meta.get('mail_id')} ts={yy_meta.get('received_at')}，"
-                        f"替换之前的 {best_otp}, 重置 settle 计时"
-                    )
-                    best_otp = code
-                    best_seen_at = now_seen
-                    settle_until = now_seen + settle
-                else:
-                    logger.debug(f"[GenericAPI] 取码接口仍返回候选 OTP={best_otp}")
-                resp = None
-                text = ""
-            else:
+    session = requests.Session()
+    try:
+        while time.time() < deadline:
+            _require_account_usable(account)
+            try:
                 if is_yangyang:
-                    last_error = "yangyang 列表中尚未出现 after_ts 之后的新验证码邮件"
-                    resp = None
-                    text = ""
+                    result = _fetch_yangyang_otp(session, account.code_url, headers,
+                                                after_ts=after_ts, expected_email=email,
+                                                check_usable=lambda: _require_account_usable(account))
+                    code = result[0] if result else None
                 else:
-                    resp = session.get(account.code_url, headers=headers, timeout=bounded_timeout(20), verify=False)
-                    text = resp.text or ""
-            if resp is None:
-                pass
-            elif resp.status_code == 200:
-                structured = _extract_structured_api_code(text, after_ts=after_ts)
-                structured_meta = structured[1] if structured else {}
-                code = structured[0] if structured else _extract_code(text)
-                if code:
-                    now_seen = time.time()
-                    if not best_otp:
-                        best_otp = code
-                        best_seen_at = now_seen
-                        settle_until = now_seen + settle
-                        if structured_meta:
-                            logger.info(
-                                f"[GenericAPI] 首次锁定 OTP={code}, source=structured_api "
-                                f"ts={structured_meta.get('received_at')} subject={str(structured_meta.get('subject') or '')[:80]!r}, "
-                                f"等 {settle}s 看取码接口是否出现更新验证码..."
-                            )
-                        else:
-                            logger.info(
-                                f"[GenericAPI] 首次锁定 OTP={code}, "
-                                f"等 {settle}s 看取码接口是否出现更新验证码..."
-                            )
-                    elif code != best_otp:
-                        if structured_meta:
-                            logger.info(
-                                f"[GenericAPI] 发现更新 OTP={code}, source=structured_api "
-                                f"ts={structured_meta.get('received_at')} subject={str(structured_meta.get('subject') or '')[:80]!r}，"
-                                f"替换之前的 {best_otp}, 重置 settle 计时"
-                            )
-                        else:
-                            logger.info(
-                                f"[GenericAPI] 发现更新 OTP={code}，"
-                                f"替换之前的 {best_otp}, 重置 settle 计时"
-                            )
-                        best_otp = code
-                        best_seen_at = now_seen
-                        settle_until = now_seen + settle
+                    response = session.get(account.code_url, headers=headers,
+                                           timeout=bounded_timeout(20), verify=True)
+                    if response.status_code != 200:
+                        _raise_read_status(response.status_code)
+                    body = response.text or ''
+                    try:
+                        structured = isinstance(json.loads(body), (dict, list))
+                    except (ValueError, TypeError):
+                        structured = False
+                    if structured:
+                        result = _extract_structured_api_code(body, after_ts=after_ts, expected_email=email)
+                        code = result[0] if result else None
+                        if not result:
+                            best_otp = settle_until = None
                     else:
-                        logger.debug(f"[GenericAPI] 取码接口仍返回候选 OTP={best_otp}")
-                else:
-                    last_error = f"HTTP 200 但未提取到 6 位验证码，响应预览: {text[:160]}"
-            else:
-                last_error = f"HTTP {resp.status_code}: {text[:160]}"
-        except WAIT_INTERRUPTED:
-            raise
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+                        code = _extract_code(body)
+                _require_account_usable(account)
+                last_read_failed = False
+                if code:
+                    if code != best_otp:
+                        best_otp = code
+                        settle_until = time.time() + settle
+                        logger.info('[GenericAPI] 已锁定候选验证码，等待稳定窗口')
+            except WAIT_INTERRUPTED:
+                raise
+            except GenericApiMailError as exc:
+                best_otp = settle_until = None
+                if exc.error_code in {'email_resource_expired', 'email_resource_expiry_invalid'}:
+                    raise
+                last_read_failed = True
+                logger.debug('[GenericAPI] 取码服务读取失败')
+            except Exception:
+                best_otp = settle_until = None
+                last_read_failed = True
+                logger.debug('[GenericAPI] 取码服务暂时无法读取')
 
-        now = time.time()
-        if best_otp and settle_until is not None and now >= settle_until:
-            logger.info(
-                f"[GenericAPI] settle 完成，返回 OTP={best_otp}, "
-                f"候选锁定时间={time.strftime('%H:%M:%S', time.localtime(best_seen_at))}"
-            )
+            _require_account_usable(account)
+            now = time.time()
+            if best_otp and settle_until is not None and now >= settle_until:
+                logger.info('[GenericAPI] 候选验证码稳定窗口完成')
+                _require_account_usable(account)
+                return best_otp
+            if now < deadline:
+                bounded_sleep(min(interval, max(0, deadline - now)))
+        _require_account_usable(account)
+        if best_otp:
+            logger.info('[GenericAPI] 等待窗口结束，返回已取得的候选验证码')
             return best_otp
-
-        remaining = int(deadline - now)
-        if best_otp and settle_until is not None:
-            logger.info(
-                f"[GenericAPI] 已锁定候选 OTP={best_otp}，等 settle 中"
-                f"（剩余 settle ~{max(0, int(settle_until - now))}s, 总剩余 {remaining}s）..."
-            )
-        else:
-            logger.info(
-                f"[GenericAPI] 暂未从取码接口拿到验证码，"
-                f"{interval}s 后重试（剩余 {remaining}s）..."
-            )
-        bounded_sleep(interval)
-
-    if best_otp:
-        logger.warning(f"[GenericAPI] 总超时但已有候选，返回 OTP={best_otp}")
-        return best_otp
-
-    raise GenericApiMailError(f"等待通用 API 验证码超时: {email}; {last_error}")
+        if last_read_failed:
+            raise GenericApiMailError('取码服务读取失败，保留原地址和领取记录')
+        raise GenericApiMailError('等待窗口内未取得符合条件的新验证码', error_code='email_otp_no_mail')
+    finally:
+        session.close()

@@ -2543,7 +2543,8 @@ def email_pool_secret(source: str, email: str, field: str) -> str:
         if spec is record_store.OUTLOOK_POOL:
             return _outlook_line(row)
         if spec is record_store.GENERIC_API_POOL:
-            return _generic_api_email_line(row)
+            line = _generic_api_email_line(row)
+            return line + '----' + str(row['expires_at']) if row.get('expires_at') else line
         return str(row.get("email") or "")
     if key in {"password", "client_id", "refresh_token", "code_url"}:
         return str(row.get(key) or "")

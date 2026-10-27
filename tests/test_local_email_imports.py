@@ -38,9 +38,26 @@ class LocalEmailImportsTests(PostgresTestCase):
             EMAIL_BUTLER_API_KEY='test-fixed-key', ICLOUD_HME_FORWARD_IMAP_EMAIL='forward@example.test')
         self.config_patch.start()
         self.addCleanup(self.config_patch.stop)
+        self.handoff_patch = patch('core.butler_inventory_handoff.handoff_for_import',
+            side_effect=lambda email, profile, **kwargs: {
+                'version': 1, 'state': 'issued', 'owner_kind': 'local_inventory',
+                'owner_id': 'test-instance', 'acquisition_id': 'test-handoff:' + email,
+                'identity_id': 'identity:' + email,
+                'parent_email': email.partition('@')[0].split('+', 1)[0] + '@icloud.com',
+            })
+        self.handoff_patch.start()
+        self.addCleanup(self.handoff_patch.stop)
 
     def post(self, endpoint, body):
         return self.client.post(endpoint, json=body, headers=self.headers)
+
+    def test_unconfirmed_butler_handoff_cannot_become_available_local_stock(self):
+        with patch('core.butler_inventory_handoff.handoff_for_import',
+                   side_effect=ValueError('handoff_unconfirmed: 请重试同一地址')):
+            response = self.post('/api/outlook/import', {'source': 'email_butler', 'text': 'new@icloud.com'})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
+        self.assertEqual(record_store.count_rows(record_store.LOCAL_EMAIL_CLAIMS), 0)
 
     def test_import_pins_connection_lists_safely_and_duplicate_does_not_change_route(self):
         response = self.post('/api/outlook/import', {'source': 'email_butler', 'text': 'new+tag@icloud.com'})
@@ -68,7 +85,7 @@ class LocalEmailImportsTests(PostgresTestCase):
         item = listing.get_json()['items'][0]
         self.assertEqual(item['source'], 'email_butler')
         for name in ('credential_ref', 'inbox_profile_id', 'inbox_locator', 'api_base', 'api_key',
-                     'local_inbox_profile_id', 'local_acquisition_id', 'local_owner_kind', 'local_owner_id'):
+                     'local_inbox_profile_id', 'local_acquisition_id', 'local_owner_kind', 'local_owner_id', 'butler_handoff'):
             self.assertNotIn(name, item)
 
     def test_cross_source_used_registered_and_unknown_are_skipped_by_all_importers(self):

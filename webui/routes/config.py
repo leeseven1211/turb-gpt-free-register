@@ -59,12 +59,8 @@ def create_config_blueprint(context: WebUIContext):
 
     @bp.get("/api/mailcode/catalog")
     def api_mailcode_catalog():
-        """使用已保存密钥查询官网商品和余额，不创建订单。"""
-        from core.mailcode_client import MailCodeError, get_wallet, list_products
-        try:
-            return jsonify({"ok": True, "products": list_products(), "wallet": get_wallet()})
-        except MailCodeError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": False, "reason_code": "email_management_managed_by_service",
+                        "error": "邮箱商品和库存请在邮箱服务中管理；Turb 仅导入并使用邮箱。"}), 410
 
     @bp.get("/api/ui-settings")
     def api_ui_settings():
@@ -82,104 +78,13 @@ def create_config_blueprint(context: WebUIContext):
 
     @bp.post("/api/cloudmail/gen-token")
     def api_cloudmail_gen_token():
-        """手动生成 CloudMail Authorization Token，并把本次填写的 CloudMail 配置一并写入 .env。"""
-        data = request.get_json(silent=True) or {}
-        try:
-            from core.cloudmail_client import gen_token
-
-            api_base = (data.get("api_base") or "").strip()
-            admin_email = (data.get("email") or data.get("admin_email") or "").strip()
-            password = (data.get("password") or "").strip()
-            path = (data.get("path") or "/api/public/genToken").strip() or "/api/public/genToken"
-            token = gen_token(
-                email=admin_email,
-                password=password,
-                path=path,
-                base_url=api_base,
-            )
-            updates = {"CLOUDMAIL_AUTH_TOKEN": token}
-            # 生成 Token 时用户通常尚未点“保存配置”；这里同步保存本次填写的字段，
-            # 避免 loadConfig() 后 API 地址/账号/密码被旧 .env 值覆盖。
-            if api_base:
-                updates["CLOUDMAIL_API_BASE"] = api_base
-            if admin_email:
-                updates["CLOUDMAIL_ADMIN_EMAIL"] = admin_email
-            if password:
-                updates["CLOUDMAIL_PASSWORD"] = password
-            if path:
-                updates["CLOUDMAIL_TOKEN_PATH"] = path
-            result = config_editor.update_config(updates)
-            return jsonify({
-                "ok": True,
-                "token": token,
-                "written": result.get("env_updated", []),
-                "reloaded": bool(result.get("reloaded")),
-                "config_revision": result.get("config_revision", config_revision()),
-                "message": "CloudMail Token 已生成，且当前 CloudMail 配置已保存",
-            })
-        except ConfigValidationError as exc:
-            return jsonify({
-                "ok": False,
-                "error": "配置校验失败",
-                "fields": dict(exc.errors),
-            }), 400
-        except Exception as exc:
-            logger.exception("生成 CloudMail Token 失败")
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+        return jsonify({"ok": False, "reason_code": "email_management_managed_by_service",
+                        "error": "邮箱服务的 Token 和账号请在邮箱服务中管理；历史收码配置已保留。"}), 410
 
     @bp.post("/api/cloudmail/domains")
     def api_cloudmail_domains():
-        """从 CloudMail 平台获取域名列表，并可写入 .env 作为本地缓存。"""
-        data = request.get_json(silent=True) or {}
-        try:
-            from core.cloudmail_client import fetch_domains
-
-            updates = {}
-            api_base = (data.get("api_base") or "").strip()
-            admin_email = (data.get("email") or data.get("admin_email") or "").strip()
-            password = (data.get("password") or "").strip()
-            token = (data.get("token") or "").strip()
-            if api_base:
-                updates["CLOUDMAIL_API_BASE"] = api_base
-            if admin_email:
-                updates["CLOUDMAIL_ADMIN_EMAIL"] = admin_email
-            if password:
-                updates["CLOUDMAIL_PASSWORD"] = password
-            if token:
-                updates["CLOUDMAIL_AUTH_TOKEN"] = token
-            written = []
-            config_result = None
-            if updates:
-                config_result = config_editor.update_config(updates)
-                written.extend(config_result.get("env_updated", []))
-
-            domains = fetch_domains(force=True)
-            domain_result = config_editor.update_config({
-                "CLOUDMAIL_DOMAINS": domains,
-            })
-            written.extend(domain_result.get("env_updated", []))
-            return jsonify({
-                "ok": True,
-                "domains": domains,
-                "count": len(domains),
-                "written": written,
-                "reloaded": bool(domain_result.get("reloaded")),
-                "config_revision": domain_result.get(
-                    "config_revision",
-                    config_result.get("config_revision", config_revision())
-                    if config_result else config_revision(),
-                ),
-                "message": f"已获取 {len(domains)} 个 CloudMail 可用域名并保存",
-            })
-        except ConfigValidationError as exc:
-            return jsonify({
-                "ok": False,
-                "error": "配置校验失败",
-                "fields": dict(exc.errors),
-            }), 400
-        except Exception as exc:
-            logger.exception("获取 CloudMail 域名失败")
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
+        return jsonify({"ok": False, "reason_code": "email_management_managed_by_service",
+                        "error": "邮箱域名和库存请在邮箱服务中管理；Turb 仅导入并使用邮箱。"}), 410
 
     @bp.post("/api/config")
     def api_config_set():

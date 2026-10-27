@@ -526,20 +526,22 @@ def _restore_hme_context(email: str) -> EmailButlerAccount | None:
 
 
 def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str | None = None) -> None:
-    """同一完整身份和归一化结果始终使用相同上报编号，可跨重启重试。"""
+    """先持久化结果；网络失败由后台队列重试，不阻塞注册完成。"""
     state = str(status or "").strip().lower()
-    if state in {"request_unknown", "unknown", "running", "reserved"}:
+    if state in {"request_unknown", "unknown", "running", "reserved", "available"}:
         return
-    result = "ok" if state in {"used", "success", "succeeded", "registered"} else "disabled" if state in {"disabled", "retired"} else "provider_error"
-    identity = account.acquisition_id or _cache_key(account.email)
-    operation_id = hashlib.sha256(f"turb-hme:{identity}:{result}".encode()).hexdigest()
-    _request("POST", "/identities/report", json={"email": _cache_key(account.email), "status": result,
-        "service": "openai", "consumer": "turb-gpt-register", "message": str(note or "")[:300],
-        "operation_id": operation_id}, api_base=account.api_base, api_key=account.api_key)
+    from core import email_usage_reports
+    # Existing profiles win over a stale process cache and mutable global config.
+    if email_usage_reports.enqueue(account.email, status=state, source="email_butler") is not None:
+        return
+    if email_usage_reports.has_success(account.email):
+        return
+    _persist_hme_context(account)
+    email_usage_reports.enqueue(account.email, status=state, source="email_butler")
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
-    """HME 幂等上报后收口本地上下文，远端保留原 TTL；其他来源释放租约。"""
+    """HME 结果持久入队后收口上下文；普通旧租约仍只释放一次。"""
     from core.local_email_inventory import record_outcome
     if record_outcome(email, source="email_butler", status=status, note=note):
         if str(status or "").lower() not in {"request_unknown", "unknown", "running", "reserved", "available"}:
@@ -547,6 +549,13 @@ def release_account(email: str, status: str = "available", note: str | None = No
         return
     key = _cache_key(email)
     if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
+        return
+    from core import email_usage_reports
+    if email_usage_reports.enqueue(email, status=status, source="email_butler") is not None:
+        _CONTEXT_CACHE.pop(key, None)
+        return
+    if email_usage_reports.has_success(email):
+        _CONTEXT_CACHE.pop(key, None)
         return
     account = _CONTEXT_CACHE.get(key)
     if not account:
@@ -557,6 +566,8 @@ def release_account(email: str, status: str = "available", note: str | None = No
         logger.info("[EmailButler] 邮箱上下文已不存在，跳过释放: %s", email)
         return
     if account.provider == "icloud_hme":
+        if str(status or "").strip().lower() == "available":
+            return
         fixed = _restore_hme_context(email)
         if fixed:
             account = fixed
@@ -565,7 +576,7 @@ def release_account(email: str, status: str = "available", note: str | None = No
             _persist_hme_context(account)
         report_hme_identity(account, status=status, note=note)
         _CONTEXT_CACHE.pop(key, None)
-        logger.info("[EmailButler] 已报告 HME 完整身份结果: %s", email)
+        logger.info("[EmailButler] HME 完整身份结果已持久入队")
         return
     try:
         _request(

@@ -21,33 +21,34 @@ class RemailProviderTests(unittest.TestCase):
             ["outlook", "remail", "gptmail"],
         )
 
-    def test_acquire_remembers_explicit_source_and_never_falls_back(self):
-        with patch("core.remail_client.pick_account", return_value=SimpleNamespace(email="one@example.test")), patch(
-            "core.email_provider._registered_email_source", return_value=None
-        ):
-            self.assertEqual(email_provider.acquire_email("remail", legacy_remail_compatibility=True), "one@example.test")
-            self.assertEqual(email_provider.resolve_email_source("one@example.test"), "remail")
-        with patch("core.remail_client.pick_account", side_effect=RuntimeError("订单待确认")), patch(
+    def test_new_acquisition_rejects_retired_supplier_even_in_compatibility_mode(self):
+        with patch("core.remail_client.pick_account") as pick, patch(
             "core.outlook_client.pick_account"
         ) as outlook:
-            with self.assertRaisesRegex(RuntimeError, "所选邮箱来源 remail 领取失败"):
+            with self.assertRaisesRegex(RuntimeError, "local_inventory_source_required"):
                 email_provider.acquire_email("remail", legacy_remail_compatibility=True)
+            pick.assert_not_called()
             outlook.assert_not_called()
 
     def test_ownerless_remail_does_not_invoke_client(self):
         with patch("core.remail_client.pick_account") as pick:
-            with self.assertRaisesRegex(RuntimeError, "缺少稳定 owner/acquisition_id"):
+            with self.assertRaisesRegex(RuntimeError, "local_inventory_source_required"):
                 email_provider.acquire_email("remail")
         pick.assert_not_called()
 
     def test_uncertain_order_preserves_reconciliation_without_fallback(self):
         from core.remail_client import RemailOrderUncertain
 
-        with patch.object(email_config, "EMAIL_SOURCE", "remail,outlook"), patch(
-            "core.remail_client.pick_account", side_effect=RemailOrderUncertain("订单结果待核验")
-        ), patch("core.outlook_client.pick_account") as outlook:
+        with patch('core.local_email_inventory.find_local_email', return_value=None), patch(
+            'core.email_derivation.restore_address', return_value=None
+        ), patch('core.storage.remail_orders.get_intent', return_value={
+            'acquisition_id': 'original', 'status': 'request_unknown', 'order_no': '', 'private_json': {},
+        }), patch("core.outlook_client.pick_account") as outlook, patch(
+            'core.remail_order_coordinator.RemailOrderCoordinator.acquire'
+        ) as purchase:
             with self.assertRaises(RemailOrderUncertain):
-                email_provider.acquire_email(legacy_remail_compatibility=True)
+                email_provider.restore_email_context('one@example.test', source='remail', acquisition_id='original')
+        purchase.assert_not_called()
         outlook.assert_not_called()
 
     def test_otp_routes_explicit_source_with_time_and_wait_options(self):

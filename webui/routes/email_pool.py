@@ -31,6 +31,7 @@ from core import (
 from core import registration_service as svc
 from core.task_errors import classify_task_error
 from core.storage import local_email_imports
+from core.email_resource_lifetime import normalize_expiry
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -65,7 +66,7 @@ def _pool_row_for_source(email: str, source: str) -> dict | None:
     return db.get_outlook_by_email(email)
 
 
-def _parse_email_pool_import(text: str, source: str, *, include_account_fields: bool = False) -> dict:
+def _parse_email_pool_import(text: str, source: str, *, include_account_fields: bool = False, expires_at=None) -> dict:
     """Parse only the fields that belong to an email resource.
 
     ``include_account_fields`` is retained for old API clients that still send
@@ -94,8 +95,9 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
         if any(not part for part in parts[:required]):
             errors.append({"line": line_no, "reason": "必填字段不能为空"})
             continue
-        if len(parts) > required:
-            extra_fields += len(parts) - required
+        expected = 3 if source == 'generic_api' and not include_account_fields else required
+        if len(parts) > expected:
+            extra_fields += len(parts) - expected
         if source == "email_butler":
             try:
                 record = {"email": local_email_imports.butler_forward_address(email)}
@@ -121,6 +123,12 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
                     "access_token": parts[4] if len(parts) > 4 else "",
                     "totp_secret": parts[5] if len(parts) > 5 else "",
                 })
+        lifetime = (parts[2] if source == 'generic_api' and not include_account_fields and len(parts) > 2 else '')
+        try:
+            record.update(normalize_expiry(lifetime or expires_at, reject_expired=True))
+        except ValueError as exc:
+            errors.append({'line': line_no, 'reason': str(exc), 'reason_code': str(exc).split(':', 1)[0]})
+            continue
         records.append(record)
     return {
         "records": records,
@@ -303,7 +311,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         source = str(data.get("source") or data.get("type") or "").strip().lower()
         if source not in ("outlook", "generic_api", "email_butler"):
             return jsonify({"ok": False, "error": "请选择 Outlook、通用 API 或 Butler 转发邮箱来源"}), 400
-        parsed = _parse_email_pool_import(data.get("text") or "", source)
+        parsed = _parse_email_pool_import(data.get("text") or "", source, expires_at=data.get('expires_at'))
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多预览 5000 行邮箱"}), 400
         emails = [record["email"].lower() for record in parsed["records"]]
@@ -333,7 +341,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         """
         粘贴文本导入邮箱资源。
         Outlook：email----password----clientId----refreshToken
-        通用 API：email----code_url
+        通用 API：email----code_url[----expires_at（带时区 ISO8601）]
         分隔符兼容 ---- 与 ====。
         """
         data = request.get_json(silent=True) or {}
@@ -344,16 +352,19 @@ def create_email_pool_blueprint(context: WebUIContext):
         # Old API clients may still send as_registered; keep the compatibility
         # path while the current UI always imports resources only.
         as_registered = bool(data.get("as_registered", False))
+        if as_registered and data.get('expires_at'):
+            return jsonify({'ok': False, 'error': '邮箱有效期仅用于资源导入；已注册账号兼容导入不支持批次邮箱有效期'}), 400
         if source == "email_butler" and as_registered:
             return jsonify({"ok": False, "error": "Butler 邮箱仅导入本地资源，不导入为已注册账号"}), 400
-        parsed = _parse_email_pool_import(text, source, include_account_fields=as_registered)
+        parsed = _parse_email_pool_import(text, source, include_account_fields=as_registered, expires_at=data.get('expires_at'))
         records = parsed["records"]
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多导入 5000 行邮箱"}), 400
         if not records:
             need = ("每行一个完整 iCloud HME 邮箱地址" if source == "email_butler" else
                     "2 段：邮箱----取码地址" if source == "generic_api" else "4 段：email----password----clientId----refreshToken")
-            return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
+            error = parsed['errors'][0]['reason'] if parsed['errors'] else f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"
+            return jsonify({"ok": False, "error": error, 'invalid_rows': parsed['errors'][:100]}), 400
         try:
             if as_registered:
                 inserted, skipped = db.import_registered_email_accounts(records, source=source)
@@ -372,6 +383,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             "parsed": len(records),
             "as_registered": as_registered,
             "invalid": len(parsed["errors"]),
+            "invalid_rows": parsed['errors'][:100],
             "extra_fields": parsed["extra_fields"],
         })
 

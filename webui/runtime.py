@@ -1878,6 +1878,11 @@ def runtime_status() -> dict[str, Any]:
         projection_status = operation_task_store.projection_worker_status()
     except Exception as exc:
         projection_status = {"error": type(exc).__name__}
+    try:
+        from core import email_usage_reports
+        usage_reports_status = email_usage_reports.worker_status()
+    except Exception as exc:
+        usage_reports_status = {"error": type(exc).__name__}
     return {
         "ready": started,
         "started": started,
@@ -1887,6 +1892,7 @@ def runtime_status() -> dict[str, Any]:
         "codex_dispatcher": dispatcher_status,
         "dependency_dispatcher": dependency_dispatcher_status,
         "projection_worker": projection_status,
+        "email_usage_reports": usage_reports_status,
     }
 
 
@@ -2043,6 +2049,11 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
 
         start_periodic_cleanup()
         start_task_center_retention()
+        try:
+            from core import email_usage_reports
+            email_usage_reports.start_worker()
+        except Exception as exc:
+            active_logger.warning("HME 结果后台队列暂不可用 (%s)", type(exc).__name__)
         _runtime_started = True
         _runtime_started_at = time.time()
         return True

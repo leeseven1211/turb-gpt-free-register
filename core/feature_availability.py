@@ -46,6 +46,33 @@ def require_email_source(source: str) -> tuple[bool, str]:
     return bool(item.get("enabled")), str(item.get("reason") or "邮箱来源当前不可用")
 
 
+def _historical_mail_readable() -> bool:
+    """已有账号读信能力与新邮箱库存容量独立；不发起网络请求。"""
+    from config import email
+    from core.email_derivation import _profile_credentials
+    from core.storage.email_address_allocations import EmailDerivationError
+    from core.storage.email_address_allocations import list_inbox_profiles
+
+    if (getattr(email, 'EMAIL_BUTLER_API_BASE', '') and getattr(email, 'EMAIL_BUTLER_API_KEY', '')):
+        return True
+    if (getattr(email, 'CLOUDFLARE_API_BASE', '') and
+            (getattr(email, 'CLOUDFLARE_SIGNAL_API_KEY', '') or getattr(email, 'CLOUDFLARE_API_KEY', ''))):
+        return True
+    for profile in list_inbox_profiles(state='active'):
+        if profile.get('connector') not in {'forward_butler', 'forward_imap'}:
+            continue
+        try:
+            locator = _profile_credentials(profile)
+        except (EmailDerivationError, ValueError, KeyError):
+            continue
+        if profile['connector'] == 'forward_butler':
+            if locator.get('api_base') and '@' in str(locator.get('mailbox_email') or ''):
+                return True
+        elif locator.get('server') and '@' in str(locator.get('email') or ''):
+            return True
+    return False
+
+
 def _registration_driver_status() -> dict[str, Any]:
     from config import roxybrowser as roxy
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
@@ -169,28 +196,10 @@ def feature_availability() -> dict[str, Any]:
         ("CPA_MANAGEMENT_URL", getattr(codex, "CPA_MANAGEMENT_URL", "")),
         ("CPA_MANAGEMENT_KEY", getattr(codex, "CPA_MANAGEMENT_KEY", "")),
     ])
-    deactivation_ready = any(
-        email_sources.get(name, {}).get("enabled") for name in ("email_butler", "cloudflare", "icloud_hide")
-    )
+    deactivation_ready = _historical_mail_readable()
     roxy_ok, roxy_reason = _all_present([
         ("ROXY_API_BASE", getattr(roxybrowser, "ROXY_API_BASE", "")),
         ("ROXY_API_TOKEN", getattr(roxybrowser, "ROXY_API_TOKEN", "")),
-    ])
-    cloudmail_tool_ok, cloudmail_tool_reason = _all_present([
-        ("CLOUDMAIL_API_BASE", getattr(email, "CLOUDMAIL_API_BASE", "")),
-        ("CLOUDMAIL_ADMIN_EMAIL", getattr(email, "CLOUDMAIL_ADMIN_EMAIL", "")),
-        ("CLOUDMAIL_PASSWORD", getattr(email, "CLOUDMAIL_PASSWORD", "")),
-    ])
-    cloudmail_domains_ok = bool(str(getattr(email, "CLOUDMAIL_API_BASE", "") or "").strip()) and bool(
-        str(getattr(email, "CLOUDMAIL_AUTH_TOKEN", "") or "").strip()
-        or (
-            str(getattr(email, "CLOUDMAIL_ADMIN_EMAIL", "") or "").strip()
-            and str(getattr(email, "CLOUDMAIL_PASSWORD", "") or "").strip()
-        )
-    )
-    cloudmail_domains_reason = "CLOUDMAIL_API_BASE 以及 Token（或管理员账号/密码）未配置"
-    icloud_tool_ok, icloud_tool_reason = _all_present([
-        ("ICLOUD_HME_API_BASE", getattr(email, "ICLOUD_HME_API_BASE", "")),
     ])
     butler_ok, butler_reason = _all_present([
         ("EMAIL_BUTLER_API_BASE", getattr(email, "EMAIL_BUTLER_API_BASE", "")),
@@ -212,9 +221,9 @@ def feature_availability() -> dict[str, Any]:
         "deactivation_mail": _feature(deactivation_ready, "没有配置支持封号扫描的 Email Butler / Cloudflare / iCloud 邮箱来源"),
         "proxy_provider_test": _feature(proxy_test_ok, proxy_test_reason),
         "roxy_workspaces": _feature(roxy_ok, roxy_reason),
-        "cloudmail_token": _feature(cloudmail_tool_ok, cloudmail_tool_reason),
-        "cloudmail_domains": _feature(cloudmail_domains_ok, cloudmail_domains_reason),
-        "icloud_hme": _feature(icloud_tool_ok, icloud_tool_reason),
+        "cloudmail_token": _feature(False, "邮箱管理已迁至邮箱服务，请在邮箱服务生成 Token"),
+        "cloudmail_domains": _feature(False, "邮箱管理已迁至邮箱服务，请在邮箱服务管理域名"),
+        "icloud_hme": _feature(False, "iCloud 管理已迁至邮箱服务，Turb 仅导入及使用"),
         "email_butler_test": _feature(butler_ok, butler_reason),
     }
     return {

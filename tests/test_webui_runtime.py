@@ -15,6 +15,9 @@ class WebUIRuntimeTests(unittest.TestCase):
         runtime._runtime_started = False
         runtime._runtime_started_at = None
         runtime._RUNTIME_HANDLERS_REGISTERED = False
+        usage_worker = patch("core.email_usage_reports.start_worker")
+        self.usage_worker = usage_worker.start()
+        self.addCleanup(usage_worker.stop)
 
     def tearDown(self):
         runtime._runtime_started = False
@@ -170,6 +173,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         ))
         self.assertGreaterEqual(init_operations.call_count, 1)
         start_proxy_pool.assert_called_once_with(prewarm=True)
+        self.usage_worker.assert_called_once_with()
 
     def test_runtime_status_is_read_only_and_contains_release_health_components(self):
         runtime._runtime_started = True
@@ -179,6 +183,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.codex_operation_service, "dispatcher_status", return_value={"alive": True}),
             patch.object(runtime.account_task_store, "dependency_dispatcher_status", return_value={"alive": True}),
             patch.object(runtime.operation_task_store, "projection_worker_status", return_value={"alive": True}),
+            patch("core.email_usage_reports.worker_status", return_value={"alive": True, "counts": {"pending": 2}}),
         ):
             status = runtime.runtime_status()
 
@@ -186,6 +191,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual(123.0, status["started_at"])
         self.assertEqual({"available": 2}, status["executor"])
         self.assertEqual({"alive": True}, status["dependency_dispatcher"])
+        self.assertEqual({"alive": True, "counts": {"pending": 2}}, status["email_usage_reports"])
         self.assertNotIn("email", status)
 
     def test_runtime_consumes_c_snapshot_uppercase_values_with_revision(self):

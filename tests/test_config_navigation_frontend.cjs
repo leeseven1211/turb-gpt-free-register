@@ -505,6 +505,16 @@ test('统一多选保留顺序、未知值和可搜索摘要', () => {
   assert.ok(email.includes('select class="config-multi-compat-v2" multiple'));
 });
 
+test('CLI 本地来源编辑器隐藏历史远端来源且保留本地顺序', () => {
+  const {view} = createConfigView();
+  const markup = view.control(field('EMAIL_SOURCE', '邮箱 / OTP', {
+    value: 'remail,generic_api,outlook',
+    options: [{value: 'outlook', label: 'Outlook'}, {value: 'generic_api', label: '通用 API'}],
+  }));
+  assert.doesNotMatch(markup, /remail/);
+  assert.match(markup, /data-key="EMAIL_SOURCE" value="generic_api,outlook"/);
+});
+
 test('敏感字段默认留空不清除，并提供显式清除入口', () => {
   const {view} = createConfigView([
     field('API_KEY', '通用配置', {secret: true, configured: true}),
@@ -608,21 +618,15 @@ test('隐藏的复合空草稿保存前仍校验，不发送零或不限', async
   assert.equal(view.pending.PROXY_POOL_WAIT_TIMEOUT, null);
 });
 
-test('iCloud forward_butler 才会让 Email Butler 作为依赖可见', () => {
+test('固定收码配置不依赖 CLI 来源顺序或历史桥接开关', () => {
   const fields = [
-    field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'icloud_hide'}),
+    field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'outlook'}),
     field('ICLOUD_HME_INBOX_MODE', '邮箱 / OTP', {value: 'forward_imap'}),
+    field('EMAIL_BUTLER_API_BASE', '邮箱 / OTP', {value: 'https://butler.example.test/v1'}),
   ];
   const {view} = createConfigView(fields);
-  assert.equal(view.emailVisible('Email Butler'), false);
-  view.setPending('ICLOUD_HME_INBOX_MODE', 'forward_butler');
   assert.equal(view.emailVisible('Email Butler'), true);
-  view.setPending('ICLOUD_HME_INBOX_MODE', 'sidecar');
-  view.setPending('EMAIL_SOURCE', 'icloud_hide,email_butler');
-  assert.equal(view.emailVisible('Email Butler'), true);
-  view.setPending('EMAIL_SOURCE', 'icloud_hme');
-  view.setPending('ICLOUD_HME_INBOX_MODE', 'forward_butler');
-  assert.equal(view.emailVisible('Email Butler'), true);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), true);
 });
 
 test('仅新 Butler 来源时仍显示已启用的历史 HME 桥接配置', () => {
@@ -630,11 +634,11 @@ test('仅新 Butler 来源时仍显示已启用的历史 HME 桥接配置', () =
     field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'email_butler'}),
     field('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', '邮箱 / OTP', {type: 'bool', value: false}),
   ]);
-  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), false);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), true);
   view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', true);
   assert.equal(view.emailVisible('iCloud 隐藏邮箱'), true);
   view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', false);
-  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), false);
+  assert.equal(view.emailVisible('iCloud 隐藏邮箱'), true);
 });
 
 test('历史 HME 桥接启用时配置页提示 Butler 管理入口', () => {
@@ -644,7 +648,20 @@ test('历史 HME 桥接启用时配置页提示 Butler 管理入口', () => {
   assert.match(view.hmeTools(), /Email Butler/);
   assert.doesNotMatch(view.hmeTools(), /btnTestICloudHMEV2|btnLoadICloudHMEAccountsV2/);
   view.setPending('ICLOUD_HME_BUTLER_BRIDGE_ENABLED', false);
-  assert.match(view.hmeTools(), /btnTestICloudHMEV2/);
+  assert.doesNotMatch(view.hmeTools(), /btnTestICloudHMEV2|btnLoadICloudHMEAccountsV2/);
+});
+
+test('邮箱收码页不再显示远端库存或账号管理操作', () => {
+  const {view} = createConfigView();
+  for (const fields of [
+    [field('CLOUDMAIL_AUTH_TOKEN', '邮箱 / OTP')],
+    [field('MAILCODE_API_KEY', '邮箱 / OTP')],
+    [field('ICLOUD_HME_API_BASE', '邮箱 / OTP')],
+  ]) {
+    view.fields(fields);
+    const markup = view.renderDomain('邮箱 / OTP', fields);
+    assert.doesNotMatch(markup, /btnGenCloudMailToken|btnLoadCloudMailDomains|btnTestICloudHME|btnLoadICloudHMEAccounts|loadMailCodeCatalog/);
+  }
 });
 
 test('跨菜单草稿统一保存，失败时保留待保存值', async () => {

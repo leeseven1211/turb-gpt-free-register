@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from core import postgres_store, record_store
+from core.email_resource_lifetime import eligibility_sql, require_usable
 
 TABLES = {
     'outlook': record_store.OUTLOOK_POOL,
@@ -81,16 +82,24 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
         f"NULLIF(BTRIM({alias}.used_at), '') IS NULL",
         f"lower(COALESCE({alias}.data->>'email_invalid', 'false')) NOT IN ('true', '1', 'yes')",
         f"lower(COALESCE({alias}.data->>'remote_active', 'true')) NOT IN ('false', '0', 'no')",
-        f"lower(COALESCE({alias}.data->>'archived', 'false')) NOT IN ('true', '1', 'yes')"]
+        f"lower(COALESCE({alias}.data->>'archived', 'false')) NOT IN ('true', '1', 'yes')",
+        eligibility_sql(alias)]
+    handoff = f"{alias}.data->'butler_handoff'"
+    confirmed_handoff = (f"{handoff}->>'version' = '1' AND {handoff}->>'state' = 'issued' "
+        f"AND {handoff}->>'owner_kind' = 'local_inventory' "
+        + ''.join(f"AND NULLIF(BTRIM({handoff}->>'{field}'), '') IS NOT NULL "
+                  for field in ('acquisition_id', 'owner_id', 'identity_id')))
     if source == 'email_butler':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
         conditions += [f"{alias}.data->>'provider' = 'icloud_hme'",
             f"{alias}.data->>'recipient_mode' = 'forwarded_exact_v1'",
             f"{alias}.data->>'strict_family' = 'true'",
+            confirmed_handoff,
             f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->>'inbox_profile_id' AND profile.state = 'active' AND profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1)"]
     if source == 'icloud_hide':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
         conditions.append(f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->'derivation_policy'->>'inbox_profile_id' AND profile.state = 'active' AND profile.connector IN ('forward_butler', 'forward_imap') AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND ((profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1) OR (profile.connector = 'forward_imap' AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'server'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'email', ''), '@') > 1)))")
+        conditions.append(f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id::text = {alias}.data->'derivation_policy'->>'inbox_profile_id' AND (profile.connector = 'forward_imap' OR ({confirmed_handoff})))")
     for spec, column in ((record_store.ACCOUNTS, 'email'),
                          (record_store.EMAIL_ADDRESS_ALLOCATIONS, 'address_norm'),
                          (record_store.LOCAL_EMAIL_CLAIMS, 'address_norm')):
@@ -143,7 +152,7 @@ def record_outcome(address: str, *, source: str | None = None, status='used', no
         previous = record_store.get_row_by(record_store.LOCAL_EMAIL_CLAIMS, 'address_norm', address, conn=conn)
         if not previous:
             # Butler 人工库存从不依赖远端租约，即使仅做了预览/收码也不远端释放。
-            if source != 'email_butler':
+            if source not in {'email_butler', 'icloud_hide'}:
                 return False
             row = record_store.get_row_by(TABLES[source], 'email', address, lower=True, conn=conn)
             if not row:
@@ -163,6 +172,11 @@ def record_outcome(address: str, *, source: str | None = None, status='used', no
         normalized = {'success': 'used', 'succeeded': 'used', 'registered': 'used'}.get(normalized, normalized)
         if normalized not in {'used', 'failed', 'disabled', 'replaced', 'retired'}:
             raise LocalEmailInventoryError('local_email_status_invalid', '不支持的本地邮箱结果状态')
+        from core.email_usage_reports import enqueue, has_success
+        with conn.cursor() as cursor:
+            if normalized != 'used' and has_success(address, cursor=cursor):
+                return True
+            enqueue(address, status=normalized, source=source, row=row, claim=previous, cursor=cursor)
         changes = {'status': normalized}
         if note is not None:
             changes['note'] = str(note)
@@ -233,6 +247,7 @@ def claim(source: str, *, owner_kind=None, owner_id=None, acquisition_id=None,
             row = record_store.get_row(spec, int(previous['pool_id']), conn=conn, for_update=True)
             if not row or str(row['email']).lower() != previous['address_norm']:
                 raise LocalEmailInventoryError('local_email_identity_unavailable', '原本地完整邮箱已删除或变更，不能改领其他地址')
+            require_usable(row)
             _bind_job(conn, row, source, previous['id'], batch, job_id)
             return row
         table = postgres_store.qualified(spec.name)
@@ -250,6 +265,7 @@ def claim(source: str, *, owner_kind=None, owner_id=None, acquisition_id=None,
                 if not cursor.fetchone():
                     continue
             original = record_store.get_row(spec, candidate['id'], conn=conn)
+            require_usable(original)
             profile_id = ((original.get('derivation_policy') or {}).get('inbox_profile_id')
                           if source == 'icloud_hide' else original.get('inbox_profile_id'))
             claim_id = record_store.insert_row(record_store.LOCAL_EMAIL_CLAIMS, {

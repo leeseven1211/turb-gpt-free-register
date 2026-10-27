@@ -946,6 +946,9 @@ _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
 
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     **_BUTLER_RECIPIENT_CAUSES,
+    "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
+    "email_resource_expiry_invalid": ("MAIL-RESOURCE-002", "邮箱有效期格式无效，需要明确带时区的绝对时间"),
+    "email_resource_read_failed": ("MAIL-RESOURCE-003", "原邮箱取码接口不可用，请检查其状态及有效期"),
     "email_cutover_target_invalid": ("MAIL-ROUTE-001", "Butler 迁移目标配置或回执无效"),
     "email_cutover_route_changed": ("MAIL-ROUTE-002", "收件路由已变化，请重新预览后重跑"),
     "icloud_result_conflict": ("MAIL-REPORT-001", "相同操作的 HME 上报结果发生冲突"),
@@ -1351,6 +1354,10 @@ def _cause_error_projection(
         projection["title"] = f"邮箱库存 · {cause['cause_summary']}"
         if cause["cause_code"] == "email_derivation_inventory_empty":
             projection.update(retryability="retryable", next_action="generate_email_inventory")
+    if cause['cause_code'].startswith('email_resource_'):
+        projection.update(source='external', source_label='邮箱资源', next_action='inspect_email_resource')
+        if cause['cause_code'] in {'email_resource_expired', 'email_resource_expiry_invalid'}:
+            projection['retryability'] = 'not_retryable'
     if error_code:
         projection["original_error_code"] = error_code
     return projection
@@ -1379,7 +1386,7 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
-    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_"))
+    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES):
         cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (

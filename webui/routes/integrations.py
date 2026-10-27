@@ -102,20 +102,8 @@ def create_integrations_blueprint(context: WebUIContext):
 
     @bp.get("/api/icloud-hme/accounts")
     def api_icloud_hme_accounts():
-        """只读已保存连接的账号目录，不同步、创建或领取隐藏邮箱。"""
-        try:
-            from core.icloud_hme_client import list_accounts
-
-            accounts = list_accounts()
-            return jsonify({"ok": True, "items": [
-                {"id": str(item["id"]), "label": str(item.get("name") or item.get("label") or item["id"]),
-                 "status": str(item.get("status") or "unknown")}
-                for item in accounts if isinstance(item, dict) and item.get("id")
-            ]})
-        except Exception as exc:
-            # 异常可能携带服务 URL 或凭据；页面只显示可操作的简短说明。
-            logger.warning("读取 iCloud 账号目录失败：%s", type(exc).__name__)
-            return jsonify({"ok": False, "error": "无法读取 iCloud 账号目录，请检查已保存的连接配置；当前账号选择已保留"}), 400
+        return jsonify({"ok": False, "reason_code": "email_management_managed_by_service",
+                        "error": "邮箱账号和库存请在邮箱服务中管理；Turb 仅导入并使用邮箱。"}), 410
 
     @bp.post("/api/proxy-provider/test")
     def api_proxy_provider_test():
@@ -162,28 +150,8 @@ def create_integrations_blueprint(context: WebUIContext):
 
     @bp.post("/api/icloud-hme/test")
     def api_icloud_hme_test():
-        """连接本机 iCloud HME 服务、同步别名池并验证实际转发收件通道。"""
-        data = request.get_json(silent=True) or {}
-        try:
-            from core.icloud_hme_client import test_connection
-
-            result = test_connection(
-                api_base=str(data.get("api_base") or "").strip() or None,
-                account_id=str(data.get("account_id") or "").strip() or None,
-                timeout=data.get("timeout"),
-            )
-            return jsonify({
-                "ok": True,
-                **result,
-                "message": (
-                    f"连接成功：远端 {result.get('remote_aliases', 0)} 个别名，"
-                    f"本地可用 {result.get('pool', {}).get('available', 0)} 个，"
-                    f"收件通道 {result.get('inbox_method') or 'unknown'}"
-                ),
-            })
-        except Exception as exc:
-            logger.warning("iCloud HME 本地测试失败：%s", type(exc).__name__)
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+        return jsonify({"ok": False, "reason_code": "email_management_managed_by_service",
+                        "error": "邮箱同步和创建请在邮箱服务中完成，再将已有邮箱导入 Turb。"}), 410
 
     @bp.post("/api/email-butler/test-connection")
     def api_email_butler_test_connection():

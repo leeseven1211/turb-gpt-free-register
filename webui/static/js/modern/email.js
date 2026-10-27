@@ -688,11 +688,13 @@ function setImportSourceV2(val) {
   const hint = document.getElementById('importFormatHintV2');
   const formats = {
     outlook: ['email----password----clientId----refreshToken', '每行一条，支持 ---- 和 ==== 分隔符；多余字段不会写入邮箱池。'],
-    generic_api: ['email----取码地址', '每行一条，支持 ---- 和 ==== 分隔符；保留现有通用 API 导入格式。'],
-    email_butler: ['one@icloud.com\ntwo+tag@icloud.com', '每行一个完整 iCloud HME 地址；请从 Butler 已有库存手动复制。其他类型请选择 Outlook 或通用 API。'],
+    generic_api: ['email----取码地址----2026-10-28T12:00:00+08:00', '每行一条，第三字段可填写带时区的有效期（ISO8601，如 2026-10-28T12:00:00+08:00 或 Z）；每行有效期优先于批次值，旧两段格式仍支持。'],
+    email_butler: ['one@icloud.com\ntwo+tag@icloud.com', '每行一个完整 iCloud HME 地址；手动导入时将原地址交接给 Turb，Butler 不再重复分配。其他类型请选择 Outlook 或通用 API。'],
   };
   if (text) text.placeholder = formats[next][0];
   if (hint) hint.textContent = formats[next][1];
+  const expiry = document.getElementById('importExpiryFieldV2');
+  if (expiry) expiry.hidden = next !== 'generic_api';
 }
 function openOutlookImportModal(source = '') {
   const modal = $('#outlookImportModal');
@@ -758,8 +760,10 @@ function bindOutlookImportModal() {
   }
   const sourceEl = $('#importSourceV2');
   const textEl = $('#importTextV2');
+  const expiryEl = $('#importExpiresAtV2');
   if (sourceEl) sourceEl.addEventListener('change', clearOutlookImportPreview);
   if (textEl) textEl.addEventListener('input', clearOutlookImportPreview);
+  if (expiryEl) expiryEl.addEventListener('input', clearOutlookImportPreview);
   if (previewBtn) previewBtn.addEventListener('click', previewOutlookImport);
   if (submitBtn) submitBtn.addEventListener('click', () => doImportOutlook());
 }
@@ -788,6 +792,10 @@ function renderOutlookImportPreview(data) {
     ${data.extra_fields ? `<p class="outlook-import-preview-note">检测到 ${esc(data.extra_fields)} 个多余字段，导入时会忽略。</p>` : ''}
     ${invalidDetail}`;
 }
+function outlookImportPayloadV2(text, source) {
+  const expiresAt = source === 'generic_api' ? String($('#importExpiresAtV2')?.value || '').trim() : '';
+  return {text, source, ...(expiresAt ? {expires_at: expiresAt} : {})};
+}
 async function previewOutlookImport() {
   const text = $('#importTextV2')?.value || '';
   const source = $('#importSourceV2')?.value || 'outlook';
@@ -797,7 +805,7 @@ async function previewOutlookImport() {
   if (previewBtn) { previewBtn.disabled = true; previewBtn.textContent = '解析中…'; }
   try {
     const data = await api('/api/outlook/import-preview', {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, source}),
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(outlookImportPayloadV2(text, source)),
     });
     outlookImportPreview = data;
     renderOutlookImportPreview(data);
@@ -826,7 +834,7 @@ async function doImportOutlook() {
       if (resultEl) resultEl.innerHTML = '<div class="banner warn">没有可新增的邮箱资源，请修改内容后重新预览。</div>';
       return;
     }
-    const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, source}) });
+    const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(outlookImportPayloadV2(text, source)) });
     const extra = r.invalid || r.extra_fields ? `；无效 ${r.invalid || 0} 行，忽略多余字段 ${r.extra_fields || 0} 个` : '';
     const msg = `导入邮箱池：解析 ${r.parsed} 行，新增 ${r.inserted}，跳过 ${r.skipped}${extra}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;

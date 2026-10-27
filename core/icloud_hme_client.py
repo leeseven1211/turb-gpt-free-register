@@ -262,135 +262,12 @@ def sync_aliases(
     api_base: str | None = None,
     timeout: int | None = None,
 ) -> dict:
-    """按 TTL 将一个或多个 Apple 侧别名集合同步到本地领取池。"""
-    global _LAST_SYNC_AT, _LAST_SYNC_KEY, _LAST_ACCOUNT_ID, _LAST_SYNC_RESULT
-    base = _normalize_base(api_base)
-    ttl = max(0, _cfg_int("ICLOUD_HME_SYNC_TTL", 300))
-
-    with _SYNC_LOCK:
-        selected_accounts = select_accounts(account_id, api_base=base, timeout=timeout)
-        account_ids = [str(item.get("id") or "").strip() for item in selected_accounts]
-        sync_key = (
-            f"{base}|{','.join(account_ids)}|{_inbox_mode()}|"
-            f"{_cfg_str('ICLOUD_HME_FORWARD_IMAP_EMAIL').lower()}"
-        )
-        now = time.monotonic()
-        if not force and _LAST_SYNC_KEY == sync_key and now - _LAST_SYNC_AT < ttl and _LAST_SYNC_RESULT:
-            cached = dict(_LAST_SYNC_RESULT)
-            cached["cached"] = True
-            return cached
-
-        from core import db
-        account_results: list[dict] = []
-        account_errors: list[dict] = []
-        synced_account_ids: list[str] = []
-        remote_count = remote_active = remote_usable = 0
-        inserted = updated = disabled = 0
-        routing_domains: set[str] = set()
-        routing_incompatible = 0
-        for account in selected_accounts:
-            selected = str(account.get("id") or "").strip()
-            try:
-                data = _request(
-                    "GET",
-                    "/api/aliases",
-                    params={"account_id": selected},
-                    api_base=base,
-                    timeout=timeout,
-                ) or {}
-                aliases = data.get("aliases") if isinstance(data, dict) else []
-                aliases = [item for item in (aliases or []) if isinstance(item, dict)]
-                prepared, routing = _prepare_imap_aliases(aliases)
-                sync = db.sync_icloud_hide_aliases(prepared, selected, full_snapshot=True)
-                synced_account_ids.append(selected)
-                remote_count += len(aliases)
-                remote_active += sum(1 for item in aliases if item.get("active", True))
-                remote_usable += int(routing.get("remote_usable") or 0)
-                routing_domains.update(routing.get("forward_domains") or [])
-                routing_incompatible += int(routing.get("forward_incompatible") or 0)
-                inserted += int(sync.get("inserted") or 0)
-                updated += int(sync.get("updated") or 0)
-                disabled += int(sync.get("disabled") or 0)
-                account_results.append({
-                    "account_id": selected,
-                    "name": str(account.get("name") or ""),
-                    "status": str(account.get("status") or ""),
-                    "remote_aliases": len(aliases),
-                    "remote_active": sum(1 for item in aliases if item.get("active", True)),
-                    "remote_usable": int(routing.get("remote_usable") or 0),
-                    "sync": sync,
-                })
-            except Exception as exc:
-                account_errors.append({
-                    "account_id": selected,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc)[:300],
-                })
-
-        if not synced_account_ids and account_errors:
-            details = "; ".join(
-                f"{item['account_id']}: {item['error']}" for item in account_errors
-            )
-            raise ICloudHMEError(f"iCloud HME 所有账号同步失败: {details[:500]}")
-
-        grouped = db.icloud_hide_email_pool_summary_by_account(synced_account_ids)
-        result = {
-            "inserted": inserted,
-            "updated": updated,
-            "disabled": disabled,
-            "total": db.icloud_hide_email_pool_summary().get("total", 0),
-            "cached": False,
-            "account_id": account_ids[0] if account_ids else "",
-            "account_ids": account_ids,
-            "synced_account_ids": synced_account_ids,
-            "accounts": account_results,
-            "account_errors": account_errors,
-            "remote_count": remote_count,
-            "remote_active": remote_active,
-            "remote_usable": remote_usable,
-            "forward_domains": sorted(routing_domains),
-            "forward_incompatible": routing_incompatible,
-            "inbox_mode": _inbox_mode(),
-            "pool": db.icloud_hide_email_pool_summary(),
-            "pool_by_account": grouped,
-        }
-        _LAST_SYNC_AT = time.monotonic()
-        _LAST_SYNC_KEY = sync_key
-        _LAST_ACCOUNT_ID = account_ids[0] if account_ids else ""
-        _LAST_SYNC_RESULT = dict(result)
-        return result
-
+    """邮箱管理已迁至邮箱服务，Turb 只消费手动导入库存。"""
+    raise ICloudHMEError("email_management_retired: 请在邮箱服务管理别名，再手动导入 Turb")
 
 def create_address(label: str | None = None, account_id: str | None = None) -> ICloudHMEAccount:
-    selected = resolve_account_id(account_id)
-    prefix = _cfg_str("ICLOUD_HME_CREATE_LABEL_PREFIX", "turb") or "turb"
-    create_label = str(label or f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}").strip()
-    data = _request(
-        "POST",
-        "/api/create",
-        json_body={"account_id": selected, "label": create_label},
-        timeout=max(_timeout(), 45),
-    ) or {}
-    email = str(data.get("email") or "").strip()
-    if not email:
-        raise ICloudHMEError("iCloud HME 创建成功响应中缺少邮箱地址")
-    remote = {
-        "email": email,
-        "label": data.get("label") or create_label,
-        "forwardToEmail": data.get("forwardToEmail") or data.get("forward_to_email") or "",
-        "createdAt": data.get("created_at") or "",
-        "active": True,
-    }
-    from core import db
-    prepared, _routing = _prepare_imap_aliases([remote])
-    db.sync_icloud_hide_aliases(prepared, selected, full_snapshot=False)
-    return ICloudHMEAccount(
-        email=email,
-        account_id=selected,
-        label=str(remote["label"]),
-        forward_to_email=str(remote.get("forwardToEmail") or ""),
-    )
-
+    """禁止从消费端创建远端邮箱。"""
+    raise ICloudHMEError("email_management_retired: 请在邮箱服务创建别名，再手动导入 Turb")
 
 def pick_account(
     *,
@@ -447,17 +324,14 @@ def release_account(email: str, status: str = "available", note: str | None = No
     from core.local_email_inventory import record_outcome
     if record_outcome(email, source="icloud_hide", status=status, note=note):
         return
-    from core import email_butler_bridge
-    if email_butler_bridge.fixed_context(email) or email_butler_bridge.enabled():
-        if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
-            return
-        email_butler_bridge.release(email, status=status, note=note)
-    from core import db
-    from core.email_derivation import release_address
-
-    if release_address(email, status=status, note=note):
+    from core import email_usage_reports
+    if email_usage_reports.record_legacy_result(email, source="icloud_hide", status=status, note=note):
         return
-    db.release_icloud_hide_email(email, status=status, note=note)
+    if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved", "available"}:
+        return
+    # A historical exact HME profile can outlive both its pool row and cache.
+    # This performs no HTTP and never releases the permanent remote ownership.
+    email_usage_reports.enqueue(email, source="icloud_hide", status=status)
 
 
 def _message_timestamp(item: dict) -> float:

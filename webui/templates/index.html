@@ -175,7 +175,7 @@
   <div id="tab-register" class="hidden" data-module-view="launch">
     <div class="register-overview module-launch-only">
       <h1 class="register-title">注册机</h1>
-      <p class="sub-cell" id="registrationEmailSupplyHint">仅统计本地库存，用完后请手动导入；Email Butler 仅提供收码连接。</p>
+      <p class="sub-cell" id="registrationEmailSupplyHint">仅统计本地库存，用完后请手动导入；邮箱由 Email Butler 等邮箱服务准备。</p>
       <div class="stats">
         <div class="stat">
           <div class="stat-top">
@@ -688,7 +688,7 @@
         <div class="butler-lease-copy">
           <span>Email Butler</span>
           <h3>手动补充本地库存</h3>
-          <p>复制已有 iCloud HME 完整地址后导入本地库存。Butler 只提供收码连接，Turb 不会远端领取或自动生成邮箱。</p>
+          <p>复制已有 iCloud HME 完整地址后导入本地库存；导入时向 Butler 登记原地址归属，避免重复分配。注册任务仅领取本地库存。</p>
         </div>
         <div class="butler-lease-actions">
           <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportButlerMailboxes">导入 Butler 邮箱</button>
@@ -971,12 +971,17 @@
           </div>
           <input type="hidden" id="importSourceV2" value="outlook">
         </div>
-        <span class="outlook-import-hint">注册任务只领取本地可用库存；导入不会远端领取或生成邮箱。</span>
+        <span class="outlook-import-hint">注册任务只领取本地可用库存；Butler 导入会交接原地址，不自动生成邮箱。</span>
       </label>
       <label class="outlook-import-field">
         <span>邮箱资源</span>
         <textarea id="importTextV2" placeholder="Outlook：email----password----clientId----refreshToken&#10;通用 API：email----取码地址"></textarea>
         <small class="outlook-import-hint" id="importFormatHintV2">支持 ---- 和 ==== 分隔符；每行一条。多余字段不会写入邮箱池。</small>
+      </label>
+      <label class="outlook-import-field" id="importExpiryFieldV2" hidden>
+        <span>批次有效期（可选）</span>
+        <input type="text" id="importExpiresAtV2" placeholder="2026-10-28T12:00:00+08:00" aria-describedby="importExpiryHintV2" autocomplete="off">
+        <small class="outlook-import-hint" id="importExpiryHintV2">只补充未在第三字段填写有效期的通用 API 邮箱；请填写带时区的 ISO8601 时间。留空保留旧两段格式，不会推算有效期。</small>
       </label>
       <div class="outlook-import-preview" id="importPreviewV2" aria-live="polite"></div>
     </div>

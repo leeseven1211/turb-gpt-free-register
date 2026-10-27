@@ -67,6 +67,25 @@ test('Outlook 和通用 API 旧导入格式原样提交', async () => {
   }
 });
 
+test('通用 API 批次有效期在预览和导入一致提交，其他来源不携带旧草稿', async () => {
+  const {view, element, calls} = createImportView();
+  view.setImportSourceV2('generic_api');
+  element('importTextV2').value = 'one@example.test----https://fixture.test/code';
+  element('importExpiresAtV2').value = '2026-10-28T12:00:00+08:00';
+  assert.equal(element('importExpiryFieldV2').hidden, false);
+  assert.match(element('importFormatHintV2').textContent, /第三.*有效期/);
+  assert.match(element('importFormatHintV2').textContent, /时区/);
+  await view.previewOutlookImport();
+  await view.doImportOutlook();
+  assert.equal(calls[0].body.expires_at, '2026-10-28T12:00:00+08:00');
+  assert.equal(calls[1].body.expires_at, '2026-10-28T12:00:00+08:00');
+  view.setImportSourceV2('outlook');
+  assert.equal(element('importExpiryFieldV2').hidden, true);
+  element('importTextV2').value = 'one@example.test----password----client----refresh';
+  await view.previewOutlookImport();
+  assert.equal(Object.hasOwn(calls.at(-1).body, 'expires_at'), false);
+});
+
 test('导入清除旧的空库存缓存，刷新注册来源后新库存立即可选', async () => {
   const {context, view, element} = createImportView();
   const common = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');

@@ -29,6 +29,10 @@ class LocalEmailInventoryTests(PostgresTestCase):
 
     def add(self, source, address, **values):
         inventory = self.inventory()
+        if source in {'icloud_hide', 'email_butler'}:
+            values.setdefault('butler_handoff', {'version': 1, 'state': 'issued',
+                'owner_kind': 'local_inventory', 'owner_id': 'fixture-consumer',
+                'identity_id': 'fixture:' + address, 'acquisition_id': 'fixture:' + address})
         if source == 'icloud_hide' and 'derivation_policy' not in values:
             profile_id = record_store.insert_row(record_store.EMAIL_INBOX_PROFILES, {
                 'inbox_key': 'hme:' + address, 'connector': 'forward_butler',
@@ -60,6 +64,36 @@ class LocalEmailInventoryTests(PostgresTestCase):
                 self.assertEqual(row['status'], 'used')
                 self.assertEqual(inv.summary(source)['available'], 0)
             self.assertEqual(inv.summary()['used'], 5)
+
+    def test_fixed_butler_inventory_without_confirmed_handoff_is_not_new_supply(self):
+        inv = self.inventory()
+        for source in ['email_butler', 'icloud_hide']:
+            with self.subTest(source=source):
+                row_id = self.add(source, source + '@icloud.com')
+                record_store.patch_row(inv.TABLES[source], row_id, {'butler_handoff': {}})
+                self.assertEqual(inv.summary(source)['available'], 0)
+                self.assertIsNone(inv.claim(source, owner_kind='test', owner_id=source, acquisition_id='no-handoff:' + source))
+
+    def test_handoff_gate_preserves_existing_claim_restore(self):
+        inv = self.inventory()
+        row_id = self.add('email_butler', 'existing@icloud.com')
+        original = inv.claim('email_butler', owner_kind='test', owner_id='existing', acquisition_id='existing')
+        record_store.patch_row(inv.TABLES['email_butler'], row_id, {'butler_handoff': {}})
+        resumed = inv.claim('email_butler', owner_kind='test', owner_id='existing', acquisition_id='existing')
+        self.assertEqual(resumed['id'], original['id'])
+        self.assertEqual(record_store.count_rows(record_store.LOCAL_EMAIL_CLAIMS), 1)
+
+    def test_fixed_imap_inventory_does_not_require_butler_handoff(self):
+        inv = self.inventory()
+        profile_id = record_store.insert_row(record_store.EMAIL_INBOX_PROFILES, {
+            'inbox_key': 'imap-fixture', 'connector': 'forward_imap', 'state': 'active', 'revision': 1,
+            'credential_ref': 'LOCAL_TEST_BUTLER_SECRET',
+            'inbox_locator': {'server': 'imap.example.test', 'email': 'final@example.test'},
+        })
+        self.add('icloud_hide', 'fixed-imap@icloud.com', butler_handoff={},
+                 derivation_policy={'inbox_profile_id': profile_id})
+        self.assertEqual(inv.summary('icloud_hide')['available'], 1)
+        self.assertIsNotNone(inv.claim('icloud_hide', owner_kind='test', owner_id='imap', acquisition_id='imap'))
 
     def test_capacity_and_claim_exclude_registered_invalid_inactive_and_old_remote_claims(self):
         inv = self.inventory()

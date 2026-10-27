@@ -2234,6 +2234,7 @@
       padding: 18px 20px; overflow: auto; display: grid; gap: 16px;
     }
     .outlook-import-field { display: grid; gap: 8px; }
+    .outlook-import-field[hidden] { display: none; }
     .outlook-import-field > span {
       font-size: 13px; font-weight: 600; color: #303133;
     }
