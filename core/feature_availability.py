@@ -91,16 +91,17 @@ def _email_source_features() -> dict[str, dict[str, Any]]:
     # An empty account ID is intentional: the HME client discovers all active
     # sidecar accounts and rotates across them. A non-empty ID remains an
     # optional fixed-account override for debugging or rollback.
-    ok, reason = _all_present([
-        ("ICLOUD_HME_API_BASE", getattr(cfg, "ICLOUD_HME_API_BASE", "")),
-    ])
-    if ok and enabled_for("icloud_hide"):
+    if enabled_for("icloud_hide"):
         capacity = capacity_summary("icloud_hide")
         ok, reason = capacity["remaining"] > 0, capacity["reason"]
-    elif ok and not bool(getattr(cfg, "ICLOUD_HME_AUTO_CREATE", False)):
-        available = int(db.icloud_hide_email_pool_summary().get("available", 0) or 0)
-        if available <= 0:
-            ok, reason = False, "iCloud 隐藏邮箱库存为空，且未开启自动创建"
+    else:
+        ok, reason = _all_present([
+            ("ICLOUD_HME_API_BASE", getattr(cfg, "ICLOUD_HME_API_BASE", "")),
+        ])
+        if ok and not bool(getattr(cfg, "ICLOUD_HME_AUTO_CREATE", False)):
+            available = int(db.icloud_hide_email_pool_summary().get("available", 0) or 0)
+            if available <= 0:
+                ok, reason = False, "iCloud 隐藏邮箱库存为空，且未开启自动创建"
     add("icloud_hide", ok, reason)
     return results
 

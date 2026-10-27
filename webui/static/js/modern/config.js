@@ -270,7 +270,7 @@ function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
-  if (key.startsWith('EMAIL_DERIVATION_')) return ['邮箱子地址', '统一管理母邮箱的子地址额度；提高额度后继续生成，历史地址始终保留归属'];
+  if (key.startsWith('EMAIL_DERIVATION_')) return ['邮箱子地址', '管理领取来源和母邮箱生成额度；先在邮箱子地址菜单生成库存，新任务只领取已有库存'];
   if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', 'Email Butler 通用 /v1 发号、收信、释放与封号信号配置'];
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];

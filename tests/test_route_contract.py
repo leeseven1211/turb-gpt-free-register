@@ -19,9 +19,11 @@ class FlaskRouteContractTests(PostgresTestCase):
     # 协议邮箱换绑路由、任务终止入口、任务中心批量动作和 iCloud HME 账号目录。
     # 本轮移植新增巡检历史/启动/取消/失败详情、已废清理及 MailCode 商品余额接口。
     # 配置页补充 Roxy 工作区目录，本轮新增邮箱子地址概况和分配台账两条只读路由。
+    # 本轮对照 main 的 155 条路由，确认原路由未变；库存管理仅新增显式生成
+    # 与批量停用/恢复两条写入路由，同时校正此前遗漏更新的历史快照。
     # 保持这些变更显式记录，不从当前路由表推导基线。
-    EXPECTED_ROUTE_COUNT = 140
-    EXPECTED_SHA256 = "f71888f2b205e28110af3bd34d3a8465c3bd58fbf4b6519c5adb231091384149"
+    EXPECTED_ROUTE_COUNT = 157
+    EXPECTED_SHA256 = "3e755b94761304f0b1bee740a29c09cbe63d5160579a3335228bc366374a33b0"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

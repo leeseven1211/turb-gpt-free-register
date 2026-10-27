@@ -24,10 +24,16 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
             inbox_locator={"server": "imap.example.test", "port": 993, "email": "sink@gmail.com"},
         )
         self.scope = patch.multiple(cfg, USE_EMAIL_SERVICE=True, EMAIL_DERIVATION_ENABLED=True, EMAIL_DERIVATION_SOURCES="icloud_hide",
-                                    EMAIL_DERIVATION_MAX_CHILDREN=3, EMAIL_DERIVATION_TAG_LENGTH=6)
+                                    EMAIL_DERIVATION_MAX_CHILDREN=3, EMAIL_DERIVATION_TAG_LENGTH=6, ICLOUD_HME_ACCOUNT_ID="")
         self.scope.start()
         self.addCleanup(self.scope.stop)
+        self.secret_scope = patch.dict(os.environ, {"TEST_DERIVATION_SECRET": "test-inbox-password"})
+        self.secret_scope.start()
+        self.addCleanup(self.secret_scope.stop)
         self.addCleanup(patch.stopall)
+        with patch.object(service, "_forward_profile", return_value=self.profile), patch(
+            "core.icloud_hme_client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
+            service.generate_inventory("icloud_hide", 3, "integration-stock")
 
     def acquire(self, number=1, **kwargs):
         with patch.object(service, "_forward_profile", return_value=self.profile), patch(
@@ -42,9 +48,14 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         first = [self.acquire(index) for index in range(1, 4)]
         self.assertEqual(len(set(first)), 3)
         self.assertTrue(all(len(address.split("+")[1].split("@")[0]) == 6 for address in first))
-        with self.assertRaisesRegex(RuntimeError, "额度"):
+        with self.assertRaisesRegex(RuntimeError, "库存"):
             self.acquire(4)
-        with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 4):
+        with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 4), patch.object(
+            service, "_forward_profile", return_value=self.profile), patch(
+            "core.icloud_hme_client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
+            with self.assertRaisesRegex(RuntimeError, "库存"):
+                self.acquire(4)
+            service.generate_inventory("icloud_hide", 1, "integration-more")
             fourth = self.acquire(4)
         self.assertNotIn(fourth, first)
         self.assertEqual(self.acquire(1), first[0])
@@ -95,7 +106,7 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         self.assertTrue(parent["archived"])
         self.assertFalse(parent["derivation_policy"]["enabled"])
         self.assertIsNotNone(service.restore_address(address))
-        with self.assertRaisesRegex(RuntimeError, "母邮箱"):
+        with self.assertRaisesRegex(RuntimeError, "库存"):
             self.acquire(2)
 
     def test_child_cannot_be_reimported_as_a_second_direct_resource(self):
@@ -189,7 +200,8 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         page = service.list_allocations(source="icloud_hide")
         self.assertEqual(page["items"][0]["email"], address)
         summary = service.public_summary("icloud_hide")
-        self.assertEqual(summary["parents"][0]["remaining"], 2)
+        self.assertEqual(summary["parents"][0]["remaining"], 0)
+        self.assertEqual(summary["available"], 2)
         self.assertNotIn("credential_ref", json.dumps(page))
         self.assertNotIn("TEST_DERIVATION_SECRET", json.dumps(summary))
 

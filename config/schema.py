@@ -944,11 +944,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "EMAIL_DERIVATION_ENABLED", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
-        "label": "启用邮箱子地址", "help": "新注册任务按冻结配置生成子地址；关闭后已有子地址仍可续跑、收码和登录",
+        "label": "启用邮箱子地址", "help": "新任务从已生成的子地址库存领取；库存不足时先到邮箱子地址页面生成补充，关闭后已有地址仍可续跑、收码和登录",
     },
     {
         "key": "EMAIL_DERIVATION_SOURCES", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "子地址来源", "help": "选择允许派生的来源；还需具备精确收码能力，不能仅根据邮箱域名判断",
+        "label": "子地址来源", "help": "选择注册时使用子地址库存的来源；还需具备精确收码能力，人工生成入口位于邮箱池的邮箱子地址菜单",
     },
     {
         "key": "EMAIL_DERIVATION_MAX_CHILDREN", "file": "email.py", "type": "int", "group": "邮箱 / OTP",

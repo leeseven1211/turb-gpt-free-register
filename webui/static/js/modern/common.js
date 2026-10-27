@@ -251,6 +251,7 @@ const PAGERS = {
   jobs:     { page: 1, size: 20 },
   accounts: { page: 1, size: 10 },
   outlook:  { page: 1, size: 20 },
+  derivations: { page: 1, size: 50 },
   codex:    { page: 1, size: 20 },
   accountTasks: { page: 1, size: 20 },
 };
@@ -272,12 +273,13 @@ function _renderPager(id, total) {
   const el = document.getElementById('pager-' + id);
   if (el) el.innerHTML = html;
 
-  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook' || id === 'accountTasks') {
+  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook' || id === 'accountTasks' || id === 'derivations') {
     const elV2 = document.getElementById(
       id === 'jobs' ? 'pager-jobs-v2'
         : id === 'accounts' ? 'pager-accounts-v2'
         : id === 'codex' ? 'pager-codex-v2'
         : id === 'accountTasks' ? 'pager-accountTasks-v2'
+        : id === 'derivations' ? 'pager-derivations-v2'
         : 'pager-outlook-v2'
     );
     if (elV2) {
@@ -285,6 +287,7 @@ function _renderPager(id, total) {
         : id === 'accounts' ? 'accountsPagerSize'
         : id === 'codex' ? 'codexPagerSize'
         : id === 'accountTasks' ? 'accountTasksPagerSize'
+        : id === 'derivations' ? 'derivationsPagerSize'
         : 'outlookPagerSize';
       const v2Sizes = [10, 20, 30, 50, 100];
       const pages = [];
@@ -347,6 +350,7 @@ function pagerGoTo(id, page) {
     : id === 'outlook' ? OUTLOOK_TOTAL
     : id === 'codex' ? CODEX_TOTAL
     : id === 'accountTasks' ? ACCOUNT_TASKS_TOTAL
+    : id === 'derivations' ? EMAIL_DERIVATION_VIEW.total
     : (p.size || 20);
   const totalPages = Math.max(1, Math.ceil(Number(total || 0) / p.size) || 1);
   p.page = Math.max(1, Math.min(parseInt(page, 10) || 1, totalPages));
@@ -357,7 +361,7 @@ function pagerJump(id, val) {
 }
 
 function _reloadPagedList(id) {
-  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks })[id]?.();
+  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks, derivations: loadEmailDerivationResources })[id]?.();
 }
 function pagerGo(id, dir) {
   PAGERS[id].page = Math.max(1, PAGERS[id].page + dir);
@@ -386,6 +390,7 @@ const TABLE_DEFAULT_WIDTHS = {
   accounts: [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
+  derivations: [4, 23, 20, 10, 10, 15, 10, 12],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
   proxyCurrent: [145, 144, 108, 156, 126, 220, 88, 188],
   proxyHistory: [145, 144, 108, 156, 126, 220, 188, 92],
@@ -588,6 +593,7 @@ function initResizableTables() {
     btnResetAccountsColumnsV2: 'accounts',
     btnResetCodexColumnsV2: 'codex',
     btnResetOutlookColumnsV2: 'outlook',
+    btnResetEmailDerivationColumns: 'derivations',
     btnResetAccountTaskColumnsV2: 'accountTasks',
   };
   Object.entries(resetButtons).forEach(([id, key]) => {
@@ -601,6 +607,7 @@ const COLUMN_FILTER_RESET_IDS = {
   accounts: 'btnResetAccountFiltersV2',
   codex: 'btnResetCodexFiltersV2',
   outlook: 'btnResetOutlookFiltersV2',
+  derivations: 'btnResetEmailDerivationFilters',
   accountTasks: 'btnResetAccountTaskFiltersV2',
 };
 
@@ -1175,7 +1182,7 @@ function normalizeNavigationState(raw) {
   const tab = NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'overview';
   const module = navigationModuleForTab(tab);
   const view = raw?.view;
-  if (module && view && MODULE_VIEW_META[module]?.[view]) return {tab, module, view};
+  if (module && view && MODULE_VIEW_META[module]?.[view] !== undefined) return {tab, module, view};
   return {tab};
 }
 function currentNavigationState() {
@@ -1291,6 +1298,7 @@ setInterval(updateTopbarClock, 30000);
 
 function closePageDialogsForNavigation() {
   // 离开页面时走完整关闭逻辑，清理轮询、焦点状态和滚动锁。
+  if (document.getElementById('emailDerivationGenerateDialog')?.open && typeof closeEmailDerivationGenerate === 'function') closeEmailDerivationGenerate({restoreFocus:false});
   const dialogs = [
     ['accountTaskLogPanel', typeof closeAccountTaskLogModal === 'function' ? closeAccountTaskLogModal : null],
     ['accountDetailDrawer', typeof closeAccountDetail === 'function' ? closeAccountDetail : null],
@@ -1330,7 +1338,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (typeof updateModalScrollLock === 'function') updateModalScrollLock();
   const meta = TAB_META[tab];
   const currentView = document.getElementById(`tab-${contentTab}`)?.dataset.moduleView;
-  const description = MODULE_VIEW_META[tab]?.[currentView] || meta.description;
+  const description = MODULE_VIEW_META[tab]?.[currentView] ?? meta.description;
   if ($('#topbarTitle')) $('#topbarTitle').textContent = meta.title;
   if ($('#topbarDescription')) $('#topbarDescription').textContent = description;
   document.title = `${meta.title} · Turb Console`;
@@ -1370,7 +1378,7 @@ const MODULE_VIEW_META = {
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
     list: '查询、导入和批量维护邮箱资源',
-    derivations: '查看邮箱子地址、母邮箱归属和关联账号任务',
+    derivations: '',
   },
   'proxy-traffic': {
     pool: '查看独立代理池库存、容量和线路状态',
@@ -1379,7 +1387,7 @@ const MODULE_VIEW_META = {
 };
 function setModuleView(module, view, persist=true, historyMode='push') {
   const tab = document.getElementById(`tab-${module}`);
-  if (!tab || !MODULE_VIEW_META[module]?.[view]) return;
+  if (!tab || MODULE_VIEW_META[module]?.[view] === undefined) return;
   if (tab.dataset.moduleView !== view) closePageDialogsForNavigation();
   tab.dataset.moduleView = view;
   if (typeof updateModalScrollLock === 'function') updateModalScrollLock();

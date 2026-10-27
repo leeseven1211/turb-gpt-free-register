@@ -5,6 +5,27 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_subaddress_inventory_shortage_is_specific_and_retryable(self):
+        for task_type in ('registration', 'email_change'):
+            info = classify_task_error(
+                '所选邮箱领取失败: email_derivation_inventory_empty: 子地址库存不足，请先生成子邮箱',
+                task_type=task_type, error_code='unknown.unclassified')
+            self.assertEqual(info['code'], 'email_derivation_inventory_empty')
+            self.assertEqual(info['display_code'], 'MAIL-STOCK-001')
+            self.assertEqual(info['retryability'], 'retryable')
+            self.assertEqual(info['next_action'], 'generate_email_inventory')
+
+    def test_subaddress_structured_causes_are_all_classified(self):
+        for code in ('email_derivation_inventory_empty', 'email_derivation_identity_conflict',
+                     'email_derivation_source_unsupported', 'email_derivation_profile_unavailable',
+                     'email_derivation_capacity_exhausted', 'email_derivation_request_conflict',
+                     'email_derivation_source_disabled', 'email_derivation_parent_unavailable',
+                     'email_derivation_address_invalid', 'email_derivation_address_collision'):
+            with self.subTest(code=code):
+                info = classify_task_error('子地址操作失败', error_code=code)
+                self.assertEqual(info['code'], code)
+                self.assertNotEqual(info['display_code'], 'UNK-000')
+
     def test_existing_account_without_session_keeps_specific_cause_and_unknown_outcome(self):
         info = classify_task_error(
             "request_unknown: 既存账号完整登录态尚未确认",

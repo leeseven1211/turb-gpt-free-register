@@ -351,12 +351,21 @@ EMAIL_ADDRESS_ALLOCATIONS = TableSpec(
         "address": "TEXT NOT NULL", "address_norm": "TEXT NOT NULL",
         "source": "TEXT NOT NULL", "parent_kind": "TEXT NOT NULL", "parent_id": "BIGINT NOT NULL",
         "parent_address": "TEXT NOT NULL", "inbox_profile_id": "BIGINT NOT NULL",
-        "strategy": "TEXT NOT NULL", "tag": "TEXT NOT NULL", "acquisition_id": "TEXT NOT NULL",
-        "owner_kind": "TEXT NOT NULL", "owner_id": "TEXT NOT NULL", "state": "TEXT NOT NULL",
+        "strategy": "TEXT NOT NULL", "tag": "TEXT NOT NULL", "generation_key": "TEXT", "acquisition_id": "TEXT",
+        "owner_kind": "TEXT", "owner_id": "TEXT", "state": "TEXT NOT NULL",
         "account_id": "BIGINT", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
     },
-    unique=("address_norm", "acquisition_id"),
-    indexes=(("source", "parent_id"), ("owner_kind", "owner_id"), ("account_id",), ("state",)),
+    unique=("address_norm", "acquisition_id", "generation_key"),
+    indexes=(("source", "parent_id"), ("owner_kind", "owner_id"), ("account_id",), ("state",), ("source", "state", "id")),
+)
+
+EMAIL_ADDRESS_GENERATION_REQUESTS = TableSpec(
+    name="email_address_generation_requests",
+    promoted={
+        "request_id": "TEXT NOT NULL", "source": "TEXT NOT NULL", "requested": "INTEGER NOT NULL",
+        "parent_id": "BIGINT", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("request_id",),
 )
 
 EMAIL_INBOX_PROFILES = TableSpec(
@@ -522,6 +531,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     DOMAIN_POOL,
     ICLOUD_HIDE_POOL,
     EMAIL_ADDRESS_ALLOCATIONS,
+    EMAIL_ADDRESS_GENERATION_REQUESTS,
     EMAIL_INBOX_PROFILES,
     EMAIL_OTP_REQUESTS,
     CODEX_CREDENTIALS,
@@ -737,6 +747,10 @@ def init() -> None:
                         )
                     if spec is ACCOUNTS:
                         _backfill_account_promotion_columns(cur)
+                    if spec is EMAIL_ADDRESS_ALLOCATIONS:
+                        # 已部署账本的归属列原为必填；人工库存尚无业务归属。
+                        for column in ("acquisition_id", "owner_kind", "owner_id"):
+                            cur.execute(f"ALTER TABLE {_qualified(spec)} ALTER COLUMN {postgres_store.quote_identifier(column)} DROP NOT NULL")
                     for col in spec.unique:
                         idx = postgres_store.quote_identifier(f"uq_{spec.name}_{col}")
                         cur.execute(

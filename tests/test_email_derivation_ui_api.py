@@ -1,4 +1,4 @@
-"""子地址配置和只读台账接口的公开边界。"""
+"""子地址库存管理接口的参数与公开边界。"""
 import logging
 import os
 from pathlib import Path
@@ -44,8 +44,9 @@ def test_derivation_defaults_and_editable_contract_are_consistent():
 
 @pytest.fixture
 def derivation_client():
-    """只注册读接口，替换仓储边界，不连接数据库或启动 worker。"""
-    service = SimpleNamespace(public_summary=Mock(), list_allocations=Mock())
+    """替换库存服务边界，不连接数据库或启动 worker。"""
+    service = SimpleNamespace(public_summary=Mock(), list_allocations=Mock(),
+                              generate_inventory=Mock(), update_inventory_status=Mock())
     app = Flask(__name__)
     app.register_blueprint(create_email_pool_blueprint(SimpleNamespace(logger=logging.getLogger(__name__))))
     with patch.object(core, "email_derivation", service, create=True):
@@ -99,3 +100,84 @@ def test_all_source_is_unfiltered_and_uses_bounded_page(derivation_client):
     response = client.get("/api/email-derivation/allocations?source=all")
     assert response.status_code == 200
     service.list_allocations.assert_called_once_with(source=None, parent_id=None, page=1, page_size=50)
+
+
+def test_column_filters_and_inventory_capabilities_are_forwarded(derivation_client):
+    client, service = derivation_client
+    service.list_allocations.return_value = {"items": [{"id": 7, "state": "available", "can_disable": True,
+        "can_restore": False, "generation_key": "private-key"}], "total": 1}
+    response = client.get('/api/email-derivation/allocations', query_string={
+        "q": "child", "parent_q": "parent", "source": "outlook", "state": "available",
+        "related_q": "42", "created_from": "2026-10-01", "created_to": "2026-10-27"})
+    assert response.status_code == 200
+    service.list_allocations.assert_called_once_with(source="outlook", parent_id=None, page=1, page_size=50,
+        q="child", parent_q="parent", state="available", related_q="42", created_from="2026-10-01", created_to="2026-10-27")
+    assert response.get_json()["items"] == [{"id": 7, "state": "available", "can_disable": True, "can_restore": False}]
+
+
+@pytest.mark.parametrize('query', ['state=bad', 'created_from=2026-02-30', 'created_to=not-date',
+    'created_from=2026-10-27&created_to=2026-10-01', 'q=' + 'x' * 513])
+def test_invalid_column_filters_are_rejected(derivation_client, query):
+    client, service = derivation_client
+    assert client.get('/api/email-derivation/allocations?' + query).status_code == 400
+    service.list_allocations.assert_not_called()
+
+
+def test_generation_preserves_stable_request_and_reports_partial_capacity(derivation_client):
+    client, service = derivation_client
+    service.generate_inventory.return_value = {"requested": 5, "created": 3, "reused": 0, "shortfall": 2,
+        "reason_code": "email_derivation_capacity_exhausted", "reason": "母邮箱剩余额度不足", "private": "secret"}
+    response = client.post('/api/email-derivation/generate', json={"source": "icloud_hide", "count": 5,
+        "request_id": "stable-request-001", "parent_id": 8})
+    assert response.status_code == 200
+    service.generate_inventory.assert_called_once_with(source="icloud_hide", count=5,
+        request_id="stable-request-001", parent_id=8)
+    assert response.get_json() == {"ok": True, "requested": 5, "created": 3, "reused": 0, "shortfall": 2,
+        "reason_code": "email_derivation_capacity_exhausted", "reason": "母邮箱剩余额度不足"}
+
+
+@pytest.mark.parametrize('data', [[], {}, {"source": "unknown", "count": 1, "request_id": "request-001"},
+    {"source": "outlook", "count": True, "request_id": "request-001"},
+    {"source": "outlook", "count": 1001, "request_id": "request-001"},
+    {"source": "outlook", "count": 1.5, "request_id": "request-001"},
+    {"source": "outlook", "count": 1, "request_id": ""},
+    {"source": "outlook", "count": 1, "request_id": "request-001", "parent_id": False}])
+def test_invalid_generation_does_not_reach_service(derivation_client, data):
+    client, service = derivation_client
+    response = client.post('/api/email-derivation/generate', json=data)
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "email_derivation_invalid_request"
+    service.generate_inventory.assert_not_called()
+
+
+def test_bulk_inventory_management_reports_immutable_rows(derivation_client):
+    client, service = derivation_client
+    service.update_inventory_status.return_value = {"updated": 1, "skipped": 1, "results": [
+        {"id": 1, "ok": True, "reason_code": "", "reason": "", "private": "secret"},
+        {"id": 2, "ok": False, "reason_code": "email_derivation_already_claimed", "reason": "已分配地址不能重新入库"}]}
+    response = client.post('/api/email-derivation/status-bulk', json={"ids": [1, 2, 1], "state": "disabled"})
+    assert response.status_code == 200
+    service.update_inventory_status.assert_called_once_with(ids=[1, 2], state="disabled")
+    assert response.get_json()["updated"] == 1
+    assert response.get_json()["skipped"] == 1
+    assert "private" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize('data', [{"ids": [1], "state": "reserved"}, {"ids": [True], "state": "disabled"},
+    {"ids": [], "state": "available"}, {"ids": ["1"], "state": "available"}, []])
+def test_invalid_bulk_changes_are_rejected(derivation_client, data):
+    client, service = derivation_client
+    assert client.post('/api/email-derivation/status-bulk', json=data).status_code == 400
+    service.update_inventory_status.assert_not_called()
+
+
+def test_known_generation_errors_keep_specific_reason_code(derivation_client):
+    client, service = derivation_client
+    error = RuntimeError('email_derivation_profile_unavailable: 母邮箱收件配置不可用')
+    error.code = 'email_derivation_profile_unavailable'
+    service.generate_inventory.side_effect = error
+    response = client.post('/api/email-derivation/generate', json={"source": "outlook", "count": 1,
+        "request_id": "request-001"})
+    assert response.status_code == 409
+    assert response.get_json()["reason_code"] == error.code
+    assert response.get_json()["error"] == '母邮箱收件配置不可用'

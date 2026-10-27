@@ -19,7 +19,7 @@ _PARENT_TABLES = {
     "cloudflare_domain": record_store.DOMAIN_POOL,
     "generic_api": record_store.GENERIC_API_POOL,
 }
-_STATES = {"reserved", "used", "replaced", "retired"}
+_STATES = {"available", "disabled", "reserved", "used", "replaced", "retired"}
 _SECRET_KEYS = {"password", "secret", "token", "cookie", "code", "otp", "body", "raw_message", "access_token", "refresh_token"}
 
 
@@ -29,6 +29,14 @@ class OtpLeaseBusy(RuntimeError):
 
 class StaleOtpFence(RuntimeError):
     """认证执行已过期或被新的执行替代。"""
+
+
+class EmailDerivationError(RuntimeError):
+    """子地址业务错误保留稳定分类，包装成普通异常后仍可识别。"""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(f"{code}: {message}")
 
 
 def _now() -> str:
@@ -114,14 +122,38 @@ def find_allocation(*, address: str = "", acquisition_id: str = "", conn=None) -
 
 
 def list_allocations(*, source: str = "", parent_id: int | None = None, owner_kind: str = "",
-                     owner_id: Any = "", state: str = "", limit: int = 100, offset: int = 0, conn=None) -> list[dict]:
+                     owner_id: Any = "", state: str = "", limit: int = 100, offset: int = 0,
+                     q: str = "", parent_q: str = "", related_q: str = "", created_from: str = "", created_to: str = "", conn=None) -> list[dict]:
+    predicates, values = allocation_filters(source=source, parent_id=parent_id, owner_kind=owner_kind,
+        owner_id=owner_id, state=state, q=q, parent_q=parent_q, related_q=related_q,
+        created_from=created_from, created_to=created_to)
+    return record_store.list_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS, where=" AND ".join(predicates), params=values,
+                                  order_by="id ASC", limit=max(1, int(limit)), offset=max(0, int(offset)), conn=conn)
+
+
+def allocation_filters(*, source="", parent_id=None, owner_kind="", owner_id="", state="",
+                       q="", parent_q="", related_q="", created_from="", created_to="") -> tuple[list[str], list]:
+    """列表与总数共用同一组筛选，所有用户文本仅作为绑定参数。"""
     predicates, values = [], []
     for name, value in (("source", source), ("parent_id", parent_id), ("owner_kind", owner_kind), ("owner_id", owner_id), ("state", state)):
         if value is not None and value != "":
             predicates.append(f'"{name}" = %s')
             values.append(str(value) if name == "owner_id" else value)
-    return record_store.list_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS, where=" AND ".join(predicates), params=values,
-                                  order_by="id ASC", limit=max(1, int(limit)), offset=max(0, int(offset)), conn=conn)
+    for column, value in (("address", q), ("parent_address", parent_q)):
+        if str(value or "").strip():
+            predicates.append(f"{column} ILIKE %s")
+            values.append("%" + str(value).strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    if str(related_q or "").strip():
+        predicates.append("(owner_id ILIKE %s OR account_id::text ILIKE %s)")
+        term = "%" + str(related_q).strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        values.extend((term, term))
+    if created_from:
+        predicates.append("created_at::timestamptz >= %s::timestamptz")
+        values.append(created_from)
+    if created_to:
+        predicates.append("created_at::timestamptz < (%s::date + INTERVAL '1 day')")
+        values.append(created_to)
+    return predicates, values
 
 
 def allocation_summary(*, source: str = "", conn=None) -> dict:
@@ -146,6 +178,8 @@ def parent_allocation_counts(*, source: str = "", parent_ids: list[int] | None =
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with _connection(conn) as current, current.cursor() as cur:
         cur.execute(f"""SELECT source, parent_id, count(*) AS issued,
+                        count(*) FILTER (WHERE state = 'available') AS available,
+                        count(*) FILTER (WHERE state = 'disabled') AS disabled,
                         count(*) FILTER (WHERE state = 'reserved') AS reserved,
                         count(*) FILTER (WHERE state = 'used') AS used,
                         count(*) FILTER (WHERE state = 'replaced') AS replaced,
@@ -163,6 +197,10 @@ def mark_allocation_state(allocation_id: int, state: str, *, account_id: int | N
         row = record_store.get_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, allocation_id, conn=current, for_update=True)
         if not row:
             return None
+        if state in {"available", "disabled"} and (row["state"] not in {"available", "disabled"} or any(
+            row.get(key) is not None for key in ("acquisition_id", "owner_kind", "owner_id", "account_id")
+        )):
+            raise ValueError("已领取或已绑定的子地址不能重新投入库存")
         if row["state"] in {"replaced", "retired"} and state != row["state"]:
             raise ValueError("已替换或退役的子地址不能重新分配")
         metadata = _metadata(data)
@@ -281,16 +319,24 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
                      max_children: int = DEFAULT_MAX_CHILDREN, tag_length: int = DEFAULT_TAG_LENGTH,
                      job_id: int | None = None, attempt_id: int | None = None,
                      root_task_id: int | None = None,
-                     profile_factory: Callable[[dict, Any], dict] | None = None, conn=None) -> dict | None:
-    if not acquisition_id or not owner_kind or str(owner_id or "") == "":
+                     profile_factory: Callable[[dict, Any], dict] | None = None,
+                     generation_key: str | None = None, generation_request: dict | None = None,
+                     failure: dict | None = None, profile_validator: Callable[[dict], bool] | None = None,
+                     conn=None) -> dict | None:
+    """兼容底层直接分配；人工生成传入 generation_key，只创建无归属库存。"""
+    if not generation_key and (not acquisition_id or not owner_kind or str(owner_id or "") == ""):
         raise ValueError("派生领取必须提供稳定领取身份和业务归属")
     if not 1 <= int(tag_length) <= 32 or int(max_children) < 0:
         raise ValueError("派生后缀长度或额度无效")
     table = _parent_table(source)
     with _connection(conn) as current:
-        record_store.advisory_xact_lock(current, f"email-address-acquisition:{acquisition_id}")
-        existing = find_allocation(acquisition_id=acquisition_id, conn=current)
+        identity = f"generation:{generation_key}" if generation_key else f"acquisition:{acquisition_id}"
+        record_store.advisory_xact_lock(current, f"email-address-{identity}")
+        existing = (record_store.get_row_by(record_store.EMAIL_ADDRESS_ALLOCATIONS, "generation_key", generation_key, conn=current)
+                    if generation_key else find_allocation(acquisition_id=acquisition_id, conn=current))
         if existing:
+            if generation_key:
+                return existing
             if (existing["source"], existing["owner_kind"], existing["owner_id"]) != (source, owner_kind, str(owner_id)):
                 raise ValueError("领取身份已归属于其他业务")
             _bind_business(existing, job_id=job_id, attempt_id=attempt_id, root_task_id=root_task_id, conn=current)
@@ -320,6 +366,13 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
                 raise ValueError("仅 HME 母资源支持上游账号范围")
             conditions.append("p.account_id = ANY(%s)")
             args.append([str(item) for item in account_ids])
+        if failure is not None:
+            # 在取额前区分“没有健康母资源”和“母资源仍健康但历史额度耗尽”。
+            with current.cursor() as cur:
+                cur.execute(f"SELECT count(*) AS n FROM {postgres_store.qualified(table.name)} p WHERE {' AND '.join(conditions)}", args)
+                healthy = int(cur.fetchone()["n"])
+            failure.update({"reason_code": "email_derivation_capacity_exhausted" if healthy else "email_derivation_parent_unavailable",
+                "reason": "合格母资源的累计生成额度已用完，请提高额度后发起新的生成请求" if healthy else "没有符合当前范围且健康可用的母邮箱，请检查母资源状态和来源范围"})
         last_id = 0
         while True:
             with current.cursor() as cur:
@@ -352,23 +405,33 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
             if not profile_id and profile_factory is not None:
                 profile = profile_factory(parent, current)
                 profile_id = profile.get("id") if profile else None
-            if not profile_id or not profile or profile["state"] != "active":
+            if not profile_id or not profile or profile["state"] != "active" or (profile_validator is not None and not profile_validator(profile)):
+                if failure is not None:
+                    failure.update(reason_code="email_derivation_profile_unavailable", reason="母邮箱固定收件配置缺失或已停用，不能生成新的子地址")
                 continue
             parent_address = str(parent["email"]).strip()
             for _ in range(5):
                 try:
                     address, tag = _new_address(parent_address, int(policy.get("tag_length", tag_length)))
                 except ValueError:
+                    if failure is not None:
+                        failure.update(reason_code="email_derivation_address_invalid", reason="母邮箱格式或生成后的地址长度不符合邮箱限制")
                     break
                 record_store.advisory_xact_lock(current, f"registered-account:{normalize_address(address)}")
                 if address_is_taken(address, conn=current):
+                    if failure is not None:
+                        failure.update(reason_code="email_derivation_address_collision", reason="生成后缀连续与历史地址冲突，请重新发起生成请求")
                     continue
                 allocation_id = record_store.insert_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, {
                     "address": address, "address_norm": normalize_address(address), "source": source,
                     "parent_kind": table.name, "parent_id": candidate_id, "parent_address": parent_address,
                     "inbox_profile_id": int(profile_id), "strategy": "plus_tag", "tag": tag,
-                    "acquisition_id": acquisition_id, "owner_kind": owner_kind, "owner_id": str(owner_id),
-                    "state": "reserved", "policy_version": 1, "max_children_at_issue": ceiling,
+                    "acquisition_id": None if generation_key else acquisition_id,
+                    "owner_kind": None if generation_key else owner_kind, "owner_id": None if generation_key else str(owner_id),
+                    "state": "available" if generation_key else "reserved", "generation_key": generation_key,
+                    "policy_version": 1, "max_children_at_issue": ceiling,
+                    **({"generation_request_id": generation_request["request_id"], "generation_request": generation_request}
+                       if generation_request else {}),
                 }, conn=current)
                 if not policy.get("inbox_profile_id"):
                     # 首次成功分配即固定母资源路由，后续同母子地址不跟随全局收件箱切换。
@@ -376,9 +439,113 @@ def allocate_address(*, source: str, acquisition_id: str, owner_kind: str, owner
                         "derivation_policy": {**policy, "inbox_profile_id": int(profile_id)},
                     }, conn=current)
                 allocation = get_allocation(allocation_id, conn=current)
-                _bind_business(allocation, job_id=job_id, attempt_id=attempt_id, root_task_id=root_task_id, conn=current)
+                if not generation_key:
+                    _bind_business(allocation, job_id=job_id, attempt_id=attempt_id, root_task_id=root_task_id, conn=current)
                 return allocation
         return None
+
+
+def inventory_eligibility(source: str, *, account_ids: list[str] | None = None) -> tuple[list[str], list]:
+    """容量与领取共用健康条件；既有库存不再受生成额度或全局收件箱影响。"""
+    conditions = ["a.source = %s", "a.state = 'available'", "a.acquisition_id IS NULL",
+        "a.owner_kind IS NULL", "a.owner_id IS NULL", "a.account_id IS NULL",
+        "COALESCE(p.status, 'available') IN ('available', 'used', 'replaced', 'reserved')",
+        "COALESCE(p.data->>'remote_active', 'true') <> 'false'",
+        "COALESCE(p.data->>'archived', 'false') <> 'true'",
+        "COALESCE(p.data->>'email_invalid', 'false') <> 'true'",
+        "COALESCE(p.data->>'disabled_reason', '') NOT IN ('remote_inactive', 'remote_missing', 'manual_disabled')",
+        "COALESCE(p.data->'derivation_policy'->>'enabled', 'true') <> 'false'",
+        "profile.state = 'active'", "profile.connector = %s"]
+    values: list[Any] = [source, "forward_imap" if source == "icloud_hide" else "outlook"]
+    if source == "icloud_hide":
+        conditions.append("NULLIF(BTRIM(p.account_id), '') IS NOT NULL")
+        if account_ids is not None:
+            conditions.append("p.account_id = ANY(%s)")
+            values.append(account_ids)
+    elif source == "outlook":
+        conditions += ["COALESCE(NULLIF(BTRIM(p.data->>'client_id'), ''), NULLIF(BTRIM(p.data->>'clientId'), '')) IS NOT NULL",
+            "COALESCE(NULLIF(BTRIM(p.data->>'refresh_token'), ''), NULLIF(BTRIM(p.data->>'refreshToken'), '')) IS NOT NULL"]
+    return conditions, values
+
+
+def claim_address(*, source: str, acquisition_id: str, owner_kind: str, owner_id: Any,
+                  job_id=None, attempt_id=None, root_task_id=None, account_ids=None,
+                  profile_validator: Callable[[dict], bool] | None = None, conn=None) -> dict | None:
+    """同一意图恢复原记录，新意图仅原子领取预生成库存。"""
+    if not acquisition_id or not owner_kind or owner_id is None:
+        raise EmailDerivationError("email_derivation_identity_conflict", "子地址领取缺少稳定业务身份")
+    table = _parent_table(source)
+    with _connection(conn) as current:
+        record_store.advisory_xact_lock(current, f"email-address-acquisition:{acquisition_id}")
+        previous = find_allocation(acquisition_id=acquisition_id, conn=current)
+        if previous:
+            if (previous["source"], previous["owner_kind"], str(previous["owner_id"])) != (source, owner_kind, str(owner_id)):
+                raise EmailDerivationError("email_derivation_identity_conflict", "领取身份已归属于其他业务")
+            if previous["state"] in {"retired", "replaced"}:
+                raise EmailDerivationError("email_derivation_identity_conflict", "原子地址已退役或被换出，请沿原账号记录恢复")
+            _bind_business(previous, job_id=job_id, attempt_id=attempt_id, root_task_id=root_task_id, conn=current)
+            return previous
+        conditions, values = inventory_eligibility(source, account_ids=account_ids)
+        joins = f"FROM {postgres_store.qualified(record_store.EMAIL_ADDRESS_ALLOCATIONS.name)} a JOIN {postgres_store.qualified(table.name)} p ON p.id = a.parent_id JOIN {postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)} profile ON profile.id = a.inbox_profile_id"
+        last_id = 0
+        while True:
+            with current.cursor() as cur:
+                # 候选校验失败时撤销本轮行锁，不能持有多个母资源锁继续扫描。
+                cur.execute("SAVEPOINT email_inventory_candidate")
+                cur.execute(f"SELECT a.id, a.parent_id {joins} WHERE {' AND '.join(conditions)} AND a.id > %s ORDER BY a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED", [*values, last_id])
+                selected = cur.fetchone()
+            if not selected:
+                with current.cursor() as cur:
+                    cur.execute("RELEASE SAVEPOINT email_inventory_candidate")
+                return None
+            last_id = int(selected["id"])
+            # 母资源更新、删除也锁同一父行，取锁后重读，避免等待期间健康状态变化。
+            record_store.get_row(table, int(selected["parent_id"]), conn=current, for_update=True)
+            with current.cursor() as cur:
+                cur.execute(f"SELECT a.id {joins} WHERE {' AND '.join(conditions)} AND a.id = %s", [*values, last_id])
+                eligible = bool(cur.fetchone())
+            if eligible and profile_validator is not None:
+                allocation = get_allocation(last_id, conn=current)
+                eligible = profile_validator(get_inbox_profile(int(allocation["inbox_profile_id"]), conn=current))
+            if not eligible:
+                with current.cursor() as cur:
+                    cur.execute("ROLLBACK TO SAVEPOINT email_inventory_candidate")
+                    cur.execute("RELEASE SAVEPOINT email_inventory_candidate")
+                continue
+            record_store.patch_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, last_id, {
+                "state": "reserved", "acquisition_id": acquisition_id,
+                "owner_kind": owner_kind, "owner_id": str(owner_id), "claimed_at": _now(),
+            }, conn=current)
+            allocation = get_allocation(last_id, conn=current)
+            _bind_business(allocation, job_id=job_id, attempt_id=attempt_id, root_task_id=root_task_id, conn=current)
+            with current.cursor() as cur:
+                cur.execute("RELEASE SAVEPOINT email_inventory_candidate")
+            return allocation
+
+
+def update_inventory_status(ids: list[int], state: str, *, conn=None) -> dict:
+    if state not in {"available", "disabled"}:
+        raise EmailDerivationError("email_derivation_request_conflict", "库存操作仅支持停用或恢复可领取")
+    results = []
+    with _connection(conn) as current:
+        # 多个批量操作先按统一顺序取锁，避免选择顺序相反时互相等待。
+        with current.cursor() as cur:
+            cur.execute(f"SELECT id FROM {postgres_store.qualified(record_store.EMAIL_ADDRESS_ALLOCATIONS.name)} WHERE id = ANY(%s) ORDER BY id FOR UPDATE", (list(dict.fromkeys(ids)),))
+            cur.fetchall()
+        for allocation_id in dict.fromkeys(ids):
+            row = record_store.get_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, int(allocation_id), conn=current, for_update=True)
+            reason_code, reason = "", ""
+            if not row:
+                reason_code, reason = "email_derivation_inventory_missing", "子地址库存不存在"
+            elif row["state"] not in {"available", "disabled"} or any(row.get(key) is not None for key in ("acquisition_id", "owner_kind", "owner_id", "account_id")):
+                reason_code, reason = "email_derivation_inventory_assigned", "子地址已领取或绑定，不能重新投入库存"
+            elif row["state"] == state:
+                reason_code, reason = "email_derivation_inventory_unchanged", "库存已处于目标状态"
+            else:
+                record_store.patch_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, int(allocation_id), {"state": state}, conn=current)
+            results.append({"id": int(allocation_id), "ok": not reason_code, "reason_code": reason_code, "reason": reason})
+    updated = sum(item["ok"] for item in results)
+    return {"updated": updated, "skipped": len(results) - updated, "results": results}
 
 
 def get_otp_request(request_id: int, *, conn=None) -> dict | None:

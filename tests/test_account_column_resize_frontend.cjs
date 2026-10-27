@@ -15,7 +15,7 @@ function pagerHarness() {
         return elements.get(id);
       },
     },
-    refreshJobs() {}, loadAccounts() {}, loadOutlook() {}, loadCodex() {}, loadAccountTasks() {},
+    refreshJobs() {}, loadAccounts() {}, loadOutlook() {}, loadCodex() {}, loadAccountTasks() {}, loadEmailDerivationResources() {},
     JOBS_TOTAL: 0, ACCOUNTS_TOTAL: 0, OUTLOOK_TOTAL: 0, CODEX_TOTAL: 0, ACCOUNT_TASKS_TOTAL: 0,
   };
   const start = common.indexOf('// ---------- 分页状态 ----------');

@@ -932,6 +932,16 @@ def _registration_error_projection(
 
 
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+    "email_derivation_inventory_empty": ("MAIL-STOCK-001", "可领取子地址库存不足，请先生成补充"),
+    "email_derivation_identity_conflict": ("MAIL-STOCK-002", "子地址领取身份与原业务归属不一致"),
+    "email_derivation_source_unsupported": ("MAIL-STOCK-003", "邮箱来源不支持子地址库存"),
+    "email_derivation_profile_unavailable": ("MAIL-STOCK-004", "子地址固定收件配置不可用"),
+    "email_derivation_capacity_exhausted": ("MAIL-STOCK-005", "母邮箱子地址生成额度不足"),
+    "email_derivation_request_conflict": ("MAIL-STOCK-006", "子地址生成请求身份与原参数不一致"),
+    "email_derivation_source_disabled": ("MAIL-STOCK-007", "该邮箱来源未启用子地址库存领取"),
+    "email_derivation_parent_unavailable": ("MAIL-STOCK-008", "子地址母邮箱当前不可用"),
+    "email_derivation_address_invalid": ("MAIL-STOCK-009", "母邮箱地址格式无法生成子地址"),
+    "email_derivation_address_collision": ("MAIL-STOCK-010", "子地址生成遇到重复地址，请重新生成"),
     "worker_interrupted": ("SYS-WORKER-001", "执行进程中断"),
     "access_token_missing": ("AUTH-AT-001", "账号缺少可用 AT"),
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
@@ -1318,6 +1328,11 @@ def _cause_error_projection(
         "retryability": "conditional", "remote_state_impact": "unknown",
         "next_action": "inspect_failure",
     })
+    if cause["cause_code"].startswith("email_derivation_"):
+        projection.update(source="internal", source_label="邮箱库存", remote_state_impact="not_started")
+        projection["title"] = f"邮箱库存 · {cause['cause_summary']}"
+        if cause["cause_code"] == "email_derivation_inventory_empty":
+            projection.update(retryability="retryable", next_action="generate_email_inventory")
     if error_code:
         projection["original_error_code"] = error_code
     return projection
@@ -1346,7 +1361,7 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
-    if cause is None and str(error_code).startswith("roxy_"):
+    if cause is None and str(error_code).startswith(("roxy_", "email_derivation_")):
         cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
         str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"

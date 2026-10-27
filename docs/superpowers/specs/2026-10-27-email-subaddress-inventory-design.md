@@ -20,6 +20,8 @@
 
 已有表在初始化时显式幂等 DROP NOT NULL，保留全部行、地址和原 acquisition。新增 (source,state,id) 索引与 generation_key 非空唯一索引。
 
+`email_address_generation_requests` 记录稳定请求身份、来源、数量、母资源范围和结果，与库存同事务提交。零结果和部分结果也冻结，重复请求直接恢复结果，变更参数拒绝；修复配置或补充额度后通过新的生成操作继续补库。
+
 人工生成保留母资源健康检查、累计额度、地址碰撞检查和固定收件 profile。所有状态都消耗历史生成额度。新生成不需要启用注册领取开关；收件配置仍必须具备完整子地址识别能力。
 
 新领取在一个事务内抢占 eligible available 行，available → reserved，写入稳定业务身份并绑定 job/Attempt/root。并发领取不同地址；同 acquisition 恢复同一地址；绑定失败回滚库存和业务绑定。领取不再调用上游同步、profile 创建或后缀生成，不受新生成额度调小影响。母邮箱失效、停用、归档或 profile 不可用的库存不参与新领取。

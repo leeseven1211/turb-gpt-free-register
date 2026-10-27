@@ -364,7 +364,8 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
                 }), 400
-        if "icloud_hide" in sources:
+        from core.email_derivation import capacity_summary, enabled_for
+        if "icloud_hide" in sources and not enabled_for("icloud_hide"):
             api_base = str(getattr(_email_cfg, "ICLOUD_HME_API_BASE", "") or "").strip()
             if not api_base:
                 return jsonify({
@@ -379,14 +380,13 @@ def create_jobs_blueprint(context: WebUIContext):
                     "ok": False,
                     "error": f"iCloud HME 服务不可用：{type(exc).__name__}: {str(exc)[:240]}",
                 }), 400
-        from core.email_derivation import capacity_summary, enabled_for
         if enabled_for(selected_source):
             capacity = capacity_summary(selected_source)
             remaining = int(capacity.get("remaining", 0))
             warning = ""
             if remaining < count:
                 detail = f"；{capacity['reason']}" if capacity.get("reason") else ""
-                warning = f"本地母邮箱剩余派生额度为 {remaining} 个，少于任务数 {count}，不足的可提高每母邮箱额度后重跑{detail}"
+                warning = f"可领取子地址库存为 {remaining} 个，少于任务数 {count}，请在邮箱子地址页面生成补充后重跑{detail}"
         elif any(source in sources for source in ("gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare", "email_butler")):
             # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
             warning = ""

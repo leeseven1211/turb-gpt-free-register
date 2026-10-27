@@ -3360,39 +3360,44 @@
     #tab-config .config-nav-v2-item { min-height: 32px; padding: 6px 10px; }
     #tab-config .config-main-v2 { max-height: 100%; overflow-y: auto; padding: 0 6px 28px 0; overscroll-behavior: contain; }
 
-    /* 子地址台账沿用邮箱池视觉，并在小屏转换为逐条卡片。 */
-    .email-derivation-panel { margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface, #fff); }
-    .email-derivation-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 48px; padding: 12px 16px; }
-    .email-derivation-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
-    .email-derivation-head small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
-    .pool-derivation-open:focus-visible { outline: 2px solid var(--primary, #5b5ce2); outline-offset: 2px; }
-    .email-derivation-content { min-width: 0; padding: 0 16px 16px; }
-    .email-derivation-toolbar, .email-derivation-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; font-size: 12px; }
-    .email-derivation-toolbar select { min-height: 36px; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; color: inherit; background: var(--surface, #fff); font: inherit; }
-    .email-derivation-toolbar .jobs-tb-btn, .email-derivation-pager .jobs-tb-btn { min-height: 36px; }
-    .email-derivation-toolbar .hint, .email-derivation-pager > span { min-width: 0; overflow-wrap: anywhere; }
-    .email-derivation-pager > span { margin-right: auto; }
-    .email-derivation-table-wrap { max-width: 100%; }
-    .email-derivation-table { table-layout: fixed; width: 100%; border-collapse: collapse; font-size: 12px; }
-    .email-derivation-table th, .email-derivation-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; line-height: 1.5; }
-    .email-derivation-table th { color: var(--muted); font-weight: 600; }
-    .email-derivation-table th:nth-child(1), .email-derivation-table th:nth-child(2) { width: 28%; }
-    .email-derivation-table td strong, .email-derivation-table td span, .email-derivation-table td small { display: block; }
-    .email-derivation-table td small { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    /* 子地址库存沿用现代列表，窄屏保留可操作的表头筛选。 */
+    .email-derivation-panel { margin: 14px 0; min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface, #fff); overflow: hidden; }
+    .email-derivation-table-wrap { max-width: 100%; overflow: auto; }
+    .email-derivation-table[data-resizable-table] { table-layout: fixed; width: max(100%, 1020px) !important; min-width: 1020px !important; border-collapse: collapse; font-size: 12px; }
+    .email-derivation-table th, .email-derivation-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; overflow-wrap: anywhere; line-height: 1.5; }
+    .email-derivation-table th { color: var(--muted); font-weight: 600; background: var(--ui-color-surface-subtle, #f8fafc); }
+    .email-derivation-table .col-check { text-align: center; }
+    .email-derivation-table input[type="checkbox"] {
+      width: 16px !important; height: 16px !important;
+      min-width: 16px !important; min-height: 16px !important;
+      max-width: 16px !important; max-height: 16px !important;
+      margin: 0 !important; padding: 0 !important; box-sizing: border-box;
+      vertical-align: middle; cursor: pointer;
+    }
+    .email-derivation-table .col-actions .jobs-tb-btn { min-height: 30px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+    .email-derivation-table td strong, .email-derivation-table td small { display: block; }
+    .email-derivation-table td small { margin-top: 3px; color: var(--muted); }
+    .email-derivation-table tr.is-selected { background: var(--ui-color-primary-subtle, #f0f3ff); }
     .email-derivation-table-wrap[aria-busy="true"] { opacity: .65; }
+    .email-derivation-panel > .column-filter-summary { margin: 0; padding: 8px 16px; }
+    .email-derivation-feedback { margin: 0; padding: 8px 16px; color: var(--ui-color-text-secondary, #606266); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+    .email-derivation-feedback:empty { display: none; }
+    #emailDerivationGenerateDialog { box-sizing: border-box; width: min(460px, calc(100vw - 28px)); max-height: 88dvh; overflow: auto; padding: 20px; }
+    .email-derivation-generate-dialog .modal-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .email-derivation-generate-dialog h2 { flex: 1; margin: 0; font-size: 18px; }
+    .email-derivation-generate-dialog form { display: grid; gap: 10px; }
+    .email-derivation-generate-dialog form > label { font-size: 13px; font-weight: 600; }
+    .email-derivation-generate-dialog select, .email-derivation-generate-dialog input { width: 100%; min-height: 38px; margin: 0 0 4px; box-sizing: border-box; font: inherit; }
+    .email-derivation-generate-dialog p { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+    #emailDerivationGenerateResult { color: var(--ui-color-text-secondary, #606266); }
+    .email-derivation-generate-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
     .pool-derivation-meta { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .pool-derivation-open { min-height: 28px; padding: 2px 0; border: 0; color: var(--primary, #5b5ce2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+    .pool-derivation-open:focus-visible { outline: 2px solid var(--primary, #5b5ce2); outline-offset: 2px; }
     @media (max-width: 720px) {
-      .email-derivation-head { align-items: flex-start; }
-      .email-derivation-head small { flex-basis: 100%; }
-      .email-derivation-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-      .email-derivation-table tbody { display: grid; gap: 10px; }
-      .email-derivation-table tr { display: grid; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
-      .email-derivation-table td { display: grid; grid-template-columns: minmax(84px, 25%) minmax(0, 1fr); gap: 0 8px; border: 0; padding: 6px 4px; }
-      .email-derivation-table td::before { content: attr(data-label); color: var(--muted); grid-column: 1; }
-      .email-derivation-table td > * { grid-column: 2; }
-      .email-derivation-table .email-derivation-empty td { display: block; }
-      .email-derivation-table .email-derivation-empty td::before { content: none; }
+      .email-derivation-table .column-filter-trigger { min-height: 44px; }
+      #emailDerivationGenerateDialog { padding: 16px; }
+      .email-derivation-generate-dialog .jobs-tb-btn { min-height: 40px; }
     }
 
     /* ---- 邮箱资源平台 ---- */

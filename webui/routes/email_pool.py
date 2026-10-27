@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -37,6 +38,21 @@ from webui.runtime import WebUIContext
 from webui.route_helpers import _pool_source_arg
 
 logger = logging.getLogger(__name__)
+
+
+def _derivation_request_error(message: str):
+    return jsonify({"ok": False, "error": message, "reason_code": "email_derivation_invalid_request"}), 400
+
+
+def _derivation_operation_error(exc: Exception, operation: str):
+    """已知库存错误保留原因码，意外异常仅写服务日志。"""
+    code = str(getattr(exc, "code", ""))
+    if re.fullmatch(r"email_derivation_[a-z_]+", code):
+        message = str(exc).removeprefix(code + ":").strip()
+        return jsonify({"ok": False, "error": message, "reason_code": code}), 409
+    logger.exception("子地址%s失败", operation)
+    return jsonify({"ok": False, "error": f"子地址{operation}失败，请检查服务日志后重试。",
+                    "reason_code": "email_derivation_operation_failed"}), 500
 
 
 def _pool_row_for_source(email: str, source: str) -> dict | None:
@@ -153,7 +169,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         result = email_derivation.public_summary(source=source)
         summary_keys = {
             "enabled", "max_children", "tag_length", "total", "used", "reserved", "retired",
-            "replaced", "parent_count", "eligible_parent_count", "remaining", "capacity",
+            "replaced", "available", "disabled", "parent_count", "eligible_parent_count", "remaining", "capacity",
         }
         parent_keys = {
             "source", "parent_id", "parent_email", "child_count", "max_children", "remaining",
@@ -170,7 +186,7 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.get("/api/email-derivation/allocations")
     def api_email_derivation_allocations():
-        """分页查看子地址归属，不提供跨任务释放或复用入口。"""
+        """分页筛选子地址库存及历史归属。"""
         source = str(request.args.get("source") or "").strip().lower()
         if source in {"", "all"}:
             source = None
@@ -187,19 +203,81 @@ def create_email_pool_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "母资源编号和页码须大于零，每页数量须为 1–100"}), 400
         if parent_id is not None and source is None:
             return jsonify({"ok": False, "error": "按母资源筛选时须明确邮箱来源"}), 400
+        filters = {key: str(request.args.get(key) or "").strip() for key in
+                   ("q", "parent_q", "state", "related_q", "created_from", "created_to")}
+        if any(len(value) > 512 for value in filters.values()):
+            return _derivation_request_error("筛选内容不能超过 512 个字符")
+        if filters["state"] and filters["state"] not in {"available", "disabled", "reserved", "used", "replaced", "retired"}:
+            return _derivation_request_error("不支持的子地址状态")
+        for key in ("created_from", "created_to"):
+            if filters[key]:
+                try:
+                    parsed = datetime.strptime(filters[key], "%Y-%m-%d")
+                    if parsed.strftime("%Y-%m-%d") != filters[key]:
+                        raise ValueError
+                except ValueError:
+                    return _derivation_request_error("生成日期须为有效的 YYYY-MM-DD 日期")
+        if filters["created_from"] and filters["created_to"] and filters["created_from"] > filters["created_to"]:
+            return _derivation_request_error("生成日期的开始时间不能晚于结束时间")
         from core import email_derivation
 
-        result = email_derivation.list_allocations(source=source, parent_id=parent_id, page=page, page_size=page_size)
+        result = email_derivation.list_allocations(source=source, parent_id=parent_id, page=page, page_size=page_size,
+                                                  **{key: value for key, value in filters.items() if value})
         result = result if isinstance(result, dict) else {}
         item_keys = {
             "id", "email", "parent_id", "parent_email", "source", "state", "registered_account_id",
-            "root_task_id", "created_at", "updated_at", "used_at", "strategy",
+            "root_task_id", "created_at", "updated_at", "used_at", "strategy", "can_disable", "can_restore",
         }
         items = [
             {key: value for key, value in row.items() if key in item_keys and isinstance(value, (str, int, float, bool, type(None)))}
             for row in result.get("items", []) if isinstance(row, dict)
         ]
         return jsonify({"items": items, "total": int(result.get("total") or 0), "page": page, "page_size": page_size})
+
+    @bp.post("/api/email-derivation/generate")
+    def api_email_derivation_generate():
+        """按稳定操作身份预生成库存，重复提交不会重复占用额度。"""
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return _derivation_request_error("请求内容须为 JSON 对象")
+        source, count = data.get("source"), data.get("count")
+        request_id, parent_id = data.get("request_id"), data.get("parent_id")
+        if not isinstance(source, str) or source not in {"icloud_hide", "outlook"}:
+            return _derivation_request_error("请选择支持子地址的邮箱来源")
+        if type(count) is not int or not 1 <= count <= 1000:
+            return _derivation_request_error("生成数量须为 1–1000 的整数")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
+            return _derivation_request_error("生成操作需要有效的稳定请求编号")
+        if parent_id is not None and (type(parent_id) is not int or parent_id < 1):
+            return _derivation_request_error("母资源编号须为正整数")
+        from core import email_derivation
+        try:
+            result = email_derivation.generate_inventory(source=source, count=count, request_id=request_id, parent_id=parent_id)
+        except Exception as exc:
+            return _derivation_operation_error(exc, "生成")
+        keys = {"requested", "created", "reused", "shortfall", "reason_code", "reason"}
+        return jsonify({"ok": True, **{key: value for key, value in result.items() if key in keys}})
+
+    @bp.post("/api/email-derivation/status-bulk")
+    def api_email_derivation_status_bulk():
+        """只管理从未领取库存，逐条返回不能修改的原因。"""
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return _derivation_request_error("请求内容须为 JSON 对象")
+        ids, state = data.get("ids"), data.get("state")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 1000 or any(type(value) is not int or value < 1 for value in ids):
+            return _derivation_request_error("请选择 1–1000 个有效的子地址编号")
+        if not isinstance(state, str) or state not in {"available", "disabled"}:
+            return _derivation_request_error("库存状态只支持停用或恢复可领取")
+        from core import email_derivation
+        try:
+            result = email_derivation.update_inventory_status(ids=list(dict.fromkeys(ids)), state=state)
+        except Exception as exc:
+            return _derivation_operation_error(exc, "状态更新")
+        keys = {"id", "ok", "reason_code", "reason"}
+        rows = [{key: value for key, value in row.items() if key in keys} for row in result.get("results", [])]
+        return jsonify({"ok": True, "updated": int(result.get("updated", 0)),
+                        "skipped": int(result.get("skipped", 0)), "results": rows})
 
     @bp.get("/api/outlook/secret")
     def api_outlook_secret():

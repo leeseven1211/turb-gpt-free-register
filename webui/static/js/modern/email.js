@@ -1,7 +1,18 @@
 // ---------- 邮箱池 ----------
-// 子地址归属单独展示，母资源的使用状态继续描述母地址本身。
-const EMAIL_DERIVATION_VIEW = {source: 'all', parentId: null, parentEmail: '', page: 1, pageSize: 50, total: 0, summary: null, generation: 0};
-const EMAIL_DERIVATION_STATE_LABELS = {reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '已停用'};
+// 子地址库存与母资源分开管理，已领取地址始终保留原归属。
+const EMAIL_DERIVATION_VIEW = {
+  source: 'all', parentId: null, parentEmail: '', total: 0, summary: null, generation: 0,
+  items: [], selected: new Map(), loading: false, updating: false,
+  generationRequest: null, generationParentEmail: '', generating: false, generationFocus: null, restoreGenerationFocus: true,
+};
+const EMAIL_DERIVATION_STATE_LABELS = {
+  available: '可领取', disabled: '已停用', reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '历史停用',
+};
+const EMAIL_DERIVATION_FILTERS = {
+  q: 'emailDerivationQuery', parent_q: 'emailDerivationParentQuery', source: 'emailDerivationSourceFilter',
+  state: 'emailDerivationStateFilter', related_q: 'emailDerivationRelatedQuery',
+  created_from: 'emailDerivationCreatedFrom', created_to: 'emailDerivationCreatedTo',
+};
 function _poolDerivationCell(row) {
   const summary = EMAIL_DERIVATION_VIEW.summary;
   const recorded = (summary?.parents || []).find(item => item.source === row.source && String(item.parent_id) === String(row.id));
@@ -18,104 +29,319 @@ function _poolDerivationCell(row) {
 }
 function renderEmailDerivationSummary(summary) {
   EMAIL_DERIVATION_VIEW.summary = summary;
-  const node = document.getElementById('emailDerivationSummary');
-  if (node) node.textContent = `${summary.enabled ? '新任务已启用' : '新任务未启用'} · 已生成 ${Number(summary.total || 0)} 个 · 每母邮箱 ${Number(summary.max_children || 3)} 个额度`;
   if (typeof OUTLOOK !== 'undefined' && OUTLOOK.length) renderOutlook();
-}
-function renderEmailDerivationAllocations(result) {
-  const state = EMAIL_DERIVATION_VIEW;
-  state.total = Number(result.total || 0);
-  const body = document.getElementById('emailDerivationBody');
-  if (!body) return;
-  const items = Array.isArray(result.items) ? result.items : [];
-  body.innerHTML = items.map(item => {
-    const bound = item.registered_account_id ? `账号 #${item.registered_account_id}` : '';
-    const task = item.root_task_id ? `任务 #${item.root_task_id}` : '';
-    return `<tr><td data-label="派生地址"><strong>${esc(item.email || '-')}</strong><small>派生地址</small></td><td data-label="母邮箱 / 来源"><span>${esc(item.parent_email || '-')}</span><small>${esc(poolLabel(item.source))} · 母资源 #${esc(item.parent_id || '-')}</small></td><td data-label="使用状态">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态待确认')}</td><td data-label="关联账号 / 任务">${esc([bound, task].filter(Boolean).join(' · ') || '归属已保留')}</td><td data-label="生成时间">${esc(formatDateTime(item.created_at))}</td></tr>`;
-  }).join('') || '<tr class="email-derivation-empty"><td colspan="5">当前筛选下没有子地址。启用后，新注册任务会按需生成。</td></tr>';
-  const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
-  const status = document.getElementById('emailDerivationListStatus');
-  if (status) status.textContent = `共 ${state.total} 个子地址 · 第 ${state.page}/${pages} 页`;
-  document.getElementById('btnDerivationPrev').disabled = state.page <= 1;
-  document.getElementById('btnDerivationNext').disabled = state.page >= pages;
 }
 async function loadEmailDerivationSummary() {
   try {
     renderEmailDerivationSummary(await api('/api/email-derivation/summary?source=all'));
   } catch (error) {
-    const node = document.getElementById('emailDerivationSummary');
-    if (node) node.textContent = '子地址概况加载失败，请刷新重试。';
+    showToast('子地址额度读取失败：' + error.message);
   }
 }
+function updateEmailDerivationSelectionUi() {
+  const state = EMAIL_DERIVATION_VIEW;
+  const selected = Array.from(state.selected.values());
+  const count = selected.length;
+  const hint = document.getElementById('emailDerivationSelectedHint');
+  if (hint) hint.textContent = count ? `已选 ${count} 个子邮箱` : '选择子邮箱后批量操作';
+  document.getElementById('emailDerivationToolbar')?.classList.toggle('has-selection', count > 0);
+  const copy = document.getElementById('btnCopyEmailDerivation');
+  if (copy) {
+    copy.textContent = count ? '复制选中' : '复制当前页';
+    copy.disabled = count === 0 && state.items.length === 0;
+  }
+  const disable = document.getElementById('btnDisableEmailDerivation');
+  if (disable) disable.disabled = state.updating || !selected.some(item => item.can_disable === true);
+  const restore = document.getElementById('btnRestoreEmailDerivation');
+  if (restore) restore.disabled = state.updating || !selected.some(item => item.can_restore === true);
+  const all = document.getElementById('emailDerivationSelectAll');
+  if (all) {
+    const checked = state.items.filter(item => state.selected.has(Number(item.id))).length;
+    all.checked = state.items.length > 0 && checked === state.items.length;
+    all.indeterminate = checked > 0 && checked < state.items.length;
+    all.disabled = state.items.length === 0;
+  }
+}
+function renderEmailDerivationAllocations(result) {
+  const state = EMAIL_DERIVATION_VIEW;
+  state.total = Number(result.total || 0);
+  state.items = Array.isArray(result.items) ? result.items : [];
+  state.items.forEach(item => {
+    if (state.selected.has(Number(item.id))) state.selected.set(Number(item.id), item);
+  });
+  const body = document.getElementById('emailDerivationBody');
+  if (!body) return;
+  body.innerHTML = state.items.map(item => {
+    const id = Number(item.id);
+    const bound = item.registered_account_id ? `账号 #${item.registered_account_id}` : '';
+    const task = item.root_task_id ? `任务 #${item.root_task_id}` : '';
+    const ownership = [bound, task].filter(Boolean).join(' · ') || (['available', 'disabled'].includes(item.state) ? '尚未领取' : '历史归属');
+    const statusClass = item.state === 'available' ? 'is-good' : item.state === 'disabled' ? 'is-bad' : 'is-muted';
+    const actions = [
+      item.can_disable === true ? `<button type="button" class="jobs-tb-btn" data-derivation-id="${id}" data-derivation-state="disabled"${state.updating ? ' disabled' : ''}>停用</button>` : '',
+      item.can_restore === true ? `<button type="button" class="jobs-tb-btn jobs-tb-btn--good" data-derivation-id="${id}" data-derivation-state="available"${state.updating ? ' disabled' : ''}>恢复可领取</button>` : '',
+    ].filter(Boolean).join('');
+    return `<tr class="${state.selected.has(id) ? 'is-selected' : ''}">
+      <td class="col-check"><input type="checkbox" class="email-derivation-row-check" data-derivation-id="${id}"${state.selected.has(id) ? ' checked' : ''} aria-label="选择 ${attrEsc(item.email)}"></td>
+      <td class="col-email" title="${attrEsc(item.email)}"><strong>${esc(item.email || '-')}</strong></td>
+      <td class="col-parent" title="${attrEsc(item.parent_email)}"><span>${esc(item.parent_email || '-')}</span><small>母资源 #${esc(item.parent_id || '-')}</small></td>
+      <td class="col-source">${esc(poolLabel(item.source))}</td>
+      <td class="col-status"><span class="pool-usage ${statusClass}">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态待确认')}</span></td>
+      <td class="col-related">${esc(ownership)}</td>
+      <td class="col-time">${esc(formatDateTime(item.created_at))}</td>
+      <td class="col-actions">${actions || '<span class="sub-cell">—</span>'}</td>
+    </tr>`;
+  }).join('') || renderTableStateRow(8, '当前筛选下没有子地址', '点击“生成子邮箱”补充可领取库存。');
+  updateEmailDerivationSelectionUi();
+  _renderPager('derivations', state.total);
+}
+function emailDerivationQueryParams() {
+  const state = EMAIL_DERIVATION_VIEW;
+  const pager = PAGERS.derivations;
+  const params = new URLSearchParams({page: String(pager.page), page_size: String(pager.size)});
+  for (const [key, id] of Object.entries(EMAIL_DERIVATION_FILTERS)) {
+    const value = document.getElementById(id)?.value.trim() || (key === 'source' ? 'all' : '');
+    if (key === 'source') state.source = value;
+    if (value) params.set(key, value);
+  }
+  if (state.parentId) params.set('parent_id', String(state.parentId));
+  return params;
+}
 async function loadEmailDerivationResources() {
-  const panel = document.getElementById('emailDerivationPanel');
-  if (!panel) return;
+  if (!document.getElementById('emailDerivationPanel')) return;
   const state = EMAIL_DERIVATION_VIEW;
   const generation = ++state.generation;
-  // 概况包含所有母资源，列表筛选不影响邮箱池各行的额度显示。
-  const params = new URLSearchParams({source: 'all'});
-  const listParams = new URLSearchParams({source: state.source, page: String(state.page), page_size: String(state.pageSize)});
-  if (state.parentId) listParams.set('parent_id', String(state.parentId));
-  const sourceSelect = document.getElementById('emailDerivationSource');
-  if (sourceSelect) sourceSelect.value = state.source;
-  document.getElementById('emailDerivationParentFilter').textContent = state.parentId ? `母邮箱：${state.parentEmail || `#${state.parentId}`}` : '';
-  document.getElementById('btnClearDerivationParent').hidden = !state.parentId;
+  const params = emailDerivationQueryParams();
+  const parentScope = document.getElementById('emailDerivationParentScope');
+  if (parentScope) parentScope.hidden = !state.parentId;
+  const parentLabel = document.getElementById('emailDerivationParentFilter');
+  if (parentLabel) parentLabel.textContent = state.parentId ? `母邮箱：${state.parentEmail || `#${state.parentId}`}` : '';
   const wrap = document.getElementById('emailDerivationTableWrap');
-  if (wrap) wrap.setAttribute('aria-busy', 'true');
-  const refresh = document.getElementById('btnRefreshEmailDerivation');
-  if (refresh) refresh.disabled = true;
+  wrap?.setAttribute('aria-busy', 'true');
+  state.loading = true;
   const status = document.getElementById('emailDerivationListStatus');
-  if (status) status.textContent = '正在读取子地址归属…';
-  document.getElementById('btnDerivationPrev').disabled = true;
-  document.getElementById('btnDerivationNext').disabled = true;
+  if (status) status.textContent = '正在读取子邮箱库存…';
   try {
-    const [summary, allocations] = await Promise.all([
-      api(`/api/email-derivation/summary?${params.toString()}`),
-      api(`/api/email-derivation/allocations?${listParams.toString()}`),
-    ]);
+    const allocations = await api(`/api/email-derivation/allocations?${params.toString()}`);
     if (generation !== state.generation) return;
-    renderEmailDerivationSummary(summary);
-    if (allocations) renderEmailDerivationAllocations(allocations);
+    const pages = Math.max(1, Math.ceil(Number(allocations.total || 0) / PAGERS.derivations.size));
+    if (PAGERS.derivations.page > pages) {
+      PAGERS.derivations.page = pages;
+      return loadEmailDerivationResources();
+    }
+    renderEmailDerivationAllocations(allocations);
+    if (status) status.textContent = '';
   } catch (error) {
     if (generation !== state.generation) return;
-    const message = '子地址加载失败，请刷新重试。';
-    document.getElementById('emailDerivationSummary').textContent = message;
-    if (status) status.textContent = message;
+    if (status) status.textContent = '子邮箱库存加载失败：' + error.message;
+    if (!state.items.length) document.getElementById('emailDerivationBody').innerHTML = renderTableStateRow(8, '子邮箱库存加载失败', '请调整筛选或重新打开本页重试。', 'error');
   } finally {
     if (generation === state.generation) {
-      if (refresh) refresh.disabled = false;
-      if (wrap) wrap.setAttribute('aria-busy', 'false');
+      state.loading = false;
+      wrap?.setAttribute('aria-busy', 'false');
     }
   }
 }
+function resetEmailDerivationFilters() {
+  const state = EMAIL_DERIVATION_VIEW;
+  Object.entries(EMAIL_DERIVATION_FILTERS).forEach(([key, id]) => {
+    const control = document.getElementById(id);
+    if (control) control.value = key === 'source' ? 'all' : '';
+  });
+  Object.assign(state, {source: 'all', parentId: null, parentEmail: ''});
+  state.selected.clear();
+  PAGERS.derivations.page = 1;
+  refreshColumnFilterStates();
+}
 function showEmailDerivationParent(button) {
+  resetEmailDerivationFilters();
   const state = EMAIL_DERIVATION_VIEW;
   state.source = button.dataset.source || 'all';
-  state.parentId = button.dataset.derivationParent;
+  state.parentId = Number(button.dataset.derivationParent) || null;
   state.parentEmail = button.dataset.parentEmail || '';
-  state.page = 1;
-  const panel = document.getElementById('emailDerivationPanel');
-  if (!panel) return;
+  const source = document.getElementById('emailDerivationSourceFilter');
+  if (source) source.value = state.source;
+  refreshColumnFilterStates();
   setModuleView('outlook', 'derivations');
-  panel.scrollIntoView({block: 'nearest'});
+  document.getElementById('emailDerivationPanel')?.scrollIntoView({block: 'nearest'});
 }
-document.getElementById('emailDerivationSource')?.addEventListener('change', event => {
-  Object.assign(EMAIL_DERIVATION_VIEW, {source: event.currentTarget.value, parentId: null, parentEmail: '', page: 1});
-  loadEmailDerivationResources();
-});
-document.getElementById('btnClearDerivationParent')?.addEventListener('click', () => {
-  Object.assign(EMAIL_DERIVATION_VIEW, {parentId: null, parentEmail: '', page: 1});
-  loadEmailDerivationResources();
-});
-document.getElementById('btnRefreshEmailDerivation')?.addEventListener('click', loadEmailDerivationResources);
-document.getElementById('btnDerivationPrev')?.addEventListener('click', () => {
-  EMAIL_DERIVATION_VIEW.page = Math.max(1, EMAIL_DERIVATION_VIEW.page - 1);
-  loadEmailDerivationResources();
-});
-document.getElementById('btnDerivationNext')?.addEventListener('click', () => {
-  EMAIL_DERIVATION_VIEW.page += 1;
-  loadEmailDerivationResources();
-});
+function syncEmailDerivationSelectAll(checked) {
+  const state = EMAIL_DERIVATION_VIEW;
+  state.items.forEach(item => {
+    if (checked) state.selected.set(Number(item.id), item);
+    else state.selected.delete(Number(item.id));
+  });
+  renderEmailDerivationAllocations({items: state.items, total: state.total});
+}
+function onEmailDerivationBodyChange(event) {
+  const checkbox = event.target.closest('.email-derivation-row-check');
+  if (!checkbox) return;
+  const state = EMAIL_DERIVATION_VIEW;
+  const id = Number(checkbox.dataset.derivationId);
+  const item = state.items.find(row => Number(row.id) === id);
+  if (checkbox.checked && item) state.selected.set(id, item);
+  else state.selected.delete(id);
+  checkbox.closest?.('tr')?.classList.toggle('is-selected', checkbox.checked);
+  updateEmailDerivationSelectionUi();
+}
+async function copyEmailDerivationEmails() {
+  const state = EMAIL_DERIVATION_VIEW;
+  const rows = state.selected.size ? Array.from(state.selected.values()) : state.items;
+  if (!rows.length) { showToast('当前没有可复制的子邮箱'); return; }
+  await copyText(rows.map(row => row.email).filter(Boolean).join('\n'));
+}
+async function updateEmailDerivationStatus(nextState, ids = null) {
+  const state = EMAIL_DERIVATION_VIEW;
+  if (state.updating) return;
+  const chosen = ids || Array.from(state.selected.keys());
+  if (!chosen.length) { showToast('请先选择子邮箱'); return; }
+  state.updating = true;
+  renderEmailDerivationAllocations({items: state.items, total: state.total});
+  const resultNode = document.getElementById('emailDerivationActionResult');
+  if (resultNode) { resultNode.hidden = false; resultNode.textContent = '正在更新子邮箱库存状态…'; }
+  try {
+    const result = await api('/api/email-derivation/status-bulk', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: chosen, state: nextState})});
+    const reasons = (result.results || []).filter(item => item.ok === false).map(item => `#${item.id}：${item.reason || item.reason_code}`);
+    if (resultNode) resultNode.textContent = `已更新 ${Number(result.updated || 0)} 个，跳过 ${Number(result.skipped || 0)} 个${reasons.length ? '。' + reasons.join('；') : '。'}`;
+    state.selected.clear();
+    await loadEmailDerivationResources();
+    loadEmailDerivationSummary();
+  } catch (error) {
+    if (resultNode) resultNode.textContent = '子邮箱状态更新失败：' + error.message;
+  } finally {
+    state.updating = false;
+    renderEmailDerivationAllocations({items: state.items, total: state.total});
+  }
+}
+function updateEmailDerivationGenerateControls() {
+  const state = EMAIL_DERIVATION_VIEW;
+  const fixed = state.generating || Boolean(state.generationRequest);
+  document.getElementById('emailDerivationGenerateSource').disabled = fixed;
+  document.getElementById('emailDerivationGenerateCount').disabled = fixed;
+  const submit = document.getElementById('btnSubmitEmailDerivationGenerate');
+  submit.disabled = state.generating;
+  submit.textContent = state.generating ? '生成中…' : state.generationRequest ? '重试生成' : '生成子邮箱';
+  const dialog = document.getElementById('emailDerivationGenerateDialog');
+  const source = document.getElementById('emailDerivationGenerateSource').value;
+  const scope = document.getElementById('emailDerivationGenerateScope');
+  scope.textContent = dialog.dataset.parentId && source === dialog.dataset.parentSource
+    ? `仅为母邮箱 ${dialog.dataset.parentEmail || `#${dialog.dataset.parentId}`} 生成` : '按所选来源的母邮箱剩余额度生成';
+}
+function openEmailDerivationGenerate() {
+  const state = EMAIL_DERIVATION_VIEW;
+  const dialog = document.getElementById('emailDerivationGenerateDialog');
+  if (!dialog || dialog.open) return;
+  const request = state.generationRequest;
+  const source = request?.source || (['icloud_hide', 'outlook'].includes(state.source) ? state.source : 'icloud_hide');
+  document.getElementById('emailDerivationGenerateSource').value = source;
+  document.getElementById('emailDerivationGenerateCount').value = String(request?.count || 1);
+  dialog.dataset.parentId = String(request?.parent_id || (!request && state.parentId) || '');
+  dialog.dataset.parentSource = request?.source || state.source;
+  dialog.dataset.parentEmail = request ? state.generationParentEmail : state.parentEmail;
+  if (!request) document.getElementById('emailDerivationGenerateResult').textContent = '';
+  state.generationFocus = document.activeElement;
+  state.restoreGenerationFocus = true;
+  updateEmailDerivationGenerateControls();
+  dialog.showModal();
+}
+function closeEmailDerivationGenerate({restoreFocus = true} = {}) {
+  EMAIL_DERIVATION_VIEW.restoreGenerationFocus = restoreFocus;
+  document.getElementById('emailDerivationGenerateDialog')?.close();
+}
+async function submitEmailDerivationGenerate(event) {
+  event.preventDefault();
+  const state = EMAIL_DERIVATION_VIEW;
+  if (state.generating) return;
+  const resultNode = document.getElementById('emailDerivationGenerateResult');
+  const dialog = document.getElementById('emailDerivationGenerateDialog');
+  if (!state.generationRequest) {
+    const source = document.getElementById('emailDerivationGenerateSource').value;
+    const count = Number(document.getElementById('emailDerivationGenerateCount').value);
+    if (!Number.isInteger(count) || count < 1 || count > 1000) {
+      resultNode.textContent = '生成数量须为 1–1000 的整数。';
+      return;
+    }
+    state.generationParentEmail = dialog.dataset.parentEmail || '';
+    state.generationRequest = {source, count, request_id: crypto.randomUUID()};
+    if (dialog.dataset.parentId && source === dialog.dataset.parentSource) state.generationRequest.parent_id = Number(dialog.dataset.parentId);
+  }
+  state.generating = true;
+  resultNode.textContent = '正在生成子邮箱…';
+  updateEmailDerivationGenerateControls();
+  try {
+    const result = await api('/api/email-derivation/generate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(state.generationRequest)});
+    const created = Number(result.created || 0);
+    const reused = Number(result.reused || 0);
+    const shortfall = Number(result.shortfall || 0);
+    const message = `已生成 ${created} 个${reused ? `，已有 ${reused} 个` : ''}${shortfall ? `，缺少 ${shortfall} 个。${result.reason || result.reason_code || '请补充母邮箱额度后继续生成。'}` : '。'}`;
+    state.generationRequest = null;
+    resultNode.textContent = message;
+    if (!shortfall) { closeEmailDerivationGenerate(); showToast(message); }
+    await loadEmailDerivationResources();
+    loadEmailDerivationSummary();
+  } catch (error) {
+    resultNode.textContent = `生成失败：${error.message}。请使用原参数重试。`;
+  } finally {
+    state.generating = false;
+    updateEmailDerivationGenerateControls();
+  }
+}
+(function bindEmailDerivationInventory() {
+  const sourceSelect = document.getElementById('emailDerivationSourceFilter');
+  if (sourceSelect) {
+    sourceSelect.innerHTML = '<option value="all">全部</option><option value="icloud_hide">iCloud 隐藏邮箱</option><option value="outlook">Outlook</option>';
+    sourceSelect.value = 'all';
+    renderColumnFilterOptions(sourceSelect);
+  }
+  const stateSelect = document.getElementById('emailDerivationStateFilter');
+  if (stateSelect) {
+    stateSelect.innerHTML = '<option value="">全部</option>' + Object.entries(EMAIL_DERIVATION_STATE_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
+    renderColumnFilterOptions(stateSelect);
+  }
+  const reload = id => {
+    const state = EMAIL_DERIVATION_VIEW;
+    if (id === 'emailDerivationSourceFilter') Object.assign(state, {parentId: null, parentEmail: ''});
+    state.selected.clear();
+    PAGERS.derivations.page = 1;
+    updateEmailDerivationSelectionUi();
+    loadEmailDerivationResources();
+  };
+  const reloadText = debounce(reload, 250);
+  Object.entries(EMAIL_DERIVATION_FILTERS).forEach(([key, id]) => {
+    const control = document.getElementById(id);
+    control?.addEventListener(['q', 'parent_q', 'related_q'].includes(key) ? 'input' : 'change', () => {
+      if (['q', 'parent_q', 'related_q'].includes(key)) reloadText(id);
+      else reload(id);
+    });
+  });
+  document.getElementById('btnClearDerivationParent')?.addEventListener('click', () => {
+    Object.assign(EMAIL_DERIVATION_VIEW, {parentId: null, parentEmail: ''});
+    EMAIL_DERIVATION_VIEW.selected.clear();
+    PAGERS.derivations.page = 1;
+    loadEmailDerivationResources();
+  });
+  document.getElementById('btnResetEmailDerivationFilters')?.addEventListener('click', () => { resetEmailDerivationFilters(); loadEmailDerivationResources(); });
+  document.getElementById('emailDerivationSelectAll')?.addEventListener('change', event => syncEmailDerivationSelectAll(event.target.checked));
+  document.getElementById('emailDerivationBody')?.addEventListener('change', onEmailDerivationBodyChange);
+  document.getElementById('emailDerivationBody')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-derivation-state]');
+    if (!button || button.disabled) return;
+    updateEmailDerivationStatus(button.dataset.derivationState, [Number(button.dataset.derivationId)]);
+  });
+  document.getElementById('btnCopyEmailDerivation')?.addEventListener('click', copyEmailDerivationEmails);
+  document.getElementById('btnDisableEmailDerivation')?.addEventListener('click', () => updateEmailDerivationStatus('disabled'));
+  document.getElementById('btnRestoreEmailDerivation')?.addEventListener('click', () => updateEmailDerivationStatus('available'));
+  document.getElementById('btnGenerateEmailDerivation')?.addEventListener('click', openEmailDerivationGenerate);
+  document.getElementById('emailDerivationGenerateForm')?.addEventListener('submit', submitEmailDerivationGenerate);
+  document.getElementById('btnCloseEmailDerivationGenerate')?.addEventListener('click', () => closeEmailDerivationGenerate());
+  document.getElementById('btnCancelEmailDerivationGenerate')?.addEventListener('click', () => closeEmailDerivationGenerate());
+  document.getElementById('emailDerivationGenerateSource')?.addEventListener('change', updateEmailDerivationGenerateControls);
+  document.getElementById('emailDerivationGenerateDialog')?.addEventListener('close', () => {
+    const state = EMAIL_DERIVATION_VIEW;
+    if (state.restoreGenerationFocus && state.generationFocus?.isConnected) state.generationFocus.focus({preventScroll: true});
+    state.generationFocus = null;
+  });
+})();
 
 function getPoolSource() {
   const v2 = document.getElementById('poolSourceV2');
