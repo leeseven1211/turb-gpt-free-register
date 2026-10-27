@@ -74,23 +74,11 @@ def create_dashboard_blueprint(context: WebUIContext):
 
     @bp.get("/api/summary")
     def api_summary():
-        from config import email as _email_cfg
-        from core.email_provider import parse_email_sources
-        pool = {"total": 0, "available": 0, "used": 0, "failed": 0}
-        for src in parse_email_sources(_email_cfg.EMAIL_SOURCE):
-            # 远端地址按需领取，不属于本地邮箱池。
-            if src in ("gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare", "email_butler"):
-                continue
-            one = (
-                db.generic_api_email_pool_summary() if src == "generic_api"
-                else db.domain_email_pool_summary() if src == "cloudflare_domain"
-                else db.icloud_hide_email_pool_summary() if src == "icloud_hide"
-                else db.outlook_pool_summary()
-            )
-            for k in pool:
-                pool[k] += int(one.get(k, 0) or 0)
-        domain_pool = db.domain_email_pool_summary()
+        from core.email_supply import email_supply_summary
+        pool = email_supply_summary()
+        domain_pool = next((row for row in pool['sources'] if row['source'] == 'cloudflare_domain'), {})
         return jsonify({
+            "email_supply": pool,
             "accounts": db.count_accounts(),
             "outlook_total": pool.get("total", 0),
             "outlook_available": pool.get("available", 0),
@@ -115,59 +103,11 @@ def create_dashboard_blueprint(context: WebUIContext):
         job_counts["active"] = sum(int(job_counts.get(key, 0) or 0) for key in ("pending", "running", "stopping"))
         today = datetime.now().date().isoformat()
         today_counts = {key: int(aggregates["jobs"]["today_counts"].get(key, 0) or 0) for key in ("success", "partial_success", "failed")}
-        pool_counts: dict[str, dict[str, int]] = {}
-        for row in aggregates["email_status_rows"]:
-            source = str(row.get("source") or "")
-            status = str(row.get("status") or "available")
-            pool_counts.setdefault(source, {})[status] = int(row.get("count") or 0)
-        local_pools = []
-        for source, label in (
-            ("outlook", "Outlook"),
-            ("generic_api", "通用 API"),
-            ("cloudflare_domain", "域名邮箱"),
-            ("icloud_hide", "iCloud 隐藏邮箱"),
-        ):
-            summary = dict(pool_counts.get(source) or {})
-            summary["total"] = sum(summary.values())
-            local_pools.append((source, label, summary))
-        # parse_email_sources 保留历史兼容语义：空值回退 Outlook。资源页需要
-        # 反映手动模式下的显式空来源，因此这里先区分“未配置来源”和兼容回退。
-        raw_email_sources = email_cfg.EMAIL_SOURCE
-        has_configured_email_source = bool(raw_email_sources.strip()) if isinstance(raw_email_sources, str) else bool(raw_email_sources)
-        enabled_sources = set(parse_email_sources(raw_email_sources)) if has_configured_email_source else set()
-        # EMAIL_SOURCE 是邮箱来源是否启用的唯一事实。收件方式可能让 iCloud
-        # 依赖 Email Butler 的收件能力，即使 Butler 本身没有参与发号，也要
-        # 在资源页保留这项依赖的可见性。
-        dependent_sources: set[str] = set()
-        inbox_mode = str(getattr(email_cfg, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower()
-        if "icloud_hide" in enabled_sources and inbox_mode == "forward_butler":
-            dependent_sources.add("email_butler")
-        pool_rows = [
-            {
-                "source": source,
-                "label": label,
-                "kind": "local_pool",
-                "enabled": source in enabled_sources,
-                "dependency": source in dependent_sources,
-                "dependency_reason": "iCloud 隐藏邮箱使用 forward_butler 收件" if source in dependent_sources else "",
-                "history_available": bool(summary.get("total", 0)),
-                "default_visible": source in enabled_sources or source in dependent_sources,
-                **{key: int(summary.get(key, 0) or 0) for key in ("total", "available", "used", "failed", "disabled")},
-            }
-            for source, label, summary in local_pools
-        ]
-        on_demand_sources = ("email_butler", "gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare")
-        pool_rows.extend({
-            "source": source,
-            "label": EMAIL_SOURCE_LABELS.get(source, source),
-            "kind": "on_demand",
-            "enabled": source in enabled_sources,
-            "dependency": source in dependent_sources,
-            "dependency_reason": "iCloud 隐藏邮箱使用 forward_butler 收件" if source in dependent_sources else "",
-            "history_available": False,
-            "default_visible": source in enabled_sources or source in dependent_sources,
-        } for source in on_demand_sources)
-
+        from core.email_supply import email_supply_summary
+        supply = email_supply_summary()
+        pool_rows = [{**row, 'dependency': False, 'dependency_reason': '',
+                      'history_available': bool(row.get('total')), 'default_visible': bool(row.get('total'))}
+                     for row in supply['sources']]
         active_leases = active_proxy_leases()
         return jsonify({
             "ok": True,
@@ -185,10 +125,11 @@ def create_dashboard_blueprint(context: WebUIContext):
                 "today_counts": today_counts,
             },
             "email": {
+                "supply": supply,
                 "sources": pool_rows,
                 "local_total": sum(int(item.get("total", 0) or 0) for item in pool_rows),
                 "local_available": sum(int(item.get("available", 0) or 0) for item in pool_rows),
-                "enabled_count": len(enabled_sources),
+                "enabled_count": sum(row["available"] > 0 for row in pool_rows),
             },
             "proxy": {
                 "platform": pool_source(),

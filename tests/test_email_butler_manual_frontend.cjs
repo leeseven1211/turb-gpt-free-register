@@ -3,125 +3,120 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-
 const fullSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/email.js'), 'utf8');
-const source = fullSource.slice(fullSource.indexOf('function renderButlerLeases('), fullSource.indexOf('async function loadOutlook('));
-const IDS = ['fb4ae841-1745-4450-ae65-a73ec0f28f99', 'fd431849-c753-428f-97fe-7ed4cd0f96ef'];
+const importSource = fullSource.slice(fullSource.indexOf('const IMPORT_SOURCE_LABELS'), fullSource.indexOf('async function bulkMarkOutlookStatus'));
 
-function createView(storage = new Map()) {
-  const nodes = new Map(), calls = [], toasts = [];
-  const element = id => {
-    if (!nodes.has(id)) nodes.set(id, {disabled: false, textContent: '', handlers: {}, addEventListener(name, handler) { this.handlers[name] = handler; }});
+function createImportView() {
+  const nodes = new Map(), calls = [], poolChanges = [], toasts = [], refreshes = [];
+  const element = selector => {
+    const id = selector.replace(/^#/, '');
+    if (!nodes.has(id)) nodes.set(id, {
+      value: '', textContent: '', innerHTML: '', disabled: false, dataset: {},
+      classList: {remove() {}, add() {}, toggle() {}}, querySelectorAll: () => [], focus() {},
+    });
     return nodes.get(id);
   };
-  let nextId = 0;
   const context = {
-    $: selector => element(selector.slice(1)),
-    sessionStorage: {
-      getItem: key => storage.get(key) || null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: key => storage.delete(key),
-    },
-    crypto: {randomUUID: () => IDS[nextId++]},
+    $: element, document: {getElementById: element}, esc: String, setTimeout: () => {},
+    getPoolSource: () => 'email_butler', updateModalScrollLock() {},
+    setPoolSourceV2: source => poolChanges.push(source),
+    loadOutlook: () => refreshes.push('list'), loadMailResources: () => refreshes.push('resources'), loadSummary: () => refreshes.push('summary'),
+    invalidateApiCache() {}, loadCapabilities: async () => {}, loadRegistrationEmailSources: async () => {},
     showToast: message => toasts.push(message),
-    api: async (url, options) => { calls.push({url, body: JSON.parse(options.body)}); return {ok: true, item: {email: 'fixture@example.test'}}; },
+    api: async (url, options) => {
+      calls.push({url, body: JSON.parse(options.body)});
+      return url.endsWith('import-preview') ? {valid: 2, invalid: 0, new: 2, existing: 0, duplicate_in_input: 0, extra_fields: 0}
+        : {parsed: 2, inserted: 2, skipped: 0, invalid: 0, extra_fields: 0};
+    },
   };
   vm.createContext(context);
-  vm.runInContext(source + '\nloadMailResources = async () => {};', context);
-  const button = element('btnLeaseButlerMailbox');
-  return {context, storage, calls, toasts, button, click: () => button.handlers.click({currentTarget: button})};
+  vm.runInContext(`${importSource}\nglobalThis.view = {openOutlookImportModal, setImportSourceV2, previewOutlookImport, doImportOutlook};`, context);
+  return {context, view: context.view, element, calls, poolChanges, toasts, refreshes};
 }
 
-test('首次手动领取在发送前保存意图，成功后清除，下一次领取使用新意图', async () => {
-  const view = createView();
-  let savedDuringRequest;
-  view.context.api = async (url, options) => {
-    const body = JSON.parse(options.body);
-    savedDuringRequest = [...view.storage.values()];
-    view.calls.push({url, body});
-    return {ok: true, item: {email: 'fixture@example.test'}};
-  };
-  await view.click();
-  assert.equal(view.calls[0].body.request_id, IDS[0]);
-  assert.deepEqual(savedDuringRequest, [IDS[0]]);
-  assert.equal(view.storage.size, 0);
-  await view.click();
-  assert.equal(view.calls[1].body.request_id, IDS[1]);
-  assert.equal(view.button.disabled, false);
+test('打开本地 Butler 池的导入弹窗保留来源，提示完整 HME 地址', () => {
+  const {view, element} = createImportView();
+  view.openOutlookImportModal();
+  assert.equal(element('importSourceV2').value, 'email_butler');
+  assert.match(element('importTextV2').placeholder, /icloud\.com/);
+  assert.match(element('importFormatHintV2').textContent, /每行.*完整/);
+  assert.match(element('importFormatHintV2').textContent, /手动/);
 });
 
-test('结果未知与网络中断保留原意图，刷新后继续原请求', async () => {
-  const view = createView();
-  view.context.api = async (url, options) => {
-    view.calls.push(JSON.parse(options.body));
-    throw Object.assign(new Error('fixture unknown'), {code: 'request_unknown'});
-  };
-  await view.click();
-  assert.deepEqual([...view.storage.values()], [IDS[0]]);
-  assert.match(view.toasts.at(-1), /原.*意图|原.*请求/);
-  const refreshed = createView(view.storage);
-  refreshed.context.api = async (url, options) => {
-    refreshed.calls.push(JSON.parse(options.body));
-    throw new TypeError('network interrupted');
-  };
-  await refreshed.click();
-  assert.equal(refreshed.calls[0].request_id, IDS[0]);
-  assert.deepEqual([...view.storage.values()], [IDS[0]]);
-  refreshed.context.api = async (url, options) => {
-    refreshed.calls.push(JSON.parse(options.body));
-    return {ok: true, item: {email: 'fixture@example.test'}};
-  };
-  await refreshed.click();
-  assert.equal(refreshed.calls[1].request_id, IDS[0]);
-  assert.equal(view.storage.size, 0);
+test('本地 Butler 地址列表复用预览和导入合同，不发远端领取请求', async () => {
+  const {view, element, calls, poolChanges, refreshes} = createImportView();
+  view.setImportSourceV2('email_butler');
+  element('importTextV2').value = 'one@icloud.com\ntwo+tag@icloud.com';
+  await view.previewOutlookImport();
+  await view.doImportOutlook();
+  assert.deepEqual(calls.map(call => call.url), ['/api/outlook/import-preview', '/api/outlook/import']);
+  for (const call of calls) assert.deepEqual(call.body, {source: 'email_butler', text: 'one@icloud.com\ntwo+tag@icloud.com'});
+  assert.deepEqual(poolChanges, ['email_butler']);
+  assert.deepEqual(refreshes, ['list', 'resources', 'summary']);
 });
 
-test('重复点击不能在前一个领取尚未返回时重复发送', async () => {
-  const view = createView();
-  let finish;
-  view.context.api = async (url, options) => {
-    view.calls.push(JSON.parse(options.body));
-    return new Promise(resolve => { finish = resolve; });
-  };
-  const pending = view.click();
-  const repeated = view.click();
-  assert.equal(view.calls.length, 1);
-  finish({ok: true, item: {email: 'fixture@example.test'}});
-  await Promise.all([pending, repeated]);
-});
-
-test('无法读取或持久保存领取意图时禁止提交', async () => {
-  for (const method of ['getItem', 'setItem']) {
-    const view = createView();
-    view.context.sessionStorage[method] = () => { throw new Error('storage blocked'); };
-    await view.click();
-    assert.equal(view.calls.length, 0);
-    assert.match(view.toasts.at(-1), /无法保存领取意图/);
-    assert.equal(view.button.disabled, false);
+test('Outlook 和通用 API 旧导入格式原样提交', async () => {
+  for (const [source, text] of [['outlook', 'one@example.test----password----client----refresh'], ['generic_api', 'one@example.test----https://fixture.test/code']]) {
+    const {view, element, calls} = createImportView();
+    view.setImportSourceV2(source);
+    element('importTextV2').value = text;
+    await view.previewOutlookImport();
+    await view.doImportOutlook();
+    assert.deepEqual(calls.at(-1).body, {source, text});
+    assert.match(element('importTextV2').placeholder, /----/);
   }
 });
 
-test('服务端未明确成功时保留意图并显示失败', async () => {
-  const view = createView();
-  view.context.api = async () => ({ok: false, request_unknown: true, code: 'request_unknown', error: 'fixture unknown'});
-  await view.click();
-  assert.deepEqual([...view.storage.values()], [IDS[0]]);
-  assert.doesNotMatch(view.toasts.at(-1), /^已租用/);
+test('导入清除旧的空库存缓存，刷新注册来源后新库存立即可选', async () => {
+  const {context, view, element} = createImportView();
+  const common = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
+  const jobs = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/jobs.js'), 'utf8');
+  const cacheSource = common.slice(common.indexOf('async function apiCached'), common.indexOf('function markViewReady'));
+  const capabilitiesSource = common.slice(common.indexOf('async function loadCapabilities'), common.indexOf("document.addEventListener('click', (event)", common.indexOf('async function loadCapabilities')));
+  let imported = false;
+  const importApi = context.api;
+  context.api = async (url, options) => {
+    if (url === '/api/email-sources') return {sources: [{value: 'email_butler', label: 'Butler 本地邮箱', enabled: imported}]};
+    if (url === '/api/capabilities') return {email_sources: {email_butler: {enabled: imported}}};
+    const result = await importApi(url, options);
+    if (url === '/api/outlook/import') imported = true;
+    return result;
+  };
+  context.applyFeatureGates = () => {};
+  vm.runInContext(`const API_CACHE = new Map(); let CAPABILITIES = {}; let REGISTRATION_EMAIL_SOURCES = [];\n${cacheSource}\n${capabilitiesSource}\n${jobs.slice(0, jobs.indexOf('async function startRegistrationFromInputs'))}`, context);
+  await context.loadRegistrationEmailSources();
+  assert.match(element('regEmailSourceV2').innerHTML, /value="email_butler" disabled/);
+  view.setImportSourceV2('email_butler');
+  element('importTextV2').value = 'one@icloud.com';
+  await view.doImportOutlook();
+  assert.match(element('regEmailSourceV2').innerHTML, /value="email_butler"/);
+  assert.doesNotMatch(element('regEmailSourceV2').innerHTML, /value="email_butler" disabled/);
 });
 
-test('普通 HTTP 页面缺少 randomUUID 时仍使用安全随机 UUID 并先持久化', async () => {
-  const view = createView();
-  delete view.context.crypto.randomUUID;
-  view.context.crypto.getRandomValues = bytes => { bytes.fill(17); return bytes; };
-  await view.click();
-  assert.equal(view.calls.length, 1);
-  assert.match(view.calls[0].body.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-});
-
-test('存储静默丢弃写入时禁止发号', async () => {
-  const view = createView();
-  view.context.sessionStorage.setItem = () => {};
-  await view.click();
-  assert.equal(view.calls.length, 0);
-  assert.match(view.toasts.at(-1), /无法保存领取意图/);
+test('邮箱资源页只加载本地 dashboard，导入入口不会触发 Butler 租用', async () => {
+  const template = fs.readFileSync(path.join(__dirname, '../webui/templates/index.html'), 'utf8');
+  const ids = new Set([...template.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]));
+  const elements = new Map(), calls = [], opened = [], rendered = [];
+  const element = selector => {
+    const id = selector.replace(/^#/, '');
+    if (!ids.has(id)) return null;
+    if (!elements.has(id)) elements.set(id, {handlers: {}, addEventListener(name, handler) { this.handlers[name] = handler; }});
+    return elements.get(id);
+  };
+  const context = {
+    $: element, sessionStorage: {getItem() {}}, renderMailSourceCards: rows => rendered.push(rows), renderButlerLeases() {},
+    setPoolSourceV2() {}, setModuleView() {}, showToast() {}, markViewReady() {},
+    openOutlookImportModal: source => opened.push(source),
+    apiCached: async url => { calls.push(url); return {email: {supply: {sources: [{source: 'email_butler', kind: 'local_pool', available: 2}]}}}; },
+    api: async url => { calls.push(url); throw new Error('禁止远端租用'); },
+  };
+  vm.createContext(context);
+  const resourceSource = fullSource.slice(fullSource.indexOf('async function loadMailResources'), fullSource.indexOf('async function loadOutlook'));
+  vm.runInContext(`${resourceSource}\nglobalThis.loadResources = loadMailResources;`, context);
+  await context.loadResources();
+  assert.deepEqual(calls, ['/api/dashboard']);
+  assert.equal(rendered[0][0].available, 2);
+  assert.equal(element('btnLeaseButlerMailbox'), null);
+  element('btnImportButlerMailboxes').handlers.click();
+  assert.deepEqual(opened, ['email_butler']);
 });

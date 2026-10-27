@@ -100,7 +100,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 动态调整注册线程数，提交后新任务立即使用最新值。
 - 账号页的补全、查活、刷新 AT、查套餐、查封号邮件、Codex 操作和提链共用「配置 → 系统设置 → 通用配置 → ACCOUNT_BATCH_WORKERS」；修改后新入队任务立即按新值调度。
 - 管理账号、邮箱池、Codex 凭证；模块子菜单与列表操作区保持吸顶，选中下方记录后无需回到页首。
-- 邮箱资源池拆分为「资源总览 / 邮箱列表 / 历史子邮箱」，区分本地库存与按需平台，并可查看、手动租用和释放当前 WebUI 进程的 Email Butler 租约；历史子地址仅供查看归属、筛选和复制，生成及库存管理统一在 Email Butler。
+- 邮箱资源池拆分为「资源总览 / 邮箱列表 / 历史子邮箱」。新注册只领取本地已导入邮箱，可用数量与领取共用同一过滤规则；库存用完后手动导入。子邮箱生成在 Email Butler 手动操作，Turb 保留固定收码连接和历史归属。
 - Codex 授权只保留一个凭证管理页面；同步 sub2api 是列表批量动作，不再重复占用二级菜单。
 - 配置页按用途合并为「注册设置、账号补全、浏览器设置、邮箱 / OTP、接码平台、代理与网络、Codex、提链、系统设置」9 个主菜单，菜单内按小节组织字段；Codex Token 自动刷新统一放在「系统设置 → 定时任务」，每项配置只展示一次。保存后继续支持热加载，旧分组入口和上次停留位置会迁移到对应新菜单。
 - 桌面端配置页固定左侧分组导航，超长配置只在右侧内容区滚动。
@@ -358,16 +358,16 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 
 #### iCloud Hide My Email（`icloud_hide`）
 
-统一 Email Butler 时，新任务只启用 `EMAIL_SOURCE=email_butler`，Apple 账号和 HME 库存由 Butler 管理。新 `provider=icloud_hme` 租约要求严格收件声明，使用完整目标地址、最终邮箱、时间窗口及原始投递证据从 `/inbound/code` 取码。同一领取意图传递 `owner_kind`、`owner_id`、`acquisition_id`，重跑保持原地址。
+新注册只从本地邮箱列表领取，注册页可用数也只统计本地合格库存；不查询 Butler 库存、不远端领号、不在注册时同步或创建邮箱。已有 `icloud_hide` 本地未用地址可直接使用。邮箱列表支持 Outlook 四段、通用 API 两段，以及 Butler iCloud 隐藏邮箱的完整地址列表导入。后者固定当前 Butler 连接与最终转发邮箱；其他 Butler provider 不能仅凭邮箱单列推断收码路径。Apple 账号和子邮箱生成仍由 Butler 管理，库存用完后手动导入 Turb。
 
-新 HME 完整身份在领取返回前保存独立固定 profile 和 acquisition metadata，Key 仅保留版本化 `.env` 引用。结果通过幂等 `/identities/report` 收口；网络失败保留可重试上下文，进程重启后也可按原完整地址和固定连接继续报告，不向 Apple 恢复租约。MailCom 等其他 Butler provider 继续使用原租约释放协议。
+本地领取在同一 PostgreSQL 事务中锁定库存、保存稳定 acquisition/owner，并绑定任务完整地址；并发和重跑保持原邮箱。重复导入不会重置已有使用、保留或未知状态。Butler 收码继续使用完整目标地址、最终邮箱、时间窗口和原始收件证据；Key 只保存版本化引用。历史远端领取意图保留恢复路径，结果未知时禁止换号。
 
 HME 上报成功后只收口本地进程上下文；远端现有租约保持原 TTL 并自然到期，成功身份的 consumed 状态阻止再次分配。`release_account` 名称为历史接口兼容，不表示 HME 会立即撤销远端租约。未知结果保留上下文且不上报；历史身份报告不会清除同地址的其他活动租约。
 
 历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
 
 ```dotenv
-EMAIL_SOURCE=email_butler
+EMAIL_SOURCE=icloud_hide,email_butler,outlook,generic_api,cloudflare_domain
 ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True
 ICLOUD_HME_INBOX_MODE=forward_butler
 ICLOUD_HME_AUTO_CREATE=False
@@ -402,7 +402,7 @@ ICLOUD_HME_ACCOUNT_ID=
 ICLOUD_HME_AUTO_CREATE=False
 ```
 
-turb 只保存别名库存、领取状态和所属 sidecar 账号 ID；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。`ICLOUD_HME_ACCOUNT_ID` 留空时会自动发现并同步所有 active iCloud 账号，填写后固定使用指定账号（适合排障或回滚）。Gmail 转发收码支持本机 `forward_imap` 直连和生产 `forward_butler` 两种模式；本机调试/注册可直接连接 Gmail，生产链路仍由 Oracle Email Butler 接收。所有账号共用同一个最终 Gmail/Email Butler 收件箱，OTP 仍按原始隐藏邮箱地址匹配。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。默认只复用已同步别名，库存为空时不会自动创建；持续自动创建建议由 sidecar worker 负责，turb 侧仅在排障或按需补充时开启 `ICLOUD_HME_AUTO_CREATE`。
+turb 只保存别名库存、领取状态和所属 sidecar 账号 ID；Apple Cookie 和 iCloud App 专用密码保留在 sidecar 中。`ICLOUD_HME_ACCOUNT_ID` 留空时会自动发现并同步所有 active iCloud 账号，填写后固定使用指定账号（适合排障或回滚）。Gmail 转发收码支持本机 `forward_imap` 直连和生产 `forward_butler` 两种模式；本机调试/注册可直接连接 Gmail，生产链路仍由 Oracle Email Butler 接收。所有账号共用同一个最终 Gmail/Email Butler 收件箱，OTP 仍按原始隐藏邮箱地址匹配。每个注册任务领取一个别名，注册成功后永久占用；明确未消耗的失败任务才会把别名退回可用池。注册只领取已导入本地库存，空库存直接提示导入；`ICLOUD_HME_AUTO_CREATE` 不会重新开启注册时创建或同步。持续创建由 Oracle sidecar worker 负责，新增库存需手动导入 Turb。
 
 收码前必须确认以下链路一致：
 
@@ -921,7 +921,7 @@ WebUI 页面说明：
 | 注册 | 「发起注册 / 任务记录」子菜单；设置批次参数，组合查询任务，查看进度、日志和断点重试 |
 | 账号 | 「活跃账号 / 归档账号 / 任务实例」子菜单；账号页集中批量操作并组合筛选，任务实例统一查询 Codex 补跑、查活、AT 刷新、查套餐和查封号邮件的脱敏日志与耗时 |
 | Codex 授权 | 单一凭证管理页；列表上方集中下载、上传 sub2api、归档和删除，表头按邮箱、Plan、导出/归档状态、Account ID、更新及过期日期筛选 |
-| 邮箱池 | 「资源总览 / 邮箱列表 / 历史子邮箱」子菜单；管理 Email Butler 当前进程租约；邮箱列表集中导入和批量操作；历史子地址页只读筛选、复制和分页，子邮箱生成、策略与库存统一在 Butler 管理 |
+| 邮箱池 | 「资源总览 / 邮箱列表 / 历史子邮箱」子菜单；本地库存统一导入、统计、领取和使用；历史子地址页只读筛选、复制和分页；子邮箱在 Butler 手动生成后导入 |
 | 代理与流量 | 「代理池库存 / 租约与流量」子菜单；库存与记录分别展示，记录页保留当前租约、线路历史、请求流量及其筛选、分页、详情和列宽调整 |
 | 配置 | 左侧切换 9 个用途菜单，菜单内按小节集中修改；系统设置统一管理通用配置、网站授权、定时任务和任务历史保留 |
 
@@ -967,9 +967,9 @@ PROXY_POOL_CHECK_INTERVAL=60
 PROXY_POOL_MAX_IDLE=300
 PROXY_POOL_WORKERS=2
 
-# 新任务统一 Email Butler；本地通过 HTTPS 直连生产 Butler
+# 新任务使用本地库存；Butler 连接用于固定收码
 USE_EMAIL_SERVICE=True
-EMAIL_SOURCE=email_butler
+EMAIL_SOURCE=icloud_hide,email_butler,outlook,generic_api,cloudflare_domain
 OTP_POLL_INTERVAL=3
 OTP_MAX_WAIT=240
 EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1

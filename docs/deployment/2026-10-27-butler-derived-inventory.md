@@ -1,5 +1,7 @@
 # Butler 子邮箱统一管理生产验收
 
+后续新注册已按用户要求改为本地库存领取；本文远端领取记录仅描述当时版本。当前边界见 [本地邮箱库存](2026-10-27-local-email-inventory.md)。
+
 后续已按用户修正为“按类型独立规则、仅手动生成”，iCloud 上限为 1；[当前规则与验收](2026-10-27-butler-manual-source-policy.md)。本页保留初版设计和发布记录。
 
 2026-10-27 已部署。Butler 管理子邮箱生成、累计额度、库存、分配和结果登记；Turb 只导入、领取和使用。管理入口为 [Email Butler → 子邮箱](https://codex-auth.leeseven.com/email-butler/derived.html)。

@@ -30,7 +30,7 @@ EMAIL_SOURCE_LABELS = {
     "generic_api": "通用 API 邮箱",
     "cloudflare_domain": "Cloudflare 域名邮箱",
     "cloudflare": "Cloudflare 临时邮箱",
-    "email_butler": "Email Butler",
+    "email_butler": "Email Butler 导入邮箱",
     "gptmail": "GPTMail",
     "mailnest": "MailNest",
     "cloudmail": "CloudMail",
@@ -83,11 +83,8 @@ def validate_email_source(source: str) -> str:
 
 
 def requires_acquisition_identity(source: str) -> bool:
-    """Every Butler allocation retains the business intent across retries."""
-    from core import email_butler_bridge
-
-    return (source in {"remail", "mailcode", "xigua", "email_butler"}
-            or source == "icloud_hide" and email_butler_bridge.enabled())
+    """旧远端意图仍需稳定身份；本地直接调用会在领取事务生成身份。"""
+    return source in {"remail", "mailcode", "xigua"}
 
 
 def remember_email_source(email: str, source: str) -> str:
@@ -176,7 +173,7 @@ def restore_email_context(
         raise RuntimeError("重跑任务缺少原注册邮箱，不能改用其他邮箱")
     selected = remember_email_source(address, source)
     from core import email_butler_bridge
-    if selected == "icloud_hide" and email_butler_bridge.enabled():
+    if selected == "icloud_hide" and (email_butler_bridge.fixed_context(address) or email_butler_bridge.enabled()):
         email_butler_bridge.restore_context(address, purpose=purpose)
         return selected
     from core.email_derivation import restore_address
@@ -313,61 +310,28 @@ def _pick_from_source(
     legacy_remail_compatibility: bool = False,
 ) -> str:
     from core import email_derivation
-    from core import email_butler_bridge
-
-    if source == "icloud_hide" and email_butler_bridge.enabled():
-        return email_butler_bridge.pick_account(owner_kind=owner_kind, owner_id=owner_id,
-            acquisition_id=acquisition_id).email
+    from core.local_email_inventory import LocalEmailInventoryError, TABLES
 
     if acquisition_id and email_derivation.store.find_allocation(acquisition_id=acquisition_id):
         return email_derivation.acquire_address(
-            source, owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
-            job_id=job_id,
-        )
-    if source == "gptmail":
-        from core.gptmail_client import pick_account
-        return pick_account().email
-    if source == "cloudflare":
-        from core.cf_temp_mail_client import pick_account
-        return pick_account().email
+            source, owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id, job_id=job_id)
+    if source not in TABLES:
+        raise LocalEmailInventoryError("local_inventory_source_required", "新注册只从本地邮箱列表领取，请先手动导入")
+    kwargs = dict(batch_id=batch_id, job_id=job_id, owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
     if source == "email_butler":
-        from core.email_butler_client import pick_account
-        return pick_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id).email
-    if source == "cloudflare_domain":
-        from core.qqmail_client import pick_domain_email
-        return pick_domain_email()
-    if source == "generic_api":
-        from core.generic_api_mail_client import pick_account
-        return pick_account().email
-    if source == "mailnest":
-        from core.mailnest_client import pick_account
-        return pick_account().email
-    if source == "cloudmail":
-        from core.cloudmail_client import pick_account
-        return pick_account().email
-    if source == "remail":
-        from core.remail_client import pick_account
-        kwargs = {}
-        if owner_kind and owner_id is not None and acquisition_id:
-            kwargs.update(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
-        elif not legacy_remail_compatibility:
-            raise RuntimeError("Remail 领取缺少稳定 owner/acquisition_id，已停止下单")
-        else:
-            kwargs["compatibility"] = True
-        return pick_account(**kwargs).email
-    if source in {"mailcode", "xigua"}:
-        module = __import__(f"core.{source}_client", fromlist=["pick_account"])
-        # 任务重跑继承根任务 owner；CLI 与换绑也显式提供自己的稳定身份。
-        selected_owner_kind, selected_owner_id = owner_kind, owner_id
-        if not selected_owner_kind and job_id is not None:
-            selected_owner_kind, selected_owner_id = "registration_job", str(job_id)
-        return module.pick_account(owner_kind=selected_owner_kind, owner_id=selected_owner_id,
-                                   acquisition_id=acquisition_id).email
+        from core.email_butler_client import pick_local_account
+        return pick_local_account(**kwargs).email
     if source == "icloud_hide":
         from core.icloud_hme_client import pick_account
-        return pick_account(batch_id=batch_id, job_id=job_id).email
-    from core.outlook_client import pick_account
-    return pick_account().email
+        return pick_account(**kwargs).email
+    if source == "outlook":
+        from core.outlook_client import pick_account
+        return pick_account(**kwargs).email
+    if source == "generic_api":
+        from core.generic_api_mail_client import pick_account
+        return pick_account(**kwargs).email
+    from core.qqmail_client import pick_domain_email
+    return pick_domain_email(**kwargs)
 
 
 def acquire_email(
@@ -382,7 +346,10 @@ def acquire_email(
 ) -> str:
     """领取邮箱；任务传入 source 时严格使用该来源，不自动切换平台。"""
     explicit = source is not None
-    sources = [validate_email_source(source)] if explicit else parse_email_sources()
+    from core.local_email_inventory import TABLES
+    sources = [validate_email_source(source)] if explicit else [item for item in parse_email_sources() if item in TABLES]
+    if not sources:
+        sources = list(TABLES)
     last_exc: Exception | None = None
     for source in sources:
         try:
@@ -422,6 +389,16 @@ def resolve_email_source(email: str, *, fallback: bool = True) -> str | None:
     registered_source = _registered_email_source(email)
     if registered_source:
         return registered_source
+
+    from core import record_store
+    from core.local_email_inventory import find_local_email
+    stable = record_store.get_row_by(record_store.LOCAL_EMAIL_CLAIMS, 'address_norm',
+        str(email or '').strip().lower())
+    if stable:
+        return str(stable['source'])
+    local = find_local_email(email)
+    if local:
+        return local[0]
 
     hinted_source = _EMAIL_SOURCE_HINTS.get(str(email or "").strip().lower())
     if hinted_source:
@@ -636,6 +613,9 @@ def release_email(
 ) -> str:
     """按已确认或解析出的邮箱来源回收状态，返回来源名。"""
     selected = remember_email_source(email, source) if source else resolve_email_source(email)
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source=selected, status=status, note=note):
+        return selected
     from core import email_butler_bridge
     if selected == "icloud_hide" and email_butler_bridge.enabled():
         from core.icloud_hme_client import release_account
@@ -686,6 +666,9 @@ def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:
     if not (email or "").strip():
         return False
 
+    from core.local_email_inventory import has_claim
+    if has_claim(email):
+        return False
     from core.email_derivation import find_binding
 
     if find_binding(email) is not None:

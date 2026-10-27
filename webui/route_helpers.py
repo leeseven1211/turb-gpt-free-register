@@ -22,7 +22,7 @@ def _pool_source_arg(default: str = "outlook") -> str:
     if not src and request.method == "POST":
         data = request.get_json(silent=True) or {}
         src = (data.get("source") or data.get("type") or "").strip()
-    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "icloud_hide") else default
+    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "icloud_hide", "email_butler") else default
 
 
 def _with_pool_source(rows: list[dict], source: str) -> list[dict]:

@@ -10,14 +10,41 @@ def enabled() -> bool:
     return bool(getattr(cfg, "ICLOUD_HME_BUTLER_BRIDGE_ENABLED", False))
 
 
+def fixed_context(email: str):
+    """既有固定路由独立于当前桥接开关；只查本地，绝不使用全局回退。"""
+    from core import db, email_derivation
+
+    address = str(email or '').strip().lower()
+    cached = butler.get_account_context(address)
+    if cached and cached.provider == 'icloud_hme':
+        return cached
+    context = butler._restore_hme_context(address)
+    if context:
+        return context
+    parent = db.get_icloud_hide_email_by_email(address)
+    profile_id = (parent or {}).get('local_inbox_profile_id') or ((parent or {}).get('derivation_policy') or {}).get('inbox_profile_id')
+    if not profile_id:
+        return None
+    profile = email_derivation.store.get_inbox_profile(int(profile_id))
+    if not profile or profile.get('connector') != 'forward_butler':
+        return None
+    if profile.get('state') != 'active':
+        raise butler.EmailButlerClientError('email_derivation_profile_unavailable: 原 HME 固定收件配置不可用')
+    connection = email_derivation._profile_credentials(profile)
+    return butler.EmailButlerAccount(email=address, mailbox_id='', provider='icloud_hme',
+        mailbox_email=connection['mailbox_email'], api_base=connection['api_base'], api_key=connection['api_key'],
+        recipient_mode='forwarded_exact_v1', strict_family=True,
+        acquisition_id=str((parent or {}).get('local_acquisition_id') or ''))
+
+
 def restore_context(email: str, *, purpose: str = "historical-hme", profile: dict | None = None):
     """只恢复已导入的原完整地址，不申请替代邮箱，也不调用 Apple。"""
     from core import db, email_derivation
 
     address = str(email or "").strip().lower()
-    leased = butler.get_account_context(address)
-    if leased and leased.provider == "icloud_hme" and leased.mailbox_id:
-        return leased
+    fixed = fixed_context(address)
+    if fixed:
+        return fixed
     route = email_derivation.restore_address(address, source="icloud_hide")
     if route:
         profile = profile or route["profile"]
@@ -51,19 +78,32 @@ def restore_context(email: str, *, purpose: str = "historical-hme", profile: dic
         recipient_mode="forwarded_exact_v1", strict_family=True, **connection)
 
 
-def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None):
-    """旧排队任务恢复原意图，新意图统一由 Butler 分配。"""
+def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None):
+    """新意图只领取本地邮箱，旧意图恢复原完整身份。"""
     from core.email_derivation import store
+    from core.local_email_inventory import claim
 
     previous = store.find_allocation(acquisition_id=acquisition_id) if acquisition_id else None
     if previous:
         if (previous["source"] != "icloud_hide" or previous["owner_kind"] != owner_kind
                 or str(previous["owner_id"]) != str(owner_id)):
-            raise butler.EmailButlerClientError("email_derivation_identity_conflict: 原 HME 意图的来源或归属不一致")
+            raise butler.EmailButlerIntentLocked("email_derivation_identity_conflict: 原 HME 意图的来源或归属不一致")
         return restore_context(previous["address"])
-    account = butler.pick_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
-    if account.provider != "icloud_hme":
-        raise butler.EmailButlerClientError("recipient_contract_unsupported: 历史 HME 任务只能由 Butler HME provider 恢复")
+    row = claim("icloud_hide", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                batch_id=batch_id, job_id=job_id)
+    if not row:
+        raise butler.EmailButlerClientError("local_email_inventory_empty: 本地 iCloud 隐藏邮箱库存为空，请先手动导入")
+    if row.get("_legacy_butler_intent"):
+        account = butler._account_from_legacy_intent(row["_legacy_butler_intent"])
+        if account.provider != "icloud_hme":
+            raise butler.EmailButlerIntentLocked("recipient_contract_unsupported: 原 HME 意图不是 HME provider")
+        return account
+    # 新库存必须在导入时固定配置，领取后不能再按当前全局连接补建。
+    account = fixed_context(row["email"])
+    if not account:
+        raise butler.EmailButlerIntentLocked('email_derivation_profile_unavailable: 本地 HME 未固定 Butler 收件配置，请重新导入')
+    account.acquisition_id = str(row.get("local_acquisition_id") or "")
+    butler._CONTEXT_CACHE[str(account.email).lower()] = account
     return account
 
 
@@ -114,9 +154,15 @@ def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:
     parents = record_store.list_rows(record_store.ICLOUD_HIDE_POOL,
         where="LOWER(email) = ANY(%s)", params=(targets,))
     for parent in parents:
-        profile_id = (parent.get("derivation_policy") or {}).get("inbox_profile_id")
+        profile_id = parent.get('local_inbox_profile_id') or (parent.get("derivation_policy") or {}).get("inbox_profile_id")
         if profile_id:
             profiles[str(parent["email"]).strip().lower()] = {**credentials(profile_id), "strict_family": True}
+    imported = record_store.list_rows(record_store.EMAIL_BUTLER_POOL,
+        where="LOWER(email) = ANY(%s)", params=(targets,))
+    for row in imported:
+        profile_id = row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
+        if profile_id:
+            profiles[str(row['email']).strip().lower()] = {**credentials(profile_id), 'strict_family': True}
     return profiles
 
 

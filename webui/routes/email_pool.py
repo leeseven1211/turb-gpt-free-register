@@ -30,6 +30,7 @@ from core import (
 )
 from core import registration_service as svc
 from core.task_errors import classify_task_error
+from core.storage import local_email_imports
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -59,6 +60,8 @@ def _pool_row_for_source(email: str, source: str) -> dict | None:
         return db.get_domain_email_by_email(email)
     if source == "icloud_hide":
         return db.get_icloud_hide_email_by_email(email)
+    if source == "email_butler":
+        return local_email_imports.get_butler_email(email)
     return db.get_outlook_by_email(email)
 
 
@@ -69,7 +72,7 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
     ``as_registered``. The new email UI never enables that path.
     """
     source = str(source or "").strip().lower()
-    required = 2 if source == "generic_api" else 4
+    required = 1 if source == "email_butler" else 2 if source == "generic_api" else 4
     records: list[dict] = []
     errors: list[dict] = []
     extra_fields = 0
@@ -93,7 +96,13 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
             continue
         if len(parts) > required:
             extra_fields += len(parts) - required
-        if source == "generic_api":
+        if source == "email_butler":
+            try:
+                record = {"email": local_email_imports.butler_forward_address(email)}
+            except ValueError as exc:
+                errors.append({"line": line_no, "reason": str(exc)})
+                continue
+        elif source == "generic_api":
             record = {"email": email, "code_url": parts[1]}
             if include_account_fields:
                 record.update({
@@ -248,7 +257,8 @@ def create_email_pool_blueprint(context: WebUIContext):
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400
         try:
-            value = db.email_pool_secret(source, email, field)
+            value = (local_email_imports.butler_email_secret(email, field) if source == "email_butler"
+                     else db.email_pool_secret(source, email, field))
         except LookupError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404
         except ValueError as exc:
@@ -275,7 +285,8 @@ def create_email_pool_blueprint(context: WebUIContext):
                 continue
             seen.add(key)
             try:
-                value = db.email_pool_secret(source, email, field)
+                value = (local_email_imports.butler_email_secret(email, field) if source == "email_butler"
+                         else db.email_pool_secret(source, email, field))
             except (LookupError, ValueError) as exc:
                 skipped.append({"source": source, "email": email, "reason": str(exc)})
                 continue
@@ -290,8 +301,8 @@ def create_email_pool_blueprint(context: WebUIContext):
         """Validate an email resource paste and report duplicates before writing."""
         data = request.get_json(silent=True) or {}
         source = str(data.get("source") or data.get("type") or "").strip().lower()
-        if source not in ("outlook", "generic_api"):
-            return jsonify({"ok": False, "error": "请选择 Outlook 或通用 API 邮箱来源"}), 400
+        if source not in ("outlook", "generic_api", "email_butler"):
+            return jsonify({"ok": False, "error": "请选择 Outlook、通用 API 或 Butler 转发邮箱来源"}), 400
         parsed = _parse_email_pool_import(data.get("text") or "", source)
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多预览 5000 行邮箱"}), 400
@@ -326,26 +337,34 @@ def create_email_pool_blueprint(context: WebUIContext):
         分隔符兼容 ---- 与 ====。
         """
         data = request.get_json(silent=True) or {}
-        source = (data.get("source") or data.get("type") or "").strip()
-        if source not in ("outlook", "generic_api"):
-            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook 或 通用 API"}), 400
+        source = (data.get("source") or data.get("type") or "").strip().lower()
+        if source not in ("outlook", "generic_api", "email_butler"):
+            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook、通用 API 或 Butler 转发邮箱"}), 400
         text = data.get("text") or ""
         # Old API clients may still send as_registered; keep the compatibility
         # path while the current UI always imports resources only.
         as_registered = bool(data.get("as_registered", False))
+        if source == "email_butler" and as_registered:
+            return jsonify({"ok": False, "error": "Butler 邮箱仅导入本地资源，不导入为已注册账号"}), 400
         parsed = _parse_email_pool_import(text, source, include_account_fields=as_registered)
         records = parsed["records"]
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多导入 5000 行邮箱"}), 400
         if not records:
-            need = "2 段：邮箱----取码地址" if source == "generic_api" else "4 段：email----password----clientId----refreshToken"
+            need = ("每行一个完整 iCloud HME 邮箱地址" if source == "email_butler" else
+                    "2 段：邮箱----取码地址" if source == "generic_api" else "4 段：email----password----clientId----refreshToken")
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
-        if as_registered:
-            inserted, skipped = db.import_registered_email_accounts(records, source=source)
-        elif source == "generic_api":
-            inserted, skipped = db.import_generic_api_emails(records)
-        else:
-            inserted, skipped = db.import_outlook_accounts(records)
+        try:
+            if as_registered:
+                inserted, skipped = db.import_registered_email_accounts(records, source=source)
+            elif source == "email_butler":
+                inserted, skipped = local_email_imports.import_resources(records, source=source)
+            elif source == "generic_api":
+                inserted, skipped = db.import_generic_api_emails(records)
+            else:
+                inserted, skipped = db.import_outlook_accounts(records)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({
             "ok": True,
             "inserted": inserted,
@@ -368,9 +387,16 @@ def create_email_pool_blueprint(context: WebUIContext):
         if source == "all":
             source = "outlook"
         current = _pool_row_for_source(email, source)
+        if status == "available" and local_email_imports.pool_mutation_protected(current):
+            return jsonify({"ok": False, "error": "已使用、已保留或结果未知的邮箱不能重新变为可用"}), 409
         if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
             return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
-        if source == "generic_api":
+        if source == "email_butler":
+            try:
+                updated = local_email_imports.set_butler_status(email, status=status, note=data.get("note"))
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 409
+        elif source == "generic_api":
             updated = db.release_generic_api_email(email, status=status, note=data.get("note"))
         elif source == "cloudflare_domain":
             updated = db.release_domain_email(email, status=status, note=data.get("note"))
@@ -418,10 +444,15 @@ def create_email_pool_blueprint(context: WebUIContext):
             seen.add(key)
             try:
                 current = _pool_row_for_source(email, item_source)
+                if status == "available" and local_email_imports.pool_mutation_protected(current):
+                    skipped.append({"email": email, "source": item_source, "reason": "已使用、已保留或结果未知的邮箱不能重新变为可用"})
+                    continue
                 if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
                     skipped.append({"email": email, "source": item_source, "reason": "换绑后邮箱不能恢复为可用"})
                     continue
-                if item_source == "generic_api":
+                if item_source == "email_butler":
+                    changed = local_email_imports.set_butler_status(email, status=status, note=note)
+                elif item_source == "generic_api":
                     changed = db.release_generic_api_email(email, status=status, note=note)
                 elif item_source == "cloudflare_domain":
                     changed = db.release_domain_email(email, status=status, note=note)
@@ -452,8 +483,12 @@ def create_email_pool_blueprint(context: WebUIContext):
         source = (data.get("source") or _pool_source_arg()).strip()
         if source == "all":
             source = "outlook"
+        if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
+            return jsonify({"ok": True, "deleted": False, "reason": "邮箱已有使用或未知结果历史，保留完整身份，不能删除后重新导入"})
         deleted = (
-            db.delete_generic_api_email(email)
+            local_email_imports.delete_butler_email(email)
+            if source == "email_butler"
+            else db.delete_generic_api_email(email)
             if source == "generic_api"
             else db.delete_domain_email(email)
             if source == "cloudflare_domain"
@@ -493,8 +528,13 @@ def create_email_pool_blueprint(context: WebUIContext):
             if key in seen:
                 continue
             seen.add(key)
+            if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source)):
+                skipped.append({"email": email, "source": item_source, "reason": "邮箱已有使用或未知结果历史，保留完整身份"})
+                continue
             deleted_ok = (
-                db.delete_generic_api_email(email)
+                local_email_imports.delete_butler_email(email)
+                if item_source == "email_butler"
+                else db.delete_generic_api_email(email)
                 if item_source == "generic_api"
                 else db.delete_domain_email(email)
                 if item_source == "cloudflare_domain"

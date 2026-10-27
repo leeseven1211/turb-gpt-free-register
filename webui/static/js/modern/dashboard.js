@@ -7,17 +7,33 @@ let overviewPageDragState = null;
 let overviewCustomizerOpen = false;
 let overviewResizeState = null;
 
+function emailSupplyValue(supply, key) {
+  const value = supply?.[key];
+  return Number.isInteger(value) && value >= 0 ? value : supply?.status === 'error' ? '读取失败' : '未知';
+}
+
+function emailSupplyHint(supply) {
+  return `仅统计本地库存；用完后请手动导入邮箱。Email Butler 仅提供收码连接${supply?.reason ? `；${supply.reason}` : ''}`;
+}
+
+function renderRegistrationEmailSupply(supply) {
+  const hint = emailSupplyHint(supply);
+  for (const [selector, key] of [['#statOutlook', 'total'], ['#statAvailable', 'available'], ['#statUsed', 'used'], ['#statFailed', 'failed']]) {
+    const node = $(selector);
+    if (node) { node.textContent = emailSupplyValue(supply, key); node.title = hint; }
+  }
+  const scope = $('#registrationEmailSupplyHint');
+  if (scope) scope.textContent = hint;
+}
+
 async function loadSummary() {
   if (summaryLoading) return;
   summaryLoading = true;
   try {
     const s = await apiCached('/api/summary', {}, 3000);
     $('#statAccounts').textContent = s.accounts;
-    $('#statOutlook').textContent = s.outlook_total;
-    $('#statAvailable').textContent = s.outlook_available;
-    $('#statUsed').textContent = s.outlook_used;
-    $('#statFailed').textContent = s.outlook_failed;
-  } catch(e) {}
+    renderRegistrationEmailSupply(s.email_supply);
+  } catch(e) { renderRegistrationEmailSupply({status: 'error', reason: '本地库存读取失败，请稍后重试'}); }
   finally { summaryLoading = false; }
 }
 
@@ -32,6 +48,8 @@ function overviewCapability(...path) {
 }
 
 function overviewEmailSources(data) {
+  const localSources = data?.email?.supply?.sources;
+  if (Array.isArray(localSources)) return localSources.filter(source => source?.kind === 'local_pool');
   const sources = Array.isArray(data?.email?.sources) ? data.email.sources : [];
   return sources.filter(source => {
     if (!source || source.enabled !== true) return false;
@@ -102,12 +120,11 @@ const OVERVIEW_CARD_REGISTRY = [
     render: (data, preferences) => dashboardMetric('metric-accounts', '有效账号', data.accounts.active || 0, `归档 ${data.accounts.archived || 0}`, '#5b5ce2', preferences?.sizes?.['metric-accounts'], preferences?.heights?.['metric-accounts']),
   },
   {
-    id: 'metric-email', region: 'metrics', label: '可用邮箱',
+    id: 'metric-email', region: 'metrics', label: '本地可用邮箱',
     available: data => overviewEmailSources(data).length > 0,
     render: (data, preferences) => {
-      const sources = overviewEmailSources(data);
-      const onDemand = sources.some(source => source.kind === 'on_demand');
-      return dashboardMetric('metric-email', '可用邮箱', onDemand && !Number(data.email.local_available || 0) ? '按需' : (data.email.local_available || 0), `已启用来源 ${sources.length} 个`, '#2dbb8a', preferences?.sizes?.['metric-email'], preferences?.heights?.['metric-email']);
+      const supply = data.email.supply;
+      return dashboardMetric('metric-email', '本地可用邮箱', emailSupplyValue(supply, 'available'), emailSupplyHint(supply), '#2dbb8a', preferences?.sizes?.['metric-email'], preferences?.heights?.['metric-email']);
     },
   },
   {
@@ -130,17 +147,18 @@ const OVERVIEW_CARD_REGISTRY = [
     render: (data, preferences) => dashboardMetric('metric-proxy', '活跃出口', data.proxy.active_leases || 0, `代理平台 ${overviewProxyPlatformLabel(data.proxy.platform)}`, '#a855f7', preferences?.sizes?.['metric-proxy'], preferences?.heights?.['metric-proxy']),
   },
   {
-    id: 'panel-email', region: 'panels', label: '邮箱资源 · 邮箱池与按需平台',
+    id: 'panel-email', region: 'panels', label: '邮箱资源 · 本地库存',
     available: data => overviewEmailSources(data).length > 0,
     action: {type: 'go', value: 'outlook', label: '管理邮箱'},
     render: data => {
       const sources = overviewEmailSources(data);
       return `<div class="overview-source-grid">${sources.map((source, index) => {
-      const onDemand = source.kind === 'on_demand';
+      const value = emailSupplyValue(source, 'available');
+      const detail = `本地总数 ${emailSupplyValue(source, 'total')} · 已用 ${emailSupplyValue(source, 'used')} · 失败 ${emailSupplyValue(source, 'failed')}`;
       return `<article class="overview-source${index >= 2 ? ' overview-density-secondary' : ''}${index >= 1 ? ' overview-density-minimal-extra' : ''}">
         <div class="overview-source-top"><span class="overview-source-name" title="${attrEsc(source.label)}">${esc(source.label)}</span><i class="overview-source-state is-on" aria-hidden="true"></i></div>
-        <strong>${onDemand ? '按需' : esc(source.available || 0)}</strong>
-        <small>${onDemand ? '运行时租用' : `总数 ${esc(source.total || 0)} · 已用 ${esc(source.used || 0)}`}</small>
+        <strong>${esc(value)}</strong>
+        <small>${esc(detail)}</small>
       </article>`;
       }).join('')}</div>${overviewMoreSummary(sources.length - 2, '个来源', 'compact', true)}${overviewMoreSummary(sources.length - 1, '个来源', 'minimal')}`;
     },

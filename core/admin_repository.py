@@ -811,6 +811,7 @@ _POOL_SPECS = {
     "generic_api": record_store.GENERIC_API_POOL,
     "cloudflare_domain": record_store.DOMAIN_POOL,
     "icloud_hide": record_store.ICLOUD_HIDE_POOL,
+    "email_butler": record_store.EMAIL_BUTLER_POOL,
 }
 
 
@@ -825,7 +826,7 @@ def _pool_union() -> str:
 
 
 def email_pool_existing_emails(source: str, emails: list[str] | set[str]) -> set[str]:
-    """Return existing addresses for an import preview without reading secrets."""
+    """Preview the same cross-source and historical conflicts as explicit import."""
     source_key = _text(source).lower()
     spec = _POOL_SPECS.get(source_key)
     if spec is None:
@@ -833,9 +834,15 @@ def email_pool_existing_emails(source: str, emails: list[str] | set[str]) -> set
     normalized = sorted({str(email or "").strip().lower() for email in emails if str(email or "").strip()})
     if not normalized:
         return set()
+    parts = [f"SELECT lower(email) AS email FROM {_q(table)}" for table in _POOL_SPECS.values()]
+    parts += [f"SELECT lower(email) AS email FROM {_q(record_store.ACCOUNTS)}",
+              f"SELECT address_norm AS email FROM {_q(record_store.EMAIL_ADDRESS_ALLOCATIONS)}",
+              f"SELECT address_norm AS email FROM {_q(record_store.LOCAL_EMAIL_CLAIMS)}",
+              f"SELECT lower(COALESCE(address_norm, data->'mailbox'->>'email', '')) AS email "
+              f"FROM {_q(record_store.EMAIL_BUTLER_CLAIM_INTENTS)} WHERE status NOT IN ('prepared','rejected')"]
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"SELECT lower(email) AS email FROM {_q(spec)} WHERE lower(email) = ANY(%s)",
+            f"SELECT DISTINCT email FROM ({' UNION ALL '.join(parts)}) known WHERE email = ANY(%s)",
             (normalized,),
         )
         return {str(row["email"]).lower() for row in cur.fetchall()}
@@ -871,7 +878,9 @@ def list_email_pool(request: PageRequest) -> dict:
     from_sql = f" FROM ({pool}) p LEFT JOIN {accounts} a ON LOWER(a.email) = LOWER(p.email)"
     safe_pool_data = (
         "p.data - ARRAY['password','client_id','refresh_token','access_token','totp_secret',"
-        "'code_url','copy_line','account_copy_line','original_line']::text[] "
+        "'code_url','copy_line','account_copy_line','original_line','api_key','api_base',"
+        "'credential_ref','inbox_profile_id','inbox_locator','mailbox','mailbox_id','lease_id',"
+        "'local_inbox_profile_id','local_acquisition_id','local_owner_kind','local_owner_id']::text[] "
         "|| jsonb_build_object("
         "'has_password', NULLIF(BTRIM(COALESCE(p.data->>'password', '')), '') IS NOT NULL, "
         "'has_client_id', NULLIF(BTRIM(COALESCE(p.data->>'client_id', '')), '') IS NOT NULL, "
@@ -900,6 +909,8 @@ def list_email_pool(request: PageRequest) -> dict:
     sensitive = {
         "password", "client_id", "refresh_token", "access_token", "totp_secret",
         "code_url", "copy_line", "account_copy_line", "original_line",
+        "api_key", "api_base", "credential_ref", "inbox_profile_id", "inbox_locator", "mailbox", "mailbox_id", "lease_id",
+        "local_inbox_profile_id", "local_acquisition_id", "local_owner_kind", "local_owner_id",
     }
     items = []
     for raw in raw_rows:

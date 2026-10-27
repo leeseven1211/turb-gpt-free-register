@@ -18,89 +18,17 @@ def _all_present(values: list[tuple[str, Any]]) -> tuple[bool, str]:
 
 
 def _email_source_features() -> dict[str, dict[str, Any]]:
-    from config import email as cfg
-    from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
+    from core.email_provider import EMAIL_SOURCE_LABELS
+    from core import local_email_inventory
 
-    configured_value = str(getattr(cfg, "EMAIL_SOURCE", "") or "").strip()
-    configured = set(parse_email_sources(configured_value)) if configured_value else set()
-    results: dict[str, dict[str, Any]] = {}
-
-    def add(source: str, ok: bool, reason: str = "") -> None:
-        enabled = source in configured and ok
-        if source not in configured:
-            reason = "未在 EMAIL_SOURCE 中启用"
-        results[source] = {
-            "label": EMAIL_SOURCE_LABELS.get(source, source),
-            **_feature(enabled, reason),
-        }
-
-    add("outlook", db.outlook_pool_summary().get("available", 0) > 0, "邮箱池没有可用 Outlook 素材")
-    add("generic_api", db.generic_api_email_pool_summary().get("available", 0) > 0, "通用 API 邮箱池为空")
-    ok, reason = _all_present([
-        ("EMAIL_DOMAIN", getattr(cfg, "EMAIL_DOMAIN", "")),
-        ("QQ_EMAIL", getattr(cfg, "QQ_EMAIL", "")),
-        ("QQ_IMAP_PASSWORD", getattr(cfg, "QQ_IMAP_PASSWORD", "")),
-    ])
-    add("cloudflare_domain", ok, reason)
-    ok, reason = _all_present([("CLOUDFLARE_API_BASE", getattr(cfg, "CLOUDFLARE_API_BASE", ""))])
-    if ok:
-        auth_mode = str(getattr(cfg, "CLOUDFLARE_AUTH_MODE", "none") or "none").lower()
-        path = str(getattr(cfg, "CLOUDFLARE_PATH_ACCOUNTS", "") or "").lower()
-        needs_key = auth_mode in {"x-admin-auth", "bearer", "x-api-key", "query-key"} or path.rstrip("/").endswith("/admin/new_address")
-        if needs_key and not str(getattr(cfg, "CLOUDFLARE_API_KEY", "") or "").strip():
-            ok, reason = False, "Cloudflare API Key 未配置"
-    add("cloudflare", ok, reason)
-    ok, reason = _all_present([
-        ("EMAIL_BUTLER_API_BASE", getattr(cfg, "EMAIL_BUTLER_API_BASE", "")),
-        ("EMAIL_BUTLER_API_KEY", getattr(cfg, "EMAIL_BUTLER_API_KEY", "")),
-    ])
-    add("email_butler", ok, reason)
-    ok, reason = _all_present([("GPTMAIL_API_KEY", getattr(cfg, "GPTMAIL_API_KEY", ""))])
-    add("gptmail", ok, reason)
-    from core.remail_client import RemailError, validate_configuration
-
-    try:
-        validate_configuration()
-        ok, reason = True, ""
-    except RemailError as exc:
-        ok, reason = False, str(exc)
-    add("remail", ok, reason)
-    for source in ("mailcode", "xigua"):
-        module = __import__(f"core.{source}_client", fromlist=["validate_configuration"])
-        try:
-            module.validate_configuration()
-            ok, reason = True, ""
-        except RuntimeError as exc:
-            ok, reason = False, str(exc)
-        add(source, ok, reason)
-    ok, reason = _all_present([
-        ("MAIL_NEST_API_KEY", getattr(cfg, "MAIL_NEST_API_KEY", "")),
-        ("MAIL_NEST_PROJECT_CODE", getattr(cfg, "MAIL_NEST_PROJECT_CODE", "")),
-    ])
-    add("mailnest", ok, reason)
-    ok, reason = _all_present([
-        ("CLOUDMAIL_API_BASE", getattr(cfg, "CLOUDMAIL_API_BASE", "")),
-        ("CLOUDMAIL_AUTH_TOKEN", getattr(cfg, "CLOUDMAIL_AUTH_TOKEN", "")),
-    ])
-    add("cloudmail", ok, reason)
-    # An empty account ID is intentional: the HME client discovers all active
-    # sidecar accounts and rotates across them. A non-empty ID remains an
-    # optional fixed-account override for debugging or rollback.
-    from core import email_butler_bridge
-    if email_butler_bridge.enabled():
-        ok, reason = _all_present([
-            ("EMAIL_BUTLER_API_BASE", getattr(cfg, "EMAIL_BUTLER_API_BASE", "")),
-            ("EMAIL_BUTLER_API_KEY", getattr(cfg, "EMAIL_BUTLER_API_KEY", "")),
-        ])
-    else:
-        ok, reason = _all_present([
-            ("ICLOUD_HME_API_BASE", getattr(cfg, "ICLOUD_HME_API_BASE", "")),
-        ])
-        if ok and not bool(getattr(cfg, "ICLOUD_HME_AUTO_CREATE", False)):
-            available = int(db.icloud_hide_email_pool_summary().get("available", 0) or 0)
-            if available <= 0:
-                ok, reason = False, "iCloud 隐藏邮箱库存为空，且未开启自动创建"
-    add("icloud_hide", ok, reason)
+    pools = {row['source']: row for row in local_email_inventory.summary()['sources']}
+    results = {}
+    for source, label in EMAIL_SOURCE_LABELS.items():
+        available = int(pools.get(source, {}).get('available', 0) or 0)
+        local = source in local_email_inventory.TABLES
+        reason = '本地邮箱库存为空，请先手动导入' if local else '新注册只使用本地邮箱库存；历史账号收码保留'
+        results[source] = {'label': label, **_feature(local and available > 0, reason),
+                           'available': available if local else 0}
     return results
 
 

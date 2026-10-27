@@ -61,7 +61,8 @@ test('历史列表保留完整地址和归属，即使旧响应带能力标记�
   assert.ok(html.includes('parent+abc123@example.test'));
   assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));
   assert.ok(!html.includes('<script>'));
-  assert.ok(html.includes('可领取') && html.includes('归属已保留') && html.includes('已停用'));
+  assert.ok(html.includes('历史未领取') && html.includes('归属已保留') && html.includes('已停用'));
+  assert.ok(!html.includes('可领取'));
   assert.ok(html.includes('账号 #5 · 任务 #root-1'));
   assert.doesNotMatch(html, /data-derivation-state|<button/);
   assert.equal(calls.filter(call => call.options).length, 0);

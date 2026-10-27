@@ -1,11 +1,11 @@
 // ---------- 邮箱池 ----------
-// 历史子地址只读展示；子邮箱生成、策略和库存由 Email Butler 管理。
+// 子地址记录只读展示；领取和统计使用本地库存，用完后手动导入。
 const EMAIL_DERIVATION_VIEW = {
   source: 'all', parentId: null, parentEmail: '', total: 0, summary: null, generation: 0,
   items: [], selected: new Map(), loading: false,
 };
 const EMAIL_DERIVATION_STATE_LABELS = {
-  available: '可领取', disabled: '已停用', reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '历史停用',
+  available: '历史未领取', disabled: '已停用', reserved: '归属已保留', used: '已绑定账号', replaced: '换绑后地址', retired: '历史停用',
 };
 const EMAIL_DERIVATION_FILTERS = {
   q: 'emailDerivationQuery', parent_q: 'emailDerivationParentQuery', source: 'emailDerivationSourceFilter',
@@ -75,7 +75,7 @@ function renderEmailDerivationAllocations(result) {
       <td class="col-time">${esc(formatDateTime(item.created_at))}</td>
       <td class="col-actions"><span class="sub-cell">只读</span></td>
     </tr>`;
-  }).join('') || renderTableStateRow(8, '当前筛选下没有历史子地址', '子邮箱生成、策略和库存请到 Email Butler 管理。');
+  }).join('') || renderTableStateRow(8, '当前筛选下没有历史子地址', '请从 Email Butler 等来源手动准备邮箱，再导入本地库存。');
   updateEmailDerivationSelectionUi();
   _renderPager('derivations', state.total);
 }
@@ -224,6 +224,7 @@ const POOL_SOURCE_LABELS = {
   generic_api: '通用 API 邮箱池',
   cloudflare_domain: '域名邮箱池',
   icloud_hide: 'iCloud 隐藏邮箱池',
+  email_butler: 'Butler 本地邮箱池',
 };
 function setPoolSourceV2(val) {
   const hidden = document.getElementById('poolSourceV2');
@@ -245,7 +246,7 @@ function getOutlookQuery() {
 }
 function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱', icloud_hide:'iCloud 隐藏邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱', icloud_hide:'iCloud 隐藏邮箱', email_butler:'Butler 本地邮箱'})[src] || src || '-';
 }
 const POOL_USAGE_LABELS = {
   available: '待领取',
@@ -283,6 +284,9 @@ function _poolCredentialsCell(r) {
     const remote = r.remote_active === true ? '远程已激活' : r.remote_active === false ? '远程未激活' : '远程状态未知';
     return `<div class="pool-credential-title">Apple 别名</div><small>${esc(remote)}</small>`;
   }
+  if (source === 'email_butler') {
+    return '<div class="pool-credential-title">Butler 收码连接</div><small>使用导入时保存的收码设置</small>';
+  }
   return `<div class="pool-credential-title">运行时配置</div><small>由来源服务管理</small>`;
 }
 function _poolActivityCell(r) {
@@ -306,7 +310,7 @@ function _mailSourceVisibility(source) {
   const defaultVisible = source.default_visible === undefined
     ? enabled || dependency
     : source.default_visible === true || source.default_visible === 'true';
-  return {onDemand, enabled, dependency, history, defaultVisible};
+  return {onDemand, enabled, dependency, history, defaultVisible: source.kind === 'local_pool' || defaultVisible};
 }
 function _ensureMailSourceVisibilityControls(root) {
   let controls = document.getElementById('mailSourceVisibilityControls');
@@ -337,7 +341,7 @@ function renderMailSourceCards(sources) {
   root.innerHTML = visibleRows.map(({source, visibility}) => {
     const {onDemand, enabled, dependency, history} = visibility;
     const clickable = !onDemand && POOL_SOURCE_LABELS[source.source] && source.source !== 'all';
-    const statusLabel = enabled ? '已启用' : dependency ? '收码依赖' : history ? '历史/已停用' : '未启用';
+    const statusLabel = source.kind === 'local_pool' ? '本地库存' : enabled ? '已启用' : dependency ? '收码依赖' : history ? '历史/已停用' : '未启用';
     const reason = dependency ? source.dependency_reason : '';
     return `<article class="mail-source-card${enabled ? ' is-enabled' : ''}${dependency ? ' is-dependency' : ''}${history && !enabled ? ' is-history' : ''}${clickable ? ' is-clickable' : ''}"${clickable ? ` data-mail-source="${attrEsc(source.source)}" role="button" tabindex="0"` : ''}>
       <div class="mail-source-card-head"><strong title="${attrEsc(source.label)}">${esc(source.label)}</strong><span>${statusLabel}</span></div>
@@ -347,26 +351,15 @@ function renderMailSourceCards(sources) {
     </article>`;
   }).join('') || '<div class="muted">暂无已启用邮箱服务，可显示未启用的服务。</div>';
 }
-function renderButlerLeases(items) {
-  const root = $('#butlerLeaseList');
-  if (!root) return;
-  root.innerHTML = (items || []).map(item => `<div class="butler-lease-row">
-    <div class="butler-lease-row-main"><strong>${esc(item.email)}</strong><small>${esc(item.provider || 'Email Butler')}${item.leased_until ? ` · 至 ${esc(formatDateTime(item.leased_until))}` : ''}</small></div>
-    <button type="button" data-butler-release="${attrEsc(item.email)}">释放</button>
-  </div>`).join('') || '<div class="butler-lease-empty">当前进程没有手动或注册中租约</div>';
-}
 async function loadMailResources() {
   try {
-    const [dashboard, leases] = await Promise.all([
-      apiCached('/api/dashboard', {}, 5000),
-      api('/api/email-butler/leases'),
-    ]);
-    renderMailSourceCards((dashboard.email || {}).sources || []);
-    renderButlerLeases(leases.items || []);
+    const dashboard = await apiCached('/api/dashboard', {}, 5000);
+    renderMailSourceCards(dashboard.email?.supply?.sources || dashboard.email?.sources || []);
     markViewReady('outlook:overview');
   } catch(e) { showToast('邮箱资源加载失败: ' + e.message); }
 }
 $('#btnRefreshMailResources')?.addEventListener('click', loadMailResources);
+$('#btnImportButlerMailboxes')?.addEventListener('click', () => openOutlookImportModal('email_butler'));
 $('#mailSourceCards')?.addEventListener('click', e => {
   const card = e.target.closest('[data-mail-source]');
   if (!card) return;
@@ -381,59 +374,6 @@ $('#mailSourceCards')?.addEventListener('keydown', e => {
   setPoolSourceV2(card.dataset.mailSource);
   setModuleView('outlook', 'list');
 });
-const BUTLER_MANUAL_REQUEST_KEY = 'turb.emailButler.manualRequestId';
-function _manualButlerRequestId() {
-  try {
-    let requestId = sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY);
-    if (!requestId) {
-      if (typeof crypto.randomUUID === 'function') requestId = crypto.randomUUID();
-      else {
-        const bytes = crypto.getRandomValues(new Uint8Array(16));
-        bytes[6] = (bytes[6] & 15) | 64;
-        bytes[8] = (bytes[8] & 63) | 128;
-        const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-        requestId = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
-      }
-      sessionStorage.setItem(BUTLER_MANUAL_REQUEST_KEY, requestId);
-    }
-    if (sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY) !== requestId) throw new Error('storage unavailable');
-    return requestId;
-  } catch (_) {
-    throw Object.assign(new Error('无法保存领取意图，请允许页面存储后重试'), {code:'manual_intent_unavailable'});
-  }
-}
-function _updateManualButlerLeaseButton() {
-  const button = $('#btnLeaseButlerMailbox');
-  if (!button) return;
-  try { button.textContent = sessionStorage.getItem(BUTLER_MANUAL_REQUEST_KEY) ? '继续领取邮箱' : '租用邮箱'; }
-  catch (_) { /* 点击时检查存储，读取失败不能提交领取。 */ }
-}
-_updateManualButlerLeaseButton();
-$('#btnLeaseButlerMailbox')?.addEventListener('click', async e => {
-  const button = e.currentTarget;
-  if (button.disabled) return;
-  button.disabled = true;
-  try {
-    const requestId = _manualButlerRequestId();
-    const result = await api('/api/email-butler/leases', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({request_id:requestId})});
-    if (result.ok !== true || !result.item?.email) throw new Error(result.error || '领取结果尚未确认');
-    sessionStorage.removeItem(BUTLER_MANUAL_REQUEST_KEY);
-    showToast(`已租用 ${result.item.email}`);
-    await loadMailResources();
-  } catch(err) { showToast(err.code === 'manual_intent_unavailable' ? err.message : '租用未完成，已保留原请求，请继续领取: ' + err.message); }
-  finally { button.disabled = false; _updateManualButlerLeaseButton(); }
-});
-$('#butlerLeaseList')?.addEventListener('click', async e => {
-  const btn = e.target.closest('[data-butler-release]');
-  if (!btn) return;
-  btn.disabled = true;
-  try {
-    await api('/api/email-butler/leases/release', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email:btn.dataset.butlerRelease,status:'available'})});
-    showToast('Email Butler 租约已释放');
-    await loadMailResources();
-  } catch(err) { showToast('释放失败: ' + err.message); btn.disabled = false; }
-});
-
 async function loadOutlook() {
   if (outlookLoading) { outlookReloadQueued = true; return; }
   outlookLoading = true;
@@ -594,7 +534,7 @@ function onPoolSourceChange(el) {
   PAGERS.outlook.page = 1;
   OUTLOOK_SELECTED.clear();
   const val = el ? el.value : getPoolSource();
-  if (val === 'outlook' || val === 'generic_api') setImportSourceV2(val);
+  if (IMPORT_SOURCE_LABELS[val]) setImportSourceV2(val);
   loadOutlook();
 }
 function syncOutlookSelectAll(checked) {
@@ -728,6 +668,7 @@ async function onOutlookBodyClick(e) {
 const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
+  email_butler: 'Butler 本地邮箱（iCloud HME）',
 };
 let outlookImportPreview = null;
 function setImportSourceV2(val) {
@@ -743,15 +684,24 @@ function setImportSourceV2(val) {
       item.classList.toggle('is-active', item.dataset.value === next);
     });
   }
+  const text = document.getElementById('importTextV2');
+  const hint = document.getElementById('importFormatHintV2');
+  const formats = {
+    outlook: ['email----password----clientId----refreshToken', '每行一条，支持 ---- 和 ==== 分隔符；多余字段不会写入邮箱池。'],
+    generic_api: ['email----取码地址', '每行一条，支持 ---- 和 ==== 分隔符；保留现有通用 API 导入格式。'],
+    email_butler: ['one@icloud.com\ntwo+tag@icloud.com', '每行一个完整 iCloud HME 地址；请从 Butler 已有库存手动复制。其他类型请选择 Outlook 或通用 API。'],
+  };
+  if (text) text.placeholder = formats[next][0];
+  if (hint) hint.textContent = formats[next][1];
 }
-function openOutlookImportModal() {
+function openOutlookImportModal(source = '') {
   const modal = $('#outlookImportModal');
   if (!modal) return;
   const result = $('#importResultV2');
   if (result) result.innerHTML = '';
   clearOutlookImportPreview();
-  const pool = getPoolSource();
-  if (pool === 'outlook' || pool === 'generic_api') setImportSourceV2(pool);
+  const pool = typeof source === 'string' && source ? source : getPoolSource();
+  if (IMPORT_SOURCE_LABELS[pool]) setImportSourceV2(pool);
   else setImportSourceV2('outlook');
   modal.classList.remove('hidden');
   updateModalScrollLock();
@@ -884,6 +834,12 @@ async function doImportOutlook() {
     clearOutlookImportPreview();
     setPoolSourceV2(source);
     setImportSourceV2(source);
+    invalidateApiCache('/api/email-sources');
+    invalidateApiCache('/api/capabilities');
+    invalidateApiCache('/api/summary');
+    invalidateApiCache('/api/dashboard');
+    await loadCapabilities();
+    await loadRegistrationEmailSources();
     loadOutlook(); loadMailResources(); loadSummary();
     showToast(`导入完成：新增 ${r.inserted}，跳过 ${r.skipped}`);
     setTimeout(closeOutlookImportModal, 600);

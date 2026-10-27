@@ -2555,38 +2555,9 @@ def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
     records 元素：{email, password, client_id, refresh_token}
     返回 (新增数, 跳过数)。
     """
-    inserted = skipped = 0
-    with record_store.transaction() as conn:
-        for raw in records:
-            email = (raw.get("email") or "").strip()
-            if not email:
-                skipped += 1
-                continue
-            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
-            from core.storage import email_address_allocations
+    from core.storage.local_email_imports import import_resources
 
-            if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
-                skipped += 1
-                continue
-            now = _now()
-            row_id = record_store.insert_row_if_absent(record_store.OUTLOOK_POOL, "email", {
-                "email": email,
-                "password": (raw.get("password") or "").strip(),
-                "client_id": (raw.get("client_id") or raw.get("clientId") or "").strip(),
-                "refresh_token": (raw.get("refresh_token") or raw.get("refreshToken") or "").strip(),
-                "access_token": (raw.get("access_token") or "").strip(),
-                "totp_secret": (raw.get("totp_secret") or "").strip(),
-                "status": "available",
-                "used_at": None,
-                "note": None,
-                "imported_at": now,
-                "created_at": now,
-            }, conn=conn)
-            if row_id is None:
-                skipped += 1
-            else:
-                inserted += 1
-    return inserted, skipped
+    return import_resources(records, source="outlook")
 
 
 def import_registered_email_accounts(records: list[dict], source: str | None) -> tuple[int, int]:
@@ -2807,36 +2778,9 @@ def import_generic_api_emails(records: list[dict]) -> tuple[int, int]:
     records 元素：{email, code_url}
     返回 (新增数, 跳过数)。
     """
-    inserted = skipped = 0
-    with record_store.transaction() as conn:
-        for raw in records:
-            email = (raw.get("email") or "").strip()
-            code_url = (raw.get("code_url") or raw.get("url") or "").strip()
-            if not email or not code_url:
-                skipped += 1
-                continue
-            record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
-            from core.storage import email_address_allocations
+    from core.storage.local_email_imports import import_resources
 
-            if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
-                skipped += 1
-                continue
-            now = _now()
-            row_id = record_store.insert_row_if_absent(record_store.GENERIC_API_POOL, "email", {
-                "email": email,
-                "code_url": code_url,
-                "access_token": (raw.get("access_token") or "").strip(),
-                "totp_secret": (raw.get("totp_secret") or "").strip(),
-                "status": "available",
-                "used_at": None,
-                "note": None,
-                "imported_at": now,
-                "created_at": now,
-            }, conn=conn)
-            if row_id is None:
-                skipped += 1
-            else:
-                inserted += 1
+    inserted, skipped = import_resources(records, source="generic_api")
     if inserted:
         compat_export.schedule("generic_api_emails")
     return inserted, skipped

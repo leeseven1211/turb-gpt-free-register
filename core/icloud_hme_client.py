@@ -400,49 +400,21 @@ def pick_account(
     owner_id: str | int | None = None,
     acquisition_id: str | None = None,
 ) -> ICloudHMEAccount:
-    from core import email_butler_bridge
-    if email_butler_bridge.enabled():
-        account = email_butler_bridge.pick_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id)
-        return ICloudHMEAccount(email=account.email, account_id="", forward_to_email=account.mailbox_email)
-    from core import db
+    from core.local_email_inventory import claim
 
-    def _claim(**filters):
-        if str(batch_id or "").strip():
-            filters["batch_id"] = str(batch_id).strip()
-            filters["job_id"] = int(job_id) if job_id is not None else None
-            filters["email_source"] = "icloud_hide"
-        return db.claim_next_icloud_hide_email(**filters)
-
-    synced = sync_aliases(force=False)
-    selected = str(synced.get("account_id") or _cfg_str("ICLOUD_HME_ACCOUNT_ID") or "").strip()
-    selected_ids = [str(value).strip() for value in synced.get("synced_account_ids") or [] if str(value).strip()]
-    row = _claim(account_ids=selected_ids or None)
-    if row is None:
-        synced = sync_aliases(force=True)
-        selected = str(synced.get("account_id") or selected).strip()
-        selected_ids = [str(value).strip() for value in synced.get("synced_account_ids") or [] if str(value).strip()]
-        row = _claim(account_ids=selected_ids or None)
-    if row is None and _cfg_bool("ICLOUD_HME_AUTO_CREATE", False):
-        for candidate_id in selected_ids:
-            try:
-                create_address(account_id=candidate_id)
-            except Exception as exc:
-                logger.warning("[iCloud HME] 账号 %s 按需创建失败: %s", candidate_id, exc)
-                continue
-            row = _claim(account_id=candidate_id)
-            if row is not None:
-                break
-    if row is None:
-        raise ICloudHMEError(
-            "iCloud 隐藏邮箱池没有可用地址。请在配置页点击“连接并同步”；如库存确实为空，可开启自动创建。"
-        )
-    return ICloudHMEAccount(
-        email=str(row.get("email") or ""),
-        account_id=str(row.get("account_id") or selected),
-        anonymous_id=str(row.get("anonymous_id") or ""),
-        label=str(row.get("label") or ""),
-        forward_to_email=str(row.get("forward_to_email") or ""),
-    )
+    row = claim("icloud_hide", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                batch_id=batch_id, job_id=job_id)
+    if not row:
+        raise ICloudHMEError("local_email_inventory_empty: 本地 iCloud 隐藏邮箱库存为空，请先手动导入")
+    if row.get('_legacy_butler_intent'):
+        from core.email_butler_client import _account_from_legacy_intent
+        account = _account_from_legacy_intent(row['_legacy_butler_intent'])
+        if account.provider != 'icloud_hme':
+            raise ICloudHMEError('recipient_contract_unsupported: 原 HME 意图的 provider 不一致')
+        return ICloudHMEAccount(email=account.email, account_id='', forward_to_email=account.mailbox_email)
+    return ICloudHMEAccount(email=str(row["email"]), account_id=str(row.get("account_id") or ""),
+        anonymous_id=str(row.get("anonymous_id") or ""), label=str(row.get("label") or ""),
+        forward_to_email=str(row.get("forward_to_email") or ""))
 
 
 def get_account_context(email: str) -> ICloudHMEAccount | None:
@@ -472,8 +444,11 @@ def _validate_forward_route(email: str) -> None:
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source="icloud_hide", status=status, note=note):
+        return
     from core import email_butler_bridge
-    if email_butler_bridge.enabled():
+    if email_butler_bridge.fixed_context(email) or email_butler_bridge.enabled():
         if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
             return
         email_butler_bridge.release(email, status=status, note=note)
@@ -516,6 +491,22 @@ def fetch_latest_otp(
     settle_seconds: int | None = None,
 ) -> str:
     from core import email_butler_bridge
+    if email_butler_bridge.fixed_context(email):
+        return email_butler_bridge.fetch_otp(email, after_ts=after_ts, max_wait=max_wait,
+            poll_interval=poll_interval, settle_seconds=settle_seconds)
+    # 新领取的母邮箱使用事务保存的原 profile；全局 bridge 不得覆盖固定 IMAP。
+    from core import db
+    from core.email_derivation import _profile_credentials, store
+    local_row = db.get_icloud_hide_email_by_email(email)
+    local_profile_id = (local_row or {}).get('local_inbox_profile_id')
+    if local_profile_id:
+        saved = store.get_inbox_profile(int(local_profile_id))
+        if not saved or saved.get('state') != 'active':
+            raise ICloudHMEError('email_derivation_profile_unavailable: 原 HME 固定收件配置不可用')
+        from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp, use_inbox_profile
+        with use_inbox_profile(_profile_credentials(saved)):
+            return fetch_forwarded_otp(email, after_ts=after_ts, max_wait=max_wait,
+                poll_interval=poll_interval, settle_seconds=settle_seconds)
     if email_butler_bridge.enabled():
         return email_butler_bridge.fetch_otp(email, after_ts=after_ts, max_wait=max_wait,
             poll_interval=poll_interval, settle_seconds=settle_seconds)
@@ -527,9 +518,18 @@ def fetch_latest_otp(
             poll_interval=poll_interval, settle_seconds=settle_seconds,
         )
     from core.forward_imap_client import use_inbox_profile
-    from core.email_derivation import inbox_profile_for_address
+    from core.email_derivation import inbox_profile_for_address, _profile_credentials, store
 
     profile = inbox_profile_for_address(email)
+    if profile is None:
+        from core import db
+        row = db.get_icloud_hide_email_by_email(email)
+        profile_id = (row or {}).get('local_inbox_profile_id') or ((row or {}).get('derivation_policy') or {}).get('inbox_profile_id')
+        if profile_id:
+            saved = store.get_inbox_profile(int(profile_id))
+            if not saved or saved.get('state') != 'active':
+                raise ICloudHMEError('email_derivation_profile_unavailable: 原 HME 固定收件配置不可用')
+            profile = _profile_credentials(saved)
     if profile is not None:
         from core.forward_imap_client import fetch_latest_otp as fetch_forwarded_otp
 

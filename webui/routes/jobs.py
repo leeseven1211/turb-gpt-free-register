@@ -194,7 +194,8 @@ def create_jobs_blueprint(context: WebUIContext):
         from core.feature_availability import email_source_availability
 
         use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
-        sources = parse_email_sources(_email_cfg.EMAIL_SOURCE) if use_service else []
+        from core.local_email_inventory import TABLES
+        sources = list(TABLES) if use_service else []
         availability = email_source_availability() if use_service else {}
         return jsonify({
             "ok": True,
@@ -281,150 +282,14 @@ def create_jobs_blueprint(context: WebUIContext):
             selected_source = validate_email_source(data.get("email_source"))
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        configured_sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
-        if selected_source not in configured_sources:
-            return jsonify({
-                "ok": False,
-                "error": f"邮箱来源 {selected_source} 未在配置页 EMAIL_SOURCE 中启用",
-            }), 400
-        sources = [selected_source]
-        if "email_butler" in sources:
-            api_base = str(getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or "").strip()
-            api_key = str(getattr(_email_cfg, "EMAIL_BUTLER_API_KEY", "") or "").strip()
-            if not api_base:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API 地址（配置 → 邮箱 / OTP）。",
-                }), 400
-            if not api_key:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 email_butler 邮箱来源，请填写 Email Butler API Key（配置 → 邮箱 / OTP）。",
-                }), 400
-        if "gptmail" in sources:
-            api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
-            if not api_key:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 gptmail 邮箱来源，请填写 GPTMail API Key（配置 → 邮箱 / OTP）。",
-                }), 400
-        for paid_source in ("mailcode", "xigua"):
-            if paid_source in sources:
-                module = __import__(f"core.{paid_source}_client", fromlist=["validate_configuration"])
-                try:
-                    module.validate_configuration()
-                except RuntimeError as exc:
-                    return jsonify({"ok": False, "error": str(exc)}), 400
-        if "remail" in sources:
-            from core.remail_client import RemailError, validate_configuration
-
-            try:
-                validate_configuration()
-            except RemailError as exc:
-                return jsonify({"ok": False, "error": str(exc)}), 400
-        if "cloudflare" in sources:
-            api_base = str(getattr(_email_cfg, "CLOUDFLARE_API_BASE", "") or "").strip()
-            if not api_base:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 cloudflare 邮箱来源，请填写 Cloudflare API 地址（配置 → 邮箱 / OTP）。",
-                }), 400
-            auth_mode = str(getattr(_email_cfg, "CLOUDFLARE_AUTH_MODE", "none") or "none").strip().lower()
-            accounts_path = str(getattr(_email_cfg, "CLOUDFLARE_PATH_ACCOUNTS", "/api/new_address") or "").strip().lower()
-            api_key = str(getattr(_email_cfg, "CLOUDFLARE_API_KEY", "") or "").strip()
-            needs_key = auth_mode in ("x-admin-auth", "bearer", "x-api-key", "query-key") or accounts_path.rstrip("/").endswith("/admin/new_address")
-            if needs_key and not api_key:
-                return jsonify({
-                    "ok": False,
-                    "error": "Cloudflare admin/鉴权模式需要填写 Cloudflare API Key（配置 → 邮箱 / OTP）。",
-                }), 400
-        if "mailnest" in sources:
-            api_key = str(getattr(_email_cfg, "MAIL_NEST_API_KEY", "") or "").strip()
-            project_code = str(getattr(_email_cfg, "MAIL_NEST_PROJECT_CODE", "") or "").strip()
-            if not api_key:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 mailnest 邮箱来源，请填写 MailNest API Key（配置 → 邮箱 / OTP）。",
-                }), 400
-            if not project_code:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 mailnest 邮箱来源，请填写 MailNest 项目代码（配置 → 邮箱 / OTP）。",
-                }), 400
-        if "cloudmail" in sources:
-            api_base = str(getattr(_email_cfg, "CLOUDMAIL_API_BASE", "") or "").strip()
-            token = str(getattr(_email_cfg, "CLOUDMAIL_AUTH_TOKEN", "") or "").strip()
-            if not api_base:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail API 地址（配置 → 邮箱 / OTP）。",
-                }), 400
-            if not token:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 cloudmail 邮箱来源，请填写 CloudMail Token（配置 → 邮箱 / OTP）。",
-                }), 400
-        from core import email_butler_bridge
-        bridged_hme = "icloud_hide" in sources and email_butler_bridge.enabled()
-        if bridged_hme:
-            if not (str(getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or "").strip()
-                    and str(getattr(_email_cfg, "EMAIL_BUTLER_API_KEY", "") or "").strip()):
-                return jsonify({"ok": False, "error": "iCloud HME 已统一到 Email Butler，请配置 Butler API 地址和 Key。"}), 400
-        if "icloud_hide" in sources and not bridged_hme:
-            api_base = str(getattr(_email_cfg, "ICLOUD_HME_API_BASE", "") or "").strip()
-            if not api_base:
-                return jsonify({
-                    "ok": False,
-                    "error": "已选择 icloud_hide 邮箱来源，请填写 iCloud HME 服务地址（配置 → 邮箱 / OTP）。",
-                }), 400
-            try:
-                from core.icloud_hme_client import sync_aliases
-                sync_aliases(force=False)
-            except Exception as exc:
-                return jsonify({
-                    "ok": False,
-                    "error": f"iCloud HME 服务不可用：{type(exc).__name__}: {str(exc)[:240]}",
-                }), 400
-        if bridged_hme:
-            warning = ""
-        elif any(source in sources for source in ("gptmail", "remail", "mailcode", "xigua", "mailnest", "cloudmail", "cloudflare", "email_butler")):
-            # 临时邮箱在任务开始时动态生成，不需要本地邮箱池容量提示。
-            warning = ""
-        elif sources == ["icloud_hide"]:
-            pool = db.icloud_hide_email_pool_summary()
-            warning = ""
-            if pool.get("available", 0) < count:
-                auto_create = bool(getattr(_email_cfg, "ICLOUD_HME_AUTO_CREATE", False))
-                suffix = "，不足的会按需创建" if auto_create else "，不足的会失败"
-                warning = f"iCloud 隐藏邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}{suffix}"
-        elif "cloudflare_domain" in sources:
-            pool = db.domain_email_pool_summary()
-            warning = ""
-            if sources == ["cloudflare_domain"] and pool.get("available", 0) < count:
-                warning = f"域名邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会自动生成"
-        elif sources == ["generic_api"]:
-            pool = db.generic_api_email_pool_summary()
-            warning = ""
-            if pool.get("available", 0) < count:
-                warning = f"通用 API 邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会失败"
-        elif len(sources) > 1:
-            available = 0
-            if "outlook" in sources:
-                available += db.outlook_pool_summary().get("available", 0)
-            if "generic_api" in sources:
-                available += db.generic_api_email_pool_summary().get("available", 0)
-            if "cloudflare_domain" in sources:
-                available += db.domain_email_pool_summary().get("available", 0)
-            if "icloud_hide" in sources:
-                available += db.icloud_hide_email_pool_summary().get("available", 0)
-            warning = ""
-            if available < count:
-                warning = f"多个邮箱池合计仅 {available} 个可用，少于任务数 {count}，不足的会失败"
-        else:
-            pool = db.outlook_pool_summary()
-            warning = ""
-            if pool.get("available", 0) < count:
-                warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
+        from core import local_email_inventory
+        if selected_source not in local_email_inventory.TABLES:
+            return jsonify({'ok': False, 'error': '新注册只使用本地邮箱列表，请先导入邮箱后选择本地来源'}), 400
+        pool = local_email_inventory.summary(selected_source)
+        available = int(pool.get('available', 0) or 0)
+        warning = ''
+        if available < count:
+            warning = f'本地可用邮箱仅 {available} 个，少于任务数 {count}；库存不足的任务会失败，请先手动导入邮箱'
         submit_kwargs = {"count": count, "email_source": selected_source, "workers": workers}
         if driver_was_explicit:
             submit_kwargs["registration_driver"] = selected_driver

@@ -253,7 +253,7 @@ def scan_openai_deactivation(email: str, *, lookback_days: int = 120,
     if not strict_family:
         context = get_account_context(target)
         if context is None:
-            context = _restore_hme_context(target)
+            context = restore_local_account(target) or _restore_hme_context(target)
         if context is not None and context.provider == "icloud_hme":
             api_base, api_key = context.api_base, context.api_key
             mailbox_email, strict_family = context.mailbox_email, True
@@ -334,96 +334,89 @@ def _mailbox_account(mailbox: dict, *, api_base: str | None = None, api_key: str
     return account
 
 
-def pick_account(*, owner_kind: str | None = None, owner_id=None, acquisition_id: str | None = None) -> EmailButlerAccount:
-    """按 API Key 策略租用一个邮箱身份，并缓存租约上下文。"""
-    intent = {}
-    saved = None
-    connection = {}
-    if acquisition_id:
-        if not owner_kind or owner_id is None:
-            raise EmailButlerIntentLocked("email_derivation_identity_conflict: Butler 领取缺少完整业务意图")
-        intent = {"owner_kind": str(owner_kind), "owner_id": str(owner_id), "acquisition_id": str(acquisition_id)}
-        from core.storage import email_butler_claims as claims
-        from core.email_derivation import _save_profile_secret, _profile_credentials
+def _account_from_legacy_intent(intent: dict) -> EmailButlerAccount:
+    """只恢复已确认远端结果；不会重新提交旧领取请求。"""
+    from core.email_derivation import _profile_credentials
 
-        saved = claims.get_intent(str(acquisition_id))
-        if saved is None:
-            base, key = _api_base(), _api_key()
-            version = hashlib.sha256(f"{base}:{key}".encode()).hexdigest()
-            reference = f"EMAIL_DERIVATION_BUTLER_SECRET_{version[:20].upper()}"
-            try:
-                _save_profile_secret(reference, key)
-            except Exception as exc:
-                raise EmailButlerClientError("email_derivation_profile_unavailable: Butler 领取前固定连接保存失败") from exc
-        else:
-            base, reference = saved['api_base'], saved['credential_ref']
+    if intent.get("status") != "claimed" or not intent.get("mailbox"):
+        raise EmailButlerClaimUnknown("request_unknown: 原 Butler 领取结果尚未明确，保留原意图")
+    connection = _profile_credentials({"connector": "forward_butler", "credential_ref": intent["credential_ref"],
+        "inbox_locator": {"api_base": intent["api_base"]}, "id": intent["id"], "inbox_key": "butler-claim", "revision": 1})
+    account = _mailbox_account(intent["mailbox"], api_base=connection["api_base"], api_key=connection["api_key"])
+    if not _cache_key(account.email) or _cache_key(account.email) != _cache_key(intent.get('address_norm')):
+        raise EmailButlerIntentLocked('recipient_mismatch: 原 Butler 意图保存的完整邮箱不一致')
+    if account.provider != 'icloud_hme':
         try:
-            saved = claims.prepare(**intent, api_base=base, credential_ref=reference)
-        except ValueError as exc:
-            raise EmailButlerIntentLocked(str(exc)) from exc
-        try:
-            pinned = _profile_credentials({'connector':'forward_butler','credential_ref':saved['credential_ref'],
-                'inbox_locator':{'api_base':saved['api_base']}, 'id':saved['id'], 'inbox_key':'butler-claim', 'revision':1})
-        except Exception as exc:
-            raise EmailButlerClaimUnknown("request_unknown: 原 Butler 领取连接不可用，已保留原意图") from exc
-        connection = {'api_base':pinned['api_base'], 'api_key':pinned['api_key']}
-    execution = None
-    try:
-        mailbox = None
-        if saved and saved['status'] != 'claimed':
-            # The capability at the original submission is part of the intent.
-            # A later key policy change cannot make an old generic claim safe.
-            try:
-                capability = _request("GET", "/me", **connection)
-                recovery_capable = "mailboxes.acquisition.v1" in capability.get("capabilities", [])
-            except Exception as exc:
-                if getattr(exc, "status_code", None) in {401, 403}:
-                    raise
-                recovery_capable = False
-            first_submit, saved = claims.mark_submitting(str(acquisition_id), recovery_capable=recovery_capable)
-            if first_submit:
-                execution = saved['submission_execution']
-            elif saved['status'] != 'claimed' and not (saved.get('acquisition_capable') and recovery_capable):
-                raise EmailButlerClaimUnknown("request_unknown: 原 Butler 领取未具备可靠恢复能力，禁止重新发号")
-        if saved and saved['status'] == 'claimed':
-            mailbox = saved['mailbox']
-            if mailbox.get('provider') != 'icloud_hme':
-                try:
-                    expiry = datetime.fromisoformat(str(mailbox.get('leased_until') or '').replace('Z', '+00:00'))
-                    if expiry.tzinfo is None:
-                        expiry = expiry.replace(tzinfo=timezone.utc)
-                    usable = expiry > datetime.now(timezone.utc)
-                except (TypeError, ValueError):
-                    usable = False
-                if not usable:
-                    raise EmailButlerIntentLocked('lease_restore_required: 原 Butler 普通邮箱租约已过期或无法确认，禁止改领新地址',
-                        status_code=409, error_code='lease_restore_required')
-        else:
-            payload = _request("POST", "/mailboxes", json=intent, **connection)
-            mailbox = payload.get("mailbox") if isinstance(payload.get("mailbox"), dict) else {}
-        email = str(mailbox.get("email") or "").strip()
-        mailbox_id = str(mailbox.get("id") or "").strip()
-        if not email or "@" not in email or not mailbox_id:
-            raise EmailButlerClientError("Email Butler 发号响应缺少 mailbox.id/email")
-        account = _mailbox_account(mailbox, **connection)
-        account.acquisition_id = str(acquisition_id or "")
-        if account.provider == "icloud_hme":
-            _persist_hme_context(account)
-        if saved:
-            claims.record_result(str(acquisition_id), mailbox=mailbox)
-    except Exception as exc:
-        if saved:
-            if getattr(exc, "definite_rejection", False):
-                current = claims.record_result(str(acquisition_id), rejected=True, execution=execution)
-                if current['status'] in {'submitting', 'request_unknown'}:
-                    raise EmailButlerClaimUnknown('request_unknown: 先前 Butler 领取结果尚未明确，保留原意图') from exc
-                raise
-            claims.record_result(str(acquisition_id), unknown=True)
-            raise EmailButlerClaimUnknown("request_unknown: Butler 领取结果待核验，请恢复原领取意图；" + str(exc)) from exc
-        raise
-    _CONTEXT_CACHE[_cache_key(email)] = account
-    logger.info("[EmailButler] 已租用邮箱: %s provider=%s", email, account.provider or "?")
+            expiry = datetime.fromisoformat(account.leased_until.replace('Z', '+00:00'))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            usable = expiry > datetime.now(timezone.utc)
+        except (TypeError, ValueError):
+            usable = False
+        if not usable:
+            raise EmailButlerIntentLocked('lease_restore_required: 原 Butler 普通邮箱租约已过期或无法确认，禁止改领新地址')
+    account.acquisition_id = intent["acquisition_id"]
+    if account.provider == 'icloud_hme' and not _restore_hme_context(account.email):
+        _persist_hme_context(account)
+    _CONTEXT_CACHE[_cache_key(account.email)] = account
     return account
+
+
+def restore_local_account(email_or_row) -> EmailButlerAccount | None:
+    """从人工导入的固定收件配置恢复；缺失时绝不向 Butler 申请邮箱。"""
+    from core import record_store
+    from core.email_derivation import _profile_credentials
+
+    row = email_or_row if isinstance(email_or_row, dict) else record_store.get_row_by(
+        record_store.EMAIL_BUTLER_POOL, "email", _cache_key(email_or_row), lower=True)
+    if not row:
+        return None
+    profile_id = row.get('local_inbox_profile_id') or row.get("inbox_profile_id")
+    profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(profile_id)) if profile_id else None
+    if not profile or profile.get("state") != "active" or profile.get("connector") != "forward_butler":
+        raise EmailButlerClientError("email_derivation_profile_unavailable: 本地 Butler 邮箱缺少固定收件配置")
+    connection = _profile_credentials(profile)
+    provider = str(row.get("provider") or "icloud_hme")
+    address = _cache_key(row.get("email"))
+    if provider == "icloud_hme":
+        if row.get("recipient_mode") != _RECIPIENT_MODE or row.get("strict_family") is not True:
+            raise EmailButlerClientError("recipient_contract_unsupported: 本地 HME 缺少严格完整收件人声明")
+        mailbox = _cache_key(connection.get("mailbox_email") or row.get("mailbox_email"))
+        if not mailbox.partition("@")[2]:
+            raise EmailButlerClientError("mailbox_mismatch: 本地 HME 缺少固定最终收件箱")
+        account = EmailButlerAccount(email=address, mailbox_id="", provider="icloud_hme",
+            mailbox_email=mailbox, recipient_mode=_RECIPIENT_MODE, strict_family=True,
+            api_base=connection["api_base"], api_key=connection["api_key"],
+            acquisition_id=str(row.get("local_acquisition_id") or ""),
+            identity_type=str(row.get("identity_type") or ("plus_tag" if "+" in address.partition("@")[0] else "primary")),
+            parent_email=str(row.get("parent_email") or ""), identity_id=str(row.get("identity_id") or ""))
+    else:
+        mailbox = dict(row.get("mailbox") or {})
+        mailbox.update(email=address, provider=provider, id=str(row.get("mailbox_id") or mailbox.get("id") or ""))
+        if not mailbox["id"]:
+            raise EmailButlerClientError("recipient_contract_unsupported: 该本地 Butler provider 缺少可只读恢复的邮箱编号")
+        account = _mailbox_account(mailbox, api_base=connection["api_base"], api_key=connection["api_key"])
+    _CONTEXT_CACHE[address] = account
+    return account
+
+
+def pick_local_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> EmailButlerAccount:
+    """只领取已手动导入的本地 Butler 邮箱。"""
+    from core.local_email_inventory import claim
+
+    row = claim("email_butler", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                batch_id=batch_id, job_id=job_id)
+    if not row:
+        raise EmailButlerClientError("local_email_inventory_empty: 本地 Butler 邮箱库存为空，请先手动导入")
+    if row.get("_legacy_butler_intent"):
+        return _account_from_legacy_intent(row["_legacy_butler_intent"])
+    return restore_local_account(row)
+
+
+def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> EmailButlerAccount:
+    """兼容公共入口；新领取始终使用本地库存。"""
+    return pick_local_account(owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                              batch_id=batch_id, job_id=job_id)
 
 
 def get_account_context(email: str) -> EmailButlerAccount | None:
@@ -450,6 +443,9 @@ def restore_account_context(email: str, *, purpose: str = "live-check", api_base
                             api_key: str | None = None) -> EmailButlerAccount:
     """HME 优先恢复原固定身份，其余邮箱沿用精确租约恢复。"""
     key = _cache_key(email)
+    local = restore_local_account(email)
+    if local:
+        return local
     cached = _CONTEXT_CACHE.get(key)
     cache_matches = cached and (api_base is None or cached.api_base == api_base) and (api_key is None or cached.api_key == api_key)
     if cache_matches and cached.provider != "icloud_hme":
@@ -460,26 +456,12 @@ def restore_account_context(email: str, *, purpose: str = "live-check", api_base
         return fixed
     if cache_matches:
         return cached
-    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
-    payload = _request(
-        "POST",
-        "/mailboxes",
-        json={"requested_email": email, "purpose": purpose},
-        **connection,
-    )
-    mailbox = payload.get("mailbox") if isinstance(payload.get("mailbox"), dict) else {}
-    mailbox_id = str(mailbox.get("id") or "").strip()
-    mailbox_email = str(mailbox.get("email") or "").strip()
-    if not mailbox_id or not mailbox_email or "@" not in mailbox_email:
-        raise EmailButlerClientError("Email Butler 按邮箱恢复上下文失败: " + email)
-    if _cache_key(mailbox_email) != key:
-        raise EmailButlerClientError("recipient_mismatch: Butler 恢复返回的完整邮箱与原身份不一致")
-    account = _mailbox_account(mailbox, api_base=api_base, api_key=api_key)
-    if account.provider == "icloud_hme":
-        _persist_hme_context(account)
-    _CONTEXT_CACHE[key] = account
-    logger.info("[EmailButler] 已按邮箱恢复上下文: %s", email)
-    return account
+    from core import record_store
+    intents = record_store.list_rows(record_store.EMAIL_BUTLER_CLAIM_INTENTS,
+        where="address_norm = %s AND status = %s", params=(key, "claimed"), order_by="id DESC", limit=1)
+    if intents:
+        return _account_from_legacy_intent(intents[0])
+    raise EmailButlerIntentLocked("lease_restore_required: 缺少原完整邮箱的固定收件或已确认租约，不能重新申请邮箱")
 
 
 def _outcome_for_status(status: str) -> str:
@@ -558,6 +540,11 @@ def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str |
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     """HME 幂等上报后收口本地上下文，远端保留原 TTL；其他来源释放租约。"""
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source="email_butler", status=status, note=note):
+        if str(status or "").lower() not in {"request_unknown", "unknown", "running", "reserved", "available"}:
+            _CONTEXT_CACHE.pop(_cache_key(email), None)
+        return
     key = _cache_key(email)
     if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
         return

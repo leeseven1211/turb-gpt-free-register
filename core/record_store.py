@@ -344,6 +344,24 @@ ICLOUD_HIDE_POOL = TableSpec(
     indexes=(("status", "id"), ("account_id", "id")),
 )
 
+EMAIL_BUTLER_POOL = TableSpec(
+    name="email_pool_butler",
+    promoted=dict(_POOL_PROMOTED),
+    unique=("email",),
+    indexes=(("status", "id"),),
+)
+
+LOCAL_EMAIL_CLAIMS = TableSpec(
+    name="local_email_claims",
+    promoted={
+        "acquisition_id": "TEXT NOT NULL", "owner_kind": "TEXT NOT NULL", "owner_id": "TEXT NOT NULL",
+        "source": "TEXT NOT NULL", "pool_id": "BIGINT NOT NULL", "address_norm": "TEXT NOT NULL",
+        "status": "TEXT NOT NULL", "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("acquisition_id", "address_norm"),
+    indexes=(("source", "pool_id"), ("owner_kind", "owner_id")),
+)
+
 # 完整业务地址独立于母邮箱库存，派生配额按历史累计，不能因失败或换绑回收。
 EMAIL_ADDRESS_ALLOCATIONS = TableSpec(
     name="email_address_allocations",
@@ -541,6 +559,8 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     GENERIC_API_POOL,
     DOMAIN_POOL,
     ICLOUD_HIDE_POOL,
+    EMAIL_BUTLER_POOL,
+    LOCAL_EMAIL_CLAIMS,
     EMAIL_ADDRESS_ALLOCATIONS,
     EMAIL_ADDRESS_GENERATION_REQUESTS,
     EMAIL_BUTLER_CLAIM_INTENTS,

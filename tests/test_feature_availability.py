@@ -45,7 +45,7 @@ class FeatureAvailabilityTests(PostgresTestCase):
         self.assertFalse(result["enabled"])
         self.assertIn("ROXY_API_BASE", result["reason"])
 
-    def test_icloud_hide_allows_dynamic_account_discovery_without_account_id(self):
+    def test_icloud_auto_create_cannot_make_empty_local_stock_available(self):
         with (
             patch.multiple(
                 "config.email",
@@ -59,8 +59,8 @@ class FeatureAvailabilityTests(PostgresTestCase):
         ):
             result = feature_availability.feature_availability()
 
-        self.assertTrue(result["email_sources"]["icloud_hide"]["enabled"])
-        self.assertEqual(result["email_sources"]["icloud_hide"]["reason"], "")
+        self.assertFalse(result["email_sources"]["icloud_hide"]["enabled"])
+        self.assertIn("导入", result["email_sources"]["icloud_hide"]["reason"])
 
     def test_icloud_hide_requires_local_inventory_when_auto_create_is_disabled(self):
         with (

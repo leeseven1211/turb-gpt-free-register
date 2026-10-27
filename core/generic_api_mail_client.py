@@ -484,23 +484,16 @@ def _fetch_inline_messages_page_otp(
     return None
 
 
-def pick_account() -> GenericApiEmailAccount:
-    """领取一个可用通用 API 邮箱。"""
-    from core.db import claim_next_generic_api_email, generic_api_email_pool_summary
+def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> GenericApiEmailAccount:
+    """只领取已手动导入的本地通用 API 邮箱。"""
+    from core.local_email_inventory import claim
 
-    inserted, skipped = import_from_file()
-    if inserted:
-        logger.info(f"[GenericAPI] 已自动从 {_ACCOUNTS_FILE.name} 导入 {inserted} 个邮箱（跳过 {skipped} 个）")
-
-    row = claim_next_generic_api_email()
+    row = claim("generic_api", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                batch_id=batch_id, job_id=job_id)
     if row is None:
-        summary = generic_api_email_pool_summary()
-        raise GenericApiMailError(
-            f"通用 API 邮箱池没有可用账号: {summary}. 请在 WebUI 邮箱池导入：邮箱----取码地址"
-        )
-    account = GenericApiEmailAccount(email=row["email"], code_url=row["code_url"])
+        raise GenericApiMailError("local_email_inventory_empty: 本地通用 API 邮箱库存为空，请先手动导入")
+    account = GenericApiEmailAccount(email=row["email"], code_url=str(row.get("code_url") or ""))
     _CONTEXT_CACHE[account.email] = account
-    logger.info(f"[GenericAPI] 选中邮箱: {account.email}（DB id={row.get('id')}）")
     return account
 
 
@@ -538,6 +531,9 @@ def get_account_context(email: str) -> GenericApiEmailAccount | None:
 
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source="generic_api", status=status, note=note):
+        return
     from core.db import release_generic_api_email
     release_generic_api_email(email, status=status, note=note)
     _CONTEXT_CACHE.pop(email, None)

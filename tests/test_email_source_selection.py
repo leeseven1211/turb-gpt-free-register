@@ -59,13 +59,10 @@ class EmailSourceSelectionTests(PostgresTestCase):
             response = self.client.get("/api/email-sources")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.get_json()["sources"],
-            [
-                {"value": "email_butler", "label": "Email Butler", "enabled": False, "reason": "API Key 未配置"},
-                {"value": "icloud_hide", "label": "iCloud 隐藏邮箱", "enabled": True, "reason": ""},
-            ],
-        )
+        choices = {row['value']: row for row in response.get_json()['sources']}
+        self.assertEqual(set(choices), {'outlook', 'generic_api', 'cloudflare_domain', 'icloud_hide', 'email_butler'})
+        self.assertFalse(choices['email_butler']['enabled'])
+        self.assertTrue(choices['icloud_hide']['enabled'])
 
     @patch("webui.app.svc.submit_registration")
     def test_jobs_require_explicit_source_in_automatic_mode(self, submit_registration):

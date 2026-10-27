@@ -35,9 +35,9 @@ def _binding(email: str) -> dict | None:
     local = find_binding(email)
     if local is not None:
         return local
-    from core.email_butler_client import _restore_hme_context, restore_account_context
+    from core.email_butler_client import _restore_hme_context, restore_account_context, restore_local_account
 
-    remote = _restore_hme_context(email)
+    remote = restore_local_account(email) or _restore_hme_context(email)
     if remote is None:
         from core import db
         account = db.get_account_by_email(email)

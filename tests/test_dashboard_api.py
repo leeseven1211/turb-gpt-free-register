@@ -506,6 +506,12 @@ console.log('ok');
                 self.assertNotIn("/static/js/legacy/", html)
                 self.assertNotIn("ui_mode=", " ".join(response.headers.getlist("Set-Cookie")))
 
+    def _local_profile(self):
+        from core.storage.email_address_allocations import create_inbox_profile
+        return create_inbox_profile(inbox_key='dashboard-fixture', connector='forward_butler',
+            credential_ref='DASHBOARD_FIXTURE_KEY', inbox_locator={
+                'api_base': 'https://butler.test/v1', 'mailbox_email': 'final@example.test'})['id']
+
     @patch("core.proxy_pool.pool_source", return_value="1024proxy")
     @patch("core.proxy_provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
     @patch("webui.app.admin_repository.dashboard_aggregates", return_value={
@@ -525,6 +531,10 @@ console.log('ok');
         "codex": {"total": 2, "exported": 1, "pending": 1},
     })
     def test_dashboard_returns_aggregates_without_account_secrets(self, *_mocks):
+        for spec, count in ((record_store.OUTLOOK_POOL, 4), (record_store.GENERIC_API_POOL, 2),
+                            (record_store.DOMAIN_POOL, 2), (record_store.ICLOUD_HIDE_POOL, 3)):
+            for index in range(count):
+                record_store.insert_row(spec, {'email': f'{spec.name}-{index}@example.test', 'status': 'available', 'derivation_policy': {'inbox_profile_id': self._local_profile()}})
         for source in ("1024proxy", "711proxy", "manual"):
             with self.subTest(source=source):
                 # 切换来源后旧租约仍可存续，总览平台必须使用当前池来源。
@@ -556,7 +566,9 @@ console.log('ok');
     def test_dashboard_email_sources_include_visibility_and_forward_butler_dependency(
         self, *_mocks
     ):
-        with patch("config.email.EMAIL_SOURCE", "icloud_hide"), patch(
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {'email': 'local@icloud.com', 'status': 'available', 'derivation_policy': {'inbox_profile_id': self._local_profile()}})
+        record_store.insert_row(record_store.OUTLOOK_POOL, {'email': 'disabled@example.test', 'status': 'disabled'})
+        with patch("config.email.USE_EMAIL_SERVICE", True), patch("config.email.EMAIL_SOURCE", "icloud_hide"), patch(
             "config.email.ICLOUD_HME_INBOX_MODE", "forward_butler"
         ):
             response = self.client.get("/api/dashboard", headers=self.headers)
@@ -566,12 +578,11 @@ console.log('ok');
         self.assertTrue(sources["icloud_hide"]["enabled"])
         self.assertTrue(sources["icloud_hide"]["default_visible"])
         self.assertTrue(sources["outlook"]["history_available"])
-        self.assertFalse(sources["outlook"]["default_visible"])
+        self.assertTrue(sources["outlook"]["default_visible"])
         self.assertFalse(sources["email_butler"]["enabled"])
-        self.assertTrue(sources["email_butler"]["dependency"])
-        self.assertTrue(sources["email_butler"]["default_visible"])
-        self.assertIn("forward_butler", sources["email_butler"]["dependency_reason"])
-        self.assertFalse(sources["gptmail"]["default_visible"])
+        self.assertFalse(sources["email_butler"]["dependency"])
+        self.assertFalse(sources["email_butler"]["default_visible"])
+        self.assertNotIn("gptmail", sources)
 
     @patch("webui.routes.dashboard.admin_repository.dashboard_aggregates", return_value={
         "accounts": {"total": 0, "active": 0, "archived": 0, "codex_ready": 0, "plans": {}},
@@ -661,7 +672,7 @@ console.log('ok');
         html = self._modern_page_source(response)
         self.assertIn('id="tab-overview"', html)
         self.assertIn('class="accounts-command-deck"', html)
-        self.assertIn('id="butlerLeasePanel"', html)
+        self.assertIn('id="butlerImportPanel"', html)
         self.assertIn('data-module-subnav="register"', html)
         self.assertIn('data-sidebar-module="register"', html)
         self.assertIn('data-sidebar-module="accounts"', html)

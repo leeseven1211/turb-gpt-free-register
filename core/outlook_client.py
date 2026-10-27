@@ -255,26 +255,26 @@ def _parse_accounts_file(path: Path) -> list[OutlookAccount]:
 # 公共接口：挑账号 / 取 OTP（统一走 DB）
 # ============================================================
 
-def pick_account() -> OutlookAccount:
+def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> OutlookAccount:
     """
     原子地挑一个 status='available' 的 Outlook 账号并标记为 'used'（DB 事务）。
     多线程并发安全。
     """
-    from core.db import claim_next_outlook, outlook_pool_summary
+    from core.local_email_inventory import claim, summary
 
-    row = claim_next_outlook()
+    row = claim("outlook", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id, batch_id=batch_id, job_id=job_id)
     if row is None:
-        summary = outlook_pool_summary()
+        counts = summary("outlook")
         raise OutlookClientError(
-            f"Outlook 账号池没有可用账号: {summary}. "
+            f"local_email_inventory_empty: Outlook 账号池没有可用账号: {counts}. "
             "请通过 WebUI/API 导入邮箱素材，或使用显式导入命令 tools/import_outlook_pool.py --file PATH。"
         )
 
     account = OutlookAccount(
         email=row["email"],
-        password=row["password"],
-        client_id=row["client_id"],
-        refresh_token=row["refresh_token"],
+        password=str(row.get("password") or ""),
+        client_id=str(row.get("client_id") or row.get("clientId") or ""),
+        refresh_token=str(row.get("refresh_token") or row.get("refreshToken") or ""),
     )
     _CONTEXT_CACHE[_cache_key(account.email)] = account
     logger.info(f"[Outlook] 选中账号: {account.email}（DB id={row['id']}）")
@@ -331,6 +331,9 @@ def get_account_context(email: str) -> OutlookAccount | None:
 
 def release_account(email: str, status: str = "available", note: str | None = None) -> None:
     """按注册阶段结果更新 Outlook 账号状态：可重试回 available，已消耗则标记 failed。"""
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source="outlook", status=status, note=note):
+        return
     from core.db import release_outlook
     release_outlook(email, status=status, note=note)
     _CONTEXT_CACHE.pop(_cache_key(email), None)

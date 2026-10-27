@@ -175,6 +175,7 @@
   <div id="tab-register" class="hidden" data-module-view="launch">
     <div class="register-overview module-launch-only">
       <h1 class="register-title">注册机</h1>
+      <p class="sub-cell" id="registrationEmailSupplyHint">仅统计本地库存，用完后请手动导入；Email Butler 仅提供收码连接。</p>
       <div class="stats">
         <div class="stat">
           <div class="stat-top">
@@ -187,21 +188,21 @@
         </div>
         <div class="stat">
           <div class="stat-top">
-            <span>邮箱总数</span>
+            <span>本地邮箱总数</span>
             <div class="stat-icon stat-icon--total" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>
             </div>
           </div>
-          <strong id="statOutlook">0</strong>
+          <strong id="statOutlook">读取中</strong>
         </div>
         <div class="stat">
           <div class="stat-top">
-            <span>可用</span>
+            <span>本地可用</span>
             <div class="stat-icon stat-icon--available" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
             </div>
           </div>
-          <strong id="statAvailable">0</strong>
+          <strong id="statAvailable">读取中</strong>
         </div>
         <div class="stat">
           <div class="stat-top">
@@ -210,7 +211,7 @@
               <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
             </div>
           </div>
-          <strong id="statUsed">0</strong>
+          <strong id="statUsed">读取中</strong>
         </div>
         <div class="stat">
           <div class="stat-top">
@@ -219,7 +220,7 @@
               <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
             </div>
           </div>
-          <strong id="statFailed">0</strong>
+          <strong id="statFailed">读取中</strong>
         </div>
       </div>
     </div>
@@ -679,24 +680,23 @@
     <h1 class="register-title">邮箱资源池</h1>
     <section class="mail-resource-overview" aria-label="邮箱资源平台">
       <div class="mail-resource-head">
-        <div><span class="data-panel-kicker">Email resources</span><h2>邮箱资源平台</h2><p>查看可用供给、占用情况和来源配置。</p></div>
+        <div><span class="data-panel-kicker">Email resources</span><h2>本地邮箱库存</h2><p>仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。</p></div>
         <button type="button" class="jobs-tb-btn" id="btnRefreshMailResources">刷新资源</button>
       </div>
       <div class="mail-source-cards" id="mailSourceCards"></div>
-      <div class="butler-lease-panel" id="butlerLeasePanel">
+      <div class="butler-lease-panel" id="butlerImportPanel">
         <div class="butler-lease-copy">
           <span>Email Butler</span>
-          <h3>当前进程租约</h3>
-          <p>可手动租用邮箱验证供给，也可释放不再使用的租约；注册任务仍会自动租用和释放。</p>
+          <h3>手动补充本地库存</h3>
+          <p>复制已有 iCloud HME 完整地址后导入本地库存。Butler 只提供收码连接，Turb 不会远端领取或自动生成邮箱。</p>
         </div>
         <div class="butler-lease-actions">
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnLeaseButlerMailbox">租用邮箱</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnImportButlerMailboxes">导入 Butler 邮箱</button>
         </div>
-        <div class="butler-lease-list" id="butlerLeaseList"></div>
       </div>
     </section>
     <section class="email-derivation-panel" id="emailDerivationPanel" aria-label="历史子邮箱">
-      <p class="email-derivation-feedback">子邮箱生成、策略和库存状态由 Email Butler 管理；此处仅展示历史记录，可筛选和复制。</p>
+      <p class="email-derivation-feedback">子邮箱由你手动准备并导入本地库存；此处可查看、筛选和复制已有记录，Turb 不会自动生成。</p>
       <div class="jobs-toolbar-v2 list-action-toolbar" id="emailDerivationToolbar">
         <span class="list-selection-hint" id="emailDerivationSelectedHint">可筛选并复制历史子邮箱</span>
         <button type="button" class="jobs-tb-btn" id="btnCopyEmailDerivation" disabled>复制当前页</button>
@@ -954,7 +954,7 @@
     <div class="outlook-import-head">
       <div class="outlook-import-head-main">
         <h3 id="outlookImportTitle">导入邮箱资源</h3>
-        <p>只导入用于接收验证码的邮箱资源。Outlook 需要邮箱、密码、Client ID、Refresh Token；通用 API 需要邮箱和取码地址。</p>
+        <p>手动补充本地库存；Outlook 和通用 API 保留原格式，Butler 类型每行粘贴一个完整 iCloud HME 地址。</p>
       </div>
       <button type="button" class="outlook-import-close" id="btnCloseOutlookImport" aria-label="关闭">×</button>
     </div>
@@ -967,15 +967,16 @@
           <div class="outlook-v2-select-menu" role="listbox">
             <button type="button" class="outlook-v2-select-item is-active" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 取码邮箱</button>
+            <button type="button" class="outlook-v2-select-item" data-value="email_butler" role="option">Butler 本地邮箱（iCloud HME）</button>
           </div>
           <input type="hidden" id="importSourceV2" value="outlook">
         </div>
-        <span class="outlook-import-hint">注册来源可在配置里填多个，例如：outlook,generic_api</span>
+        <span class="outlook-import-hint">注册任务只领取本地可用库存；导入不会远端领取或生成邮箱。</span>
       </label>
       <label class="outlook-import-field">
         <span>邮箱资源</span>
         <textarea id="importTextV2" placeholder="Outlook：email----password----clientId----refreshToken&#10;通用 API：email----取码地址"></textarea>
-        <small class="outlook-import-hint">支持 `----` 和 `====` 分隔符；每行一条。多余字段不会写入邮箱池。</small>
+        <small class="outlook-import-hint" id="importFormatHintV2">支持 ---- 和 ==== 分隔符；每行一条。多余字段不会写入邮箱池。</small>
       </label>
       <div class="outlook-import-preview" id="importPreviewV2" aria-live="polite"></div>
     </div>
@@ -1012,10 +1013,10 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/modern/common.js') }}?v=20261027-butler-child-history-v2"></script>
-<script src="{{ url_for('static', filename='js/modern/dashboard.js') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/dashboard.js') }}?v=20261027-local-inventory-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/accounts.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-butler-child-history-v2"></script>
+<script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-local-inventory-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261023-progress-refresh-v1') }}"></script>

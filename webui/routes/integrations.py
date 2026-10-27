@@ -208,7 +208,7 @@ def create_integrations_blueprint(context: WebUIContext):
 
     @bp.post("/api/email-butler/leases")
     def api_email_butler_lease_create():
-        """手动租用一个邮箱，供资源页检查平台供给情况。"""
+        """手动领取一个已导入的本地 Butler 邮箱。"""
         data = request.get_json(silent=True)
         request_id = data.get("request_id") if isinstance(data, dict) else None
         try:
@@ -219,8 +219,8 @@ def create_integrations_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "code": "invalid_request_id", "request_unknown": False,
                             "error": "request_id 必须是浏览器保存的有效 UUID"}), 400
         try:
-            from core.email_butler_client import active_mailbox_leases, pick_account
-            account = pick_account(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
+            from core.email_butler_client import active_mailbox_leases, pick_local_account
+            account = pick_local_account(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
             item = next(
                 (row for row in active_mailbox_leases() if row.get("email") == account.email),
                 {"email": account.email, "mailbox_id": account.mailbox_id},

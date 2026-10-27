@@ -229,29 +229,22 @@ def _search_messages(mail: imaplib.IMAP4_SSL, after_dt: datetime | None = None) 
 # 公共接口
 # ============================================================
 
-def pick_domain_email() -> str:
-    """
-    生成一个随机的域名邮箱地址并记录到 DB。
-    格式：{8位随机数字母}@{EMAIL_DOMAIN}
-    """
-    from core.db import claim_next_domain_email
+def pick_domain_email(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> str:
+    """只领取已手动导入的本地域名邮箱，不再运行时生成地址。"""
+    from core.local_email_inventory import claim
 
-    domain = _email_cfg.EMAIL_DOMAIN
-    if not domain:
-        raise QQMailClientError(
-            "EMAIL_DOMAIN 未配置，请在 config/email.py 中设置你的 Cloudflare 域名"
-        )
-
-    prefix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    email = f"{prefix}@{domain}"
-
-    claim_next_domain_email(email)
-    logger.info(f"[QQMail] 生成域名邮箱: {email}")
-    return email
+    row = claim("cloudflare_domain", owner_kind=owner_kind, owner_id=owner_id, acquisition_id=acquisition_id,
+                batch_id=batch_id, job_id=job_id)
+    if not row:
+        raise QQMailClientError("local_email_inventory_empty: 本地域名邮箱库存为空，请先手动导入")
+    return str(row["email"])
 
 
 def release_domain_email(email: str, status: str = "available", note: str | None = None) -> None:
     """更新域名邮箱状态。"""
+    from core.local_email_inventory import record_outcome
+    if record_outcome(email, source="cloudflare_domain", status=status, note=note):
+        return
     from core.db import release_domain_email as _release
     _release(email, status=status, note=note)
 

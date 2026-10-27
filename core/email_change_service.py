@@ -757,7 +757,8 @@ def _acquire_email_change_target(
             acquisition_id = f"{acquisition_id}:duplicate:{duplicate_count}"
         supported_derivation = str(source or "").strip().lower() in email_derivation._SUPPORTED_SOURCES
         previous = email_derivation.store.find_allocation(acquisition_id=acquisition_id) if acquisition_id and supported_derivation else None
-        if requires_acquisition_identity(source) or email_derivation.enabled_for(source, policy=policy) or previous:
+        from core.local_email_inventory import TABLES as local_sources
+        if source in local_sources or requires_acquisition_identity(source) or email_derivation.enabled_for(source, policy=policy) or previous:
             if acquisition_id:
                 with email_derivation.use_policy(policy):
                     target = str(email_provider.acquire_email(
