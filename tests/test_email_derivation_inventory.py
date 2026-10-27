@@ -286,12 +286,36 @@ class EmailDerivationInventoryTests(PostgresTestCase):
             "email": "mother@icloud.test", "status": "used", "account_id": "apple-test"})
         profile = store.create_inbox_profile(inbox_key="old-inbox", connector="forward_imap",
             credential_ref="TEST_OLD_INBOX", inbox_locator={"server": "imap.example.test", "email": "old@example.test", "port": 993})
-        with patch.dict("os.environ", {"TEST_OLD_INBOX": "test-old-secret"}), patch.object(service, "_forward_profile", return_value=profile), patch(
+        with patch.multiple(cfg, ICLOUD_HME_INBOX_MODE="forward_imap", ICLOUD_HME_BUTLER_BRIDGE_ENABLED=False), patch.dict(
+            "os.environ", {"TEST_OLD_INBOX": "test-old-secret"}), patch.object(service, "_forward_profile", return_value=profile), patch(
             "core.icloud_hme_client.sync_aliases", return_value={"synced_account_ids": ["apple-test"]}):
             service.generate_inventory("icloud_hide", 2, "hme-request")
-        with patch.dict("os.environ", {"TEST_OLD_INBOX": "test-old-secret"}), patch.object(service, "_forward_profile", side_effect=AssertionError("不能重建")), patch(
+        with patch.multiple(cfg, ICLOUD_HME_INBOX_MODE="forward_butler", ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True), patch.dict(
+            "os.environ", {"TEST_OLD_INBOX": "test-old-secret"}), patch.object(service, "_forward_profile", side_effect=AssertionError("不能重建")), patch(
             "core.icloud_hme_client.sync_aliases", side_effect=AssertionError("不能同步")):
             again = service.generate_inventory("icloud_hide", 2, "hme-request")
             address = service.acquire_address("icloud_hide", owner_kind="registration_root", owner_id="hme-root", acquisition_id="hme-root")
         self.assertEqual(again["reused"], 2)
         self.assertTrue(address.startswith("mother+"))
+        saved = record_store.list_rows(record_store.EMAIL_ADDRESS_GENERATION_REQUESTS)
+        record_store.delete_rows(record_store.EMAIL_ADDRESS_GENERATION_REQUESTS, [row["id"] for row in saved])
+        with patch.multiple(cfg, ICLOUD_HME_INBOX_MODE="forward_butler", ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True), patch.object(
+            service, "_forward_profile", side_effect=AssertionError("历史库存不能重建收件配置")
+        ), patch("core.icloud_hme_client.sync_aliases", side_effect=AssertionError("历史库存不能同步 Apple")):
+            legacy = service.generate_inventory("icloud_hide", 2, "hme-request")
+        self.assertEqual((legacy["created"], legacy["reused"]), (0, 2))
+
+    def test_new_hme_inventory_is_rejected_before_profile_or_apple_calls_after_butler_cutover(self):
+        for mode, bridge in (("forward_butler", False), ("forward_imap", True)):
+            with self.subTest(mode=mode, bridge=bridge), patch.multiple(cfg,
+                ICLOUD_HME_INBOX_MODE=mode, ICLOUD_HME_BUTLER_BRIDGE_ENABLED=bridge
+            ), patch.object(service, "_forward_profile", side_effect=AssertionError("统一后不能创建本机收件配置")), patch(
+                "core.icloud_hme_client.sync_aliases", side_effect=AssertionError("统一后不能同步 Apple")
+            ):
+                with self.assertRaises(service.EmailDerivationError) as caught:
+                    service.generate_inventory("icloud_hide", 1, f"blocked-hme-{mode}-{bridge}")
+                self.assertEqual(caught.exception.code, "email_derivation_source_disabled")
+                self.assertIn("Butler", str(caught.exception))
+        self.assertEqual(store.list_allocations(source="icloud_hide"), [])
+        self.assertEqual(store.list_inbox_profiles(), [])
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_ADDRESS_GENERATION_REQUESTS), 0)

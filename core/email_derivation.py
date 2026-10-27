@@ -173,6 +173,12 @@ def generate_inventory(source: str, count: int, request_id: str, parent_id: int 
         selected = policy_snapshot()
         kwargs: dict[str, Any] = {}
         if source == "icloud_hide":
+            from core import email_butler_bridge
+
+            if (email_butler_bridge.enabled()
+                    or str(getattr(email_config, "ICLOUD_HME_INBOX_MODE", "") or "").strip().lower() == "forward_butler"):
+                raise EmailDerivationError("email_derivation_source_disabled",
+                    "iCloud HME 已统一到 Email Butler，请在 Butler 库存入口管理；本机不再生成新的 HME 子地址")
             from core.icloud_hme_client import sync_aliases
             try:
                 profile = _forward_profile()
