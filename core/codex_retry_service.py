@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import db, task_run_log
+from core.account_credentials import get_account_totp_secret_candidate
 from core.operation_runtime import OperationCancelled, report_stage
 from core.operations import task_gateway as account_task_store
 from core.auth_challenge import (
@@ -606,9 +607,10 @@ def _build_roxy_twofa_setup(
 
     def _setup(driver) -> bool:
         current = db.get_account_by_email(email) or {}
-        existing_secret = str(current.get("totp_secret") or state["secret"] or "").strip()
+        active_secret = str(current.get("totp_secret") or "").strip()
+        existing_secret = get_account_totp_secret_candidate(current) or state["secret"]
         setup_pending = _totp_setup_pending(current)
-        if existing_secret and not setup_pending and not force_reconfigure:
+        if active_secret and not setup_pending and not force_reconfigure:
             state["secret"] = existing_secret
             account_task_store.append_event(
                 task_id,
@@ -659,6 +661,11 @@ def _build_roxy_twofa_setup(
             from config import twofa as twofa_cfg
 
             selected_twofa_driver = twofa_cfg.get_twofa_driver(twofa_driver) if twofa_driver else twofa_cfg.get_twofa_driver()
+            if (selected_twofa_driver == "protocol" and browser_fallback_enabled and existing_secret
+                    and (not active_secret or setup_pending) and not force_reconfigure):
+                # 激活回执失败时远端可能已经启用；先核验开关，避免重新 enroll 覆盖恢复密钥。
+                selected_twofa_driver = "browser"
+                logger.info("[账号补跑][2FA] 已有待确认密钥，先通过安全设置核验远端 Authenticator 状态")
             if selected_twofa_driver == "protocol":
                 # Roxy 负责登录和拿到本次新鲜 session；enroll/activate 直接走协议，
                 # 若 OpenAI 要求 recent_auth，则复用当前已登录浏览器完成邮箱重认证，
@@ -1253,6 +1260,20 @@ def run_twofa_worker(
         protocol_reauth_enabled = bool(
             getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)
         )
+        if (
+            "twofa" in requested_steps
+            and selected_twofa_mode != "browser"
+            and browser_fallback_enabled
+            and get_account_totp_secret_candidate(account)
+            and (not str(account.get("totp_secret") or "").strip() or _totp_setup_pending(account))
+        ):
+            # 激活回执不明时必须先核验远端状态，不能让协议 enroll 覆盖恢复候选。
+            selected_twofa_mode = "browser"
+            _report_account_setup_event(
+                task_id, stage="twofa", state="running",
+                message="已有待确认 Authenticator 密钥，先通过浏览器核验远端状态",
+                detail={"driver": "browser", "reason": "pending_totp_recovery"},
+            )
 
         # 账号密码和显式 browser 2FA 需要浏览器会话；这和 Codex OAuth
         # 的驱动是两个独立边界，不能拿 CODEX_OAUTH_DRIVER 误拦截账号配置。

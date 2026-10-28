@@ -21,6 +21,23 @@ def account_email_is_invalid(email: str) -> bool:
     return account.get("email_invalid") is True
 
 
+def get_account_totp_secret_candidate(account: dict | None) -> str:
+    """优先读取正式密钥，缺失时仅将待确认检查点作为登录候选，不改变启用状态。"""
+    account = account or {}
+    active_secret = str(account.get("totp_secret") or "").strip()
+    if active_secret:
+        return active_secret
+    raw_extra = account.get("extra_json") or {}
+    if isinstance(raw_extra, str):
+        try:
+            raw_extra = json.loads(raw_extra)
+        except (TypeError, ValueError):
+            raw_extra = {}
+    if not isinstance(raw_extra, dict):
+        return ""
+    return str(raw_extra.get("totp_pending_secret") or "").strip()
+
+
 def get_account_login_credentials(email: str) -> tuple[str, str]:
     """Return ``(OpenAI password, TOTP secret)`` without logging either value."""
     try:
@@ -54,5 +71,5 @@ def get_account_login_credentials(email: str) -> tuple[str, str]:
             or account.get("registration_password")
             or ""
         ).strip()
-    totp_secret = str(account.get("totp_secret") or "").strip()
+    totp_secret = get_account_totp_secret_candidate(account)
     return password, totp_secret

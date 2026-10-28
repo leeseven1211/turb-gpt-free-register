@@ -521,6 +521,53 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
+    def test_pending_totp_with_fallback_checks_browser_before_protocol_enroll(self):
+        for active_secret, extra, mode in (
+            ("", {"totp_pending_secret": "pending-secret", "totp_setup_pending": True}, "auto"),
+            ("", {"totp_pending_secret": "pending-secret"}, "auto"),
+            ("   ", {"totp_pending_secret": "pending-secret"}, "protocol"),
+            ("active-secret", {"totp_setup_pending": True}, "protocol"),
+        ):
+            with self.subTest(active=bool(active_secret.strip()), extra=extra, mode=mode):
+                account = {
+                    "id": 9, "email": "a@example.com", "access_token": "saved-chatgpt-token",
+                    "totp_secret": active_secret, "extra_json": json.dumps(extra),
+                }
+                action = Mock()
+                with patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=action) as build_action:
+                    result, route, db_mocks, _events, setup_protocol, reauth, protocol_session, run_browser, _action = self._run_worker(
+                        account=account, fallback_enabled=True, existing_action=action,
+                        twofa_driver_override=mode,
+                    )
+
+                self.assertTrue(result["ok"])
+                self.assertEqual("browser", result["twofa_driver"])
+                self.assertEqual("browser_session", result["auth_source"])
+                setup_protocol.assert_not_called()
+                reauth.assert_not_called()
+                protocol_session.assert_not_called()
+                run_browser.assert_called_once()
+                db_mocks["update_account_totp_secret"].assert_not_called()
+                build_action.assert_called_once_with(
+                    "a@example.com", 101, proxy="http://proxy.example", include_password=False,
+                    include_twofa=True, twofa_driver="browser", browser_fallback_enabled=True,
+                )
+                route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
+
+    def test_pending_totp_keeps_explicit_protocol_when_browser_fallback_is_disabled(self):
+        account = {
+            "id": 9, "email": "a@example.com", "access_token": "saved-chatgpt-token",
+            "totp_secret": "", "extra_json": json.dumps({"totp_pending_secret": "pending-secret"}),
+        }
+        result, _route, _db, _events, setup_protocol, _reauth, _session, run_browser, _action = self._run_worker(
+            account=account, fallback_enabled=False, twofa_driver_override="protocol",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("protocol", result["twofa_driver"])
+        setup_protocol.assert_called_once()
+        run_browser.assert_not_called()
+
     def test_reauth_page_and_dispatch_failures_allow_browser_recovery(self):
         account = {
             "id": 9, "email": "a@example.com", "access_token": "saved-chatgpt-token",
