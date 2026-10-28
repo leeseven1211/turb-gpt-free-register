@@ -132,6 +132,20 @@ class LegacyStatusTests(unittest.TestCase):
         self.assertEqual("upstream_timeout", result.summary["failure_code"])
         self.assertEqual("UPI 上游请求超时", result.summary["failure_message"])
 
+    def test_payment_confirmation_blocked_has_its_own_specific_classification(self):
+        message = "blocked：支付确认被拦截，请更换账号或稍后重试。"
+        for error in (message, {"code": "blocked", "message": message}):
+            with self.subTest(error=error):
+                result = LegacyProvider._job({"status": "failed", "error": error}, "blocked-job")
+                self.assertEqual("payment_confirmation_blocked", result.summary["failure_type"])
+                self.assertEqual("payment_confirmation_blocked", result.summary["failure_code"])
+                self.assertEqual(message, result.summary["failure_message"])
+        unrelated = LegacyProvider._job({"status": "failed", "error": {
+            "code": "blocked", "message": "blocked：访问被拦截",
+        }}, "unrelated-job")
+        self.assertEqual("remote_task_failed", unrelated.summary["failure_type"])
+        self.assertEqual("blocked", unrelated.summary["failure_code"])
+
     def test_explicit_creation_rejection_is_failed_not_unknown(self):
         provider, _ = _provider({"ok": False, "code": "token_task_in_progress", "error": "该 token 已有未完成任务"})
         result = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "extract_only"))

@@ -71,6 +71,7 @@ def _failure_summary(data, *, secrets=()):
     text = f"{raw_code} {message}".lower()
     failure_type = "remote_task_failed"
     for name, markers in (
+        ("payment_confirmation_blocked", ("支付确认被拦截",)),
         ("task_in_progress", ("in_progress", "未完成任务", "进行中任务")),
         ("quota_exhausted", ("quota", "余额不足", "次数不足", "次数已用完", "额度不足", "exhausted")),
         ("token_invalid", ("token_expired", "token_invalid", "invalid token", "token 失效", "token 已过期", "at 已过期")),
@@ -83,6 +84,8 @@ def _failure_summary(data, *, secrets=()):
             failure_type = name
             break
     safe_code = raw_code.strip()
+    if failure_type == "payment_confirmation_blocked" and safe_code.lower() in {"", "blocked"}:
+        safe_code = failure_type
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,99}", safe_code) or any(
         secret and secret in safe_code for secret in secrets
     ):
