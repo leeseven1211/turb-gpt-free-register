@@ -52,6 +52,11 @@ _MFA_EMAIL_CODE_SELECTOR = (
 
 _MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"]'
 
+_AUTHENTICATOR_TOGGLE_LABELS = frozenset({
+    "authenticator", "authenticator app", "ऑथेंटिकेटर ऐप", "身份验证器应用",
+    "驗證器應用程式", "認証アプリ",
+})
+
 def _probe_existing_roxy_totp(driver, email: str, *, timeout: float = 15.0) -> dict:
     """同浏览器只读确认远端 TOTP 状态，不验证候选密钥，也不修改任何 factor。"""
     _checkpoint()
@@ -191,6 +196,50 @@ def _first_visible_css(driver, selector: str):
         if _visible(element):
             return element
     return None
+
+def _find_authenticator_toggle(driver):
+    """优先使用旧稳定标记；新版仅按可信安全页的精确关联标签识别唯一开关。"""
+    from selenium.webdriver.common.by import By
+
+    legacy = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+    if legacy is not None:
+        return legacy
+
+    def trusted_security_page() -> bool:
+        current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+        if (current.scheme != "https" or current.hostname != "chatgpt.com"
+                or current.port not in (None, 443) or current.username is not None or current.password is not None):
+            return False
+        path = current.path.lower().rstrip("/")
+        fragment = current.fragment.lower().rstrip("/")
+        return path == "/settings/security" or (not path and fragment == "settings/security")
+
+    try:
+        if not trusted_security_page():
+            return None
+        matches = []
+        for element in driver.find_elements(By.CSS_SELECTOR, '[role="switch"][aria-labelledby]'):
+            if not _visible(element):
+                continue
+            label_ids = str(element.get_attribute("aria-labelledby") or "").split()
+            if not label_ids:
+                continue
+            labels = []
+            for label_id in label_ids:
+                targets = driver.find_elements(By.ID, label_id)
+                if len(targets) != 1:
+                    break
+                labels.append(str(targets[0].get_attribute("textContent") or ""))
+            if len(labels) != len(label_ids):
+                continue
+            name = re.sub(r"\s+", " ", " ".join(labels)).strip().casefold()
+            if name in _AUTHENTICATOR_TOGGLE_LABELS:
+                matches.append(element)
+        return matches[0] if len(matches) == 1 and trusted_security_page() else None
+    except (StageTimeout, CancellationRequested, OperationCancelled):
+        raise
+    except Exception:
+        return None
 
 def _is_stale_element_error(exc: BaseException) -> bool:
     text = f"{type(exc).__name__}: {exc}".lower()
@@ -543,7 +592,7 @@ def _open_chatgpt_security_settings(driver, *, timeout: int = 75):
             continue
         # The settings controls can exist behind a blocking first-login <dialog>.
         # Only return the toggle after the welcome layer has been handled.
-        toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+        toggle = _find_authenticator_toggle(driver)
         if toggle is not None:
             return toggle
         navigation = driver.execute_script(r"""
@@ -627,7 +676,7 @@ def _disable_roxy_2fa(driver, toggle, *, timeout: int = 60) -> None:
         """)
         if confirmation is not None:
             _human_click(driver, confirmation, label="mfa_authenticator_disable_confirm")
-        current = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+        current = _find_authenticator_toggle(driver)
         if current is not None and not is_enabled(current):
             logger.info("%s[2FA] 已确认远端 Authenticator 开关关闭", _log_prefix(driver))
             return
@@ -813,7 +862,7 @@ def setup_roxy_2fa(
             _disable_roxy_2fa(driver, toggle)
             if on_disabled is not None:
                 on_disabled()
-            toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+            toggle = _find_authenticator_toggle(driver)
             if toggle is None:
                 raise RuntimeError("关闭旧 Authenticator 后未找到新的设置开关")
         else:
@@ -865,7 +914,7 @@ def setup_roxy_2fa(
     submitted_code = totp_code
     while time.time() < end:
         _check_manual_stop()
-        current_toggle = _first_visible_css(driver, '[data-testid="mfa-authenticator-toggle"]')
+        current_toggle = _find_authenticator_toggle(driver)
         enabled = current_toggle is not None and (
             str(current_toggle.get_attribute("aria-checked") or "").lower() == "true"
             or str(current_toggle.get_attribute("data-state") or "").lower() == "checked"
@@ -986,7 +1035,7 @@ def setup_protocol_2fa_with_browser_fallback(
 
 install_dispatches(globals(), (
     "wait_for_otp", "setup_2fa_protocol", "_totp_secret_candidate",
-    "_first_visible_css", "_is_stale_element_error", "_visible_new_password_inputs",
+    "_first_visible_css", "_find_authenticator_toggle", "_is_stale_element_error", "_visible_new_password_inputs",
     "_wait_visible_css", "_detect_mfa_enrollment_step", "_wait_mfa_enrollment_step",
     "_wait_after_mfa_email_submit", "_dismiss_single_action_dialog",
     "_dismiss_chatgpt_pricing_modal", "_click_chatgpt_settings_control",
@@ -1001,7 +1050,7 @@ __all__ = [
     "_CHATGPT_HOME_URL", "_CHATGPT_SECURITY_SETTINGS_URL",
     "_CHATGPT_PASSWORD_SETTINGS_URL", "_MFA_EMAIL_CODE_SELECTOR",
     "_MFA_TOTP_CODE_SELECTOR", "wait_for_otp", "setup_2fa_protocol",
-    "_totp_secret_candidate", "_first_visible_css", "_is_stale_element_error",
+    "_totp_secret_candidate", "_first_visible_css", "_find_authenticator_toggle", "_is_stale_element_error",
     "_visible_new_password_inputs", "_wait_visible_css", "_detect_mfa_enrollment_step",
     "_wait_mfa_enrollment_step", "_wait_after_mfa_email_submit",
     "_dismiss_single_action_dialog", "_dismiss_chatgpt_pricing_modal",

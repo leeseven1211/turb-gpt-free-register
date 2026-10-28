@@ -103,8 +103,59 @@ _FAILURE_CATEGORY_LABELS = {
     "page_not_hydrated": "页面未完成渲染",
     "element_not_found": "页面元素缺失",
     "upstream_http_error": "上游 HTTP 错误",
-    "unknown": "未分类",
+    "unknown": "诊断证据不足",
 }
+
+
+def _failure_network_evidence(item: dict, stage: str = "") -> dict:
+    """内存归因仅保留固定认证类别、状态与布尔事实，不复制头、URL 或正文。"""
+    status = int(item.get("status") or 0)
+    endpoint = _submission_endpoint_kind(item.get("url"))
+    method = str(item.get("method") or "").upper()
+    allowed_methods = {"POST"}
+    if endpoint == "nextauth_csrf":
+        allowed_methods = {"GET"}
+    elif endpoint == "otp_resend":
+        allowed_methods = {"GET", "POST"}
+    if method not in allowed_methods:
+        endpoint = ""
+    evidence = {"status": status, "failure": bool(item.get("failure"))}
+    if endpoint:
+        evidence.update({
+            "auth_endpoint": endpoint,
+            "stage": normalize_stage(item.get("stage") or stage),
+            "auth_challenge": status == 403 and (
+                safe_response_headers(item.get("response_headers")).get("cf-mitigated") == "challenge"
+            ),
+        })
+    return evidence
+
+
+def _pending_auth_challenge(network: list[dict], failure_stage: str = "") -> bool:
+    """只用最后一条认证结果；后续认证成功或明确进度成功会终止旧挑战证据。"""
+    for item in reversed(network):
+        if item.get("auth_progress_confirmed"):
+            return False
+        evidence = item if "auth_endpoint" in item else _failure_network_evidence(item)
+        if evidence.get("auth_endpoint"):
+            final_stage = normalize_stage(failure_stage) if failure_stage else ""
+            entry_predecessor = (
+                evidence.get("auth_endpoint") in {"nextauth_csrf", "nextauth_signin"}
+                and evidence.get("stage") in {"preflight", "browser", "page"}
+                and final_stage in {"submit_email", "auth_redirect"}
+            )
+            return bool(evidence.get("auth_challenge")) and (
+                not final_stage or evidence.get("stage") == final_stage or entry_predecessor
+            )
+    return False
+
+
+def _challenge_explains_error(info: dict | None) -> bool:
+    """直接挑战证据可以细化等待症状，不覆盖最终明确的密码、配置或网络错误。"""
+    code = str((info or {}).get("code") or "")
+    return code in {
+        "", "unknown.unclassified", "email_entry_not_ready", "browser_stage_timeout", "email_transition_timeout",
+    } or code.endswith("_receipt_missing")
 
 
 def _raw_url(value: object) -> str:
@@ -492,22 +543,32 @@ class RegistrationDebugSession:
         if email_evidence is not None:
             self.email_evidence = email_evidence
 
-    def _classify_failure(self, reason: Any) -> dict[str, Any] | None:
+    def _classify_error(self, reason: Any, *, result_summary: dict | None = None) -> dict[str, Any] | None:
+        """单条事件分类是纯查询，不改写任务最终错误。"""
         try:
             from core.task_errors import classify_task_error
 
-            self.error_info = classify_task_error(
+            return classify_task_error(
                 reason,
                 stage=self.failure_stage or self.current_stage,
                 task_type=str(self.job.get("job_type") or "registration"),
                 error_code=str(self.job.get("error_code") or ""),
+                result_summary=result_summary,
             )
         except Exception:
-            self.error_info = None
+            return None
+
+    def _classify_failure(self, reason: Any) -> dict[str, Any] | None:
+        info = self._classify_error(reason)
+        if _challenge_explains_error(info) and _pending_auth_challenge(
+            list(self._failure_network_seen), self.failure_stage or self.current_stage,
+        ):
+            info = self._classify_error(reason, result_summary={"cause_code": "auth_cloudflare_challenge"}) or info
+        self.error_info = info
         return self.error_info
 
     def _error_payload(self, message: Any, *, stage: str | None = None, status: int = 0) -> dict[str, Any]:
-        info = self._classify_failure(message) if message else None
+        info = self._classify_error(message) if message else None
         payload = dict(info or {})
         payload["message"] = str(message or "")[:1000]
         if stage:
@@ -676,6 +737,11 @@ class RegistrationDebugSession:
         self._stage_initial_state.setdefault(next_stage, state_before)
         self._stage_wait_reason[next_stage] = normalize_wait_reason(wait_reason)
         self._stage_state[next_stage] = state_after
+        if state_after == "success" and next_stage in {
+            "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
+        }:
+            with self._lock:
+                self._failure_network_seen.append({"auth_progress_confirmed": True})
         self._stage_started_at.setdefault(next_stage, now)
         event = {
             "kind": "stage",
@@ -712,6 +778,12 @@ class RegistrationDebugSession:
         item = dict(record or {})
         item["kind"] = "network_request"
         status = int(item.get("status") or 0)
+        expected_data_saver_failure = _is_expected_data_saver_failure(item)
+        if not expected_data_saver_failure:
+            evidence = _failure_network_evidence(item, self.current_stage)
+            if evidence.get("auth_endpoint") or item.get("failure") or status >= 400:
+                with self._lock:
+                    self._failure_network_seen.append(evidence)
         if item.get("failure") or status >= 400:
             item.setdefault(
                 "error",
@@ -730,7 +802,6 @@ class RegistrationDebugSession:
             item.pop("request_body", None)
             item.pop("response_body", None)
             item["capture_mode"] = self.capture_mode
-            expected_data_saver_failure = _is_expected_data_saver_failure(item)
             with self._lock:
                 self.request_count += 1
                 if expected_data_saver_failure:
@@ -744,8 +815,6 @@ class RegistrationDebugSession:
                             self.body_bytes_saved += len(json.dumps(item[body_key], ensure_ascii=False, default=str).encode("utf-8"))
                         except Exception:
                             self.body_bytes_saved += len(str(item[body_key]).encode("utf-8", errors="replace"))
-                if not expected_data_saver_failure:
-                    self._failure_network_seen.append(dict(item))
                 if not self.capture_started:
                     self._pending_network.append(item)
                     return
@@ -761,7 +830,6 @@ class RegistrationDebugSession:
             item["response_body_omitted"] = "body_budget"
         with self._lock:
             self.request_count += 1
-            expected_data_saver_failure = _is_expected_data_saver_failure(item)
             if expected_data_saver_failure:
                 self.data_saver_blocked_count += 1
             if item.get("failure") and not expected_data_saver_failure:
@@ -788,8 +856,16 @@ class RegistrationDebugSession:
         url = str(state.get("url") or "").lower()
         dom = state.get("dom") if isinstance(state.get("dom"), dict) else {}
         meaningful_network = [item for item in (network or []) if not _is_expected_data_saver_failure(item)]
+        if _pending_auth_challenge(meaningful_network, str(state.get("failure_stage") or "")):
+            info = state.get("error_info")
+            if not isinstance(info, dict) or not info:
+                from core.task_errors import classify_task_error
+
+                info = classify_task_error(reason, task_type="registration")
+            if _challenge_explains_error(info) or (info or {}).get("code") == "auth_cloudflare_challenge":
+                return "challenge_or_captcha"
         if any(item.get("failure") for item in meaningful_network) or any(
-            marker in text for marker in ("proxy", "tunnel", "connection", "timed out", "timeout", "chrome-error")
+            marker in text for marker in ("proxy", "tunnel", "connection", "chrome-error")
         ):
             return "network_or_proxy"
         if "cloudflare" in text or "challenge" in text or "captcha" in text:
@@ -966,7 +1042,10 @@ class RegistrationDebugSession:
             else:
                 # 协议驱动或浏览器尚未启动时仍落盘失败请求元数据和错误原因。
                 self._start_capture()
-                category = self._failure_category(reason, {}, list(self._failure_network_seen))
+                category = self._failure_category(
+                    reason, {"failure_stage": self.failure_stage, "error_info": error_info or {}},
+                    list(self._failure_network_seen),
+                )
                 self.failure_category = category
                 self.record({
                     "kind": "failure_diagnostics",
@@ -1107,7 +1186,10 @@ class RegistrationDebugSession:
             self.failure_stage = normalize_stage(self.current_stage or self.job.get("progress_stage"))
             reason = self.job.get("error") or self.job.get("error_message") or terminal_status or "unknown"
             error_info = self._classify_failure(reason)
-            self.failure_category = self._failure_category(str(reason), {}, list(self._failure_network_seen))
+            self.failure_category = self._failure_category(
+                str(reason), {"failure_stage": self.failure_stage, "error_info": error_info or {}},
+                list(self._failure_network_seen),
+            )
             self._start_capture()
             self.record({
                 "kind": "failure_diagnostics",

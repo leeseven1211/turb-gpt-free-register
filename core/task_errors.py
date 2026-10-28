@@ -376,7 +376,7 @@ _SOURCE_LABELS = {
     "external": "外部错误",
     "internal": "内部错误",
     "workflow": "流程错误",
-    "unknown": "未分类错误",
+    "unknown": "诊断证据不足",
     "system": "系统事件",
 }
 
@@ -752,7 +752,7 @@ _DISPLAY_SUMMARIES = {
     "workflow.password_settings_entry_unavailable": "账号设置页没有添加密码入口",
     "workflow.retry_blocked": "原邮箱不可用，不能安全重试",
     "workflow.unsupported": "当前功能不支持",
-    "unknown.unclassified": "未知错误",
+    "unknown.unclassified": "诊断证据不足，无法确认具体原因",
 }
 
 
@@ -962,6 +962,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "access_token_missing": ("AUTH-AT-001", "账号缺少可用 AT"),
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
+    "auth_cloudflare_challenge": ("OA-AUTH-CF-CHALLENGE", "认证请求被 Cloudflare 挑战阻断"),
     "codex_consent_unverifiable": (
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
     ),
@@ -974,6 +975,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未收到验证码邮件"),
     "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未确认下一步"),
     "email_transition_timeout": ("FLOW-EMAIL-002", "邮箱提交或认证跳转预算耗尽"),
+    "email_entry_not_ready": ("FLOW-EMAIL-003", "邮箱输入框或邮箱入口尚未就绪"),
+    "browser_stage_timeout": ("FLOW-STAGE-001", "浏览器阶段等待预算耗尽，具体原因证据不足"),
     "email_change_verify_prepare_failed": (
         "OA-EMAIL-VERIFY-001", "新邮箱验证请求在本地准备阶段失败",
     ),
@@ -1258,21 +1261,33 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
 
 def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, str] | None:
     """识别浏览器已记录的阶段症状，不把类名里的 Timeout 当作网络证据。"""
-    if str(task_type or "").strip().lower() not in {"", "registration", "registration_resume"}:
+    task_key = str(task_type or "").strip().lower()
+    registration_task_types = {"", "registration", "registration_resume"}
+    account_login_task_types = {"twofa_retry", "account_setup_retry", "password_setup", "account_completion"}
+    if task_key not in registration_task_types | account_login_task_types:
         return None
     markers = (
+        ("ERR_TUNNEL_CONNECTION_FAILED", "roxy_proxy_tunnel_failed"),
+        ("ERR_PROXY_CONNECTION_FAILED", "roxy_proxy_tunnel_failed"),
         ("_EmailSubmissionUnknown", "email_submit_unconfirmed"),
         ("_PasswordTransitionTimeout", "password_result_unknown"),
-        ("资料提交后的会话读取未完成", "profile_session_read_failed"),
-        ("资料提交后的会话尚未确认登录态", "profile_session_unconfirmed"),
-        ("资料提交后进入认证错误页", "profile_auth_error"),
-        ("资料阶段进入认证错误页", "profile_auth_error"),
-        ("邮箱提交/认证跳转超过总预算", "email_transition_timeout"),
-        ("create_account_password_navigation_timeout", "password_entry_navigation_timeout"),
+        ("找不到邮箱输入框/邮箱入口", "email_entry_not_ready"),
     )
+    if task_key in registration_task_types:
+        markers += (
+            ("资料提交后的会话读取未完成", "profile_session_read_failed"),
+            ("资料提交后的会话尚未确认登录态", "profile_session_unconfirmed"),
+            ("资料提交后进入认证错误页", "profile_auth_error"),
+            ("资料阶段进入认证错误页", "profile_auth_error"),
+        )
+    markers += (("邮箱提交/认证跳转超过总预算", "email_transition_timeout"),)
+    if task_key in registration_task_types:
+        markers += (("create_account_password_navigation_timeout", "password_entry_navigation_timeout"),)
     for marker, code in markers:
         if marker in raw:
             return _specific_error_cause({"cause_code": code})
+    if re.search(r"(?<![\w])StageTimeout(?=[:：\s]|$)", raw):
+        return _specific_error_cause({"cause_code": "browser_stage_timeout"})
     return None
 
 
@@ -1366,7 +1381,7 @@ def _classify_raw_task_error(
         TaskErrorCode.UNKNOWN.value,
         "unknown",
         _SOURCE_LABELS["unknown"],
-        "待归类",
+        "具体原因未确认",
         stage=stage,
         error_code=error_code,
         raw=raw,
@@ -1508,6 +1523,9 @@ def classify_task_error(
     if cause is None:
         # 旧记录可能只把固定原因码写在正文中；只识别整词，不输出任意诊断原文。
         for candidate in sorted(_CAUSE_DETAILS, key=len, reverse=True):
+            if candidate == "auth_cloudflare_challenge":
+                # 挑战原因只接受抓包保存的结构化证据，不由正文中的原因码推断。
+                continue
             if candidate == "auth_route_rejected":
                 # 历史原文的 HTTP 状态继续交给已有授权路由分类读取。
                 continue

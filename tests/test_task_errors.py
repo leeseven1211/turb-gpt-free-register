@@ -549,7 +549,9 @@ class TaskErrorClassificationTests(unittest.TestCase):
         info = classify_task_error("某个尚未建立映射的内部异常：opaque_failure_123")
         self.assertEqual("unknown.unclassified", info["code"])
         self.assertEqual("UNK-000", info["display_code"])
-        self.assertEqual("未知错误", info["summary"])
+        self.assertEqual("诊断证据不足，无法确认具体原因", info["summary"])
+        self.assertEqual("诊断证据不足", info["source_label"])
+        self.assertEqual("具体原因未确认", info["kind_label"])
         self.assertNotIn("opaque_failure_123", info["summary"])
 
     def test_old_account_task_known_errors_no_longer_show_unknown(self):
@@ -823,6 +825,70 @@ class TaskErrorClassificationTests(unittest.TestCase):
 
 class RegistrationBrowserFailureCauseTests(unittest.TestCase):
     """真实阶段异常不能被通用网络或回执分类覆盖。"""
+
+    def test_cloudflare_challenge_requires_structured_failure_evidence(self):
+        info = classify_task_error(
+            "StageTimeout: 邮箱输入准备恢复预算耗尽", task_type="registration",
+            result_summary={"cause_code": "auth_cloudflare_challenge"},
+        )
+        self.assertEqual("auth_cloudflare_challenge", info["code"])
+        self.assertEqual("OA-AUTH-CF-CHALLENGE", info["display_code"])
+        self.assertEqual("认证请求被 Cloudflare 挑战阻断", info["summary"])
+        without_evidence = classify_task_error(
+            "auth_cloudflare_challenge", task_type="registration",
+        )
+        self.assertNotEqual("auth_cloudflare_challenge", without_evidence["code"])
+
+    def test_missing_email_entry_has_a_fixed_cause_without_guessing_the_root_cause(self):
+        info = classify_task_error(
+            "账号配置补跑失败：RuntimeError: 找不到邮箱输入框/邮箱入口（未使用文字识别），"
+            "state={'inputs': [], 'actions': [], 'url': 'https://chatgpt.com/auth/login'}",
+            task_type="registration",
+        )
+        self.assertEqual("email_entry_not_ready", info["code"])
+        self.assertEqual("FLOW-EMAIL-003", info["display_code"])
+        self.assertEqual("邮箱输入框或邮箱入口尚未就绪", info["summary"])
+        self.assertEqual("workflow", info["source"])
+        self.assertEqual("unknown", info["remote_state_impact"])
+
+    def test_stage_timeout_alone_is_a_stage_symptom_without_network_evidence(self):
+        info = classify_task_error(
+            "账号配置补跑失败：StageTimeout: email-entry: 邮箱输入准备恢复预算耗尽",
+            task_type="registration",
+        )
+        self.assertEqual("browser_stage_timeout", info["code"])
+        self.assertEqual("FLOW-STAGE-001", info["display_code"])
+        self.assertEqual("workflow", info["source"])
+        self.assertEqual("浏览器阶段等待预算耗尽，具体原因证据不足", info["summary"])
+
+    def test_more_specific_browser_failure_precedes_generic_stage_timeout(self):
+        info = classify_task_error(
+            "StageTimeout: 找不到邮箱输入框/邮箱入口（未使用文字识别）",
+            task_type="registration",
+        )
+        self.assertEqual("email_entry_not_ready", info["code"])
+
+    def test_shared_account_login_causes_apply_to_real_setup_types_only(self):
+        cases = (
+            ("RuntimeError: 找不到邮箱输入框/邮箱入口（未使用文字识别）", "email_entry_not_ready"),
+            ("_PasswordTransitionTimeout: request_unknown: 密码提交结果未确认", "password_result_unknown"),
+            ("StageTimeout: 邮箱输入准备恢复预算耗尽", "browser_stage_timeout"),
+            ("StageTimeout: net::ERR_TUNNEL_CONNECTION_FAILED", "roxy_proxy_tunnel_failed"),
+        )
+        for task_type in ("twofa_retry", "account_setup_retry", "password_setup", "account_completion"):
+            for raw, code in cases:
+                with self.subTest(task_type=task_type, code=code):
+                    info = classify_task_error(raw, task_type=task_type)
+                    self.assertEqual(code, info["code"])
+            profile = classify_task_error(
+                "RuntimeError: 资料提交后的会话读取未完成", task_type=task_type,
+            )
+            self.assertNotEqual("profile_session_read_failed", profile["code"])
+        for task_type in ("extract_link", "plan_check", "live_check"):
+            for raw, code in cases:
+                with self.subTest(task_type=task_type, code=code):
+                    info = classify_task_error(raw, task_type=task_type)
+                    self.assertNotEqual(code, info["code"])
 
     def test_existing_browser_messages_keep_the_known_failure_stage(self):
         cases = (

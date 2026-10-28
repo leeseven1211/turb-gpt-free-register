@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core import roxy_codex_oauth as oauth
+from core.task_errors import classify_task_error
 
 
 class AccountActionDebugTests(unittest.TestCase):
@@ -38,19 +39,56 @@ class AccountActionDebugTests(unittest.TestCase):
                 raise error
 
             stack.enter_context(patch.object(oauth, "_fill_email_and_otp", side_effect=fail_login))
-            with self.assertRaises(type(error)):
+            with self.assertRaises(type(error)) as raised:
                 oauth.run_roxy_chatgpt_account_action("unit@example.test", action=Mock())
+            self.assertIs(raised.exception, error)
         self.assertEqual(client.open_profile_for_account.call_args.kwargs.get("headless"), False)
         attach.assert_called_once_with(opened.debugger_address)
         if capture:
             self.assertIs(pause.call_args.args[0], driver)
             self.assertEqual(events, ["attach", "login", "capture", "cleanup"])
+            return pause.call_args.args[1]
         else:
             pause.assert_not_called()
             self.assertEqual(events, ["attach", "login", "cleanup"])
 
     def test_full_debug_attaches_before_login_and_preserves_failure_before_cleanup(self):
         self._failed_action(RuntimeError("模拟账号登录失败"))
+
+    def test_pause_keeps_email_entry_failure_message_with_existing_redaction(self):
+        reason = self._failed_action(RuntimeError(
+            "找不到邮箱输入框/邮箱入口（未使用文字识别），state={'inputs': []} "
+            "password=fixture-private Bearer fixture-bearer-token"
+        ))
+        self.assertIn("RuntimeError: 找不到邮箱输入框/邮箱入口", reason)
+        self.assertNotIn("fixture-private", reason)
+        self.assertNotIn("fixture-bearer-token", reason)
+        info = classify_task_error(reason, task_type="twofa_retry")
+        self.assertEqual("email_entry_not_ready", info["code"])
+        self.assertEqual("FLOW-EMAIL-003", info["display_code"])
+
+    def test_pause_keeps_existing_password_result_unknown_cause(self):
+        from core.registration.password_auth import _PasswordTransitionTimeout
+
+        reason = self._failed_action(_PasswordTransitionTimeout(
+            "request_unknown: 已触发密码提交操作，等待仍未确认远端结果"
+        ))
+        self.assertIn("_PasswordTransitionTimeout: request_unknown:", reason)
+        info = classify_task_error(reason, task_type="twofa_retry")
+        self.assertEqual("password_result_unknown", info["code"])
+        self.assertTrue(info["reconcile_required"])
+
+    def test_pause_preserves_proxy_tunnel_failure_for_real_twofa_retry_task(self):
+        from selenium.common.exceptions import WebDriverException
+
+        reason = self._failed_action(WebDriverException(
+            "unknown error: net::ERR_TUNNEL_CONNECTION_FAILED"
+        ))
+        self.assertIn("WebDriverException:", reason)
+        self.assertIn("net::ERR_TUNNEL_CONNECTION_FAILED", reason)
+        info = classify_task_error(reason, task_type="twofa_retry")
+        self.assertEqual("roxy_proxy_tunnel_failed", info["code"])
+        self.assertEqual("NET-ROXY-001", info["display_code"])
 
     def test_user_stop_does_not_enter_failure_debug_hold(self):
         from core.codex_retry_service import CodexRetryStopped

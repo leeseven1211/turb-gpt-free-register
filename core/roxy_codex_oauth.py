@@ -3985,7 +3985,10 @@ def run_roxy_chatgpt_account_action(
 
         if not isinstance(exc, (CodexRetryStopped, OperationCancelled, CancellationRequested, StopRequested)):
             try:
-                registration_debug.pause_current_failure(driver, f"账号配置补跑失败：{type(exc).__name__}")
+                from core.task_run_log import redact_text
+
+                reason = redact_text(f"账号配置补跑失败：{type(exc).__name__}: {exc}", limit=1000)
+                registration_debug.pause_current_failure(driver, reason)
             except Exception:
                 logger.exception("[Codex][调试] 保存账号操作失败现场失败，继续原异常收口")
         raise
