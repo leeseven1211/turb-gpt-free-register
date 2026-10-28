@@ -1679,55 +1679,85 @@ def _submit_email_and_wait_next_impl(
             except Exception:
                 pass
         _progress("waiting_input", "正在等待可见的邮箱输入框")
-        entry_state = _type_email_address(
-            driver,
-            email,
-            timeout=_remaining(20),
-            stop_on_advanced=True,
-        )
+        missing_entry = False
+        try:
+            entry_state = _type_email_address(
+                driver,
+                email,
+                timeout=_remaining(20),
+                stop_on_advanced=True,
+            )
+        except RuntimeError as exc:
+            if not str(exc).startswith("找不到邮箱输入框/邮箱入口"):
+                raise
+            accepted = _accept_advanced_state(
+                _email_submit_advanced_state(driver), "邮箱输入准备结束时页面",
+            )
+            if accepted:
+                return accepted
+            budget.require("邮箱输入准备恢复")
+            last_state = _email_entry_state(driver)
+            try:
+                current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+                trusted_login = (
+                    current.scheme == "https" and current.hostname == "chatgpt.com"
+                    and current.port in (None, 443) and not current.username and not current.password
+                    and current.path.rstrip("/") == "/auth/login"
+                )
+            except ValueError:
+                trusted_login = False
+            if not trusted_login or has_visible_auth_inputs(last_state) or nextauth_fallback_done:
+                raise
+            # 初始登录页也可能只有空壳，尚无邮箱表单可提交。交给下方同一份
+            # NextAuth 兜底；已派发屏障和剩余预算仍由原流程统一检查。
+            missing_entry = True
+            entry_state = None
         accepted = _accept_advanced_state(entry_state, "重填邮箱前页面")
         if accepted:
             return accepted
-        state = _email_input_value_state(driver)
-        last_state = state
-        values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
-        if not any(v.strip().lower() == email.strip().lower() for v in values):
-            active_receipt = getattr(driver, "_browser_submission_receipt", None)
-            if isinstance(getattr(driver, "_email_submission_receipt", None), dict) or (
-                active_receipt is not None
-                and getattr(active_receipt, "endpoint_kind", "") in {"email_submit", "nextauth_signin"}
-                and getattr(active_receipt, "phase", "") in {
-                    "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown",
-                }
-            ):
-                raise _EmailSubmissionUnknown("request_unknown: 邮箱提交仍待确认，未改写当前输入框")
-            # send_keys 返回不代表 React 受控值已保持；提交前用当前 DOM 的
-            # 原生 setter 补齐一次，再跨渲染时序确认，整个过程不点击或发请求。
-            budget.require("邮箱输入恢复")
-            stable = _stabilize_email_input_before_submit(driver, email)
-            budget.require("邮箱输入恢复结果")
-            time.sleep(min(0.2, budget.remaining()))
-            budget.require("邮箱输入稳定校验")
+        if not missing_entry:
             state = _email_input_value_state(driver)
+            last_state = state
             values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
-            matched = any(v.strip().lower() == email.strip().lower() for v in values)
-            logger.info("%s 邮箱输入恢复：ok=%s matched=%s value_lengths=%s", _log_prefix(driver),
-                        bool(stable.get("ok")), matched, [len(value) for value in values])
-            if not matched:
-                last_state = {"input_count": len(values), "value_lengths": [len(value) for value in values]}
-                logger.warning("%s 邮箱写入校验失败，准备重试：attempt=%s/%s value_lengths=%s",
-                               _log_prefix(driver), attempt, attempts, last_state["value_lengths"])
-                time.sleep(min(0.8, budget.remaining()))
-                continue
-        logger.info("%s 已填写邮箱并校验通过", _log_prefix(driver))
-        _progress("filled", "邮箱已填写并校验，正在等待表单就绪")
-        human_delay("form")
+            if not any(v.strip().lower() == email.strip().lower() for v in values):
+                active_receipt = getattr(driver, "_browser_submission_receipt", None)
+                if isinstance(getattr(driver, "_email_submission_receipt", None), dict) or (
+                    active_receipt is not None
+                    and getattr(active_receipt, "endpoint_kind", "") in {"email_submit", "nextauth_signin"}
+                    and getattr(active_receipt, "phase", "") in {
+                        "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown",
+                    }
+                ):
+                    raise _EmailSubmissionUnknown("request_unknown: 邮箱提交仍待确认，未改写当前输入框")
+                # send_keys 返回不代表 React 受控值已保持；提交前用当前 DOM 的
+                # 原生 setter 补齐一次，再跨渲染时序确认，整个过程不点击或发请求。
+                budget.require("邮箱输入恢复")
+                stable = _stabilize_email_input_before_submit(driver, email)
+                budget.require("邮箱输入恢复结果")
+                time.sleep(min(0.2, budget.remaining()))
+                budget.require("邮箱输入稳定校验")
+                state = _email_input_value_state(driver)
+                values = [str(i.get("value") or "") for i in (state.get("inputs") or [])]
+                matched = any(v.strip().lower() == email.strip().lower() for v in values)
+                logger.info("%s 邮箱输入恢复：ok=%s matched=%s value_lengths=%s", _log_prefix(driver),
+                            bool(stable.get("ok")), matched, [len(value) for value in values])
+                if not matched:
+                    last_state = {"input_count": len(values), "value_lengths": [len(value) for value in values]}
+                    logger.warning("%s 邮箱写入校验失败，准备重试：attempt=%s/%s value_lengths=%s",
+                                   _log_prefix(driver), attempt, attempts, last_state["value_lengths"])
+                    time.sleep(min(0.8, budget.remaining()))
+                    continue
+            logger.info("%s 已填写邮箱并校验通过", _log_prefix(driver))
+            _progress("filled", "邮箱已填写并校验，正在等待表单就绪")
+            human_delay("form")
         frontend_not_ready = False
         try:
             setattr(driver, "_registration_before_email_dispatch", _use_submission_budget)
         except Exception:
             pass
         try:
+            if missing_entry:
+                raise _EmailFrontendNotReady("邮箱入口尚未挂载，尚未执行提交")
             submission_started = True
             _submit_email_step(driver, email)
         except _EmailFrontendNotReady:

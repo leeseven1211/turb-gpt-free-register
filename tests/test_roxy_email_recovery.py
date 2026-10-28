@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 from core import roxy_registration
@@ -20,6 +21,141 @@ class _FakeDriver:
 
 
 class RoxyEmailRecoveryTests(unittest.TestCase):
+    @contextmanager
+    def _missing_email_entry(self, driver, *, advanced_state=None, fallback=None, now=None):
+        now = now if now is not None else [0.0]
+        outer_budget = email_otp.StageBudget.start(10, clock=lambda: now[0])
+        state = {"url": driver.current_url, "title": "ChatGPT", "inputs": [], "actions": []}
+        error = RuntimeError("找不到邮箱输入框/邮箱入口（未使用文字识别），state={...}")
+        with (
+            patch.object(email_otp.StageBudget, "start", return_value=outer_budget),
+            patch.object(email_otp, "_type_email_address", side_effect=error) as type_email,
+            patch.object(email_otp, "_email_submit_advanced_state", return_value=advanced_state),
+            patch.object(email_otp, "_email_entry_state", return_value=state),
+            patch.object(email_otp, "_email_input_value_state") as input_state,
+            patch.object(email_otp, "_submit_email_step") as submit,
+            patch.object(email_otp, "_email_ui_submission_state", return_value=None) as ui_state,
+            patch.object(email_otp, "_submit_email_via_browser_nextauth", return_value=(
+                fallback if fallback is not None else {"ok": True, "stage": "redirect_dispatched"}
+            )) as nextauth,
+            patch.object(email_otp, "_wait_email_submit_next_state", return_value="login_password") as wait_next,
+            patch.object(email_otp, "human_delay"),
+        ):
+            yield {
+                "type_email": type_email, "input_state": input_state, "submit": submit,
+                "ui_state": ui_state, "nextauth": nextauth, "wait_next": wait_next,
+                "outer_budget": outer_budget, "state": state, "error": error,
+            }
+
+    def test_missing_initial_email_entry_uses_nextauth_with_remaining_budget(self):
+        for actions in ([], [{"tag": "A", "attrs": "https://openai.com/policies/terms-of-use"}]):
+            with self.subTest(actions=actions):
+                driver = _FakeDriver()
+                now = [0.0]
+                with self._missing_email_entry(driver, now=now) as calls:
+                    calls["state"]["actions"] = actions
+
+                    def missing_after_preparation(*_args, **_kwargs):
+                        now[0] = 7.0
+                        raise calls["error"]
+
+                    def dispatch_nextauth(current_driver, _email):
+                        budget = current_driver._registration_stage_budget
+                        self.assertEqual(budget.deadline, calls["outer_budget"].deadline)
+                        self.assertEqual(budget.remaining(), 3.0)
+                        return {"ok": True, "stage": "redirect_dispatched"}
+
+                    calls["type_email"].side_effect = missing_after_preparation
+                    calls["nextauth"].side_effect = dispatch_nextauth
+                    result = email_otp._submit_email_and_wait_next(
+                        driver, "test@example.com", total_timeout=10, allow_login_password=True,
+                    )
+
+                self.assertEqual(result, "login_password")
+                calls["nextauth"].assert_called_once_with(driver, "test@example.com")
+                calls["wait_next"].assert_called_once_with(
+                    driver, "test@example.com", timeout=3.0, wait_through_transient=True,
+                )
+                calls["submit"].assert_not_called()
+                calls["input_state"].assert_not_called()
+
+    def test_missing_initial_email_entry_accepts_late_authentication_state(self):
+        for advanced_state in ("otp", "login_password", "logged_in"):
+            with self.subTest(advanced_state=advanced_state):
+                driver = _FakeDriver()
+                with self._missing_email_entry(driver, advanced_state=advanced_state) as calls:
+                    result = email_otp._submit_email_and_wait_next(
+                        driver, "test@example.com", allow_login_password=True,
+                    )
+                self.assertEqual(result, advanced_state)
+                calls["nextauth"].assert_not_called()
+                calls["submit"].assert_not_called()
+
+    def test_missing_initial_email_entry_preserves_dispatched_submission_barrier(self):
+        phases = ("dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown")
+        cases = [(phase, None) for phase in phases] + [(None, phase) for phase in ("queued", "dispatched", "unknown")]
+        for receipt_phase, ui_phase in cases:
+            with self.subTest(receipt_phase=receipt_phase, ui_phase=ui_phase):
+                driver = _FakeDriver()
+                if receipt_phase is not None:
+                    driver._browser_submission_receipt = email_otp.BrowserSubmissionReceipt(
+                        kind="resume_login", stage="email", phase=receipt_phase,
+                    )
+                with self._missing_email_entry(driver) as calls:
+                    calls["ui_state"].return_value = ui_phase
+                    with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                        email_otp._submit_email_and_wait_next(driver, "test@example.com")
+                calls["nextauth"].assert_not_called()
+                calls["submit"].assert_not_called()
+
+    def test_missing_initial_email_entry_rejects_other_origins_and_oauth_routes(self):
+        for url in (
+            "https://accounts.google.com/", "https://auth.openai.com/authorize",
+            "https://chatgpt.com/consent", "https://chatgpt.com.evil.test/auth/login",
+            "http://chatgpt.com/auth/login", "https://chatgpt.com:8443/auth/login",
+            "https://user@chatgpt.com/auth/login",
+        ):
+            with self.subTest(url=url):
+                driver = _FakeDriver()
+                driver.current_url = url
+                with self._missing_email_entry(driver) as calls:
+                    with self.assertRaisesRegex(RuntimeError, "找不到邮箱输入框/邮箱入口"):
+                        email_otp._submit_email_and_wait_next(driver, "test@example.com")
+                calls["nextauth"].assert_not_called()
+                calls["submit"].assert_not_called()
+
+    def test_missing_initial_email_entry_does_not_replace_visible_challenge(self):
+        driver = _FakeDriver()
+        with self._missing_email_entry(driver) as calls:
+            calls["state"]["inputs"] = [{"name": "totp", "type": "text"}]
+            with self.assertRaisesRegex(RuntimeError, "找不到邮箱输入框/邮箱入口"):
+                email_otp._submit_email_and_wait_next(driver, "test@example.com")
+        calls["nextauth"].assert_not_called()
+
+    def test_missing_initial_email_entry_does_not_restart_expired_budget(self):
+        driver = _FakeDriver()
+        now = [0.0]
+        with self._missing_email_entry(driver, now=now) as calls:
+            def missing_after_deadline(*_args, **_kwargs):
+                now[0] = 11.0
+                raise calls["error"]
+
+            calls["type_email"].side_effect = missing_after_deadline
+            with self.assertRaises(StageTimeout):
+                email_otp._submit_email_and_wait_next(driver, "test@example.com", total_timeout=10)
+        calls["nextauth"].assert_not_called()
+        calls["submit"].assert_not_called()
+
+    def test_missing_initial_email_entry_only_attempts_nextauth_once(self):
+        driver = _FakeDriver()
+        fallback = {"ok": False, "not_dispatched": True, "reason": "csrf_unavailable"}
+        with self._missing_email_entry(driver, fallback=fallback) as calls:
+            calls["submit"].side_effect = email_otp._EmailFrontendNotReady("页面仍未挂载")
+            with self.assertRaisesRegex(RuntimeError, "邮箱提交后未进入密码页/验证码页"):
+                email_otp._submit_email_and_wait_next(driver, "test@example.com")
+        calls["nextauth"].assert_called_once_with(driver, "test@example.com")
+        calls["type_email"].assert_called_once()
+
     def test_password_relogin_does_not_reuse_completed_email_budget(self):
         driver = _FakeDriver()
         completed_budgets = []
