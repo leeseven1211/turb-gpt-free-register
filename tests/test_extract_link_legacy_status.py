@@ -160,6 +160,22 @@ class LegacyStatusTests(unittest.TestCase):
         self.assertEqual("promotion_unavailable", result.summary["failure_code"])
         self.assertEqual(message, result.summary["failure_message"])
 
+    def test_checkout_unusual_activity_is_classified_without_generalizing_http_400(self):
+        message = 'checkout create failed: HTTP 400 {"detail":"Our systems have detected unusual activity. Please try again later."}'
+        result = LegacyProvider._job({"status": "failed", "error": message}, "activity-blocked-job")
+        self.assertEqual("checkout_activity_blocked", result.summary["failure_type"])
+        self.assertEqual("checkout_activity_blocked", result.summary["failure_code"])
+        self.assertIn("unusual activity", result.summary["failure_message"])
+        unrelated = LegacyProvider._job({"status": "failed", "error": "checkout create failed: HTTP 400 invalid input"}, "other-400-job")
+        self.assertEqual("remote_task_failed", unrelated.summary["failure_type"])
+
+    def test_revoked_access_token_is_classified_without_assuming_account_deactivation(self):
+        message = "token_revoked：access_token 已失效，请更换 token。"
+        result = LegacyProvider._job({"status": "failed", "error": message}, "revoked-token-job")
+        self.assertEqual("token_invalid", result.summary["failure_type"])
+        self.assertEqual("token_invalid", result.summary["failure_code"])
+        self.assertEqual(message, result.summary["failure_message"])
+
     def test_explicit_creation_rejection_is_failed_not_unknown(self):
         provider, _ = _provider({"ok": False, "code": "token_task_in_progress", "error": "该 token 已有未完成任务"})
         result = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "extract_only"))

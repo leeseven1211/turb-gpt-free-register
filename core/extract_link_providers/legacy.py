@@ -71,11 +71,12 @@ def _failure_summary(data, *, secrets=()):
     text = f"{raw_code} {message}".lower()
     failure_type = "remote_task_failed"
     for name, markers in (
+        ("checkout_activity_blocked", ("our systems have detected unusual activity",)),
         ("payment_confirmation_blocked", ("支付确认被拦截",)),
         ("payment_submission_failed", ("支付提交失败，请稍后重试。",)),
         ("task_in_progress", ("in_progress", "未完成任务", "进行中任务")),
         ("quota_exhausted", ("quota", "余额不足", "次数不足", "次数已用完", "额度不足", "exhausted")),
-        ("token_invalid", ("token_expired", "token_invalid", "invalid token", "token 失效", "token 已过期", "at 已过期")),
+        ("token_invalid", ("token_expired", "token_invalid", "token_revoked", "invalid token", "token 失效", "token 已过期", "at 已过期")),
         ("promotion_unavailable", ("不符合", "无优惠", "优惠未生效", "not eligible", "ineligible", "promotion")),
         ("unsupported", ("unsupported", "not supported", "不支持")),
         ("upstream_timeout", ("timeout", "timed out", "超时")),
