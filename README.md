@@ -1438,6 +1438,8 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 虾扯蛋链（`legacy`）的连接参数继续使用既有环境变量 `EXTRACT_LINK_API_BASE`、`EXTRACT_LINK_CDK`、`EXTRACT_LINK_TYPE`、`EXTRACT_LINK_REQUEST_TIMEOUT` 和 `EXTRACT_LINK_EVENT_TIMEOUT`，不另建重复配置键。配置页和提链工作台统一显示平台名“虾扯蛋链”，已有任务、配置键及 API 中的 `legacy` 标识继续兼容。新平台各自配置 API 地址、CDK、默认提链类型、请求超时、轮询间隔和事件超时。CDK 属于密钥，只在 `.env` 中保存，配置 API 和快照不返回密钥内容。
 
+「配置 → 提链 → 虾扯蛋链」中的“提链 CDK”（`EXTRACT_LINK_CDK`）用于创建提链任务，“虾扯蛋链支付扫码 CDK”（`EXTRACT_LINK_LEGACY_PAYMENT_CDK`）用于 UPI 自动支付扫码，两者分开保存。只有显式选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED`，并配置支付扫码 CDK 时才使用扫码凭据；仅提链和手动支付不使用该凭据。平台自动支付开关默认关闭，支付扫码 CDK 默认空字符串，仅保存在 `.env`。支付平台返回 `submitted` 仅表示已建单，继续查询原单直到确认支付成功或明确失败；不能据此认定已经支付成功。
+
 提链成功后，卡片的“支付入口”按需显示平台返回的支付页面、支付链接、原生二维码图片及可复制的二维码内容；平台没有返回的字段会明确标注，不把普通网页链接生成付款码。平台支付状态、平台 Plus 状态与本地到账核验分别展示。旧任务未保存二维码时，可用“同步状态”读取原远端任务补齐，无需重新提链；打开支付入口本身仅读取本地已保存内容，不触发支付。任务中心按独立提链、支付状态展示结果，后续支付失败或待确认不会把已成功的提链写成失败。
 
 接口契约以[流光文档](https://int31.space/public/checkout-api)和[幻光文档](https://chongyun-link.xiaoliai.shop/static/api-docs.html)为准。流光记录平台步骤、百分比、任务/步骤尝试次数及 `failureCode/failureType`；平台 Plus 验证不能代替本地套餐核验。幻光当前仅开放 UPI，默认类型为 `upi`；出链成功依据有效支付材料判断，顶层任务 `done` 本身不足以证明成功。

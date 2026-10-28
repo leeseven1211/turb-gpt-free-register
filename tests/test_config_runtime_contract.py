@@ -74,13 +74,17 @@ def test_extract_provider_payment_switches_are_editable_and_auto_payment_default
         assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].range == {"min": 1, "max": 32}
 
 
-def test_extract_link_legacy_environment_names_remain_the_only_connection_keys():
+def test_extract_link_legacy_environment_names_are_reused_with_separate_payment_cdk():
     legacy_keys = {
         "EXTRACT_LINK_API_BASE", "EXTRACT_LINK_CDK", "EXTRACT_LINK_TYPE",
         "EXTRACT_LINK_REQUEST_TIMEOUT", "EXTRACT_LINK_EVENT_TIMEOUT",
     }
     assert legacy_keys.issubset(set(schema.CONFIG_SCHEMA.keys()))
-    assert not any(key.startswith("EXTRACT_LINK_LEGACY_") and key.endswith(("API_BASE", "CDK", "TYPE", "REQUEST_TIMEOUT", "EVENT_TIMEOUT")) for key in schema.CONFIG_SCHEMA.keys())
+    legacy_connection_keys = {
+        key for key in schema.CONFIG_SCHEMA.keys()
+        if key.startswith("EXTRACT_LINK_LEGACY_") and key.endswith(("API_BASE", "CDK", "TYPE", "REQUEST_TIMEOUT", "EVENT_TIMEOUT"))
+    }
+    assert legacy_connection_keys == {"EXTRACT_LINK_LEGACY_PAYMENT_CDK"}
 
 
 def test_extract_link_cdk_values_are_never_returned_in_metadata_or_snapshot():

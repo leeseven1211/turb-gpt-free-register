@@ -227,7 +227,7 @@ _PROVIDER_SETTINGS = {
         "prefix": "EXTRACT_LINK_LEGACY",
         "config_prefix": "EXTRACT_LINK",
         "concurrency_key": "EXTRACT_LINK_LEGACY_CONCURRENCY",
-        "supports": {"extract_only": True, "manual_payment": True, "auto_payment": False},
+        "supports": {"extract_only": True, "manual_payment": True, "auto_payment": True},
     },
     "lumen_flow": {
         "label": "Lumen Flow",
@@ -281,8 +281,8 @@ def _provider_mode_enabled(provider_id: str, mode: str) -> bool:
         return False
     if not provider["supports"].get(mode, False):
         return False
-    if provider_id == "huanguang" and mode == "auto_payment" and not str(
-        _runtime_setting("EXTRACT_LINK_HUANGUANG_PAYMENT_CDK", "") or ""
+    if provider_id in {"legacy", "huanguang"} and mode == "auto_payment" and not str(
+        _runtime_setting(f"EXTRACT_LINK_{provider_id.upper()}_PAYMENT_CDK", "") or ""
     ).strip():
         return False
     if mode != "extract_only" and not (
@@ -351,8 +351,8 @@ def _provider_configuration(provider_id: str):
         capabilities=capabilities,
         concurrency=_int_setting(settings["concurrency_key"], 1, 1, 32),
         timeout=timeout,
-        payment_cdk=(str(_runtime_setting("EXTRACT_LINK_HUANGUANG_PAYMENT_CDK", "") or "").strip()
-                     if provider_id == "huanguang" else ""),
+        payment_cdk=(str(_runtime_setting(f"EXTRACT_LINK_{provider_id.upper()}_PAYMENT_CDK", "") or "").strip()
+                     if provider_id in {"legacy", "huanguang"} else ""),
         xxsyun_api_key=(str(_runtime_setting("EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY", "") or "").strip()
                         if provider_id == "huanguang" else ""),
         scan_fallback_enabled=(
@@ -474,6 +474,8 @@ def workbench_config() -> dict:
                 if _provider_mode_enabled(provider_id, mode)
             ]
             if provider_id == "lumen_flow" and runtime_config.default_type != "momo":
+                modes = [mode for mode in modes if mode != "auto_payment"]
+            if provider_id == "legacy" and runtime_config.default_type != "upi":
                 modes = [mode for mode in modes if mode != "auto_payment"]
             if not modes:
                 unavailable_providers.append({
@@ -1817,6 +1819,8 @@ def _provider_link_type(provider_id: str, value: object, default: str) -> str:
 def _provider_request_options(provider_id: str, options: object, *, mode: str, link_type: str) -> dict:
     source = options if isinstance(options, dict) else {}
     if provider_id == "legacy":
+        if mode == "auto_payment" and link_type != "upi":
+            raise ValueError("虾扯蛋链自动支付仅支持 UPI")
         return _paypal_options(source)
     if provider_id == "huanguang":
         if "retry_count" not in source:

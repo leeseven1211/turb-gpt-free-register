@@ -421,7 +421,8 @@ class ExtractLinkProviderTests(unittest.TestCase):
         ))
         self.assertNotIn("private-url-token", repr(status))
         self.assertEqual(transport.calls[0][1], "/api/extract")
-        self.assertTrue(transport.calls[1][1].startswith("/api/jobs/legacy-1/events?cdk="))
+        self.assertEqual("GET", transport.calls[1][0])
+        self.assertTrue(transport.calls[1][1].startswith("/api/jobs/legacy-1?cdk="))
 
     def test_secret_values_are_omitted_from_object_representations(self):
         from core.extract_link_providers.contracts import ExtractRequest, ProviderJob
