@@ -439,7 +439,7 @@ const CONFIG_EXTRACT_LINK_LEGACY_KEYS_V2 = new Set([
   'EXTRACT_LINK_REQUEST_TIMEOUT', 'EXTRACT_LINK_EVENT_TIMEOUT',
 ]);
 const CONFIG_EXTRACT_LINK_PROVIDER_LABELS_V2 = Object.freeze({
-  legacy: '现有提链服务', lumen_flow: '流光', huanguang: '幻光',
+  legacy: '虾扯蛋链', lumen_flow: '流光', huanguang: '幻光',
 });
 function extractLinkProviderEnabledKeyV2(providerId) {
   return `EXTRACT_LINK_${String(providerId || '').trim().toUpperCase()}_ENABLED`;

@@ -223,7 +223,7 @@ def _int_setting(name: str, default: int, lower: int, upper: int) -> int:
 
 _PROVIDER_SETTINGS = {
     "legacy": {
-        "label": "现有提链服务",
+        "label": "虾扯蛋链",
         "prefix": "EXTRACT_LINK_LEGACY",
         "config_prefix": "EXTRACT_LINK",
         "concurrency_key": "EXTRACT_LINK_LEGACY_CONCURRENCY",
@@ -3938,7 +3938,7 @@ def enqueue_account_extract(
     email = str(email or "").strip()
     trigger = str(trigger or "manual")
     if not _provider_mode_enabled("legacy", "extract_only"):
-        return {"accepted": False, "busy": False, "error": "legacy 平台或提取能力已关闭"}
+        return {"accepted": False, "busy": False, "error": "虾扯蛋链平台或提取能力已关闭"}
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}

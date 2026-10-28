@@ -12,7 +12,7 @@ let EXTRACT_WORKBENCH_DETAIL_REQUESTS = new Map();
 let EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
 let EXTRACT_WORKBENCH_PAYMENT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_PAYMENT_TRIGGER = null;
-const EXTRACT_WORKBENCH_PROVIDER_LABELS = {legacy:'现有提链', lumen_flow:'Lumen Flow', huanguang:'幻光提链'};
+const EXTRACT_WORKBENCH_PROVIDER_LABELS = {legacy:'虾扯蛋链', lumen_flow:'Lumen Flow', huanguang:'幻光提链'};
 const EXTRACT_WORKBENCH_LINK_TYPE_LABELS = {
   pix: 'PIX', upi: 'UPI', gopay: 'GoPay', momo: 'MOMO', gcash: 'GCash',
   paypal: 'PayPal', ideal: 'iDEAL', ideal_short: 'iDEAL Short', kakao_pay: 'Kakao Pay',

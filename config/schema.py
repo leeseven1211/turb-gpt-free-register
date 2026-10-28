@@ -1511,7 +1511,7 @@ _FIELD_DEFINITIONS = [
     # ---- 提链 ----
     {
         "key": "EXTRACT_LINK_API_BASE", "file": "extract_link.py", "type": "str", "group": "提链",
-        "label": "提链服务地址", "help": "填写提链服务 API 地址",
+        "label": "虾扯蛋链 API 地址", "help": "填写虾扯蛋链服务的 API 地址",
     },
     {
         "key": "EXTRACT_LINK_CDK", "file": "extract_link.py", "type": "str", "group": "提链",
@@ -1546,11 +1546,11 @@ _FIELD_DEFINITIONS = [
     {"key": "EXTRACT_LINK_POST_PAYMENT_CHECK_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "支付后检查", "help": "支付后执行账号资格检查；默认关闭"},
     {"key": "EXTRACT_LINK_POST_PAYMENT_REFRESH_AT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "支付后刷新 AT", "help": "需同时开启支付后检查；仅当检查确认 AT 失效时刷新，默认关闭"},
     {"key": "EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "支付后查询套餐", "help": "支付后执行套餐查询；默认关闭"},
-    {"key": "EXTRACT_LINK_LEGACY_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "启用 legacy 平台", "help": "保留现有提链服务的启用行为"},
-    {"key": "EXTRACT_LINK_LEGACY_EXTRACT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "legacy 提链", "help": "legacy 平台的提取开关"},
-    {"key": "EXTRACT_LINK_LEGACY_MANUAL_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "legacy 手动支付", "help": "legacy 平台的手动支付开关"},
-    {"key": "EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "legacy 自动支付", "help": "高风险能力，默认关闭"},
-    {"key": "EXTRACT_LINK_LEGACY_CONCURRENCY", "file": "extract_link.py", "type": "int", "group": "提链", "label": "legacy 并发", "help": "legacy 平台最大并发数，范围 1-32"},
+    {"key": "EXTRACT_LINK_LEGACY_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "启用虾扯蛋链", "help": "虾扯蛋链平台的启用开关"},
+    {"key": "EXTRACT_LINK_LEGACY_EXTRACT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "虾扯蛋链提链", "help": "虾扯蛋链平台的提取开关"},
+    {"key": "EXTRACT_LINK_LEGACY_MANUAL_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "虾扯蛋链手动支付", "help": "虾扯蛋链平台的手动支付开关"},
+    {"key": "EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "虾扯蛋链自动支付", "help": "高风险能力，默认关闭"},
+    {"key": "EXTRACT_LINK_LEGACY_CONCURRENCY", "file": "extract_link.py", "type": "int", "group": "提链", "label": "虾扯蛋链并发", "help": "虾扯蛋链平台最大并发数，范围 1-32"},
     {"key": "EXTRACT_LINK_LUMEN_FLOW_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "启用 lumen_flow 平台", "help": "新平台默认关闭"},
     {"key": "EXTRACT_LINK_LUMEN_FLOW_EXTRACT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "lumen_flow 提链", "help": "lumen_flow 平台的提取开关"},
     {"key": "EXTRACT_LINK_LUMEN_FLOW_MANUAL_PAYMENT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "lumen_flow 手动支付", "help": "lumen_flow 平台的手动支付开关"},
@@ -1850,7 +1850,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "EMAIL_DERIVATION_SOURCES": _options(("icloud_hide", "iCloud 隐藏邮箱"), ("outlook", "Outlook")),
     "REMAIL_SERVICE_MODE": _options(("purchase", "长效购买"), ("code", "短效接码")),
     "REMAIL_SUPPLY_POLICY": _options(("public_only", "只使用公开库存"), ("private_first", "优先自己的库存")),
-    "EXTRACT_LINK_DEFAULT_PROVIDER": _options(("legacy", "legacy"), ("lumen_flow", "lumen_flow"), ("huanguang", "huanguang")),
+    "EXTRACT_LINK_DEFAULT_PROVIDER": _options(("legacy", "虾扯蛋链"), ("lumen_flow", "lumen_flow"), ("huanguang", "huanguang")),
     "EXTRACT_LINK_DEFAULT_MODE": _options(("extract_only", "仅提取"), ("manual_payment", "手动支付"), ("auto_payment", "自动支付")),
 }
 

@@ -3,7 +3,7 @@
 from config.env_loader import apply_env_overrides
 from config.schema import schema_default
 
-# 提链服务地址
+# 虾扯蛋链服务地址
 EXTRACT_LINK_API_BASE: str = schema_default("EXTRACT_LINK_API_BASE")
 
 # 提链 CDK；创建任务和监听事件都需要。
@@ -31,7 +31,7 @@ EXTRACT_LINK_POST_PAYMENT_CHECK_ENABLED: bool = schema_default("EXTRACT_LINK_POS
 EXTRACT_LINK_POST_PAYMENT_REFRESH_AT_ENABLED: bool = schema_default("EXTRACT_LINK_POST_PAYMENT_REFRESH_AT_ENABLED")
 EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED: bool = schema_default("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED")
 
-# 平台开关与并发。legacy 的连接参数继续使用原变量名，保持调用方兼容。
+# 平台开关与并发。虾扯蛋链（内部标识 legacy）的连接参数继续使用原变量名，保持调用方兼容。
 EXTRACT_LINK_LEGACY_ENABLED: bool = schema_default("EXTRACT_LINK_LEGACY_ENABLED")
 EXTRACT_LINK_LEGACY_EXTRACT_ENABLED: bool = schema_default("EXTRACT_LINK_LEGACY_EXTRACT_ENABLED")
 EXTRACT_LINK_LEGACY_MANUAL_PAYMENT_ENABLED: bool = schema_default("EXTRACT_LINK_LEGACY_MANUAL_PAYMENT_ENABLED")

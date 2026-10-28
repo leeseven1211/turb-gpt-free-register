@@ -231,7 +231,7 @@ test('提链在资源与服务中独立成项，并分为通用与平台页签',
   const fields = [
     field('EXTRACT_LINK_ENABLED', '提链', {type: 'bool', value: true}),
     field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {value: 'lumen_flow', options: [
-      {value: 'legacy', label: '现有提链服务'}, {value: 'lumen_flow', label: '流光'}, {value: 'huanguang', label: '幻光'},
+      {value: 'legacy', label: '虾扯蛋链'}, {value: 'lumen_flow', label: '流光'}, {value: 'huanguang', label: '幻光'},
     ]}),
     field('EXTRACT_LINK_DEFAULT_MODE', '提链', {value: 'extract_only'}),
     field('EXTRACT_LINK_BATCH_WORKERS', '提链', {type: 'int', value: 2}),
@@ -257,7 +257,7 @@ test('提链在资源与服务中独立成项，并分为通用与平台页签',
   assert.equal(groups['服务集成'], undefined);
   assert.ok((groups['提链'] || []).length > 0);
   assert.match(markup, /data-extract-link-tab="通用配置"/);
-  assert.match(markup, /data-extract-link-tab="现有提链服务"/);
+  assert.match(markup, /data-extract-link-tab="虾扯蛋链"/);
   assert.match(markup, /data-extract-link-tab="流光"/);
   assert.match(markup, /data-extract-link-tab="幻光"/);
   assert.match(markup, /data-multi-picker="EXTRACT_LINK_ENABLED_PROVIDERS"/);
