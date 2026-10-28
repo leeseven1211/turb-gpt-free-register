@@ -1081,8 +1081,6 @@ def create_accounts_blueprint(context: WebUIContext):
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
-        if len(ids) > 500:
-            return jsonify({"ok": False, "error": "单次最多刷新 500 个账号"}), 400
 
         account_ids: list[int] = []
         skipped: list[dict] = []

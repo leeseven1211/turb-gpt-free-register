@@ -845,6 +845,58 @@ class AccountActionLoginTests(unittest.TestCase):
 
 
 class AccountTaskApiTests(PostgresTestCase):
+    def test_token_refresh_bulk_accepts_more_than_500_accounts_and_deduplicates_ids(self):
+        account_ids = self.seed(record_store.ACCOUNTS, [
+            {"email": f"refresh-{index}@example.test"} for index in range(501)
+        ])
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(account_task_store, "create_batch", return_value="refresh-batch") as create_batch,
+            patch.object(
+                live_check_service, "enqueue_account_live_check", return_value={"accepted": True},
+            ) as enqueue,
+        ):
+            response = client.post(
+                "/api/accounts/refresh-token-bulk",
+                json={"account_ids": [*account_ids, account_ids[0], str(account_ids[-1])]},
+            )
+
+        self.assertEqual(202, response.status_code)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(501, payload["started_count"])
+        self.assertEqual(account_ids, [item["id"] for item in payload["started"]])
+        self.assertEqual([], payload["skipped"])
+        self.assertEqual(0, payload["failed_count"])
+        create_batch.assert_called_once_with(
+            action_type="token_refresh", trigger="manual_bulk", total_count=501,
+        )
+        self.assertEqual(account_ids, [item.kwargs["account_id"] for item in enqueue.call_args_list])
+        self.assertTrue(all(item.kwargs["force_refresh"] for item in enqueue.call_args_list))
+
+    def test_token_refresh_bulk_still_requires_nonempty_id_array(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        with (
+            patch("core.feature_availability.require_feature", return_value=(True, "")),
+            patch.object(account_task_store, "create_batch") as create_batch,
+            patch.object(live_check_service, "enqueue_account_live_check") as enqueue,
+        ):
+            for invalid_ids in (None, [], "1,2", {"id": 1}, 1):
+                with self.subTest(account_ids=invalid_ids):
+                    response = client.post(
+                        "/api/accounts/refresh-token-bulk", json={"account_ids": invalid_ids},
+                    )
+                    self.assertEqual(400, response.status_code)
+                    self.assertFalse(response.get_json()["ok"])
+
+        create_batch.assert_not_called()
+        enqueue.assert_not_called()
+
     def test_live_check_and_token_refresh_are_separate_api_actions(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
