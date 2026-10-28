@@ -1086,6 +1086,8 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 账号列表的“查活”请求会把当前配置驱动显式传给后端，后端在领代理/创建 Roxy Profile 前校验；任务结果同时保留 configured/effective driver。也可以在测试账号上通过批量接口的 `driver` 字段做单次 override，该 override 不会写回全局配置。
 
+账号状态列显示“查活通过”及上次检查时间，表示该次检查成功；Token 列按 AT 自身的到期时间和在线验证结果显示当前状态。查活通过后，AT 仍可能随时间到期，普通查活不会刷新 AT；“创建 / 更新”中的更新时间也不是 AT 刷新时间。账号状态筛选中的“未废号”表示未标记停用，包含待查活、查活通过和 Token 异常等账号。
+
 在「配置 → 注册与账号 → 账号补全 → 刷新 AT 策略」选择 `ACCOUNT_AT_REFRESH_DRIVER`：默认 `protocol` 使用协议刷新，`browser_roxy` 直接使用 Roxy 指纹浏览器重新登录，不先尝试协议。单号、批量和后台刷新使用同一驱动配置，任务入队后固定本次驱动。任务中心重跑 AT 刷新时，新 Run 重新读取并固定当前刷新配置，包括驱动、协议版本和 Roxy 调试开关；历史 Run 继续保留原配置和执行证据。
 
 批量刷新 AT 可一次提交全部选中账号，不设 500 个账号的单次上限；重复 ID 只入队一次，任务仍按 `ACCOUNT_BATCH_WORKERS` 的共享并发预算调度。

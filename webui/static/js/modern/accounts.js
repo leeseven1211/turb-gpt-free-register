@@ -1341,7 +1341,7 @@ function _codexCellV2(r) {
 }
 function _accountStatusCellV2(r) {
   const reason = String(r.account_status_reason || '').trim();
-  const lines = (status, summary = '') => `<div class="account-cell-lines"><div class="account-cell-line">${status}</div>${summary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(summary)}">${esc(short(summary, 34))}</div>` : ''}</div>`;
+  const lines = (status, summary = '', summaryTitle = summary) => `<div class="account-cell-lines"><div class="account-cell-line">${status}</div>${summary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(summaryTitle)}">${esc(short(summary, 34))}</div>` : ''}</div>`;
   if (accountIsDeactivated(r)) {
     return lines(`<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`, reason);
   }
@@ -1357,7 +1357,12 @@ function _accountStatusCellV2(r) {
   if (liveStatus === 'queued' || liveStatus === 'running') {
     return '<span class="acc-v2-account-status is-mute">查活中</span>';
   }
-  if (liveStatus === 'live') return '<span class="acc-v2-account-status is-ok">正常</span>';
+  if (liveStatus === 'live') {
+    const checkedAt = _fmtPlanTime(r.live_checked_at);
+    const title = `上次查活通过：${checkedAt || '时间未记录'}；AT 有效期见 Token 列`;
+    const time = checkedAt ? checkedAt.replace(/^\d{4}-/, '') : '时间未记录';
+    return lines(`<span class="acc-v2-account-status is-ok" title="${esc(title)}">查活通过</span>`, time, checkedAt || time);
+  }
   return '<span class="acc-v2-account-status is-mute" title="尚未完成查活，不能确认账号正常">待查活</span>';
 }
 function _fmtPlanTime(v, dateOnly = false) {
@@ -2352,7 +2357,7 @@ function _accountDetailMarkup(r) {
   const tokenStateLabels = {missing: '无 Token', normal: 'Token 正常', expired: 'Token 已过期', invalid: `Token 已失效${liveHttpLabel}`};
   const tokenState = tokenStateLabels[tokenDisplay.key] || tokenDisplay.label;
   const tokenTone = tokenDisplay.key === 'normal' ? 'success' : 'danger';
-  const liveState = r.live_check_status === 'live' ? '查活正常' : (r.live_check_status === 'failed' ? `查活失败${liveHttpLabel}` : (r.live_check_status === 'running' ? '查活中' : '未查活'));
+  const liveState = r.live_check_status === 'live' ? '上次查活通过' : (r.live_check_status === 'failed' ? `查活失败${liveHttpLabel}` : (r.live_check_status === 'running' ? '查活中' : '未查活'));
   const liveTone = r.live_check_status === 'live' ? 'success' : (r.live_check_status === 'failed' ? 'danger' : (r.live_check_status === 'running' ? 'warning' : 'neutral'));
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
   const promotionDisplay = _accountPromotionDisplay(r);

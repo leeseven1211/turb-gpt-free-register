@@ -82,7 +82,7 @@ const LIST_FACET_LABELS = {
     pending:'待查询', failed:'查询失败', not_applicable:'不适用',
   },
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
-  account_status: {active:'正常', deactivated:'已废号', unknown:'待确认'},
+  account_status: {active:'未废号', deactivated:'已废号', unknown:'待确认'},
   task_type: {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
