@@ -153,6 +153,13 @@ class LegacyStatusTests(unittest.TestCase):
         self.assertEqual("payment_submission_failed", result.summary["failure_code"])
         self.assertEqual(message, result.summary["failure_message"])
 
+    def test_promotion_not_applied_is_classified_as_unavailable(self):
+        message = "优惠未生效，请更换账号或稍后重试。"
+        result = LegacyProvider._job({"status": "failed", "error": message}, "promotion-failed-job")
+        self.assertEqual("promotion_unavailable", result.summary["failure_type"])
+        self.assertEqual("promotion_unavailable", result.summary["failure_code"])
+        self.assertEqual(message, result.summary["failure_message"])
+
     def test_explicit_creation_rejection_is_failed_not_unknown(self):
         provider, _ = _provider({"ok": False, "code": "token_task_in_progress", "error": "该 token 已有未完成任务"})
         result = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "extract_only"))

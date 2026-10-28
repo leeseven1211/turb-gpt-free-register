@@ -76,7 +76,7 @@ def _failure_summary(data, *, secrets=()):
         ("task_in_progress", ("in_progress", "未完成任务", "进行中任务")),
         ("quota_exhausted", ("quota", "余额不足", "次数不足", "次数已用完", "额度不足", "exhausted")),
         ("token_invalid", ("token_expired", "token_invalid", "invalid token", "token 失效", "token 已过期", "at 已过期")),
-        ("promotion_unavailable", ("不符合", "无优惠", "not eligible", "ineligible", "promotion")),
+        ("promotion_unavailable", ("不符合", "无优惠", "优惠未生效", "not eligible", "ineligible", "promotion")),
         ("unsupported", ("unsupported", "not supported", "不支持")),
         ("upstream_timeout", ("timeout", "timed out", "超时")),
         ("upstream_network", ("network", "connection", "网络", "连接失败")),
