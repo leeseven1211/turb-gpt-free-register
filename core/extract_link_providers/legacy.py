@@ -72,6 +72,7 @@ def _failure_summary(data, *, secrets=()):
     failure_type = "remote_task_failed"
     for name, markers in (
         ("payment_confirmation_blocked", ("支付确认被拦截",)),
+        ("payment_submission_failed", ("支付提交失败，请稍后重试。",)),
         ("task_in_progress", ("in_progress", "未完成任务", "进行中任务")),
         ("quota_exhausted", ("quota", "余额不足", "次数不足", "次数已用完", "额度不足", "exhausted")),
         ("token_invalid", ("token_expired", "token_invalid", "invalid token", "token 失效", "token 已过期", "at 已过期")),

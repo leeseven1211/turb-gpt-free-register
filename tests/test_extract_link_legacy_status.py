@@ -146,6 +146,13 @@ class LegacyStatusTests(unittest.TestCase):
         self.assertEqual("remote_task_failed", unrelated.summary["failure_type"])
         self.assertEqual("blocked", unrelated.summary["failure_code"])
 
+    def test_payment_submission_failure_has_specific_classification_without_remote_code(self):
+        message = "支付提交失败，请稍后重试。"
+        result = LegacyProvider._job({"status": "failed", "error": message}, "submit-failed-job")
+        self.assertEqual("payment_submission_failed", result.summary["failure_type"])
+        self.assertEqual("payment_submission_failed", result.summary["failure_code"])
+        self.assertEqual(message, result.summary["failure_message"])
+
     def test_explicit_creation_rejection_is_failed_not_unknown(self):
         provider, _ = _provider({"ok": False, "code": "token_task_in_progress", "error": "该 token 已有未完成任务"})
         result = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "extract_only"))
