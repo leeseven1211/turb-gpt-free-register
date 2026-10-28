@@ -214,6 +214,14 @@ class LegacyProvider:
         if previous:
             summary = {**previous.summary, **job.summary}
             payment_observed = "automatic_payment_status" in job.summary
+            confirmed_not_submitted = (
+                previous.payment_state == "pending"
+                and previous.private_data.get("legacy_payment_submission_status") not in {"submitting", "submitted", "unknown"}
+                and job.extraction_state == "failed" and job.payment_state == "not_started"
+                and job.summary.get("automatic_payment_status") == "NOT_SUBMITTED"
+                and job.summary.get("automatic_payment_terminal") is True
+                and not any(job.private_data.get(key) for key in ("legacy_payment_order_id", "legacy_payment_order_no"))
+            )
             order_changed = any(
                 previous.private_data.get(key) and job.private_data.get(key)
                 and previous.private_data[key] != job.private_data[key]
@@ -235,7 +243,7 @@ class LegacyProvider:
                 job,
                 extraction_state=(previous.extraction_state if job.extraction_state == "unknown"
                                   or previous.extraction_state == "succeeded" else job.extraction_state),
-                payment_state=previous.payment_state if keep_payment_terminal or job.payment_state == "not_started" or not payment_observed else job.payment_state,
+                payment_state=previous.payment_state if keep_payment_terminal or (job.payment_state == "not_started" and not confirmed_not_submitted) or not payment_observed else job.payment_state,
                 links=tuple(dict.fromkeys((*previous.links, *job.links))),
                 payment_links=tuple(dict.fromkeys((*previous.payment_links, *job.payment_links))),
                 payment_artifact={**previous.payment_artifact, **job.payment_artifact},

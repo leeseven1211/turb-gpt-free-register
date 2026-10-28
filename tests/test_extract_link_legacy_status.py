@@ -283,6 +283,43 @@ class LegacyAutomaticPaymentTests(unittest.TestCase):
         self.assertEqual("pending", result.payment_state)
         self.assertEqual([("POST", "/api/extract")], [(call[0], call[1]) for call in transport.calls])
 
+    def test_failed_extraction_explicitly_not_submitted_without_order_clears_initial_pending(self):
+        provider, transport = self.provider({"ok": True, "job_id": "rejected-before-payment"})
+        created = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+        self.assertEqual("pending", created.payment_state)
+        transport.response = {"ok": True, "status": "failed", "result": None,
+            "error": "优惠未生效，请更换账号或稍后重试。", "payment_platform": {"status": "not_submitted"}}
+        failed = provider.get_status("rejected-before-payment")
+        self.assertEqual("failed", failed.extraction_state)
+        self.assertEqual("not_started", failed.payment_state)
+        self.assertTrue(failed.summary["automatic_payment_terminal"])
+        self.assertEqual("not_started", provider.get_automatic_payment_status("rejected-before-payment").payment_state)
+        self.assertEqual(["POST", "GET"], [call[0] for call in transport.calls])
+
+    def test_failed_extraction_does_not_clear_payment_without_explicit_no_order_fact(self):
+        for payment, wanted in ((None, "pending"), ({"status": "unknown"}, "unknown"),
+                                ({"status": "not_submitted", "order_id": "existing-order"}, "pending")):
+            with self.subTest(payment=payment):
+                provider, transport = self.provider({"ok": True, "job_id": "uncertain-payment"})
+                provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+                transport.response = {"ok": True, "status": "failed", "result": None, "error": "上游提链失败"}
+                if payment is not None:
+                    transport.response["payment_platform"] = payment
+                failed = provider.get_status("uncertain-payment")
+                self.assertEqual(wanted, failed.payment_state)
+                self.assertNotEqual("not_started", failed.payment_state)
+
+    def test_not_submitted_snapshot_does_not_erase_earlier_uncertain_or_submitted_payment(self):
+        for status, wanted in (("unknown", "unknown"), ("submitted", "pending")):
+            with self.subTest(status=status):
+                provider, transport = self.provider({"ok": True, "job_id": "earlier-payment"})
+                provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+                transport.response = {"ok": True, "status": "running", "payment_platform": {"status": status}}
+                provider.get_status("earlier-payment")
+                transport.response = {"ok": True, "status": "failed", "result": None,
+                    "error": "上游提链失败", "payment_platform": {"status": "not_submitted"}}
+                self.assertEqual(wanted, provider.get_status("earlier-payment").payment_state)
+
     def test_missing_mode_is_rejected_before_payment_query(self):
         provider, transport = self.provider({"ok": True, "result": {}})
         with self.assertRaises(ProviderError):
