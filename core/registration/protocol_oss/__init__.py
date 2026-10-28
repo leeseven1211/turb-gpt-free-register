@@ -39,6 +39,8 @@ class ProtocolOssRequestUnknown(RuntimeError):
                 }
                 if status == 409 and self.cause_diagnostics["auth_error"].get("code") == "invalid_state":
                     self.cause_code = "account_create_invalid_state"
+                elif status == 400 and self.cause_diagnostics["auth_error"].get("code") == "user_already_exists":
+                    self.cause_code = "account_create_user_already_exists"
 
 
 class ProtocolOssManualReconcile(RuntimeError):

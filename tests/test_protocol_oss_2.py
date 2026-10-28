@@ -251,14 +251,20 @@ def test_unknown_registration_result_does_not_invent_a_checkpoint_failure_or_res
     assert "protocol2@example.test" not in result["error"]
 
 
-def test_profile_invalid_state_preserves_safe_cause_and_unknown_account_result(upstream):
+@pytest.mark.parametrize("status,code,category,cause_code,description", [
+    (409, "invalid_state", "auth_state", "account_create_invalid_state", "资料提交时认证会话已失效"),
+    (400, "user_already_exists", "email_conflict", "account_create_user_already_exists", "远端提示账号已存在，完整登录态尚未确认"),
+])
+def test_known_profile_rejection_preserves_safe_cause_and_unknown_account_result(
+    upstream, status, code, category, cause_code, description,
+):
     from core.registration_service import _registration_request_unknown_facts
     from core.task_errors import classify_task_error
 
     session, transport, _ = upstream
-    transport.profile_status = 409
+    transport.profile_status = status
     transport.profile_payload = {"error": {
-        "code": "invalid_state", "type": "invalid_request_error",
+        "code": code, "type": "invalid_request_error",
         "message": "Your sign-in session is no longer valid. private@example.test token=fixture-private",
         "redirect_uri": "https://chatgpt.com/auth/login_with?callback_path=/&private=fixture-private",
     }}
@@ -272,33 +278,38 @@ def test_profile_invalid_state_preserves_safe_cause_and_unknown_account_result(u
             proxy=session.proxy, email_source="icloud_hide",
         )
 
-    assert result["cause_code"] == "account_create_invalid_state"
+    assert result["cause_code"] == cause_code
     assert result["cause_diagnostics"] == {
-        "operation": "profile_submit", "http_status": 409,
-        "auth_error": {"code": "invalid_state", "type": "invalid_request_error", "category": "auth_state"},
+        "operation": "profile_submit", "http_status": status,
+        "auth_error": {"code": code, "type": "invalid_request_error", "category": category},
     }
     assert result["request_unknown"] is True
     assert result["error_code"] == "request_unknown"
+    assert result["manual_reconcile"] is False
+    assert result["registration_pending"] is True
     assert result["register_response_confirmed"] is True
     assert result["remote_account_state"] == "request_unknown"
     assert result["core_persisted"] is False
     assert result["account_id"] is None
-    assert "HTTP 409" in result["error"]
-    assert "invalid_state" in result["error"]
-    assert "认证会话已失效" in result["error"]
+    assert f"HTTP {status}" in result["error"]
+    assert cause_code in result["error"]
+    assert description in result["error"]
     for private in ("fixture-private", "private@example.test", "redirect_uri", "login_with", "Your sign-in session"):
         assert private not in json.dumps(result)
     assert sum(url.endswith("/create_account") for _, url, _ in transport.requests) == 1
     retain.assert_called_once()
     mark_unusable.assert_not_called()
-    assert _registration_request_unknown_facts(result)["cause_code"] == "account_create_invalid_state"
+    assert _registration_request_unknown_facts(result)["cause_code"] == cause_code
     for summary in ({}, result):
         info = classify_task_error(result["error"], task_type="registration", result_summary=summary)
-        assert info["code"] == "account_create_invalid_state"
-        assert info["summary"] == "资料提交时认证会话已失效"
+        assert info["code"] == cause_code
+        assert info["summary"] == description
 
 
-@pytest.mark.parametrize("status,code", [(400, "invalid_state"), (409, "invalid_email"), (409, "private-code")])
+@pytest.mark.parametrize("status,code", [
+    (400, "invalid_state"), (409, "invalid_email"), (409, "private-code"),
+    (409, "user_already_exists"), (400, "account_exists"),
+])
 def test_other_profile_rejections_do_not_invent_an_expired_session_cause(upstream, status, code):
     session, transport, _ = upstream
     transport.profile_status = status

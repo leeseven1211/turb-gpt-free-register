@@ -570,7 +570,7 @@ REGISTRATION_DRIVER = "protocol"
 
 本地优化 Protocol 基于 `curl_cffi`、Sentinel/PoW 和代理池，带有本项目维护的阶段预算、密码/注册检查点、错误分类、未知结果保护和同 Attempt 续跑。已有优化与恢复逻辑留在 `core/registration/protocol.py`。
 
-协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。开源protocol-2 的资料提交明确返回 HTTP 409 `invalid_state` 时，任务会显示“资料提交时认证会话已失效”（`account_create_invalid_state`），保留原身份供续跑，不将此前账号创建结果改为未创建。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
+协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。开源protocol-2 的资料提交明确返回 HTTP 409 `invalid_state` 时，任务会显示“资料提交时认证会话已失效”（`account_create_invalid_state`），保留原身份供续跑，不将此前账号创建结果改为未创建。明确返回 HTTP 400 `user_already_exists` 时，任务显示“远端提示账号已存在，完整登录态尚未确认”（`account_create_user_already_exists`），继续保留待确认状态、原邮箱和重跑资格。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
 
 OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。实现与验证边界见[协议注册可靠性实施记录](docs/development/2026-10-12-protocol-reliability-plan.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
 
