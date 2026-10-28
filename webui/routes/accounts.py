@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -29,6 +30,7 @@ from core import (
     live_check_service,
     operation_task_store,
     plan_check_service,
+    record_store,
 )
 from core import registration_service as svc
 from core.account_search import AccountSearchError, account_search_filters, parse_account_search
@@ -680,6 +682,88 @@ def create_accounts_blueprint(context: WebUIContext):
             else:
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "值为空"})
         return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+
+    @bp.post("/api/accounts/download-session-bulk")
+    def api_accounts_download_session_bulk():
+        """将选中账号已保存的 Session 原样打包；缺失记录列入结果清单。"""
+        data = request.get_json(silent=True)
+        ids = data.get("account_ids") if isinstance(data, dict) else None
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 5000:
+            return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "单次最多下载 5000 个账号"}), 400
+        if any(type(acc_id) is not int or not 0 < acc_id < 2**63 for acc_id in ids):
+            return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "账号 ID 必须是有效正整数"}), 400
+
+        added = []
+        skipped = []
+        now = datetime.now()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for acc_id in dict.fromkeys(ids):
+                email = ""
+                try:
+                    account = record_store.get_row(record_store.ACCOUNTS, acc_id)
+                    if account is None:
+                        skipped.append({"id": acc_id, "error_code": "account_not_found", "reason": "账号不存在"})
+                        continue
+                    email = str(account.get("email") or "").strip()
+                    session = account.get("chatgpt_session")
+                except Exception as exc:
+                    logger.warning("批量导出 Session：账号 #%s 读取失败（%s）", acc_id, type(exc).__name__)
+                    skipped.append({
+                        "id": acc_id, "email": email, "error_code": "session_read_failed",
+                        "reason": f"读取 Session 失败，请重试（{type(exc).__name__}）",
+                    })
+                    continue
+                if session is None:
+                    skipped.append({
+                        "id": acc_id, "email": email, "error_code": "session_missing",
+                        "reason": "未保存 Session，请先刷新 AT 重新登录补齐",
+                    })
+                    continue
+                if isinstance(session, str):
+                    try:
+                        session = json.loads(session)
+                    except json.JSONDecodeError:
+                        session = False
+                if not isinstance(session, dict) or not isinstance(session.get("accessToken"), str) or not session["accessToken"].strip():
+                    skipped.append({
+                        "id": acc_id, "email": email, "error_code": "session_invalid",
+                        "reason": "已保存的 Session 缺少有效 accessToken，请先刷新 AT",
+                    })
+                    continue
+
+                # 固定 ID 前缀并清理邮箱中的路径字符，确保 ZIP 内文件名唯一且不含目录。
+                safe_email = re.sub(r"[^A-Za-z0-9@._+-]", "_", email)[:120] or "account"
+                filename = f"{acc_id}-{safe_email}.json"
+                archive.writestr(filename, json.dumps(session, ensure_ascii=False, indent=2) + "\n")
+                added.append({"id": acc_id, "email": email, "filename": filename})
+
+            manifest = {
+                "exported_at": now.isoformat(timespec="seconds"), "source": "accounts-session",
+                "count": len(added), "skipped_count": len(skipped), "files": added, "skipped": skipped,
+            }
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+
+        filename = f"accounts-session-bulk-{now.strftime('%Y%m%d-%H%M%S')}.zip"
+        content = buf.getvalue()
+        if data.get("prepare"):
+            download_id = _put_prepared_download(content, filename, "application/zip")
+            response = jsonify({
+                "ok": True, "prepared": True, "download_id": download_id,
+                "download_url": f"/api/downloads/{download_id}", "filename": filename,
+                "added_count": len(added), "skipped_count": len(skipped), "skipped": skipped,
+            })
+        else:
+            response = Response(content, mimetype="application/zip", headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(content)),
+                "X-Content-Type-Options": "nosniff", "X-Download-Options": "noopen",
+            })
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     @bp.post("/api/accounts/email-invalid-bulk")
     def api_accounts_email_invalid_bulk():

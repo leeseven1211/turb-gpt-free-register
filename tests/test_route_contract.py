@@ -21,9 +21,11 @@ class FlaskRouteContractTests(PostgresTestCase):
     # 配置页补充 Roxy 工作区目录，本轮新增邮箱子地址概况和分配台账两条只读路由。
     # 本轮对照 main 的 155 条路由，确认原路由未变；库存管理仅新增显式生成
     # 与批量停用/恢复两条写入路由，同时校正此前遗漏更新的历史快照。
+    # 同步已存在的五条 Butler 手动导入路由，以及账号 Session 批量下载路由；
+    # 排除这六条新增项后，原 157 条路由的摘要仍与上一版基线完全一致。
     # 保持这些变更显式记录，不从当前路由表推导基线。
-    EXPECTED_ROUTE_COUNT = 157
-    EXPECTED_SHA256 = "3e755b94761304f0b1bee740a29c09cbe63d5160579a3335228bc366374a33b0"
+    EXPECTED_ROUTE_COUNT = 163
+    EXPECTED_SHA256 = "2ac1dc2665779900d8deeb126cc0bcf96a109e4b5ffa16c8a59be949d3da99b5"
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")

@@ -4,6 +4,7 @@ let accountsReloadQueued = false;
 let accountsRenderedQuery = '';
 let planStatusLoading = false;
 let planStatusRevision = '';
+let accountSessionDownloadLoading = false;
 let ACCOUNT_BATCH_WORKERS = 3;
 let emailChangeReturnFocus = null;
 const ACCOUNT_SELECTED_EMAILS = new Map();
@@ -2767,13 +2768,13 @@ function updateAccountSelectionUi(pageRows = null) {
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedExtractLinksV2',
     'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
-    'btnDownloadSelectedTxtV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
+    'btnDownloadSelectedTxtV2', 'btnDownloadSelectedSessionsV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
     'btnMarkSelectedEmailInvalidV2', 'btnClearSelectedEmailInvalidV2',
   ];
   v2Ids.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.disabled = none;
+    el.disabled = none || (id === 'btnDownloadSelectedSessionsV2' && accountSessionDownloadLoading);
     if (id === 'btnArchiveSelectedAccountsV2') {
       el.textContent = archiveLabel;
       el.title = archiveTitle;
@@ -3444,6 +3445,44 @@ async function downloadSelectedAccountTxt() {
   showToast(`已下载 ${lines.length} 个账号 TXT`);
 }
 
+async function downloadSelectedAccountSessions() {
+  if (accountSessionDownloadLoading) return;
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  const btn = $('#btnDownloadSelectedSessionsV2');
+  const old = btn?.textContent || '下载 Session';
+  accountSessionDownloadLoading = true;
+  if (btn) { btn.disabled = true; btn.textContent = '打包中…'; }
+  try {
+    const r = await api('/api/accounts/download-session-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account_ids: ids, prepare: true}),
+    });
+    if (!r.download_url) throw new Error('服务端未返回下载地址');
+    const a = document.createElement('a');
+    a.href = r.download_url;
+    a.download = r.filename || '';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+    const addedCount = Number(r.added_count || 0);
+    const skippedCount = Number(r.skipped_count || 0);
+    if (addedCount === 0) {
+      showToast(`没有可下载的 Session，已生成结果清单，跳过 ${skippedCount} 个；开始下载，分类原因见 ZIP 内 manifest.json；Session 缺失或无效的账号请先刷新 AT，读取失败的账号请重试`);
+    } else {
+      showToast(`已打包 ${addedCount} 个账号 Session，跳过 ${skippedCount} 个；开始下载，结果见 ZIP 内 manifest.json`);
+    }
+  } catch (err) {
+    showToast('下载 Session 失败: ' + err.message);
+  } finally {
+    accountSessionDownloadLoading = false;
+    if (btn) btn.textContent = old;
+    updateAccountSelectionUi();
+  }
+}
+
 async function downloadSelectedCpa() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -4083,6 +4122,7 @@ async function copySelectedAccountTokens() {
   bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
   bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);
   bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
+  bind('btnDownloadSelectedSessionsV2', downloadSelectedAccountSessions);
   bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
   bind('btnMarkSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, true, event.currentTarget));
