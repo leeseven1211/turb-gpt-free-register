@@ -5,6 +5,7 @@ import logging
 import random
 import re
 import time
+from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
 from core.account_export import (
@@ -12,7 +13,8 @@ from core.account_export import (
     setup_2fa_protocol as _setup_2fa_protocol,
 )
 from core.email_provider import wait_for_otp as _wait_for_otp
-from core.registration.state_machine import PageState, StageBudget, StageTimeout, classify_page
+from core.operation_runtime import OperationCancelled
+from core.registration.state_machine import CancellationRequested, PageState, StageBudget, StageTimeout, classify_page
 from core.session import BrowserSession
 
 from .auth_context import (
@@ -49,6 +51,112 @@ _MFA_EMAIL_CODE_SELECTOR = (
 )
 
 _MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"]'
+
+def _probe_existing_roxy_totp(driver, email: str, *, timeout: float = 15.0) -> dict:
+    """同浏览器只读确认远端 TOTP 状态，不验证候选密钥，也不修改任何 factor。"""
+    _checkpoint()
+    try:
+        current = urlsplit(str(getattr(driver, "current_url", "") or ""))
+        trusted = (current.scheme == "https" and current.hostname == "chatgpt.com"
+                   and current.port in (None, 443) and not current.username and not current.password)
+    except ValueError:
+        trusted = False
+    if not trusted:
+        return {"confirmed": False, "reason": "untrusted_origin"}
+    wait_seconds = min(15.0, max(0.0, float(timeout)))
+    context = current_execution_context()
+    if context is not None:
+        wait_seconds = context.remaining(wait_seconds)
+    if wait_seconds <= 0:
+        return {"confirmed": False, "reason": "timeout"}
+    old_script_timeout = None
+    try:
+        previous = driver.timeouts.script
+        if isinstance(previous, (int, float)):
+            old_script_timeout = previous
+    except Exception:
+        pass
+    try:
+        driver.set_script_timeout(wait_seconds)
+        result = driver.execute_async_script(r"""
+        const expectedEmail = String(arguments[0] || '').trim().toLowerCase();
+        const timeoutMs = arguments[1];
+        const callback = arguments[arguments.length - 1];
+        const controller = new AbortController();
+        let settled = false;
+        const done = (confirmed, reason) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback({confirmed, reason});
+        };
+        const timer = setTimeout(() => {
+          controller.abort();
+          done(false, 'timeout');
+        }, timeoutMs);
+        const trusted = () => {
+          try {
+            const u = new URL(location.href);
+            return u.protocol === 'https:' && u.hostname === 'chatgpt.com'
+              && (!u.port || u.port === '443') && !u.username && !u.password;
+          } catch (_) { return false; }
+        };
+        (async () => {
+          try {
+            if (!trusted()) { done(false, 'untrusted_origin'); return; }
+            const sessionResp = await fetch('/api/auth/session', {
+              method:'GET', credentials:'include', redirect:'error', signal:controller.signal,
+              headers:{accept:'application/json'}
+            });
+            if (sessionResp.status !== 200) { done(false, 'session_http'); return; }
+            let session;
+            try { session = await sessionResp.json(); }
+            catch (_) { done(false, 'session_json'); return; }
+            const actualEmail = typeof session?.user?.email === 'string' ? session.user.email.trim().toLowerCase() : '';
+            if (!expectedEmail || !actualEmail) { done(false, 'session_identity_unverified'); return; }
+            if (actualEmail !== expectedEmail) { done(false, 'session_identity_mismatch'); return; }
+            const accessToken = typeof session?.accessToken === 'string' ? session.accessToken.trim() : '';
+            if (!accessToken) { done(false, 'session_token_missing'); return; }
+            if (!trusted()) { done(false, 'untrusted_origin'); return; }
+            const infoResp = await fetch('/backend-api/accounts/mfa_info', {
+              method:'GET', credentials:'include', redirect:'error', signal:controller.signal,
+              headers:{accept:'application/json', Authorization:'Bearer ' + accessToken}
+            });
+            if (infoResp.status !== 200) { done(false, 'mfa_http'); return; }
+            let info;
+            try { info = await infoResp.json(); }
+            catch (_) { done(false, 'mfa_json'); return; }
+            if (info?.mfa_enabled !== true || info?.mfa_enabled_v2 !== true) {
+              done(false, 'mfa_not_enabled'); return;
+            }
+            const totp = info?.factors?.totp;
+            const enabled = Array.isArray(totp) && totp.some(factor => factor && typeof factor === 'object'
+              && !Array.isArray(factor) && factor.factor_type === 'totp' && factor.is_recovery === false);
+            done(enabled, enabled ? 'totp_enabled' : 'totp_not_enabled');
+          } catch (_) { done(false, controller.signal.aborted ? 'timeout' : 'read_failed'); }
+        })();
+        """, str(email or "").strip(), max(1, int(wait_seconds * 1000) - 50))
+    except (StageTimeout, CancellationRequested, OperationCancelled):
+        raise
+    except Exception:
+        result = {"confirmed": False, "reason": "read_failed"}
+    finally:
+        if old_script_timeout is not None:
+            try:
+                driver.set_script_timeout(old_script_timeout)
+            except Exception:
+                pass
+    _checkpoint()
+    reasons = {
+        "untrusted_origin", "timeout", "session_http", "session_json", "session_identity_unverified",
+        "session_identity_mismatch", "session_token_missing", "mfa_http", "mfa_json", "mfa_not_enabled",
+        "totp_enabled", "totp_not_enabled", "read_failed",
+    }
+    if not isinstance(result, dict) or result.get("reason") not in reasons:
+        return {"confirmed": False, "reason": "invalid_response"}
+    reason = result["reason"]
+    return {"confirmed": result.get("confirmed") is True and reason == "totp_enabled", "reason": reason}
+
 
 def _totp_secret_candidate(value: object) -> str | None:
     """Normalize the manual Authenticator key without ever logging it."""
@@ -686,6 +794,15 @@ def setup_roxy_2fa(
     """Enable Authenticator MFA in the existing Roxy browser session."""
     import pyotp
 
+    recovered = _totp_secret_candidate(existing_secret)
+    if recovered and not force_reconfigure:
+        evidence = _probe_existing_roxy_totp(driver, email)
+        if evidence["reason"] in {"session_identity_unverified", "session_identity_mismatch"}:
+            raise RuntimeError(f"{evidence['reason']}: 远端 TOTP 状态核验未匹配当前任务身份")
+        if evidence["confirmed"]:
+            logger.info("%s[2FA] 只读接口已确认远端 TOTP 启用，保留本地检查点密钥", _log_prefix(driver))
+            return recovered
+        logger.info("%s[2FA] 远端 TOTP 只读核验未确认，继续安全设置页：reason=%s", _log_prefix(driver), evidence["reason"])
     logger.info("%s[2FA] 打开 ChatGPT 安全设置", _log_prefix(driver))
     toggle = _open_chatgpt_security_settings(driver)
     if (
