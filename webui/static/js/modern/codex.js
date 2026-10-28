@@ -3,6 +3,7 @@ let CODEX = [];
 let CODEX_TOTAL = 0;
 let codexLoading = false;
 let codexReloadQueued = false;
+let codexScopeVersion = 0;
 function getCodexQuery() {
   const el = document.getElementById('qCodexV2');
   return (el ? el.value : '').trim();
@@ -12,12 +13,13 @@ async function loadCodex() {
   if (codexLoading) { codexReloadQueued = true; return; }
   codexLoading = true;
   setListBusy('codexPanelV2', true);
+  const showArchived = CODEX_SHOW_ARCHIVED;
+  const scopeVersion = codexScopeVersion;
   try {
     const p = PAGERS.codex;
     const q = getCodexQuery();
     const status = document.getElementById('codexStatusFilterV2')?.value || '';
-    CODEX_SHOW_ARCHIVED = status === 'archived';
-    const archived = CODEX_SHOW_ARCHIVED ? 'only' : '0';
+    const archived = showArchived ? 'only' : '0';
     const dateFrom = document.getElementById('dateFromCodexV2')?.value || '';
     const dateTo = document.getElementById('dateToCodexV2')?.value || '';
     const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), q, archived, date_from:dateFrom, date_to:dateTo});
@@ -28,9 +30,11 @@ async function loadCodex() {
     params.set('expired_date', document.getElementById('codexExpiredFilterV2')?.value || '');
     params.set('sub2api_id', document.getElementById('codexSub2apiIdFilterV2')?.value || '');
     const r = await api(`/api/codex?${params.toString()}`);
+    // 切换归档范围后忽略旧请求，避免旧列表覆盖新菜单的内容。
+    if (scopeVersion !== codexScopeVersion) return;
     const facets = r.facets || {};
     syncFacetSelect('codexPlanFilterV2', facets.plan, {group:'plan'});
-    syncFacetSelect('codexStatusFilterV2', facets.status, {group:'status', allLabel:'未归档'});
+    syncFacetSelect('codexStatusFilterV2', (facets.status || []).filter(item => item.value !== 'archived'), {group:'status'});
     syncFacetSelect('codexOauthFilterV2', facets.oauth_status, {group:'oauth_status'});
     CODEX = r.accounts || [];
     CODEX_TOTAL = Number(r.total || CODEX.length || 0);
@@ -40,6 +44,7 @@ async function loadCodex() {
     renderCodex();
     markViewReady('codex');
   } catch(e) {
+    if (scopeVersion !== codexScopeVersion) return;
     if (!CODEX.length) $('#codexBodyV2').innerHTML = renderTableStateRow(10, '授权凭证加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载 Codex 列表失败: ' + e.message);
   }
@@ -325,14 +330,16 @@ async function codexArchiveSelected() {
   } catch(err) { showToast('归档失败: ' + err.message); }
 }
 function applyCodexArchivedFilter(on) {
+  codexScopeVersion += 1;
   CODEX_SHOW_ARCHIVED = !!on;
-  const btn = document.getElementById('showArchivedCodexV2');
-  if (btn) {
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    btn.classList.toggle('is-active', on);
-  }
+  closeCodexV2MoreMenus();
   CODEX_SELECTED.clear();
+  CODEX = [];
+  CODEX_TOTAL = 0;
   PAGERS.codex.page = 1;
+  renderCodex();
+  const body = document.getElementById('codexBodyV2');
+  if (body) body.innerHTML = renderTableStateRow(10, '正在加载授权凭证', '正在同步 OAuth 与导出状态', 'loading');
   loadCodex();
 }
 async function codexDownloadBulkLocal() {
@@ -548,7 +555,7 @@ async function codexDeleteBulk() {
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   bind('btnResetCodexFiltersV2', () => {
     ['qCodexV2','codexPlanFilterV2','codexStatusFilterV2','codexOauthFilterV2','codexAccountFilterV2','codexSub2apiIdFilterV2','dateFromCodexV2','dateToCodexV2','codexExpiredFilterV2'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
-    CODEX_SHOW_ARCHIVED = false; CODEX_SELECTED.clear(); PAGERS.codex.page = 1; refreshColumnFilterStates(); loadCodex();
+    CODEX_SELECTED.clear(); PAGERS.codex.page = 1; refreshColumnFilterStates(); loadCodex();
   });
   document.addEventListener('click', (e) => {
     if (e.target.closest('.codex-table-v2 .acc-v2-more')) return;

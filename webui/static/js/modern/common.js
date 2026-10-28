@@ -1176,7 +1176,7 @@ let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
 
 function navigationModuleForTab(tab) {
-  return ['register', 'accounts', 'outlook', 'proxy-traffic'].includes(tab) ? tab : null;
+  return ['register', 'accounts', 'codex', 'outlook', 'proxy-traffic'].includes(tab) ? tab : null;
 }
 function normalizeNavigationState(raw) {
   const tab = NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'overview';
@@ -1239,6 +1239,11 @@ function recordNavigationHistory(mode = 'push') {
 }
 function applyNavigationState(raw) {
   const nav = normalizeNavigationState(raw);
+  // Codex 先确定归档范围，避免历史恢复时先请求上一个菜单的数据。
+  if (nav.module === 'codex' && nav.view) {
+    const tab = document.getElementById('tab-codex');
+    if (tab) tab.dataset.moduleView = nav.view;
+  }
   activateTab(nav.tab, true, 'none');
   if (nav.module && nav.view) setModuleView(nav.module, nav.view, true, 'none');
   updateNavigationBackButton();
@@ -1246,7 +1251,7 @@ function applyNavigationState(raw) {
 function initializeNavigationHistory(fallbackTab = 'overview') {
   const fromLocation = parseNavigationHash(location.hash);
   if (fromLocation) applyNavigationState(fromLocation);
-  else if (!NAV_ALLOWED_TABS.includes(ACTIVE_TAB)) activateTab(fallbackTab, true, 'none');
+  else activateTab(fallbackTab, false, 'none');
   recordNavigationHistory('replace');
   if (navigationHistoryBound) return;
   navigationHistoryBound = true;
@@ -1350,7 +1355,11 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
     if (view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
     else ensureViewLoaded(`accounts:${view}`, loadAccounts);
   }
-  if (tab === 'codex') ensureViewLoaded('codex', loadCodex);
+  if (tab === 'codex') {
+    const archived = $('#tab-codex')?.dataset.moduleView === 'archived';
+    if (CODEX_SHOW_ARCHIVED !== archived) applyCodexArchivedFilter(archived);
+    else if (!codexLoading) ensureViewLoaded('codex', loadCodex);
+  }
   if (tab === 'outlook') {
     const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
     if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
@@ -1373,6 +1382,10 @@ const MODULE_VIEW_META = {
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
     archived: '集中查看和恢复已归档账号',
+  },
+  codex: {
+    active: '查询、导出和批量维护未归档的 Codex 授权凭证',
+    archived: '集中查看和恢复已归档的 Codex 授权凭证',
   },
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
@@ -1398,7 +1411,10 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
   if (module === 'register') refreshJobs({coalesce: true});
-  if (module === 'codex') ensureViewLoaded('codex', loadCodex);
+  if (module === 'codex') {
+    if (CODEX_SHOW_ARCHIVED !== (view === 'archived')) applyCodexArchivedFilter(view === 'archived');
+    else if (!codexLoading) ensureViewLoaded('codex', loadCodex);
+  }
   if (module === 'outlook') {
     if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
     else if (view === 'derivations') loadEmailDerivationResources();
@@ -1425,6 +1441,7 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
     tab.dataset.moduleView = btn.dataset.view;
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
     if (module === 'accounts') localStorage.setItem('gpt_console_module_view_accounts', btn.dataset.view);
+    if (module === 'codex') localStorage.setItem('gpt_console_module_view_codex', btn.dataset.view);
     if (module === 'outlook') localStorage.setItem('gpt_console_module_view_outlook', btn.dataset.view);
     if (module === 'proxy-traffic') localStorage.setItem('gpt_console_module_view_proxy-traffic', btn.dataset.view);
     nav.querySelectorAll('[data-view]').forEach(item => item.classList.toggle('is-active', item === btn));
@@ -1444,5 +1461,6 @@ function restoreModuleViewState() {
       btn.classList.toggle('is-active', btn.dataset.view === saved);
     });
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
+    if (module === 'codex') CODEX_SHOW_ARCHIVED = saved === 'archived';
   });
 }
