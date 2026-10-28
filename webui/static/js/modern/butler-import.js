@@ -9,6 +9,7 @@ const BUTLER_IMPORT_STATE = {
 };
 const butlerImportElement = id => document.getElementById(id);
 const butlerImportRunning = () => ['pending', 'queued', 'running', 'processing'].includes(BUTLER_IMPORT_STATE.batch?.status);
+const butlerImportSucceeded = status => ['completed', 'succeeded', 'done'].includes(status);
 const butlerImportRevision = batch => JSON.stringify([batch.updated_at, batch.status, batch.imported, batch.pending, batch.submitting, batch.unknown, batch.failed, batch.error_code]);
 
 function butlerImportError(message = '') {
@@ -27,7 +28,8 @@ function restoreButlerImport() {
       if (input && saved.filters && saved.filters[key] !== undefined) input.value = String(saved.filters[key]);
     }
     if (typeof saved.batch_id === 'string' && saved.batch_id) {
-      BUTLER_IMPORT_STATE.batch = {batch_id: saved.batch_id, status: 'running'};
+      BUTLER_IMPORT_STATE.batch = {batch_id: saved.batch_id,
+        status: butlerImportSucceeded(saved.batch_status) ? saved.batch_status : 'running'};
       if (typeof saved.resume_revision === 'string') BUTLER_IMPORT_STATE.resumePending = saved.resume_revision;
     }
   } catch (_) { BUTLER_IMPORT_STATE.storageError = true; }
@@ -38,7 +40,7 @@ function persistButlerImport() {
   const request = state.request;
   localStorage.setItem(BUTLER_IMPORT_STORAGE_KEY, JSON.stringify({
     request_id: request.request_id, preview_token: request.preview_token,
-    filters: request.filters, ...(state.batch ? {batch_id: state.batch.batch_id} : {}),
+    filters: request.filters, ...(state.batch ? {batch_id: state.batch.batch_id, batch_status: state.batch.status} : {}),
     ...(state.resumePending ? {resume_revision: state.resumePending} : {}),
   }));
 }
@@ -96,7 +98,7 @@ function renderButlerImportControls() {
   if (description) description.textContent = state.request ? '导入进度会自动保存，可随时关闭窗口。' : '从 Butler 已有库存补充邮箱，自动查询当前可用数量。';
   const pageStatus = butlerImportElement('butlerImportPageStatus');
   if (pageStatus) {
-    pageStatus.hidden = !state.request || !!modal?.open;
+    pageStatus.hidden = !state.request || !!modal?.open || butlerImportSucceeded(state.batch?.status);
     pageStatus.textContent = state.batch
       ? `Butler 导入${butlerImportRunning() ? '中' : '结果'} · 已导入 ${Number(state.batch.imported || 0)} / ${Number(state.batch.total || 0)} · 查看进度`
       : 'Butler 导入请求待确认 · 查看进度';

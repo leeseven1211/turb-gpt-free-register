@@ -347,6 +347,70 @@ test('完成后刷新库存和来源；刷新失败不会把已完成批次误�
   assert.match(h.node('butlerImportProgress').textContent, /5/);
 });
 
+test('成功导入自动收起右下角提示，保留原记录供邮箱页查看结果', async () => {
+  for (const status of ['completed', 'succeeded', 'done']) {
+    let currentStatus = 'running';
+    const batch = () => ({batch_id: 'completed-batch', status: currentStatus, requested: 5, total: 5,
+      imported: currentStatus === 'running' ? 1 : 5, pending: currentStatus === 'running' ? 4 : 0,
+      can_retry: currentStatus === 'running'});
+    const h = createView({handler(call) {
+      if (call.url.endsWith('import-preview')) return {ok: true, preview_token: 'p', available: 5, selected: 5};
+      return {ok: true, batch: batch()};
+    }});
+    await h.view.preview(); await h.view.apply();
+    h.view.close();
+    assert.equal(h.node('butlerImportPageStatus').hidden, false);
+    currentStatus = status;
+    await h.view.poll();
+    assert.equal(h.node('butlerImportPageStatus').hidden, true, `${status} 成功后不再常驻提示`);
+    const saved = JSON.parse(h.storage.get('turb.butler-import.v1'));
+    assert.equal(saved.batch_id, 'completed-batch');
+    assert.equal(saved.request_id, '11111111-1111-4111-8111-111111111111');
+    assert.match(h.node('btnOpenButlerImportPool').textContent, /查看/);
+    await h.node('btnOpenButlerImportPool').listeners.click();
+    assert.equal(h.node('butlerImportModal').open, true);
+    assert.match(content(h.node('butlerImportStatusTitle')), /完成/);
+    assert.match(content(h.node('butlerImportStats')), /5/);
+    h.view.close();
+    assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  }
+});
+
+test('刷新已完成页面时不重新弹出右下角提示，仍查询原批次结果', async () => {
+  for (const status of ['completed', 'succeeded', 'done']) {
+    const finished = {batch_id: 'saved-completed', status, requested: 5, total: 5, imported: 5, can_retry: false};
+    const original = createView({saved: {batch_id: finished.batch_id, request_id: 'original-request', preview_token: 'original-preview'},
+      handler: () => ({ok: true, batch: finished})});
+    await original.settle();
+    const saved = JSON.parse(original.storage.get('turb.butler-import.v1'));
+    let finishRead;
+    const restored = createView({saved, handler: () => new Promise(resolve => { finishRead = resolve; })});
+    assert.equal(restored.node('butlerImportPageStatus').hidden, true, '查询返回前也不把已完成批次显示成正在导入');
+    assert.equal(restored.requests[0].url, '/api/email-butler/imports/saved-completed');
+    assert.equal(restored.requests[0].method, 'GET');
+    finishRead({ok: true, batch: finished});
+    await restored.settle();
+    assert.equal(restored.node('butlerImportPageStatus').hidden, true);
+    assert.equal(restored.view.state.batch.batch_id, finished.batch_id);
+    assert.equal(restored.view.state.batch.status, status);
+  }
+});
+
+test('运行中和待处理结果仍保留右下角恢复入口', async () => {
+  for (const status of ['running', 'partial', 'unknown', 'failed']) {
+    const h = createView({saved: {batch_id: 'recoverable', request_id: 'r', preview_token: 'p'}, handler() {
+      return {ok: true, batch: {batch_id: 'recoverable', status, requested: 5, total: 5, imported: 2,
+        unknown: status === 'running' ? 0 : 3, pending: status === 'running' ? 3 : 0, can_retry: true}};
+    }});
+    await h.settle();
+    assert.equal(h.node('butlerImportPageStatus').hidden, false, `${status} 仍可恢复查看`);
+    await h.node('butlerImportPageStatus').listeners.click();
+    assert.equal(h.node('butlerImportModal').open, true);
+    h.view.close();
+    assert.equal(h.node('butlerImportPageStatus').hidden, false);
+  }
+});
+
 test('服务端已完成后刷新页面失败保留已完成结果，不提示重新领取', async () => {
   const h = createView({refreshFails: true, handler(call) {
     if (call.url.endsWith('import-preview')) return {ok: true, preview_token: 'p', available: 5, selected: 5};
