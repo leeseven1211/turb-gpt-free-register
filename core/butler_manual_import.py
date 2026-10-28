@@ -8,8 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -180,14 +182,19 @@ def create(data):
 
 def _public(row, *, conn=None):
     counts = {state: 0 for state in _ITEM_STATES}
+    error_counts = {}
     for item in store.items(row['batch_id'], conn=conn):
         counts[item['status']] += 1
+        code = item.get('error_code')
+        if code:
+            error_counts[code] = error_counts.get(code, 0) + 1
     return {'batch_id': row['batch_id'], 'request_id': row['request_id'], 'status': row['status'],
             'total': sum(counts.values()), 'requested': row['filters']['count'],
             **counts, 'counts': counts,
             'completed': counts['imported'] + counts['skipped'] + counts['failed'] + counts['unknown'],
             'can_retry': bool(counts['pending'] or counts['submitting'] or counts['unknown']),
-            'error_code': row.get('error_code'), 'created_at': row.get('created_at'), 'updated_at': row.get('updated_at')}
+            'error_counts': error_counts, 'error_code': row.get('error_code'),
+            'created_at': row.get('created_at'), 'updated_at': row.get('updated_at')}
 
 
 def get(batch_id):
@@ -208,8 +215,54 @@ def _launch(batch_id):
     threading.Thread(target=_run_batch, args=(batch_id,), name='butler-import-' + batch_id[:8], daemon=True).start()
 
 
+def reconcile_interrupted():
+    """启动时标记已中断批次，保留原地址供显式续跑，不发起远端交接。"""
+    recovered = 0
+    rows = record_store.list_rows(record_store.EMAIL_BUTLER_IMPORT_BATCHES, where='status = %s', params=('running',))
+    for row in rows:
+        lock_key = 'butler-manual-import:' + row['batch_id']
+        with postgres_store.connect() as lock_conn:
+            with lock_conn.cursor() as cur:
+                cur.execute('SELECT pg_try_advisory_lock(hashtextextended(%s, 0))', (lock_key,))
+                acquired = cur.fetchone()[0]
+            lock_conn.commit()
+            if not acquired:
+                continue
+            try:
+                current = store.batch(row['batch_id'])
+                if current['status'] == 'running':
+                    states = [item['status'] for item in store.items(row['batch_id'])]
+                    complete = all(state in {'imported', 'skipped'} for state in states)
+                    record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, current['id'],
+                                           {'status': 'completed' if complete else 'partial',
+                                            'error_code': None if complete else 'import_interrupted'})
+                    recovered += 1
+            finally:
+                lock_conn.rollback()
+                with lock_conn.cursor() as cur:
+                    cur.execute('SELECT pg_advisory_unlock(hashtextextended(%s, 0))', (lock_key,))
+                lock_conn.commit()
+    return recovered
+
+
 def _patch_item(item_id, changes, *, conn=None):
     record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_ITEMS, item_id, changes, conn=conn)
+
+
+def _batch_error_code(error):
+    """区分数据库、本地任务和固定远端连接异常，不把任意异常误报为配置失效。"""
+    from psycopg import Error as PostgresError
+
+    if isinstance(error, PostgresError):
+        return 'import_storage_unavailable'
+    if isinstance(error, RemoteError):
+        return 'butler_remote_unavailable'
+    code = str(getattr(error, 'code', '') or str(error).partition(':')[0])
+    if code in {'fixed_route_unavailable', 'email_derivation_profile_unavailable'}:
+        return 'fixed_route_unavailable'
+    if code == 'handoff_contract_unsupported':
+        return code
+    return 'import_internal_error'
 
 
 def _process_item(batch, item, profile):
@@ -271,17 +324,22 @@ def _run_batch(batch_id):
                 handoff.verify_client(who, client_id=batch['client_id'])
                 record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
                                        {'status': 'running', 'error_code': None})
-                for item in remaining:
-                    _process_item(batch, item, profile)
+                # 批次锁与行级业务连接按 row_factory 分池；小业务池同步降低并发。
+                workers = min(4, max(1, int(os.getenv('TURB_DB_POOL_MAX') or 12)))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='butler-handoff') as executor:
+                    futures = [executor.submit(_process_item, batch, item, profile) for item in remaining]
+                    for future in futures:
+                        future.result()
             states = [item['status'] for item in store.items(batch_id)]
             complete = all(state in {'imported', 'skipped'} for state in states)
             record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
                                    {'status': 'completed' if complete else 'partial', 'error_code': None})
-        except Exception:
+        except Exception as exc:
+            error_code = _batch_error_code(exc)
             if batch:
                 record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                                       {'status': 'partial', 'error_code': 'original_route_unavailable'})
-            logger.warning('Butler manual import paused; original batch retained')
+                                       {'status': 'partial', 'error_code': error_code})
+            logger.warning('Butler 手动导入已暂停，原批次已保留：%s（%s）', error_code, type(exc).__name__)
         finally:
             lock_conn.rollback()
             with lock_conn.cursor() as cur:

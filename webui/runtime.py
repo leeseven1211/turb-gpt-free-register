@@ -1905,6 +1905,10 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             return False
 
         operation_task_store.init()
+        from core import butler_manual_import
+        recovered_imports = butler_manual_import.reconcile_interrupted()
+        if recovered_imports:
+            active_logger.warning("已恢复 %s 个因服务重启中断的 Butler 导入批次，可继续原批次", recovered_imports)
         try:
             from core import proxy_pool
 

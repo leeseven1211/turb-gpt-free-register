@@ -3,6 +3,7 @@ import importlib.util
 import os
 import uuid
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -195,6 +196,144 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertEqual(self.service.get(batch['batch_id'])['imported'], 2)
         self.assertEqual(len([path for _, path, _ in self.calls if path == '/mailboxes']), 2)
 
+    def test_parallel_imports_finish_other_addresses_while_one_handoff_is_slow(self):
+        self.addresses = ['parent+child' + str(index) + '@icloud.com' for index in range(8)]
+        preview = self.preview(count=8)
+        batch = self.service.create({'request_id': str(uuid.uuid4()), 'preview_token': preview['preview_token']})
+        four_started, release_fast, release_slow = threading.Event(), threading.Event(), threading.Event()
+        monitor = threading.Lock()
+        active = peak = 0
+
+        def held_remote(method, path, **kwargs):
+            nonlocal active, peak
+            if path != '/mailboxes':
+                return self.remote(method, path, **kwargs)
+            with monitor:
+                active += 1
+                peak = max(peak, active)
+                if active == 4:
+                    four_started.set()
+            try:
+                gate = release_slow if kwargs['json']['requested_email'] == self.addresses[0] else release_fast
+                if not gate.wait(5):
+                    raise TimeoutError('测试交接等待超时')
+                return self.remote(method, path, **kwargs)
+            finally:
+                with monitor:
+                    active -= 1
+
+        with patch('core.email_butler_client._request', side_effect=held_remote), ThreadPoolExecutor(max_workers=1) as pool:
+            worker = pool.submit(self.service._run_batch, batch['batch_id'])
+            try:
+                self.assertTrue(four_started.wait(2), '慢地址占用时，其他地址也应开始交接')
+                release_fast.set()
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    progress = self.service.get(batch['batch_id'])
+                    if progress['imported'] == 7:
+                        break
+                    threading.Event().wait(0.01)
+                self.assertEqual((progress['imported'], progress['submitting']), (7, 1))
+                self.assertEqual(peak, 4)
+            finally:
+                release_fast.set()
+                release_slow.set()
+                worker.result(timeout=5)
+        self.assertEqual(self.service.get(batch['batch_id'])['imported'], 8)
+
+    def test_error_counts_explain_failed_and_unconfirmed_handoffs_without_addresses(self):
+        batch, _ = self.create()
+        self.reject_address, self.timeout_address = self.addresses
+        self.service._run_batch(batch['batch_id'])
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual(result['error_counts'], {'handoff_rejected': 1, 'handoff_unconfirmed': 1})
+        self.assertNotIn('icloud.com', str(result))
+
+    def test_startup_marks_only_interrupted_batch_and_retry_keeps_original_identity(self):
+        batch, request = self.create()
+        original = self.items(batch)[0]
+        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_ITEMS, original['id'], {'status': 'submitting'})
+        self.calls.clear()
+        self.assertEqual(self.service.reconcile_interrupted(), 1)
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual((result['status'], result['error_code'], result['pending'], result['submitting']),
+                         ('partial', 'import_interrupted', 1, 1))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.service.reconcile_interrupted(), 0)
+        self.assertEqual(self.service.create(request)['batch_id'], batch['batch_id'])
+        self.service._run_batch(batch['batch_id'])
+        self.assertEqual(self.service.get(batch['batch_id'])['imported'], 2)
+        self.assertEqual(self.items(batch)[0]['acquisition_id'], original['acquisition_id'])
+
+    def test_startup_completes_imports_committed_before_batch_summary(self):
+        batch, _ = self.create()
+        row = record_store.get_row_by(record_store.EMAIL_BUTLER_IMPORT_BATCHES, 'batch_id', batch['batch_id'])
+        profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, row['profile_id'])
+        for item in self.items(batch):
+            self.service._process_item(row, item, profile)
+        self.assertEqual(self.service.get(batch['batch_id'])['status'], 'running')
+        self.calls.clear()
+        self.assertEqual(self.service.reconcile_interrupted(), 1)
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual((result['status'], result['error_code'], result['imported'], result['can_retry']),
+                         ('completed', None, 2, False))
+        self.assertEqual(self.calls, [])
+
+    def test_batch_classifies_database_and_local_worker_failures_separately(self):
+        from psycopg import OperationalError
+        from psycopg_pool import PoolTimeout
+
+        batch, _ = self.create()
+        for error, expected in ((RuntimeError('测试本地任务异常'), 'import_internal_error'),
+                                (OperationalError('测试数据库异常'), 'import_storage_unavailable'),
+                                (PoolTimeout('测试连接池耗尽'), 'import_storage_unavailable')):
+            with self.subTest(error=type(error).__name__), patch.object(self.service, '_process_item', side_effect=error):
+                self.service._run_batch(batch['batch_id'])
+                result = self.service.get(batch['batch_id'])
+                self.assertEqual((result['status'], result['error_code']), ('partial', expected))
+                self.assertEqual(result['pending'], 2)
+
+    def test_batch_classifies_remote_contract_and_fixed_credentials_failures(self):
+        from core.email_derivation import EmailDerivationError
+
+        batch, _ = self.create()
+        cases = [
+            (patch.object(self.service, '_request', side_effect=self.service.RemoteError('butler_remote_unavailable')),
+             'butler_remote_unavailable'),
+            (patch.object(self.service.handoff, 'verify_client', side_effect=ValueError('handoff_contract_unsupported')),
+             'handoff_contract_unsupported'),
+            (patch('core.email_derivation._profile_credentials', side_effect=EmailDerivationError(
+                'email_derivation_profile_unavailable', '测试固定凭据缺失')), 'fixed_route_unavailable'),
+        ]
+        for target, expected in cases:
+            with self.subTest(expected=expected), target:
+                self.service._run_batch(batch['batch_id'])
+                result = self.service.get(batch['batch_id'])
+                self.assertEqual((result['status'], result['error_code']), ('partial', expected))
+                self.assertEqual(result['pending'], 2)
+
+    def test_startup_does_not_pause_a_batch_with_an_active_worker(self):
+        batch, _ = self.create()
+        entered, release = threading.Event(), threading.Event()
+
+        def held_remote(method, path, **kwargs):
+            if path == '/mailboxes':
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('测试交接等待超时')
+            return self.remote(method, path, **kwargs)
+
+        with patch('core.email_butler_client._request', side_effect=held_remote), ThreadPoolExecutor(max_workers=1) as pool:
+            worker = pool.submit(self.service._run_batch, batch['batch_id'])
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(self.service.reconcile_interrupted(), 0)
+                self.assertEqual(self.service.get(batch['batch_id'])['status'], 'running')
+            finally:
+                release.set()
+                worker.result(timeout=5)
+        self.assertEqual(self.service.get(batch['batch_id'])['status'], 'completed')
+
     def test_expired_or_empty_preview_rejects_before_saving_profile_or_batch(self):
         preview = self.preview()
         snapshot = record_store.get_row_by(record_store.EMAIL_BUTLER_IMPORT_PREVIEWS,
@@ -283,6 +422,46 @@ class ButlerManualImportTests(PostgresTestCase):
                 batch, _ = self.create()
                 self.service._run_batch(batch['batch_id'])
                 self.assertEqual(self.service.get(batch['batch_id'])['imported'], 2)
+        finally:
+            postgres_store.close_pools()
+
+    def test_small_business_pool_can_finish_parallel_handoffs_without_connection_exhaustion(self):
+        postgres_store.close_pools()
+        self.addresses = ['parent+small' + str(index) + '@icloud.com' for index in range(6)]
+        two_started, release = threading.Event(), threading.Event()
+        monitor = threading.Lock()
+        active = peak = 0
+
+        def held_remote(method, path, **kwargs):
+            nonlocal active, peak
+            if path != '/mailboxes':
+                return self.remote(method, path, **kwargs)
+            with monitor:
+                active += 1
+                peak = max(peak, active)
+                if active == 2:
+                    two_started.set()
+            try:
+                if not release.wait(5):
+                    raise TimeoutError('测试交接等待超时')
+                return self.remote(method, path, **kwargs)
+            finally:
+                with monitor:
+                    active -= 1
+
+        try:
+            with patch.dict(os.environ, {'TURB_DB_POOL_MAX': '2'}):
+                preview = self.preview(count=6)
+                batch = self.service.create({'request_id': str(uuid.uuid4()), 'preview_token': preview['preview_token']})
+                with patch('core.email_butler_client._request', side_effect=held_remote), ThreadPoolExecutor(max_workers=1) as pool:
+                    worker = pool.submit(self.service._run_batch, batch['batch_id'])
+                    try:
+                        self.assertTrue(two_started.wait(2))
+                    finally:
+                        release.set()
+                        worker.result(timeout=5)
+                self.assertEqual(self.service.get(batch['batch_id'])['imported'], 6)
+                self.assertEqual(peak, 2)
         finally:
             postgres_store.close_pools()
 

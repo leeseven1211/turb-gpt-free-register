@@ -18,6 +18,9 @@ class WebUIRuntimeTests(unittest.TestCase):
         usage_worker = patch("core.email_usage_reports.start_worker")
         self.usage_worker = usage_worker.start()
         self.addCleanup(usage_worker.stop)
+        butler_recovery = patch('core.butler_manual_import.reconcile_interrupted', return_value=1)
+        self.butler_recovery = butler_recovery.start()
+        self.addCleanup(butler_recovery.stop)
 
     def tearDown(self):
         runtime._runtime_started = False
@@ -174,6 +177,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(init_operations.call_count, 1)
         start_proxy_pool.assert_called_once_with(prewarm=True)
         self.usage_worker.assert_called_once_with()
+        self.butler_recovery.assert_called_once_with()
 
     def test_runtime_status_is_read_only_and_contains_release_health_components(self):
         runtime._runtime_started = True
