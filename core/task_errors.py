@@ -1012,6 +1012,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),
     "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后的登录态未确认"),
     "profile_auth_error": ("FLOW-PROFILE-003", "资料阶段进入认证错误页"),
+    "account_create_invalid_state": ("OA-REG-SESSION-001", "资料提交时认证会话已失效"),
     "post_register_failure": ("OA-REG-POST-001", "注册请求之后流程失败（细项未记录）"),
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
@@ -1038,6 +1039,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
 
 # 注册驱动可以写入 Run 的固定原因码；拒绝从异常正文推断或透传任意字符串。
 REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
+    "account_create_invalid_state",
     "account_create_user_already_exists",
     "user_register_result_unknown",
     "registration_checkpoint_failed",

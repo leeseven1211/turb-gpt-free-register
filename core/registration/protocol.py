@@ -115,6 +115,7 @@ def _protocol_registration_cause_code(
 def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> str:
     """仅保留固定阶段、异常类型和 HTTP 状态，不复制远端正文。"""
     descriptions = {
+        "account_create_invalid_state": "资料提交时认证会话已失效",
         "user_register_result_unknown": "账号创建请求结果待确认",
         "registration_checkpoint_failed": "注册检查点本地写入失败",
         "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
@@ -151,6 +152,8 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
             if 100 <= candidate <= 599:
                 status = candidate
     suffix = f" HTTP {status}" if status is not None else ""
+    if cause_code == "account_create_invalid_state":
+        return f"{cause_code}: {descriptions[cause_code]}：{type_name}{suffix}"
     return f"{descriptions.get(cause_code, '注册流程失败')}：{type_name}{suffix}"
 
 

@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 from core.auth_challenge import AuthCancelledError
+from core.http_response_diagnostics import auth_error_from_body, auth_submission_endpoint
 from core.registration.protocol_oss import ProtocolOssRequestUnknown
 
 _CONTEXT: ContextVar[dict | None] = ContextVar("protocol_oss_2_context", default=None)
@@ -67,12 +68,26 @@ class _ObservedSession:
         path = urlsplit(url).path
         if method.upper() == "POST" and path.endswith("/create_account"):
             context["profile_started"] = True
+        profile_submit = method.upper() == "POST" and auth_submission_endpoint(url) == "profile_submit"
+        if profile_submit:
+            context.pop("profile_diagnostics", None)
         started = time.perf_counter()
         response = None
         error = None
         try:
             response = self._transport.request(method, url, **kwargs)
             response._protocol2_streaming = bool(kwargs.get("stream"))
+            if profile_submit and not kwargs.get("stream"):
+                try:
+                    status = int(response.status_code)
+                    if 400 <= status <= 599:
+                        context["profile_diagnostics"] = {
+                            "operation": "profile_submit", "http_status": status,
+                            "auth_error": auth_error_from_body(response.text),
+                        }
+                except Exception:
+                    # 诊断提取失败不能覆盖远端响应或读取原始异常正文。
+                    pass
             if path.endswith("/api/auth/session") and response.status_code == 200:
                 payload = response.json()
                 if isinstance(payload, dict):
@@ -250,8 +265,15 @@ def run_upstream_protocol(
             return result
 
         def create_account(self):
+            context.pop("profile_diagnostics", None)
+            context.pop("profile_error", None)
             progress("profile", "running", "正在提交上游注册资料")
-            result = super().create_account()
+            try:
+                result = super().create_account()
+            except Exception as exc:
+                # 上游可能吞掉资料异常后重认证；仅给最终仍传播的同一异常归因。
+                context["profile_error"] = exc
+                raise
             progress("profile", "success", "上游已确认注册资料")
             return result
 
@@ -324,6 +346,7 @@ def run_upstream_protocol(
             raise ProtocolOssRequestUnknown(
                 "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
                 register_response_confirmed=context["password_confirmed"],
+                cause_diagnostics=context.get("profile_diagnostics") if context.get("profile_error") is exc else None,
             ) from exc
         raise
     finally:

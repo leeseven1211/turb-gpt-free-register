@@ -21,9 +21,24 @@ logger = logging.getLogger(__name__)
 class ProtocolOssRequestUnknown(RuntimeError):
     """上游写请求已发出，但本地尚未确认远端结果。"""
 
-    def __init__(self, message: str, *, register_response_confirmed: bool = False):
+    def __init__(self, message: str, *, register_response_confirmed: bool = False,
+                 cause_diagnostics: dict | None = None):
         super().__init__(message)
         self.register_response_confirmed = register_response_confirmed is True
+        self.cause_diagnostics = {}
+        self.cause_code = ""
+        if isinstance(cause_diagnostics, dict) and cause_diagnostics.get("operation") == "profile_submit":
+            from core.http_response_diagnostics import safe_auth_error
+
+            status = cause_diagnostics.get("http_status")
+            if type(status) is int and 400 <= status <= 599:
+                self.http_status = status
+                self.cause_diagnostics = {
+                    "operation": "profile_submit", "http_status": status,
+                    "auth_error": safe_auth_error(cause_diagnostics.get("auth_error")),
+                }
+                if status == 409 and self.cause_diagnostics["auth_error"].get("code") == "invalid_state":
+                    self.cause_code = "account_create_invalid_state"
 
 
 class ProtocolOssManualReconcile(RuntimeError):
@@ -710,7 +725,7 @@ def run_protocol_oss_registration(
         if request_unknown:
             # A started write or incomplete session is not evidence of a local
             # persistence failure, nor of a confirmed registration response.
-            cause_code = "user_register_result_unknown"
+            cause_code = exc.cause_code or "user_register_result_unknown"
         elif core_persistence_started and account_id is None:
             cause_code = "registration_checkpoint_failed"
         else:
@@ -761,6 +776,7 @@ def run_protocol_oss_registration(
             "remote_account_state": "confirmed" if manual_reconcile else "request_unknown" if request_unknown else "not_started",
             "error_code": "manual_reconcile" if manual_reconcile else "request_unknown" if request_unknown else "registration_failed",
             "cause_code": "remote_identity_existing" if manual_reconcile else cause_code,
+            **({"cause_diagnostics": exc.cause_diagnostics} if request_unknown and exc.cause_diagnostics else {}),
             "error": error,
         }
     finally:

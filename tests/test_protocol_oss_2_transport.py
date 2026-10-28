@@ -95,6 +95,55 @@ def test_stopping_prevents_another_network_write():
     transport.request.assert_not_called()
 
 
+@pytest.mark.parametrize("method,url,stream,expected", [
+    ("POST", "https://auth.openai.com/api/accounts/create_account", False, True),
+    ("GET", "https://auth.openai.com/api/accounts/create_account", False, False),
+    ("POST", "https://auth.openai.com/api/accounts/create_account", True, False),
+    ("POST", "https://auth.openai.com.evil.test/api/accounts/create_account", False, False),
+    ("POST", "https://private@auth.openai.com/api/accounts/create_account", False, False),
+    ("POST", "https://auth.openai.com/api/accounts/password/verify", False, False),
+])
+def test_profile_error_diagnostic_reads_only_trusted_nonstreaming_submit(method, url, stream, expected):
+    class Response:
+        status_code = 409
+
+        @property
+        def text(self):
+            assert expected, "非目标资料响应不得读取正文"
+            return '{"error":{"code":"invalid_state","type":"private-type","message":"private-body"}}'
+
+    transport = Mock()
+    transport.request.return_value = Response()
+    context = {"capture": None}
+    session = _ObservedSession(transport, context)
+    with patch("core.registration_service.check_stop_requested"), patch("core.registration_debug.record_protocol_exchange"):
+        session.request(method, url, stream=stream)
+    if expected:
+        assert context["profile_diagnostics"] == {
+            "operation": "profile_submit", "http_status": 409,
+            "auth_error": {"code": "invalid_state", "type": "unknown", "category": "auth_state"},
+        }
+        assert "private" not in json.dumps(context)
+    else:
+        assert "profile_diagnostics" not in context
+
+
+def test_successful_profile_does_not_read_response_body_for_error_diagnostics():
+    class Response:
+        status_code = 200
+
+        @property
+        def text(self):
+            raise AssertionError("成功资料响应不应读取错误正文")
+
+    transport = Mock()
+    transport.request.return_value = Response()
+    context = {"capture": None}
+    with patch("core.registration_service.check_stop_requested"), patch("core.registration_debug.record_protocol_exchange"):
+        _ObservedSession(transport, context).post("https://auth.openai.com/api/accounts/create_account")
+    assert "profile_diagnostics" not in context
+
+
 def test_upstream_trace_also_avoids_reading_streamed_navigation():
     from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
 

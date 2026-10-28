@@ -1,4 +1,5 @@
 """开源protocol-2 的真实上游控制流与本地接缝回归。"""
+import json
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -23,6 +24,8 @@ class Transport:
         self.checkpoints = []
         self.password_error = None
         self.password_status = 200
+        self.profile_status = 200
+        self.profile_payload = None
         self.progress_events = []
         self.otp_payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
         self.closed = False
@@ -39,12 +42,18 @@ class Transport:
         payload = {}
         if url.endswith("/email-otp/validate"):
             payload = self.otp_payload
+        elif url.endswith("/create_account") and self.profile_payload is not None:
+            payload = self.profile_payload
         elif url.endswith("/create_account") or url.endswith("/password/verify"):
             payload = {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture"}
         elif url.endswith("/api/auth/session"):
             payload = {"accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user"}}
         status = self.password_status if url.endswith("/user/register") else 200
+        if url.endswith("/create_account"):
+            status = self.profile_status
         response = Mock(status_code=status, headers={}, content=b"{}", text="{}")
+        if url.endswith("/create_account"):
+            response.text = json.dumps(payload)
         response.json.return_value = payload
         return response
 
@@ -240,6 +249,99 @@ def test_unknown_registration_result_does_not_invent_a_checkpoint_failure_or_res
     assert "private-response-body" not in result["error"]
     assert "fixture-secret" not in result["error"]
     assert "protocol2@example.test" not in result["error"]
+
+
+def test_profile_invalid_state_preserves_safe_cause_and_unknown_account_result(upstream):
+    from core.registration_service import _registration_request_unknown_facts
+    from core.task_errors import classify_task_error
+
+    session, transport, _ = upstream
+    transport.profile_status = 409
+    transport.profile_payload = {"error": {
+        "code": "invalid_state", "type": "invalid_request_error",
+        "message": "Your sign-in session is no longer valid. private@example.test token=fixture-private",
+        "redirect_uri": "https://chatgpt.com/auth/login_with?callback_path=/&private=fixture-private",
+    }}
+    with (
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.retain_email") as retain,
+        patch("core.email_provider.mark_email_permanently_unusable") as mark_unusable,
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide",
+        )
+
+    assert result["cause_code"] == "account_create_invalid_state"
+    assert result["cause_diagnostics"] == {
+        "operation": "profile_submit", "http_status": 409,
+        "auth_error": {"code": "invalid_state", "type": "invalid_request_error", "category": "auth_state"},
+    }
+    assert result["request_unknown"] is True
+    assert result["error_code"] == "request_unknown"
+    assert result["register_response_confirmed"] is True
+    assert result["remote_account_state"] == "request_unknown"
+    assert result["core_persisted"] is False
+    assert result["account_id"] is None
+    assert "HTTP 409" in result["error"]
+    assert "invalid_state" in result["error"]
+    assert "认证会话已失效" in result["error"]
+    for private in ("fixture-private", "private@example.test", "redirect_uri", "login_with", "Your sign-in session"):
+        assert private not in json.dumps(result)
+    assert sum(url.endswith("/create_account") for _, url, _ in transport.requests) == 1
+    retain.assert_called_once()
+    mark_unusable.assert_not_called()
+    assert _registration_request_unknown_facts(result)["cause_code"] == "account_create_invalid_state"
+    for summary in ({}, result):
+        info = classify_task_error(result["error"], task_type="registration", result_summary=summary)
+        assert info["code"] == "account_create_invalid_state"
+        assert info["summary"] == "资料提交时认证会话已失效"
+
+
+@pytest.mark.parametrize("status,code", [(400, "invalid_state"), (409, "invalid_email"), (409, "private-code")])
+def test_other_profile_rejections_do_not_invent_an_expired_session_cause(upstream, status, code):
+    session, transport, _ = upstream
+    transport.profile_status = status
+    transport.profile_payload = {"error": {"code": code, "type": "invalid_request_error"}}
+    with patch("core.session.BrowserSession", return_value=session), patch("core.email_provider.retain_email"):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide",
+        )
+    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["request_unknown"] is True
+    assert result["cause_diagnostics"]["http_status"] == status
+    assert "private-code" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("second_profile_attempt", [False, True])
+def test_recovered_profile_error_does_not_mask_a_later_session_failure(upstream, second_profile_attempt):
+    session, transport, _ = upstream
+    transport.profile_status = 409
+    transport.profile_payload = {"error": {"code": "invalid_state", "type": "invalid_request_error"}}
+
+    def recover_profile_then_fail_session(flow, _mailbox):
+        try:
+            flow.create_account()
+        except RuntimeError:
+            pass
+        if second_profile_attempt:
+            with patch.object(AuthFlow, "create_account", side_effect=TimeoutError("profile preparation failure fixture")):
+                flow.create_account()
+        raise TimeoutError("later session failure fixture")
+
+    with (
+        patch.object(AuthFlow, "run_register", recover_profile_then_fail_session),
+        patch("core.session.BrowserSession", return_value=session),
+        patch("core.email_provider.retain_email"),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
+        )
+    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["request_unknown"] is True
+    assert "cause_diagnostics" not in result
 
 
 def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoint_failure(upstream):
