@@ -8,6 +8,28 @@ from core.registration_service import _build_retry_info
 
 
 class RegistrationServicePostprocessContractTests(unittest.TestCase):
+    def test_request_unknown_keeps_safe_registration_diagnostics(self):
+        evidence = {
+            "operation": "otp_validate", "failure_kind": "transport_error",
+            "exception_type": "TimeoutError", "failure_stage": "email_otp",
+            "last_confirmed_stage": "password", "otp_received": True,
+            "profile_confirmed": False,
+        }
+        facts = registration_service._registration_request_unknown_facts({
+            "cause_code": "user_register_result_unknown",
+            "register_response_confirmed": True,
+            "registration_diagnostics": {**evidence, "raw_response": "不可持久化", "email": "unit@example.test"},
+        })
+        self.assertEqual(evidence, facts.get("registration_diagnostics"))
+        self.assertEqual("request_unknown", facts["outcome"])
+        self.assertTrue(facts["register_response_confirmed"])
+
+    def test_request_unknown_drops_untrusted_registration_diagnostics(self):
+        facts = registration_service._registration_request_unknown_facts({
+            "registration_diagnostics": {"email": "unit@example.test", "raw_response": "不可持久化"},
+        })
+        self.assertNotIn("registration_diagnostics", facts)
+
     def test_request_unknown_facts_only_keep_fixed_code_and_real_boolean(self):
         facts = registration_service._registration_request_unknown_facts({
             "cause_code": "registration_checkpoint_failed",

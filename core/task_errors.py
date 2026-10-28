@@ -112,6 +112,13 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ("账号已删除或提链状态已被重置",),
     ),
     (
+        "external.network.mfa_transport",
+        "external",
+        "网络 / 上游服务",
+        "2FA 通道网络错误",
+        ("twofaprotocoltransporterror", "transport failed after retry", "enroll transport failed", "activate transport failed"),
+    ),
+    (
         "task.pending",
         "system",
         "任务状态",
@@ -289,18 +296,6 @@ _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
             "account cannot be created",
             "无法创建账号",
             "无法创建您的账号",
-        ),
-    ),
-    (
-        "external.network.mfa_transport",
-        "external",
-        "网络 / 上游服务",
-        "2FA 通道网络错误",
-        (
-            "twofaprotocoltransporterror",
-            "transport failed after retry",
-            "enroll transport failed",
-            "activate transport failed",
         ),
     ),
     (
@@ -1032,8 +1027,16 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "remote_response_missing": ("REQ-RESPONSE-001", "远端响应缺失"),
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
-    "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认"),
+    "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认，未保留失败细项"),
     "account_create_user_already_exists": ("OA-REG-EXISTS-001", "远端提示账号已存在，完整登录态尚未确认"),
+    "protocol_preauth_transport_failed": ("NET-REG-PREAUTH", "协议认证前置请求发生传输错误"),
+    "protocol_post_otp_transport_failed": ("NET-REG-OTP", "已取得邮箱验证码，后续认证请求发生传输错误"),
+    "protocol_auth_transport_failed": ("NET-REG-AUTH", "协议认证请求发生传输错误"),
+    "protocol_auth_rejected_before_password": ("OA-REG-AUTH-PWD", "密码尚未确认时认证请求被拒绝"),
+    "protocol_auth_http_failed": ("OA-REG-AUTH-HTTP", "协议认证请求返回 HTTP 错误"),
+    "protocol_session_incomplete": ("FLOW-REG-SESSION", "注册资料已确认，后续登录态尚未取得"),
+    "protocol_failure_evidence_missing": ("FLOW-REG-EVIDENCE", "协议失败未保留足够请求证据，无法确认具体原因"),
+    "local_config_schema_mismatch": ("SYS-CONFIG-SCHEMA", "配置 schema 不匹配，请重启后重跑"),
 }
 
 
@@ -1051,7 +1054,103 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "email_otp_send_unknown",
     "email_otp_no_mail",
     "post_register_failure",
+    "protocol_preauth_transport_failed",
+    "protocol_post_otp_transport_failed",
+    "protocol_auth_transport_failed",
+    "protocol_auth_rejected_before_password",
+    "protocol_auth_http_failed",
+    "protocol_session_incomplete",
+    "protocol_failure_evidence_missing",
 })
+
+
+_REGISTRATION_DIAGNOSTIC_OPERATIONS = frozenset({
+    "preauth", "email_submit", "password_submit", "otp_send", "otp_validate", "profile_submit",
+    "callback", "session", "auth_session", "other",
+})
+_REGISTRATION_DIAGNOSTIC_STAGES = frozenset({
+    "browser", "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
+})
+_REGISTRATION_DIAGNOSTIC_FAILURE_KINDS = frozenset({
+    "transport_error", "http_error", "invalid_response", "missing_session", "unknown",
+})
+_REGISTRATION_EXCEPTION_TYPES = frozenset({
+    "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError", "JSONDecodeError",
+    "TimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout", "RequestTimeout", "TimeoutException",
+    "ConnectionError", "ConnectionResetError", "ConnectionAbortedError", "BrokenPipeError", "OSError",
+    "SSLError", "SSLCertVerificationError", "CertificateError", "TlsError", "ProxyConnectionError", "ProxyError",
+    "HTTPError", "HTTPStatusError", "RequestException", "RequestError", "TransportError", "ProtocolError",
+    "ConnectError", "ReadError", "WriteError", "ConnectTimeoutError", "ReadTimeoutError", "ProtocolOssRequestUnknown",
+})
+
+
+def safe_registration_diagnostics(value: object) -> dict[str, Any]:
+    """只保留固定请求与进度事实，不信任异常正文或任意属性字符串。"""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, allowed in (
+        ("operation", _REGISTRATION_DIAGNOSTIC_OPERATIONS),
+        ("failure_kind", _REGISTRATION_DIAGNOSTIC_FAILURE_KINDS),
+        ("failure_stage", _REGISTRATION_DIAGNOSTIC_STAGES),
+        ("last_confirmed_stage", _REGISTRATION_DIAGNOSTIC_STAGES | {""}),
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item in allowed:
+            result[key] = item
+    status = value.get("http_status")
+    if type(status) is int and 100 <= status <= 599:
+        result["http_status"] = status
+    if isinstance(value.get("auth_error"), dict):
+        from core.http_response_diagnostics import safe_auth_error
+
+        auth_error = safe_auth_error(value["auth_error"])
+        if auth_error:
+            result["auth_error"] = auth_error
+    for key in ("otp_received", "profile_confirmed"):
+        if type(value.get(key)) is bool:
+            result[key] = value[key]
+    exception_type = value.get("exception_type")
+    if isinstance(exception_type, str):
+        result["exception_type"] = exception_type if exception_type in _REGISTRATION_EXCEPTION_TYPES else "Exception"
+    chain = value.get("exception_chain")
+    if isinstance(chain, (list, tuple)):
+        result["exception_chain"] = [
+            item if isinstance(item, str) and item in _REGISTRATION_EXCEPTION_TYPES else "Exception"
+            for item in chain[:8]
+        ]
+    return result
+
+
+def registration_diagnostic_cause_code(value: object) -> str:
+    """同一次失败请求的受控证据决定原因，较早响应不参与推断。"""
+    diagnostics = safe_registration_diagnostics(value)
+    if not diagnostics:
+        return ""
+    operation = diagnostics.get("operation")
+    kind = diagnostics.get("failure_kind")
+    status = diagnostics.get("http_status")
+    if kind == "http_error" and operation == "profile_submit":
+        code = diagnostics.get("auth_error", {}).get("code")
+        if status == 409 and code == "invalid_state":
+            return "account_create_invalid_state"
+        if status == 400 and code == "user_already_exists":
+            return "account_create_user_already_exists"
+    if diagnostics.get("profile_confirmed") is True:
+        return "protocol_session_incomplete"
+    if kind == "transport_error" and operation not in {None, "other"}:
+        if diagnostics.get("otp_received") is True:
+            return "protocol_post_otp_transport_failed"
+        if operation == "preauth":
+            return "protocol_preauth_transport_failed"
+        return "protocol_auth_transport_failed"
+    if kind == "http_error" and isinstance(status, int) and 400 <= status <= 599:
+        if (status < 500 and operation in {"email_submit", "password_submit", "auth_session"}
+                and diagnostics.get("last_confirmed_stage") in {"", "browser", "submit_email", "auth_redirect"}
+                and diagnostics.get("failure_stage") in {"submit_email", "auth_redirect", "password", "login_password"}):
+            return "protocol_auth_rejected_before_password"
+        return "protocol_auth_http_failed"
+    return "protocol_failure_evidence_missing"
 
 
 def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> dict[str, str] | None:
@@ -1116,6 +1215,11 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
                           if isinstance(value := summary.get(key), dict)]
     diagnostics = diagnostic_sources[0] if diagnostic_sources else {}
     code = str(summary.get("cause_code") or "").strip()
+    registration_cause = registration_diagnostic_cause_code(summary.get("registration_diagnostics"))
+    if registration_cause and code in ({"", "registration_failed", "user_register_result_unknown"} | {
+        item for item in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES if item.startswith("protocol_")
+    }):
+        code = registration_cause
     if code == "password_rejected_email_fallback_failed":
         inner_code = str(diagnostics.get("cause_code") or "").strip()
         if inner_code in _CAUSE_DETAILS:
@@ -1360,6 +1464,9 @@ def _cause_error_projection(
         projection.update(source='external', source_label='邮箱资源', next_action='inspect_email_resource')
         if cause['cause_code'] in {'email_resource_expired', 'email_resource_expiry_invalid'}:
             projection['retryability'] = 'not_retryable'
+    if cause["cause_code"] == "local_config_schema_mismatch":
+        projection.update(source="internal", source_label="本地配置", remote_state_impact="unknown",
+                          next_action="restart_and_retry")
     if error_code:
         projection["original_error_code"] = error_code
     return projection
@@ -1388,6 +1495,8 @@ def classify_task_error(
         ))
     )
     cause = _specific_error_cause(summary_data)
+    if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
+        cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES):
         cause = _specific_error_cause({"cause_code": error_code})
@@ -1438,4 +1547,6 @@ __all__ = [
     "classify_task_error",
     "is_request_unknown",
     "stable_error_code",
+    "safe_registration_diagnostics",
+    "registration_diagnostic_cause_code",
 ]

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from core.auth_challenge import AuthCancelledError
 from core.http_response_diagnostics import auth_error_from_body, auth_submission_endpoint
+from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
 from core.registration.protocol_oss import ProtocolOssRequestUnknown
 
 _CONTEXT: ContextVar[dict | None] = ContextVar("protocol_oss_2_context", default=None)
@@ -99,6 +100,15 @@ class _ObservedSession:
                 context["write_unknown"] = True
             raise
         finally:
+            diagnostics = context.get("registration_diagnostics")
+            if diagnostics is not None:
+                try:
+                    diagnostics.observe_request(
+                        method, url, response=response, error=error, stream=bool(kwargs.get("stream")),
+                    )
+                except Exception:
+                    # 外围诊断失败不能改变原响应、异常或后续认证动作。
+                    pass
             capture = context.get("capture")
             if context.get("observing", True):
                 try:
@@ -172,11 +182,31 @@ def run_upstream_protocol(
         "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [],
         "password_started": False, "password_confirmed": password_confirmed,
         "profile_started": False, "write_unknown": False, "session_info": {},
+        "registration_diagnostics": RegistrationFailureDiagnostics(),
     }
+
+    def observe(method, *args):
+        try:
+            return getattr(context["registration_diagnostics"], method)(*args)
+        except Exception:
+            # 诊断只观察，不授予认证分支、重试或取消控制权。
+            return None
+
+    def observed_action(operation, callback, *args, **kwargs):
+        try:
+            sequence = context["registration_diagnostics"].sequence
+        except Exception:
+            sequence = None
+        try:
+            return callback(*args, **kwargs)
+        except Exception as exc:
+            observe("bind_failure", exc, operation, sequence)
+            raise
 
     def progress(stage, state, detail):
         _check_stop_requested()
         report_job_progress(stage, state, detail)
+        observe("progress", stage, state)
 
     class LocalMailbox:
         kind = "local"
@@ -198,11 +228,14 @@ def run_upstream_protocol(
             progress("email_otp", "running", "正在通过原邮箱来源等待验证码")
             if self.code is not None:
                 code, self.code = self.code, None
+                observe("received_otp")
                 return code
             try:
-                return wait_for_otp(
+                code = wait_for_otp(
                     email, after_ts=issued_after, max_wait=timeout, email_source=email_source,
                 )
+                observe("received_otp")
+                return code
             except (StopRequested, AuthCancelledError) as exc:
                 raise _VendorCancelled(exc) from exc
 
@@ -211,6 +244,7 @@ def run_upstream_protocol(
             if context["password_confirmed"]:
                 # 原 Attempt 已有远端确认，续跑沿用原密码并进入邮箱认证分支。
                 progress("password", "skipped", "复用原任务已确认的账号密码，本次不重复提交密码注册")
+                observe("progress", "password", "success")
                 return False
             accepted = super().register_password(address)
             if not accepted:
@@ -246,20 +280,23 @@ def run_upstream_protocol(
 
         def signup(self, *args, **kwargs):
             progress("submit_email", "running", "正在建立上游邮箱认证状态")
-            result = super().signup(*args, **kwargs)
+            result = observed_action("email_submit", super().signup, *args, **kwargs)
             progress("submit_email", "success", "上游邮箱认证状态已建立")
             progress("auth_redirect", "success", "已进入上游认证流程")
             return result
 
         def verify_otp(self, code):
-            result = super().verify_otp(code)
+            result = observed_action("otp_validate", super().verify_otp, code)
             progress("email_otp", "success", "上游邮箱验证码已通过")
             return result
+
+        def send_otp(self, *args, **kwargs):
+            return observed_action("otp_send", super().send_otp, *args, **kwargs)
 
         def login_password_verify(self, password):
             progress("login_password", "running", "正在使用原密码继续上游认证")
             self.get_sentinel_token(self.result.device_id)
-            result = super().login_password_verify(password)
+            result = observed_action("password_submit", super().login_password_verify, password)
             context["password_confirmed"] = True
             progress("login_password", "success", "原密码已通过上游认证")
             return result
@@ -269,12 +306,19 @@ def run_upstream_protocol(
             context.pop("profile_error", None)
             progress("profile", "running", "正在提交上游注册资料")
             try:
-                result = super().create_account()
+                result = observed_action("profile_submit", super().create_account)
             except Exception as exc:
                 # 上游可能吞掉资料异常后重认证；仅给最终仍传播的同一异常归因。
                 context["profile_error"] = exc
                 raise
             progress("profile", "success", "上游已确认注册资料")
+            # 仅补进度，不在原流程之外增加停止检查点。
+            try:
+                report_job_progress("token", "running", "资料已确认，正在完成回调和登录态")
+            except Exception:
+                # 新增进度写入失败同样不能改变原认证结果。
+                pass
+            observe("progress", "token", "running")
             return result
 
         def _resolve_login_password(self, address):
@@ -342,12 +386,21 @@ def run_upstream_protocol(
     except (StopRequested, AuthCancelledError):
         raise
     except Exception as exc:
+        diagnostics = observe("failure", exc)
+        if diagnostics is not None:
+            try:
+                exc.registration_diagnostics = diagnostics
+            except Exception:
+                pass
         if existing_password or any(context[key] for key in ("password_started", "password_confirmed", "profile_started", "write_unknown")):
-            raise ProtocolOssRequestUnknown(
+            unknown = ProtocolOssRequestUnknown(
                 "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
                 register_response_confirmed=context["password_confirmed"],
                 cause_diagnostics=context.get("profile_diagnostics") if context.get("profile_error") is exc else None,
-            ) from exc
+            )
+            if diagnostics is not None:
+                unknown.registration_diagnostics = diagnostics
+            raise unknown from exc
         raise
     finally:
         _CONTEXT.reset(token)

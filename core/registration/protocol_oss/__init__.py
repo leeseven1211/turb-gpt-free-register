@@ -22,11 +22,14 @@ class ProtocolOssRequestUnknown(RuntimeError):
     """上游写请求已发出，但本地尚未确认远端结果。"""
 
     def __init__(self, message: str, *, register_response_confirmed: bool = False,
-                 cause_diagnostics: dict | None = None):
+                 cause_diagnostics: dict | None = None, registration_diagnostics: dict | None = None):
         super().__init__(message)
+        from core.task_errors import registration_diagnostic_cause_code, safe_registration_diagnostics
+
         self.register_response_confirmed = register_response_confirmed is True
+        self.registration_diagnostics = safe_registration_diagnostics(registration_diagnostics)
         self.cause_diagnostics = {}
-        self.cause_code = ""
+        self.cause_code = registration_diagnostic_cause_code(self.registration_diagnostics)
         if isinstance(cause_diagnostics, dict) and cause_diagnostics.get("operation") == "profile_submit":
             from core.http_response_diagnostics import safe_auth_error
 
@@ -411,6 +414,25 @@ def _run_upstream_protocol(
         raise
 
 
+def _safe_twofa_failure_detail(exc: BaseException) -> str:
+    """后置失败只保留操作、异常类型和 HTTP 状态，不复制远端正文。"""
+    from core.account_export import TwofaProtocolHTTPError, TwofaProtocolTransportError
+
+    type_name = type(exc).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", type_name):
+        type_name = "Exception"
+    operation = getattr(exc, "operation", "")
+    operation = operation if isinstance(operation, str) and operation in {"enroll", "activate", "reauth"} else "mfa"
+    if isinstance(exc, TwofaProtocolTransportError):
+        cause_type = str(getattr(exc, "cause_type", "") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", cause_type):
+            cause_type = "TransportError"
+        return f"{type_name}: {operation} 传输失败，异常类型={cause_type}"
+    if isinstance(exc, TwofaProtocolHTTPError):
+        return f"{type_name}: {operation} HTTP {exc.status_code}"
+    return f"{type_name}: {operation} 步骤未完成"
+
+
 def _run_local_postprocessing(
     *,
     session,
@@ -484,6 +506,7 @@ def _run_local_postprocessing(
             report_job_progress("plan_check", "failed", plan_result["message"])
 
     totp_secret = existing_totp_secret or None
+    twofa_error = None
     if twofa_enabled and totp_secret:
         report_job_progress("twofa", "success", "已复用原任务确认的 Authenticator 2FA")
     elif twofa_enabled:
@@ -508,8 +531,9 @@ def _run_local_postprocessing(
         except (AuthCancelledError, StopRequested):
             raise
         except Exception as exc:
-            logger.error("开源 Protocol 2FA 未完成：%s", type(exc).__name__)
-            report_job_progress("twofa", "failed", f"2FA 设置未完成：{type(exc).__name__}")
+            twofa_error = f"2FA 未完成：{_safe_twofa_failure_detail(exc)}"
+            logger.error("开源 Protocol %s", twofa_error)
+            report_job_progress("twofa", "failed", twofa_error)
     else:
         report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
 
@@ -567,7 +591,7 @@ def _run_local_postprocessing(
     )
     error_parts = [
         None if codex_ok else f"Codex 未完成：{codex_result.get('message') or '未知'}",
-        None if twofa_ok else "2FA 未完成",
+        None if twofa_ok else twofa_error or "2FA 未完成",
         None if plan_result.get("ok") else "套餐查询待重试",
         None if password_ok else "原密码尚未确认生效",
         bootstrap_error,
@@ -721,17 +745,20 @@ def run_protocol_oss_registration(
             _protocol_registration_cause_code,
             _safe_protocol_registration_error,
         )
+        from core.task_errors import registration_diagnostic_cause_code, safe_registration_diagnostics
 
+        registration_diagnostics = safe_registration_diagnostics(getattr(exc, "registration_diagnostics", None))
+        diagnostic_cause = registration_diagnostic_cause_code(registration_diagnostics)
         request_unknown = isinstance(exc, ProtocolOssRequestUnknown)
         manual_reconcile = isinstance(exc, ProtocolOssManualReconcile)
         if request_unknown:
             # A started write or incomplete session is not evidence of a local
             # persistence failure, nor of a confirmed registration response.
-            cause_code = exc.cause_code or "user_register_result_unknown"
+            cause_code = exc.cause_code or diagnostic_cause or "user_register_result_unknown"
         elif core_persistence_started and account_id is None:
             cause_code = "registration_checkpoint_failed"
         else:
-            cause_code = _protocol_registration_cause_code(
+            cause_code = diagnostic_cause or _protocol_registration_cause_code(
                 exc,
                 str(exc),
                 register_accepted=False,
@@ -779,6 +806,7 @@ def run_protocol_oss_registration(
             "error_code": "manual_reconcile" if manual_reconcile else "request_unknown" if request_unknown else "registration_failed",
             "cause_code": "remote_identity_existing" if manual_reconcile else cause_code,
             **({"cause_diagnostics": exc.cause_diagnostics} if request_unknown and exc.cause_diagnostics else {}),
+            **({"registration_diagnostics": registration_diagnostics} if registration_diagnostics else {}),
             "error": error,
         }
     finally:

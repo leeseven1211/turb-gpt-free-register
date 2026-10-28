@@ -138,7 +138,8 @@ class RegistrationRetryDriverTests(unittest.TestCase):
 
     def test_roxy_resume_rejects_non_resume_and_unverified_identity(self):
         for changed, action in (
-            ({}, "registration"),
+            ({}, "codex"),
+            ({}, "plan_check"),
             ({"account": {"access_token": "already-complete"}}, "registration_resume"),
             ({"account": {"extra_json": {"registration_checkpoint": "completed", "account_password": "SavedPassword!123"}}}, "registration_resume"),
             ({"account": {"extra_json": {"registration_checkpoint": "email_verification_pending"}}}, "registration_resume"),
@@ -157,6 +158,80 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["status"], 409)
                 self.assertIsNone(create_call)
+                executor.submit.assert_not_called()
+
+    def test_roxy_registration_retry_keeps_original_identity_and_new_snapshot_only(self):
+        source, _account, attempt = self._facts()
+        source["account_id"] = None
+        source["config_snapshot"]["registration_driver"] = "protocol_oss_2"
+        original = copy.deepcopy(source)
+
+        result, create_call, executor = self._retry(
+            source, None, attempt, action="registration", debug_enabled=True,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(create_call.args, (21,))
+        self.assertEqual(create_call.kwargs["job_type"], "registration")
+        self.assertEqual(create_call.kwargs["email"], "pending@example.test")
+        self.assertEqual(create_call.kwargs["email_source"], "icloud_hide")
+        self.assertIsNone(create_call.kwargs["account_id"])
+        self.assertEqual(create_call.kwargs["data"]["config_snapshot"]["registration_driver"], "roxy")
+        self.assertEqual(source, original)
+        self.assertIs(result["job"]["debug_enabled"], True)
+        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_one_job)
+
+    def test_roxy_twofa_retry_freezes_browser_mode_without_changing_original_snapshot(self):
+        source, account, attempt = self._facts()
+        account["access_token"] = "unit-existing-token"
+        source["config_snapshot"].update(registration_driver="protocol_oss_2", twofa_driver="protocol")
+        original = copy.deepcopy(source)
+
+        result, create_call, executor = self._retry(
+            source, account, attempt, action="twofa", debug_enabled=True,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(create_call.kwargs["job_type"], "twofa_retry")
+        snapshot = create_call.kwargs["data"]["config_snapshot"]
+        self.assertEqual(snapshot["registration_driver"], "roxy")
+        self.assertEqual(snapshot["twofa_driver"], "browser")
+        self.assertEqual(create_call.kwargs["account_id"], 44)
+        self.assertEqual(create_call.kwargs["email"], "pending@example.test")
+        self.assertEqual(source, original)
+        self.assertIs(result["job"]["debug_enabled"], True)
+        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_twofa_retry_job)
+
+    def test_twofa_retry_without_override_keeps_original_modes(self):
+        source, account, attempt = self._facts()
+        account["access_token"] = "unit-existing-token"
+        source["config_snapshot"].update(registration_driver="protocol_oss_2", twofa_driver="protocol")
+
+        result, create_call, _executor = self._retry(
+            source, account, attempt, action="twofa", driver_choice=None,
+        )
+
+        self.assertTrue(result["ok"], result)
+        snapshot = create_call.kwargs["data"]["config_snapshot"]
+        self.assertEqual(snapshot["registration_driver"], "protocol_oss_2")
+        self.assertEqual(snapshot["twofa_driver"], "protocol")
+
+    def test_roxy_twofa_retry_only_reuses_matching_browser_mode_and_debug(self):
+        for mode, debug, expected in (("protocol", True, False), (None, True, False),
+                                      ("browser", False, False), ("browser", True, True)):
+            with self.subTest(mode=mode, debug=debug):
+                source, account, attempt = self._facts()
+                account["access_token"] = "unit-existing-token"
+                child = {"id": 22, "status": "running", "job_type": "twofa_retry", "debug_enabled": debug,
+                         "config_snapshot": {"registration_driver": "roxy", "twofa_driver": mode}}
+                result, _create_call, executor = self._retry(
+                    source, account, attempt, action="twofa", child=child, debug_enabled=True,
+                )
+                self.assertIs(result["ok"], expected, result)
+                if expected:
+                    self.assertTrue(result["reused"])
+                else:
+                    self.assertEqual(result["status"], 409)
                 executor.submit.assert_not_called()
 
     def test_roxy_resume_does_not_reuse_active_protocol_child(self):

@@ -58,6 +58,48 @@ def test_observed_wreq_posts_json_and_preserves_cookies_through_the_allocated_pr
         worker.join(timeout=3)
 
 
+@pytest.mark.parametrize("path", ["/api/accounts/email-otp/validate", "/api/accounts/create_account"])
+def test_real_wreq_error_body_remains_readable_after_diagnostics(path):
+    pytest.importorskip("wreq")
+    from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
+    from core.registration.protocol_oss_2.upstream.http_client_wreq import create_http_session
+
+    payload = {"error": {"code": "invalid_state", "type": "invalid_request_error"}}
+    body = json.dumps(payload).encode()
+
+    class Proxy(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(403)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    transport = create_http_session(proxy=f"http://127.0.0.1:{server.server_port}", impersonate="chrome152")
+    try:
+        response = transport.get("http://protocol2.fixture.invalid/error", timeout=3)
+        diagnostics = RegistrationFailureDiagnostics()
+        session = _ObservedSession(Mock(request=Mock(return_value=response)), {
+            "capture": None, "registration_diagnostics": diagnostics,
+        })
+        with patch("core.registration_service.check_stop_requested"), patch("core.registration_debug.record_protocol_exchange"):
+            assert session.post("https://auth.openai.com" + path) is response
+        assert response.text == body.decode()
+        assert response.json() == payload
+        assert response.content == body
+        assert diagnostics._events[-1][1]["auth_error"]["code"] == "invalid_state"
+    finally:
+        transport.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)
+
+
 def test_streaming_navigation_diagnostics_do_not_read_the_body():
     class StreamingResponse:
         status_code = 200

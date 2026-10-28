@@ -238,7 +238,9 @@ def test_unknown_registration_result_does_not_invent_a_checkpoint_failure_or_res
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
             proxy=session.proxy, email_source="icloud_hide",
         )
-    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["cause_code"] == (
+        "protocol_failure_evidence_missing" if response_confirmed else "protocol_auth_transport_failed"
+    )
     assert result["request_unknown"] is True
     assert result["register_response_confirmed"] is response_confirmed
     assert result["registration_pending"] is True
@@ -319,7 +321,7 @@ def test_other_profile_rejections_do_not_invent_an_expired_session_cause(upstrea
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
             proxy=session.proxy, email_source="icloud_hide",
         )
-    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["cause_code"] == "protocol_auth_http_failed"
     assert result["request_unknown"] is True
     assert result["cause_diagnostics"]["http_status"] == status
     assert "private-code" not in json.dumps(result)
@@ -350,7 +352,7 @@ def test_recovered_profile_error_does_not_mask_a_later_session_failure(upstream,
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
             proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
         )
-    assert result["cause_code"] == "user_register_result_unknown"
+    assert result["cause_code"] == "protocol_failure_evidence_missing"
     assert result["request_unknown"] is True
     assert "cause_diagnostics" not in result
 

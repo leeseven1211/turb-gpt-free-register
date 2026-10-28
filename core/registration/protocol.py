@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -114,10 +115,13 @@ def _protocol_registration_cause_code(
 
 def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> str:
     """仅保留固定阶段、异常类型和 HTTP 状态，不复制远端正文。"""
+    from core.task_errors import safe_registration_diagnostics
+
+    diagnostics = safe_registration_diagnostics(getattr(exc, "registration_diagnostics", None))
     descriptions = {
         "account_create_invalid_state": "资料提交时认证会话已失效",
         "account_create_user_already_exists": "远端提示账号已存在，完整登录态尚未确认",
-        "user_register_result_unknown": "账号创建请求结果待确认",
+        "user_register_result_unknown": "账号创建请求结果待确认，未保留失败细项",
         "registration_checkpoint_failed": "注册检查点本地写入失败",
         "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
         "email_otp_send_rejected": "验证码发送请求被拒绝",
@@ -128,17 +132,26 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         "email_otp_no_mail": "等待窗口内未收到验证码邮件",
         "post_register_failure": "注册请求之后流程失败",
         "registration_failed": "注册流程失败",
+        "protocol_preauth_transport_failed": "协议认证前置请求发生传输错误",
+        "protocol_post_otp_transport_failed": "已取得邮箱验证码，后续认证请求发生传输错误",
+        "protocol_auth_transport_failed": "协议认证请求发生传输错误",
+        "protocol_auth_rejected_before_password": "密码尚未确认时认证请求被拒绝",
+        "protocol_auth_http_failed": "协议认证请求返回 HTTP 错误",
+        "protocol_session_incomplete": "注册资料已确认，后续登录态尚未取得",
+        "protocol_failure_evidence_missing": "协议失败未保留足够请求证据，无法确认具体原因",
     }
-    type_name = type(exc).__name__
+    type_name = diagnostics.get("exception_type", "Exception") if diagnostics else type(exc).__name__
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", type_name):
         type_name = "Exception"
     response = getattr(exc, "response", None)
-    status = None
+    status = diagnostics.get("http_status")
     for value in (
         getattr(response, "status_code", None),
         getattr(exc, "status_code", None),
         getattr(exc, "http_status", None),
     ):
+        if diagnostics:
+            break
         try:
             candidate = int(value)
         except (TypeError, ValueError):
@@ -146,14 +159,18 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         if 100 <= candidate <= 599:
             status = candidate
             break
-    if status is None:
+    if status is None and not diagnostics and not cause_code.startswith("protocol_") and cause_code != "user_register_result_unknown":
         match = re.search(r"\b(?:HTTP(?:\s+Error)?\s*:?|status\s*[=:])\s*(\d{3})\b", str(exc), re.IGNORECASE)
         if match:
             candidate = int(match.group(1))
             if 100 <= candidate <= 599:
                 status = candidate
     suffix = f" HTTP {status}" if status is not None else ""
-    if cause_code in {"account_create_invalid_state", "account_create_user_already_exists"}:
+    if diagnostics:
+        suffix += " 诊断=" + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
+    if cause_code in {"account_create_invalid_state", "account_create_user_already_exists"} or (
+        cause_code.startswith("protocol_") and cause_code in descriptions
+    ):
         return f"{cause_code}: {descriptions[cause_code]}：{type_name}{suffix}"
     return f"{descriptions.get(cause_code, '注册流程失败')}：{type_name}{suffix}"
 

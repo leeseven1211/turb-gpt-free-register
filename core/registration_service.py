@@ -536,7 +536,9 @@ def _advance_registration_checkpoint(stage: str, state: str, detail: str | None 
 
 
 def _registration_request_unknown_facts(result: dict | None) -> dict[str, object]:
-    """只保存注册驱动的固定原因码和明确响应布尔值。"""
+    """只保存固定原因码、明确响应布尔值及安全的失败诊断。"""
+    from core.task_errors import safe_registration_diagnostics
+
     facts: dict[str, object] = {"outcome": "request_unknown"}
     if not isinstance(result, dict):
         return facts
@@ -545,6 +547,9 @@ def _registration_request_unknown_facts(result: dict | None) -> dict[str, object
         facts["cause_code"] = cause_code
     if type(result.get("register_response_confirmed")) is bool:
         facts["register_response_confirmed"] = result["register_response_confirmed"]
+    diagnostics = safe_registration_diagnostics(result.get("registration_diagnostics"))
+    if diagnostics:
+        facts["registration_diagnostics"] = diagnostics
     return facts
 
 
@@ -2531,6 +2536,15 @@ def _run_twofa_retry_job(
         from core.protocol_traffic import correlation_context
 
         proxy_correlation = _registration_proxy_correlation(job_id, db.get_job(job_id) or current)
+        retry_snapshot = current.get("config_snapshot")
+        if not isinstance(retry_snapshot, dict):
+            retry_data = current.get("data")
+            retry_snapshot = retry_data.get("config_snapshot") if isinstance(retry_data, dict) else None
+        worker_overrides = {}
+        if (isinstance(retry_snapshot, dict)
+                and retry_snapshot.get("registration_driver") == "roxy"
+                and retry_snapshot.get("twofa_driver") == "browser"):
+            worker_overrides = {"twofa_driver_override": "browser", "password_driver_override": "roxy"}
         # 账号动作领取的租约必须归属真实 operation Run；结束后恢复父注册日志上下文。
         # 不继承注册阶段的旧 lease_id，避免新中继绑定到另一条供应商线路。
         with task_run_log.stage_context(
@@ -2543,6 +2557,7 @@ def _run_twofa_retry_job(
                 target_log_path=log_file,
                 task_id=account_task_id,
                 task_trigger="registration_job_retry",
+                **worker_overrides,
             )
         now_iso = _now_iso()
         proxy_fields = {}
@@ -3559,9 +3574,9 @@ def retry_job(
     registration_driver: str | None = None,
     debug_enabled: bool | None = None,
 ) -> dict:
-    """智能重试终态任务：未生成账号则重新注册，已有账号则仅补跑 Codex。"""
+    """按原身份重跑终态任务，显式驱动覆盖只冻结到新子任务。"""
     if registration_driver is not None and registration_driver != "roxy":
-        return {"ok": False, "error": "仅支持为单个待验证账号选择 roxy 续跑", "status": 400}
+        return {"ok": False, "error": "单任务驱动覆盖仅支持 roxy", "status": 400}
     if debug_enabled is not None and type(debug_enabled) is not bool:
         return {"ok": False, "error": "debug_enabled 必须是布尔值", "status": 400}
     source = db.get_job(job_id)
@@ -3603,10 +3618,10 @@ def retry_job(
             "status": 409,
         }
     if registration_driver == "roxy":
-        if action != "registration_resume":
+        if action not in {"registration", "registration_resume", "twofa"}:
             return {
                 "ok": False,
-                "error": "Roxy 续跑仅适用于原邮箱、保存密码及注册 Attempt 均可核验的待验证账号",
+                "error": "Roxy 驱动覆盖仅适用于注册、继续邮箱验证或账号配置重跑",
                 "status": 409,
             }
     if batch_id is None:
@@ -3712,6 +3727,8 @@ def retry_job(
     retry_snapshot = registration_options_for_job(source)
     if registration_driver == "roxy":
         retry_snapshot["registration_driver"] = "roxy"
+        if action == "twofa":
+            retry_snapshot["twofa_driver"] = "browser"
     try:
         job_type = {
             "codex": "codex_retry",
@@ -3753,6 +3770,12 @@ def retry_job(
                 return {
                     "ok": False,
                     "error": "同一 Attempt 已有其他驱动的任务在排队或运行",
+                    "status": 409,
+                }
+            if action == "twofa" and active_snapshot.get("twofa_driver") != "browser":
+                return {
+                    "ok": False,
+                    "error": "同一 Attempt 已有其他 2FA 驱动的任务在排队或运行",
                     "status": 409,
                 }
         return {

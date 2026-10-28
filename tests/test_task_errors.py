@@ -791,7 +791,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
 
     def test_registration_unknown_shows_only_confirmed_stage_cause(self):
         causes = {
-            "user_register_result_unknown": "账号创建请求结果未确认",
+            "user_register_result_unknown": "账号创建请求结果未确认，未保留失败细项",
             "registration_checkpoint_failed": "注册检查点本地写入失败",
             "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
             "email_otp_send_rejected": "验证码发送请求被拒绝",
