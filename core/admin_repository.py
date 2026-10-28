@@ -195,13 +195,14 @@ def _account_registration_driver_sql() -> str:
 
 
 def _account_registration_driver_filter_sql() -> str:
-    """筛选选项与列表五种驱动的显示一致，其余记录合并为未记录。"""
+    """筛选选项与列表当前及历史驱动的显示一致，其余记录合并为未记录。"""
     return f"""CASE {_account_registration_driver_sql()}
         WHEN 'roxy' THEN 'roxy'
         WHEN 'roxy_oss' THEN 'roxy_oss'
         WHEN 'protocol' THEN 'protocol'
         WHEN 'protocol_oss' THEN 'protocol_oss'
         WHEN 'protocol_oss_2' THEN 'protocol_oss_2'
+        WHEN 'cloakbrowser' THEN 'cloakbrowser'
         ELSE 'unknown'
     END"""
 

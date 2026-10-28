@@ -99,6 +99,7 @@ class AccountRegistrationDriverFilterTests(PostgresTestCase):
             ("proto_local", {"extra_json": json.dumps({"registration_driver": "protocol"})}, ["roxy"]),
             ("proto_public", {}, ["protocol", "protocol_oss"]),
             ("proto_sso", {"extra_json": json.dumps({"registration_driver": "protocol_oss_2"})}, []),
+            ("cloakbrowser_history", {"registration_driver": " CLOAKBROWSER "}, []),
             ("missing", {}, []),
             ("invalid_json", {"extra_json": "{invalid-json", "email_source": "outlook"}, ["protocol_oss"]),
             ("unsupported", {"registration_driver": "future_driver", "extra_json": {"registration_driver": "roxy"}}, ["protocol"]),
@@ -131,7 +132,8 @@ class AccountRegistrationDriverFilterTests(PostgresTestCase):
         cases = {
             "roxy": {"roxy"}, "roxy_oss": {"roxy_public", "blank"},
             "protocol": {"proto_local"}, "protocol_oss": {"proto_public", "invalid_json"},
-            "protocol_oss_2": {"proto_sso"}, "unknown": {"missing", "unsupported", "latest_unknown"},
+            "protocol_oss_2": {"proto_sso"}, "cloakbrowser": {"cloakbrowser_history"},
+            "unknown": {"missing", "unsupported", "latest_unknown"},
         }
         for driver, names in cases.items():
             expected = {self.ids[name] for name in names}
@@ -158,7 +160,7 @@ class AccountRegistrationDriverFilterTests(PostgresTestCase):
 
     def test_driver_facets_cover_the_archive_scope_before_filters_and_pagination(self):
         expected = {"roxy": 1, "roxy_oss": 2, "protocol": 1,
-                    "protocol_oss": 2, "protocol_oss_2": 1, "unknown": 3}
+                    "protocol_oss": 2, "protocol_oss_2": 1, "cloakbrowser": 1, "unknown": 3}
         result = self._get("/api/accounts", page_size=1, registration_driver="roxy", source="outlook")
         self.assertEqual(result["total"], 1)
         self.assertEqual({item["value"]: item["count"] for item in result["facets"]["registration_driver"]}, expected)

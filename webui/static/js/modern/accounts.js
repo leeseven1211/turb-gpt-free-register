@@ -1219,7 +1219,7 @@ async function loadAccounts() {
     const facets = res.facets || {};
     syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
     syncFacetSelect('accountRegistrationDriverFilterV2', facets.registration_driver, {
-      group:'registration_driver', values:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','unknown'],
+      group:'registration_driver', values:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','cloakbrowser','unknown'],
     });
     syncFacetSelect('accountTokenFilterV2', facets.token, {
       group:'account_token',
@@ -2671,6 +2671,7 @@ function accountRegistrationDriverLabel(value) {
     protocol: 'proto-local',
     protocol_oss: 'proto-public',
     protocol_oss_2: 'proto-sso',
+    cloakbrowser: 'CloakBrowser（历史）',
   })[String(value || '').trim().toLowerCase()] || '未记录';
 }
 function _accountEmailInvalidBadge(r) {
