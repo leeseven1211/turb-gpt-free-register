@@ -1,0 +1,186 @@
+# -*- coding: utf-8 -*-
+"""Mail parsing helpers (ported from gmail-ingest.py, generalized multi-mailbox)."""
+from __future__ import annotations
+import html
+import imaplib
+import re
+from datetime import datetime, timezone
+from email import policy
+from email.parser import BytesParser
+from email.utils import getaddresses, parsedate_to_datetime, parseaddr
+
+# A bare number is not a verification code.  In particular, newsletters and
+# articles often quote phrases such as "verification code: 2000" as examples.
+# Keep the marker deliberately specific and require a code-bearing context.
+MARKER = (
+    r"(?:验证码|校验码|验证代码|动态码|一次性(?:密码|代码)|安全代码|登录代码|确认代码|"
+    r"(?:verification|security|login|authentication|auth)\s+(?:code|password)|"
+    r"one[-\s]?time\s+(?:code|password)|(?:2fa|otp)\b)"
+)
+DIRECT_CODE_MARKER = r"(?:(?:your|the)\s+code\b|(?<![a-z])code\s*(?:is|[:=]))"
+CODE_TOKEN = r"((?=[A-Z0-9 -]{0,10}\d)(?:[A-Z0-9]{4,8}|[A-Z0-9]{3}(?:[-\s][A-Z0-9]{3})))"
+BROADCAST_HINTS = (
+    "newsletter", "news letter", "digest", "substack", "mailchimp", "mailerlite",
+    "campaign", "list-unsubscribe", "unsubscribe", "manage preferences",
+    "view in browser", "weekly roundup", "monthly roundup",
+)
+
+def response_bytes(data) -> bytes:
+    chunks: list[bytes] = []
+    for item in data or []:
+        if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], bytes):
+            chunks.append(item[1])
+    return b"".join(chunks)
+
+def uidvalidity(mail: imaplib.IMAP4_SSL) -> str:
+    values = mail.untagged_responses.get("UIDVALIDITY") or []
+    for value in values:
+        text = value.decode("ascii", errors="ignore") if isinstance(value, bytes) else str(value)
+        m = re.search(r"\d+", text)
+        if m:
+            return m.group(0)
+    return "0"
+
+def openai_sender(message) -> str:
+    for header in ("Sender", "From", "Reply-To", "Return-Path"):
+        address = parseaddr(str(message.get(header) or ""))[1].lower()
+        if "@" not in address:
+            continue
+        domain = address.rsplit("@", 1)[-1]
+        if domain == "openai.com" or domain.endswith(".openai.com"):
+            return address
+    auth_results = " ".join(
+        str(value or "")
+        for header in ("Authentication-Results", "ARC-Authentication-Results")
+        for value in (message.get_all(header, []) or [])
+    )
+    for domain in re.findall(
+        r"dkim=pass[^;]{0,600}?header\.d=([a-z0-9.-]+)",
+        auth_results,
+        re.IGNORECASE,
+    ):
+        normalized = domain.strip().lower().rstrip(".")
+        if normalized == "openai.com" or normalized.endswith(".openai.com"):
+            return "dkim:" + normalized
+    return ""
+
+def sender_is_openai(message) -> bool:
+    return bool(openai_sender(message))
+
+def recipients(message) -> list[str]:
+    values: list[str] = []
+    for header in ("To", "Delivered-To", "X-Original-To", "X-FORWARDED-TO", "Envelope-To", "X-Forwarded-To"):
+        values.extend(str(value or "") for value in (message.get_all(header, []) or []))
+    out: list[str] = []
+    for _, address in getaddresses(values):
+        normalized = address.strip().lower()
+        if normalized and normalized not in out:
+            out.append(normalized)
+    return out
+
+def text_body(message) -> str:
+    parts: list[str] = []
+    candidates = message.walk() if message.is_multipart() else [message]
+    for part in candidates:
+        if part.is_multipart() or part.get_content_maintype() != "text":
+            continue
+        try:
+            value = part.get_content()
+        except Exception:
+            raw = part.get_payload(decode=True) or b""
+            value = raw.decode(part.get_content_charset() or "utf-8", errors="replace")
+        if part.get_content_subtype() == "html":
+            value = html.unescape(str(value))
+            value = re.sub(r"<(?:style|script|head)\b[^>]*>.*?</(?:style|script|head)>", " ", value, flags=re.I | re.S)
+            value = re.sub(r"<!--.*?-->", " ", value, flags=re.S)
+            value = re.sub(r"<[^>]{1,500}>", " ", value)
+        parts.append(str(value))
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+def _sender_address(value: str) -> str:
+    return parseaddr(str(value or ""))[1].strip().lower()
+
+
+def _subject_has_code_signal(subject: str) -> bool:
+    return bool(re.search(
+        rf"(?:{MARKER}|{DIRECT_CODE_MARKER})",
+        str(subject or ""),
+        re.IGNORECASE,
+    ))
+
+
+def is_broadcast_message(sender: str, subject: str = "", body: str = "") -> bool:
+    """Return whether the message looks like a newsletter or article digest.
+
+    A broadcast can quote a real verification email verbatim.  Such a quote is
+    not a code for the recipient, so body-only code markers must not win over a
+    normal newsletter.  An explicit code-bearing subject still takes priority.
+    """
+    if _subject_has_code_signal(subject):
+        return False
+    sender_text = str(sender or "").lower()
+    address = _sender_address(sender)
+    subject_text = str(subject or "").lower()
+    body_head = str(body or "")[:6000].lower()
+    return (
+        any(hint in sender_text or hint in address for hint in BROADCAST_HINTS)
+        or any(hint in subject_text for hint in BROADCAST_HINTS)
+        or any(hint in body_head for hint in BROADCAST_HINTS)
+    )
+
+
+def _clean_code(value: str) -> str:
+    return re.sub(r"[\s-]+", "", str(value or "")).upper()
+
+
+def _valid_code(value: str) -> bool:
+    return bool(
+        re.fullmatch(r"[A-Z0-9]{4,8}", value)
+        and re.search(r"\d", value)
+    )
+
+
+def extract_code_candidates(subject: str, body: str, sender: str = "") -> list[str]:
+    """Extract only high-confidence codes from a direct code message.
+
+    Do not fall back to arbitrary 4-8 digit numbers: dates, amounts, article
+    examples, and ticket numbers are common in ordinary mail.  A newsletter is
+    also rejected unless its subject explicitly asks for a verification code.
+    """
+    subject = str(subject or "")
+    body = re.sub(r"https?://\S+", " ", str(body or ""))
+    if is_broadcast_message(sender, subject, body):
+        return []
+
+    text = f"{subject}\n{body}"[:100_000]
+    patterns = (
+        re.compile(
+            rf"(?:{MARKER})[^0-9]{{0,100}}?(?<![A-Za-z0-9]){CODE_TOKEN}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"(?:{DIRECT_CODE_MARKER})[^0-9]{{0,100}}?(?<![A-Za-z0-9]){CODE_TOKEN}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    )
+    candidates: list[str] = []
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            code = _clean_code(match.group(1))
+            if _valid_code(code) and code not in candidates:
+                candidates.append(code)
+    return candidates[:3]
+
+
+def extract_otp(subject: str, body: str, sender: str = "") -> str:
+    return (extract_code_candidates(subject, body, sender) or [""])[0]
+
+def message_time(message) -> str:
+    try:
+        value = parsedate_to_datetime(str(message.get("Date") or ""))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
