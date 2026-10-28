@@ -139,3 +139,78 @@ def test_network_event_does_not_replace_the_task_terminal_error(session, reason,
     })
     assert session.error_info == original
     assert session.summary()["error_info"]["code"] == expected
+
+
+def otp_record(**changes):
+    return {
+        "method": "POST", "url": "https://auth.openai.com/api/accounts/email-otp/validate",
+        "stage": "email_otp", "status": None, "failure": "net::ERR_TUNNEL_CONNECTION_FAILED",
+        **changes,
+    }
+
+
+@pytest.mark.parametrize("failure", ["net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"])
+@pytest.mark.parametrize("stage", ["email_otp", "browser"])
+def test_exact_otp_transport_failure_refines_unconfirmed_receipt_after_password_and_code(session, failure, stage):
+    session.update_stage("login_password", state="success")
+    session.update_stage(stage, state="running", detail="已收到验证码")
+    session.record_network(otp_record(failure=failure, stage=stage))
+    session.record_network(otp_record(failure=failure, stage=stage))
+    for _ in range(3):
+        session.record_network({
+            "method": "POST", "url": "https://sentinel.openai.com/backend-api/sentinel/req",
+            "stage": stage, "status": None, "failure": failure,
+        })
+    info = session._classify_failure("_EmailSubmissionUnknown: request_unknown otp_request_unconfirmed")
+    assert info["code"] == "roxy_proxy_tunnel_failed"
+    assert info["display_code"] == "NET-ROXY-001"
+    assert info["reconcile_required"] is True
+    assert category(session, "_EmailSubmissionUnknown: request_unknown otp_request_unconfirmed") == "network_or_proxy"
+    assert failure not in str(list(session._failure_network_seen))
+
+
+@pytest.mark.parametrize("following", [
+    {"status": 200, "failure": ""}, {"status": 403, "failure": ""},
+    {"status": None, "failure": "net::ERR_ABORTED"},
+])
+def test_new_auth_outcome_prevents_old_transport_from_replacing_receipt(session, following):
+    session.update_stage("email_otp", state="running")
+    session.record_network(otp_record())
+    session.record_network(otp_record(**following))
+    info = session._classify_failure("_EmailSubmissionUnknown: request_unknown otp_request_unconfirmed")
+    assert info["code"] == "email_submit_unconfirmed"
+
+
+def test_confirmed_auth_progress_prevents_old_transport_from_becoming_final_cause(session):
+    session.update_stage("email_otp", state="running")
+    session.record_network(otp_record())
+    session.update_stage("email_otp", state="success")
+    session.update_stage("email_otp", state="running")
+    info = session._classify_failure("_EmailSubmissionUnknown: request_unknown otp_request_unconfirmed")
+    assert info["code"] == "email_submit_unconfirmed"
+
+
+@pytest.mark.parametrize("changes", [
+    {"failure": "net::ERR_CONNECTION_TIMED_OUT"},
+    {"failure": "private net::ERR_TUNNEL_CONNECTION_FAILED"},
+    {"failure": "TimeoutError"},
+    {"url": "https://auth.openai.com.evil.test/api/accounts/email-otp/validate"},
+    {"method": "GET"},
+])
+def test_only_exact_transport_failure_on_trusted_auth_endpoint_can_refine_receipt(session, changes):
+    session.update_stage("email_otp", state="running")
+    session.record_network(otp_record(**changes))
+    info = session._classify_failure("_EmailSubmissionUnknown: request_unknown otp_request_unconfirmed")
+    assert info["code"] == "email_submit_unconfirmed"
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("_PasswordTransitionTimeout: 创建密码页没有完成跳转", "password_result_unknown"),
+    ("account_deactivated", "account.deactivated"),
+    ("password_rejected", "password_rejected"),
+    ("KeyError: 'schema 未定义字段: UNIT_FIELD'", "local_config_schema_mismatch"),
+])
+def test_transport_evidence_does_not_replace_specific_password_or_local_failure(session, reason, expected):
+    session.update_stage("email_otp", state="running")
+    session.record_network(otp_record())
+    assert session._classify_failure(reason)["code"] == expected

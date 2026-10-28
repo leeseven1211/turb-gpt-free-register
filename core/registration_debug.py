@@ -128,14 +128,17 @@ def _failure_network_evidence(item: dict, stage: str = "") -> dict:
                 safe_response_headers(item.get("response_headers")).get("cf-mitigated") == "challenge"
             ),
         })
+        failure = item.get("failure")
+        if isinstance(failure, str) and failure in {"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"}:
+            evidence["transport_cause"] = "roxy_proxy_tunnel_failed"
     return evidence
 
 
-def _pending_auth_challenge(network: list[dict], failure_stage: str = "") -> bool:
-    """只用最后一条认证结果；后续认证成功或明确进度成功会终止旧挑战证据。"""
+def _pending_auth_failure_cause(network: list[dict], failure_stage: str = "") -> str:
+    """只用最后一条认证结果；后续认证成功或明确进度成功会终止旧失败证据。"""
     for item in reversed(network):
         if item.get("auth_progress_confirmed"):
-            return False
+            return ""
         evidence = item if "auth_endpoint" in item else _failure_network_evidence(item)
         if evidence.get("auth_endpoint"):
             final_stage = normalize_stage(failure_stage) if failure_stage else ""
@@ -144,10 +147,12 @@ def _pending_auth_challenge(network: list[dict], failure_stage: str = "") -> boo
                 and evidence.get("stage") in {"preflight", "browser", "page"}
                 and final_stage in {"submit_email", "auth_redirect"}
             )
-            return bool(evidence.get("auth_challenge")) and (
-                not final_stage or evidence.get("stage") == final_stage or entry_predecessor
-            )
-    return False
+            if final_stage and evidence.get("stage") != final_stage and not entry_predecessor:
+                return ""
+            if evidence.get("auth_challenge"):
+                return "auth_cloudflare_challenge"
+            return "roxy_proxy_tunnel_failed" if evidence.get("transport_cause") == "roxy_proxy_tunnel_failed" else ""
+    return ""
 
 
 def _challenge_explains_error(info: dict | None) -> bool:
@@ -560,10 +565,16 @@ class RegistrationDebugSession:
 
     def _classify_failure(self, reason: Any) -> dict[str, Any] | None:
         info = self._classify_error(reason)
-        if _challenge_explains_error(info) and _pending_auth_challenge(
+        cause = _pending_auth_failure_cause(
             list(self._failure_network_seen), self.failure_stage or self.current_stage,
-        ):
-            info = self._classify_error(reason, result_summary={"cause_code": "auth_cloudflare_challenge"}) or info
+        )
+        code = str((info or {}).get("code") or "")
+        transport_symptom = code in {
+            "email_submit_unconfirmed", "browser_stage_timeout", "email_transition_timeout",
+        } or code.endswith("_receipt_missing")
+        if ((cause == "auth_cloudflare_challenge" and _challenge_explains_error(info))
+                or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)):
+            info = self._classify_error(reason, result_summary={"cause_code": cause}) or info
         self.error_info = info
         return self.error_info
 
@@ -856,7 +867,7 @@ class RegistrationDebugSession:
         url = str(state.get("url") or "").lower()
         dom = state.get("dom") if isinstance(state.get("dom"), dict) else {}
         meaningful_network = [item for item in (network or []) if not _is_expected_data_saver_failure(item)]
-        if _pending_auth_challenge(meaningful_network, str(state.get("failure_stage") or "")):
+        if _pending_auth_failure_cause(meaningful_network, str(state.get("failure_stage") or "")) == "auth_cloudflare_challenge":
             info = state.get("error_info")
             if not isinstance(info, dict) or not info:
                 from core.task_errors import classify_task_error
