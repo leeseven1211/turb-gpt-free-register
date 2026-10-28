@@ -46,6 +46,78 @@ def _email_flow(clock, driver):
 
 
 class EmailFrontendLoadingTests(unittest.TestCase):
+    def test_login_with_native_redirect_waits_within_existing_preparation_budget_before_single_submit(self):
+        clock = _Clock()
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login_with?callback_path=/")
+        real_type_email = email_otp._type_email_address
+        email_input = object()
+
+        def visible_email_input(_driver):
+            if clock.now >= 51:
+                driver.current_url = "https://auth.openai.com/log-in"
+                return email_input
+            return None
+
+        with _email_flow(clock, driver) as stack:
+            typed = stack.enter_context(patch.object(email_otp, "_type_email_address", side_effect=real_type_email))
+            stack.enter_context(patch.object(email_otp, "_find_visible_email_input_js", side_effect=visible_email_input))
+            stack.enter_context(patch.object(email_otp, "_human_type_text"))
+            stack.enter_context(patch.object(email_otp, "_email_entry_state", return_value={"inputs": [], "actions": []}))
+            stack.enter_context(patch.object(email_otp, "_click_email_entry_option", return_value=False))
+            refresh = stack.enter_context(patch.object(email_otp, "_reload_blank_chatgpt_auth_shell"))
+            submit = stack.enter_context(patch.object(email_otp, "_submit_email_step"))
+            fallback = stack.enter_context(patch.object(email_otp, "_submit_email_via_browser_nextauth"))
+            stack.enter_context(patch.object(email_otp, "_wait_email_submit_next_state", return_value="otp"))
+            self.assertEqual(email_otp._submit_email_and_wait_next(
+                driver, "unit@example.test", attempts=1, allow_login_password=True,
+            ), "otp")
+        typed.assert_called_once()
+        self.assertEqual(typed.call_args.kwargs["timeout"], email_otp.EMAIL_PREPARATION_TIMEOUT)
+        self.assertGreaterEqual(clock.now, 51)
+        self.assertLess(clock.now, 52)
+        submit.assert_called_once()
+        fallback.assert_not_called()
+        refresh.assert_not_called()
+
+    def test_login_with_wait_does_not_extend_outer_budget_or_send_fallback(self):
+        clock = _Clock()
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login_with?callback_path=/")
+
+        def wait_until_deadline(_driver, _email, *, timeout, stop_on_advanced):
+            clock.sleep(timeout)
+            raise RuntimeError("找不到邮箱输入框/邮箱入口（原生登录跳转仍在进行）")
+
+        with _email_flow(clock, driver) as stack:
+            stack.enter_context(patch.object(email_otp, "_type_email_address", side_effect=wait_until_deadline))
+            submit = stack.enter_context(patch.object(email_otp, "_submit_email_step"))
+            fallback = stack.enter_context(patch.object(email_otp, "_submit_email_via_browser_nextauth"))
+            with self.assertRaises(StageTimeout):
+                email_otp._submit_email_and_wait_next(
+                    driver, "unit@example.test", attempts=1, allow_login_password=True, total_timeout=30,
+                )
+        self.assertEqual(clock.now, 30)
+        submit.assert_not_called()
+        fallback.assert_not_called()
+
+    def test_native_redirect_wait_is_not_enabled_for_ordinary_or_untrusted_entries(self):
+        for entry, allow_login in (
+            ("https://chatgpt.com/auth/login", True),
+            ("https://chatgpt.com/auth/login_with?callback_path=/", False),
+            ("https://user@chatgpt.com/auth/login_with?callback_path=/", True),
+            ("https://chatgpt.com:8443/auth/login_with?callback_path=/", True),
+            ("https://chatgpt.com.evil.test/auth/login_with?callback_path=/", True),
+            ("https://chatgpt.com/auth/login_with_other?callback_path=/", True),
+        ):
+            with self.subTest(entry=entry, allow_login=allow_login):
+                clock = _Clock()
+                driver = SimpleNamespace(current_url=entry)
+                with _email_flow(clock, driver) as stack:
+                    typed = stack.enter_context(patch.object(email_otp, "_type_email_address", return_value="otp"))
+                    self.assertEqual(email_otp._submit_email_and_wait_next(
+                        driver, "unit@example.test", attempts=1, allow_login_password=allow_login,
+                    ), "otp")
+                self.assertEqual(typed.call_args.kwargs["timeout"], 20)
+
     def test_slow_frontend_keeps_full_submission_budget_after_extended_wait(self):
         clock = _Clock()
         driver = SimpleNamespace(

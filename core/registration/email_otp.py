@@ -1680,11 +1680,22 @@ def _submit_email_and_wait_next_impl(
                 pass
         _progress("waiting_input", "正在等待可见的邮箱输入框")
         missing_entry = False
+        entry_timeout = 20
+        if allow_login_password and not submission_started:
+            try:
+                entry = urlsplit(str(getattr(driver, "current_url", "") or ""))
+                if (entry.scheme == "https" and entry.hostname == "chatgpt.com"
+                        and entry.port in (None, 443) and not entry.username and not entry.password
+                        and entry.path.rstrip("/") == "/auth/login_with"):
+                    # 原生登录 GET 仍可能在跳转；只等待同一准备预算，不刷新或另发 signin。
+                    entry_timeout = EMAIL_PREPARATION_TIMEOUT
+            except ValueError:
+                pass
         try:
             entry_state = _type_email_address(
                 driver,
                 email,
-                timeout=_remaining(20),
+                timeout=_remaining(entry_timeout),
                 stop_on_advanced=True,
             )
         except RuntimeError as exc:

@@ -1414,14 +1414,19 @@ def run_roxy_registration(
             report_job_progress("page", "skipped", "已接管原失败窗口，从当前认证页面继续")
         else:
             report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
-            logger.info("[Roxy注册] 打开登录页：https://chatgpt.com/auth/login")
+            # 已核验的原身份恢复走原生登录入口，避免已有账号被导向创建密码。
+            entry_url = (
+                "https://chatgpt.com/auth/login_with?callback_path=/"
+                if resume_scope and existing_password else "https://chatgpt.com/auth/login"
+            )
+            logger.info("[Roxy注册] 打开登录页：%s", entry_url)
             try:
                 # 此调用点先于本 Run 的 submit_email、密码、OTP 和资料提交。
                 # 只依据这个明确的初始 GET 控制流给出换线许可，不从缺失网络日志
                 # 推断未提交，也不向后续认证阶段的未知结果开放整段重试。
                 _safe_get(
                     driver,
-                    "https://chatgpt.com/auth/login",
+                    entry_url,
                     timeout=min(45, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
                     attempts=2,
                     accept_hosts=("chatgpt.com", "auth.openai.com"),
