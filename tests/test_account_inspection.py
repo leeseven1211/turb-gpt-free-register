@@ -113,6 +113,12 @@ class AccountInspectionTests(PostgresTestCase):
         self.assertEqual("completed",self.summary()["status"])
         self.assertEqual((parent,False),store.create_inspection(idempotency_key="same"))
 
+    def test_default_inspection_keeps_its_limit_when_shared_budget_is_twenty(self):
+        self.account()
+        with patch.object(service.account_operation_executor, "configured_workers", return_value=20):
+            service.start_inspection()
+        self.assertEqual(16, self.summary()["workers"])
+
     def test_expired_refresh_and_plan_use_original_session_and_save_at_first(self):
         account_id=self.account(access_token=token(1))
         parent=self.start()

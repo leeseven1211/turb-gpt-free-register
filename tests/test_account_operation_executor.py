@@ -40,6 +40,38 @@ class AccountOperationExecutorTests(unittest.TestCase):
         with patch("config.codex.ACCOUNT_BATCH_WORKERS", 7):
             self.assertEqual(7, account_operation_executor.configured_workers())
 
+    def test_twenty_workers_run_together_and_the_next_submission_waits_for_budget(self):
+        from core.account_operation_executor import AccountOperationExecutor
+
+        started = threading.Condition()
+        release = threading.Event()
+        entered = 0
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            nonlocal entered
+            with started:
+                entered += 1
+                started.notify_all()
+            release.wait(5)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 20):
+                futures = [operation_executor.try_submit(work) for _ in range(20)]
+                self.assertTrue(all(future is not None for future in futures))
+                with started:
+                    self.assertTrue(started.wait_for(lambda: entered == 20, timeout=3))
+                self.assertEqual(20, operation_executor.status()["active"])
+                self.assertEqual(0, operation_executor.available_slots())
+                self.assertIsNone(operation_executor.try_submit(work))
+                release.set()
+                for future in futures:
+                    future.result(timeout=3)
+                self.assertEqual(20, operation_executor.available_slots())
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
     def test_common_executor_rebuilds_for_a_new_configured_worker_count(self):
         from core.account_operation_executor import AccountOperationExecutor
 

@@ -125,7 +125,7 @@ def register_operation_handlers():
 
 
 def start_inspection(*,workers=None,archived="0",idempotency_key=None):
-    workers=account_operation_executor.configured_workers() if workers is None else workers
+    workers=min(16, account_operation_executor.configured_workers()) if workers is None else workers
     if type(workers) is not int or not 1 <= workers <= 16:
         raise ValueError("巡检并发必须为 1–16 的整数，实际并发同时受账号操作共享预算限制")
     store.validate_scope(archived)

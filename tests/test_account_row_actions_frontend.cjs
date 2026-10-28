@@ -27,6 +27,24 @@ function loadFunctions(names, dependencies = {}) {
   return context;
 }
 
+test('账号共享并发配置保留20和32，越界值限制在1至32', () => {
+  for (const [configured, expected] of [[20, 20], [32, 32], [33, 32], [-1, 1]]) {
+    const context = loadFunctions(['getAccountOperationWorkers'], {
+      CONFIG: [{key: 'ACCOUNT_BATCH_WORKERS', value: configured}], ACCOUNT_BATCH_WORKERS: 3,
+    });
+    assert.equal(context.getAccountOperationWorkers(), expected);
+  }
+});
+
+test('运行配置的20并发在尚未加载配置页时仍原样使用', async () => {
+  const context = loadFunctions(['getAccountOperationWorkers', 'loadRuntimeUiSettings'], {
+    CONFIG: [], ACCOUNT_BATCH_WORKERS: 3,
+    apiCached: async () => ({account_batch_workers: 20}),
+  });
+  await context.loadRuntimeUiSettings();
+  assert.equal(context.getAccountOperationWorkers(), 20);
+});
+
 test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示成功', () => {
   const context = loadFunctions(['accountTaskResultText']);
   const task = {task_type: 'extract_link', status: 'success', result_summary: {

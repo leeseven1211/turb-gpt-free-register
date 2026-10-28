@@ -31,6 +31,9 @@ vm.runInContext(common.slice(common.indexOf('function formatDateTime('), common.
   vm.runInContext('openAccountInspectionStart()', context);
   assert.equal(element('accountInspectionStart').dataset.archived, '0');
   assert.equal(element('accountInspectionWorkers').value, 4);
+  context.getAccountOperationWorkers = () => 20;
+  vm.runInContext('openAccountInspectionStart()', context);
+  assert.equal(element('accountInspectionWorkers').value, 16);
   context.SHOW_ARCHIVED_ACCOUNTS = true;
   vm.runInContext('openAccountInspectionStart()', context);
   assert.equal(element('accountInspectionStart').dataset.archived, 'only');

@@ -16,6 +16,7 @@ from core import plan_check_service, registration_service
 # 对应 registration_service/live_check_service 的换线边界、chatgpt_plan 和
 # plan_check_service 的请求边界，以及 codex_token_refresh_service 的调度边界。
 RUNTIME_RANGES = (
+    ("ACCOUNT_BATCH_WORKERS", 1, 32),
     ("REGISTRATION_PROXY_RETRIES", 0, 3),
     ("REGISTRATION_PROXY_RETRY_DELAY", 0, 10.0),
     ("ACCOUNT_ACTION_PROXY_RETRIES", 0, 3),
@@ -31,6 +32,17 @@ RUNTIME_RANGES = (
     ("CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS", 10, 3600),
     ("CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", 1, 200),
 )
+
+
+@pytest.mark.parametrize("workers", (1, 20, 32))
+def test_saved_shared_account_budget_reaches_executor_without_lower_clamp(workers):
+    from core.account_operation_executor import AccountOperationExecutor
+
+    saved = schema.validate_config_updates({"ACCOUNT_BATCH_WORKERS": workers})
+    with patch.object(codex_config, "ACCOUNT_BATCH_WORKERS", saved["ACCOUNT_BATCH_WORKERS"]):
+        executor = AccountOperationExecutor()
+        assert executor.workers() == workers
+        assert executor.available_slots() == workers
 
 
 def test_missing_runtime_settings_are_schema_fields_with_explicit_restart_semantics():
