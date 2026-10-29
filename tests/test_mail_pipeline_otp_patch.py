@@ -1,6 +1,7 @@
 """Oracle 实际入库解析器的脱敏基线和多语言回归，不连接邮件或数据库。"""
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -48,6 +49,8 @@ SAMPLES = {
     "马来语": "Kod pengesahan anda ialah 123456",
     "泰语": "รหัสยืนยันของคุณคือ 123456",
     "印地语": "आपका सत्यापन कोड है 123456",
+    "印地语借词": "जारी रखने के लिए ये टेम्पररी वेरिफिकेशन कोड डालें: 123456",
+    "印地语借词含nukta": "जारी रखने के लिए ये टेम्पररी वेरिफ़िकेशन कोड डालें: 123456",
     "阿拉伯语": "رمز التحقق الخاص بك هو \u200f123456\u200f",
     "希伯来语": "קוד האימות שלך הוא 123456",
     "菲律宾语": "Ang iyong verification code ay 123456",
@@ -77,7 +80,7 @@ class MailPipelineOtpTest(unittest.TestCase):
                     self.assertEqual(self.parser.extract_code_candidates(subject, body), ["123456"])
 
     def test_decomposed_unicode_and_mime(self):
-        for language in ("越南语验证", "法语", "韩语"):
+        for language in ("越南语验证", "法语", "韩语", "印地语借词含nukta"):
             with self.subTest(language=language):
                 message = EmailMessage()
                 message["Subject"] = unicodedata.normalize("NFD", SAMPLES[language])
@@ -93,6 +96,7 @@ class MailPipelineOtpTest(unittest.TestCase):
             ("주문 확인", "주문 번호 123456, 우편번호 654321"),
             ("Reçu de commande", "Code postal 123456, commande 654321."),
             ("Invoice", "Paid 123456. Ticket 654321. 2026-10-28."),
+            ("वेरिफिकेशन स्थिति", "ऑर्डर नंबर 123456"),
             ("Mã giảm giá", "Mã giảm giá: 123456"),
             ("Votre code postal", "Code postal : 123456"),
             ("Mã nguồn ChatGPT", "Mã nguồn ChatGPT phiên bản 123456"),
@@ -135,6 +139,22 @@ class MailPipelineOtpTest(unittest.TestCase):
 
 
 class OtpPatchPreparationTest(unittest.TestCase):
+    def test_upgrade_previous_deployed_parser_preserves_drift_protection(self):
+        from tools.prepare_mail_pipeline_otp_patch import PreparationError, prepare_source
+        modified = prepare_source(BASELINE.read_text())
+        previous = modified.replace("|वेरिफ़?िकेशन", "")
+        self.assertEqual(hashlib.sha256(previous.encode()).hexdigest(),
+                         "0244461e4e5aea5253056b05ef31574898c9e4e4a73cba384c47ad323756de04")
+        for source in (previous, previous[:-1]):
+            with self.subTest(ending=repr(source[-3:])):
+                try:
+                    upgraded = prepare_source(source)
+                except PreparationError:
+                    self.fail("已审计的上一部署版本应能升级")
+                self.assertEqual(upgraded, modified)
+                with self.assertRaises(PreparationError):
+                    prepare_source(source + "# 未审计改动\n")
+
     def test_idempotence_and_source_drift(self):
         from tools.prepare_mail_pipeline_otp_patch import PreparationError, prepare_source
         original = BASELINE.read_text()

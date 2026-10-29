@@ -10,6 +10,8 @@ from pathlib import Path
 
 
 BASELINE_SHA256 = "2c4531ee7fb51920744ede6aec4eb2cb1b135cb1c21db550e646974a6b3186b6"
+PREVIOUS_PREPARED_SHA256 = "0244461e4e5aea5253056b05ef31574898c9e4e4a73cba384c47ad323756de04"
+PREVIOUS_DEPLOYED_SHA256 = "cd06e1ca09b267b6ad31242897c2b826815ff0208e01a2bceff848a077206c5e"
 ORIGINAL_MARKER = '''MARKER = (
     r"(?:验证码|校验码|验证代码|动态码|一次性(?:密码|代码)|安全代码|登录代码|确认代码|"
     r"(?:verification|security|login|authentication|auth)\\s+(?:code|password)|"
@@ -48,7 +50,7 @@ MULTILINGUAL_MARKER = '''MARKER = (
     r"kode\\s+(?:verifikasi|autentikasi|keamanan|masuk|sekali\\s+pakai)|"
     r"kod\\s+(?:pengesahan|keselamatan|log\\s+masuk|sekali\\s+guna)|"
     r"รหัส\\s*(?:ยืนยัน(?:ตัวตน)?|ตรวจสอบ|ความปลอดภัย|เข้าสู่ระบบ|ใช้ครั้งเดียว)|"
-    r"(?:सत्यापन|पुष्टि|सुरक्षा|प्रमाणीकरण|लॉगिन)\\s*कोड|"
+    r"(?:सत्यापन|पुष्टि|सुरक्षा|प्रमाणीकरण|लॉगिन|वेरिफ़?िकेशन)\\s*कोड|"
     r"رمز\\s+(?:التحقق|التأكيد|المصادقة|الأمان|تسجيل\\s+الدخول)|"
     r"קוד\\s+(?:האימות|אימות|אבטחה|התחברות)|"
     r"(?:verification|beripikasyon)\\s+(?:code|kodigo))"
@@ -81,7 +83,15 @@ def _replace_once(source: str, before: str, after: str) -> str:
 
 def prepare_source(source: str) -> str:
     """只接受完整基线或本工具已生成的相同版本；未知漂移拒绝覆盖。"""
-    if hashlib.sha256(source.encode()).hexdigest() != BASELINE_SHA256:
+    source_sha256 = hashlib.sha256(source.encode()).hexdigest()
+    if source_sha256 in {PREVIOUS_PREPARED_SHA256, PREVIOUS_DEPLOYED_SHA256}:
+        # 现网已审计版本只比上一准备结果少一个末尾空行，升级时恢复规范字节。
+        if source_sha256 == PREVIOUS_DEPLOYED_SHA256:
+            source += "\n"
+        source = _replace_once(source, MULTILINGUAL_MARKER.replace("|वेरिफ़?िकेशन", ""), MULTILINGUAL_MARKER)
+        ast.parse(source)
+        return source
+    if source_sha256 != BASELINE_SHA256:
         original = source
         for before, after in reversed(REPLACEMENTS):
             original = _replace_once(original, after, before)
