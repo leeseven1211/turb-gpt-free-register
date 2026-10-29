@@ -9,6 +9,7 @@ import math
 import random
 import re
 import string
+import threading
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ from config import twofa as _twofa_cfg
 from core.account_export import setup_2fa_protocol
 from core.email_provider import wait_for_otp, resolve_email_source, validate_email_source
 from core.humanize import delay as human_delay
+from core.http_response_diagnostics import auth_submission_endpoint, safe_response_headers
 from core.openai_auth import AccountUnusableError
 from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult, RoxyProfileQuotaExceeded
 from core.session import BrowserSession
@@ -52,6 +54,94 @@ from core.auth_challenge import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_native_signin_page(url: object) -> bool:
+    try:
+        parsed = urlsplit(str(url or ""))
+        return (parsed.scheme == "https" and parsed.hostname == "chatgpt.com"
+                and parsed.port in (None, 443) and not parsed.username and not parsed.password
+                and parsed.path == "/auth/login_with")
+    except ValueError:
+        return False
+
+
+class _NativeSigninFailureDiagnostics:
+    """只读关联当前原生登录导航，不把旧窗口的挑战归给本轮邮箱等待。"""
+
+    def __init__(self, shared_diagnostics) -> None:
+        self.shared_diagnostics = shared_diagnostics
+        self.lock = threading.Lock()
+        self.active = False
+        self.target = ""
+        self.started = None
+        self.latest = None
+
+    def begin_navigation(self, driver) -> None:
+        try:
+            handle = driver.current_window_handle
+            target = handle.removeprefix("CDwindow-") if isinstance(handle, str) else ""
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", target):
+                target = ""
+        except Exception:
+            target = ""
+        with self.lock:
+            self.active = bool(target)
+            self.target = target
+            self.started = None
+            self.latest = None
+
+    def observe_network(self, record, *, phase: str) -> None:
+        self.shared_diagnostics.observe_network(record, phase=phase)
+        if not isinstance(record, dict):
+            return
+        target = str(record.get("target_id") or "")
+        request = str(record.get("request_id") or "")
+        started = record.get("started_monotonic")
+        valid_start = (isinstance(started, (int, float)) and not isinstance(started, bool)
+                       and math.isfinite(started))
+        with self.lock:
+            if not self.active or target != self.target:
+                return
+            if phase == "request" and record.get("resource_type") == "Document" and record.get("method") == "GET":
+                if _is_native_signin_page(record.get("url")) and target and valid_start:
+                    self.started, self.latest = started, None
+                else:
+                    self.started, self.latest = None, None
+                return
+            if self.started is None or not request:
+                return
+            key = (target, request, record.get("redirect_index", 0))
+            endpoint = auth_submission_endpoint(record.get("url"))
+            if phase == "request" and record.get("method") == "POST" and endpoint:
+                if not valid_start or started < self.started:
+                    return
+                # 后续认证 POST 一旦开始，旧失败就不再解释当前等待；迟到响应也
+                # 只能更新同一请求，不能盖过新请求的成功或尚未确认状态。
+                self.latest = {"key": key, "endpoint": endpoint, "status": None, "challenge": False}
+            elif phase in {"response", "complete"} and self.latest and key == self.latest["key"]:
+                # collector 结束请求后会移除开始时间；补充头只能凭已接纳的
+                # 当前请求及重定向代际更新，不能据此建立新的认证请求范围。
+                status = record.get("status")
+                if isinstance(status, (int, float)) and not isinstance(status, bool) and 100 <= status <= 599:
+                    self.latest["status"] = status
+                headers = safe_response_headers(record.get("response_headers"))
+                if "cf-mitigated" in headers:
+                    self.latest["challenge"] = headers["cf-mitigated"] == "challenge"
+
+    def failure_diagnostic(self, driver) -> dict:
+        try:
+            if not _is_native_signin_page(driver.current_url):
+                return {}
+        except Exception:
+            return {}
+        with self.lock:
+            if not (self.latest and self.latest["endpoint"] == "nextauth_signin"
+                    and self.latest["status"] == 403 and self.latest["challenge"]):
+                return {}
+        return {"cause_code": "auth_cloudflare_challenge", "cause_diagnostics": {
+            "http_status": 403, "auth_endpoint": "nextauth_signin", "response_kind": "cloudflare_challenge",
+        }}
 
 
 def _receipt_accepts_submission_endpoint(receipt, endpoint_kind: str) -> bool:
@@ -1311,6 +1401,8 @@ def run_roxy_registration(
     resume_proxy_rotation_ready = False
     existing_profile_unverified = False
     existing_profile_reconciliation = False
+    native_signin_diagnostics = None
+    email_entry_waiting = False
     try:
         try:
             from core.registration_debug import attach_current_roxy
@@ -1359,7 +1451,10 @@ def run_roxy_registration(
         if traffic_capture is not None:
             diagnostic_observer = getattr(traffic_capture, "set_auth_diagnostic_observer", None)
             if callable(diagnostic_observer):
-                diagnostic_observer(diagnostics_for(driver).observe_network)
+                shared_diagnostics = diagnostics_for(driver)
+                if _browser_helpers is None:
+                    native_signin_diagnostics = _NativeSigninFailureDiagnostics(shared_diagnostics)
+                diagnostic_observer((native_signin_diagnostics or shared_diagnostics).observe_network)
             setter = getattr(traffic_capture, "set_data_saver", None)
             if callable(setter):
                 setter(data_saver)
@@ -1422,6 +1517,8 @@ def run_roxy_registration(
                 if resume_scope and existing_password else "https://chatgpt.com/auth/login"
             )
             logger.info("[Roxy注册] 打开登录页：%s", entry_url)
+            if native_signin_diagnostics is not None and _is_native_signin_page(entry_url):
+                native_signin_diagnostics.begin_navigation(driver)
             try:
                 # 此调用点先于本 Run 的 submit_email、密码、OTP 和资料提交。
                 # 只依据这个明确的初始 GET 控制流给出换线许可，不从缺失网络日志
@@ -1470,6 +1567,7 @@ def run_roxy_registration(
             report_job_progress("auth_redirect", "skipped", "从原窗口当前认证步骤继续")
         else:
             report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
+            email_entry_waiting = True
             next_state = submit_email(
                 driver,
                 email,
@@ -1479,6 +1577,7 @@ def run_roxy_registration(
                 on_progress=_report_email_progress,
                 **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
             )
+            email_entry_waiting = False
         remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()
         # 只要已经到达 OpenAI 的密码/OTP 等下一页，认证跳转就已经完成。密码创建是
@@ -2311,7 +2410,16 @@ def run_roxy_registration(
         }
     except Exception as exc:
         failed = True
-        logger.error("[Roxy注册] 失败：%s: %s", type(exc).__name__, exc)
+        native_failure_diagnostic = (
+            native_signin_diagnostics.failure_diagnostic(driver)
+            if native_signin_diagnostics is not None and email_entry_waiting and isinstance(exc, StageTimeout)
+            else {}
+        )
+        failure_note = (
+            "; auth_cloudflare_challenge: 原生登录 signin 请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口"
+            if native_failure_diagnostic else ""
+        )
+        logger.error("[Roxy注册] 失败：%s: %s%s", type(exc).__name__, exc, failure_note)
         logger.debug("[Roxy注册] 失败详情", exc_info=True)
         try:
             from core.registration_service import is_stop_requested
@@ -2343,7 +2451,7 @@ def run_roxy_registration(
             if not resume_proxy_rotation_ready:
                 try:
                     from core.registration_debug import pause_current_failure
-                    pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}")
+                    pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}{failure_note}")
                 except Exception:
                     logger.exception("[Roxy注册][Debug] 保留失败现场失败；继续按原失败流程收口")
         # 未确认创建前通常可以回收邮箱；但 password 模式下缺少创建密码入口时，
@@ -2445,6 +2553,7 @@ def run_roxy_registration(
         )
         return {
             "success": False,
+            **native_failure_diagnostic,
             **({"cause_code": ProfileAccountAlreadyExistsError.error_type, "register_response_confirmed": True}
                if existing_profile_reconciliation else {}),
             "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
@@ -2479,7 +2588,7 @@ def run_roxy_registration(
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),
-            "error": f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}",
+            "error": f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}{failure_note}",
         }
     finally:
         if postprocess_data_saver is not None:
