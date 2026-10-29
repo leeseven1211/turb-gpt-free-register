@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import nullcontext
-from datetime import date
+from datetime import date, datetime
 
 from core import admin_repository, record_store
 from core.storage import operation
@@ -15,6 +15,90 @@ MAX_BATCH_WORKERS = 16
 _FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
+
+
+def sync_cancelled_account_extraction(run_id: int, *, expected_account_version: str | None = None) -> bool:
+    """仅收口被取消 Run 自己的账号占用，不覆盖新任务或已出链事实。
+
+    新取消传入取消前账号快照的版本；历史取消没有快照时，只修复排队时间明确
+    早于该 Run 创建及取消时间的占用。同秒或缺失时间无法证明归属，返回 False。
+    """
+    operation.init()
+    with operation._connect() as conn, conn.cursor() as cur:
+        # 重跑按 task→account 加锁；不锁 Run，避免和取消的 Run→task 顺序形成环。
+        cur.execute(
+            f"""SELECT run.id, run.task_id, run.account_id, run.status, run.source_system,
+                       run.created_at, run.cancel_requested_at, run.completed_at,
+                       task.task_type, task.last_run_id, task.source_system AS task_source,
+                       COALESCE(LOWER(job.extraction_state) IN ('succeeded','success')
+                           OR LOWER(job.public_state->>'extraction_state') IN ('succeeded','success')
+                           OR job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb,
+                           FALSE) AS extraction_succeeded
+                FROM {operation._table('operation_runs')} run
+                JOIN {operation._table('operation_tasks')} task ON task.id=run.task_id
+                LEFT JOIN {operation._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+                WHERE run.id=%s FOR UPDATE OF task""",
+            (int(run_id),),
+        )
+        run = cur.fetchone()
+        if not run or (
+            run["source_system"] != "native_operations" or run["task_source"] != "native_operations"
+            or run["task_type"] != "extract_link" or run["status"] != "cancelled"
+            or run["cancel_requested_at"] is None or run["last_run_id"] != int(run_id)
+            or not run["account_id"]
+        ):
+            return True
+        account_id = int(run["account_id"])
+        account = record_store.get_row(
+            record_store.ACCOUNTS, account_id, conn=conn, for_update=True, include_version=True,
+        )
+        if not account or str(account.get("extract_link_status") or "").lower() not in {"queued", "running"}:
+            return True
+        cur.execute(
+            f"""SELECT 1 FROM {operation._table('operation_tasks')} other
+                LEFT JOIN {operation._table('operation_runs')} related ON related.task_id=other.id
+                WHERE other.account_id=%s AND other.task_type='extract_link'
+                  AND (other.id>%s OR related.id>%s
+                       OR (related.id<>%s AND related.status=ANY(%s))
+                       OR (other.id<>%s AND other.status=ANY(%s))) LIMIT 1""",
+            (account_id, int(run["task_id"]), int(run_id), int(run_id),
+             sorted(operation._ACTIVE_RUN_STATUSES), int(run["task_id"]), sorted(operation._ACTIVE_RUN_STATUSES)),
+        )
+        if cur.fetchone():
+            return True
+
+        def account_time(field: str) -> datetime | None:
+            try:
+                value = datetime.fromisoformat(str(account.get(field) or "").replace("Z", "+00:00"))
+                return value.astimezone(run["created_at"].tzinfo)
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        queued_at = account_time("extract_link_queued_at")
+        if expected_account_version is not None:
+            if str(account["__record_version"]) != str(expected_account_version):
+                return False
+            # 排队已超时后，新 claim 可能先于新 Run 落库；即便快照版本一致也保留它。
+            if queued_at is not None and queued_at > run["created_at"]:
+                return False
+        else:
+            cutoff = min(run["created_at"], run["cancel_requested_at"]).replace(microsecond=0)
+            if queued_at is None or queued_at >= cutoff:
+                return False
+            if str(account.get("extract_link_status") or "").lower() == "running":
+                started_at = account_time("extract_link_started_at")
+                if started_at is None or started_at >= cutoff:
+                    return False
+        now = datetime.now().isoformat(timespec="seconds")
+        succeeded = bool(run["extraction_succeeded"])
+        return record_store.patch_row(record_store.ACCOUNTS, account_id, {
+            "extract_link_status": "success" if succeeded else "cancelled",
+            "extract_link_ok": succeeded,
+            "extract_link_error": None,
+            "extract_link_message": "已保留提链成功结果" if succeeded else "用户取消提链任务",
+            "extract_link_completed_at": now,
+            "updated_at": now,
+        }, conn=conn)
 
 
 def normalize_filters(filters: dict | None) -> dict[str, str]:
