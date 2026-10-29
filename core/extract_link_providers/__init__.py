@@ -13,12 +13,14 @@ _REGISTRY = {
 }
 
 
-def get_provider(provider_id: str, *, config: ProviderConfig, transport):
+def get_provider(provider_id: str, *, config: ProviderConfig, transport, payment_transport=None):
     if not isinstance(config, ProviderConfig) or config.provider_id != provider_id:
         raise ProviderError("Provider 配置不匹配")
     provider_type = _REGISTRY.get(provider_id)
     if provider_type is None:
         raise ProviderError("未知 Provider")
+    if provider_id == "legacy":
+        return provider_type(config, transport, payment_transport=payment_transport)
     return provider_type(config, transport)
 
 

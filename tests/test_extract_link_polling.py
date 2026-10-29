@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -35,7 +36,8 @@ class ExtractPollingTests(unittest.TestCase):
     def _monitor(self, jobs, *, budget=10, interval=2, mode="extract_only", provider_id="lumen_flow"):
         clock = [0.0]
         def sleep(seconds): clock[0] += seconds
-        context = SimpleNamespace(run_id=99, report=Mock(), checkpoint=Mock())
+        context = SimpleNamespace(run_id=99, report=Mock(), checkpoint=Mock(),
+                                  run={"created_at": datetime.now(timezone.utc).isoformat()})
         provider = SimpleNamespace(get_status=Mock(side_effect=jobs), transport=SimpleNamespace())
         runtime = SimpleNamespace(event_timeout=budget, poll_interval=interval, timeout=30)
         initial = ProviderJob(job_id="synthetic", extraction_state="running", summary={"current_step": "CREATE"})

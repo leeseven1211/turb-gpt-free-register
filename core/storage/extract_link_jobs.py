@@ -26,7 +26,7 @@ _SUMMARY_FIELDS = frozenset({
     "failure_type", "last_event", "plus_verification_status", "automatic_payment_status",
     "automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
     "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred", "xxsyun_status",
-    "payment_confirmation_source", "payment_confirmed_plan_checked_at",
+    "payment_confirmation_source", "payment_confirmed_plan_checked_at", "platform_plus_checked_at",
     "queue_position", "max_attempts", "cdk_state",
     "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
     "extraction_ever_succeeded", "local_plan_check_pending",
@@ -79,7 +79,9 @@ def _public_state(value: Mapping[str, Any]) -> dict:
         safe_summary: dict[str, Any] = {}
         for key in _SUMMARY_FIELDS:
             item = summary.get(key)
-            if key == "payment_confirmation_source" and item != "local_plan_check":
+            if key == "payment_confirmation_source" and (
+                not isinstance(item, str) or item not in {"local_plan_check", "platform_order_check"}
+            ):
                 continue
             if key == "remote_status":
                 normalized = item.strip().upper() if isinstance(item, str) else ""
@@ -94,7 +96,7 @@ def _public_state(value: Mapping[str, Any]) -> dict:
                 if isinstance(item, str) and item in {"remote_not_found", "query_failures", "timeout", "no_progress"}:
                     safe_summary[key] = item
                 continue
-            if key == "local_reconcile_halted_at":
+            if key in {"local_reconcile_halted_at", "platform_plus_checked_at"}:
                 if isinstance(item, str) and len(item) <= 64:
                     try:
                         parsed = datetime.fromisoformat(item.replace("Z", "+00:00"))
@@ -148,6 +150,14 @@ def save_provider_job(
             NULLIF(EXCLUDED.private_data->>'active_job_id', '')) IS DISTINCT FROM
             COALESCE(NULLIF(stored.private_data->>'material_job_id', ''),
                 NULLIF(stored.private_data->>'active_job_id', ''), stored.job_id)"""
+    same_payment_order = """stored.provider_id='legacy' AND EXCLUDED.provider_id='legacy'
+        AND stored.job_id IS NOT DISTINCT FROM COALESCE(EXCLUDED.job_id, stored.job_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM (VALUES ('legacy_payment_order_id'), ('legacy_payment_order_no')) identity(key)
+            WHERE NULLIF(EXCLUDED.private_data->>identity.key, '') IS NOT NULL
+              AND NULLIF(stored.private_data->>identity.key, '') IS NOT NULL
+              AND EXCLUDED.private_data->>identity.key IS DISTINCT FROM stored.private_data->>identity.key
+        )"""
     with operation_store._connect() as conn, conn.cursor() as cur:
         if execution_fence is not None:
             from core.operations.task_gateway import OperationLeaseLost
@@ -178,7 +188,14 @@ def save_provider_job(
                         ELSE COALESCE(stored.public_state->'payment_artifact', '{{}}'::jsonb)
                         || COALESCE(EXCLUDED.public_state->'payment_artifact', '{{}}'::jsonb) END
                 ),
-                private_data=stored.private_data || EXCLUDED.private_data,
+                private_data=CASE WHEN stored.provider_id='legacy' THEN
+                    (CASE WHEN {same_payment_order} THEN stored.private_data
+                        ELSE stored.private_data - 'legacy_payment_cdk' END) || EXCLUDED.private_data
+                    || CASE WHEN {same_payment_order}
+                            AND NULLIF(BTRIM(stored.private_data->>'legacy_payment_cdk'), '') IS NOT NULL
+                        THEN jsonb_build_object('legacy_payment_cdk', stored.private_data->'legacy_payment_cdk')
+                        ELSE '{{}}'::jsonb END
+                    ELSE stored.private_data || EXCLUDED.private_data END,
                 updated_at=now()
             """,
             (
@@ -195,6 +212,73 @@ def save_provider_job(
     if saved is None:
         raise RuntimeError("提链 Provider 任务保存后不可读取")
     return saved
+
+
+def restore_legacy_payment_query_credential(
+    task_id: int, *, expected_run_id: int, provider_job_run_id: int, expected_job_id: str,
+    payment_cdk: str, expected_order_id: str = "", expected_order_no: str = "",
+) -> dict:
+    """仅补齐已由服务验证的原单查询凭据；不创建订单，也不改变任务状态。"""
+    identifiers = (task_id, expected_run_id, provider_job_run_id)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in identifiers):
+        raise ValueError("原单任务标识无效")
+    if not isinstance(payment_cdk, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}", payment_cdk) is None:
+        raise ValueError("支付查询凭据格式无效")
+    if (not isinstance(expected_job_id, str) or not expected_job_id
+            or not all(isinstance(value, str) and len(value) <= 256 for value in (expected_order_id, expected_order_no))
+            or not (expected_order_id or expected_order_no)):
+        raise ValueError("原单身份信息不足")
+    operation_store.init()
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (expected_run_id,))
+        current = cur.fetchone()
+        if not current or current["task_id"] != task_id or current["source_system"] != "native_operations":
+            raise LookupError("当前任务执行记录已变化")
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_tasks')} WHERE id=%s FOR UPDATE", (task_id,))
+        task = cur.fetchone()
+        if (not task or task["last_run_id"] != expected_run_id or task["task_type"] != "extract_link"
+                or task["source_system"] != "native_operations"):
+            raise ValueError("当前原单任务已变化")
+        task_data = _json_object(task["data"], field_name="任务数据")
+        current_data = _json_object(current["data"], field_name="执行数据")
+        if (current_data.get("provider_id", task_data.get("provider_id")) != "legacy"
+                or current_data.get("mode", task_data.get("mode")) not in {"auto_payment", "manual_payment"}):
+            raise ValueError("当前任务不支持恢复支付查询凭据")
+        chain = [expected_run_id]
+        row = current
+        while chain[-1] != provider_job_run_id and len(chain) < 20:
+            data = _json_object(row["data"], field_name="执行数据")
+            parent = data.get("provider_job_run_id")
+            if (data.get("workbench_action") != "sync_status" or isinstance(parent, bool)
+                    or not isinstance(parent, int) or parent < 1 or parent in chain):
+                raise ValueError("当前执行与待恢复原单不一致")
+            cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (parent,))
+            row = cur.fetchone()
+            if not row or row["task_id"] != task_id or row["source_system"] != "native_operations":
+                raise ValueError("当前执行与待恢复原单不一致")
+            chain.append(parent)
+        if chain[-1] != provider_job_run_id:
+            raise ValueError("原单执行关联过深")
+        cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=ANY(%s) ORDER BY run_id FOR UPDATE", (chain,))
+        jobs = list(cur.fetchall())
+        source = next((job for job in jobs if job["run_id"] == provider_job_run_id), None)
+        if not source or source["provider_id"] != "legacy" or source["job_id"] != expected_job_id:
+            raise ValueError("待恢复的远端原单已变化")
+        for job in jobs:
+            if job["provider_id"] != "legacy" or job["job_id"] != expected_job_id:
+                raise ValueError("当前执行包含其他远端原单")
+            private = _json_object(job["private_data"], field_name="平台恢复数据")
+            for key, expected in (("legacy_payment_order_id", expected_order_id), ("legacy_payment_order_no", expected_order_no)):
+                if expected and private.get(key) != expected:
+                    raise ValueError("待恢复的支付订单已变化")
+            existing = private.get("legacy_payment_cdk")
+            if existing not in (None, "", payment_cdk):
+                raise ValueError("原单已保存其他支付查询凭据")
+        # 查询凭据补齐不代表远端状态发生变化，保留原有观测时间供到账归因使用。
+        cur.execute(f"UPDATE {operation_store._table('extract_link_provider_jobs')} "
+                    "SET private_data=private_data || %s::jsonb WHERE run_id=ANY(%s)",
+                    (_dump({"legacy_payment_cdk": payment_cdk}), [job["run_id"] for job in jobs]))
+    return {"task_id": task_id, "run_id": expected_run_id, "provider_job_run_id": provider_job_run_id, "updated": True}
 
 
 def get_provider_job_private(run_id: int) -> dict | None:
@@ -329,7 +413,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
                                OR job.public_state->'summary'->'local_plan_check_pending'='true'::jsonb))
                   )
               ))
-              AND (job.provider_id<>'huanguang'
+              AND (job.provider_id NOT IN ('huanguang', 'legacy')
                    OR job.public_state->'summary'->'local_reconcile_halted' IS DISTINCT FROM 'true'::jsonb)
               AND (
                   (job.provider_id<>'huanguang' AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL)
@@ -696,7 +780,7 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
                 THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
             COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
             COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
-            COALESCE(job.provider_id='huanguang'
+            COALESCE(job.provider_id IN ('huanguang', 'legacy')
                 AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
             CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                 THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),

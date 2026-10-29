@@ -311,7 +311,7 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
                     COALESCE(NULLIF(task.data->>'provider_id', ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
                     COALESCE(NULLIF(task.data->>'mode', ''), 'extract_only') AS mode,
-                    COALESCE(job.provider_id='huanguang'
+                    COALESCE(job.provider_id IN ('huanguang', 'legacy')
                         AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
                     CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                         THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),

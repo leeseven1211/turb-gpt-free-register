@@ -968,6 +968,22 @@ test('扫码完成与独立套餐联合确认后显示支付成功及核验来�
   assert.doesNotMatch(html, /支付待确认|结果待确认/);
 });
 
+test('支付平台核验到账与仅支付成功分别展示', () => {
+  const {api} = createView();
+  const task = {task_id:730, task_status:'success', mode:'auto_payment',
+    extraction_status:'success', payment_status:'paid', plus_status:'confirmed',
+    payment_confirmation_source:'platform_order_check'};
+  const outcome = api.outcome(task);
+  assert.equal(outcome.title, '支付成功 · 到账已核实');
+  assert.match(outcome.copy, /支付平台已核验 Plus 到账/);
+  assert.doesNotMatch(outcome.copy, /独立套餐查询/);
+  const html = api.renderCard(task);
+  assert.match(html, /支付平台已核验 Plus 到账/);
+  const pending = api.outcome({...task, plus_status:'pending', payment_confirmation_source:''});
+  assert.equal(pending.title, '支付成功 · 到账待核实');
+  assert.doesNotMatch(pending.copy, /支付平台已核验/);
+});
+
 test('提链成功事实独立于任务后续失败和待确认，结果区不反写提链失败', () => {
   const {api} = createView();
   for (const [status, title] of [['failed','提链成功 · 后续处理失败'], ['attention_required','提链成功 · 后续结果待确认'], ['request_unknown','提链成功 · 后续结果待确认']]) {

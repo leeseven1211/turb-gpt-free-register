@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 try:
     from curl_cffi import requests as curl_requests
@@ -309,7 +309,7 @@ def _provider_mode_enabled(provider_id: str, mode: str) -> bool:
     )
 
 
-def _provider_configuration(provider_id: str):
+def _provider_configuration(provider_id: str, *, for_query: bool = False):
     from core.extract_link_providers.contracts import ProviderConfig
 
     provider_id = str(provider_id or "").strip().lower()
@@ -317,14 +317,15 @@ def _provider_configuration(provider_id: str):
     if not settings:
         raise ValueError("未知提链平台")
     prefix = settings["prefix"]
-    if not _bool_setting("EXTRACT_LINK_ENABLED", True):
+    saved_query = for_query and provider_id == "legacy"
+    if not saved_query and not _bool_setting("EXTRACT_LINK_ENABLED", True):
         raise ValueError("提链工作台已关闭")
-    if not _bool_setting(f"{prefix}_ENABLED", provider_id == "legacy"):
+    if not saved_query and not _bool_setting(f"{prefix}_ENABLED", provider_id == "legacy"):
         raise ValueError("提链平台未启用")
     config_prefix = settings.get("config_prefix", prefix)
     api_base = _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", ""))
     cdk = str(_runtime_setting(f"{config_prefix}_CDK", "") or "").strip()
-    if not api_base or not cdk:
+    if not api_base or (not cdk and not saved_query):
         raise ValueError("提链平台 API 地址或 CDK 未配置")
     default_type = str(_runtime_setting(f"{config_prefix}_DEFAULT_TYPE", "") or "").strip().lower()
     if provider_id == "legacy":
@@ -373,11 +374,17 @@ def _provider_configuration(provider_id: str):
     )
 
 
-class _ProviderHTTPTransport:
-    """Adapter transport; responses and errors never include request secrets."""
+class _NoProviderRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
-    def __init__(self, runtime_config):
+
+class _ProviderHTTPTransport:
+    """平台传输；响应和错误不包含请求凭据。"""
+
+    def __init__(self, runtime_config, *, allow_redirects=True):
         self.runtime_config = runtime_config
+        self.allow_redirects = allow_redirects
 
     def request(self, method, path, *, json=None, headers=None, timeout=30):
         deadline = getattr(self, "deadline", None)
@@ -391,12 +398,13 @@ class _ProviderHTTPTransport:
         if curl_requests is not None:
             return curl_requests.request(
                 str(method).upper(), url, json=json, headers=safe_headers,
-                timeout=timeout,
+                timeout=timeout, allow_redirects=self.allow_redirects,
             )
         body = None if json is None else __import__("json").dumps(json).encode("utf-8")
         request = Request(url, data=body, headers=safe_headers, method=str(method).upper())
         try:
-            with urlopen(request, timeout=timeout) as response:
+            open_request = urlopen if self.allow_redirects else build_opener(_NoProviderRedirect()).open
+            with open_request(request, timeout=timeout) as response:
                 content = response.read()
                 status = int(getattr(response, "status", 200) or 200)
         except HTTPError as exc:
@@ -426,10 +434,16 @@ def _provider(provider_id: str, runtime_config=None):
     from core.extract_link_providers import get_provider
 
     runtime_config = runtime_config or _provider_configuration(provider_id)
+    payment_options = {}
+    if provider_id == "legacy":
+        payment_options["payment_transport"] = _ProviderHTTPTransport(
+            SimpleNamespace(api_base="https://plus.bzb.qzz.io"), allow_redirects=False,
+        )
     return get_provider(
         provider_id,
         config=runtime_config.config,
         transport=_ProviderHTTPTransport(runtime_config),
+        **payment_options,
     )
 
 
@@ -1924,14 +1938,14 @@ def _safe_provider_job_state(
     safe_summary = {}
     for key in ("current_step", "percent", "outcome", "failure_code", "failure_type", "last_event",
                 "plus_verification_status", "automatic_payment_status", "payment_check_status", "platform_plus_status",
-                "payment_confirmed_plan_checked_at"):
+                "payment_confirmed_plan_checked_at", "platform_plus_checked_at"):
         value = summary.get(key)
         if key == "percent" and isinstance(value, (int, float)) and not isinstance(value, bool):
             safe_summary[key] = max(0, min(100, int(value)))
         elif isinstance(value, str):
             safe_summary[key] = value[:100]
-    if summary.get("payment_confirmation_source") == "local_plan_check":
-        safe_summary["payment_confirmation_source"] = "local_plan_check"
+    if summary.get("payment_confirmation_source") in {"local_plan_check", "platform_order_check"}:
+        safe_summary["payment_confirmation_source"] = summary["payment_confirmation_source"]
     for key in ("completed_steps", "total_steps", "run_attempt", "step_attempt", "max_attempts", "queue_position",
                 "auto_relink_attempt", "remote_chain_length"):
         value = summary.get(key)
@@ -2022,18 +2036,39 @@ def _legacy_needs_continuation(state: dict, *, mode: str) -> bool:
                 and summary.get("automatic_payment_terminal") is not True))
 
 
+def _legacy_awaiting_platform_plus(state: dict, private: dict) -> bool:
+    summary = state.get("summary") or {}
+    return bool(private.get("legacy_payment_order_id") and state.get("payment_state") == "succeeded"
+        and state.get("plus_status") != "confirmed"
+        and summary.get("platform_plus_status") not in {"confirmed", "inferred"}
+        and summary.get("payment_check_status") in {"pending", "checking"})
+
+
 def _defer_legacy_job(context, runtime, state, private, *, job_id, error=""):
     """每次原单查询后释放线程；连续故障退避，不丢弃待确认订单。"""
+    reason = _legacy_reconcile_halt_reason(private)
+    if reason:
+        _halt_huanguang_reconcile(context, state, private, job_id=job_id, mode=private.get("mode", "auto_payment"),
+            reason=reason, leases=[], proxy_resource_ids=[], provider_id="legacy")
+        return
     failures = int((private.get("local_reconcile") or {}).get("consecutive_failures") or 0)
     delay = max(10, min(30, runtime.poll_interval))
     if error:
         delay = min(300, max(delay, 15 * 2 ** min(failures, 5)))
-    reason = "原单查询暂时失败，等待重试" if error else "等待平台原单同步"
+    reason = ("原单查询暂时失败，等待重试" if error else
+              "支付成功，等待支付平台核验 Plus 到账" if state.get("payment_state") == "succeeded" else "等待平台原单同步")
     state["message"] = reason
     _update_provider_job(context, "legacy", job_id, state, private)
     context.defer(delay_seconds=delay, reason=reason, data={
         "extract_poll_continuation": True, "workbench_action": "sync_status", "provider_job_run_id": context.run_id,
     })
+
+
+def _legacy_reconcile_halt_reason(private):
+    from core.extract_link_reconcile_policy import halt_reason
+
+    return halt_reason((private or {}).get("local_reconcile"), now=datetime.now(timezone.utc),
+        total_timeout=3600, no_progress_timeout=900, max_query_failures=12)
 
 
 def _huanguang_needs_continuation(state: dict) -> bool:
@@ -2084,7 +2119,8 @@ def _huanguang_reconcile_halt_reason(private) -> str:
     )
 
 
-def _halt_huanguang_reconcile(context, state, private, *, job_id, mode, reason, leases, proxy_resource_ids):
+def _halt_huanguang_reconcile(context, state, private, *, job_id, mode, reason, leases, proxy_resource_ids,
+                              provider_id="huanguang"):
     """只停止本地查询，保留原单及材料，不推断远端失败或取消付款。"""
     message = _HUANGUANG_RECONCILE_MESSAGES[reason]
     private = dict(private or {})
@@ -2100,17 +2136,18 @@ def _halt_huanguang_reconcile(context, state, private, *, job_id, mode, reason, 
     if mode != "extract_only" and state.get("payment_state") not in {"succeeded", "failed"}:
         state["payment_state"] = "unknown"
     state["message"] = message
-    _update_provider_job(context, "huanguang", job_id or None, state, private)
+    _update_provider_job(context, provider_id, job_id or None, state, private)
     context.report(stage="remote_sync", level="warning", message=message,
                    detail={"cause_code": "extract_reconcile_halted", "local_reconcile_reason": reason})
-    _release_huanguang_proxies(context, leases, proxy_resource_ids, terminal=False)
+    if provider_id == "huanguang":
+        _release_huanguang_proxies(context, leases, proxy_resource_ids, terminal=False)
     extracted = state.get("extraction_state") == "succeeded" or summary.get("extraction_ever_succeeded") is True
     db.update_account_extract(int(context.account_id), {
         "status": "success" if extracted else "request_unknown", "ok": extracted,
         "job_id": job_id or None, "message": message, "error": message,
     })
     context.finish(status="request_unknown", message=message, error=message, result_summary={
-        "provider_id": "huanguang", "mode": mode, "extraction_status": state.get("extraction_state"),
+        "provider_id": provider_id, "mode": mode, "extraction_status": state.get("extraction_state"),
         "payment_status": state.get("payment_state"), "plus_status": state.get("plus_status"),
         "remote_job_created": bool(job_id), "cause_code": "extract_reconcile_halted",
         "local_reconcile_halted": True, "local_reconcile_reason": reason,
@@ -2271,8 +2308,8 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "preflight_status": preflight,
         "extraction_status": extraction,
         "payment_status": payment,
-        "payment_confirmation_source": "local_plan_check" if (
-            payment == "paid" and summary.get("payment_confirmation_source") == "local_plan_check"
+        "payment_confirmation_source": summary.get("payment_confirmation_source") if (
+            payment == "paid" and summary.get("payment_confirmation_source") in {"local_plan_check", "platform_order_check"}
         ) else "",
         "plus_status": plus,
         "run_count": int(row.get("run_count") or 0),
@@ -2285,7 +2322,7 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "has_payment_link": bool(artifact.get("payment_url") or artifact.get("payment_page_url") or state.get("payment_links") or state.get("links") or legacy_has_link),
         "has_payment_entry": has_payment_entry,
         "has_qr": bool(artifact.get("qr_data") or artifact.get("qr_image_url_png") or artifact.get("qr_image_url_svg")),
-        "local_reconcile_halted": provider_id == "huanguang" and summary.get("local_reconcile_halted") is True,
+        "local_reconcile_halted": provider_id in {"huanguang", "legacy"} and summary.get("local_reconcile_halted") is True,
     }
 
 
@@ -2797,8 +2834,6 @@ def extract_workbench_task_detail(task_id: int) -> dict | None:
 def perform_extract_workbench_action(task_id: int, action: str) -> dict:
     from core.storage import extract_link_jobs, operation
 
-    if not _bool_setting("EXTRACT_LINK_ENABLED", True):
-        return {"accepted": False}
     task_id = int(task_id)
     task = operation.get_task(task_id, include_events=False)
     if not task or str(task.get("task_type") or "") != "extract_link":
@@ -2810,7 +2845,7 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
     data = task.get("data") if isinstance(task.get("data"), dict) else {}
     provider_id = str(data.get("provider_id") or "legacy").strip().lower()
     mode = str(data.get("mode") or "extract_only").strip().lower()
-    if provider_id not in _PROVIDER_SETTINGS or not _provider_enabled(provider_id):
+    if provider_id not in _PROVIDER_SETTINGS:
         return {"accepted": False}
     runs = task.get("runs") if isinstance(task.get("runs"), list) else []
     latest = max(runs, key=lambda row: (int(row.get("run_no") or 0), int(row.get("id") or 0))) if runs else {}
@@ -2819,6 +2854,9 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
     prior_state = prior_job.get("public_state") if prior_job and isinstance(prior_job.get("public_state"), dict) else {}
 
     requested_action = str(action or "").strip().lower()
+    saved_legacy_query = provider_id == "legacy" and requested_action == "sync_status" and _provider_has_reference(prior_job)
+    if not saved_legacy_query and (not _bool_setting("EXTRACT_LINK_ENABLED", True) or not _provider_enabled(provider_id)):
+        return {"accepted": False}
     workbench_action = requested_action
     run_data = {"provider_id": provider_id, "mode": mode}
     if requested_action == "retry":
@@ -3210,6 +3248,42 @@ def _provider_job_for_sync(run_id: int):
     return job
 
 
+def restore_legacy_payment_query_credential(task_id: int, payment_cdk: str) -> dict:
+    """先只读核对精确原单，再补存该订单的查询凭据；不修改全局配置。"""
+    from core.extract_link_providers.contracts import request
+    from core.storage import extract_link_jobs, operation
+
+    if not isinstance(payment_cdk, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}", payment_cdk):
+        raise ValueError("原单查询凭据格式无效")
+    task = operation.get_task(int(task_id), include_events=False)
+    if not task or task.get("task_type") != "extract_link":
+        raise ValueError("没有可补齐的提链原单")
+    current_run_id = int(task.get("last_run_id") or 0)
+    job = _provider_job_for_sync(current_run_id)
+    if not job or job.get("provider_id") != "legacy" or not job.get("job_id"):
+        raise ValueError("没有可补齐的虾扯蛋链原单")
+    private = job.get("private_data") or {}
+    order_id = str(private.get("legacy_payment_order_id") or "")
+    order_no = str(private.get("legacy_payment_order_no") or "")
+    if not order_id or len(order_id) > 160:
+        raise ValueError("原单缺少精确支付订单引用")
+    transport = _ProviderHTTPTransport(SimpleNamespace(api_base="https://plus.bzb.qzz.io"), allow_redirects=False)
+    try:
+        payload = request(transport, "GET", f"/api/customer/orders/{quote(order_id, safe='')}",
+            headers={"Authorization": f"Bearer {payment_cdk}"}, timeout=30)
+    except Exception:
+        raise ValueError("原单查询凭据验证失败，请确认使用建单时的支付 CDK") from None
+    order = payload.get("data") if isinstance(payload, dict) else None
+    if (not isinstance(payload, dict) or payload.get("ok") is False
+            or not isinstance(order, dict) or str(order.get("id") or "") != order_id
+            or (order_no and order.get("orderNo") != order_no)):
+        raise ValueError("支付平台返回的订单与原单不匹配")
+    return extract_link_jobs.restore_legacy_payment_query_credential(int(task_id),
+        expected_run_id=current_run_id, provider_job_run_id=int(job["run_id"]),
+        expected_job_id=str(job["job_id"]), payment_cdk=payment_cdk,
+        expected_order_id=order_id, expected_order_no=order_no)
+
+
 def _huanguang_scan_completed(state: dict) -> bool:
     """原单已结束扫码，具备发起独立套餐核验的条件。"""
     from core.extract_link_providers.payment_confirmation import huanguang_scan_completed
@@ -3218,7 +3292,7 @@ def _huanguang_scan_completed(state: dict) -> bool:
 
 
 def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
-    """结合原单扫码完成和独立套餐事实确认付款，保留平台推断标记。"""
+    """按精确原单的到账证据或独立套餐事实确认，明确记录来源。"""
     from core.extract_link_providers.payment_confirmation import payment_scan_completed
 
     if not (mode in {"auto_payment", "manual_payment"} and payment_scan_completed(state, provider_id=provider_id)):
@@ -3228,6 +3302,30 @@ def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id:
 
     task = operation.get_task(int(context.task_id), include_events=False) or {}
     prior_summary = prior_state.get("summary") or {}
+    platform_evidence = summary
+    if (provider_id == "legacy" and prior_state.get("payment_state") == "succeeded"
+            and prior_state.get("plus_status") == "confirmed"
+            and prior_summary.get("payment_confirmation_source") == "platform_order_check"):
+        platform_evidence = prior_summary
+    if (provider_id == "legacy" and state.get("payment_state") == "succeeded"
+            and platform_evidence.get("platform_plus_status") == "confirmed"
+            and platform_evidence.get("payment_check_status") == "verified"):
+        checked_at = platform_evidence.get("platform_plus_checked_at")
+        try:
+            checked = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00"))
+            created_at = task.get("created_at")
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if isinstance(created_at, str) else created_at
+            valid_time = checked.tzinfo is not None and (not isinstance(created, datetime)
+                or (created.tzinfo is not None and checked >= created))
+        except (ValueError, TypeError):
+            valid_time = False
+        if valid_time:
+            state.update(extraction_state="succeeded", payment_state="succeeded", plus_status="confirmed")
+            summary.update(payment_confirmation_source="platform_order_check", platform_plus_status="confirmed",
+                payment_check_status="verified", platform_plus_checked_at=checked_at,
+                automatic_payment_requires_reconcile=False, local_plan_check_pending=False)
+            state["summary"] = summary
+            return True
     prior_confirmed = (
         prior_state.get("payment_state") == "succeeded" and prior_state.get("plus_status") == "confirmed"
         and prior_summary.get("payment_confirmation_source") == "local_plan_check"
@@ -3282,13 +3380,16 @@ def _handle_provider_operation(context):
     )):
         context.finish(status="failed", message="账号已不符合 Plus 优惠资格，未提交提链", error="账号不符合提链资格")
         return None
-    if provider_id not in _PROVIDER_SETTINGS or not _provider_enabled(provider_id):
+    prior_run_id = int(data.get("provider_job_run_id") or (context.run_id if continuation else 0))
+    prior_job = _provider_job_for_sync(prior_run_id) if prior_run_id else None
+    saved_legacy_query = provider_id == "legacy" and action == "sync_status" and _provider_has_reference(prior_job)
+    if provider_id not in _PROVIDER_SETTINGS or (not saved_legacy_query and not _provider_enabled(provider_id)):
         context.finish(status="failed", message="平台或运行模式已在配置中关闭", error="平台或运行模式未启用")
         return None
     if action == "create" and not _provider_mode_enabled(provider_id, mode):
         context.finish(status="failed", message="平台或运行模式已在配置中关闭", error="平台或运行模式未启用")
         return None
-    runtime = _provider_configuration(provider_id)
+    runtime = _provider_configuration(provider_id, for_query=True) if saved_legacy_query else _provider_configuration(provider_id)
     link_type = _provider_link_type(provider_id, data.get("link_type"), runtime.default_type)
     options = _provider_request_options(
         provider_id, data.get("options") or data.get("payment_options"),
@@ -3296,8 +3397,6 @@ def _handle_provider_operation(context):
     )
     provider = _provider(provider_id, runtime)
     email = str(account.get("email") or context.email or "").strip()
-    prior_run_id = int(data.get("provider_job_run_id") or (context.run_id if continuation else 0))
-    prior_job = _provider_job_for_sync(prior_run_id) if prior_run_id else None
     prior_private = prior_job.get("private_data") if prior_job and isinstance(prior_job.get("private_data"), dict) else {}
     job_id = str(prior_job.get("job_id") or "") if prior_job else ""
     state = _safe_provider_job_state(
@@ -3388,7 +3487,8 @@ def _handle_provider_operation(context):
                 def checkpoint_submission(private_data):
                     nonlocal prior_private
                     prior_private = {**prior_private, **private_data}
-                    state["summary"].update({"submission_receipt_pending": True, "remote_polling": True})
+                    if provider_id == "huanguang":
+                        state["summary"].update({"submission_receipt_pending": True, "remote_polling": True})
                     _update_provider_job(context, provider_id, None, state, prior_private)
 
                 request_data = ExtractRequest(
@@ -3400,7 +3500,7 @@ def _handle_provider_operation(context):
                     options=options,
                     entry_proxies=proxy_routes.get("entry", ()),
                     exit_proxies=proxy_routes.get("exit", ()),
-                    submission_checkpoint=checkpoint_submission if provider_id == "huanguang" else None,
+                    submission_checkpoint=checkpoint_submission if provider_id in {"huanguang", "legacy"} else None,
                 )
                 context.report(stage="extraction", state="running", message=f"正在向 {provider_id} 提交提链任务")
                 request_id = str(uuid.uuid4())
@@ -3490,7 +3590,6 @@ def _handle_provider_operation(context):
                 _update_provider_job(context, provider_id, job_id or None, state, prior_private)
                 context.report(stage="extraction", message=f"正在读取已有远端任务状态，本次请求最多等待 {runtime.timeout} 秒")
                 job = provider.get_status(job_id, private_data=_provider_resume_private(provider_id, prior_private, state))
-                sync_query_succeeded = True
                 context.checkpoint()
                 job_id = str(job.job_id or job_id or "").strip()
                 saved_state = prior_job.get("public_state") if isinstance(prior_job.get("public_state"), dict) else {}
@@ -3532,6 +3631,7 @@ def _handle_provider_operation(context):
                         plus_status=state["plus_status"],
                         aftercare_status=state["aftercare_status"],
                     )
+                sync_query_succeeded = True
                 _update_provider_job(context, provider_id, job_id, state, job.private_data or prior_private)
                 intent = data.get("remote_intent")
                 if (provider_id == "huanguang" and isinstance(intent, dict)
@@ -3605,13 +3705,17 @@ def _handle_provider_operation(context):
                 mode == "auto_payment" and not local_payment_confirmed
                 and payment_scan_completed(state, provider_id=provider_id)
                 and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False)
+                and (provider_id != "legacy" or state.get("plus_status") not in {"failed", "not_confirmed"})
             )
+            confirmation_source = state["summary"].get("payment_confirmation_source")
+            confirmation_message = ("支付平台已核验 Plus 到账" if confirmation_source == "platform_order_check"
+                                    else "独立套餐查询已确认 Plus 到账")
             if state["payment_state"] == "succeeded" or scan_awaiting_verification:
                 context.report(
                     stage="payment", state="pending" if scan_awaiting_verification else "success",
                     message=("扫码已完成，等待独立套餐核验" if scan_awaiting_verification else
-                             "扫码完成，独立套餐查询已确认 Plus 到账" if local_payment_confirmed else "平台已确认支付成功"),
-                    detail={"payment_confirmation_source": "local_plan_check"} if local_payment_confirmed else {},
+                             confirmation_message if local_payment_confirmed else "平台已确认支付成功"),
+                    detail={"payment_confirmation_source": confirmation_source} if local_payment_confirmed else {},
                 )
                 aftercare = state.get("aftercare_status") or "not_started"
                 if not local_payment_confirmed and aftercare in {"not_started", "pending"}:
@@ -3660,15 +3764,17 @@ def _handle_provider_operation(context):
                         state["plus_status"] = "not_confirmed" if checked_result.get("ok") else "failed"
                 if local_payment_confirmed:
                     state["plus_status"] = "confirmed"
-                elif not scan_awaiting_verification and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False):
+                elif (not scan_awaiting_verification and state.get("plus_status") not in {"failed", "not_confirmed"}
+                      and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False)):
                     schedule_plan_check = True
                     state["plus_status"] = "pending"
-                elif not scan_awaiting_verification:
+                elif not scan_awaiting_verification and state.get("plus_status") not in {"failed", "not_confirmed"}:
                     state["plus_status"] = "not_applicable"
+                confirmation_source = state["summary"].get("payment_confirmation_source")
                 context.report(
                     stage="plus", state=("success" if local_payment_confirmed else "pending" if state["plus_status"] == "pending"
                                         else "failed" if state["plus_status"] in {"failed", "not_confirmed"} else "skipped"),
-                    message=("独立套餐查询已确认 Plus 到账" if local_payment_confirmed else
+                    message=(confirmation_message if local_payment_confirmed else
                              "独立套餐查询尚未确认 Plus 到账" if state["plus_status"] == "not_confirmed" else
                              "独立套餐核验失败，可同步原单重查" if state["plus_status"] == "failed" else "Plus 权益核验状态已单独记录"),
                     detail={"plus_status": state["plus_status"]},
@@ -3678,6 +3784,12 @@ def _handle_provider_operation(context):
                 state["plus_status"] = "not_applicable"
             else:
                 state["plus_status"] = "not_applicable"
+
+            if (provider_id == "legacy" and callable(getattr(context, "defer", None))
+                    and _legacy_awaiting_platform_plus(state, {**prior_private, **job.private_data})):
+                private = _record_huanguang_reconcile(context, {**prior_private, **job.private_data}, state, succeeded=True)
+                _defer_legacy_job(context, runtime, state, private, job_id=job_id)
+                return None
 
             extraction = state["extraction_state"]
             payment = state["payment_state"]
@@ -3694,7 +3806,7 @@ def _handle_provider_operation(context):
                     terminal_status = "request_unknown" if payment == "unknown" else "partial_success"
                     status_message = "提链成功，自动支付状态待确认"
                 elif local_payment_confirmed:
-                    status_message = "提链并支付成功，独立套餐查询已确认 Plus 到账"
+                    status_message = f"提链并支付成功，{confirmation_message}"
                 elif mode == "manual_payment" and payment not in {"succeeded", "failed"}:
                     status_message = "提链成功，等待手动支付"
             elif extraction == "failed":
@@ -3748,9 +3860,11 @@ def _handle_provider_operation(context):
             }
             if local_payment_confirmed:
                 result_summary.update({
-                    "payment_confirmation_source": "local_plan_check",
-                    "payment_confirmed_plan_checked_at": state["summary"]["payment_confirmed_plan_checked_at"],
+                    "payment_confirmation_source": confirmation_source,
                 })
+                for key in ("payment_confirmed_plan_checked_at", "platform_plus_checked_at"):
+                    if state["summary"].get(key):
+                        result_summary[key] = state["summary"][key]
             if extraction == "failed":
                 result_summary.update({
                     "cause_code": "extract_provider_failed",
@@ -3829,6 +3943,26 @@ def _handle_provider_operation(context):
             safe_error = task_run_log.redact_text(str(exc), 500)
             from core.extract_link_providers.payment_confirmation import payment_scan_completed
 
+            prior_public = (prior_job or {}).get("public_state") or {}
+            prior_summary = prior_public.get("summary") or {}
+            if (provider_id == "legacy" and action == "sync_status" and not sync_query_succeeded
+                    and prior_public.get("payment_state") == "succeeded"
+                    and prior_public.get("plus_status") == "confirmed"
+                    and prior_summary.get("payment_confirmation_source") in {"local_plan_check", "platform_order_check"}
+                    and state.get("payment_state") != "failed"):
+                # 网络读取失败不能抹掉同一原单此前已经核实的付款和到账事实。
+                state = dict(prior_public)
+                state["message"] = "原单已支付且 Plus 已确认，本次查询暂时失败，已保留确认结果"
+                _update_provider_job(context, provider_id, job_id, state, prior_private)
+                context.report(stage="remote_sync", level="warning", message=f"已保留原单确认结果：{safe_error}")
+                context.finish(status="success", message=state["message"], result_summary={
+                    "provider_id": provider_id, "mode": mode, "extraction_status": "succeeded",
+                    "payment_status": "succeeded", "plus_status": "confirmed", "remote_job_created": True,
+                    "payment_confirmation_source": prior_summary["payment_confirmation_source"],
+                    **{key: prior_summary[key] for key in ("platform_plus_checked_at", "payment_confirmed_plan_checked_at")
+                       if prior_summary.get(key)},
+                })
+                return None
             if (provider_id == "legacy" and job_id and callable(getattr(context, "defer", None))
                     and (_legacy_needs_continuation(state, mode=mode)
                          or (action == "sync_status" and not sync_query_succeeded

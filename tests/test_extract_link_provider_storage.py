@@ -40,6 +40,107 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
     def setUp(self):
         operation.init()
 
+    def test_restore_legacy_payment_credential_updates_same_order_and_survives_stale_worker(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="credential@example.test",
+            data={"provider_id": "legacy", "mode": "auto_payment"})
+        original = task["run"]["id"]
+        state = {"extraction_state": "succeeded", "payment_state": "pending"}
+        private = {"legacy_payment_order_id": "order-1", "legacy_payment_order_no": "UPI-FIXTURE-1"}
+        extract_link_jobs.save_provider_job(original, "legacy", "job-1", state, private)
+        operation.finish_run(original, status="attention_required", message="等待原单查询")
+        current = operation.retry_runtime_task(task["id"], data={"workbench_action": "sync_status",
+            "provider_job_run_id": original})["id"]
+        extract_link_jobs.save_provider_job(current, "legacy", "job-1", state, private)
+        operation.claim_run(current, execution_id="credential-worker", worker_pid=91)
+
+        result = extract_link_jobs.restore_legacy_payment_query_credential(task["id"],
+            expected_run_id=current, provider_job_run_id=original, expected_job_id="job-1",
+            expected_order_id="order-1", expected_order_no="UPI-FIXTURE-1", payment_cdk="validated-old-card")
+        self.assertTrue(result["updated"])
+        for run_id in (original, current):
+            self.assertEqual("validated-old-card", extract_link_jobs.get_provider_job_private(run_id)["private_data"]["legacy_payment_cdk"])
+        extract_link_jobs.save_provider_job(current, "legacy", "job-1", state,
+            {**private, "legacy_payment_cdk": "stale-current-card"})
+        self.assertEqual("validated-old-card", extract_link_jobs.get_provider_job_private(current)["private_data"]["legacy_payment_cdk"])
+        self.assertNotIn("validated-old-card", repr(operation.get_task(task["id"])))
+        self.assertNotIn("validated-old-card", repr(result))
+        self.assertEqual("running", operation.get_run(current)["status"])
+
+    def test_restore_legacy_payment_credential_rejects_changed_identity_or_existing_other_card(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="credential@example.test",
+            data={"provider_id": "legacy", "mode": "auto_payment"})
+        run_id = task["run"]["id"]
+        extract_link_jobs.save_provider_job(run_id, "legacy", "job-1", {},
+            {"legacy_payment_order_id": "order-1"})
+        valid = {"expected_run_id": run_id, "provider_job_run_id": run_id,
+            "expected_job_id": "job-1", "expected_order_id": "order-1", "payment_cdk": "validated-old-card"}
+        for changed in ({"expected_run_id": run_id + 100}, {"expected_job_id": "other-job"},
+                        {"expected_order_id": "other-order"}, {"expected_order_id": ""},
+                        {"payment_cdk": "invalid secret\n"}):
+            with self.subTest(changed=list(changed)), self.assertRaises((ValueError, LookupError)):
+                extract_link_jobs.restore_legacy_payment_query_credential(task["id"], **{**valid, **changed})
+        self.assertNotIn("legacy_payment_cdk", extract_link_jobs.get_provider_job_private(run_id)["private_data"])
+        extract_link_jobs.save_provider_job(run_id, "legacy", "job-1", {},
+            {"legacy_payment_order_id": "order-1", "legacy_payment_cdk": "existing-other-card"})
+        with self.assertRaises(ValueError):
+            extract_link_jobs.restore_legacy_payment_query_credential(task["id"], **valid)
+        self.assertEqual("existing-other-card", extract_link_jobs.get_provider_job_private(run_id)["private_data"]["legacy_payment_cdk"])
+
+    def test_restore_legacy_payment_credential_rejects_foreign_source_and_obsolete_current_run(self):
+        from core.storage import extract_link_jobs
+
+        tasks = [operation.create_runtime_task(task_type="extract_link", account_id=None,
+                 email="credential@example.test", data={"provider_id": "legacy", "mode": "auto_payment"})
+                 for _ in range(2)]
+        for task in tasks:
+            extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "same-job", {},
+                                               {"legacy_payment_order_id": "same-order"})
+        original = tasks[0]["run"]["id"]
+        operation.finish_run(original, status="attention_required", message="等待查询")
+        current = operation.retry_runtime_task(tasks[0]["id"], data={"workbench_action": "sync_status",
+            "provider_job_run_id": tasks[1]["run"]["id"]})["id"]
+        with self.assertRaises(ValueError):
+            extract_link_jobs.restore_legacy_payment_query_credential(tasks[0]["id"],
+                expected_run_id=current, provider_job_run_id=tasks[1]["run"]["id"], expected_job_id="same-job",
+                expected_order_id="same-order", payment_cdk="validated-old-card")
+        with self.assertRaises(ValueError):
+            extract_link_jobs.restore_legacy_payment_query_credential(tasks[0]["id"],
+                expected_run_id=original, provider_job_run_id=original, expected_job_id="same-job",
+                expected_order_id="same-order", payment_cdk="validated-old-card")
+        for task in tasks:
+            self.assertNotIn("legacy_payment_cdk", extract_link_jobs.get_provider_job_private(task["run"]["id"])["private_data"])
+
+    def test_saved_legacy_payment_credential_does_not_cross_changed_remote_order(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="credential@example.test",
+            data={"provider_id": "legacy", "mode": "auto_payment"})
+        run_id = task["run"]["id"]
+        extract_link_jobs.save_provider_job(run_id, "legacy", "job-1", {},
+            {"legacy_payment_order_id": "order-1", "legacy_payment_cdk": "original-card"})
+        extract_link_jobs.save_provider_job(run_id, "legacy", "job-1", {},
+            {"legacy_payment_order_id": "order-2"})
+        self.assertNotIn("legacy_payment_cdk", extract_link_jobs.get_provider_job_private(run_id)["private_data"])
+
+    def test_platform_order_plus_evidence_is_public_but_credential_is_private(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="credential@example.test",
+            data={"provider_id": "legacy", "mode": "auto_payment"})
+        extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "job-1", {
+            "summary": {"payment_confirmation_source": "platform_order_check",
+                        "platform_plus_checked_at": "2026-10-29T08:00:00Z", "platform_plus_status": "at_invalidated"}},
+            {"legacy_payment_cdk": "must-stay-private"})
+        public = extract_link_jobs.get_provider_job_public(task["run"]["id"])
+        self.assertEqual("platform_order_check", public["public_state"]["summary"]["payment_confirmation_source"])
+        self.assertEqual("2026-10-29T08:00:00Z", public["public_state"]["summary"]["platform_plus_checked_at"])
+        self.assertNotEqual("confirmed", public["public_state"].get("plus_status"))
+        self.assertNotIn("must-stay-private", repr(public))
+
     def test_provider_private_data_is_not_in_normal_task_or_run_projections(self):
         from core.storage import extract_link_jobs
 

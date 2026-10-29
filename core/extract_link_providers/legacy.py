@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import re
 from urllib.parse import quote, urlencode
 
@@ -25,7 +26,7 @@ _EXTRACTION = {"CREATED": "queued", "SUBMITTED": "queued", "QUEUED": "queued", "
 _CREATE_REJECTION_STATUSES = {400, 401, 402, 403, 404, 409, 413, 422, 429}
 _PAYMENT_ORDER_STATES = {
     "PENDING": "pending", "ASSIGNED": "pending", "CHECKING": "pending", "COMPLETED": "succeeded",
-    "FAILED": "failed", "CANCELLED": "failed", "EXPIRED": "failed", "NEED_REUPLOAD": "failed",
+    "FAILED": "failed", "FAILED_REFUNDED": "failed", "CANCELLED": "failed", "EXPIRED": "failed", "NEED_REUPLOAD": "failed",
 }
 _PAYMENT_ORDER_LABELS = {
     "等待处理": "PENDING", "处理中": "ASSIGNED", "检测中": "CHECKING", "已完成": "COMPLETED",
@@ -109,8 +110,9 @@ class LegacyQueryRejected(ProviderError):
 class LegacyProvider:
     provider_id = "legacy"
 
-    def __init__(self, config, transport):
+    def __init__(self, config, transport, payment_transport=None):
         self.config, self.transport = config, transport
+        self.payment_transport = payment_transport
         self._last_jobs: dict[str, ProviderJob] = {}
 
     def _require_automatic_payment(self):
@@ -123,7 +125,8 @@ class LegacyProvider:
         require_capability(self.config, "extract")
         if request_data.mode not in {"extract_only", "manual_payment", "auto_payment"}:
             raise ProviderError("虾扯蛋链提链模式无效")
-        private = {"mode": request_data.mode, "link_type": request_data.link_type}
+        private = {"mode": request_data.mode, "link_type": request_data.link_type,
+                   "legacy_extract_cdk": self.config.cdk}
         body = {"link_type": request_data.link_type, "cdk": self.config.cdk, "token": request_data.access_token}
         if request_data.mode == "auto_payment":
             self._require_automatic_payment()
@@ -132,10 +135,13 @@ class LegacyProvider:
             body["payment_platform"] = {
                 "enabled": True, "platform_id": "xiachedan_plus", "cdk": self.config.payment_cdk,
             }
+            private["legacy_payment_cdk"] = self.config.payment_cdk
         if request_data.link_type == "paypal":
             for key in ("paypal_region_selected", "paypal_country", "paypal_currency", "paypal_region"):
                 if key in request_data.options:
                     body[key] = request_data.options[key]
+        if callable(request_data.submission_checkpoint):
+            request_data.submission_checkpoint(dict(private))
         failed = False
         try:
             response = self.transport.request("POST", "/api/extract", json=body, headers={}, timeout=self.config.timeout)
@@ -171,27 +177,29 @@ class LegacyProvider:
         return self._remember(job)
 
     def get_status(self, job_ref: str, *, private_data: dict | None = None) -> ProviderJob:
-        require_capability(self.config, "extract")
         previous = self._last_jobs.get(str(job_ref))
         private = {**(previous.private_data if previous else {}), **(private_data or {})}
+        extract_cdk, payment_cdk = self._query_credentials(private)
         # 官网也使用此只读接口恢复最终结果，避免 SSE 的 done 事件覆盖此前的 result。
-        path = f"/api/jobs/{quote(str(job_ref), safe='')}?" + urlencode({"cdk": self.config.cdk})
+        path = f"/api/jobs/{quote(str(job_ref), safe='')}?" + urlencode({"cdk": extract_cdk})
         data = request(self.transport, "GET", path, timeout=self.config.timeout)
         if data.get("ok") is False:
-            raise LegacyQueryRejected(_failure_summary(data, secrets=(self.config.cdk, self.config.payment_cdk)))
+            raise LegacyQueryRejected(_failure_summary(data, secrets=(extract_cdk, payment_cdk)))
         return self._remember(self._job(
-            data, str(job_ref), secrets=(self.config.cdk, self.config.payment_cdk), private_data=private,
+            data, str(job_ref), secrets=(extract_cdk, payment_cdk), private_data=private,
         ))
 
     def get_automatic_payment_status(self, job_ref: str) -> ProviderJob:
         """仅同步已有订单；未提链或尚待远端提交时不提前查询支付。"""
-        self._require_automatic_payment()
         job_ref = str(job_ref)
         previous = self._last_jobs.get(job_ref)
         if previous is None or previous.private_data.get("mode") != "auto_payment":
             raise ProviderError("虾扯蛋链自动支付查询缺少原任务模式，需先恢复原任务状态")
         if previous.private_data.get("link_type", "upi") != "upi":
             raise ProviderError("虾扯蛋链自动支付仅支持 UPI")
+        if (self.payment_transport is not None and previous.private_data.get("legacy_payment_order_id")
+                and previous.payment_state != "failed"):
+            return self._direct_payment_status(job_ref, previous)
         if previous.extraction_state != "succeeded" or previous.payment_state in {"succeeded", "failed"}:
             return previous
         private = previous.private_data
@@ -199,14 +207,91 @@ class LegacyProvider:
             private.get(key) for key in ("legacy_payment_order_id", "legacy_payment_order_no")
         ):
             return previous
+        extract_cdk, payment_cdk = self._query_credentials(private)
+        if not payment_cdk:
+            raise ProviderError("虾扯蛋链原单查询缺少支付平台 CDK")
         data = request(self.transport, "POST", "/api/payment-status", body={
-            "job_id": job_ref, "cdk": self.config.cdk, "payment_cdk": self.config.payment_cdk,
+            "job_id": job_ref, "cdk": extract_cdk, "payment_cdk": payment_cdk,
         }, timeout=self.config.timeout)
         if data.get("ok") is False:
-            raise LegacyQueryRejected(_failure_summary(data, secrets=(self.config.cdk, self.config.payment_cdk)))
+            raise LegacyQueryRejected(_failure_summary(data, secrets=(extract_cdk, payment_cdk)))
         return self._remember(self._job(
-            data, job_ref, secrets=(self.config.cdk, self.config.payment_cdk), private_data=private,
+            data, job_ref, secrets=(extract_cdk, payment_cdk), private_data=private,
         ))
+
+    def _query_credentials(self, private, *, require_extract=True):
+        """原单读取沿用提交凭据；旧任务没有快照时兼容当前配置。"""
+        credentials = []
+        for name, current in (("legacy_extract_cdk", self.config.cdk), ("legacy_payment_cdk", self.config.payment_cdk)):
+            saved = private.get(name)
+            credentials.append(saved if isinstance(saved, str) and saved.strip() else current)
+        if require_extract and (not isinstance(credentials[0], str) or not credentials[0].strip()):
+            raise ProviderError("虾扯蛋链原单查询缺少提链 CDK")
+        return tuple(credentials)
+
+    def _direct_payment_status(self, job_ref, previous):
+        """直接核对原支付订单，避免提链平台快照或换卡后权限影响结果同步。"""
+        private = dict(previous.private_data)
+        order_id = str(private["legacy_payment_order_id"])
+        extract_cdk, payment_cdk = self._query_credentials(private, require_extract=False)
+        if not isinstance(payment_cdk, str) or not payment_cdk.strip():
+            raise ProviderError("虾扯蛋链原单查询缺少支付平台 CDK")
+        data = request(self.payment_transport, "GET", f"/api/customer/orders/{quote(order_id, safe='')}",
+                       headers={"Authorization": f"Bearer {payment_cdk}"}, timeout=self.config.timeout)
+        secrets = (extract_cdk, payment_cdk)
+        if data.get("ok") is False:
+            raise LegacyQueryRejected(_failure_summary(data, secrets=secrets))
+        order = data.get("data")
+        if not isinstance(order, dict):
+            raise ProviderError("虾扯蛋链支付原单响应缺少订单")
+        expected_no = str(private.get("legacy_payment_order_no") or "")
+        actual_id, actual_no = order.get("id"), order.get("orderNo")
+        if (not isinstance(actual_id, (str, int)) or isinstance(actual_id, bool) or str(actual_id) != order_id
+                or (expected_no and (not isinstance(actual_no, str) or actual_no != expected_no))):
+            raise ProviderError("虾扯蛋链支付原单身份不匹配，已保留上次结果")
+        order_status = str(order.get("status") or "").strip().upper()
+        refunded = order.get("cdkRefundedAt") is not None
+        if refunded:
+            order_status = "FAILED_REFUNDED"
+        # 此处已经按原 ID 和订单号核实直接来源，旧中间快照的终态不能覆盖本次读取。
+        query_private = {key: value for key, value in private.items() if not key.startswith("legacy_payment_confirmed_")}
+        payment_state, summary, details = self._payment_state({
+            "status": "submitted", "order_status": order_status, "order_id": order_id,
+            "order_no": actual_no,
+        }, query_private, secrets=secrets)
+        if payment_state in {"pending", "unknown"} and previous.payment_state == "succeeded":
+            payment_state = previous.payment_state
+            for key in ("automatic_payment_status", "automatic_payment_terminal"):
+                summary[key] = previous.summary.get(key)
+        combined = {**previous.summary, **summary}
+        if payment_state == "succeeded":
+            for key in ("failure_code", "failure_type", "failure_message", "remote_terminal_failure"):
+                combined.pop(key, None)
+        check = str(order.get("subscriptionCheckStatus") or "").strip().upper()
+        plan = str(order.get("subscriptionCheckLastPlan") or "").strip().lower()
+        checked_at = order.get("subscriptionCheckedAt")
+        valid_time = False
+        if isinstance(checked_at, str) and len(checked_at) <= 80:
+            try:
+                valid_time = datetime.fromisoformat(checked_at.replace("Z", "+00:00")).tzinfo is not None
+            except ValueError:
+                pass
+        combined["platform_plus_status"] = "unknown"
+        combined.pop("platform_plus_checked_at", None)
+        combined["payment_check_status"] = check.lower() if check in {
+            "PENDING", "CHECKING", "VERIFIED", "FAILED", "ERROR", "UNAVAILABLE", "CANCELLED",
+        } else "unknown"
+        if valid_time:
+            combined["platform_plus_checked_at"] = checked_at
+        if order_status == "COMPLETED" and check == "VERIFIED" and valid_time and not refunded:
+            if plan in {"plus", "pro"}:
+                combined["platform_plus_status"] = "confirmed"
+            elif plan == "at_invalidated":
+                combined["platform_plus_status"] = "inferred"
+        result = replace(previous, extraction_state="succeeded" if payment_state == "succeeded" else previous.extraction_state,
+                         payment_state=payment_state, private_data={**private, **details}, summary=combined)
+        self._last_jobs[job_ref] = result
+        return result
 
     def _remember(self, job):
         if not job.job_id:

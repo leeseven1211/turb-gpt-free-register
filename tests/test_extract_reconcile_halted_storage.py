@@ -116,7 +116,27 @@ class ExtractReconcileHaltedStorageTests(PostgresTestCase):
         self.assertEqual(1, counts["plus_confirmed"])
 
     def test_halt_marker_does_not_change_other_provider_processing(self):
-        task = self.task(provider="lumen_flow", payment="pending", summary={"local_reconcile_halted": True})
+        task = self.task(provider="lumen_flow", status="running", payment="pending", summary={"local_reconcile_halted": True})
         processing = extract_link_jobs.list_workbench_page(status="processing")
         self.assertEqual([task["id"]], [row["task_id"] for row in processing["items"]])
         self.assertEqual(1, processing["counts"]["processing"])
+
+    def test_halted_legacy_plus_query_leaves_processing_and_preserves_paid(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="原单到账核验收口", requested_count=1)
+        task = self.task(batch_id=batch["id"], provider="legacy", extraction="succeeded", payment="succeeded",
+            plus="pending", summary={"local_reconcile_halted": True, "local_reconcile_reason": "timeout"},
+            artifact={"qr_data": "upi://pay?pa=fixture", "payment_page_url": "https://checkout.example.test/retained"})
+        processing = extract_link_jobs.list_workbench_page(status="processing")
+        self.assertEqual([], processing["items"])
+        self.assertEqual(0, processing["counts"]["processing"])
+        self.assertEqual(1, processing["counts"]["payment_succeeded"])
+        attention = extract_link_jobs.list_workbench_page(status="needs_attention")
+        self.assertEqual([task["id"]], [row["task_id"] for row in attention["items"]])
+        counts = extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]
+        self.assertEqual(0, counts["processing"])
+        self.assertEqual(1, counts["payment_succeeded"])
+        self.assertEqual(0, counts["plus_confirmed"])
+        public = extract_link_jobs.get_provider_job_public(task["run"]["id"])["public_state"]
+        self.assertEqual("succeeded", public["payment_state"])
+        self.assertEqual("pending", public["plus_status"])
+        self.assertEqual("upi://pay?pa=fixture", public["payment_artifact"]["qr_data"])

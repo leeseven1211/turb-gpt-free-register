@@ -574,6 +574,40 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             authorized = client.get("/api/extract-workbench/config")
         self.assertEqual(200, authorized.status_code)
 
+    def test_payment_query_credential_restoration_is_explicit_and_returns_only_public_result(self):
+        with patch.object(extract_workbench.extract_link_service, "restore_legacy_payment_query_credential", create=True,
+                return_value={"ok": True, "updated": True, "task_id": 11, "run_id": 22,
+                              "payment_cdk": "old-payment-card", "raw": "must-not-project"}) as restore:
+            response = self.client.post("/api/extract-workbench/tasks/11/payment-query-credential",
+                                        json={"payment_cdk": "old-payment-card"})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "updated": True, "task_id": 11, "run_id": 22}, response.get_json())
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+        self.assertNotIn("old-payment-card", response.get_data(as_text=True))
+        self.assertNotIn("must-not-project", response.get_data(as_text=True))
+        restore.assert_called_once_with(11, "old-payment-card")
+
+    def test_payment_query_credential_restoration_rejects_bad_inputs_and_hides_failure(self):
+        path = "/api/extract-workbench/tasks/11/payment-query-credential"
+        with patch.object(extract_workbench.extract_link_service, "restore_legacy_payment_query_credential", create=True) as restore:
+            for body in ({}, [], {"payment_cdk": 123}, {"payment_cdk": "short"},
+                         {"payment_cdk": "x" * 257}, {"payment_cdk": "invalid card"},
+                         {"payment_cdk": "old-payment-card", "url": "https://other.test"}):
+                with self.subTest(body_type=type(body).__name__):
+                    self.assertEqual(400, self.client.post(path, json=body).status_code)
+        restore.assert_not_called()
+        with patch.object(extract_workbench.extract_link_service, "restore_legacy_payment_query_credential", create=True,
+                          side_effect=ValueError("private-card remote response")):
+            response = self.client.post(path, json={"payment_cdk": "old-payment-card"})
+        self.assertEqual(409, response.status_code)
+        self.assertNotIn("private-card", response.get_data(as_text=True))
+
+    def test_payment_query_credential_route_requires_application_auth(self):
+        client = create_app(auth_code="workbench-route-auth").test_client()
+        response = client.post("/api/extract-workbench/tasks/11/payment-query-credential",
+                               json={"payment_cdk": "old-payment-card"})
+        self.assertEqual(401, response.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

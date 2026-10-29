@@ -14,9 +14,11 @@ class _Transport:
     def __init__(self, response):
         self.response = response
         self.calls = []
+        self.headers = []
 
     def request(self, method, path, *, json=None, headers=None, timeout=None):
         self.calls.append((method, path, json, timeout))
+        self.headers.append(dict(headers or {}))
         return self.response
 
 
@@ -216,6 +218,64 @@ class LegacyAutomaticPaymentTests(unittest.TestCase):
         self.assertEqual("pending", result.payment_state)
         self.assertEqual("auto_payment", result.private_data["mode"])
         self.assertNotIn("synthetic-payment-cdk", repr(result))
+
+    def test_creation_checkpoints_original_query_credentials_before_submission(self):
+        provider, transport = self.provider({"ok": True, "job_id": "credential-job"})
+        checkpoints = []
+
+        def checkpoint(private):
+            self.assertFalse(transport.calls)
+            checkpoints.append(dict(private))
+
+        job = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment",
+                                                submission_checkpoint=checkpoint))
+        self.assertEqual(1, len(checkpoints))
+        self.assertEqual("synthetic-cdk", checkpoints[0]["legacy_extract_cdk"])
+        self.assertEqual("synthetic-payment-cdk", checkpoints[0]["legacy_payment_cdk"])
+        self.assertEqual(checkpoints[0], job.private_data)
+        self.assertNotIn("synthetic-cdk", repr(job))
+        self.assertNotIn("synthetic-payment-cdk", repr(job.summary))
+
+    def test_original_credentials_survive_config_rotation_and_restart(self):
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                provider, transport = self.provider({"ok": True, "job_id": "credential-job"})
+                created = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+                if restart:
+                    provider, transport = self.provider({})
+                provider.config = replace(provider.config, cdk="replacement-cdk", payment_cdk="replacement-payment-cdk")
+                transport.calls.clear()
+                transport.response = {"ok": True, "status": "success", "result": {"payment_platform": {
+                    "status": "submitted", "order_id": "credential-order"}}}
+                provider.get_status("credential-job", private_data=created.private_data)
+                provider.get_automatic_payment_status("credential-job")
+                self.assertEqual("synthetic-cdk", parse_qs(urlsplit(transport.calls[0][1]).query)["cdk"][0])
+                self.assertEqual({"job_id": "credential-job", "cdk": "synthetic-cdk",
+                                  "payment_cdk": "synthetic-payment-cdk"}, transport.calls[1][2])
+                self.assertEqual(["GET", "POST"], [call[0] for call in transport.calls])
+
+    def test_existing_order_queries_use_saved_credentials_when_current_settings_are_disabled(self):
+        provider, transport = self.provider({"ok": True, "job_id": "credential-job"})
+        created = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+        provider.config = replace(provider.config, cdk="", payment_cdk="", capabilities={})
+        transport.calls.clear()
+        transport.response = {"ok": True, "status": "success", "result": {"payment_platform": {
+            "status": "submitted", "order_id": "credential-order"}}}
+        provider.get_status("credential-job", private_data=created.private_data)
+        provider.get_automatic_payment_status("credential-job")
+        self.assertEqual("synthetic-cdk", parse_qs(urlsplit(transport.calls[0][1]).query)["cdk"][0])
+        self.assertEqual("synthetic-payment-cdk", transport.calls[1][2]["payment_cdk"])
+
+    def test_saved_credentials_are_redacted_from_query_rejection_after_config_rotation(self):
+        provider, transport = self.provider({"ok": True, "job_id": "credential-job"})
+        created = provider.create_job(ExtractRequest(1, "synthetic-token", "upi", "auto_payment"))
+        provider.config = replace(provider.config, cdk="replacement-cdk", payment_cdk="replacement-payment-cdk")
+        transport.response = {"ok": False, "code": "payment_cdk_invalid", "error":
+                              "拒绝 synthetic-cdk synthetic-payment-cdk"}
+        with self.assertRaises(ProviderError) as error:
+            provider.get_status("credential-job", private_data=created.private_data)
+        self.assertNotIn("synthetic-cdk", str(error.exception))
+        self.assertNotIn("synthetic-payment-cdk", str(error.exception))
 
     def test_other_modes_do_not_submit_payment_even_when_payment_cdk_is_configured(self):
         for mode in ("extract_only", "manual_payment"):
@@ -462,3 +522,74 @@ class LegacyAutomaticPaymentTests(unittest.TestCase):
                     "long_url": "https://payment.example.test/upi", "payment_platform": payment,
                 }}, "existing-job")
                 self.assertEqual(wanted, result.payment_state)
+
+
+class LegacyDirectOrderQueryTests(unittest.TestCase):
+    def provider(self, *, previous_status="success", order_status="submitted", direct_changes=None):
+        transport = _Transport({"ok": True, "status": previous_status, "result": {"payment_platform": {
+            "status": order_status, "order_id": "original-order", "order_no": "UPI-original"}}})
+        order = {"id": "original-order", "orderNo": "UPI-original", "status": "COMPLETED",
+                 "subscriptionCheckStatus": "VERIFIED", "subscriptionCheckLastPlan": "plus",
+                 "subscriptionCheckedAt": "2026-10-29T08:30:00Z", "cdkRefundedAt": None,
+                 "customerNote": "private-note", "cdk": "private-response-cdk"}
+        order.update(direct_changes or {})
+        payment = _Transport({"ok": True, "data": order})
+        provider = LegacyProvider(ProviderConfig("legacy", "https://provider.example.test", "current-cdk",
+            {"extract": True, "payment": True, "auto_payment": True}, payment_cdk="current-payment-cdk"),
+            transport, payment_transport=payment)
+        provider.get_status("original-job", private_data={"mode": "auto_payment", "link_type": "upi",
+            "legacy_extract_cdk": "original-cdk", "legacy_payment_cdk": "original-payment-cdk"})
+        return provider, transport, payment
+
+    def test_direct_original_order_query_confirms_verified_plus_without_intermediate_payment_call(self):
+        provider, transport, payment = self.provider()
+        job = provider.get_automatic_payment_status("original-job")
+        self.assertEqual("succeeded", job.payment_state)
+        self.assertEqual("confirmed", job.summary["platform_plus_status"])
+        self.assertEqual("2026-10-29T08:30:00Z", job.summary["platform_plus_checked_at"])
+        self.assertEqual("verified", job.summary["payment_check_status"])
+        self.assertEqual(["GET"], [call[0] for call in transport.calls])
+        self.assertEqual("GET", payment.calls[0][0])
+        self.assertEqual("/api/customer/orders/original-order", payment.calls[0][1])
+        self.assertIsNone(payment.calls[0][2])
+        self.assertEqual({"Authorization": "Bearer original-payment-cdk"}, payment.headers[0])
+        self.assertNotIn("private-note", repr(job))
+        self.assertNotIn("private-response-cdk", repr(job.summary))
+
+    def test_direct_query_reads_completed_order_again_when_subscription_check_changes(self):
+        provider, transport, payment = self.provider(direct_changes={"subscriptionCheckLastPlan": "at_invalidated"})
+        first = provider.get_automatic_payment_status("original-job")
+        self.assertEqual("succeeded", first.payment_state)
+        self.assertEqual("inferred", first.summary["platform_plus_status"])
+        payment.response["data"]["subscriptionCheckLastPlan"] = "plus"
+        second = provider.get_automatic_payment_status("original-job")
+        self.assertEqual("confirmed", second.summary["platform_plus_status"])
+        self.assertEqual(2, len(payment.calls))
+        self.assertEqual(1, len(transport.calls))
+
+    def test_direct_order_completion_corrects_only_nonfailed_old_extraction_snapshot(self):
+        provider, _, payment = self.provider(previous_status="running")
+        job = provider.get_automatic_payment_status("original-job")
+        self.assertEqual("succeeded", job.extraction_state)
+        self.assertEqual("succeeded", job.payment_state)
+        self.assertEqual(1, len(payment.calls))
+        failed, _, failed_payment = self.provider(previous_status="failed", direct_changes={"status": "FAILED"})
+        self.assertEqual("failed", failed.get_automatic_payment_status("original-job").payment_state)
+        self.assertEqual(1, len(failed_payment.calls))
+
+    def test_direct_query_rejects_mismatched_order_identity(self):
+        for changes in ({"id": "another-order"}, {"orderNo": "UPI-another"}, {"id": None}, {"orderNo": None}):
+            with self.subTest(changes=changes):
+                provider, _, _ = self.provider(direct_changes=changes)
+                with self.assertRaises(ProviderError):
+                    provider.get_automatic_payment_status("original-job")
+
+    def test_direct_query_requires_complete_nonrefunded_plus_evidence(self):
+        for changes in ({"subscriptionCheckStatus": "PENDING"}, {"subscriptionCheckLastPlan": "free"},
+                        {"subscriptionCheckedAt": None}, {"subscriptionCheckedAt": "not-a-date"},
+                        {"subscriptionCheckedAt": "2026-10-29"}, {"cdkRefundedAt": "2026-10-29T08:31:00Z"},
+                        {"status": "PENDING"}):
+            with self.subTest(changes=changes):
+                provider, _, _ = self.provider(direct_changes=changes)
+                job = provider.get_automatic_payment_status("original-job")
+                self.assertNotEqual("confirmed", job.summary.get("platform_plus_status"))

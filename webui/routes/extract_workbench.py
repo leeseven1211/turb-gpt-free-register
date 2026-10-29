@@ -19,6 +19,7 @@ from webui.runtime import WebUIContext
 logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PAYMENT_QUERY_CREDENTIAL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}")
 _MODES = {"extract_only", "manual_payment", "auto_payment"}
 _ACTIONS = {"sync_status", "retry", "manual_payment", "auto_payment"}
 _LINK_KINDS = {"extract", "payment"}
@@ -576,6 +577,33 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         )):
             return _error("当前任务没有已保存的支付入口，可同步原任务状态后重试", 404)
         response = jsonify({"ok": True, "entry": entry})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @bp.post("/api/extract-workbench/tasks/<int:task_id>/payment-query-credential")
+    def restore_extract_workbench_payment_query_credential(task_id: int):
+        if task_id < 1:
+            return _error("task_id 参数无效", 400)
+        # 此专用入口只接收原卡查询凭据，不接受查询地址或订单身份覆盖。
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {"payment_cdk"}:
+            return _error("请求必须仅包含 payment_cdk", 400)
+        credential = data["payment_cdk"]
+        if not isinstance(credential, str) or _PAYMENT_QUERY_CREDENTIAL_RE.fullmatch(credential) is None:
+            return _error("支付查询凭据格式无效", 400)
+        try:
+            result = extract_link_service.restore_legacy_payment_query_credential(task_id, credential)
+        except LookupError:
+            return _error("任务或已保存原单不存在", 404)
+        except ValueError:
+            return _error("未能核对原单与支付查询凭据，请检查后重试", 409)
+        except Exception as exc:
+            return _service_error("支付查询凭据恢复", exc)
+        if not isinstance(result, dict) or result.get("updated") is not True:
+            return _error("支付查询凭据未恢复，请刷新原单状态后重试", 409)
+        run_id = result.get("run_id")
+        response = jsonify({"ok": True, "updated": True, "task_id": task_id,
+                            "run_id": run_id if isinstance(run_id, int) and not isinstance(run_id, bool) else None})
         response.headers["Cache-Control"] = "no-store"
         return response
 

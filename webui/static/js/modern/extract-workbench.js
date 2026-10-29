@@ -129,7 +129,7 @@ function extractWorkbenchOutcome(task) {
   const extraction = String(task?.extraction_status || 'pending');
   const paid = task?.payment_status === 'paid';
   const confirmed = ['confirmed', 'plus'].includes(task?.plus_status);
-  if (paid && confirmed) return {tone:'success', state:'完成', title:'支付成功 · 到账已核实', copy:task?.payment_confirmation_source === 'local_plan_check' ? '扫码订单已完成，独立套餐查询已确认 Plus 到账' : '平台状态与本地套餐核实分别记录', icon:'check'};
+  if (paid && confirmed) return {tone:'success', state:'完成', title:'支付成功 · 到账已核实', copy:task?.payment_confirmation_source === 'local_plan_check' ? '扫码订单已完成，独立套餐查询已确认 Plus 到账' : task?.payment_confirmation_source === 'platform_order_check' ? '支付平台已核验 Plus 到账' : '平台状态与本地套餐核实分别记录', icon:'check'};
   if (paid) return {tone:'warning', state:'待核实', title:'支付成功 · 到账待核实', copy:'已记录支付成功，等待本地 Plus 到账核验', icon:'dots'};
   if (task?.payment_status === 'failed' && ['success', 'succeeded'].includes(extraction)) return {tone:'danger', state:'支付失败', title:'提链完成 · 支付失败', copy:'提链结果与支付结果分别记录，可查看任务详情', icon:'warning'};
   if (confirmed && ['auto_payment', 'manual_payment'].includes(task?.mode) && ['success', 'succeeded'].includes(extraction)) return {tone:'success', state:'Plus 已到账', title:'Plus 已到账 · 支付待确认', copy:'本地套餐已核实，平台支付结果仍待确认', icon:'check'};
