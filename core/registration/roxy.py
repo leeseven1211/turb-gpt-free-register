@@ -1477,6 +1477,7 @@ def run_roxy_registration(
                 on_submitted=_mark_email_submitted,
                 allow_login_password=resume_scope,
                 on_progress=_report_email_progress,
+                **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
             )
         remote_identity = classify_registration_identity(next_state)
         _check_manual_stop()

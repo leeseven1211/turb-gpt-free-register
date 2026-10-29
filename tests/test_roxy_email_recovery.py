@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import roxy_registration
@@ -131,6 +132,185 @@ class RoxyEmailRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "找不到邮箱输入框/邮箱入口"):
                 email_otp._submit_email_and_wait_next(driver, "test@example.com")
         calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_uses_remaining_attempt_and_budget(self):
+        driver = _FakeDriver()
+        now = [0.0]
+        submitted = Mock()
+        with self._missing_email_entry(driver, now=now) as calls:
+            calls["state"]["inputs"] = [{"type": "email", "name": "email"}]
+            calls["input_state"].return_value = {"inputs": [{"value": "test@example.com"}]}
+
+            def type_after_mount(*_args, **kwargs):
+                if calls["type_email"].call_count == 1:
+                    now[0] = 7.0
+                    raise calls["error"]
+                self.assertEqual(kwargs["timeout"], 3.0)
+                self.assertEqual(driver._registration_stage_budget.remaining(), 3.0)
+                return "email"
+
+            calls["type_email"].side_effect = type_after_mount
+            with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                result = email_otp._submit_email_and_wait_next(
+                    driver, "test@example.com", total_timeout=10, allow_login_password=True,
+                    recover_late_email_entry=True, on_submitted=submitted,
+                )
+
+        self.assertEqual(result, "login_password")
+        self.assertEqual(calls["type_email"].call_count, 2)
+        calls["submit"].assert_called_once_with(driver, "test@example.com")
+        submitted.assert_called_once_with()
+        calls["nextauth"].assert_not_called()
+
+    def test_shared_email_entry_keeps_default_late_input_behavior(self):
+        driver = _FakeDriver()
+        with self._missing_email_entry(driver) as calls:
+            calls["state"]["inputs"] = [{"type": "email", "name": "email"}]
+            with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                with self.assertRaises(RuntimeError) as raised:
+                    email_otp._submit_email_and_wait_next(driver, "test@example.com")
+        self.assertIs(raised.exception, calls["error"])
+        calls["type_email"].assert_called_once()
+        calls["submit"].assert_not_called()
+        calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_preserves_unknown_submission_barrier(self):
+        for receipt_phase, ui_phase in (
+            ("dispatch_intent", None), ("ui_queued", None), ("ui_dispatched", None),
+            ("request_observed", None), ("response_observed", None), ("unknown", None),
+            (None, "queued"), (None, "dispatched"), (None, "unknown"),
+        ):
+            with self.subTest(receipt_phase=receipt_phase, ui_phase=ui_phase):
+                driver = _FakeDriver()
+                if receipt_phase is not None:
+                    driver._browser_submission_receipt = email_otp.BrowserSubmissionReceipt(
+                        kind="registration", stage="email", endpoint_kind="email_submit", phase=receipt_phase,
+                    )
+                with self._missing_email_entry(driver) as calls:
+                    calls["state"]["inputs"] = [{"type": "email", "name": "email"}]
+                    calls["ui_state"].return_value = ui_phase
+                    with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                        with self.assertRaises(email_otp._EmailSubmissionUnknown):
+                            email_otp._submit_email_and_wait_next(
+                                driver, "test@example.com", recover_late_email_entry=True,
+                            )
+                calls["type_email"].assert_called_once()
+                calls["submit"].assert_not_called()
+                calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_does_not_extend_attempts(self):
+        driver = _FakeDriver()
+        with self._missing_email_entry(driver) as calls:
+            calls["state"]["inputs"] = [{"type": "email", "name": "email"}]
+            with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                with self.assertRaises(RuntimeError) as raised:
+                    email_otp._submit_email_and_wait_next(
+                        driver, "test@example.com", attempts=1, recover_late_email_entry=True,
+                    )
+        self.assertIs(raised.exception, calls["error"])
+        calls["type_email"].assert_called_once()
+        calls["submit"].assert_not_called()
+        calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_does_not_replace_other_challenges(self):
+        driver = _FakeDriver()
+        with self._missing_email_entry(driver) as calls:
+            calls["state"]["inputs"] = [{"name": "totp", "type": "text"}]
+            with patch.object(email_otp, "_find_visible_email_input_js", return_value=None):
+                with self.assertRaises(RuntimeError) as raised:
+                    email_otp._submit_email_and_wait_next(
+                        driver, "test@example.com", recover_late_email_entry=True,
+                    )
+        self.assertIs(raised.exception, calls["error"])
+        calls["type_email"].assert_called_once()
+        calls["submit"].assert_not_called()
+        calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_preserves_coexisting_challenge(self):
+        for challenge in ({"name": "authenticator", "type": "text"}, {"name": "password", "type": "password"}):
+            with self.subTest(challenge=challenge):
+                driver = _FakeDriver()
+                with self._missing_email_entry(driver) as calls:
+                    calls["state"]["inputs"] = [{"type": "email", "name": "email"}, challenge]
+                    calls["input_state"].return_value = {"inputs": [{"value": "test@example.com"}]}
+                    calls["type_email"].side_effect = [calls["error"], "email"]
+                    with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                        with self.assertRaises(RuntimeError) as raised:
+                            email_otp._submit_email_and_wait_next(
+                                driver, "test@example.com", allow_login_password=True,
+                                recover_late_email_entry=True,
+                            )
+                self.assertIs(raised.exception, calls["error"])
+                calls["type_email"].assert_called_once()
+                calls["submit"].assert_not_called()
+                calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_allows_hidden_and_non_text_controls(self):
+        for email_input in (
+            {"type": "email"}, {"type": "text", "name": "email"},
+            {"type": "text", "name": "username"}, {"type": "text", "id": "email-input"},
+            {"type": "text", "autocomplete": "email"},
+        ):
+            with self.subTest(email_input=email_input):
+                driver = _FakeDriver()
+                with self._missing_email_entry(driver) as calls:
+                    calls["state"]["inputs"] = [email_input,
+                        {"type": "hidden", "name": "csrfToken"},
+                        {"type": "password", "name": "password", "visible": False},
+                        {"type": "submit"}, {"type": "button"}, {"type": "reset"},
+                    ]
+                    calls["input_state"].return_value = {"inputs": [{"value": "test@example.com"}]}
+                    calls["type_email"].side_effect = [calls["error"], "email"]
+                    with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                        result = email_otp._submit_email_and_wait_next(
+                            driver, "test@example.com", allow_login_password=True,
+                            recover_late_email_entry=True,
+                        )
+                self.assertEqual(result, "login_password")
+                self.assertEqual(calls["type_email"].call_count, 2)
+                calls["submit"].assert_called_once_with(driver, "test@example.com")
+                calls["nextauth"].assert_not_called()
+
+    def test_local_roxy_late_email_entry_does_not_restart_expired_budget(self):
+        driver = _FakeDriver()
+        now = [0.0]
+        with self._missing_email_entry(driver, now=now) as calls:
+            def missing_after_deadline(*_args, **_kwargs):
+                now[0] = 11.0
+                raise calls["error"]
+
+            calls["type_email"].side_effect = missing_after_deadline
+            calls["state"]["inputs"] = [{"type": "email", "name": "email"}]
+            with patch.object(email_otp, "_find_visible_email_input_js", return_value=object()):
+                with self.assertRaises(StageTimeout):
+                    email_otp._submit_email_and_wait_next(
+                        driver, "test@example.com", total_timeout=10, recover_late_email_entry=True,
+                    )
+        calls["submit"].assert_not_called()
+        calls["nextauth"].assert_not_called()
+
+    def test_only_local_roxy_registration_enables_late_email_entry_recovery(self):
+        from tests.test_registration_resume_session import ResumeSessionFlowTests
+
+        harness = ResumeSessionFlowTests()
+        for local_roxy in (True, False):
+            with self.subTest(local_roxy=local_roxy), harness.run_context(action="registration") as (_, mocks):
+                mocks["navigate"].side_effect = None
+                submit_email = Mock(side_effect=RuntimeError("单测在邮箱入口结束"))
+                helpers = None if local_roxy else SimpleNamespace(
+                    driver_name="roxy_oss", submit_email_and_wait_next=submit_email,
+                    complete_profile_page=Mock(),
+                )
+                if local_roxy:
+                    submit_email = mocks["_submit_email_and_wait_next"]
+                    submit_email.side_effect = RuntimeError("单测在邮箱入口结束")
+                result = harness.run_registration(existing_password=None, _browser_helpers=helpers)
+            self.assertFalse(result["success"])
+            submit_email.assert_called_once()
+            if local_roxy:
+                self.assertIs(submit_email.call_args.kwargs["recover_late_email_entry"], True)
+            else:
+                self.assertNotIn("recover_late_email_entry", submit_email.call_args.kwargs)
 
     def test_missing_initial_email_entry_does_not_restart_expired_budget(self):
         driver = _FakeDriver()

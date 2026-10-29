@@ -1533,6 +1533,7 @@ def _submit_email_and_wait_next(
     total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
     on_progress=None,
+    recover_late_email_entry: bool = False,
 ) -> str:
     """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。"""
     driver._email_submission_receipt = None
@@ -1553,6 +1554,7 @@ def _submit_email_and_wait_next(
     try:
         return _submit_email_and_wait_next_impl(
             driver, email, attempts, on_submitted, total_timeout, allow_login_password, on_progress,
+            **({"recover_late_email_entry": True} if recover_late_email_entry else {}),
         )
     except StageTimeout as exc:
         if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
@@ -1579,6 +1581,7 @@ def _submit_email_and_wait_next_impl(
     total_timeout: int = EMAIL_OUTER_TIMEOUT,
     allow_login_password: bool = False,
     on_progress=None,
+    recover_late_email_entry: bool = False,
 ) -> str:
     """填写并提交邮箱：准备、单次提交和整个阶段各自受有界预算约束。"""
     last_state = None
@@ -1717,6 +1720,42 @@ def _submit_email_and_wait_next_impl(
                 )
             except ValueError:
                 trusted_login = False
+            if (recover_late_email_entry and trusted_login and not submission_started
+                    and attempt < attempts and _find_visible_email_input_js(driver)):
+                # 邮箱框可能与验证码、密码等挑战同时存在；只有纯邮箱输入
+                # 页面可继续填框，隐藏字段和提交类控件不参与挑战判断。
+                late_inputs = [
+                    item for item in (last_state.get("inputs") or [])
+                    if isinstance(item, dict) and item.get("visible", True)
+                    and not item.get("disabled", False)
+                    and str(item.get("type") or "").lower() not in {"hidden", "submit", "button", "reset"}
+                ]
+                if not late_inputs or any(not (
+                    str(item.get("type") or "").lower() == "email"
+                    or item.get("name") in {"email", "username"}
+                    or item.get("id") == "email-input"
+                    or item.get("autocomplete") == "email"
+                ) for item in late_inputs):
+                    raise
+                submission_state = _email_ui_submission_state(driver)
+                active_receipt = getattr(driver, "_browser_submission_receipt", None)
+                if submission_state in {"queued", "dispatched", "unknown"} or (
+                    active_receipt is not None
+                    and getattr(active_receipt, "phase", "") in {
+                        "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed",
+                        "response_observed", "unknown",
+                    }
+                ):
+                    raise _EmailSubmissionUnknown(
+                        "request_unknown: 邮箱提交仍待确认，未重填晚加载的邮箱输入框"
+                    ) from exc
+                # 只由本地 Roxy 注册显式开启；复读时刚挂载的可编辑邮箱框
+                # 使用既有下一次机会，不能重置预算或直接提交旧页面快照。
+                budget.require("邮箱入口晚加载恢复")
+                _progress("waiting_input", "邮箱输入框刚刚就绪，继续在原预算内填写")
+                logger.info("%s 邮箱输入框晚加载，沿用原预算继续填写（%s/%s）",
+                            _log_prefix(driver), attempt + 1, attempts)
+                continue
             if not trusted_login or has_visible_auth_inputs(last_state) or nextauth_fallback_done:
                 raise
             # 初始登录页也可能只有空壳，尚无邮箱表单可提交。交给下方同一份
