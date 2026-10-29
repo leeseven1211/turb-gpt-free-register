@@ -91,14 +91,15 @@ class ExtractPaymentReconcileHookTests(unittest.TestCase):
         sync.assert_called_once_with()
         recover.assert_not_called()
 
-    def test_periodic_remote_recovery_does_not_rescan_all_completed_payments(self):
+    def test_periodic_recovery_retries_saved_payment_evidence_writeback(self):
         with (
             patch.object(extract_link_service, "_bool_setting", return_value=True),
-            patch.object(extract_link_jobs, "reconcile_completed_payments", create=True) as sync,
+            patch.object(extract_link_jobs, "reconcile_completed_payments", create=True,
+                return_value={"confirmed": 0, "skipped": 0, "failed": 0}) as sync,
             patch.object(extract_link_jobs, "list_recoverable_workbench_jobs", return_value=[]),
         ):
             self.assertEqual(0, extract_link_service.resume_known_remote_jobs(continuous_only=True))
-        sync.assert_not_called()
+        sync.assert_called_once_with()
 
     def test_local_reconcile_error_does_not_block_existing_remote_recovery(self):
         with (

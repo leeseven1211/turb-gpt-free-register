@@ -235,6 +235,74 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertEqual("lumen_flow", rows[0]["provider_id"])
         self.assertEqual("auto_payment", rows[0]["mode"])
 
+    def test_recovery_excludes_explicitly_stopped_batches(self):
+        from core.storage import extract_link_jobs
+
+        expected = set()
+        for status in ("cancelled", "stopped", "paused", "waiting"):
+            batch = operation.create_runtime_batch(batch_type="extract_link", requested_count=1, title="恢复范围")
+            task = operation.create_runtime_task(task_type="extract_link", account_id=77, email="test@example.test",
+                batch_id=batch["id"], data={"provider_id": "legacy", "mode": "auto_payment", "extract_poll_continuation": True})
+            extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "remote-job",
+                {"extraction_state": "running", "payment_state": "pending"}, {})
+            operation.finish_run(task["run"]["id"], status="attention_required", message="等待同步")
+            with operation._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {operation._table('operation_batches')} SET status=%s WHERE id=%s", (status, batch["id"]))
+            if status == "waiting":
+                expected.add(task["id"])
+        self.assertEqual(expected, {row["task_id"] for row in extract_link_jobs.list_recoverable_workbench_jobs()})
+
+    def test_recovery_does_not_include_legacy_history_without_continuation(self):
+        from core.storage import extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=77, email="test@example.test",
+            data={"provider_id": "legacy", "mode": "auto_payment"})
+        extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "remote-job",
+            {"extraction_state": "running", "payment_state": "pending"}, {})
+        operation.finish_run(task["run"]["id"], status="attention_required", message="等待同步")
+        self.assertEqual([], extract_link_jobs.list_recoverable_workbench_jobs())
+
+    def test_legacy_initial_monitor_interruption_recovers_only_with_reconcile_metadata(self):
+        from core.storage import extract_link_jobs
+
+        expected = set()
+        for metadata in ({"started_at": "2026-10-29T00:00:00Z"}, None, "invalid"):
+            task = operation.create_runtime_task(task_type="extract_link", account_id=77, email="test@example.test",
+                data={"provider_id": "legacy", "mode": "auto_payment"})
+            private = {"local_reconcile": metadata} if metadata is not None else {}
+            extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "remote-job",
+                {"extraction_state": "running", "payment_state": "pending"}, private)
+            with operation._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {operation._table('operation_runs')} SET status='interrupted' WHERE id=%s", (task["run"]["id"],))
+            if isinstance(metadata, dict):
+                expected.add(task["id"])
+        self.assertEqual(expected, {row["task_id"] for row in extract_link_jobs.list_recoverable_workbench_jobs()})
+
+    def test_legacy_recovery_only_keeps_nonterminal_original_orders(self):
+        from core.storage import extract_link_jobs
+
+        cases = [
+            ({"extraction_state": "running", "payment_state": "pending"}, "auto_payment", True),
+            ({"extraction_state": "succeeded", "payment_state": "pending"}, "auto_payment", True),
+            ({"extraction_state": "succeeded", "payment_state": "pending",
+              "summary": {"automatic_payment_terminal": True}}, "auto_payment", False),
+            ({"extraction_state": "succeeded", "payment_state": "pending"}, "extract_only", False),
+            ({"extraction_state": "running", "payment_state": "failed"}, "auto_payment", False),
+            ({"extraction_state": "running", "payment_state": "succeeded"}, "auto_payment", False),
+            ({"extraction_state": "failed", "payment_state": "pending"}, "auto_payment", False),
+            ({"extraction_state": "running", "payment_state": "pending", "summary": {"outcome": "REJECTED"}}, "auto_payment", False),
+            ({"extraction_state": "running", "payment_state": "pending", "summary": {"remote_terminal_failure": True}}, "auto_payment", False),
+        ]
+        expected = set()
+        for state, mode, recoverable in cases:
+            task = operation.create_runtime_task(task_type="extract_link", account_id=77, email="test@example.test",
+                data={"provider_id": "legacy", "mode": mode, "extract_poll_continuation": True})
+            extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "remote-job", state, {})
+            operation.finish_run(task["run"]["id"], status="attention_required", message="等待同步")
+            if recoverable:
+                expected.add(task["id"])
+        self.assertEqual(expected, {row["task_id"] for row in extract_link_jobs.list_recoverable_workbench_jobs()})
+
     def test_provider_terminal_failure_evidence_is_preserved_without_private_fields(self):
         from core.storage import extract_link_jobs
 

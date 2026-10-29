@@ -2009,6 +2009,33 @@ def _provider_resume_private(provider_id, private, state):
     return {**private, "previous_public_state": state}
 
 
+def _legacy_needs_continuation(state: dict, *, mode: str) -> bool:
+    """已建原单持续同步到明确终态，查询预算到期不能当作业务结束。"""
+    summary = state.get("summary") or {}
+    if (state.get("extraction_state") == "failed" or summary.get("outcome") == "REJECTED"
+            or summary.get("remote_terminal_failure") is True):
+        return False
+    if state.get("payment_state") in {"succeeded", "failed"}:
+        return False
+    return (state.get("extraction_state") in {"pending", "queued", "running", "unknown"}
+            or (mode == "auto_payment" and state.get("payment_state") in {"pending", "not_started", "unknown"}
+                and summary.get("automatic_payment_terminal") is not True))
+
+
+def _defer_legacy_job(context, runtime, state, private, *, job_id, error=""):
+    """每次原单查询后释放线程；连续故障退避，不丢弃待确认订单。"""
+    failures = int((private.get("local_reconcile") or {}).get("consecutive_failures") or 0)
+    delay = max(10, min(30, runtime.poll_interval))
+    if error:
+        delay = min(300, max(delay, 15 * 2 ** min(failures, 5)))
+    reason = "原单查询暂时失败，等待重试" if error else "等待平台原单同步"
+    state["message"] = reason
+    _update_provider_job(context, "legacy", job_id, state, private)
+    context.defer(delay_seconds=delay, reason=reason, data={
+        "extract_poll_continuation": True, "workbench_action": "sync_status", "provider_job_run_id": context.run_id,
+    })
+
+
 def _huanguang_needs_continuation(state: dict) -> bool:
     """只续查仍在执行的原单；明确结束或人工核对不无限占用队列。"""
     summary = state.get("summary") or {}
@@ -2190,11 +2217,6 @@ def _workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     }.get(payment, "pending_payment")
     preflight = str(state.get("preflight_status") or run_summary.get("preflight_status") or "pending").lower()
     plus = str(state.get("plus_status") or run_summary.get("plus_status") or "unknown").lower()
-    if account and payment == "paid" and plus in {"unknown", "pending", "queued"}:
-        check_status = str(account.get("plan_check_status") or "").lower()
-        plan = str(account.get("current_plan_type") or account.get("plan_type") or "").lower()
-        if check_status == "success":
-            plus = "confirmed" if ("plus" in plan or "pro" in plan or bool(account.get("has_active_subscription"))) else "not_confirmed"
     if mode in {"auto_payment", "manual_payment"} and extraction == "success":
         from core.storage.extract_link_jobs import independent_plus_is_confirmed
         if independent_plus_is_confirmed(account, task_created_at=row.get("task_created_at")):
@@ -2279,7 +2301,8 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
     if status == "processing":
         return (
             task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
-            or (item.get("mode") == "auto_payment" and payment == "pending_payment")
+            or (item.get("mode") == "auto_payment" and payment == "pending_payment"
+                and task_status not in {"attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted"})
             or (payment == "paid" and plus in {"unknown", "pending", "queued"})
         )
     if status == "running":
@@ -2292,7 +2315,7 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
         return plus == "confirmed"
     if status == "needs_attention":
         return (
-            task_status in {"failed", "request_unknown", "cancelled", "attention_required", "partial_success", "stopped"}
+            task_status in {"failed", "request_unknown", "cancelled", "attention_required", "partial_success", "stopped", "interrupted"}
             or extraction in {"unknown", "failed"} or payment in {"request_unknown", "failed"}
             or plus in {"failed", "not_confirmed"} or (payment == "paid" and plus == "unknown")
         )
@@ -3196,7 +3219,9 @@ def _huanguang_scan_completed(state: dict) -> bool:
 
 def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
     """结合原单扫码完成和独立套餐事实确认付款，保留平台推断标记。"""
-    if not (provider_id == "huanguang" and mode == "auto_payment" and _huanguang_scan_completed(state)):
+    from core.extract_link_providers.payment_confirmation import payment_scan_completed
+
+    if not (mode in {"auto_payment", "manual_payment"} and payment_scan_completed(state, provider_id=provider_id)):
         return False
     summary = state.get("summary") or {}
     from core.storage import extract_link_jobs, operation
@@ -3218,6 +3243,7 @@ def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id:
     if not extract_link_jobs.independent_plus_is_confirmed(account, task_created_at=task.get("created_at")):
         return False
     checked_at = str(account.get("plan_checked_at") or "").strip() or str(account.get("plan_last_success_at") or "").strip()
+    state["extraction_state"] = "succeeded"
     state["payment_state"] = "succeeded"
     state["plus_status"] = "confirmed"
     summary["payment_confirmation_source"] = "local_plan_check"
@@ -3235,7 +3261,7 @@ def _handle_provider_operation(context):
     provider_id = str(data.get("provider_id") or "legacy").strip().lower()
     mode = str(data.get("mode") or "extract_only").strip().lower()
     action = str(data.get("workbench_action") or "create").strip().lower()
-    continuation = provider_id == "huanguang" and data.get("extract_poll_continuation") is True
+    continuation = provider_id in {"huanguang", "legacy"} and data.get("extract_poll_continuation") is True
     if continuation:
         action = "sync_status"
     if context.account_id is None:
@@ -3394,7 +3420,7 @@ def _handle_provider_operation(context):
                     preflight_status=state["preflight_status"],
                     plus_status="not_applicable",
                 )
-                if provider_id == "huanguang":
+                if provider_id in {"huanguang", "legacy"}:
                     from dataclasses import replace
                     private = _record_huanguang_reconcile(
                         context, {**prior_private, **job.private_data}, state,
@@ -3546,6 +3572,15 @@ def _handle_provider_operation(context):
                     private["local_reconcile"].pop("halted_reason", None)
                     private["local_reconcile"].pop("halted_at", None)
                     state["summary"]["local_reconcile_halted"] = False
+            # 同一原单的支付成功说明此前已生成付款材料，旧提链快照不能覆盖这一事实。
+            if provider_id == "legacy" and job_id and state["payment_state"] == "succeeded" and state["extraction_state"] != "failed":
+                state["extraction_state"] = "succeeded"
+            if (provider_id == "legacy" and job_id and callable(getattr(context, "defer", None))
+                    and _legacy_needs_continuation(state, mode=mode)):
+                private = _record_huanguang_reconcile(context, {**prior_private, **job.private_data}, state,
+                                                     succeeded=not bool(safe_error))
+                _defer_legacy_job(context, runtime, state, private, job_id=job_id, error=safe_error)
+                return None
             if (
                 provider_id == "huanguang" and mode == "auto_payment"
                 and state["extraction_state"] == "succeeded" and state["payment_state"] == "not_started"
@@ -3563,8 +3598,10 @@ def _handle_provider_operation(context):
                 _release_huanguang_proxies(context, leases, proxy_resource_ids, terminal=False)
                 _defer_huanguang_job(context, runtime, state)
                 return None
+            from core.extract_link_providers.payment_confirmation import payment_scan_completed
             scan_awaiting_verification = (
-                provider_id == "huanguang" and mode == "auto_payment" and _huanguang_scan_completed(state)
+                mode == "auto_payment" and not local_payment_confirmed
+                and payment_scan_completed(state, provider_id=provider_id)
                 and _bool_setting("EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED", False)
             )
             if state["payment_state"] == "succeeded" or scan_awaiting_verification:
@@ -3666,6 +3703,9 @@ def _handle_provider_operation(context):
                     stage="extraction", state="failed", message=status_message,
                     detail={"cause_code": "extract_provider_failed", "error_code": "extract_provider_failed"},
                 )
+            elif payment == "failed":
+                terminal_status = "failed"
+                status_message = state.get("summary", {}).get("failure_message") or "平台确认支付失败"
             elif terminal_status != "request_unknown":
                 terminal_status = "request_unknown"
                 status_message = "远端任务状态暂未收敛，保留任务以便继续同步"
@@ -3785,6 +3825,16 @@ def _handle_provider_operation(context):
             return None
         except Exception as exc:
             safe_error = task_run_log.redact_text(str(exc), 500)
+            if (provider_id == "legacy" and job_id and callable(getattr(context, "defer", None))
+                    and _legacy_needs_continuation(state, mode=mode)):
+                context.checkpoint()
+                private = {**prior_private, **(job.private_data if "job" in locals() else {})}
+                private = _record_huanguang_reconcile(context, private, state, succeeded=False,
+                                                     http_status=getattr(exc, "http_status", None))
+                context.report(stage="remote_sync", level="warning",
+                               message=f"原单查询暂时失败，保留上次结果并稍后续查：{safe_error}")
+                _defer_legacy_job(context, runtime, state, private, job_id=job_id, error=safe_error)
+                return None
             if (provider_id == "huanguang" and action == "sync_status"
                     and _provider_has_reference(prior_job) and callable(getattr(context, "defer", None))):
                 context.checkpoint()
@@ -3951,21 +4001,21 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
     """服务启动时为已知远端任务排队状态同步，避免等待人工重跑。"""
     from core.storage import extract_link_jobs, operation
 
-    if not continuous_only:
-        try:
-            counts = extract_link_jobs.reconcile_completed_payments()
-            if counts["confirmed"]:
-                logger.info("[提链] 启动时已补齐支付与到账状态：confirmed=%s", counts["confirmed"])
-            if counts["failed"]:
-                logger.warning("[提链] 启动时支付状态补齐未完成：failed=%s", counts["failed"])
-        except Exception as exc:
-            logger.warning("[提链] 启动时支付状态补齐异常：error_type=%s", type(exc).__name__)
+    # 与每分钟的恢复检查共用，补偿套餐写回后进程退出或一次补齐失败。
+    try:
+        counts = extract_link_jobs.reconcile_completed_payments()
+        if counts["confirmed"]:
+            logger.info("[提链] 已补齐支付与到账状态：confirmed=%s", counts["confirmed"])
+        if counts["failed"]:
+            logger.warning("[提链] 支付状态补齐未完成：failed=%s", counts["failed"])
+    except Exception as exc:
+        logger.warning("[提链] 支付状态补齐异常：error_type=%s", type(exc).__name__)
     if not _bool_setting("EXTRACT_LINK_ENABLED", True):
         return 0
     resumed = 0
     for item in extract_link_jobs.list_recoverable_workbench_jobs():
         provider_id = str(item.get("provider_id") or "legacy").strip().lower()
-        if continuous_only and provider_id != "huanguang":
+        if continuous_only and provider_id not in {"huanguang", "legacy"}:
             continue
         mode = str(item.get("mode") or "extract_only").strip().lower()
         task_id = int(item.get("task_id") or 0)
@@ -3986,7 +4036,7 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
                     "mode": mode,
                     "workbench_action": "sync_status",
                     "provider_job_run_id": int(item.get("provider_job_run_id") or run_id),
-                    **({"extract_poll_continuation": True} if provider_id == "huanguang" else {}),
+                    **({"extract_poll_continuation": True} if provider_id in {"huanguang", "legacy"} else {}),
                 },
             )
         except Exception:

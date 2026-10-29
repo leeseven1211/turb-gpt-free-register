@@ -1555,8 +1555,9 @@ def _reserve_dispatch_capacity(
             requirements = {key: max(0, int(limit_fn(key)))}
         if not requirements or any(not key for key in requirements):
             raise ValueError("容量 key 不能为空")
-        if _is_huanguang_continuation(run):
-            requirements["huanguang:continuation"] = min(2, min(requirements.values()))
+        if _is_extract_continuation(run):
+            provider_id = run["data"]["provider_id"]
+            requirements[f"{provider_id}:continuation"] = min(2, min(requirements.values()))
     except (TypeError, ValueError, KeyError):
         logger.warning("durable operation 容量配置无效：task_type=%s", task_type)
         return False, None
@@ -1584,12 +1585,12 @@ def _release_dispatch_capacity(tokens: tuple[tuple[str, str], ...] | None) -> No
                 _DISPATCH_CAPACITY_COUNTS[token] = active - 1
 
 
-def _is_huanguang_continuation(run: Mapping[str, Any]) -> bool:
+def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
     data = run.get("data")
     return bool(
         str(run.get("task_type") or "") == "extract_link"
         and isinstance(data, Mapping)
-        and data.get("provider_id") == "huanguang"
+        and data.get("provider_id") in {"huanguang", "legacy"}
         and data.get("extract_poll_continuation") is True
     )
 
@@ -1664,9 +1665,9 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
             break
         submitted += 1
         data = run.get("data")
-        if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") == "huanguang":
+        if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") in {"huanguang", "legacy"}:
             with _RUN_DISPATCH_LOCK:
-                _PREFER_EXTRACT_CONTINUATIONS = not _is_huanguang_continuation(run)
+                _PREFER_EXTRACT_CONTINUATIONS = not _is_extract_continuation(run)
         try:
             future.add_done_callback(
                 lambda _completed, run_id=int(run["id"]), token=capacity_token: (

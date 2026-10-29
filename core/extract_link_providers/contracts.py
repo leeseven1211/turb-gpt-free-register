@@ -7,8 +7,10 @@ import base64
 import binascii
 import math
 import re
+import socket
+import ssl
 from typing import Literal, Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 
 
@@ -176,9 +178,36 @@ def _http_status(value: object) -> int | None:
     return status if 100 <= status <= 599 else None
 
 
+def _safe_exception_type(error: Exception) -> str:
+    exception_type = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", exception_type):
+        return "Exception"
+    return exception_type
+
+
+def _transport_error_message(error: Exception) -> str:
+    reason = error.reason if isinstance(error, URLError) and isinstance(error.reason, Exception) else error
+    exception_type = _safe_exception_type(reason)
+    curl_code = getattr(reason, "code", None) if type(reason).__module__.startswith("curl_cffi.") else None
+    if isinstance(reason, ssl.SSLCertVerificationError) or curl_code in {51, 60}:
+        category = "TLS 证书校验失败"
+    elif isinstance(reason, TimeoutError) or curl_code == 28:
+        category = "请求超时"
+    elif isinstance(reason, socket.gaierror) or curl_code == 6:
+        category = "域名解析失败"
+    elif isinstance(reason, ssl.SSLError) or curl_code == 35:
+        category = "TLS 连接失败"
+    elif isinstance(reason, ConnectionError) or curl_code in {5, 7, 52, 55, 56}:
+        category = "连接失败"
+    else:
+        category = "请求异常"
+    return f"Provider {category}（异常类型：{exception_type}）"
+
+
 def request(transport, method: str, path: str, *, body=None, headers=None, timeout=30):
     transport_failed = False
     transport_status = None
+    transport_error = "Provider 请求异常（异常类型：Exception）"
     try:
         result = transport.request(method, path, json=body, headers=headers or {}, timeout=timeout)
     except ProviderError:
@@ -186,24 +215,27 @@ def request(transport, method: str, path: str, *, body=None, headers=None, timeo
     except HTTPError as exc:
         transport_failed = True
         transport_status = _http_status(exc.code)
+        transport_error = _transport_error_message(exc)
     except Exception as exc:
         transport_failed = True
         transport_status = _http_status(getattr(getattr(exc, "response", None), "status_code", None))
+        transport_error = _transport_error_message(exc)
     # 在异常处理块外抛出安全错误，避免保留可能带 URL 或响应正文的原异常链。
     if transport_failed:
         if transport_status is not None and not 200 <= transport_status < 300:
             raise ProviderHTTPError(transport_status)
-        raise ProviderError("Provider 请求失败")
+        raise ProviderError(transport_error)
     try:
         status_code = getattr(result, "status_code", None)
         if status_code is not None:
             status = _http_status(status_code)
             if status is None:
-                raise ProviderError("Provider 请求失败")
+                raise ProviderError("Provider 响应状态码无效")
             if not 200 <= status < 300:
                 raise ProviderHTTPError(status)
         return response_dict(result)
     except ProviderError:
         raise
-    except Exception:
-        raise ProviderError("Provider 请求失败") from None
+    except Exception as exc:
+        response_error = f"Provider 响应读取异常（异常类型：{_safe_exception_type(exc)}）"
+    raise ProviderError(response_error)

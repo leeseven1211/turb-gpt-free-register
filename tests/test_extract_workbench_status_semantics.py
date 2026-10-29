@@ -38,6 +38,13 @@ class ExtractWorkbenchStatusSemanticsTests(TestCase):
         self.assertFalse(service._workbench_status_matches(item, "processing"))
         self.assertTrue(service._workbench_status_matches(item, "needs_attention"))
 
+    def test_stopped_pending_payment_does_not_claim_processing(self):
+        for status in ("attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted"):
+            with self.subTest(status=status):
+                item = self.item(task_status=status, extraction_status="running", payment_status="pending_payment")
+                self.assertFalse(service._workbench_status_matches(item, "processing"))
+                self.assertTrue(service._workbench_status_matches(item, "needs_attention"))
+
     def test_scheduled_and_running_unknown_payments_remain_processing(self):
         for status in ("queued", "running", "waiting", "cancelling", "settling", "stopping"):
             with self.subTest(status=status):

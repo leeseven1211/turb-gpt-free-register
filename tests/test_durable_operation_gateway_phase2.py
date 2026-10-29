@@ -1186,6 +1186,19 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertTrue(rows[0]["data"].get("extract_poll_continuation"))
         self.assertTrue(any(row["id"] == initial_id for row in rows))
 
+    def test_legacy_dispatch_candidates_preserve_initial_lane(self):
+        for number in range(70):
+            operation.create_runtime_task(task_type="extract_link", account_id=None, email=f"legacy-poll-{number}@example.test", data={
+                "provider_id": "legacy", "extract_poll_continuation": True,
+            })
+        initial = operation.create_runtime_task(task_type="extract_link", account_id=None, email="legacy-initial@example.test",
+                                                data={"provider_id": "legacy"})
+        initial_id = int(initial["run"]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=False)
+        self.assertEqual(initial_id, rows[0]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=True)
+        self.assertTrue(rows[0]["data"].get("extract_poll_continuation"))
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
     def test_crashed_huanguang_continuation_requeues_same_known_job(self):
         from core.storage import extract_link_jobs
 
@@ -1205,6 +1218,29 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.assertIsNone(run["completed_at"])
         self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
         self.assertIsNotNone(operation.claim_run(run_id, execution_id="restarted-poll", worker_pid=93))
+
+    def test_crashed_legacy_continuation_requires_known_job_and_reuses_run(self):
+        from core.storage import extract_link_jobs
+
+        for job_id, cancelled, expected in (("existing-original", False, "queued"),
+                                             (None, False, "interrupted"),
+                                             ("cancelled-original", True, "interrupted")):
+            with self.subTest(has_job=bool(job_id), cancelled=cancelled):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"legacy-recover-{bool(job_id)}-{cancelled}@example.test", data={
+                        "provider_id": "legacy", "extract_poll_continuation": True,
+                        "workbench_action": "sync_status",
+                    })
+                run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(run_id, "legacy", job_id,
+                    {"extraction_state": "running"}, {"mode": "auto_payment"})
+                operation.claim_run(run_id, execution_id=f"legacy-crash-{run_id}", worker_pid=92)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour', "
+                                "cancel_requested_at=CASE WHEN %s THEN now() ELSE NULL END WHERE id=%s", (cancelled, run_id))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual(expected, operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
 
     def test_crashed_huanguang_receipt_continuation_reuses_original_submission(self):
         from core.storage import extract_link_jobs
@@ -1244,12 +1280,12 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
     def test_crashed_continuation_recovers_same_task_prior_provider_reference(self):
         from core.storage import extract_link_jobs
 
-        for has_job in (True, False):
-            with self.subTest(has_job=has_job):
+        for provider_id, has_job in (("huanguang", True), ("huanguang", False), ("legacy", True)):
+            with self.subTest(provider_id=provider_id, has_job=has_job):
                 task = operation.create_runtime_task(task_type="extract_link", account_id=None,
-                    email=f"prior-ref-{has_job}@example.test", data={"provider_id": "huanguang"})
+                    email=f"prior-ref-{provider_id}-{has_job}@example.test", data={"provider_id": provider_id})
                 prior_run_id = int(task["run"]["id"])
-                extract_link_jobs.save_provider_job(prior_run_id, "huanguang", "original" if has_job else None,
+                extract_link_jobs.save_provider_job(prior_run_id, provider_id, "original" if has_job else None,
                     {"extraction_state": "running"},
                     {} if has_job else {"batch_receipt_pending": True, "batch_receipt_secret": "private-receipt"})
                 operation.finish_run(prior_run_id, status="attention_required")
@@ -1258,6 +1294,8 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                     "provider_job_run_id": prior_run_id,
                 })
                 run_id = int(retry["id"])
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {operation._table('extract_link_provider_jobs')} WHERE run_id=%s", (run_id,))
                 self.assertIsNone(extract_link_jobs.get_provider_job_private(run_id))
                 operation.claim_run(run_id, execution_id=f"ref-crash-{run_id}", worker_pid=95)
                 with operation._connect() as conn, conn.cursor() as cur:

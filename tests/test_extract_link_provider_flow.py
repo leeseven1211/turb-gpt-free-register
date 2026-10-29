@@ -482,6 +482,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
 
         row = {
             "task_id": 11,
+            "task_created_at": "2026-10-29T01:00:00+00:00",
             "account_id": 77,
             "email": "fixture@example.test",
             "task_data": {"provider_id": "lumen_flow", "mode": "manual_payment"},
@@ -506,6 +507,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
                 11: {
                     "plan_check_status": "success",
                     "current_plan_type": "plus",
+                    "plan_checked_at": "2026-10-29T02:00:00+00:00",
                     "access_token": "must-not-project",
                 },
             }),

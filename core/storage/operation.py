@@ -4807,7 +4807,7 @@ def list_dispatchable_runs(
         params.append(source_values)
     scan_limit = max(1, min(5000, int(limit or 500)))
     continuation = """(t.task_type='extract_link'
-        AND r.data->>'provider_id'='huanguang'
+        AND r.data->>'provider_id' IN ('huanguang', 'legacy')
         AND r.data->'extract_poll_continuation'='true'::jsonb)"""
     base_query = f"""
         SELECT r.*, t.email_snapshot, t.task_type, t.source_system,
@@ -4830,9 +4830,9 @@ def list_dispatchable_runs(
             ), ranked AS (
                 SELECT candidates.*, ROW_NUMBER() OVER (
                     PARTITION BY COALESCE(task_type='extract_link'
-                        AND data->>'provider_id'='huanguang'
+                        AND data->>'provider_id' IN ('huanguang', 'legacy')
                         AND data->'extract_poll_continuation'='true'::jsonb, false)
-                    ORDER BY CASE WHEN task_type='extract_link' AND data->>'provider_id'='huanguang'
+                    ORDER BY CASE WHEN task_type='extract_link' AND data->>'provider_id' IN ('huanguang', 'legacy')
                         AND data->'extract_poll_continuation'='true'::jsonb THEN next_attempt_at END
                         ASC NULLS FIRST, created_at, id
                 ) AS dispatch_position
@@ -4840,7 +4840,7 @@ def list_dispatchable_runs(
             )
             SELECT * FROM ranked
             ORDER BY dispatch_position,
-                (COALESCE(task_type='extract_link' AND data->>'provider_id'='huanguang'
+                (COALESCE(task_type='extract_link' AND data->>'provider_id' IN ('huanguang', 'legacy')
                  AND data->'extract_poll_continuation'='true'::jsonb, false) = %s) DESC,
                 created_at, id
             LIMIT %s
@@ -5015,16 +5015,16 @@ def _requeue_stale_extract_continuations(cur, stale_seconds: int) -> list[dict]:
         SELECT run.* FROM {_table('operation_runs')} run
         JOIN {_table('operation_tasks')} task ON task.id=run.task_id AND task.last_run_id=run.id
         WHERE task.task_type='extract_link' AND task.source_system='native_operations'
-          AND run.data->>'provider_id'='huanguang'
+          AND run.data->>'provider_id' IN ('huanguang', 'legacy')
           AND run.data->'extract_poll_continuation'='true'::jsonb
           AND EXISTS (
               SELECT 1 FROM {_table('operation_runs')} source_run
               JOIN {_table('extract_link_provider_jobs')} job ON job.run_id=source_run.id
-              WHERE source_run.task_id=run.task_id AND job.provider_id='huanguang'
+              WHERE source_run.task_id=run.task_id AND job.provider_id=run.data->>'provider_id'
                 AND (source_run.id=run.id OR source_run.id=CASE
                     WHEN run.data->>'provider_job_run_id' ~ '^[0-9]{{1,19}}$'
                     THEN (run.data->>'provider_job_run_id')::numeric END)
-                AND (NULLIF(BTRIM(job.job_id), '') IS NOT NULL OR (
+                AND (NULLIF(BTRIM(job.job_id), '') IS NOT NULL OR (job.provider_id='huanguang' AND
                     job.private_data->'batch_receipt_pending'='true'::jsonb
                     AND NULLIF(BTRIM(job.private_data->>'batch_receipt_secret'), '') IS NOT NULL
                 ))

@@ -71,8 +71,8 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
 
     def test_sql_filters_preserve_independent_payment_plus_and_legacy_states(self):
         plus_account, free_account = self.seed(record_store.ACCOUNTS, [
-            {"email": "plus@example.test", "plan_check_status": "success", "current_plan_type": "plus"},
-            {"email": "free@example.test", "plan_check_status": "success", "current_plan_type": "free"},
+            {"email": "plus@example.test", "plan_check_status": "success", "current_plan_type": "plus", "plan_checked_at": "2026-10-23T13:01:00Z"},
+            {"email": "free@example.test", "plan_check_status": "success", "current_plan_type": "free", "plan_checked_at": "2026-10-23T13:01:00Z"},
         ])
         legacy = self.task(provider="legacy", status="success", summary={"has_link": True, "remote_job_id": "old-job"})
         paid_plus = self.task(status="success", mode="manual_payment", account_id=plus_account, state={
@@ -87,8 +87,11 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         extract_only = self.task(status="success", state={
             "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "confirmed",
         })
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at='2026-10-23T13:00:00Z' WHERE id=ANY(%s)",
+                        ([paid_plus["id"], paid_free["id"]],))
         expected = {
-            "processing": set(),
+            "processing": {paid_free["id"]},
             "running": set(),
             "extraction_succeeded": {legacy["id"], paid_plus["id"], extract_only["id"]},
             "payment_succeeded": {paid_plus["id"], paid_free["id"]},
@@ -127,6 +130,20 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         self.assertEqual(len(active_ids), batch_counts["processing"])
         self.assertEqual(2, batch_counts["running"])
         self.assertEqual(len(all_ids), batch_counts["needs_attention"])
+
+    def test_terminal_pending_payments_are_attention_not_processing(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="停止查询统计", requested_count=7)
+        tasks = {}
+        for status in ("attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted", "partial_success"):
+            tasks[status] = self.task(provider="legacy", mode="auto_payment", status=status, batch_id=batch["id"],
+                state={"extraction_state": "running", "payment_state": "pending", "plus_status": "not_applicable"})
+        processing = extract_link_jobs.list_workbench_page(status="processing", batch_id=batch["id"])
+        self.assertEqual({tasks["partial_success"]["id"]}, {row["task_id"] for row in processing["items"]})
+        counts = extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]
+        self.assertEqual(1, counts["processing"])
+        attention = extract_link_jobs.list_workbench_page(status="needs_attention", batch_id=batch["id"])
+        self.assertTrue({tasks[s]["id"] for s in ("attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted")}
+                        <= {row["task_id"] for row in attention["items"]})
 
     def test_old_remote_running_snapshot_does_not_count_as_local_execution(self):
         batch = operation.create_runtime_batch(batch_type="extract_link", title="同步统计测试", requested_count=10)
@@ -168,6 +185,34 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
             extract_link_service.extract_workbench_task_detail(queued["id"])["item"], "needs_attention"))
         queued_page = extract_link_service.list_workbench_tasks(status="processing", batch_id=batch["id"])
         self.assertIn(queued["id"], {item["task_id"] for item in queued_page["items"]})
+
+    def test_paid_order_does_not_use_older_account_plan_for_arrival_counts(self):
+        account_id = self.seed(record_store.ACCOUNTS, [{
+            "email": "old-plus@example.test", "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": "2026-10-23T12:59:00Z",
+        }])[0]
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="旧套餐检查", requested_count=1)
+        task = self.task(provider="legacy", mode="auto_payment", status="attention_required", account_id=account_id,
+                         batch_id=batch["id"], state={"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "pending"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at=%s WHERE id=%s",
+                        ("2026-10-23T13:00:00Z", task["id"]))
+        page = extract_link_jobs.list_workbench_page(status="plus_confirmed", batch_id=batch["id"])
+        self.assertEqual(0, page["total"])
+        self.assertEqual(0, page["counts"]["plus_confirmed"])
+        self.assertEqual(0, extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]["plus_confirmed"])
+
+    def test_batch_plus_count_uses_same_email_fallback_as_list(self):
+        self.seed(record_store.ACCOUNTS, [{"email": "batch-fallback@example.test", "plan_check_status": "success",
+            "current_plan_type": "plus", "plan_checked_at": "2026-10-23T13:01:00Z"}])
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="批次邮箱回退", requested_count=1)
+        task = self.task(provider="legacy", mode="auto_payment", status="attention_required", account_id=None,
+            email="batch-fallback@example.test", batch_id=batch["id"],
+            state={"extraction_state": "succeeded", "payment_state": "pending", "plus_status": "pending"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at='2026-10-23T13:00:00Z' WHERE id=%s", (task["id"],))
+        self.assertEqual(1, extract_link_jobs.list_workbench_page(status="plus_confirmed", batch_id=batch["id"])["total"])
+        self.assertEqual(1, extract_link_batches.batch_task_counts([batch["id"]])[batch["id"]]["plus_confirmed"])
 
     def test_independent_plus_check_is_visible_before_platform_payment_confirmation(self):
         account_id = self.seed(record_store.ACCOUNTS, [{
@@ -255,12 +300,14 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
 
     def test_plus_filter_falls_back_to_email_and_preserves_matching_legacy_link(self):
         account_id = self.seed(record_store.ACCOUNTS, [{
-            "email": "history@example.test", "plan_check_status": "success", "plan_type": "free",
-            "has_active_subscription": True, "extract_link_job_id": "old-job",
+            "email": "history@example.test", "plan_check_status": "success", "plan_type": "plus",
+            "plan_checked_at": "2026-10-23T13:01:00Z", "extract_link_job_id": "old-job",
             "extract_link_long_url": "https://example.test/old-link",
         }])[0]
         task = self.task(provider="legacy", mode="manual_payment", status="success", email=" HISTORY@example.test ",
                          summary={"remote_job_id": "old-job", "payment_status": "succeeded", "plus_status": "pending"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at='2026-10-23T13:00:00Z' WHERE id=%s", (task["id"],))
         result = extract_link_service.list_workbench_tasks(status="plus_confirmed")
         self.assertEqual(1, result["total"])
         self.assertEqual(task["id"], result["items"][0]["task_id"])
@@ -344,10 +391,13 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
     def test_email_fallback_aggregates_only_missing_accounts_in_filtered_tasks(self):
         account_id = self.seed(record_store.ACCOUNTS, [{
             "email": "selected@example.test", "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": "2026-10-23T13:01:00Z",
         }])[0]
         task = self.task(account_id=account_id, email="selected@example.test", mode="manual_payment", state={
             "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "pending",
         })
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at='2026-10-23T13:00:00Z' WHERE id=%s", (task["id"],))
         self.task(provider="huanguang", email="unrelated-1@example.test")
         accounts = record_store._qualified(record_store.ACCOUNTS)
         with operation._connect() as conn, conn.cursor() as cur:

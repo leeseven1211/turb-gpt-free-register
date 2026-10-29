@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from io import BytesIO
+import ssl
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+
+from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError, Timeout as CurlTimeout
 
 from core.extract_link_providers import contracts
 
@@ -62,6 +65,26 @@ class ExtractLinkProviderHttpErrorTests(TestCase):
         self.assertNotIn("private-error", repr(caught.exception))
         self.assertNotIn("synthetic-secret", repr(caught.exception))
 
+    def test_transport_errors_keep_safe_categories_and_exception_types(self):
+        cases = (
+            (TimeoutError("private-error synthetic-secret"), "请求超时", "TimeoutError"),
+            (URLError(TimeoutError("private-error synthetic-secret")), "请求超时", "TimeoutError"),
+            (ConnectionRefusedError("private-error synthetic-secret"), "连接失败", "ConnectionRefusedError"),
+            (ssl.SSLCertVerificationError("private-error synthetic-secret"), "证书校验失败", "SSLCertVerificationError"),
+            (CurlTimeout("private-error synthetic-secret", code=28), "请求超时", "Timeout"),
+            (CurlConnectionError("private-error synthetic-secret", code=7), "连接失败", "ConnectionError"),
+            (ValueError("private-error synthetic-secret"), "请求异常", "ValueError"),
+        )
+        for failure, category, exception_type in cases:
+            with self.subTest(exception_type=exception_type):
+                with self.assertRaises(contracts.ProviderError) as caught:
+                    self.request(error=failure)
+                self.assertIn(category, str(caught.exception))
+                self.assertIn(exception_type, str(caught.exception))
+                self.assertNotIn("private-error", repr(caught.exception))
+                self.assertNotIn("synthetic-secret", repr(caught.exception))
+                self.assertIsNone(caught.exception.__context__)
+
     def test_existing_provider_error_is_not_wrapped(self):
         failure = contracts.ProviderUnsupported()
         with self.assertRaises(contracts.ProviderUnsupported) as caught:
@@ -85,6 +108,25 @@ class ExtractLinkProviderHttpErrorTests(TestCase):
                 self.assertFalse(hasattr(caught.exception, "http_status"))
                 self.assertNotIn("private-response", repr(caught.exception))
                 self.assertNotIn("private-error", repr(caught.exception))
+
+    def test_invalid_response_status_has_a_specific_reason(self):
+        with self.assertRaises(contracts.ProviderError) as caught:
+            self.request(SimpleNamespace(status_code="private-error synthetic-secret", json=Mock()))
+        self.assertIn("响应状态码无效", str(caught.exception))
+        self.assertNotIn("synthetic-secret", repr(caught.exception))
+
+    def test_response_reading_exception_keeps_type_without_message_or_context(self):
+        class BrokenResponse:
+            @property
+            def status_code(self):
+                raise ValueError("private-error synthetic-secret")
+
+        with self.assertRaises(contracts.ProviderError) as caught:
+            self.request(BrokenResponse())
+        self.assertIn("响应读取异常", str(caught.exception))
+        self.assertIn("ValueError", str(caught.exception))
+        self.assertNotIn("synthetic-secret", repr(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
 
     def test_http_error_remains_a_provider_error_subclass(self):
         error_class = getattr(contracts, "ProviderHTTPError", None)

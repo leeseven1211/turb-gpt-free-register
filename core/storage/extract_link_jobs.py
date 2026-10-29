@@ -11,7 +11,7 @@ from typing import Any
 
 from core import record_store
 from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
-from core.extract_link_providers.payment_confirmation import huanguang_scan_completed
+from core.extract_link_providers.payment_confirmation import payment_scan_completed
 from core.storage import operation as operation_store
 
 
@@ -289,6 +289,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
                    COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') AS mode
             FROM {operation_store._table('operation_tasks')} task
             JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
+            LEFT JOIN {operation_store._table('operation_batches')} batch ON batch.id=task.batch_id
             JOIN LATERAL (
                 SELECT original.* FROM {operation_store._table('extract_link_provider_jobs')} original
                 JOIN {operation_store._table('operation_runs')} source_run
@@ -304,6 +305,19 @@ def list_recoverable_workbench_jobs() -> list[dict]:
               AND task.source_system='native_operations'
               AND run.status IN ('attention_required', 'interrupted')
               AND run.cancel_requested_at IS NULL
+              AND (batch.id IS NULL OR batch.status NOT IN ('cancelled', 'stopped', 'paused'))
+              AND (job.provider_id<>'legacy' OR run.data->>'extract_poll_continuation'='true'
+                   OR jsonb_typeof(job.private_data->'local_reconcile')='object')
+              AND (job.provider_id<>'legacy' OR (
+                  job.extraction_state <> 'failed'
+                  AND job.payment_state NOT IN ('failed', 'succeeded')
+                  AND COALESCE(job.public_state->'summary'->>'outcome', '') <> 'REJECTED'
+                  AND job.public_state->'summary'->'remote_terminal_failure' IS DISTINCT FROM 'true'::jsonb
+                  AND (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
+                       OR (COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only')='auto_payment'
+                           AND job.payment_state IN ('pending', 'not_started', 'unknown')
+                           AND job.public_state->'summary'->'automatic_payment_terminal' IS DISTINCT FROM 'true'::jsonb))
+              ))
               AND (job.provider_id<>'huanguang'
                    OR job.public_state->'summary'->'local_reconcile_halted' IS DISTINCT FROM 'true'::jsonb)
               AND (
@@ -405,13 +419,14 @@ def list_workbench_rows(
 
 _WORKBENCH_STATUS_SQL = {
     "processing": """NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-        OR (mode='auto_payment' AND payment_status='pending_payment')
+        OR (mode='auto_payment' AND payment_status='pending_payment'
+            AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted'))
         OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))""",
     "running": "NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')",
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
-    "needs_attention": """local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped')
+    "needs_attention": """local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped','interrupted')
         OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
         OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",
 }
@@ -457,7 +472,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (run_id,))
         run = cur.fetchone()
-        if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown"}:
+        if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown", "partial_success", "success"}:
             return False
         if run["cancel_requested_at"] is not None:
             return False
@@ -468,17 +483,21 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         task = cur.fetchone()
         if not task or task["last_run_id"] != run_id or task["source_system"] != "native_operations" or task["task_type"] != "extract_link":
             return False
-        if task["status"] not in {"attention_required", "request_unknown"} or not task["account_id"]:
+        if task["status"] not in {"attention_required", "request_unknown", "partial_success", "success"} or not task["account_id"]:
             return False
         data = _json_object(task["data"], field_name="任务数据")
-        if data.get("provider_id") != "huanguang" or data.get("mode") != "auto_payment":
+        if data.get("mode") not in {"auto_payment", "manual_payment"}:
             return False
         cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=%s FOR UPDATE", (run_id,))
         job = cur.fetchone()
-        if not job or job["provider_id"] != "huanguang" or job["job_id"] != expected_job_id or not job["job_id"]:
+        if not job or job["provider_id"] != data.get("provider_id") or job["job_id"] != expected_job_id or not job["job_id"]:
             return False
         state = _json_object(job["public_state"], field_name="平台公开状态")
-        if job["payment_state"] != "unknown" or not huanguang_scan_completed(state):
+        if run["status"] == "success" and state.get("plus_status") == "confirmed":
+            return False
+        if data.get("mode") == "manual_payment" and job["payment_state"] != "succeeded":
+            return False
+        if job["payment_state"] not in {"unknown", "succeeded"} or not payment_scan_completed(state, provider_id=job["provider_id"]):
             return False
         account = record_store.get_row(record_store.ACCOUNTS, int(task["account_id"]), conn=conn, for_update=True)
         cur.execute(f"""SELECT 1 FROM {operation_store._table('operation_tasks')} newer
@@ -491,7 +510,21 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             return False
         checked_at = str(account.get("plan_checked_at") or "").strip(" ") or str(account.get("plan_last_success_at") or "").strip(" ")
         checked_time = _workbench_timestamp(checked_at)
-        boundaries = [_workbench_timestamp(value) for value in (task["created_at"], job["updated_at"], run["completed_at"])]
+        boundary_job, boundary_run = job, run
+        run_data = _json_object(run.get("data") or {}, field_name="执行数据")
+        source_id = run_data.get("provider_job_run_id")
+        if (job["payment_state"] == "succeeded" and run_data.get("workbench_action") == "sync_status"
+                and isinstance(source_id, int) and not isinstance(source_id, bool)):
+            cur.execute(f"""SELECT source.*, original.completed_at AS original_completed_at
+                FROM {operation_store._table('extract_link_provider_jobs')} source
+                JOIN {operation_store._table('operation_runs')} original ON original.id=source.run_id
+                WHERE source.run_id=%s AND original.task_id=%s FOR UPDATE OF source, original""", (source_id, task["id"]))
+            original = cur.fetchone()
+            if (original and original["job_id"] == job["job_id"] and original["provider_id"] == job["provider_id"]
+                    and payment_scan_completed(_json_object(original["public_state"], field_name="原单公开状态"), provider_id=job["provider_id"])):
+                boundary_job = original
+                boundary_run = {"completed_at": original["original_completed_at"]}
+        boundaries = [_workbench_timestamp(value) for value in (task["created_at"], boundary_job["updated_at"], boundary_run["completed_at"])]
         # 这里只补齐任务结束后的独立查询；扫码前或原任务内的查询不能反推本次付款。
         if any(value is None for value in boundaries) or checked_time <= max(boundaries):
             return False
@@ -505,7 +538,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             "local_reconcile_halted": False, "current_step": message, "percent": 100,
             "outcome": "success", "plus_status": "confirmed",
         })
-        state.update(payment_state="succeeded", plus_status="confirmed", summary=summary, message=message)
+        state.update(extraction_state="succeeded", payment_state="succeeded", plus_status="confirmed", summary=summary, message=message)
         result_summary = _json_object(run.get("result_summary") or {}, field_name="执行摘要")
         for key in ("failure_stage", "failure_event_id", "failure_evidence", "requested_status"):
             result_summary.pop(key, None)
@@ -515,7 +548,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             "outcome": "success", "reconcile_required": False, "message": message,
         })
         cur.execute(f"""UPDATE {operation_store._table('extract_link_provider_jobs')}
-            SET payment_state='succeeded', public_state=%s::jsonb, updated_at=now() WHERE run_id=%s""", (_dump(state), run_id))
+            SET extraction_state='succeeded', payment_state='succeeded', public_state=%s::jsonb, updated_at=now() WHERE run_id=%s""", (_dump(state), run_id))
         failure_keys = ['failure_stage', 'failure_event_id', 'failure_evidence']
         cur.execute(f"""UPDATE {operation_store._table('operation_runs')}
             SET status='success', progress_stage='complete', error_category=NULL, error_code=NULL,
@@ -556,10 +589,11 @@ def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, 
     operation_store.init()
     where = [
         "task.source_system='native_operations'", "task.task_type='extract_link'",
-        "task.data->>'provider_id'='huanguang'", "task.data->>'mode'='auto_payment'",
-        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown')",
-        "task.status IN ('attention_required','request_unknown')", "run.cancel_requested_at IS NULL",
-        "job.provider_id='huanguang'", "job.payment_state='unknown'", "COALESCE(job.job_id,'')<>''",
+        "task.data->>'mode' IN ('auto_payment','manual_payment')",
+        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success')",
+        "task.status IN ('attention_required','request_unknown','partial_success','success')", "run.cancel_requested_at IS NULL",
+        "job.provider_id IN ('huanguang','legacy','lumen_flow')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
+        "(run.status<>'success' OR job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed')",
     ]
     params = []
     if account_id is not None:
@@ -666,8 +700,6 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
         SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
             AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > task_created_at
             THEN 'confirmed'
-            WHEN payment_status='paid' AND plus IN ('unknown','pending','queued') AND plan_check_status='success'
-            THEN CASE WHEN plan LIKE '%%plus%%' OR plan LIKE '%%pro%%' OR subscribed THEN 'confirmed' ELSE 'not_confirmed' END
             ELSE plus END AS plus_status
         FROM normalized
     )"""

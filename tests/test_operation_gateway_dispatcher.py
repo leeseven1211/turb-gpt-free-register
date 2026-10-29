@@ -294,6 +294,76 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
             for row in rows:
                 task_gateway.release_dispatch(row["id"])
 
+    def test_legacy_continuation_capacity_preserves_initial_slots(self):
+        from core.operations import task_gateway
+
+        continuation = {"task_type": "extract_link", "data": {
+            "provider_id": "legacy", "extract_poll_continuation": True}}
+        initial = {"task_type": "extract_link", "data": {"provider_id": "legacy"}}
+        capacity = (lambda _run: {"legacy": 10, "batch:legacy": 10}, lambda _key: 10)
+        tokens = []
+        try:
+            for _ in range(2):
+                accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
+                self.assertTrue(accepted)
+                tokens.append(token)
+            accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
+            if accepted:
+                tokens.append(token)
+            self.assertFalse(accepted)
+            accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", initial, capacity)
+            self.assertTrue(accepted)
+            tokens.append(token)
+        finally:
+            for token in tokens:
+                task_gateway._release_dispatch_capacity(token)
+
+    def test_single_slot_rotates_initial_and_legacy_continuation(self):
+        from core.operations import task_gateway
+
+        submitted, callbacks = [], []
+        rows = [
+            {"id": 9301, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "legacy"}},
+            {"id": 9302, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "legacy", "extract_poll_continuation": True}},
+        ]
+
+        class Future:
+            def add_done_callback(self, callback):
+                callbacks.append(callback)
+
+        class Executor:
+            def available_slots(self):
+                return 1
+
+            def try_submit(self, _handler, run_id):
+                submitted.append(run_id)
+                return Future()
+
+        def list_runs(**kwargs):
+            return sorted(rows, key=lambda row: row["data"].get("extract_poll_continuation", False)
+                          != kwargs.get("prioritize_continuations", False))
+
+        previous = task_gateway._run_handler_snapshot()[0].get("extract_link")
+        previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
+        try:
+            with (patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
+                  patch.object(task_gateway, "_executor", return_value=Executor())):
+                task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
+                    dispatch_capacity_key=lambda _run: "legacy", dispatch_capacity_limit=lambda _key: 1)
+                for _ in range(4):
+                    self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+                    callbacks[-1](None)
+            self.assertEqual({9301, 9302}, set(submitted[:2]))
+            self.assertEqual([submitted[0], submitted[1], submitted[0], submitted[1]], submitted)
+        finally:
+            task_gateway.unregister_dispatch_handler("extract_link")
+            if previous:
+                task_gateway.register_dispatch_handler("extract_link", previous[0], source_systems=previous[1],
+                    dispatch_capacity_key=previous_capacity[0] if previous_capacity else None,
+                    dispatch_capacity_limit=previous_capacity[1] if previous_capacity else None)
+            for row in rows:
+                task_gateway.release_dispatch(row["id"])
+
     def test_schema_config_snapshot_object_is_consumed_without_defining_config(self):
         from core import codex_operation_service
         from config import schema

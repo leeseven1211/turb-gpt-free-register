@@ -234,6 +234,57 @@ class ExtractPaymentReconcileStorageTests(PostgresTestCase):
         self.assertEqual(1, extract_link_jobs.reconcile_completed_payments()["confirmed"])
         self.assertEqual("succeeded", extract_link_jobs.get_provider_job_public(task["run"]["id"])["payment_state"])
 
+    def test_legacy_confirmed_payment_and_later_plus_complete_the_task(self):
+        state = {"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "failed"}
+        task = self.task(self.account(), provider="legacy", state=state)
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments()["confirmed"])
+        self.assertEqual("success", operation.get_run(task["run"]["id"])["status"])
+        self.assertEqual("confirmed", extract_link_jobs.get_provider_job_public(task["run"]["id"])["public_state"]["plus_status"])
+        counts = extract_link_batches.batch_task_counts([task["batch_id"]])[task["batch_id"]]
+        self.assertEqual(1, counts["payment_succeeded"])
+        self.assertEqual(1, counts["plus_confirmed"])
+        self.assertEqual(1, extract_link_jobs.list_workbench_page(batch_id=task["batch_id"], status="plus_confirmed")["total"])
+
+    def test_legacy_pending_and_explicit_failure_do_not_confirm_payment_from_plus(self):
+        for state in (
+            {"extraction_state": "succeeded", "payment_state": "pending"},
+            {"extraction_state": "failed", "payment_state": "succeeded", "summary": {"remote_terminal_failure": True}},
+            {"extraction_state": "succeeded", "payment_state": "succeeded", "summary": {"automatic_payment_status": "CANCELLED"}},
+        ):
+            with self.subTest(state=state):
+                task = self.task(self.account(), provider="legacy", state=state)
+                self.assertEqual(0, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+                self.assertEqual("attention_required", operation.get_run(task["run"]["id"])["status"])
+
+    def test_new_sync_run_reuses_later_account_check_with_confirmed_original_payment(self):
+        state = {"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "pending"}
+        task = self.task(self.account(), provider="legacy", state=state)
+        sync = operation.retry_runtime_task(task["id"], data={"workbench_action": "sync_status", "provider_job_run_id": task["run"]["id"]})
+        extract_link_jobs.save_provider_job(sync["id"], "legacy", "fixture-original-job", state, {})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_tasks')} SET status='attention_required' WHERE id=%s", (task["id"],))
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET status='attention_required', completed_at='2026-10-28T16:02:00Z' WHERE id=%s", (sync["id"],))
+            cur.execute(f"UPDATE {operation._table('extract_link_provider_jobs')} SET updated_at='2026-10-28T16:02:00Z' WHERE run_id=%s", (sync["id"],))
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+        self.assertEqual("success", operation.get_run(sync["id"])["status"])
+        self.assertEqual("attention_required", operation.get_run(task["run"]["id"])["status"])
+
+    def test_finished_manual_paid_order_with_failed_arrival_is_reconciled_once(self):
+        state = {"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "failed"}
+        task = self.task(self.account(), status="success", provider="legacy", mode="manual_payment", state=state)
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+        job = extract_link_jobs.get_provider_job_public(task["run"]["id"])
+        self.assertEqual("confirmed", job["public_state"]["plus_status"])
+        self.assertEqual(0, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+
+    def test_paid_running_extraction_is_completed_with_independent_arrival(self):
+        state = {"extraction_state": "running", "payment_state": "succeeded", "plus_status": "pending"}
+        task = self.task(self.account(), provider="legacy", state=state)
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+        job = extract_link_jobs.get_provider_job_public(task["run"]["id"])
+        self.assertEqual("succeeded", job["extraction_state"])
+        self.assertEqual("succeeded", job["public_state"]["extraction_state"])
+
     def test_item_failure_rolls_back_all_changes_and_continues_other_items(self):
         first = self.task(self.account())
         second = self.task(self.account())
