@@ -64,10 +64,11 @@ function createConfigView(fields = []) {
     globalThis.view = {
       groups: configGroups, names: getConfigGroupNames,
       renderNav: renderConfigNavV2,
+      filterNav: applyConfigNavFilter,
       destination: setConfigDestinationV2, open: openConfigGroup,
       render: renderConfigSectionV2, renderDomain: renderConfigDomainSectionV2,
       bind: bindConfigLayoutV2, save: saveConfigUpdates,
-      stubLayoutRender() { renderConfigLayoutV2 = () => {}; },
+      stubLayoutRender(callback = () => {}) { renderConfigLayoutV2 = callback; },
       clickExtractLinkTab(section) {
         const button = {dataset: {extractLinkTab: section}};
         layoutListeners.click({target: {closest(selector) { return selector === '[data-extract-link-tab]' ? button : null; }}, preventDefault() {}});
@@ -698,6 +699,61 @@ test('字段校验错误定位到投影菜单并保留草稿，成功保存后�
   await view.save();
   assert.equal(Object.keys(view.errors).length, 0);
   assert.equal(Object.keys(view.pending).length, 0);
+});
+
+test('搜索后校验失败重绘保留唯一导航、草稿和错误提示，清空搜索恢复所有菜单', async () => {
+  const key = 'TASK_CENTER_RETENTION_DAYS';
+  const {view, context, nodes} = createConfigView([
+    field(key, '任务中心', {type: 'int', value: 30}),
+    field('ROXY_API_BASE', 'RoxyBrowser'),
+  ]);
+  const groups = view.groups();
+  const items = Object.entries(groups).map(([name, fields]) => ({
+    name, hidden: false, textContent: name,
+    dataset: {configSearch: fields.map(item => item.key).join(' ')},
+  }));
+  const navigationGroups = items.map(item => ({
+    hidden: false, querySelector() { return item.hidden ? null : item; },
+  }));
+  const originalQueryAll = context.document.querySelectorAll;
+  context.document.querySelectorAll = selector => {
+    if (selector === '#configNavV2 [data-config-nav]') return items;
+    if (selector === '#configNavV2 [data-config-nav-group]') return navigationGroups;
+    return originalQueryAll(selector);
+  };
+  const count = {textContent: ''};
+  const empty = {hidden: false};
+  const search = {value: key};
+  nodes.set('configNavCountV2', count);
+  nodes.set('configNavEmptyV2', empty);
+  nodes.set('configNavSearchV2', search);
+  view.stubLayoutRender(() => view.filterNav());
+  view.search(key);
+  view.filterNav();
+  view.setPending(key, 0);
+  context.api = async () => {
+    const error = new Error('模拟字段校验失败');
+    error.fields = {[key]: '保留天数必须大于零'};
+    throw error;
+  };
+
+  await view.save();
+
+  assert.deepEqual(items.filter(item => !item.hidden).map(item => item.name), ['系统与维护']);
+  assert.equal(navigationGroups.filter(group => !group.hidden).length, 1);
+  assert.equal(count.textContent, '1/2');
+  assert.equal(empty.hidden, true);
+  assert.equal(search.value, key);
+  assert.equal(view.pending[key], 0);
+  assert.equal(view.errors[key], '保留天数必须大于零');
+  assert.equal(nodes.get('configSaveBarV2').hidden, false);
+  assert.equal(view.ui.saveCopy.textContent, '请检查标记的配置项');
+
+  view.search('');
+  view.filterNav();
+  assert.equal(items.filter(item => !item.hidden).length, 2);
+  assert.equal(navigationGroups.filter(group => !group.hidden).length, 2);
+  assert.equal(count.textContent, '2');
 });
 
 test('字段校验失败提示检查标记配置，普通错误仍提示服务状态', async () => {

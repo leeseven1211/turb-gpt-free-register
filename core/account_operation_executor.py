@@ -17,7 +17,6 @@ from typing import Any, Callable
 
 
 _MIN_WORKERS = 1
-_MAX_WORKERS = 50
 _LOG_SCOPE = ContextVar("operation_log_scope", default=None)
 
 
@@ -67,7 +66,7 @@ def configured_workers() -> int:
         value = int(getattr(cfg, "ACCOUNT_BATCH_WORKERS", 3) or 3)
     except (TypeError, ValueError):
         value = 3
-    return max(_MIN_WORKERS, min(_MAX_WORKERS, value))
+    return max(_MIN_WORKERS, value)
 
 
 class AccountOperationExecutor:
@@ -93,7 +92,7 @@ class AccountOperationExecutor:
 
     def _refresh_budget_locked(self, requested: int | None = None) -> int:
         value = configured_workers() if requested is None else int(requested)
-        value = max(_MIN_WORKERS, min(_MAX_WORKERS, value))
+        value = max(_MIN_WORKERS, value)
         if self._budget_limit != value:
             self._budget_limit = value
             self._condition.notify_all()

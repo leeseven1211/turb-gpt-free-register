@@ -79,7 +79,8 @@ CODEX_TOKEN_AUTO_SYNC_SUB2API: bool = schema_default("CODEX_TOKEN_AUTO_SYNC_SUB2
 ENABLE_CODEX_AUTO: bool = schema_default("ENABLE_CODEX_AUTO")
 
 # WebUI 账号操作的公共并发数（补全、查活、套餐、刷新 AT、风险扫描、
-# Codex、提链等），范围 1-50。注册线程数和注册链路异步套餐查询仍分别维护。
+# Codex、提链等），填写不小于 1 的整数，由用户自行控制，无固定上限，默认 3。
+# 注册线程数和注册链路异步套餐查询仍分别维护。
 # 页面不再临时填写，统一在「配置 → 通用配置」维护。
 ACCOUNT_BATCH_WORKERS: int = schema_default("ACCOUNT_BATCH_WORKERS")
 

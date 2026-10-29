@@ -2334,6 +2334,7 @@ table[data-resizable-table="codex"] {
 
 #tab-config .config-nav-v2-list {
   display: grid;
+  align-content: start;
   gap: 16px;
   min-width: 0;
   padding: 2px 0 4px;

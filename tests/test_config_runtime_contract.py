@@ -16,7 +16,6 @@ from core import plan_check_service, registration_service
 # 对应 registration_service/live_check_service 的换线边界、chatgpt_plan 和
 # plan_check_service 的请求边界，以及 codex_token_refresh_service 的调度边界。
 RUNTIME_RANGES = (
-    ("ACCOUNT_BATCH_WORKERS", 1, 50),
     ("EXTRACT_LINK_BATCH_WORKERS", 1, 50),
     ("EXTRACT_LINK_LEGACY_CONCURRENCY", 1, 50),
     ("EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY", 1, 50),
@@ -38,7 +37,7 @@ RUNTIME_RANGES = (
 )
 
 
-@pytest.mark.parametrize("workers", (1, 20, 32, 50))
+@pytest.mark.parametrize("workers", (1, 20, 32, 50, 51, 100, 1000))
 def test_saved_shared_account_budget_reaches_executor_without_lower_clamp(workers):
     from core.account_operation_executor import AccountOperationExecutor
 
@@ -47,6 +46,19 @@ def test_saved_shared_account_budget_reaches_executor_without_lower_clamp(worker
         executor = AccountOperationExecutor()
         assert executor.workers() == workers
         assert executor.available_slots() == workers
+
+
+@pytest.mark.parametrize("workers", (100, 1000))
+def test_shared_account_budget_environment_is_published_without_upper_clamp(workers):
+    with (
+        patch.dict("os.environ", {"ACCOUNT_BATCH_WORKERS": str(workers)}, clear=True),
+        patch.object(env_loader, "read_env_file", return_value={}),
+        patch.object(schema, "_PUBLISHED_SNAPSHOT", None),
+    ):
+        item = next(item for item in schema.effective_config_metadata() if item["key"] == "ACCOUNT_BATCH_WORKERS")
+        assert item["invalid_env"] is False
+        assert item["value"] == workers
+        assert schema.resolve_config({"ACCOUNT_BATCH_WORKERS": str(workers)}, strict=True)["ACCOUNT_BATCH_WORKERS"].value == workers
 
 
 def test_missing_runtime_settings_are_schema_fields_with_explicit_restart_semantics():

@@ -490,7 +490,7 @@ _FIELD_DEFINITIONS = [
     # ---- 通用配置 ----
     {
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
-        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件、Codex 和提链共用的并发数，范围 1-50；注册线程数另行设置",
+        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件、Codex 和提链共用的并发数，填写不小于 1 的整数，由用户自行控制，无固定上限；默认 3，注册线程数另行设置",
     },
     # ---- 定时任务 ----
     {
@@ -1870,7 +1870,7 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": (16, 4096),
     "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES": (1, 10000),
     "BROWSER_JS_COVERAGE_MAX_ENTRIES": (1, 10000),
-    "ACCOUNT_BATCH_WORKERS": (1, 50),
+    "ACCOUNT_BATCH_WORKERS": (1, None),
     "EXTRACT_LINK_BATCH_WORKERS": (1, 50),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
     "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),

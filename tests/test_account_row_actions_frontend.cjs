@@ -27,8 +27,8 @@ function loadFunctions(names, dependencies = {}) {
   return context;
 }
 
-test('账号共享并发配置保留20至50，越界值限制在1至50', () => {
-  for (const [configured, expected] of [[20, 20], [32, 32], [33, 33], [50, 50], [51, 50], [-1, 1], [undefined, 3]]) {
+test('账号共享并发配置保留用户指定的正整数且不截断上限', () => {
+  for (const [configured, expected] of [[20, 20], [50, 50], [51, 51], [100, 100], [1000, 1000], [-1, 1], [undefined, 3]]) {
     const context = loadFunctions(['getAccountOperationWorkers'], {
       CONFIG: [{key: 'ACCOUNT_BATCH_WORKERS', value: configured}], ACCOUNT_BATCH_WORKERS: 3,
     });
@@ -36,8 +36,8 @@ test('账号共享并发配置保留20至50，越界值限制在1至50', () => {
   }
 });
 
-test('运行配置并发在尚未加载配置页时保留20和50并约束越界值', async () => {
-  for (const [configured, expected] of [[20, 20], [50, 50], [51, 50], [-1, 1], [undefined, 3]]) {
+test('运行配置并发在尚未加载配置页时保留超过50的正整数', async () => {
+  for (const [configured, expected] of [[20, 20], [50, 50], [51, 51], [100, 100], [1000, 1000], [-1, 1], [undefined, 3]]) {
     const context = loadFunctions(['getAccountOperationWorkers', 'loadRuntimeUiSettings'], {
       CONFIG: [], ACCOUNT_BATCH_WORKERS: 3,
       apiCached: async () => ({account_batch_workers: configured}),

@@ -40,15 +40,43 @@ class AccountOperationExecutorTests(unittest.TestCase):
         with patch("config.codex.ACCOUNT_BATCH_WORKERS", 7):
             self.assertEqual(7, account_operation_executor.configured_workers())
 
-    def test_common_executor_clamps_configured_budget_to_fifty(self):
+    def test_common_executor_preserves_configured_budget_above_fifty(self):
         from core.account_operation_executor import AccountOperationExecutor, configured_workers
 
         operation_executor = AccountOperationExecutor()
-        for configured, expected in ((50, 50), (51, 50)):
+        for configured, expected in ((50, 50), (51, 51), (100, 100), (1000, 1000)):
             with self.subTest(configured=configured), patch("config.codex.ACCOUNT_BATCH_WORKERS", configured):
                 self.assertEqual(expected, configured_workers())
                 self.assertEqual(expected, operation_executor.available_slots())
                 self.assertEqual(expected, operation_executor.status()["budget"])
+
+    def test_one_submission_uses_hundred_worker_budget_without_starting_extra_workers(self):
+        from core.account_operation_executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            entered.set()
+            release.wait(5)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 100):
+                future = operation_executor.try_submit(work)
+                self.assertIsNotNone(future)
+                self.assertTrue(entered.wait(1))
+                status = operation_executor.status()
+                self.assertEqual(100, status["current_pool_workers"])
+                self.assertEqual(100, status["budget"])
+                self.assertEqual(1, status["active"])
+                self.assertEqual(99, operation_executor.available_slots())
+                release.set()
+                future.result(timeout=3)
+                self.assertEqual(100, operation_executor.available_slots())
+        finally:
+            release.set()
+            operation_executor.shutdown()
 
     def test_fifty_workers_run_together_and_the_next_submission_waits_for_budget(self):
         from core.account_operation_executor import AccountOperationExecutor

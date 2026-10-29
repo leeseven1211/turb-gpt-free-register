@@ -403,9 +403,21 @@ class ConfigSchemaTests(unittest.TestCase):
             if field.module
         }.issubset(reloadable))
 
-    def test_account_and_extract_concurrency_accept_fifty_and_reject_fifty_one(self):
+    def test_shared_account_concurrency_accepts_positive_integers_without_fixed_upper_bound(self):
+        key = "ACCOUNT_BATCH_WORKERS"
+        for workers in (1, 50, 51, 100, 1000, 1000000):
+            with self.subTest(workers=workers):
+                self.assertEqual({key: workers}, validate_config_updates({key: workers}))
+        for invalid in (0, -1, True, None, 1.5, "1.5", "abc"):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigValidationError):
+                validate_config_updates({key: invalid})
+        metadata = CONFIG_SCHEMA[key].metadata()
+        self.assertEqual({"min": 1}, metadata["range"])
+        self.assertNotIn("max", metadata)
+        self.assertEqual(3, metadata["default"])
+
+    def test_extract_concurrency_accepts_fifty_and_rejects_fifty_one(self):
         keys = (
-            "ACCOUNT_BATCH_WORKERS",
             "EXTRACT_LINK_BATCH_WORKERS",
             "EXTRACT_LINK_LEGACY_CONCURRENCY",
             "EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY",
