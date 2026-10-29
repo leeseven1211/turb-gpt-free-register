@@ -29,6 +29,7 @@ from core import (
     plan_check_service,
 )
 from core import registration_service as svc
+from core.extract_link_providers.huanguang import HuanguangQuotaError
 from core.task_errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
@@ -93,12 +94,42 @@ def create_integrations_blueprint(context: WebUIContext):
         data = request.get_json(silent=True)
         if (not isinstance(data, dict) or set(data) - {"api_key"}
                 or ("api_key" in data and (not isinstance(data["api_key"], str) or len(data["api_key"]) > 512))):
-            return response({"ok": False, "error": "查询参数无效，请检查 XXSYUN API Key"}, 400)
+            return response({"ok": False, "error": "查询参数无效，请检查 XXSYUN API Key",
+                             "error_code": "config_invalid", "code": "config_invalid"}, 400)
         try:
             return response(extract_link_service.query_huanguang_xxsyun_quota(api_key=data.get("api_key")))
+        except HuanguangQuotaError as exc:
+            logger.warning("查询 XXSYUN 剩余次数失败：%s", exc.error_code)
+            return response({"ok": False, "error": str(exc), "error_code": exc.error_code, "code": exc.error_code}, 400)
         except Exception as exc:
             logger.warning("查询 XXSYUN 剩余次数失败：%s", type(exc).__name__)
-            return response({"ok": False, "error": "查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数"}, 400)
+            return response({"ok": False, "error": "查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数",
+                             "error_code": "query_failed", "code": "query_failed"}, 400)
+
+    @bp.get("/api/extract-link/huanguang/cdk-quota/<kind>")
+    def api_huanguang_single_cdk_quota(kind):
+        """独立查询一项已保存 CDK，拒绝查询参数和请求正文。"""
+        def response(payload, status=200):
+            result = jsonify(payload)
+            result.status_code = status
+            result.headers["Cache-Control"] = "no-store"
+            return result
+
+        if kind not in {"extraction", "payment"} or request.query_string or request.get_data():
+            return response({"ok": False, "error": "此接口仅查询指定的已保存 CDK，不接受查询参数或请求正文",
+                             "error_code": "config_invalid", "code": "config_invalid"}, 400)
+        try:
+            quota = extract_link_service.query_huanguang_saved_cdk_quota(kind)
+            if not isinstance(quota, dict) or quota.get("ok") is not True or not isinstance(quota.get("quota"), dict):
+                raise HuanguangQuotaError("invalid_response", credential=kind)
+            return response(quota)
+        except HuanguangQuotaError as exc:
+            logger.warning("查询幻光单项 CDK 剩余次数失败：%s", exc.error_code)
+            return response({"ok": False, "error": str(exc), "error_code": exc.error_code, "code": exc.error_code}, 503)
+        except Exception as exc:
+            logger.warning("查询幻光单项 CDK 剩余次数失败：%s", type(exc).__name__)
+            error = HuanguangQuotaError("query_failed", credential=kind)
+            return response({"ok": False, "error": str(error), "error_code": error.error_code, "code": error.error_code}, 503)
 
     @bp.get("/api/icloud-hme/accounts")
     def api_icloud_hme_accounts():

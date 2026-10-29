@@ -693,39 +693,53 @@ def query_link_types() -> dict:
 
 def query_huanguang_xxsyun_quota(api_key: str | None = None) -> dict:
     """只读查询备用扫码次数；草稿 Key 不写入配置或任务数据。"""
-    from core.extract_link_providers.contracts import request as provider_request
+    from core.extract_link_providers.huanguang import HuanguangQuotaError, query_quota_response
 
     key = (_runtime_setting("EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY", "")
            if api_key is None else api_key)
-    if not isinstance(key, str) or not key.strip():
-        raise ValueError("XXSYUN API Key 未配置，请先填写")
+    if key is None or (isinstance(key, str) and not key.strip()):
+        raise HuanguangQuotaError("key_missing")
+    if not isinstance(key, str) or len(key) > 512:
+        raise HuanguangQuotaError("key_invalid")
     key = key.strip()
-    if len(key) > 512:
-        raise ValueError("XXSYUN API Key 格式无效")
     base = _valid_provider_base(_runtime_setting("EXTRACT_LINK_HUANGUANG_API_BASE", ""))
     if not base:
-        raise ValueError("幻光 API 地址未配置")
-    try:
-        payload = provider_request(
-            _ProviderHTTPTransport(SimpleNamespace(api_base=base)), "POST", "/api/xxsyun-quota",
-            body={"api_key": key}, headers={"Content-Type": "application/json"},
-            timeout=_int_setting("EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", 30, 5, 300),
-        )
-        if payload.get("ok") is False:
-            raise ValueError
-        result = {"ok": True}
-        for name in ("remainingUses", "totalUses", "reservedUses"):
-            value = payload.get(name)
-            if name != "remainingUses" and value is None:
-                result[name] = None
-            elif type(value) is int and 0 <= value <= 2**53 - 1:
-                result[name] = value
-            else:
-                raise ValueError
-        return result
-    except Exception:
-        # HTTP 异常或上游正文可能包含 Key；只返回固定中文提示。
-        raise ValueError("查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数") from None
+        raise HuanguangQuotaError("config_invalid")
+    payload = query_quota_response(
+        _ProviderHTTPTransport(SimpleNamespace(api_base=base)), "/api/xxsyun-quota",
+        body={"api_key": key}, credential="key",
+        timeout=_int_setting("EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", 30, 5, 300),
+    )
+    result = {"ok": True}
+    for name in ("remainingUses", "totalUses", "reservedUses"):
+        value = payload.get(name)
+        if name != "remainingUses" and value is None:
+            result[name] = None
+        elif type(value) is int and 0 <= value <= 2**53 - 1:
+            result[name] = value
+        else:
+            raise HuanguangQuotaError("invalid_response")
+    return result
+
+
+def query_huanguang_saved_cdk_quota(kind: str) -> dict:
+    """独立查询一项已保存 CDK，不依赖任务开关或另一项凭据。"""
+    from core.extract_link_providers.contracts import ProviderConfig
+    from core.extract_link_providers.huanguang import HuanguangProvider, HuanguangQuotaError
+
+    if kind not in {"extraction", "payment"}:
+        raise HuanguangQuotaError("config_invalid")
+    base = _valid_provider_base(_runtime_setting("EXTRACT_LINK_HUANGUANG_API_BASE", ""))
+    if not base:
+        raise HuanguangQuotaError("config_invalid", credential=kind)
+    setting = "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK" if kind == "payment" else "EXTRACT_LINK_HUANGUANG_CDK"
+    cdk = _runtime_setting(setting, "")
+    config = ProviderConfig(
+        provider_id="huanguang", api_base=base, cdk="",
+        timeout=_int_setting("EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT", 30, 5, 300),
+    )
+    provider = HuanguangProvider(config, _ProviderHTTPTransport(SimpleNamespace(api_base=base)))
+    return {"ok": True, "quota": provider.query_cdk_quota(cdk, payment=kind == "payment")}
 
 
 def query_huanguang_cdk_quota(*, include_payment: bool = True, runtime=None) -> dict:

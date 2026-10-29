@@ -57,6 +57,75 @@ _GENERIC_FAILURE_MESSAGES = {
 _FAILURE_TEXT_RE = re.compile(r"失败|错误|异常|无效|不足|已用完|用尽|耗尽|未执行|取消|拒绝|超时|不可用|无法|\b(?:error|failed|invalid|exhausted|insufficient|timeout|denied|cancelled|canceled)\b", re.IGNORECASE)
 
 
+class HuanguangQuotaError(ProviderError, ValueError):
+    """额度查询专用分类；文案只从本地固定模板生成。"""
+
+    def __init__(self, error_code: str, *, credential: str = "key"):
+        label = {"key": "XXSYUN API Key", "extraction": "幻光提链 CDK", "payment": "幻光支付扫码 CDK"}[credential]
+        messages = {
+            "key_missing": "XXSYUN API Key 未配置，请先填写",
+            "key_invalid": "XXSYUN API Key 无效或已失效，请核对或更换后重试",
+            "cdk_missing": f"{label} 未配置，请先保存后查询",
+            "cdk_invalid": f"{label} 无效或已失效，请核对或更换后重试",
+            "config_invalid": "幻光查询配置无效，请检查已保存的 API 地址和查询参数",
+            "network_error": f"{label} 额度查询网络连接失败或超时，请稍后重试",
+            "rate_limited": f"{label} 额度查询过于频繁，请稍后重试",
+            "upstream_http_error": f"{label} 额度查询平台 HTTP 请求失败，请稍后重试",
+            "invalid_response": f"{label} 额度查询返回格式无效，无法确认剩余次数",
+            "query_failed": f"{label} 额度查询未成功，请核对配置或稍后重试",
+        }
+        self.error_code = error_code if error_code in messages else "query_failed"
+        super().__init__(messages[self.error_code])
+
+
+def query_quota_response(transport, path: str, *, body: dict, timeout: float, credential: str) -> dict:
+    """只读额度请求保留错误 JSON，仅识别白名单原因，不回显上游正文。"""
+    response = None
+    failed = False
+    try:
+        response = transport.request(
+            "POST", path, json=body,
+            headers={"Content-Type": "application/json", "Cache-Control": "no-store"}, timeout=timeout,
+        )
+    except Exception:
+        failed = True
+    # 在异常处理块外生成错误，避免原始请求异常通过异常链携带凭据。
+    if failed:
+        raise HuanguangQuotaError("network_error", credential=credential)
+    status = getattr(response, "status_code", 200)
+    if type(status) is not int or not 100 <= status <= 599:
+        raise HuanguangQuotaError("invalid_response", credential=credential)
+    if status == 429:
+        raise HuanguangQuotaError("rate_limited", credential=credential)
+    data = None
+    try:
+        data = response_dict(response)
+    except Exception:
+        pass
+    if isinstance(data, dict):
+        code = data.get("error_code")
+        message = data.get("error")
+        code = code.strip().casefold() if isinstance(code, str) else ""
+        message = re.sub(r"\s+", "", message).casefold().rstrip("。.!！") if isinstance(message, str) and len(message) <= 512 else ""
+        if credential == "key":
+            known_codes = {"key_invalid", "api_key_invalid", "invalid_api_key", "invalid_key"}
+            known_messages = {"apikey无效或已失效", "apikey无效", "apikey已失效", "apikey不存在", "invalidapikey", "apikeyisinvalidorexpired"}
+            invalid_code = "key_invalid"
+        else:
+            known_codes = {"cdk_invalid", "invalid_cdk", "cdk_not_found", "cdk_expired"}
+            known_messages = {"cdk无效或不存在", "cdk无效或已失效", "cdk无效", "cdk不存在", "cdk已失效", "invalidcdk", "cdknotfound"}
+            invalid_code = "cdk_invalid"
+        if code in known_codes or message in known_messages:
+            raise HuanguangQuotaError(invalid_code, credential=credential)
+    if not 200 <= status < 300:
+        raise HuanguangQuotaError("upstream_http_error", credential=credential)
+    if data is None:
+        raise HuanguangQuotaError("invalid_response", credential=credential)
+    if data.get("ok") is False:
+        raise HuanguangQuotaError("query_failed", credential=credential)
+    return data
+
+
 def _safe_message(value: object, *, secrets: tuple[str, ...]) -> str:
     if not isinstance(value, str):
         return ""
@@ -123,40 +192,34 @@ class HuanguangProvider:
 
     def query_cdk_quota(self, cdk: str, *, payment: bool = False) -> dict:
         """只读查询提链或扫码额度；仅返回次数和可用状态，不返回凭据或上游正文。"""
-        label = "支付扫码" if payment else "提链"
-        if not isinstance(cdk, str) or not cdk.strip() or len(cdk) > 512:
-            raise ProviderError(f"幻光{label} CDK 未配置或格式无效")
-        try:
-            data = request(
-                self.transport, "POST", "/api/chongyun-cdk-status" if payment else "/api/cdk-status",
-                body={"cdk": cdk.strip()},
-                headers={"Content-Type": "application/json", "Cache-Control": "no-store"},
-                timeout=min(self.config.timeout, 10),
-            )
-            if data.get("ok") is False:
-                raise ValueError
-            if not payment:
-                if data.get("ok") is not True or ("required" in data and type(data["required"]) is not bool):
-                    raise ValueError
-                if data.get("required") is False:
-                    return {"required": False, "remaining": None, "reserved": None, "active": True}
-            remaining = data.get("remainingUses" if payment else "remaining_uses")
-            reserved = None if payment else data.get("reserved_uses")
-            if type(remaining) is not int or not 0 <= remaining <= 2**53 - 1:
-                raise ValueError
-            if reserved is not None and (type(reserved) is not int or not 0 <= reserved <= 2**53 - 1):
-                raise ValueError
-            if payment:
-                status = data.get("status")
-                active = {"ACTIVE": True, "DISABLED": False}.get(status) if isinstance(status, str) else None
-            else:
-                active = data.get("enabled")
-                if active is not None and type(active) is not bool:
-                    raise ValueError
-            return {"required": True, "remaining": remaining, "reserved": reserved, "active": active}
-        except Exception:
-            # 网络异常和远端拒绝可能包含 CDK；额度未知不能伪装成零，也不回显正文。
-            raise ProviderError(f"幻光{label} CDK 额度查询失败，请核对配置或稍后重试") from None
+        credential = "payment" if payment else "extraction"
+        if cdk is None or (isinstance(cdk, str) and not cdk.strip()):
+            raise HuanguangQuotaError("cdk_missing", credential=credential)
+        if not isinstance(cdk, str) or len(cdk) > 512:
+            raise HuanguangQuotaError("cdk_invalid", credential=credential)
+        data = query_quota_response(
+            self.transport, "/api/chongyun-cdk-status" if payment else "/api/cdk-status",
+            body={"cdk": cdk.strip()}, timeout=min(self.config.timeout, 10), credential=credential,
+        )
+        if not payment:
+            if data.get("ok") is not True or ("required" in data and type(data["required"]) is not bool):
+                raise HuanguangQuotaError("invalid_response", credential=credential)
+            if data.get("required") is False:
+                return {"required": False, "remaining": None, "reserved": None, "active": True}
+        remaining = data.get("remainingUses" if payment else "remaining_uses")
+        reserved = None if payment else data.get("reserved_uses")
+        if type(remaining) is not int or not 0 <= remaining <= 2**53 - 1:
+            raise HuanguangQuotaError("invalid_response", credential=credential)
+        if reserved is not None and (type(reserved) is not int or not 0 <= reserved <= 2**53 - 1):
+            raise HuanguangQuotaError("invalid_response", credential=credential)
+        if payment:
+            status = data.get("status")
+            active = {"ACTIVE": True, "DISABLED": False}.get(status) if isinstance(status, str) else None
+        else:
+            active = data.get("enabled")
+            if active is not None and type(active) is not bool:
+                raise HuanguangQuotaError("invalid_response", credential=credential)
+        return {"required": True, "remaining": remaining, "reserved": reserved, "active": active}
 
     def create_job(self, request_data: ExtractRequest) -> ProviderJob:
         require_capability(self.config, "extract")

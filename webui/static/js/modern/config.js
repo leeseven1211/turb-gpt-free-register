@@ -13,6 +13,10 @@ const CONFIG_ACTIVE_DOMAIN_V2 = {};
 const CONFIG_MULTI_PICKER_FIELDS_V2 = new Map();
 let CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2 = 0;
 const CONFIG_HUANGUANG_XXSYUN_QUOTA_V2 = {loading: false, text: ''};
+const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
+  extraction: {key: 'EXTRACT_LINK_HUANGUANG_CDK', label: '幻光提链 CDK', request: 0, inflight: null, loading: false, text: ''},
+  payment: {key: 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK', label: '幻光支付扫码 CDK', request: 0, inflight: null, loading: false, text: ''},
+};
 // 菜单集中定义；schema 的 group 继续表示配置所属领域。导航菜单是页面导航契约，
 // 底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
 const CONFIG_MENU_DOMAINS_V2 = {
@@ -132,7 +136,7 @@ function configValuesEqual(a, b) {
 }
 
 function setPendingConfigValue(key, value, options = {}) {
-  if (key === 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY') resetHuanguangXxsyunQuotaV2();
+  resetHuanguangQuotaForKeyV2(key);
   const field = CONFIG.find(item => item.key === key);
   if (!options.force && field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
   else CONFIG_PENDING_UPDATES[key] = value;
@@ -1267,11 +1271,102 @@ function renderConfigControlMarkupV2(f) {
   if (f.key === 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY') {
     const quota = CONFIG_HUANGUANG_XXSYUN_QUOTA_V2;
     control = `<div data-huanguang-xxsyun-key>${control}
-      <button type="button" class="btn" data-query-huanguang-xxsyun-quota${quota.loading ? ' disabled' : ''}>${quota.loading ? '正在查询…' : '查询剩余次数'}</button>
+      <button type="button" class="btn" data-query-huanguang-xxsyun-quota aria-label="查询 XXSYUN 剩余次数"${quota.loading ? ' disabled' : ''}>${quota.loading ? '正在查询…' : '查询剩余次数'}</button>
       <p class="config-setting-short-help-v2" data-huanguang-xxsyun-quota-status role="status" aria-live="polite">${esc(quota.text)}</p>
     </div>`;
   }
+  const cdkKind = Object.keys(CONFIG_HUANGUANG_CDK_QUOTAS_V2).find(kind => CONFIG_HUANGUANG_CDK_QUOTAS_V2[kind].key === f.key);
+  if (cdkKind) {
+    const quota = CONFIG_HUANGUANG_CDK_QUOTAS_V2[cdkKind];
+    control = `<div data-huanguang-cdk-key="${cdkKind}">${control}
+      <button type="button" class="btn" data-query-huanguang-cdk-quota="${cdkKind}" aria-label="查询${quota.label} 剩余次数"${quota.loading ? ' disabled' : ''}>${quota.loading ? '正在查询…' : '查询剩余次数'}</button>
+      <p class="config-setting-short-help-v2" data-huanguang-cdk-quota-status="${cdkKind}" role="status" aria-live="polite">${esc(quota.text)}</p>
+    </div>`;
+  }
   return control;
+}
+
+function huanguangQuotaErrorTextV2(error, label = 'XXSYUN API Key') {
+  const code = error?.code || error?.error_code || '';
+  const messages = {
+    key_invalid: 'XXSYUN API Key 无效或已失效，请更新后重试',
+    key_missing: '未配置 XXSYUN API Key，请填写后重试',
+    cdk_invalid: `${label} 无效或已失效，请更新并保存后重试`,
+    cdk_missing: `未配置${label}，请填写并保存后重试`,
+    config_invalid: '查询配置无效，请检查服务地址并保存后重试',
+    network_error: '查询遇到网络连接异常，请稍后重试',
+    upstream_http_error: '上游服务暂时无法完成查询，请稍后重试',
+    rate_limited: '查询过于频繁，请稍后重试',
+    invalid_response: '上游次数响应无效，请稍后重试',
+    query_failed: '查询失败，请稍后重试',
+  };
+  return Object.prototype.hasOwnProperty.call(messages, code) ? messages[code] : messages.query_failed;
+}
+
+function syncHuanguangCdkQuotaV2(kind) {
+  const quota = CONFIG_HUANGUANG_CDK_QUOTAS_V2[kind];
+  document.querySelectorAll(`#tab-config [data-query-huanguang-cdk-quota="${kind}"]`).forEach(button => {
+    button.disabled = quota.loading;
+    button.textContent = quota.loading ? '正在查询…' : '查询剩余次数';
+  });
+  document.querySelectorAll(`#tab-config [data-huanguang-cdk-quota-status="${kind}"]`).forEach(status => {
+    status.textContent = quota.text;
+  });
+}
+
+function resetHuanguangQuotaForKeyV2(key) {
+  if (key === 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY' || key === 'EXTRACT_LINK_HUANGUANG_API_BASE') resetHuanguangXxsyunQuotaV2();
+  Object.entries(CONFIG_HUANGUANG_CDK_QUOTAS_V2).forEach(([kind, quota]) => {
+    if (key !== quota.key && key !== 'EXTRACT_LINK_HUANGUANG_API_BASE') return;
+    quota.request += 1;
+    Object.assign(quota, {loading: false, text: ''});
+    syncHuanguangCdkQuotaV2(kind);
+  });
+}
+
+async function queryHuanguangCdkQuotaV2(button) {
+  const kind = button.dataset.queryHuanguangCdkQuota;
+  if (!Object.prototype.hasOwnProperty.call(CONFIG_HUANGUANG_CDK_QUOTAS_V2, kind)) return;
+  const quota = CONFIG_HUANGUANG_CDK_QUOTAS_V2[kind];
+  if (quota.loading) return;
+  const input = button.closest('[data-huanguang-cdk-key]')?.querySelector(`[data-key="${quota.key}"]`);
+  const pending = [quota.key, 'EXTRACT_LINK_HUANGUANG_API_BASE'].some(key => Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key));
+  if (pending || String(input?.value || '').trim() || input?.dataset.secretClear === 'true') {
+    quota.text = '请先保存此 CDK 或服务地址的更改，再查询剩余次数';
+    syncHuanguangCdkQuotaV2(kind);
+    return;
+  }
+  const request = ++quota.request;
+  Object.assign(quota, {loading: true, text: '正在查询剩余次数…'});
+  syncHuanguangCdkQuotaV2(kind);
+  let inflight = null;
+  try {
+    // 通用请求层会合并同 URL 的 GET；待旧请求结束后再查询，避免保存后复用旧凭据结果。
+    if (quota.inflight) await quota.inflight.catch(() => {});
+    if (request !== quota.request) return;
+    inflight = api(`/api/extract-link/huanguang/cdk-quota/${kind}`, {method: 'GET'});
+    quota.inflight = inflight;
+    const result = await inflight;
+    if (request !== quota.request) return;
+    if (result?.ok !== true) throw result;
+    const value = result.quota;
+    const validCount = count => count === null || (Number.isSafeInteger(count) && count >= 0);
+    if (!value || typeof value.required !== 'boolean' || !validCount(value.remaining) || !validCount(value.reserved)
+      || (value.active !== null && typeof value.active !== 'boolean')) throw {code: 'invalid_response'};
+    const status = value.active === false ? '已停用' : value.active === true ? '已启用' : '可用状态未知';
+    quota.text = value.required
+      ? `剩余 ${value.remaining ?? '未知'} 次 · 占用 ${value.reserved ?? '未知'} · ${status}`
+      : '平台免计次';
+  } catch (error) {
+    if (request !== quota.request) return;
+    quota.text = huanguangQuotaErrorTextV2(error, quota.label);
+  } finally {
+    if (quota.inflight === inflight) quota.inflight = null;
+    if (request === quota.request) {
+      quota.loading = false;
+      syncHuanguangCdkQuotaV2(kind);
+    }
+  }
 }
 
 function syncHuanguangXxsyunQuotaV2() {
@@ -1293,6 +1388,11 @@ function resetHuanguangXxsyunQuotaV2() {
 
 async function queryHuanguangXxsyunQuotaV2(button) {
   if (CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.loading) return;
+  if (Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EXTRACT_LINK_HUANGUANG_API_BASE')) {
+    CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.text = '请先保存服务地址的更改，再查询剩余次数';
+    syncHuanguangXxsyunQuotaV2();
+    return;
+  }
   const key = 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY';
   const input = button.closest('[data-huanguang-xxsyun-key]')?.querySelector(`[data-key="${key}"]`);
   const pending = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key);
@@ -1309,13 +1409,14 @@ async function queryHuanguangXxsyunQuotaV2(button) {
     });
     if (request !== CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2) return;
     const validCount = value => Number.isSafeInteger(value) && value >= 0;
-    if (result?.ok !== true || !validCount(result.remainingUses)
+    if (result?.ok !== true) throw result;
+    if (!validCount(result.remainingUses)
       || (result.totalUses != null && !validCount(result.totalUses))
-      || (result.reservedUses != null && !validCount(result.reservedUses))) throw new Error('次数响应无效');
+      || (result.reservedUses != null && !validCount(result.reservedUses))) throw {code: 'invalid_response'};
     CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.text = `剩余 ${result.remainingUses} 次 · 总次数 ${result.totalUses ?? '未知'} · 占用 ${result.reservedUses ?? '未知'}`;
-  } catch {
+  } catch (error) {
     if (request !== CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2) return;
-    CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.text = '查询失败，请检查 XXSYUN API Key 后重试';
+    CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.text = huanguangQuotaErrorTextV2(error);
   } finally {
     if (request === CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2) {
       CONFIG_HUANGUANG_XXSYUN_QUOTA_V2.loading = false;
@@ -1841,7 +1942,7 @@ function resetPendingConfigUpdates() {
   const keys = Object.keys(CONFIG_PENDING_UPDATES);
   if (!keys.length) return;
   if (!window.confirm(`撤销 ${keys.length} 项未保存更改？`)) return;
-  if (keys.includes('EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY')) resetHuanguangXxsyunQuotaV2();
+  keys.forEach(resetHuanguangQuotaForKeyV2);
   keys.forEach(key => delete CONFIG_PENDING_UPDATES[key]);
   Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
   Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
@@ -1983,6 +2084,7 @@ async function loadConfig() {
   try {
     CONFIG = await apiCached('/api/config', {}, 30000);
     resetHuanguangXxsyunQuotaV2();
+    resetHuanguangQuotaForKeyV2('EXTRACT_LINK_HUANGUANG_API_BASE');
     renderConfigLayoutV2();
     bindConfigLayoutV2();
     loadExtractLinkTypesV2();
@@ -2110,7 +2212,7 @@ function trackConfigFieldChange(e) {
   // 密钥输入框留空表示“保留已有值”；只有点击明确的“清除”操作后才
   // 向后端提交空字符串，避免重绘或误删导致凭据丢失。
   if (f.secret && el.dataset.secretClear !== 'true' && String(el.value || '').trim() === '') {
-    if (f.key === 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY') resetHuanguangXxsyunQuotaV2();
+    resetHuanguangQuotaForKeyV2(f.key);
     delete CONFIG_PENDING_UPDATES[f.key];
     updateConfigSaveUi();
     return;
@@ -2169,6 +2271,7 @@ async function saveConfigUpdates(triggerBtn) {
       }
     });
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
+    Object.keys(updates).forEach(resetHuanguangQuotaForKeyV2);
     Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
     Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
     invalidateApiCache('/api/config');
@@ -2202,6 +2305,11 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const cdkQuotaButton = e.target.closest('[data-query-huanguang-cdk-quota]');
+  if (cdkQuotaButton) {
+    e.preventDefault();
+    return queryHuanguangCdkQuotaV2(cdkQuotaButton);
+  }
   const quotaButton = e.target.closest('[data-query-huanguang-xxsyun-quota]');
   if (quotaButton) {
     e.preventDefault();

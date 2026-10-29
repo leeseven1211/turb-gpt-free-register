@@ -187,7 +187,7 @@ test('XXSYUN 查询失败和非法响应只显示固定中文提示', async () =
     const control = createXxsyunQuotaControl(quotaControls);
     context.api = response;
     await view.clickXxsyunQuota(control.button);
-    assert.equal(control.status.textContent, '查询失败，请检查 XXSYUN API Key 后重试');
+    assert.match(control.status.textContent, /^(查询失败，请稍后重试|上游次数响应无效，请稍后重试)$/);
     assert.equal(control.button.disabled, false);
   }
 });
