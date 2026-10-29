@@ -69,13 +69,25 @@ def _is_native_signin_page(url: object) -> bool:
 class _NativeSigninFailureDiagnostics:
     """只读关联当前原生登录导航，不把旧窗口的挑战归给本轮邮箱等待。"""
 
-    def __init__(self, shared_diagnostics) -> None:
+    def __init__(self, shared_diagnostics, *, include_form_entry: bool = False) -> None:
         self.shared_diagnostics = shared_diagnostics
+        self.include_form_entry = include_form_entry
         self.lock = threading.Lock()
         self.active = False
         self.target = ""
         self.started = None
         self.latest = None
+
+    def _is_entry(self, url) -> bool:
+        if _is_native_signin_page(url):
+            return True
+        try:
+            parsed = urlsplit(str(url or ''))
+            return (self.include_form_entry and parsed.scheme == 'https'
+                    and parsed.hostname == 'chatgpt.com' and parsed.port in (None, 443)
+                    and not parsed.username and not parsed.password and parsed.path == '/auth/login')
+        except ValueError:
+            return False
 
     def begin_navigation(self, driver) -> None:
         try:
@@ -104,7 +116,7 @@ class _NativeSigninFailureDiagnostics:
             if not self.active or target != self.target:
                 return
             if phase == "request" and record.get("resource_type") == "Document" and record.get("method") == "GET":
-                if _is_native_signin_page(record.get("url")) and target and valid_start:
+                if self._is_entry(record.get("url")) and target and valid_start:
                     self.started, self.latest = started, None
                 else:
                     self.started, self.latest = None, None
@@ -113,7 +125,9 @@ class _NativeSigninFailureDiagnostics:
                 return
             key = (target, request, record.get("redirect_index", 0))
             endpoint = auth_submission_endpoint(record.get("url"))
-            if phase == "request" and record.get("method") == "POST" and endpoint:
+            is_auth_request = endpoint and (record.get('method') == 'POST' or (
+                self.include_form_entry and endpoint == 'nextauth_csrf' and record.get('method') == 'GET'))
+            if phase == "request" and is_auth_request:
                 if not valid_start or started < self.started:
                     return
                 # 后续认证 POST 一旦开始，旧失败就不再解释当前等待；迟到响应也
@@ -131,16 +145,20 @@ class _NativeSigninFailureDiagnostics:
 
     def failure_diagnostic(self, driver) -> dict:
         try:
-            if not _is_native_signin_page(driver.current_url):
+            if not self._is_entry(driver.current_url):
                 return {}
+            handle = driver.current_window_handle
+            target = handle.removeprefix('CDwindow-') if isinstance(handle, str) else ''
         except Exception:
             return {}
         with self.lock:
-            if not (self.latest and self.latest["endpoint"] == "nextauth_signin"
+            endpoints = {'nextauth_signin', 'nextauth_csrf'} if self.include_form_entry else {'nextauth_signin'}
+            if not (self.active and target == self.target and self.latest and self.latest["endpoint"] in endpoints
                     and self.latest["status"] == 403 and self.latest["challenge"]):
                 return {}
+            endpoint = self.latest['endpoint']
         return {"cause_code": "auth_cloudflare_challenge", "cause_diagnostics": {
-            "http_status": 403, "auth_endpoint": "nextauth_signin", "response_kind": "cloudflare_challenge",
+            "http_status": 403, "auth_endpoint": endpoint, "response_kind": "cloudflare_challenge",
         }}
 
 
@@ -1210,6 +1228,61 @@ def _validated_resume_proxy_rotation(options: dict, facts: dict, profile_id: str
     return value
 
 
+def _validated_roxy_cf_proxy_rotation(options: dict, facts: dict, profile_id: str | None) -> dict:
+    """认证挑战换线只接受服务层绑定当前 Run 的临时上下文。"""
+    value = options.get('_roxy_cf_proxy_rotation')
+    if not isinstance(value, dict):
+        return {}
+    reopen = str(value.get('reopen_profile_id') or '').strip()
+    deleted_temporary = value.get('previous_cf_temporary_profile_deleted', False)
+    try:
+        if type(deleted_temporary) is not bool or (deleted_temporary and (reopen or profile_id)):
+            raise ValueError
+        keys = ('job_id', 'attempt_id', 'run_id', 'execution_id')
+        if any(facts.get(key) in (None, '') or type(value.get(key)) is not type(facts[key])
+               or value.get(key) != facts[key] for key in keys):
+            raise ValueError
+        from core.storage import registration
+        run = registration.get_run(int(facts['run_id'])) or {}
+        if (run.get('action_type') not in {'registration', 'registration_resume'}
+                or run.get('status') != 'running'
+                or any(run.get(key) != facts[key] for key in ('job_id', 'attempt_id', 'execution_id'))
+                or (reopen and reopen != str(profile_id or '').strip())):
+            raise ValueError
+    except Exception:
+        if reopen or deleted_temporary:
+            raise RuntimeError('request_unknown: CF 换线与原 Run、Attempt 或环境身份不一致，保留原环境') from None
+        return {}
+    return value
+
+
+def _confirmed_cf_profile_deleted(client, profile_id: str) -> bool:
+    """新建环境换线前，必须在回收站实际查到该环境，未知列表不视为删除成功。"""
+    from core.roxybrowser_client import _workspace_id_value
+    normalized = str(profile_id).strip()
+    payload = client.request('GET', '/browser/list_v2', params={
+        'workspaceId': _workspace_id_value(), 'dirId': normalized, 'isDelete': 1,
+        'page_index': 1, 'page_size': 10,
+    })
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get('data')
+    containers = [data, payload]
+    rows = data if isinstance(data, list) else None
+    if rows is None:
+        for container in containers:
+            if isinstance(container, dict):
+                rows = next((container[key] for key in ('rows', 'list', 'records', 'items')
+                             if isinstance(container.get(key), list)), None)
+                if rows is not None:
+                    break
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return False
+    return any(str(row.get('dirId') or row.get('dir_id') or row.get('id')
+                   or row.get('profileId') or row.get('profile_id') or '').strip() == normalized
+               for row in rows)
+
+
 def _registration_profile_form_ready(driver) -> bool:
     """注册恢复已到可信资料表单时，交给资料阶段，不借 URL 空壳跳过认证。"""
     snapshot = _page_snapshot(driver)
@@ -1303,8 +1376,12 @@ def run_roxy_registration(
 
     facts = registration_fact_context()
     rotation_context = _validated_resume_proxy_rotation(options, facts, profile_id)
+    cf_rotation_context = (
+        _validated_roxy_cf_proxy_rotation(options, facts, profile_id) if _browser_helpers is None else {}
+    )
     retained = None
-    if not rotation_context.get("reopen_profile_id"):
+    if not (rotation_context.get("reopen_profile_id") or cf_rotation_context.get('reopen_profile_id')
+            or cf_rotation_context.get('previous_cf_temporary_profile_deleted') is True):
         retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
         if retained is None:
             retained = recover_attempt_failed_browser(email=email, profile_id=profile_id, facts=facts)
@@ -1399,6 +1476,8 @@ def run_roxy_registration(
     current_lease_route_verified = retained is None and getattr(opened, "proxy_route_retained", False) is False
     resume_login_get_transport_failure = False
     resume_proxy_rotation_ready = False
+    cf_proxy_rotation_ready = False
+    cf_proxy_rotation_profile_id = ''
     existing_profile_unverified = False
     existing_profile_reconciliation = False
     native_signin_diagnostics = None
@@ -1453,7 +1532,7 @@ def run_roxy_registration(
             if callable(diagnostic_observer):
                 shared_diagnostics = diagnostics_for(driver)
                 if _browser_helpers is None:
-                    native_signin_diagnostics = _NativeSigninFailureDiagnostics(shared_diagnostics)
+                    native_signin_diagnostics = _NativeSigninFailureDiagnostics(shared_diagnostics, include_form_entry=True)
                 diagnostic_observer((native_signin_diagnostics or shared_diagnostics).observe_network)
             setter = getattr(traffic_capture, "set_data_saver", None)
             if callable(setter):
@@ -1518,7 +1597,7 @@ def run_roxy_registration(
                 else "https://chatgpt.com/auth/login"
             )
             logger.info("[Roxy注册] 打开登录页：%s", entry_url)
-            if native_signin_diagnostics is not None and _is_native_signin_page(entry_url):
+            if native_signin_diagnostics is not None:
                 native_signin_diagnostics.begin_navigation(driver)
             try:
                 # 此调用点先于本 Run 的 submit_email、密码、OTP 和资料提交。
@@ -1554,6 +1633,10 @@ def run_roxy_registration(
         def _mark_email_submitted() -> None:
             report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
 
+        def _handoff_current_cf_challenge() -> None:
+            if native_signin_diagnostics.failure_diagnostic(driver):
+                raise _EmailSubmissionUnknown('email_submit_unconfirmed: 当前认证入口尚未进入下一步，交回服务层检查线路')
+
         if verified_resume_session:
             next_state = "authenticated"
             report_job_progress("submit_email", "skipped", "原环境登录态已核验，无需再次提交邮箱")
@@ -1577,6 +1660,9 @@ def run_roxy_registration(
                 allow_login_password=resume_scope,
                 on_progress=_report_email_progress,
                 **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
+                **({'on_before_recovery': _handoff_current_cf_challenge}
+                   if cf_rotation_context and current_lease_route_verified and retained is None
+                   and native_signin_diagnostics is not None else {}),
             )
             email_entry_waiting = False
         remote_identity = classify_registration_identity(next_state)
@@ -2413,11 +2499,12 @@ def run_roxy_registration(
         failed = True
         native_failure_diagnostic = (
             native_signin_diagnostics.failure_diagnostic(driver)
-            if native_signin_diagnostics is not None and email_entry_waiting and isinstance(exc, StageTimeout)
+            if native_signin_diagnostics is not None and email_entry_waiting
+            and isinstance(exc, (StageTimeout, _EmailSubmissionUnknown))
             else {}
         )
         failure_note = (
-            "; auth_cloudflare_challenge: 原生登录 signin 请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口"
+            "; auth_cloudflare_challenge: 认证入口请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口"
             if native_failure_diagnostic else ""
         )
         logger.error("[Roxy注册] 失败：%s: %s%s", type(exc).__name__, exc, failure_note)
@@ -2432,6 +2519,41 @@ def run_roxy_registration(
                 if driver is not None:
                     log_submission_diagnostics(driver, diagnostics_for(driver).stage, "final_failure",
                                                receipt=getattr(driver, "_browser_submission_receipt", None))
+                if (native_failure_diagnostic and cf_rotation_context.get('retry_available') is True
+                        and current_lease_route_verified and retained is None
+                        and not (core_persisted or create_acknowledged or access_token)):
+                    from core.registration_debug import current_session
+                    debug_session = current_session()
+                    if debug_session is not None:
+                        debug_session.capture_page_snapshot(driver, f'{type(exc).__name__}: CF 认证挑战换线')
+                    # 保存证据可能耗时；较新的认证请求或导航一旦出现就撤销旧挑战许可。
+                    if native_signin_diagnostics.failure_diagnostic(driver) == native_failure_diagnostic:
+                        from core.browser_traffic import finish_roxy_capture
+                        finish_roxy_capture(opened)
+                        # 采集收口会排空迟到事件，再次确认后才能关闭本轮挑战连接。
+                        still_challenged = native_signin_diagnostics.failure_diagnostic(driver) == native_failure_diagnostic
+                        if not still_challenged:
+                            native_failure_diagnostic = {}
+                        closed = still_challenged and client.close_profile(opened.profile_id) is True
+                        closed = closed and client.get_open_profile_connection(opened.profile_id) is None
+                        if closed and opened.created_by_run and not opened.account_bound:
+                            deleted = client.delete_profile(opened.profile_id) is True
+                            deleted = deleted and _confirmed_cf_profile_deleted(client, opened.profile_id)
+                            if deleted:
+                                profile_discarded = True
+                                from core.roxybrowser_client import _untrack_created_profile
+                                try:
+                                    _untrack_created_profile(opened.profile_id)
+                                except Exception:
+                                    logger.exception('[Roxy注册] 临时环境已进入回收站，本地清理登记待后续收口')
+                                cf_proxy_rotation_ready = True
+                        elif closed:
+                            cf_proxy_rotation_profile_id = str(opened.profile_id)
+                            cf_proxy_rotation_ready = True
+                        if cf_proxy_rotation_ready:
+                            logger.info('[Roxy注册] 当前认证入口已确认 CF 挑战，环境已关闭，交回同身份换 IP 重试')
+                    else:
+                        native_failure_diagnostic = {}
                 if resume_login_get_transport_failure and rotation_context.get("retry_available") is True:
                     from core.registration_debug import current_session
 
@@ -2449,7 +2571,9 @@ def run_roxy_registration(
                     resume_proxy_rotation_ready = client.close_profile(opened.profile_id) is True
             except Exception:
                 logger.exception("[Roxy注册] 保存换线现场或关闭失败连接未完成，保留原窗口")
-            if not resume_proxy_rotation_ready:
+            if not native_failure_diagnostic:
+                failure_note = ''
+            if not (resume_proxy_rotation_ready or cf_proxy_rotation_ready):
                 try:
                     from core.registration_debug import pause_current_failure
                     pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}{failure_note}")
@@ -2555,6 +2679,11 @@ def run_roxy_registration(
         return {
             "success": False,
             **native_failure_diagnostic,
+            'cf_proxy_rotation_ready': cf_proxy_rotation_ready,
+            'cf_proxy_rotation_profile_id': cf_proxy_rotation_profile_id if cf_proxy_rotation_ready else '',
+            **({'cf_proxy_rotation_context': {key: facts[key] for key in (
+                'job_id', 'attempt_id', 'run_id', 'execution_id',
+            )}} if native_failure_diagnostic and cf_rotation_context and current_lease_route_verified else {}),
             **({"cause_code": ProfileAccountAlreadyExistsError.error_type, "register_response_confirmed": True}
                if existing_profile_reconciliation else {}),
             "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
@@ -2611,12 +2740,13 @@ def run_roxy_registration(
                 finish_roxy_capture(opened)
             except Exception:
                 logger.exception("[Roxy注册] 收口浏览器流量与执行覆盖率失败")
-        if driver and not profile_discarded and (resume_proxy_rotation_ready or not bool(_cfg.ROXY_KEEP_BROWSER_OPEN)):
+        if driver and not profile_discarded and (resume_proxy_rotation_ready or cf_proxy_rotation_ready
+                                                  or not bool(_cfg.ROXY_KEEP_BROWSER_OPEN)):
             try:
                 _quit_driver(driver)
             except Exception:
                 pass
-        if not profile_discarded and not resume_proxy_rotation_ready:
+        if not profile_discarded and not (resume_proxy_rotation_ready or cf_proxy_rotation_ready):
             try:
                 client.cleanup_profile(opened)
             finally:

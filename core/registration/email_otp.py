@@ -1267,6 +1267,7 @@ def _wait_email_submit_next_state(
     wait_through_transient: bool = False,
     budget: StageBudget | None = None,
     blank_shell_grace: float = 0.0,
+    on_before_recovery=None,
 ) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
 
@@ -1376,6 +1377,8 @@ def _wait_email_submit_next_state(
                 next_diagnostic_at = loop_now + 15.0
             if (not recovery_attempted and loop_now - wait_started >= 5.0
                     and loop_now >= end - RECOVERY_WINDOW_SECONDS):
+                if on_before_recovery is not None:
+                    on_before_recovery()
                 recovery_attempted = True
                 recovered = recover_submission_page(
                     driver, "email", observe_recovery,
@@ -1439,6 +1442,8 @@ def _wait_email_submit_next_state(
                 ):
                     if budget is not None:
                         budget.require("email submit recovery")
+                    if on_before_recovery is not None:
+                        on_before_recovery()
                     recover = _recover_email_submit_if_stuck(driver, email)
                     cleared_recover_done = True
                     logger.info("%s 邮箱提交后仍停留在 login?email，中途补交一次表单：%s", _log_prefix(driver), recover)
@@ -1534,8 +1539,12 @@ def _submit_email_and_wait_next(
     allow_login_password: bool = False,
     on_progress=None,
     recover_late_email_entry: bool = False,
+    on_before_recovery=None,
 ) -> str:
-    """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。"""
+    """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。
+
+    调用方可在恢复导航前检查当前证据并中断，避免刷新抹掉尚需交接的失败信息。
+    """
     driver._email_submission_receipt = None
     driver._email_submission_diagnostics = None
     # 仅显式续跑入口可标记为 resume_login；存储层仍会核对原 Attempt
@@ -1555,6 +1564,7 @@ def _submit_email_and_wait_next(
         return _submit_email_and_wait_next_impl(
             driver, email, attempts, on_submitted, total_timeout, allow_login_password, on_progress,
             **({"recover_late_email_entry": True} if recover_late_email_entry else {}),
+            **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
         )
     except StageTimeout as exc:
         if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
@@ -1582,6 +1592,7 @@ def _submit_email_and_wait_next_impl(
     allow_login_password: bool = False,
     on_progress=None,
     recover_late_email_entry: bool = False,
+    on_before_recovery=None,
 ) -> str:
     """填写并提交邮箱：准备、单次提交和整个阶段各自受有界预算约束。"""
     last_state = None
@@ -1832,11 +1843,14 @@ def _submit_email_and_wait_next_impl(
                     email,
                     timeout=_remaining(20),
                     blank_shell_grace=3,
+                    **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
                 )
             except _EmailSubmissionUnknown:
                 if (not allow_login_password or saved_login_restarted
                         or attempt >= attempts or outer_budget.expired()):
                     raise
+                if on_before_recovery is not None:
+                    on_before_recovery()
                 saved_login_restarted = True
                 recovered = _recover_saved_login_email_page(
                     driver, budget=outer_budget.child(RECOVERY_WINDOW_SECONDS),
@@ -1884,6 +1898,8 @@ def _submit_email_and_wait_next_impl(
                 )
             # 前置请求明确未派发时，NextAuth 是唯一一次独立认证请求；
             # 使用新的请求预算，但仍受同一外层截止时间约束。
+            if on_before_recovery is not None:
+                on_before_recovery()
             _use_submission_budget(new_request=True)
             budget.require("邮箱认证导航兜底")
             nextauth_fallback_done = True
@@ -1907,12 +1923,15 @@ def _submit_email_and_wait_next_impl(
                     email,
                     timeout=_remaining(35),
                     wait_through_transient=True,
+                    **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
                 )
                 retry_state_name = fallback_state or retry_state_name
                 accepted = _accept_advanced_state(fallback_state, "NextAuth 兜底后")
                 if accepted:
                     return accepted
                 if not frontend_not_ready and fallback_state in ("blank_shell", "unknown") and _is_blank_chatgpt_auth_shell(driver):
+                    if on_before_recovery is not None:
+                        on_before_recovery()
                     _reload_blank_chatgpt_auth_shell(driver)
             elif frontend_not_ready and fallback.get("not_dispatched") is True:
                 # CSRF GET 失败没有发送认证 POST；页面脚本可能在预检期间
@@ -1923,6 +1942,8 @@ def _submit_email_and_wait_next_impl(
                     active_receipt is None or getattr(active_receipt, "phase", "") in {"prepared", "not_dispatched"}
                 )
                 if no_dispatch and not budget.expired():
+                    if on_before_recovery is not None:
+                        on_before_recovery()
                     submission_started = False
                     _progress("waiting_frontend", "认证预检未发出提交，继续等待页面就绪后自动点击继续")
                     try:
@@ -1934,12 +1955,15 @@ def _submit_email_and_wait_next_impl(
                         _progress("pending", "邮箱首次提交已进入排队或派发阶段，正在确认认证下一页")
                         fallback_state = _wait_email_submit_next_state(
                             driver, email, timeout=_remaining(35), wait_through_transient=True,
+                            **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
                         )
                         accepted = _accept_advanced_state(fallback_state, "页面加载完成后邮箱提交")
                         if accepted:
                             return accepted
             elif state_name == "blank_shell" and _is_blank_chatgpt_auth_shell(driver):
                 # NextAuth 自身也失败时才刷新页面，保留一次 UI 重试机会。
+                if on_before_recovery is not None:
+                    on_before_recovery()
                 _reload_blank_chatgpt_auth_shell(driver)
         if frontend_not_ready and outer_budget.expired():
             break

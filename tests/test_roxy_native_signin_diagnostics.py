@@ -228,11 +228,12 @@ class NativeSigninFlowTests(unittest.TestCase):
             result = flow.run_registration(**({"_browser_helpers": helpers} if helpers is not None else {}))
         return result, mocks
 
-    def test_local_form_timeout_does_not_claim_native_challenge_and_preserves_execution(self):
+    def test_local_form_timeout_reports_current_challenge_and_preserves_execution_without_rotation_context(self):
         result, mocks = self.run_failure(response_headers={"cf-mitigated": "challenge"})
         self.assertFalse(result["success"])
-        self.assertNotIn("cause_code", result)
-        self.assertNotIn("Cloudflare", result["error"])
+        self.assertEqual(result['cause_code'], 'auth_cloudflare_challenge')
+        self.assertIn('Cloudflare', result['error'])
+        self.assertFalse(result['cf_proxy_rotation_ready'])
         self.assertIn("StageTimeout", result["error"])
         self.assertEqual(result["error_code"], "registration_failed")
         self.assertFalse(result["request_unknown"])

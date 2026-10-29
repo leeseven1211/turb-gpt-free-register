@@ -347,6 +347,45 @@ def _account_login_password(row: dict) -> str:
     return _account_password(row)
 
 
+def _job_error_info(row: dict) -> dict | None:
+    """只用同一 Roxy 调试任务已保存的挑战原因细化邮箱未确认展示。"""
+    message = row.get("error_message")
+    kwargs = {
+        "stage": str(row.get("progress_stage") or ""),
+        "task_type": str(row.get("job_type") or "registration"),
+    }
+    info = classify_task_error(message, **kwargs)
+    snapshot = row.get("config_snapshot")
+    if not isinstance(snapshot, dict):
+        data = row.get("data")
+        snapshot = data.get("config_snapshot") if isinstance(data, dict) else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    summary = row.get("debug_capture_summary")
+    summary = summary if isinstance(summary, dict) else {}
+    saved = summary.get("error_info")
+    saved = saved if isinstance(saved, dict) else {}
+    # 不信任任意保存的展示字段；固定原因码重新交给统一分类器，沿用原未知语义。
+    if (
+        (info or {}).get("code") == "email_submit_unconfirmed"
+        and row.get("job_type") in {"registration", "registration_resume"}
+        and row.get("status") in {"failed", "request_unknown"}
+        and row.get("debug_enabled") is True
+        and (snapshot.get("registration_driver") or row.get("registration_driver")) == "roxy"
+        and kwargs["stage"] in {"submit_email", "auth_redirect", "complete"}
+        and type(row.get("id")) is int and type(summary.get("job_id")) is int
+        and summary["job_id"] == row["id"]
+        and summary.get("capture_mode") == "full"
+        and summary.get("failure_stage") in {"submit_email", "auth_redirect"}
+        and kwargs["stage"] in {summary["failure_stage"], "complete"}
+        and saved.get("code") == saved.get("cause_code") == "auth_cloudflare_challenge"
+    ):
+        return classify_task_error(
+            message, stage=summary["failure_stage"], task_type=kwargs["task_type"],
+            result_summary={"cause_code": "auth_cloudflare_challenge"},
+        )
+    return info
+
+
 def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize_routes: bool = False) -> dict:
     """注册任务列表轻量对象：只返回表格展示和按钮判断需要的字段。"""
     out = {
@@ -391,11 +430,7 @@ def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize
     if err:
         # 列表只需要摘要；完整错误和堆栈看“任务日志”。
         out["error_message"] = err[:240] + ("…" if len(err) > 240 else "")
-        out["error_info"] = classify_task_error(
-            err,
-            stage=str(row.get("progress_stage") or ""),
-            task_type=str(row.get("job_type") or "registration"),
-        )
+        out["error_info"] = _job_error_info(row)
     if (
         str(row.get("status") or "") == "success"
         and "代理线路瞬时失败，准备换线重试" in err

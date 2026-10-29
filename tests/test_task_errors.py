@@ -1052,6 +1052,40 @@ class TaskErrorClassificationTests(unittest.TestCase):
 class RegistrationBrowserFailureCauseTests(unittest.TestCase):
     """真实阶段异常不能被通用网络或回执分类覆盖。"""
 
+    def test_cf_rotation_without_verified_new_ip_keeps_current_cause_and_unknown_semantics(self):
+        result = {
+            "cause_code": "cf_proxy_new_ip_unverified",
+            "cause_diagnostics": {"previous_exit_ip_present": True, "exit_ip_present": True,
+                                  "exit_ip_repeated": True},
+            "cf_proxy_previous_cause": {
+                "cause_code": "auth_cloudflare_challenge",
+                "cause_diagnostics": {"http_status": 403, "auth_endpoint": "nextauth_signin",
+                                      "response_kind": "cloudflare_challenge"},
+            },
+            "request_unknown": True,
+        }
+        info = classify_task_error(
+            "cf_proxy_new_ip_unverified: CF换线未获得可核验的新出口IP，保留原任务重跑",
+            task_type="registration_resume", stage="auth_redirect", result_summary=result,
+        )
+        self.assertEqual("cf_proxy_new_ip_unverified", info["code"])
+        self.assertEqual("NET-ROXY-CF-001", info["display_code"])
+        self.assertEqual("CF 换线未确认新的出口 IP", info["summary"])
+        self.assertTrue(info["reconcile_required"])
+        self.assertEqual("manual_only", info["retryability"])
+        self.assertEqual("unknown", info["remote_state_impact"])
+        self.assertEqual("manual_reconcile", info["next_action"])
+
+    def test_stored_cf_rotation_error_has_fixed_chinese_cause_without_previous_challenge(self):
+        info = classify_task_error(
+            "cf_proxy_new_ip_unverified: CF换线未获得可核验的新出口IP",
+            task_type="registration", stage="auth_redirect",
+        )
+        self.assertEqual("cf_proxy_new_ip_unverified", info["cause_code"])
+        self.assertEqual("NET-ROXY-CF-001", info["display_code"])
+        self.assertEqual("CF 换线未确认新的出口 IP", info["summary"])
+        self.assertFalse(info.get("reconcile_required", False))
+
     def test_cloudflare_challenge_requires_structured_failure_evidence(self):
         info = classify_task_error(
             "StageTimeout: 邮箱输入准备恢复预算耗尽", task_type="registration",

@@ -1345,6 +1345,93 @@ def _confirmed_registration_proxy_transport_failure(result: object) -> bool:
     )
 
 
+def _job_uses_local_roxy_snapshot(job: dict) -> bool:
+    """CF换线只信任务冻结的本地Roxy快照，不使用当前全局驱动回退。"""
+    snapshot = job.get("config_snapshot")
+    if not isinstance(snapshot, dict):
+        data = job.get("data")
+        snapshot = data.get("config_snapshot") if isinstance(data, dict) else None
+    return isinstance(snapshot, dict) and snapshot.get("registration_driver") == "roxy"
+
+
+def _confirmed_registration_cf_proxy_failure(
+    result: object,
+    job: dict,
+    *,
+    email: str,
+    fact_context: dict,
+) -> bool:
+    """本轮邮箱入口的CF强回执可隔离线路，不代表浏览器已允许重开。"""
+    if (not isinstance(result, dict)
+            or str(job.get("job_type") or "") not in {"registration", "registration_resume"}
+            or not _job_uses_local_roxy_snapshot(job)
+            or result.get("current_lease_route_verified") is not True
+            or result.get("cause_code") != "auth_cloudflare_challenge"
+            or result.get("success")
+            or result.get("access_token")
+            or result.get("core_persisted")):
+        return False
+    original_email = str(email or "").strip().casefold()
+    if not original_email or original_email != str(result.get("email") or "").strip().casefold():
+        return False
+    job_email = str(job.get("email") or "").strip().casefold()
+    if job_email and job_email != original_email:
+        return False
+    for key in ("checkpoint", "registration_checkpoint"):
+        if str(result.get(key) or "").strip().lower() in {"core_persisted", "completed"}:
+            return False
+    diagnostics = result.get("cause_diagnostics")
+    if (not isinstance(diagnostics, dict)
+            or type(diagnostics.get("http_status")) is not int
+            or diagnostics["http_status"] != 403
+            or diagnostics.get("auth_endpoint") not in {"nextauth_signin", "nextauth_csrf"}
+            or diagnostics.get("response_kind") != "cloudflare_challenge"):
+        return False
+    context = result.get("cf_proxy_rotation_context")
+    if not isinstance(context, dict) or fact_context.get("job_id") != job.get("id"):
+        return False
+    for key in ("job_id", "attempt_id", "run_id", "execution_id"):
+        current = fact_context.get(key)
+        if (current is None or current == "" or type(context.get(key)) is not type(current)
+                or context.get(key) != current):
+            return False
+    return True
+
+
+def _confirmed_registration_cf_proxy_rotation(
+    result: object,
+    job: dict,
+    *,
+    email: str,
+    fact_context: dict,
+) -> bool:
+    """只有当前CF事实且原环境已确认关闭，才允许在新租约上继续。"""
+    return (
+        _confirmed_registration_cf_proxy_failure(result, job, email=email, fact_context=fact_context)
+        and result.get("cf_proxy_rotation_ready") is True
+        and isinstance(result.get("cf_proxy_rotation_profile_id"), str)
+    )
+
+
+def _cf_proxy_new_ip_unverified_result(
+    result: dict, *, previous_ip_present: bool, new_ip_present: bool, repeated_ip: bool,
+    previous_cause: dict | None = None,
+) -> dict:
+    """只停止本轮不可核验的换线，保留CF原因、原身份和历史未知提交。"""
+    return {
+        **result,
+        "cf_proxy_previous_cause": dict(previous_cause) if previous_cause is not None else {
+            "cause_code": result.get("cause_code"),
+            "cause_diagnostics": dict(result.get("cause_diagnostics") or {}),
+        },
+        "cause_code": "cf_proxy_new_ip_unverified",
+        "cause_diagnostics": {"previous_exit_ip_present": previous_ip_present,
+                              "exit_ip_present": new_ip_present, "exit_ip_repeated": repeated_ip},
+        "error_code": "cf_proxy_new_ip_unverified",
+        "error": "cf_proxy_new_ip_unverified: CF换线未获得可核验的新出口IP，停止本轮内部换线，保留原任务重跑",
+    }
+
+
 def _should_retry_registration_resume_with_new_proxy(
     result: object,
     job: dict,
@@ -1725,7 +1812,12 @@ def _run_one_job(job_id: int, log_file: str) -> None:
     email: str | None = None
     proxy_lease = None
     proxy_transport_failure = False
+    proxy_cf_failure = False
     resume_rotation_profile_id = ""
+    cf_rotation_profile_id = ""
+    previous_cf_temporary_profile_deleted = False
+    cf_failed_exit_ips: set[str] = set()
+    cf_previous_cause: dict | None = None
     unknown_facts: dict[str, object] = {}
     try:
         with _JobLogContext(log_file, task_id=job_id):
@@ -1954,14 +2046,27 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     if bound_profile_id and str(bound_profile_id) != resume_rotation_profile_id:
                         raise RuntimeError("request_unknown: 换线后的账号环境绑定已变化，保留原 Attempt")
                     bound_profile_id = resume_rotation_profile_id
+                if cf_rotation_profile_id:
+                    if bound_profile_id and str(bound_profile_id) != cf_rotation_profile_id:
+                        raise RuntimeError("request_unknown: CF换线后的账号环境绑定已变化，保留原 Attempt")
+                    bound_profile_id = cf_rotation_profile_id
                 call_options = dict(registration_options_for_job(current))
                 # 仅本轮调用使用；不能写回任务快照或全局配置，也不能继承用户输入。
                 call_options.pop("_resume_proxy_rotation", None)
+                call_options.pop("_roxy_cf_proxy_rotation", None)
                 if str(current.get("job_type") or "") == "registration_resume":
                     call_options["_resume_proxy_rotation"] = {
                         **registration_fact_context(),
                         "retry_available": retry_attempt < _registration_proxy_retry_limit(),
                         "reopen_profile_id": resume_rotation_profile_id,
+                    }
+                if (_job_uses_local_roxy_snapshot(current)
+                        and str(current.get("job_type") or "") in {"registration", "registration_resume"}):
+                    call_options["_roxy_cf_proxy_rotation"] = {
+                        **registration_fact_context(),
+                        "retry_available": retry_attempt < _registration_proxy_retry_limit(),
+                        "reopen_profile_id": cf_rotation_profile_id,
+                        "previous_cf_temporary_profile_deleted": previous_cf_temporary_profile_deleted,
                     }
                 from core.protocol_traffic import correlation_context
                 with correlation_context(**{**proxy_correlation,
@@ -1981,7 +2086,18 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         email_source=selected_source,
                     )
                 proxy_transport_failure = _confirmed_registration_proxy_transport_failure(result)
-                if str(current.get("job_type") or "") == "registration_resume":
+                proxy_cf_failure = _confirmed_registration_cf_proxy_failure(
+                    result, current, email=email, fact_context=registration_fact_context(),
+                )
+                cf_retry_permitted = _confirmed_registration_cf_proxy_rotation(
+                    result, current, email=email, fact_context=registration_fact_context(),
+                )
+                if (cf_retry_permitted and bound_profile_id
+                        and result["cf_proxy_rotation_profile_id"].strip() != str(bound_profile_id)):
+                    cf_retry_permitted = False
+                if proxy_cf_failure:
+                    retry_with_new_proxy = cf_retry_permitted and retry_attempt < _registration_proxy_retry_limit()
+                elif str(current.get("job_type") or "") == "registration_resume":
                     retry_with_new_proxy = _should_retry_registration_resume_with_new_proxy(
                         result, current, retry_attempt, existing_password=existing_password,
                     )
@@ -1990,28 +2106,51 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 if not retry_with_new_proxy:
                     break
 
-                if str(current.get("job_type") or "") == "registration_resume":
-                    resume_rotation_profile_id = result["resume_proxy_rotation_profile_id"].strip()
+                if proxy_cf_failure:
+                    cf_previous_cause = {
+                        "cause_code": result.get("cause_code"),
+                        "cause_diagnostics": dict(result.get("cause_diagnostics") or {}),
+                    }
+                    exit_ip = str(getattr(proxy_lease, "exit_ip", "") or "").strip()
+                    if not exit_ip:
+                        result = _cf_proxy_new_ip_unverified_result(
+                            result, previous_ip_present=False, new_ip_present=False, repeated_ip=False,
+                        )
+                        log_logger.warning("[Job %s] CF旧出口IP未知，无法核验换线差异，停止本轮内部换线", job_id)
+                        break
+                    resume_rotation_profile_id = ""
+                    cf_rotation_profile_id = result["cf_proxy_rotation_profile_id"].strip()
+                    previous_cf_temporary_profile_deleted = not bool(cf_rotation_profile_id)
+                    cf_failed_exit_ips.add(exit_ip)
+                else:
+                    # 重开许可只描述上一轮实际关闭的环境，不能混用更早的CF删除事实。
+                    cf_rotation_profile_id = ""
+                    previous_cf_temporary_profile_deleted = False
+                    if str(current.get("job_type") or "") == "registration_resume":
+                        resume_rotation_profile_id = result["resume_proxy_rotation_profile_id"].strip()
 
                 retry_attempt += 1
-                retry_error = str((result or {}).get("error") or "代理线路瞬时失败")[:220]
+                retry_label = "Cloudflare挑战" if proxy_cf_failure else "代理线路瞬时失败"
+                retry_error = "auth_cloudflare_challenge: 邮箱认证入口遭Cloudflare挑战" if proxy_cf_failure else str((result or {}).get("error") or "代理线路瞬时失败")[:220]
                 log_logger.warning(
-                    "[Job %s] 注册遇到代理瞬时错误，释放旧线路并换线重试 (%s/%s): %s",
+                    "[Job %s] 注册遇到%s，释放旧线路并换线重试 (%s/%s): %s",
                     job_id,
+                    retry_label,
                     retry_attempt,
                     _registration_proxy_retry_limit(),
                     retry_error,
                 )
                 release_proxy(
-                    proxy_lease, reason=f"registration_proxy_retry_{retry_attempt}",
-                    fault=proxy_transport_failure,
+                    proxy_lease, reason="auth_cloudflare_challenge" if proxy_cf_failure else f"registration_proxy_retry_{retry_attempt}",
+                    fault=proxy_cf_failure or proxy_transport_failure,
                 )
                 proxy_lease = None
                 proxy_transport_failure = False
+                proxy_cf_failure = False
                 db.update_job(
                     job_id,
                     proxy_status="acquiring",
-                    error=f"代理线路瞬时失败，准备换线重试: {retry_error}",
+                    error=f"{retry_label}，准备换线重试: {retry_error}",
                 )
                 next_route_no = db.begin_job_route_attempt(
                     job_id,
@@ -2023,7 +2162,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     job_id,
                     "network",
                     state="running",
-                    detail=f"线路瞬时失败，正在更换代理重试 ({retry_attempt}/{_registration_proxy_retry_limit()})",
+                    detail=f"{retry_label}，正在更换代理重试 ({retry_attempt}/{_registration_proxy_retry_limit()})",
                 )
                 retry_network_instance = _progress_step_instance("network", "running")
                 retry_delay = _registration_proxy_retry_delay()
@@ -2062,6 +2201,19 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     country=registration_country,
                     **retry_proxy_correlation,
                 )
+                if cf_failed_exit_ips:
+                    new_exit_ip = str(getattr(proxy_lease, "exit_ip", "") or "").strip()
+                    if not new_exit_ip or new_exit_ip in cf_failed_exit_ips:
+                        release_proxy(proxy_lease, reason="auth_cloudflare_challenge", fault=True)
+                        proxy_lease = None
+                        db.update_job(job_id, proxy_status="released")
+                        result = _cf_proxy_new_ip_unverified_result(
+                            result, previous_ip_present=True, new_ip_present=bool(new_exit_ip),
+                            repeated_ip=new_exit_ip in cf_failed_exit_ips,
+                            previous_cause=cf_previous_cause,
+                        )
+                        log_logger.warning("[Job %s] CF换线未获得可核验的新出口IP，停止本轮内部换线", job_id)
+                        break
                 _bind_proxy_lease(proxy_lease)
                 _persist_job_progress(
                     job_id,
@@ -2085,7 +2237,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     )
             # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
             # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
-            if isinstance(result, dict) and result.get("account_id"):
+            if isinstance(result, dict) and result.get("account_id") and proxy_lease is not None:
                 db.update_account_registration_proxy(
                     int(result.get("account_id")),
                     provider=proxy_lease.provider,
@@ -2337,7 +2489,9 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             try:
                 from core.proxy_provider import release_proxy
 
-                if proxy_transport_failure:
+                if proxy_cf_failure:
+                    release_proxy(proxy_lease, reason="auth_cloudflare_challenge", fault=True)
+                elif proxy_transport_failure:
                     release_proxy(proxy_lease, reason="transport_failure", fault=True)
                 else:
                     release_proxy(proxy_lease, reason=str(final_job.get("status") or "completed"))

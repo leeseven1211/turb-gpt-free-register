@@ -964,6 +964,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
     "auth_cloudflare_challenge": ("OA-AUTH-CF-CHALLENGE", "认证请求被 Cloudflare 挑战阻断"),
+    "cf_proxy_new_ip_unverified": ("NET-ROXY-CF-001", "CF 换线未确认新的出口 IP"),
     "codex_consent_unverifiable": (
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
     ),

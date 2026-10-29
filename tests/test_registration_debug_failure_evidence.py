@@ -47,6 +47,73 @@ def test_unresolved_auth_challenge_explains_entry_timeout_without_debug_disk_rea
     assert "response_headers" not in str(list(session._failure_network_seen))
 
 
+def roxy_email_session(**changes):
+    job = {
+        "id": 992, "job_uuid": "unit-roxy-email-challenge", "progress_stage": "auth_redirect",
+        "job_type": "registration_resume", "debug_enabled": True,
+        "config_snapshot": {"registration_driver": "roxy"},
+        **changes,
+    }
+    with patch.object(debug.RegistrationDebugSession, "_start_capture"):
+        return debug.RegistrationDebugSession(job, capture_mode=job.pop("capture_mode", "full"))
+
+
+@pytest.mark.parametrize("job_type", ["registration", "registration_resume"])
+def test_roxy_debug_current_signin_challenge_refines_unknown_email_and_keeps_reconcile(job_type):
+    value = roxy_email_session(job_type=job_type)
+    value.record_network(challenge_record(stage="auth_redirect"))
+    reason = "_EmailSubmissionUnknown: request_unknown: 邮箱提交后阶段预算耗尽，远端结果未确认"
+    info = value._classify_failure(reason)
+    assert info["code"] == "auth_cloudflare_challenge"
+    assert info["reconcile_required"] is True
+    assert info["retryability"] == "manual_only"
+    assert info["remote_state_impact"] == "unknown"
+    assert info["next_action"] == "manual_reconcile"
+    assert category(value, reason) == "challenge_or_captcha"
+    assert value.summary()["error_info"]["cause_code"] == "auth_cloudflare_challenge"
+
+
+@pytest.mark.parametrize("changes", [
+    {"capture_mode": "failure_only"}, {"debug_enabled": False},
+    {"config_snapshot": {"registration_driver": "roxy_oss"}},
+    {"config_snapshot": {"registration_driver": "protocol_oss_2"}}, {"config_snapshot": {}},
+    {"job_type": "twofa_retry"}, {"progress_stage": "password"}, {"progress_stage": "profile"},
+])
+def test_unknown_email_challenge_refinement_is_limited_to_local_roxy_debug(changes):
+    value = roxy_email_session(**changes)
+    value.record_network(challenge_record(stage=value.current_stage))
+    info = value._classify_failure("_EmailSubmissionUnknown: request_unknown: 未确认下一步")
+    assert info["code"] == "email_submit_unconfirmed"
+
+
+@pytest.mark.parametrize("record", [
+    challenge_record(response_headers={}),
+    challenge_record(response_headers={"server": "cloudflare"}),
+    challenge_record(url="https://auth.openai.com/awe/api/v2/rum"),
+    challenge_record(url="https://chatgpt.com.evil.test/api/auth/signin/openai"),
+    challenge_record(method="GET"),
+])
+def test_unknown_roxy_email_requires_real_auth_post_challenge(record):
+    value = roxy_email_session(progress_stage="submit_email")
+    value.record_network(record)
+    info = value._classify_failure("_EmailSubmissionUnknown: request_unknown: 未确认下一步")
+    assert info["code"] == "email_submit_unconfirmed"
+
+
+@pytest.mark.parametrize("following", ["success", "progress", "password_error"])
+def test_old_challenge_cannot_replace_later_roxy_outcome(following):
+    value = roxy_email_session(progress_stage="submit_email")
+    value.record_network(challenge_record())
+    reason = "_EmailSubmissionUnknown: request_unknown: 未确认下一步"
+    if following == "success":
+        value.record_network(challenge_record(status=200, response_headers={}))
+    elif following == "progress":
+        value.update_stage("auth_redirect", state="success")
+    else:
+        reason = "_PasswordTransitionTimeout: request_unknown: 密码结果未确认"
+    assert value._classify_failure(reason)["code"] != "auth_cloudflare_challenge"
+
+
 @pytest.mark.parametrize("following", [
     {"status": 200, "response_headers": {}},
     {"status": 400, "response_headers": {}},

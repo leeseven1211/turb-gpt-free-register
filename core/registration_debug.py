@@ -569,10 +569,19 @@ class RegistrationDebugSession:
             list(self._failure_network_seen), self.failure_stage or self.current_stage,
         )
         code = str((info or {}).get("code") or "")
+        snapshot = self.job.get("config_snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        roxy_email_symptom = (
+            code == "email_submit_unconfirmed" and self.capture_mode == "full"
+            and self.job.get("debug_enabled") is True
+            and self.job.get("job_type") in {"registration", "registration_resume"}
+            and (snapshot.get("registration_driver") or self.job.get("registration_driver")) == "roxy"
+            and (self.failure_stage or self.current_stage) in {"submit_email", "auth_redirect"}
+        )
         transport_symptom = code in {
             "email_submit_unconfirmed", "browser_stage_timeout", "email_transition_timeout",
         } or code.endswith("_receipt_missing")
-        if ((cause == "auth_cloudflare_challenge" and _challenge_explains_error(info))
+        if ((cause == "auth_cloudflare_challenge" and (_challenge_explains_error(info) or roxy_email_symptom))
                 or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)):
             info = self._classify_error(reason, result_summary={"cause_code": cause}) or info
         self.error_info = info

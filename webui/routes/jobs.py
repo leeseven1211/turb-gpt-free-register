@@ -40,7 +40,7 @@ from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
-from webui.route_helpers import _compact_job_for_list, _current_progress_jobs, _latest_progress_batch
+from webui.route_helpers import _compact_job_for_list, _current_progress_jobs, _job_error_info, _latest_progress_batch
 
 logger = logging.getLogger(__name__)
 
@@ -684,11 +684,7 @@ def create_jobs_blueprint(context: WebUIContext):
         job = db.get_job(job_id)
         if not job:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
-        error_info = classify_task_error(
-            job.get("error_message"),
-            stage=str(job.get("progress_stage") or ""),
-            task_type=str(job.get("job_type") or "registration"),
-        )
+        error_info = _job_error_info(job)
         if error_info:
             job["error_info"] = error_info
         return jsonify({
