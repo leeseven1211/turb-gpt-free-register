@@ -29,13 +29,14 @@ function formatTaskDuration(ms) {
 }
 function accountTaskErrorDisplayText(info, raw = '') {
   const summary = taskErrorDisplayText(info, raw);
-  return info?.code === 'request_unknown' && info?.cause_summary
-    ? `${summary} · ${info.cause_summary}` : summary;
+  const cause = String(info?.cause_summary || '').trim();
+  return cause && !String(summary).includes(cause) ? `${summary} · ${cause}` : summary;
 }
 function accountTaskErrorDisplayTitle(info, raw = '') {
   const title = taskErrorDisplayTitle(info, raw);
-  return info?.code === 'request_unknown' && info?.cause_summary
-    ? `${title} · ${info.cause_display_code ? `${info.cause_display_code} · ` : ''}${info.cause_summary}` : title;
+  const cause = String(info?.cause_summary || '').trim();
+  return cause && !String(title).includes(cause)
+    ? `${title} · ${info.cause_display_code ? `${info.cause_display_code} · ` : ''}${cause}` : title;
 }
 function accountTaskResultText(task, compact = false) {
   const status = String(task.status || '');
@@ -123,7 +124,7 @@ const ACCOUNT_TASK_STEP_STATE_LABELS = {
 const ACCOUNT_TASK_PROGRESS_STATUS_LABELS = {
   pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败',
   unconfirmed:'未确认', not_executed:'未执行', request_unknown:'结果待确认', stopped:'已中断',
-  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'待人工处理',
+  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'结果待确认',
   deferred:'已延后', awaiting_confirmation:'待确认', record_incomplete:'记录不完整'
 };
 function accountTaskEventStepState(event) {
@@ -168,20 +169,31 @@ function accountTaskStepDetails(step) {
   const evidenceHtml = evidence.length ? `<details class="account-task-stage-technical" data-account-task-detail="technical"><summary>阶段与时间</summary><div class="account-task-stage-evidence">${evidence.map(item => `<span>${esc(item)}</span>`).join('')}</div></details>` : '';
   return `${rawDetail ? `<div class="account-task-stage-reason">${esc(rawDetail)}</div>` : ''}${evidenceHtml}${accountTaskStepAttempts(step)}`;
 }
+function accountTaskFailureLocation(failure) {
+  const classifiedStage = String(failure.error_info?.stage || '').trim();
+  const correctedStage = classifiedStage && !['unknown', 'complete', 'result', 'event', 'queued'].includes(classifiedStage)
+    && classifiedStage !== failure.stage ? classifiedStage : '';
+  return correctedStage
+    ? (typeof facetLabel === 'function' ? facetLabel('stage', correctedStage) : correctedStage)
+    : [failure.label || failure.step_id || '位置待确认', failure.stage].filter(Boolean).join(' · ');
+}
 function accountTaskFailureSummary(progress) {
   const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
   if (!failure) return '';
-  const location = [failure.label || failure.step_id || '位置待确认', failure.stage].filter(Boolean).join(' · ');
+  const location = accountTaskFailureLocation(failure);
   const message = failure.message || (typeof failure.evidence === 'string' ? failure.evidence : '') || '失败位置待确认';
   const reconcile = failure.reconcile_required || ['request_unknown', 'attention_required'].includes(String(progress?.outcome?.status || '').toLowerCase());
   const inferred = failure.inferred === true || failure.evidence?.inferred === true || failure.evidence?.source === 'inferred' || failure.evidence?.kind === 'inferred' || failure.evidence === 'inferred' || failure.evidence === 'legacy' || failure.evidence === 'unobserved';
   const locationTitle = inferred || (!failure.step_id && !failure.label && !failure.event_id) ? '待确认位置' : '失败位置';
   const event = failure.event_id ? `<span>事件 ${esc(failure.event_id)}</span>` : '';
   const errorSummary = failure.error_info?.summary || failure.error_info?.display_code || '';
+  const cause = String(failure.error_info?.cause_summary || '').trim();
+  const causeHtml = cause && !String(errorSummary).includes(cause) && !String(message).includes(cause)
+    ? `<span>原因：${esc(cause)}</span>` : '';
   const technical = failure.error_info || (failure.evidence && typeof failure.evidence === 'object')
     ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
     : '';
-  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong><span>${esc(message)}</span>${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${event}${reconcile ? '<span class="account-task-progress-flag">需要对账</span>' : ''}${technical}</div>`;
+  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong><span>${esc(message)}</span>${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
 }
 function accountTaskStepTooltipText(step) {
   return taskProgressStepTooltip(step);
@@ -307,7 +319,7 @@ function scrollAccountTaskDialogFromWheel(event) {
 function accountTaskProgressBrief(progress) {
   const failure = progress?.failure;
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
-  const location = failure ? `${failure.label || failure.step_id || '位置待确认'}${failure.stage ? ` · ${failure.stage}` : ''}` : '';
+  const location = failure ? accountTaskFailureLocation(failure) : '';
   const message = failure?.message || '';
   const inferred = failure?.inferred === true || failure?.evidence?.inferred === true || ['inferred', 'legacy', 'unobserved'].includes(failure?.evidence) || ['inferred'].includes(failure?.evidence?.source || failure?.evidence?.kind);
   return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '待确认位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
@@ -458,10 +470,21 @@ function renderAccountTasks() {
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
     const trigger = facetLabel('trigger', task.trigger);
     const stage = task.current_stage_label || facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
-    const failureStage = task.failure_stage || task.result_summary?.failure_stage;
-    const failureLocation = failureStage && !active ? `失败于 ${task.failure_stage_label || facetLabel('stage', normalizeAccountTaskStage(failureStage))}` : '';
     const error = task.error_message || '';
     const errorInfo = task.error_info || null;
+    const reportedFailureStage = task.failure_stage || task.result_summary?.failure_stage;
+    const classifiedStage = String(errorInfo?.stage || '').trim();
+    const hasClassifiedStage = classifiedStage && !['unknown', 'complete', 'result', 'event', 'queued'].includes(classifiedStage);
+    const authDiagnostics = task.result_summary?.auth_diagnostics || {};
+    const mfaOperation = authDiagnostics.operation === 'password_email_fallback'
+      ? authDiagnostics.cause_operation : authDiagnostics.operation;
+    const mfaDiagnostic = ['token_refresh', 'live_check'].includes(task.task_type) && !active && task.status !== 'success'
+      && ['login_password', 'email_otp'].includes(reportedFailureStage)
+      && ['mfa_verify', 'mfa_issue_challenge'].includes(mfaOperation);
+    const failureStage = mfaDiagnostic ? 'mfa_challenge' : hasClassifiedStage ? classifiedStage : reportedFailureStage;
+    const failureLabel = failureStage === reportedFailureStage && task.failure_stage_label
+      ? task.failure_stage_label : facetLabel('stage', normalizeAccountTaskStage(failureStage));
+    const failureLocation = failureStage && !active ? `失败于 ${failureLabel}` : '';
     const errorText = accountTaskErrorDisplayText(errorInfo, error);
     const extractionSucceeded = task.task_type === 'extract_link' && (
       ['succeeded', 'success'].includes(String(task.result_summary?.extraction_status || '').toLowerCase())
@@ -480,7 +503,7 @@ function renderAccountTasks() {
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(resultErrorText, 90))}</span>` : esc(short(result, 90))}</td>
+      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(resultErrorText, 90))}</span>${extractionSucceeded && errorText && errorText !== result ? `<span class="task-error-cell-text">原因：${esc(short(errorText, 90))}</span>` : ''}` : esc(short(result, 90))}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');

@@ -296,8 +296,8 @@ function progressJobResult(job) {
   if (status === 'success') return { label: '成功', cls: '' };
   if (status === 'partial_success') return { label: '部分完成', cls: 'is-failed' };
   if (status === 'request_unknown') return { label: job.retryable ? '待确认（可重跑）' : '待确认', cls: 'is-failed' };
-  if (status === 'manual_reconcile') return { label: job.retryable ? '待人工确认（可重跑）' : '待人工确认', cls: 'is-failed' };
-  if (status === 'attention_required') return { label: '待人工处理', cls: 'is-failed' };
+  if (status === 'manual_reconcile') return { label: job.retryable ? '结果待确认（可重跑）' : '结果待确认', cls: 'is-failed' };
+  if (status === 'attention_required') return { label: '结果待确认', cls: 'is-failed' };
   if (status === 'unsupported') return { label: '不支持', cls: 'is-failed' };
   if (status === 'deactivated') return { label: '已停用', cls: 'is-failed' };
   if (status === 'interrupted') return { label: '服务中断', cls: 'is-failed' };

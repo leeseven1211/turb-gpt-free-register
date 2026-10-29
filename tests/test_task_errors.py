@@ -5,6 +5,88 @@ from core.task_errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_local_butler_inventory_empty_is_not_unclassified(self):
+        info = classify_task_error(
+            "RuntimeError: 所选邮箱来源 email_butler 领取失败: local_email_inventory_empty: 本地 Butler 邮箱库存为空，请先手动导入",
+            task_type="registration", stage="email", error_code="unknown.unclassified",
+        )
+        self.assertEqual("local_email_inventory_empty", info["code"])
+        self.assertEqual("本地 Butler 邮箱库存为空", info["summary"])
+        self.assertEqual("internal", info["source"])
+
+    def test_extract_original_order_reconciliation_uses_specific_evidence(self):
+        for reason, message, expected_code, expected_summary in (
+            ("remote_not_found", "原单连续查询返回 HTTP 404，已停止自动续查，待核验", "extract_order_not_found", "提链原单查询连续返回 HTTP 404"),
+            ("timeout", "原单自动续查已超过总时限，已停止自动续查，待核验", "extract_order_polling_timeout", "提链原单自动续查达到总时限"),
+            ("query_failures", "原单连续查询失败达到上限，已停止自动续查，待核验", "extract_order_query_failures", "提链原单连续查询失败达到上限"),
+            ("no_progress", "原单长时间没有有效进展，已停止自动续查，待核验", "extract_order_no_progress", "提链原单长时间没有有效进展"),
+        ):
+            with self.subTest(reason=reason):
+                info = classify_task_error(
+                    message, task_type="extract_link", stage="access_token",
+                    error_code="access_token_receipt_missing", task_status="attention_required",
+                    result_summary={"cause_code": "extract_reconcile_halted", "local_reconcile_reason": reason,
+                                    "outcome": "request_unknown", "reconcile_required": True},
+                )
+                self.assertEqual(expected_code, info["code"])
+                self.assertEqual(expected_summary, info["summary"])
+                self.assertEqual("remote_sync", info["stage"])
+                self.assertTrue(info["reconcile_required"])
+
+        from core.task_stages import stage_label
+        self.assertEqual("原单状态查询", stage_label("remote_sync"))
+
+    def test_extract_provider_failure_surfaces_specific_recorded_cause(self):
+        for raw, expected_code, expected_summary in (
+            ("平台提链失败：失败阶段：Checkout approval｜上游 result=blocked", "extract_checkout_blocked", "Checkout approval 被阻断，原因未记录"),
+            ("平台提链失败：失败阶段：零元优惠校验｜原因：今日应付金额不是 0", "extract_nonzero_amount", "零元优惠校验失败：今日应付金额不是 0"),
+            ("平台提链失败：失败阶段：OpenAI Checkout 创建｜上游详情：OpenAI Checkout HTTP 400: Billing country must match request country.", "extract_country_mismatch", "OpenAI Checkout 账单国家与请求国家不一致（HTTP 400）"),
+            ("平台提链失败：失败阶段：UPI 支付确认｜原因：支付提供商拒绝", "extract_upi_rejected", "UPI 支付确认被支付提供商拒绝"),
+            ("平台提链失败：OpenAI Checkout HTTP 401: token_revoked", "extract_checkout_token_revoked", "OpenAI Checkout OAuth Token 已撤销（HTTP 401）"),
+            ("平台提链失败：blocked：支付确认被拦截", "extract_payment_blocked", "支付确认被拦截，原因未记录"),
+            ("平台提链失败：优惠未生效", "extract_promotion_not_applied", "优惠未生效，具体原因未记录"),
+            ("平台提链失败：任务处理失败", "extract_provider_task_failed", "提链平台任务处理失败，具体原因未记录"),
+            ("平台提链失败：支付提交失败，请稍后重试。", "extract_payment_submit_failed", "提链平台报告支付提交失败，具体原因未记录"),
+            ("平台提链失败：失败阶段：Sentinel 校验｜原因：网络或上游校验异常", "extract_sentinel_failed", "Sentinel 校验发生网络或上游异常，具体原因未记录"),
+            ("平台提链失败：网络连接失败，请稍后重试。", "extract_connection_failed", "提链平台报告网络连接失败"),
+            ("平台提链失败：支付授权或审批被阻止", "extract_payment_approval_blocked", "支付授权或审批被阻止，具体原因未记录"),
+            ("平台提链失败：checkout create failed: HTTP 400: Our systems have detected unusual activity", "extract_checkout_unusual_activity", "Checkout HTTP 400：上游提示异常活动"),
+            ("平台提链失败：支付方式设置流程失败", "extract_payment_method_failed", "支付方式设置流程失败，具体原因未记录"),
+            ("平台提链失败：上游结账风控拦截", "extract_checkout_risk_blocked", "平台报告上游结账被风控拦截"),
+            ("平台已明确拒绝提链请求：CDK is invalid or unavailable", "extract_cdk_invalid", "提链平台报告 CDK 无效或不可用"),
+            ("平台提链失败：token_revoked：access_token 已失效，请更换 token。", "extract_token_revoked", "提链平台报告 access_token 已失效（token_revoked）"),
+            ("平台提链失败：请求超时，请稍后重试。", "extract_request_timeout", "提链阶段请求超时，具体位置未记录"),
+            ("平台提链失败：Failed to perform, curl: (28) Operation timed out", "extract_request_timeout", "提链阶段请求超时，具体位置未记录"),
+            ("平台提链失败：Failed to perform, curl: (35) TLS connect error", "extract_tls_error", "提链阶段 TLS 连接失败"),
+            ("平台提链失败：Failed to perform, curl: (60) SSL certificate problem", "extract_certificate_error", "提链阶段 TLS 证书校验失败"),
+            ("平台提链失败：任务处理失败：curl: (60) SSL certificate problem", "extract_certificate_error", "提链阶段 TLS 证书校验失败"),
+            ("平台提链失败：Stripe confirm 后审批/结果查询阶段失败", "extract_approval_query_failed", "Stripe 确认后的审批或结果查询失败"),
+        ):
+            with self.subTest(raw=raw):
+                info = classify_task_error(
+                    raw, task_type="extract_link", stage="extraction", error_code="extract_provider_failed",
+                    result_summary={"cause_code": "extract_provider_failed"},
+                )
+                self.assertEqual(expected_code, info["code"])
+                self.assertEqual(expected_summary, info["summary"])
+                self.assertEqual("extraction", info["stage"])
+
+    def test_plan_country_failure_reports_stage_without_inventing_cause(self):
+        info = classify_task_error(
+            "全部国家查询失败：JP、VN、IN", task_type="plan_check", stage="plan_check",
+            error_code="unknown.unclassified",
+        )
+        self.assertEqual("plan_country_queries_failed", info["code"])
+        self.assertEqual("套餐国家查询均失败，具体原因未记录", info["summary"])
+        self.assertEqual("plan_check", info["stage"])
+
+    def test_extract_categories_do_not_infer_cause_from_generic_http(self):
+        for raw in ("平台提链失败：HTTP 401", "平台提链失败：HTTP 400", "平台提链失败：原因未知"):
+            with self.subTest(raw=raw):
+                info = classify_task_error(raw, task_type="extract_link", stage="extraction",
+                                           error_code="extract_provider_failed")
+                self.assertEqual("extract_provider_failed", info["code"])
+
     def test_butler_cutover_and_report_failures_are_classified(self):
         for code in ("email_cutover_target_invalid", "email_cutover_route_changed", "icloud_result_conflict", "icloud_identity_not_found"):
             with self.subTest(code=code):
@@ -214,6 +296,58 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("OA-MFA-503", info["display_code"])
         self.assertEqual("MFA 验证请求返回 HTTP 503", info["summary"])
         self.assertEqual("manual_reconcile", info["next_action"])
+
+    def test_password_401_displays_observed_status_without_inferring_password_rejection(self):
+        info = classify_task_error(
+            "密码提交结果未知", task_type="token_refresh", stage="login_password",
+            error_code="password_verify_http_error", task_status="attention_required",
+            result_summary={"outcome": "request_unknown", "cause_code": "password_result_unknown",
+                            "auth_diagnostics": {"operation": "password_verify", "failure_kind": "http_error",
+                                                 "http_status": 401, "response_observed": True}},
+        )
+        self.assertEqual("password_verify_http_error", info["code"])
+        self.assertEqual("密码验证请求返回 HTTP 401", info["cause_summary"])
+        self.assertEqual("login_password", info["stage"])
+
+    def test_mfa_403_diagnostics_override_incorrect_saved_password_stage(self):
+        info = classify_task_error(
+            "账号已停用", task_type="token_refresh", stage="login_password",
+            error_code="mfa_verify_http_error", task_status="deactivated",
+            result_summary={"cause_code": "account_deactivated",
+                            "auth_diagnostics": {"operation": "mfa_verify", "failure_kind": "http_error",
+                                                 "http_status": 403, "response_observed": True}},
+        )
+        self.assertEqual("mfa_verify_http_error", info["code"])
+        self.assertEqual("MFA 验证请求返回 HTTP 403", info["cause_summary"])
+        self.assertEqual("mfa_challenge", info["stage"])
+
+    def test_mfa_stage_projection_is_limited_to_terminal_account_auth_tasks(self):
+        summary = {"cause_code": "protocol_network_error", "auth_diagnostics": {
+            "operation": "mfa_verify", "failure_kind": "http_error", "http_status": 403}}
+        for task_type, status, expected_stage in (
+            ("live_check", "failed", "mfa_challenge"),
+            ("token_refresh", "running", "login_password"),
+            ("registration", "failed", "login_password"),
+        ):
+            with self.subTest(task_type=task_type, status=status):
+                info = classify_task_error("认证失败", task_type=task_type, stage="login_password",
+                                           task_status=status, result_summary=summary)
+                self.assertEqual(expected_stage, info["stage"])
+
+    def test_password_email_fallback_mfa_failure_uses_nested_operation_stage(self):
+        for operation, cause_operation, expected_stage in (
+            ("password_email_fallback", "mfa_verify", "mfa_challenge"),
+            ("password_email_fallback", "email_otp", "login_password"),
+            ("password_verify", "mfa_verify", "login_password"),
+        ):
+            with self.subTest(operation=operation, cause_operation=cause_operation):
+                info = classify_task_error(
+                    "密码认证后验证失败", task_type="token_refresh", stage="login_password", task_status="failed",
+                    result_summary={"cause_code": "password_rejected_email_fallback_failed",
+                                    "auth_diagnostics": {"operation": operation, "cause_operation": cause_operation,
+                                                         "cause_failure_kind": "http_error", "http_status": 403}},
+                )
+                self.assertEqual(expected_stage, info["stage"])
 
     def test_different_diagnostic_sources_do_not_mix_operations_and_transport_details(self):
         info = classify_task_error(

@@ -633,6 +633,13 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     """Project Protocol v2's actual auth method without inventing OTP success."""
     auth_method = str(result.get("auth_method") or "protocol_v2")
     password_status = str(result.get("password_auth_status") or "")
+    diagnostics = _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")) or {}
+    operation = diagnostics.get("operation")
+    if operation == "password_email_fallback":
+        operation = diagnostics.get("cause_operation")
+    mfa_failed = not result.get("ok") and operation in {"mfa_issue_challenge", "mfa_verify"}
+    if mfa_failed and not password_status and auth_method.startswith("password"):
+        password_status = "rejected" if result.get("error") == "password_rejected_email_fallback_failed" else "verified"
     is_roxy_fallback = bool(result.get("fallback_used")) and result.get("validation_method") == "roxy_email_otp"
     uses_email = (
         "email" in auth_method
@@ -643,7 +650,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
             "email_verification_required",
         }
     )
-    uses_mfa = "mfa" in auth_method
+    uses_mfa = "mfa" in auth_method or mfa_failed
 
     if password_status == "rejected":
         reporter.stage(
@@ -684,13 +691,13 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         "success" if uses_mfa and result.get("ok") else "skipped" if not uses_mfa else "failed",
         "TOTP MFA 验证已完成" if uses_mfa and result.get("ok") else "本次认证未进入 TOTP MFA" if not uses_mfa else "TOTP MFA 未完成",
         level="ERROR" if uses_mfa and not result.get("ok") else "INFO",
-        detail={"auth_method": auth_method},
+        detail={"auth_method": auth_method, **({"auth_diagnostics": diagnostics} if mfa_failed else {})},
     )
     reporter.stage(
         "email_otp",
-        "success" if uses_email and result.get("ok") else "skipped" if not uses_email else "failed",
-        "邮箱验证码已通过" if uses_email and result.get("ok") else "本次认证未使用邮箱验证码" if not uses_email else "邮箱验证码未完成",
-        level="ERROR" if uses_email and not result.get("ok") else "INFO",
+        "success" if uses_email and (result.get("ok") or mfa_failed) else "skipped" if not uses_email else "failed",
+        "邮箱验证码已通过" if uses_email and (result.get("ok") or mfa_failed) else "本次认证未使用邮箱验证码" if not uses_email else "邮箱验证码未完成",
+        level="ERROR" if uses_email and not result.get("ok") and not mfa_failed else "INFO",
         detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))},
     )
     if result.get("ok"):

@@ -57,7 +57,7 @@ const LIST_FACET_LABELS = {
   status: {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
     failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
-    deactivated:'已停用', unsupported:'不支持', attention_required:'需人工处理', request_unknown:'待确认', manual_reconcile:'需人工对账',
+    deactivated:'已停用', unsupported:'不支持', attention_required:'结果待确认', request_unknown:'待确认', manual_reconcile:'结果待确认',
     available:'可用', used:'已使用', replaced:'换绑后邮箱', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
   },
   source: {
@@ -98,9 +98,9 @@ const LIST_FACET_LABELS = {
   target_status: {
     not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',
     account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
-    attention_required:'需人工处理', deactivated:'账号已停用', account_deactivated:'账号已停用',
+    attention_required:'结果待确认', deactivated:'账号已停用', account_deactivated:'账号已停用',
     cancelled:'已取消', failed:'失败', pending:'等待执行', request_unknown:'结果待确认',
-    manual_reconcile:'需人工对账', completed:'已完成', unknown:'状态待确认',
+    manual_reconcile:'结果待确认', completed:'已完成', unknown:'状态待确认',
   },
   stage: {
     queued:'进入队列', running:'执行中', preflight:'配置预检', network:'分配网络', network_route:'分配网络',
@@ -111,7 +111,7 @@ const LIST_FACET_LABELS = {
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', cancelling:'正在停止',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
-    mailbox_scan:'扫描邮件', extract_link:'提炼', complete:'完成', interrupted:'执行中断', event:'事件',
+    mailbox_scan:'扫描邮件', extract_link:'提炼', extraction:'平台提链', remote_sync:'原单状态查询', payment:'支付处理', login_mfa:'TOTP 验证', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
@@ -122,8 +122,8 @@ const TASK_PROGRESS_STATUS_LABELS = {
   pending: '未开始', running: '执行中', success: '已完成', skipped: '已跳过', failed: '失败',
   recovered: '重试已恢复', unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
   record_incomplete: '记录不完整', debug_paused: '调试暂停',
-  stopped: '已中断', attention_required: '待人工处理', partial_success: '部分完成',
-  unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '需人工对账', password_confirmation_pending: '密码待确认',
+  stopped: '已中断', attention_required: '结果待确认', partial_success: '部分完成',
+  unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '结果待确认', password_confirmation_pending: '密码待确认',
   cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '待确认',
 };
 function taskProgressStatusLabel(value) {
@@ -966,7 +966,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n) 
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', replaced:'换绑后邮箱', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'需人工对账' };
+  const map = { available:'可用', used:'已用', replaced:'换绑后邮箱', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'结果待确认' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status, group = 'status') {

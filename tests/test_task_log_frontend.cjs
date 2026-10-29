@@ -166,13 +166,13 @@ test('混合历史事件按校正后的时间展示且不改变 ID 游标顺序'
   assert.deepEqual(events.map(event => event.id), [10, 20, 30]);
 });
 
-test('flow_version2 失败摘要定位并折叠技术证据，状态文字不依赖颜色', () => {
+test('flow_version2 失败摘要显示具体原因和结果状态，并折叠技术证据', () => {
   const progress = {
     outcome: {status: 'request_unknown'},
     failure: {
       step_id: 'auth', stage: 'oauth', label: 'Codex 授权', event_id: 'evt-9',
       message: '<远端结果待确认>', evidence: {provider: 'redacted'},
-      error_info: {code: 'REMOTE-001'}, reconcile_required: true,
+      error_info: {code: 'REMOTE-001', summary: '远端结果待确认', cause_summary: '密码验证请求返回 HTTP 401'}, reconcile_required: true,
     },
   };
   const sandbox = runVm(`${progressFunctions}
@@ -202,13 +202,50 @@ test('flow_version2 失败摘要定位并折叠技术证据，状态文字不依
   assert.match(sandbox.result.failure, /失败位置：Codex 授权 · oauth/);
   assert.match(sandbox.result.failure, /事件 evt-9/);
   assert.match(sandbox.result.failure, /远端结果待确认/);
-  assert.match(sandbox.result.failure, /需要对账/);
+  assert.match(sandbox.result.failure, /<span>原因：密码验证请求返回 HTTP 401<\/span>/);
+  assert.match(sandbox.result.failure, /远端结果待确认/);
+  assert.doesNotMatch(sandbox.result.failure, /需要对账/);
   assert.match(sandbox.result.failure, /查看技术详情/);
   assert.doesNotMatch(sandbox.result.failure, /<远端结果待确认>/);
   assert.match(sandbox.result.inferred, /待确认位置/);
   assert.doesNotMatch(sandbox.result.inferred, /失败位置/);
   assert.match(sandbox.result.inferred, /错误：待确认/);
   assert.deepEqual(JSON.parse(sandbox.result.labels), ['未确认', '未执行', '结果待确认', '已中断', '待人工处理']);
+});
+
+test('待确认状态不要求人工处理，并保留可重跑提示', () => {
+  const statusStart = commonSource.indexOf('const LIST_FACET_LABELS =');
+  const statusEnd = commonSource.indexOf('\nfunction taskProgressStatusLabel', statusStart);
+  const progressStart = jobsSource.indexOf('function progressJobResult(');
+  const progressEnd = jobsSource.indexOf('\nfunction ', progressStart + 1);
+  const sandbox = runVm(`${commonSource.slice(statusStart, statusEnd)}\n${jobsSource.slice(progressStart, progressEnd)}\nresult = {
+    status: LIST_FACET_LABELS.status.attention_required,
+    reconcile: LIST_FACET_LABELS.status.manual_reconcile,
+    progress: TASK_PROGRESS_STATUS_LABELS.attention_required,
+    remoteSync: LIST_FACET_LABELS.stage.remote_sync,
+    job: progressJobResult({status:'manual_reconcile', retryable:true}).label,
+  };`);
+  assert.equal(sandbox.result.status, '结果待确认');
+  assert.equal(sandbox.result.reconcile, '结果待确认');
+  assert.equal(sandbox.result.progress, '结果待确认');
+  assert.equal(sandbox.result.remoteSync, '原单状态查询');
+  assert.equal(sandbox.result.job, '结果待确认（可重跑）');
+});
+
+test('详情失败位置优先采用有具体证据纠正的阶段', () => {
+  const sandbox = runVm(`${progressFunctions}
+    const failure = {
+      label:'校验 Token', stage:'access_token', evidence:'explicit', message:'原单查询 HTTP 404',
+      error_info:{stage:'remote_sync', summary:'原单查询 HTTP 404'},
+    };
+    result = {summary: accountTaskFailureSummary({failure}), brief: accountTaskProgressBrief({failure}),
+      uncorrected: accountTaskProgressBrief({failure: {...failure, error_info: null}})};`, {
+    esc: htmlEscape, attrEsc: htmlEscape, facetLabel: (_group, value) => ({remote_sync:'原单状态查询'})[value] || value,
+  });
+  assert.match(sandbox.result.summary, /失败位置：原单状态查询/);
+  assert.match(sandbox.result.brief, /失败：原单状态查询/);
+  assert.doesNotMatch(sandbox.result.brief, /校验 Token/);
+  assert.match(sandbox.result.uncorrected, /校验 Token · access_token/);
 });
 
 test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全量运行日志', () => {

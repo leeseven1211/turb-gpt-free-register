@@ -33,6 +33,70 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_historical_mfa_diagnostic_corrects_only_matching_failed_stage():
+    for previous, message in (("login_password", "Protocol v2 密码认证未完成"), ("email_otp", "邮箱验证码未完成")):
+        events = [
+            _event(1, previous, "failed", message=message, detail={"auth_method": "password"}),
+            _event(2, "mfa_challenge", "skipped", message="本次认证未进入 TOTP MFA"),
+        ]
+        run = _run("deactivated", failure_stage=previous, result_summary={
+            "auth_diagnostics": {"operation": "mfa_verify", "http_status": 403},
+        })
+        snapshot = build_progress_snapshot(1, 2, "token_refresh", run, events)
+        assert snapshot["failure"]["stage"] == "mfa_challenge"
+        auth = _step(snapshot, "authenticate")
+        mfa = next(child for child in auth["children"] if child["id"] == "mfa_challenge")
+        assert mfa["state"] == "failed"
+        assert events[0]["stage"] == previous
+
+
+def test_historical_mfa_correction_requires_diagnostic_and_matching_event():
+    events = [_event(1, "login_password", "failed", message="Protocol v2 密码认证未完成")]
+    for summary in ({}, {"auth_diagnostics": {"operation": "password_verify"}}):
+        snapshot = build_progress_snapshot(1, 2, "token_refresh", _run("failed", result_summary=summary), events)
+        assert snapshot["failure"]["stage"] == "login_password"
+    summary = {"auth_diagnostics": {"operation": "mfa_verify"}}
+    other = [_event(1, "login_password", "failed", message="密码被拒绝")]
+    snapshot = build_progress_snapshot(1, 2, "token_refresh", _run("failed", result_summary=summary), other)
+    assert snapshot["failure"]["stage"] == "login_password"
+    snapshot = build_progress_snapshot(1, 2, "registration", _run("failed", result_summary=summary), events)
+    assert snapshot["failure"]["stage"] == "login_password"
+
+
+def test_historical_mfa_corrects_combined_password_and_email_misreports():
+    import copy
+
+    method = "password_email_otp"
+    events = [
+        _event(1, "login_password", "failed", message="Protocol v2 密码认证未完成", detail={"auth_method": method}),
+        _event(2, "mfa_challenge", "skipped", message="本次认证未进入 TOTP MFA", detail={"auth_method": method}),
+        _event(3, "email_otp", "failed", message="邮箱验证码未完成", detail={"auth_method": method}),
+    ]
+    original = copy.deepcopy(events)
+    run = _run("deactivated", result_summary={"auth_diagnostics": {"operation": "mfa_verify", "http_status": 403}})
+    snapshot = build_progress_snapshot(1, 2, "token_refresh", run, events)
+    assert snapshot["failure"]["stage"] == "mfa_challenge"
+    children = _step(snapshot, "authenticate")["children"]
+    assert [(child["id"], child["state"]) for child in children if child["state"] == "failed"] == [("mfa_challenge", "failed")]
+    assert not any(child["state"] == "success" for child in children)
+    assert events == original
+
+
+def test_historical_fallback_cause_operation_identifies_mfa_without_password_success():
+    method = "password_fallback_email_otp"
+    events = [
+        _event(1, "login_password", "failed", message="Protocol v2 密码认证未完成", detail={"auth_method": method}),
+        _event(2, "mfa_challenge", "skipped", message="本次认证未进入 TOTP MFA", detail={"auth_method": method}),
+        _event(3, "email_otp", "failed", message="邮箱验证码未完成", detail={"auth_method": method}),
+    ]
+    run = _run("failed", result_summary={"auth_diagnostics": {
+        "operation": "password_email_fallback", "cause_operation": "mfa_verify",
+    }})
+    snapshot = build_progress_snapshot(1, 2, "token_refresh", run, events)
+    assert snapshot["failure"]["stage"] == "mfa_challenge"
+    assert not any(child["state"] == "success" for child in _step(snapshot, "authenticate")["children"])
+
+
 def test_debug_pause_preserves_execution_facts_and_only_marks_current_running_steps():
     events = [
         _event(1, "page", "running", created_at="2026-10-13T10:00:00Z"),

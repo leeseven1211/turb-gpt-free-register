@@ -190,6 +190,42 @@ class TaskPreflightReportingTests(unittest.TestCase):
             scenario.network.assert_not_called()
             scenario.remote.assert_not_called()
 
+    def test_protocol_mfa_failure_reports_the_mfa_stage(self):
+        for method, password_status in (("password", ""), ("email_otp", "skipped")):
+            with self.subTest(method=method), self._scenario(live_check_service, native=False) as scenario:
+                live_check_service._report_protocol_v2_refresh(
+                    live_check_service.TaskReporter(901),
+                    {
+                        "ok": False,
+                        "auth_method": method,
+                        "password_auth_status": password_status,
+                        "error": "account_deactivated",
+                        "auth_diagnostics": {"operation": "mfa_verify", "http_status": 403},
+                    },
+                )
+                self.assertEqual(["mfa_challenge"], self._states(scenario.events, "failed"))
+                mfa = next(event for event in scenario.events if event["stage"] == "mfa_challenge")
+                self.assertEqual("mfa_verify", mfa["detail"]["auth_diagnostics"]["operation"])
+                snapshot = self._progress(scenario.events, task_type="token_refresh", status="deactivated")
+                self.assertEqual("mfa_challenge", snapshot["failure"]["stage"])
+
+    def test_password_rejected_email_fallback_mfa_failure_keeps_password_rejection(self):
+        with self._scenario(live_check_service, native=False) as scenario:
+            live_check_service._report_protocol_v2_refresh(
+                live_check_service.TaskReporter(901),
+                {
+                    "ok": False,
+                    "auth_method": "password_fallback_email_otp",
+                    "error": "password_rejected_email_fallback_failed",
+                    "auth_diagnostics": {"operation": "password_email_fallback", "cause_operation": "mfa_verify"},
+                },
+            )
+            self.assertEqual(["login_password", "mfa_challenge"], self._states(scenario.events, "failed"))
+            password = next(event for event in scenario.events if event["stage"] == "login_password")
+            self.assertIn("密码被拒绝", password["message"])
+            email = next(event for event in scenario.events if event["stage"] == "email_otp")
+            self.assertEqual("success", email["state"])
+
     def test_live_missing_token_reports_actual_failure_instead_of_successful_preflight(self):
         for native in (True, False):
             with self.subTest(native=native), self._scenario(live_check_service, native=native) as scenario:

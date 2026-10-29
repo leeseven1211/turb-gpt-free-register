@@ -98,6 +98,7 @@ STAGES: dict[str, dict[str, str]] = {
     "access_token": {"label": "校验 Token", "group": "account"},
     "refresh_token": {"label": "刷新 Token", "group": "account"},
     "extraction": {"label": "平台提链", "group": "account"},
+    "remote_sync": {"label": "原单状态查询", "group": "account"},
     "payment": {"label": "支付处理", "group": "account"},
     "account_setup_dispatch": {"label": "提交账号配置任务", "group": "account"},
     "account_setup": {"label": "执行账号配置", "group": "account"},

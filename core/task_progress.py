@@ -948,6 +948,59 @@ def _project_debug_pause(steps: list[dict[str, Any]], run: dict[str, Any], curre
     return pause
 
 
+def _correct_historical_mfa_events(task_type: str, run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """仅在明确诊断为 MFA 失败时纠正旧版错误阶段投影。"""
+    if task_type not in {"token_refresh", "live_check"} or str(run.get("status") or "") in _ACTIVE_PROGRESS_STATUSES | {"success"}:
+        return events
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    diagnostics = summary.get("auth_diagnostics") if isinstance(summary.get("auth_diagnostics"), dict) else {}
+    operation = diagnostics.get("operation")
+    if operation == "password_email_fallback":
+        operation = diagnostics.get("cause_operation")
+    if operation not in {"mfa_issue_challenge", "mfa_verify"}:
+        return events
+    if any(_raw_stage(event) == "mfa_challenge" and _event_state(event) == "failed" for event in events):
+        return events
+    matches = [index for index, event in enumerate(events)
+               if _event_state(event) == "failed" and (
+                   (_raw_stage(event) == "login_password" and event.get("message") == "Protocol v2 密码认证未完成")
+                   or (_raw_stage(event) == "email_otp" and event.get("message") == "邮箱验证码未完成")
+               )]
+    if not matches:
+        return events
+    matched = matches[-1]
+    method = str(_event_detail(events[matched]).get("auth_method") or "")
+    prior_false_password = None
+    if method and _raw_stage(events[matched]) == "email_otp":
+        for index in range(matched - 1, -1, -1):
+            event = events[index]
+            state = _event_state(event)
+            if state in {"running", "success"}:
+                break
+            if index in matches and _raw_stage(event) == "login_password" and _event_detail(event).get("auth_method") == method:
+                prior_false_password = index
+                break
+            if state == "failed":
+                break
+    group_start = prior_false_password if prior_false_password is not None else matched
+    stale_skip = next((index for index, event in enumerate(events) if index > group_start
+                       and _raw_stage(event) == "mfa_challenge" and _event_state(event) == "skipped"
+                       and (not method or not _event_detail(event).get("auth_method") or _event_detail(event).get("auth_method") == method)
+                       and event.get("message") == "本次认证未进入 TOTP MFA"), None)
+    corrected = []
+    for index, event in enumerate(events):
+        if index in {stale_skip, prior_false_password}:
+            continue
+        if index == matched:
+            detail = dict(_event_detail(event))
+            detail["original_reported_stage"] = _original_stage(event)
+            detail["raw_stage"] = "mfa_challenge"
+            detail["auth_diagnostics"] = diagnostics
+            event = {**event, "stage": "mfa_challenge", "message": "MFA 验证未完成（历史阶段标记已纠正）", "detail": detail}
+        corrected.append(event)
+    return corrected
+
+
 def build_progress_snapshot(
     task_id: int,
     run_id: int,
@@ -1000,6 +1053,7 @@ def build_progress_snapshot(
                 unknown_events.append({**value, "unknown_reason": "事件缺少线路归属"})
             # 其他已知线路保留给下方 routes 历史视图。
         source_events = filtered_routes
+    source_events = _correct_historical_mfa_events(task_key, run_value, source_events)
     recorded_steps = {str(value.get("step_id") or value.get("main_step_id"))
                       for value in _child_tasks(run_value.get("result_summary") or {})
                       if value.get("step_id") or value.get("main_step_id")}

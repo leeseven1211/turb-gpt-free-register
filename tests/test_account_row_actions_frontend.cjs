@@ -142,7 +142,51 @@ test('任务列表支付异常仍显示提链成功并保留错误徽标和详�
     assert.match(cell, /title="支付&lt;失败&gt;"/);
     assert.match(cell, /class="error-badge">PAYMENT<\/span>/);
     assert.ok(cell.includes(`<span class="task-error-cell-text">${expected}</span>`));
+    if (task_type === 'extract_link' && result_summary.extraction_status === 'succeeded') {
+      assert.match(cell, /<span class="task-error-cell-text">原因：支付&lt;失败&gt;<\/span>/);
+    }
   }
+  context.ACCOUNT_TASKS = [{id: 258741, task_type:'extract_link', status:'attention_required',
+    error_message:'原单查询 HTTP 404', failure_stage:'access_token', failure_stage_label:'校验 Token',
+    error_info:{stage:'extraction'}, result_summary:{}}];
+  context.renderAccountTasks();
+  assert.match(body.innerHTML, /失败于 extraction/);
+  assert.doesNotMatch(body.innerHTML, /失败于 校验 Token/);
+
+  context.ACCOUNT_TASKS = [{id: 265413, task_type:'token_refresh', status:'deactivated',
+    error_message:'账号已停用', failure_stage:'login_password', failure_stage_label:'账号密码',
+    error_info:{stage:'login_password'}, result_summary:{auth_diagnostics:{operation:'mfa_verify'}}}];
+  context.renderAccountTasks();
+  assert.match(body.innerHTML, /失败于 mfa_challenge/);
+  assert.doesNotMatch(body.innerHTML, /失败于 账号密码/);
+
+  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.operation = 'password_verify';
+  context.renderAccountTasks();
+  assert.match(body.innerHTML, /失败于 账号密码/);
+
+  context.ACCOUNT_TASKS[0].failure_stage = 'email_otp';
+  context.ACCOUNT_TASKS[0].failure_stage_label = '邮箱验证';
+  context.ACCOUNT_TASKS[0].error_info.stage = 'email_otp';
+  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics = {
+    operation: 'password_email_fallback', cause_operation: 'mfa_verify',
+  };
+  context.renderAccountTasks();
+  assert.match(body.innerHTML, /失败于 mfa_challenge/);
+  assert.doesNotMatch(body.innerHTML, /失败于 邮箱验证/);
+
+  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.cause_operation = 'email_otp';
+  context.renderAccountTasks();
+  assert.match(body.innerHTML, /失败于 邮箱验证/);
+});
+
+test('任务错误摘要保留具体原因且不重复相同内容', () => {
+  const context = loadFunctions(['accountTaskErrorDisplayText', 'accountTaskErrorDisplayTitle'], {
+    taskErrorDisplayText: info => info?.summary || '',
+    taskErrorDisplayTitle: info => info?.summary || '',
+  });
+  assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), '登录失败 · 密码验证返回 HTTP 401');
+  assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'密码验证返回 HTTP 401', cause_summary:'密码验证返回 HTTP 401'}), '密码验证返回 HTTP 401');
+  assert.match(context.accountTaskErrorDisplayTitle({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), /密码验证返回 HTTP 401/);
 });
 
 function operationContext(name, response) {

@@ -941,6 +941,7 @@ _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
 
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     **_BUTLER_RECIPIENT_CAUSES,
+    "local_email_inventory_empty": ("MAIL-LOCAL-STOCK-001", "本地邮箱库存为空"),
     "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
     "email_resource_expiry_invalid": ("MAIL-RESOURCE-002", "邮箱有效期格式无效，需要明确带时区的绝对时间"),
     "email_resource_read_failed": ("MAIL-RESOURCE-003", "原邮箱取码接口不可用，请检查其状态及有效期"),
@@ -985,6 +986,32 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "extract_create_http_unknown": ("OA-EXTRACT-HTTP", "提链创建请求返回 HTTP 错误"),
     "extract_create_transport_error": ("NET-EXTRACT-001", "提链创建网络请求中断"),
     "extract_provider_failed": ("LINK-FAILED", "平台提链失败"),
+    "extract_order_not_found": ("LINK-ORDER-404", "提链原单查询连续返回 HTTP 404"),
+    "extract_order_polling_timeout": ("LINK-ORDER-TIMEOUT", "提链原单自动续查达到总时限"),
+    "extract_order_query_failures": ("LINK-ORDER-QUERY", "提链原单连续查询失败达到上限"),
+    "extract_order_no_progress": ("LINK-ORDER-PROGRESS", "提链原单长时间没有有效进展"),
+    "extract_checkout_blocked": ("LINK-CHECKOUT-BLOCKED", "Checkout approval 被阻断，原因未记录"),
+    "extract_nonzero_amount": ("LINK-PROMO-AMOUNT", "零元优惠校验失败：今日应付金额不是 0"),
+    "extract_country_mismatch": ("LINK-COUNTRY-400", "OpenAI Checkout 账单国家与请求国家不一致（HTTP 400）"),
+    "extract_upi_rejected": ("LINK-UPI-REJECTED", "UPI 支付确认被支付提供商拒绝"),
+    "extract_checkout_token_revoked": ("LINK-CHECKOUT-TOKEN", "OpenAI Checkout OAuth Token 已撤销（HTTP 401）"),
+    "extract_payment_blocked": ("LINK-PAYMENT-BLOCKED", "支付确认被拦截，原因未记录"),
+    "extract_promotion_not_applied": ("LINK-PROMO-MISSING", "优惠未生效，具体原因未记录"),
+    "extract_provider_task_failed": ("LINK-TASK-FAILED", "提链平台任务处理失败，具体原因未记录"),
+    "extract_payment_submit_failed": ("LINK-PAYMENT-SUBMIT", "提链平台报告支付提交失败，具体原因未记录"),
+    "extract_sentinel_failed": ("LINK-SENTINEL", "Sentinel 校验发生网络或上游异常，具体原因未记录"),
+    "extract_connection_failed": ("NET-LINK-CONNECT", "提链平台报告网络连接失败"),
+    "extract_payment_approval_blocked": ("LINK-PAYMENT-APPROVAL", "支付授权或审批被阻止，具体原因未记录"),
+    "extract_checkout_unusual_activity": ("LINK-CHECKOUT-ACTIVITY", "Checkout HTTP 400：上游提示异常活动"),
+    "extract_payment_method_failed": ("LINK-PAYMENT-METHOD", "支付方式设置流程失败，具体原因未记录"),
+    "extract_checkout_risk_blocked": ("LINK-CHECKOUT-RISK", "平台报告上游结账被风控拦截"),
+    "extract_cdk_invalid": ("LINK-CDK-INVALID", "提链平台报告 CDK 无效或不可用"),
+    "extract_token_revoked": ("LINK-TOKEN-REVOKED", "提链平台报告 access_token 已失效（token_revoked）"),
+    "extract_request_timeout": ("NET-LINK-TIMEOUT", "提链阶段请求超时，具体位置未记录"),
+    "extract_tls_error": ("NET-LINK-TLS", "提链阶段 TLS 连接失败"),
+    "extract_certificate_error": ("NET-LINK-CERT", "提链阶段 TLS 证书校验失败"),
+    "extract_approval_query_failed": ("LINK-APPROVAL-QUERY", "Stripe 确认后的审批或结果查询失败"),
+    "plan_country_queries_failed": ("OA-PLAN-COUNTRIES", "套餐国家查询均失败，具体原因未记录"),
     "mfa_code_missing": ("AUTH-MFA-001", "MFA 验证码不可用"),
     "mfa_factor_missing": ("AUTH-MFA-002", "MFA 验证方式不可用"),
     "mfa_issue_challenge_failed": ("AUTH-MFA-003", "MFA 挑战发起失败"),
@@ -1475,6 +1502,9 @@ def _cause_error_projection(
         projection["title"] = f"邮箱库存 · {cause['cause_summary']}"
         if cause["cause_code"] == "email_derivation_inventory_empty":
             projection.update(retryability="retryable", next_action="generate_email_inventory")
+    if cause["cause_code"] == "local_email_inventory_empty":
+        projection.update(source="internal", source_label="邮箱库存", remote_state_impact="not_started")
+        projection["title"] = f"邮箱库存 · {cause['cause_summary']}"
     if cause['cause_code'].startswith('email_resource_'):
         projection.update(source='external', source_label='邮箱资源', next_action='inspect_email_resource')
         if cause['cause_code'] in {'email_resource_expired', 'email_resource_expiry_invalid'}:
@@ -1485,6 +1515,72 @@ def _cause_error_projection(
     if error_code:
         projection["original_error_code"] = error_code
     return projection
+
+
+def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, Any]) -> dict[str, str] | None:
+    """只使用历史记录中的固定状态或明确文本细化通用错误。"""
+    task_key = str(task_type or "").strip().lower()
+    lower = raw.lower()
+    code = ""
+    if "local_email_inventory_empty" in lower:
+        cause = _specific_error_cause({"cause_code": "local_email_inventory_empty"})
+        if cause and ("email_butler" in lower or "butler" in lower):
+            cause["cause_summary"] = "本地 Butler 邮箱库存为空"
+        return cause
+    if task_key == "plan_check" and raw.startswith("全部国家查询失败"):
+        code = "plan_country_queries_failed"
+    elif task_key == "extract_link":
+        if summary.get("cause_code") == "extract_reconcile_halted":
+            code = {
+                "remote_not_found": "extract_order_not_found",
+                "timeout": "extract_order_polling_timeout",
+                "query_failures": "extract_order_query_failures",
+                "no_progress": "extract_order_no_progress",
+            }.get(summary.get("local_reconcile_reason"), "")
+        if not code and (summary.get("cause_code") == "extract_provider_failed" or "平台提链失败" in raw):
+            if "checkout approval" in lower and "result=blocked" in lower:
+                code = "extract_checkout_blocked"
+            elif "今日应付金额不是 0" in raw:
+                code = "extract_nonzero_amount"
+            elif "openai checkout http 400" in lower and "billing country must match request country" in lower:
+                code = "extract_country_mismatch"
+            elif "upi 支付确认" in lower and "支付提供商拒绝" in raw:
+                code = "extract_upi_rejected"
+            elif "openai checkout http 401" in lower and re.search(r"\btoken_revoked\b", lower):
+                code = "extract_checkout_token_revoked"
+            elif "支付确认被拦截" in raw:
+                code = "extract_payment_blocked"
+            elif "优惠未生效" in raw:
+                code = "extract_promotion_not_applied"
+            elif "支付提交失败" in raw:
+                code = "extract_payment_submit_failed"
+            elif "sentinel 校验" in lower and "网络或上游校验异常" in raw:
+                code = "extract_sentinel_failed"
+            elif "网络连接失败" in raw:
+                code = "extract_connection_failed"
+            elif "支付授权或审批被阻止" in raw:
+                code = "extract_payment_approval_blocked"
+            elif "checkout create failed" in lower and "http 400" in lower and "unusual activity" in lower:
+                code = "extract_checkout_unusual_activity"
+            elif "支付方式设置流程失败" in raw:
+                code = "extract_payment_method_failed"
+            elif "上游结账风控拦截" in raw:
+                code = "extract_checkout_risk_blocked"
+            elif "cdk is invalid or unavailable" in lower:
+                code = "extract_cdk_invalid"
+            elif "token_revoked" in lower and "access_token 已失效" in raw:
+                code = "extract_token_revoked"
+            elif "请求超时" in raw or ("curl: (28)" in lower and "operation timed out" in lower):
+                code = "extract_request_timeout"
+            elif "curl: (35)" in lower and "tls connect error" in lower:
+                code = "extract_tls_error"
+            elif "curl: (60)" in lower and "ssl certificate problem" in lower:
+                code = "extract_certificate_error"
+            elif "stripe confirm 后审批/结果查询阶段失败" in lower:
+                code = "extract_approval_query_failed"
+            elif "任务处理失败" in raw:
+                code = "extract_provider_task_failed"
+    return _specific_error_cause({"cause_code": code}) if code else None
 
 
 def classify_task_error(
@@ -1509,7 +1605,26 @@ def classify_task_error(
             "禁止直接重试", "远端结果待确认", "结果待核验",
         ))
     )
-    cause = _specific_error_cause(summary_data)
+    cause = _stored_specific_error_cause(raw, task_type, summary_data) or _specific_error_cause(summary_data)
+    if cause and cause["cause_code"].startswith("extract_order_"):
+        stage = "remote_sync"
+    auth_diagnostics = summary_data.get("auth_diagnostics")
+    if (
+        str(task_type or "").strip().lower() in {"token_refresh", "live_check"}
+        and str(task_status or "").strip().lower() in {
+            "failed", "attention_required", "request_unknown", "deactivated", "partial_success",
+            "interrupted", "stopped", "cancelled",
+        }
+        and isinstance(auth_diagnostics, dict)
+        and (
+            auth_diagnostics.get("operation") in {"mfa_verify", "mfa_issue_challenge"}
+            or (
+                auth_diagnostics.get("operation") == "password_email_fallback"
+                and auth_diagnostics.get("cause_operation") == "mfa_verify"
+            )
+        )
+    ):
+        stage = "mfa_challenge"
     if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
         cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_"))
