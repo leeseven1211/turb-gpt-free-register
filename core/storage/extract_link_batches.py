@@ -384,6 +384,7 @@ def finish_submission(batch_id: int, *, skipped: int, failed: int, complete: boo
     operation.init()
     metadata = {"submission_skipped": int(skipped), "submission_failed": int(failed), "submission_complete": bool(complete)}
     with operation._connect() as conn, conn.cursor() as cur:
+        operation._lock_projection_batch(cur, int(batch_id))
         cur.execute(
             f"""UPDATE {operation._table('operation_batches')}
                 SET skipped_count=%s, data=data || %s::jsonb WHERE id=%s""",

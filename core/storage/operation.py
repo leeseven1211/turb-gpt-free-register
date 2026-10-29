@@ -1934,7 +1934,7 @@ def _refresh_batch(cur, batch_id: int) -> None:
     batch_id = int(batch_id)
     _lock_projection_batch(cur, batch_id)
     cur.execute(
-        f"SELECT skipped_count FROM {_table('operation_batches')} WHERE id=%s FOR UPDATE",
+        f"SELECT skipped_count FROM {_table('operation_batches')} WHERE id=%s FOR NO KEY UPDATE",
         (batch_id,),
     )
     raw = cur.fetchone()
@@ -5354,6 +5354,7 @@ def set_runtime_batch_skipped(batch_id: int, skipped: list[dict]) -> None:
     init()
     safe_items = list(skipped or [])[:5000]
     with _connect() as conn, conn.cursor() as cur:
+        _lock_projection_batch(cur, int(batch_id))
         cur.execute(
             f"""
             UPDATE {_table('operation_batches')}
