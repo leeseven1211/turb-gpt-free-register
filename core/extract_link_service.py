@@ -3181,26 +3181,9 @@ def _provider_job_for_sync(run_id: int):
 
 def _huanguang_scan_completed(state: dict) -> bool:
     """原单已结束扫码，具备发起独立套餐核验的条件。"""
-    summary = state.get("summary") or {}
-    artifact = state.get("payment_artifact") or {}
-    completed = (
-        state.get("extraction_state") == "succeeded" and state.get("payment_state") == "unknown"
-        and summary.get("automatic_payment_terminal") is True and summary.get("remote_polling") is False
-        and summary.get("remote_status") == "DONE"
-        and summary.get("remote_terminal_failure") is not True
-        and not summary.get("remote_chain_error")
-    )
-    inferred_complete = (
-        artifact.get("payment_status") == "completed" and summary.get("automatic_payment_status") == "COMPLETED"
-        and summary.get("platform_plus_status") == "inferred" and summary.get("entitlement_inferred") is True
-        and summary.get("entitlement_active") is True and summary.get("payment_check_status") == "completed"
-    )
-    fallback_complete = (
-        summary.get("automatic_payment_status") == "XXSYUN_COMPLETED"
-        and summary.get("xxsyun_status") == "completed"
-        and artifact.get("payment_status") in {"completed", "verification_unavailable", "payment_check_error"}
-    )
-    return bool(completed and (inferred_complete or fallback_complete))
+    from core.extract_link_providers.payment_confirmation import huanguang_scan_completed
+
+    return huanguang_scan_completed(state)
 
 
 def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id: str, mode: str, prior_state: dict) -> bool:
@@ -3955,10 +3938,19 @@ def register_operation_handlers() -> bool:
 
 def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
     """服务启动时为已知远端任务排队状态同步，避免等待人工重跑。"""
-    if not _bool_setting("EXTRACT_LINK_ENABLED", True):
-        return 0
     from core.storage import extract_link_jobs, operation
 
+    if not continuous_only:
+        try:
+            counts = extract_link_jobs.reconcile_completed_payments()
+            if counts["confirmed"]:
+                logger.info("[提链] 启动时已补齐支付与到账状态：confirmed=%s", counts["confirmed"])
+            if counts["failed"]:
+                logger.warning("[提链] 启动时支付状态补齐未完成：failed=%s", counts["failed"])
+        except Exception as exc:
+            logger.warning("[提链] 启动时支付状态补齐异常：error_type=%s", type(exc).__name__)
+    if not _bool_setting("EXTRACT_LINK_ENABLED", True):
+        return 0
     resumed = 0
     for item in extract_link_jobs.list_recoverable_workbench_jobs():
         provider_id = str(item.get("provider_id") or "legacy").strip().lower()

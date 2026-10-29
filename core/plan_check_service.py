@@ -549,7 +549,8 @@ def _run_country_plan_checks(
     history = [record for state in progress["countries"].values() for record in state["history"]]
     result = aggregate_country_results(rows)
     result["promotion_query_history"] = history
-    plan_countries.save_country_summary(account_id, result, fence=fence)
+    if plan_countries.save_country_summary(account_id, result, fence=fence):
+        _reconcile_extract_payment_after_plan(account_id, result, trigger=trigger)
     count = result["country_success_count"]
     message = f"国家查询完成：{count}/{len(countries)} 成功"
     if result["failed_countries"]:
@@ -593,6 +594,24 @@ def _log_plan_result(email: str, trigger: str, result: dict) -> None:
             trigger,
             result.get("error") or "未知错误",
         )
+
+
+def _reconcile_extract_payment_after_plan(account_id: int, result: dict, *, trigger: str) -> None:
+    """套餐结果已保存后，补齐原单扫码完成的支付事实。"""
+    if (not result.get("ok") or str(trigger).startswith("registration")
+            or str(result.get("current_plan_type") or "").strip().lower() not in {"plus", "pro"}):
+        return
+    from core.storage import extract_link_jobs
+
+    try:
+        counts = extract_link_jobs.reconcile_completed_payments(account_id=int(account_id))
+        if counts["confirmed"]:
+            logger.info("[套餐] 已补齐原单支付与到账状态：account_id=%s confirmed=%s", account_id, counts["confirmed"])
+        if counts["failed"]:
+            logger.warning("[套餐] 原单支付状态补齐未完成：account_id=%s failed=%s", account_id, counts["failed"])
+    except Exception as exc:
+        # 支付记录补齐失败不抹掉已保存的套餐查询结果，启动时可再次补齐。
+        logger.warning("[套餐] 原单支付状态补齐异常：account_id=%s error_type=%s", account_id, type(exc).__name__)
 
 
 def _run_plan_check(
@@ -700,7 +719,8 @@ def _run_plan_check(
             if key not in {"proxy_mode", "network_route", "proxy_used"} or not result.get(key)
         })
         _record_promotion_queries(reporter, result)
-        db.update_account_plan_check(acc_id=account_id, result=result)
+        if db.update_account_plan_check(acc_id=account_id, result=result):
+            _reconcile_extract_payment_after_plan(account_id, result, trigger=trigger)
         _log_plan_result(email, trigger, result)
         reporter.stage(
             "plan_check", "success" if result.get("ok") else "failed",

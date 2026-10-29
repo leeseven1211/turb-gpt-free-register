@@ -216,6 +216,8 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             "mode": "auto_payment",
         }]
         with (
+            patch("core.storage.extract_link_jobs.reconcile_completed_payments", create=True,
+                return_value={"confirmed": 0, "skipped": 0, "failed": 0}),
             patch("core.storage.extract_link_jobs.list_recoverable_workbench_jobs", return_value=recoverable),
             patch("core.storage.operation.retry_runtime_task", return_value={"id": 29}) as retry,
             patch.object(extract_link_service.account_task_store, "notify_dispatch") as notify,
