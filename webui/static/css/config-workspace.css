@@ -212,18 +212,21 @@
 
 #tab-config .config-secret-control-v2 input { height: 40px; }
 
-#tab-config [data-huanguang-xxsyun-key] {
+#tab-config [data-huanguang-xxsyun-key],
+#tab-config [data-huanguang-cdk-key] {
   display: grid;
   gap: 8px;
   min-width: 0;
   width: 100%;
 }
 
-#tab-config [data-huanguang-xxsyun-key] > .btn {
+#tab-config [data-huanguang-xxsyun-key] > .btn,
+#tab-config [data-huanguang-cdk-key] > .btn {
   justify-self: start;
 }
 
-#tab-config [data-huanguang-xxsyun-quota-status] {
+#tab-config [data-huanguang-xxsyun-quota-status],
+#tab-config [data-huanguang-cdk-quota-status] {
   font-size: 12px;
   white-space: normal;
   overflow-wrap: anywhere;
