@@ -896,6 +896,30 @@ class ResumeSessionFlowTests(unittest.TestCase):
         driver.execute_async_script.assert_not_called()
         self.assertEqual(receipt.phase, "rejected")
 
+    def test_saved_login_page_error_keeps_identity_unknown_and_real_cause(self):
+        from core.registration.password_auth import PasswordPageError
+        for code in ("password_change_required", "password_page_error"):
+            with self.subTest(code=code), self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+                mocks["_fill_password_page_if_present"].side_effect = PasswordPageError(code, "密码登录页返回明确错误")
+                result = self.run_registration()
+            self.assertFalse(result["success"])
+            self.assertTrue(result["request_unknown"])
+            self.assertEqual(result["remote_account_state"], "request_unknown")
+            self.assertEqual(result["error_code"], code)
+            mocks["persist"].assert_not_called()
+
+    def test_preexisting_change_notice_records_no_current_submit(self):
+        from core.registration.password_auth import PasswordPageError
+        error = PasswordPageError("password_change_required", "OpenAI 要求修改密码后重新登录")
+        error.not_submitted = True
+        self.assertFalse(roxy._is_registration_request_unknown(error))
+        with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
+            mocks["_fill_password_page_if_present"].side_effect = error
+            result = self.run_registration()
+        self.assertTrue(result["current_password_not_submitted"])
+        self.assertEqual(result["remote_account_state"], "request_unknown")
+        self.assertEqual(result["error_code"], "password_change_required")
+
     def test_historical_existing_profile_transport_failure_never_discards_original_identity(self):
         with self.existing_profile_context(historical=True) as (driver, mocks, receipt):
             mocks["opened"].return_value.created_by_run = True

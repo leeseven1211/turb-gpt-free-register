@@ -35,6 +35,122 @@ class OperationTaskStoreTests(PostgresTestCase):
         self.task_log_root_patch.stop()
         self.task_log_tempdir.cleanup()
 
+    def test_password_page_failures_keep_failed_status_and_unknown_receipt(self):
+        for index, (task_type, code) in enumerate((
+            ("token_refresh", "password_change_required"),
+            ("live_check", "password_page_error"),
+        )):
+            account_id = self._seed_runtime_account(f"page-error-{index}@example.test")
+            batch = operation_task_store.create_runtime_batch(
+                batch_type=task_type, title="页面错误", requested_count=1, trigger="test",
+            )
+            task = operation_task_store.create_runtime_task(
+                task_type=task_type, account_id=account_id,
+                email=f"page-error-{index}@example.test", trigger="test", batch_id=int(batch["id"]),
+            )
+            run_id = int(task["run"]["id"])
+            execution = f"page-error-{index}"
+            operation_task_store.claim_run(run_id, execution_id=execution, worker_pid=123)
+            lease = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+            operation_task_store.record_remote_intent(run_id, execution_id=execution, lease_token=lease, action="token_refresh")
+            operation_task_store.record_remote_receipt(run_id, execution_id=execution, lease_token=lease, outcome="unknown", detail={"response_observed": False})
+            completed = operation_task_store.finish_run(
+                run_id, status="failed", error="密码页显示明确错误",
+                result_summary={"cause_code": code, "status": "failed"},
+                execution_id=execution, lease_token=lease,
+            )
+            self.assertEqual("failed", completed["status"])
+            self.assertEqual("request_unknown", completed["result_summary"]["outcome"])
+            self.assertEqual("unknown", completed["data"]["remote_intent"]["receipt_state"])
+            self.assertFalse(completed["data"]["remote_receipt"]["detail"]["response_observed"])
+            task_detail = operation_task_store.get_task(int(task["id"]))
+            self.assertEqual("failed", task_detail["status"])
+            self.assertEqual("retry", task_detail["next_actions"][0]["action"])
+            filtered = operation_task_store.list_tasks(task_type=task_type, status="failed")
+            self.assertIn(int(task["id"]), [row["id"] for row in filtered["items"]])
+            batch_result = next(row for row in operation_task_store.list_batches() if row["id"] == batch["id"])
+            self.assertEqual(1, batch_result["failed_count"])
+            with postgres_store.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {postgres_store.qualified('operation_tasks')} SET completed_at=now() - interval '8 days' WHERE id=%s", (int(task["id"]),))
+                cur.execute(f"UPDATE {postgres_store.qualified('operation_runs')} SET completed_at=now() - interval '8 days' WHERE id=%s", (run_id,))
+            operation_task_store.cleanup_terminal_history(retention_days=7, limit=100, archive=lambda snapshot: None)
+            self.assertIsNotNone(operation_task_store.get_task(int(task["id"])))
+            retried = operation_task_store.retry_runtime_task(int(task["id"]))
+            self.assertEqual("queued", retried["status"])
+            self.assertEqual("unknown", operation_task_store.get_run(run_id)["data"]["remote_intent"]["receipt_state"])
+
+    def test_password_page_failure_does_not_change_other_remote_unknown_tasks(self):
+        for index, (task_type, status, cause) in enumerate((
+            ("extract_link", "failed", "password_change_required"),
+            ("registration_resume", "failed", "password_page_error"),
+            ("token_refresh", "cancelled", "password_change_required"),
+            ("token_refresh", "failed", "password_result_unknown"),
+        )):
+            account_id = self._seed_runtime_account(f"page-control-{index}@example.test")
+            task = operation_task_store.create_runtime_task(
+                task_type=task_type, account_id=account_id,
+                email=f"page-control-{index}@example.test", trigger="test",
+            )
+            run_id = int(task["run"]["id"])
+            execution = f"page-control-{index}"
+            operation_task_store.claim_run(run_id, execution_id=execution, worker_pid=123)
+            lease = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+            operation_task_store.record_remote_intent(run_id, execution_id=execution, lease_token=lease, action="token_refresh")
+            operation_task_store.record_remote_receipt(run_id, execution_id=execution, lease_token=lease, outcome="unknown")
+            completed = operation_task_store.finish_run(
+                run_id, status=status, error="密码页显示明确错误", result_summary={"cause_code": cause},
+                execution_id=execution, lease_token=lease,
+            )
+            self.assertEqual("attention_required", completed["status"])
+            self.assertEqual("unknown", completed["data"]["remote_intent"]["receipt_state"])
+
+    def test_password_page_failure_keeps_unknown_parent_reconciliation(self):
+        parent = operation_task_store.create_runtime_task(
+            task_type="account_completion", account_id=None, email="parent-page@example.test",
+            trigger="test", resource_family="completion_coordinator",
+        )
+        account_id = self._seed_runtime_account("child-page@example.test")
+        child = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=account_id, email="child-page@example.test",
+            trigger="test", parent_task_id=int(parent["id"]),
+        )
+        run_id = int(child["run"]["id"])
+        operation_task_store.claim_run(run_id, execution_id="child-page", worker_pid=123)
+        lease = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation_task_store.record_remote_intent(run_id, execution_id="child-page", lease_token=lease, action="token_refresh")
+        operation_task_store.record_remote_receipt(run_id, execution_id="child-page", lease_token=lease, outcome="unknown")
+        completed = operation_task_store.finish_run(
+            run_id, status="failed", error="密码页显示明确错误", result_summary={"cause_code": "password_change_required"},
+            execution_id="child-page", lease_token=lease,
+        )
+        self.assertEqual("failed", completed["status"])
+        self.assertEqual("attention_required", operation_task_store.get_task(int(parent["id"]))["status"])
+
+    def test_password_page_unknown_receipt_survives_successful_retry_retention(self):
+        account_id = self._seed_runtime_account("page-retry-retention@example.test")
+        task = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=account_id,
+            email="page-retry-retention@example.test", trigger="test",
+        )
+        run_id = int(task["run"]["id"])
+        operation_task_store.claim_run(run_id, execution_id="page-old", worker_pid=123)
+        lease = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation_task_store.record_remote_intent(run_id, execution_id="page-old", lease_token=lease, action="token_refresh")
+        operation_task_store.record_remote_receipt(run_id, execution_id="page-old", lease_token=lease, outcome="unknown")
+        operation_task_store.finish_run(
+            run_id, status="failed", error="密码页显示明确错误", result_summary={"cause_code": "password_change_required"},
+            execution_id="page-old", lease_token=lease,
+        )
+        retry = operation_task_store.retry_runtime_task(int(task["id"]))
+        operation_task_store.finish_run(int(retry["id"]), status="success")
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {postgres_store.qualified('operation_tasks')} SET completed_at=now() - interval '8 days' WHERE id=%s", (int(task["id"]),))
+            cur.execute(f"UPDATE {postgres_store.qualified('operation_runs')} SET completed_at=now() - interval '8 days' WHERE task_id=%s", (int(task["id"]),))
+        archived = []
+        operation_task_store.cleanup_terminal_history(retention_days=7, limit=100, archive=lambda snapshot: archived.append(snapshot))
+        self.assertIsNotNone(operation_task_store.get_task(int(task["id"])))
+        self.assertEqual("unknown", operation_task_store.get_run(run_id)["data"]["remote_intent"]["receipt_state"])
+
     def test_existing_projection_queue_is_locked_before_batch_sync(self):
         class RecordingCursor:
             def __init__(self):

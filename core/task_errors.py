@@ -1025,6 +1025,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "oauth_callback_failed": ("AUTH-CALLBACK-001", "OAuth 回调未完成"),
     "password_missing": ("AUTH-PWD-001", "本地缺少账号密码"),
     "password_rejected": ("AUTH-PWD-002", "账号密码被拒绝"),
+    "password_change_required": ("AUTH-PWD-RESET", "OpenAI 要求修改密码后重新登录"),
+    "password_page_error": ("AUTH-PWD-PAGE", "密码登录页返回明确错误"),
     "password_rejected_email_fallback_failed": ("AUTH-PWD-003", "密码被拒且邮箱兜底未完成"),
     "password_result_unknown": ("AUTH-PWD-004", "密码提交结果未确认"),
     "password_sentinel_failed": ("AUTH-PWD-005", "密码认证前置检查失败"),

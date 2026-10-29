@@ -41,7 +41,7 @@ from core.registration.retained_browser import (
 from core.registration.retained_resume import (
     _is_native_resume_start_page, has_rejected_existing_profile, prepare_retained_resume,
 )
-from core.registration.password_auth import ProfileAccountAlreadyExistsError
+from core.registration.password_auth import PasswordPageError, ProfileAccountAlreadyExistsError
 from core.auth_challenge import (
     MfaSecretMissingError,
     PasswordRejectedError,
@@ -542,6 +542,8 @@ def _is_registration_request_unknown(error_text: object) -> bool:
     """Recognize an observed-but-unclassified remote registration state."""
     if isinstance(error_text, _EmailSubmissionUnknown):
         return True
+    if isinstance(error_text, PasswordPageError):
+        return not bool(getattr(error_text, "not_submitted", False))
     text = str(error_text or "")
     if text.startswith("request_unknown:"):
         return True
@@ -2357,6 +2359,7 @@ def run_roxy_registration(
         ) and not (password_result_unknown or email_result_unknown or existing_profile_unverified)
         request_unknown = (
             password_result_unknown or existing_profile_unverified or _is_registration_request_unknown(exc)
+            or (isinstance(exc, PasswordPageError) and bool(existing_password))
         ) and not pre_account_transport_failure
         remote_existing = (
             isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
@@ -2416,6 +2419,9 @@ def run_roxy_registration(
             ProfileAccountAlreadyExistsError.error_type
             if existing_profile_reconciliation
             else
+            exc.code
+            if isinstance(exc, PasswordPageError)
+            else
             "password_rejected"
             if password_rejected
             else "account_create_rejected"
@@ -2452,6 +2458,8 @@ def run_roxy_registration(
             "access_token": access_token,
             "totp_secret": totp_secret,
             "request_unknown": request_unknown,
+            **({"current_password_not_submitted": True} if isinstance(exc, PasswordPageError)
+               and getattr(exc, "not_submitted", False) else {}),
             "email_submission_unconfirmed": bool(email_result_unknown and not create_acknowledged and account_id is None),
             "manual_reconcile": remote_existing,
             "remote_identity": "existing" if remote_existing else remote_identity,

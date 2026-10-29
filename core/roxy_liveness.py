@@ -78,7 +78,8 @@ def _browser_proxy_error(driver) -> str:
 def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") -> tuple[str, str]:
     """先保留认证异常的明确原因，再按实际失败阶段分类并保留异常原文。"""
     code = str(getattr(exc, "code", "") or "")
-    if code in {"password_rejected", "password_result_unknown", "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed"}:
+    if code in {"password_rejected", "password_result_unknown", "password_change_required", "password_page_error",
+                "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed"}:
         return code, "auth"
     if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
         return "roxy_proxy_tunnel_failed", "network"
@@ -639,6 +640,8 @@ def refresh_access_token(
                                  "exception_type": type(exc).__name__},
             "validation_method": "roxy_email_otp",
         }
+        if cause_code in {"password_change_required", "password_page_error"} and getattr(exc, "not_submitted", False):
+            refresh_result["password_action_dispatched"] = False
         if not remote_started:
             refresh_result.update({"remote_request_started": False, "mutation_submitted": False, "action_dispatched": False})
         return refresh_result

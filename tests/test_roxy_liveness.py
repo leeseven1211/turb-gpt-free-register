@@ -7,6 +7,37 @@ from core import browser_flow_policy, roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_preexisting_password_notice_does_not_claim_entire_auth_was_not_dispatched(self):
+        from core import live_check_service
+        from core.registration.password_auth import PasswordPageError
+
+        error = PasswordPageError("password_change_required", "OpenAI 要求修改密码后重新登录")
+        error.not_submitted = True
+        opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+        driver, client = MagicMock(), MagicMock()
+        client.open_profile_for_account.return_value = opened
+        with ExitStack() as stack:
+            for dependency in self._patch_refresh_dependencies(client=client, opened=opened, driver=driver, install=MagicMock()):
+                stack.enter_context(dependency)
+            stack.enter_context(patch.object(roxy_liveness, "_enter_existing_account_otp", side_effect=error))
+            result = roxy_liveness.refresh_access_token("account@example.test", on_remote_request_started=lambda: None)
+        self.assertIs(result["password_action_dispatched"], False)
+        self.assertTrue(result["remote_request_started"])
+        self.assertFalse(live_check_service._refresh_result_not_submitted(result))
+
+    def test_explicit_password_page_causes_are_propagated(self):
+        for code in ("password_change_required", "password_page_error"):
+            error = RuntimeError("密码登录页返回明确错误")
+            error.code = code
+            self.assertEqual((code, "auth"), roxy_liveness._refresh_failure_cause(error, "login"))
+
+    def test_explicit_password_page_causes_survive_refresh_projection_without_forging_receipt(self):
+        from core import live_check_service
+        for code in ("password_change_required", "password_page_error"):
+            result = {"status": "failed", "error_code": code, "error": "密码登录页返回明确错误"}
+            self.assertEqual(code, live_check_service._safe_refresh_cause_code(result))
+            self.assertFalse(live_check_service._refresh_result_is_rejected(result))
+
     def test_open_source_roxy_keeps_browser_refresh_available_when_configured(self):
         with patch.multiple(
             roxy_liveness.cfg,

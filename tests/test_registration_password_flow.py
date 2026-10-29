@@ -93,6 +93,49 @@ def _password_target_result(**fixture):
     return json.loads(result.stdout)
 
 
+def _password_error_snapshot(**fixture):
+    from core.registration import selenium_dom
+
+    module = ast.parse(Path(selenium_dom.__file__).read_text(encoding="utf-8"))
+    script = next(
+        node.value for node in ast.walk(module)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and "aria-errormessage" in node.value and "const password =" in node.value
+    )
+    source = r"""
+      const fixture = FIXTURE;
+      const getComputedStyle = el => ({visibility:el.hidden ? 'hidden' : 'visible', display:'block'});
+      const makeNode = (text, hidden=false) => ({innerText:text, textContent:text, hidden, offsetWidth:100,
+        offsetHeight:20, getClientRects:()=>[{}], matches:()=>true, querySelectorAll:()=>[]});
+      const help = makeNode('普通帮助');
+      const explicit = makeNode('表单外关联错误', !!fixture.hidden);
+      const sibling = fixture.sibling ? makeNode('表单外相邻错误') : null;
+      const form = {nextElementSibling:sibling, getAttribute:()=>'', querySelectorAll:()=>[]};
+      const input = {type:'password', value:'private-value', id:'password', offsetWidth:100, offsetHeight:20,
+        getClientRects:()=>[{}], closest:()=>form, getAttribute:key=>({type:'password',
+          'aria-describedby':'help', 'aria-errormessage':fixture.explicit ? 'error' : ''}[key] || '')};
+      const document = {title:'', body:{innerText:'登录'}, getElementById:id=>id === 'help' ? help : explicit,
+        querySelector:()=>input, querySelectorAll:selector=>selector === 'input' ? [input] : selector === 'form' ? [form] : []};
+      const location = {href:'https://auth.openai.com/log-in/password'};
+      const execute = function(){SCRIPT};
+      console.log(JSON.stringify(execute()));
+    """.replace("FIXTURE", json.dumps(fixture)).replace("SCRIPT", script)
+    result = subprocess.run([shutil.which("node"), "-e", source], check=True, capture_output=True, text=True, timeout=10)
+    return json.loads(result.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "需要 Node 验证真实密码页采集脚本")
+class PasswordErrorDomTests(unittest.TestCase):
+    def test_explicit_and_adjacent_errors_are_captured_but_help_is_not(self):
+        state = _password_error_snapshot(explicit=True, sibling=True)
+        self.assertEqual(state["errors"], ["表单外相邻错误", "表单外关联错误"])
+        self.assertNotIn("private-value", json.dumps(state, ensure_ascii=False))
+
+    def test_hidden_error_and_describedby_help_are_not_captured(self):
+        self.assertEqual(_password_error_snapshot(explicit=True, hidden=True)["errors"], [])
+        self.assertEqual(_password_error_snapshot()["errors"], [])
+
+
 @unittest.skipUnless(shutil.which("node"), "需要 Node 执行实际密码表单脚本")
 class PasswordFormTargetTests(unittest.TestCase):
     def test_trusted_password_submit_reserves_one_click_without_synthetic_dispatch(self):
@@ -329,7 +372,7 @@ class _SteppingClock:
 
 
 @contextmanager
-def _observed_password_submission(post_submit_state, *, is_login=True):
+def _observed_password_submission(post_submit_state, *, is_login=True, initial_error=None):
     """保留真实填写、一次排队及落点观察，只替换 DOM 和远端边界。"""
     path = "/log-in/password" if is_login else "/create-account/password"
     driver = SimpleNamespace(current_url="https://auth.openai.com" + path, refresh=Mock())
@@ -343,6 +386,8 @@ def _observed_password_submission(post_submit_state, *, is_login=True):
 
     driver.execute_script = Mock(side_effect=execute)
     initial_state = {"url": driver.current_url, "inputs": [{"type": "password"}]}
+    if initial_error:
+        initial_state["errors"] = [initial_error]
     with ExitStack() as stack:
         for name, value in (
             ("_registration_auth_mode", "password"),
@@ -524,6 +569,102 @@ class RegistrationFailureClassificationTests(unittest.TestCase):
 
 
 class RegistrationPasswordFlowTests(unittest.TestCase):
+    def test_saved_login_change_required_stops_before_refresh_or_resubmit(self):
+        messages = (
+            "アカウントの保護を強化するため、パスワードを変更して\n再度ログインしてください。",
+            "Để bảo vệ tài khoản tốt hơn, vui lòng thay đổi mật khẩu và đăng nhập lại",
+            "To better protect your account, please change your password and log in again.",
+        )
+        for message in messages:
+            with self.subTest(message=message), _observed_password_submission({
+                "url": "https://auth.openai.com/log-in/password",
+                "inputs": [{"type": "password"}], "text": message,
+            }) as flow:
+                with self.assertRaises(password_auth.PasswordPageError) as caught:
+                    selenium_auth.fill_password_page_if_present(
+                        flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    )
+                self.assertEqual("password_change_required", caught.exception.code)
+                self.assertEqual(len(flow.queues), 1)
+                flow.recovery.assert_not_called()
+                flow.driver.refresh.assert_not_called()
+
+    def test_saved_login_visible_unknown_error_stops_with_safe_detail(self):
+        state = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}],
+                 "errors": ["上游临时拒绝，请稍后重试"]}
+        with _observed_password_submission(state) as flow:
+            with self.assertRaises(password_auth.PasswordPageError) as caught:
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual("password_page_error", caught.exception.code)
+            self.assertEqual("密码登录页显示错误，具体原因未识别", str(caught.exception))
+            self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
+
+    def test_dispatch_unknown_still_reports_visible_error_without_recovery(self):
+        state = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}],
+                 "text": "アカウントの保護を強化するため、パスワードを変更して再度ログインしてください。"}
+        with _observed_password_submission(state) as flow:
+            with patch.object(password_auth, "_password_submission_snapshot", return_value={"phase": "dispatch_unknown"}):
+                with self.assertRaises(password_auth.PasswordPageError) as caught:
+                    selenium_auth.fill_password_page_if_present(
+                        flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                    )
+            self.assertEqual(caught.exception.code, "password_change_required")
+            self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
+            self.assertNotIn("rejected", [call.args[1] for call in flow.facts.call_args_list])
+
+    def test_normal_password_page_text_is_not_an_error(self):
+        state = {"url": "https://auth.openai.com/log-in/password", "text": "忘记密码？ 更改密码",
+                 "inputs": [{"type": "password"}], "errors": []}
+        self.assertIsNone(password_auth._login_password_page_error(state))
+
+    def test_preexisting_password_error_is_not_attributed_to_new_submit(self):
+        state = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}],
+                 "errors": ["先前的表单错误"]}
+        with _observed_password_submission(state, initial_error="先前的表单错误") as flow:
+            with self.assertRaises(password_auth._PasswordTransitionTimeout):
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual(len(flow.queues), 1)
+
+    def test_new_error_after_stale_error_is_not_ignored(self):
+        state = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}],
+                 "errors": ["新的表单错误"]}
+        with _observed_password_submission(state, initial_error="先前的表单错误") as flow:
+            with self.assertRaises(password_auth.PasswordPageError) as caught:
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual(caught.exception.code, "password_page_error")
+            self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
+
+    def test_preexisting_change_password_notice_does_not_submit(self):
+        notice = "アカウントの保護を強化するため、パスワードを変更して再度ログインしてください。"
+        state = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}],
+                 "errors": [notice]}
+        with _observed_password_submission(state, initial_error=notice) as flow:
+            with self.assertRaises(password_auth.PasswordPageError) as caught:
+                selenium_auth.fill_password_page_if_present(
+                    flow.driver, "saved@example.test", existing_password="SavedPass123!",
+                )
+            self.assertEqual(caught.exception.code, "password_change_required")
+            self.assertTrue(caught.exception.not_submitted)
+            self.assertEqual(len(flow.queues), 0)
+            flow.recovery.assert_not_called()
+
+    def test_unrecognized_error_never_exposes_untrusted_text(self):
+        for message in ("密码：test_private_value", "パスワード：test_private_value",
+                        "비밀번호: test_private_value", "test_private_value"):
+            state = {"url": "https://auth.openai.com/log-in/password", "errors": [message]}
+            error = password_auth._login_password_page_error(state)
+            self.assertEqual(error.code, "password_page_error")
+            self.assertNotIn("test_private_value", str(error))
+
     def test_saved_password_refills_only_new_document_and_preserves_the_old_unknown_receipt(self):
         for landing in ("otp", "mfa", "profile", "session"):
             with self.subTest(landing=landing), _saved_password_refresh_flow(landing=landing) as flow:
@@ -656,18 +797,20 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             self.assertEqual(len(flow.queues), 1)
             flow.recovery.assert_not_called()
 
-    def test_saved_login_without_rejection_detector_preserves_default_observation(self):
+    def test_saved_login_without_rejection_detector_stops_on_visible_error(self):
         state = {
             "url": "https://auth.openai.com/log-in/password",
             "inputs": [{"type": "password"}], "errors": ["Incorrect password"],
         }
         with _observed_password_submission(state) as flow:
-            with self.assertRaises(password_auth._PasswordTransitionTimeout):
+            with self.assertRaises(password_auth.PasswordPageError) as caught:
                 selenium_auth.fill_password_page_if_present(
                     flow.driver, "saved@example.test", existing_password="SavedPass123!",
                 )
+            self.assertEqual(caught.exception.code, "password_page_error")
             self.assertNotIn("rejected", [call.args[1] for call in flow.facts.call_args_list])
             self.assertEqual(len(flow.queues), 1)
+            flow.recovery.assert_not_called()
 
     def test_password_timeout_reports_submit_evidence_without_repeating_click(self):
         driver = _RoxyDriver()

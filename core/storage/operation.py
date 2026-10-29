@@ -3860,7 +3860,14 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
             next_actions = []
             message = "子任务已确认废号，父任务停止重跑"
             level = "WARNING"
-        elif "attention_required" in statuses:
+        elif "attention_required" in statuses or any(
+            str(child.get("status") or "") == "failed"
+            and str(child.get("task_type") or "") in {"token_refresh", "live_check"}
+            and isinstance(summary := _decode(child.get("result_summary")), dict)
+            and summary.get("outcome") == "request_unknown"
+            and summary.get("cause_code") in {"password_change_required", "password_page_error"}
+            for child in children
+        ):
             desired = "attention_required"
             target_status = "attention_required"
             next_actions = [{"action": "reconcile", "label": "确认远端结果后继续"}]
@@ -6440,6 +6447,13 @@ def finish_run(
                 status_value == "failed"
                 and _confirmed_extract_terminal_failure(cur, found, dependency_result)
             )
+            password_page_failure = (
+                str(found.get("task_type") or "") in {"token_refresh", "live_check"}
+                and status_value == "failed"
+                and str(dependency_result.get("cause_code") or "") in {
+                    "password_change_required", "password_page_error",
+                }
+            )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
                 not (explicit_remote_rejection or confirmed_extract_failure)
                 and (status_value != "success" or receipt != "confirmed")
@@ -6453,7 +6467,8 @@ def finish_run(
                     "remote_action": intent.get("action"),
                     "remote_intent_state": receipt,
                 })
-                status_value = "attention_required"
+                if not password_page_failure:
+                    status_value = "attention_required"
                 # 回执是否完整独立保留，不覆盖驱动已经报告的具体失败。
                 if not error:
                     error = message or f"{intent.get('action') or '远端请求'}未保存完整回执"
@@ -6643,6 +6658,14 @@ def cleanup_terminal_history(
             WHERE task.status IN ({_TERMINAL_STATUS_SQL})
               AND task.completed_at IS NOT NULL
               AND task.completed_at < %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('operation_runs')} uncertain_run
+                  WHERE uncertain_run.task_id=task.id
+                    AND task.task_type IN ('token_refresh', 'live_check')
+                    AND uncertain_run.status='failed'
+                    AND uncertain_run.result_summary->>'cause_code' IN ('password_change_required', 'password_page_error')
+                    AND uncertain_run.result_summary->>'outcome'='request_unknown'
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM {_table('operation_runs')} run
                   WHERE run.task_id=task.id

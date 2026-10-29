@@ -164,7 +164,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "mfa_secret_missing", "mfa_verify_failed", "mfa_verify_invalid_response",
     "network_preflight_failed", "oauth_callback_failed", "password_missing",
     "password_rejected", "password_rejected_email_fallback_failed",
-    "password_result_unknown", "password_sentinel_failed",
+    "password_result_unknown", "password_sentinel_failed", "password_change_required", "password_page_error",
     "password_verify_failed", "password_verify_invalid_response",
     "password_login_unavailable", "email_verification_required",
     "passwordless_fallback_unavailable", "protocol_network_error",
@@ -263,6 +263,13 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
             )
         )
     )
+
+
+def _unknown_refresh_response_observed(result: dict) -> bool:
+    """页面错误不能冒充已经观测到认证 HTTP 响应。"""
+    if result.get("error_code") in {"password_change_required", "password_page_error"}:
+        return result.get("response_observed") is True
+    return True
 
 
 def _refresh_exception_is_unknown(exc: BaseException) -> bool:
@@ -1050,7 +1057,7 @@ def _run_live_check(
                     operation_context,
                     refresh_boundary,
                     "unknown",
-                    {"response_observed": True, "status": remote_result.get("status")},
+                    {"response_observed": _unknown_refresh_response_observed(remote_result), "status": remote_result.get("status")},
                 )
                 return _mark_refresh_reconcile_required(remote_result)
             if remote_result.get("ok") and str(remote_result.get("access_token") or "").strip():
@@ -1083,7 +1090,7 @@ def _run_live_check(
                 operation_context,
                 refresh_boundary,
                 "unknown",
-                {"response_observed": True, "status": remote_result.get("status")},
+                {"response_observed": _unknown_refresh_response_observed(remote_result), "status": remote_result.get("status")},
             )
             return _mark_refresh_reconcile_required(remote_result)
         if saved_access_token and not force_refresh:
@@ -1488,9 +1495,11 @@ def _run_live_check(
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
             if selected_refresh_driver == "browser_roxy":
+                error_message = str(result.get("error") or "")
+                page_error = result.get("error_code") in {"password_change_required", "password_page_error"}
                 reporter.stage(
                     "authenticate", "success" if result.get("ok") else "failed",
-                    "Roxy 浏览器登录已完成" if result.get("ok") else "Roxy 浏览器登录未完成",
+                    "Roxy 浏览器登录已完成" if result.get("ok") else error_message if page_error else "Roxy 浏览器登录未完成",
                     level="INFO" if result.get("ok") else "ERROR",
                     detail={"auth_method": result.get("auth_method"), "error": result.get("error")},
                 )
@@ -1548,6 +1557,7 @@ def _run_live_check(
                 "protocol_version": _refresh_protocol_version(selected_refresh_driver),
                 "auth_method": result.get("auth_method"),
                 "password_auth_status": result.get("password_auth_status"),
+                "password_action_dispatched": result.get("password_action_dispatched"),
                 "fallback_used": result.get("fallback_used"),
                 "debug_browser_kept": bool(result.get("debug_browser_kept")),
                 "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),

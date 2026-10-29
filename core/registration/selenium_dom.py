@@ -756,7 +756,18 @@ def _password_page_state(driver) -> dict:
           type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
           disabled: !!el.disabled, visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
         })).slice(0, 30);
-        return {url: location.href, title: document.title || '', text: (document.body?.innerText || '').slice(0, 1200), inputs, forms, buttons};
+        const password = document.querySelector('input[type="password"]');
+        const form = password?.closest('form');
+        const scope = form || password?.parentElement?.parentElement;
+        const selector = '[role="alert"], [aria-live="assertive"], [data-testid*="error"], [id*="error"], .react-aria-FieldError, [slot="errorMessage"]';
+        const adjacent = form?.nextElementSibling;
+        const explicitId = password?.getAttribute('aria-errormessage');
+        const nodes = [...(scope?.querySelectorAll(selector) || []),
+          ...(adjacent?.matches(selector) ? [adjacent] : []),
+          ...(adjacent?.querySelectorAll(selector) || []),
+          ...(explicitId ? [document.getElementById(explicitId)].filter(Boolean) : [])];
+        const errors = [...new Set(nodes.filter(visible).map(el => (el.innerText || el.textContent || '').trim()).filter(Boolean))].slice(0, 5);
+        return {url: location.href, title: document.title || '', text: (document.body?.innerText || '').slice(0, 1200), inputs, forms, buttons, errors};
         """) or {}
     except Exception as exc:
         return {"url": getattr(driver, "current_url", ""), "error": f"{type(exc).__name__}: {exc}"}

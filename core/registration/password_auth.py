@@ -1,6 +1,7 @@
 """Password and profile authentication capabilities."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -95,6 +96,51 @@ def _password_transition_timeout_seconds() -> float:
 
 class _PasswordTransitionTimeout(RuntimeError):
     """Password submit was dispatched but the remote result is still unknown."""
+
+
+class PasswordPageError(RuntimeError):
+    """密码提交后登录页显示了明确的错误。"""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def _login_password_page_error(state: object) -> PasswordPageError | None:
+    if not isinstance(state, dict):
+        return None
+    try:
+        location = urlsplit(str(state.get("url") or ""))
+        trusted = (location.scheme == "https" and location.hostname == "auth.openai.com"
+                   and location.port in (None, 443) and not location.username and not location.password
+                   and location.path.rstrip("/") == "/log-in/password")
+    except ValueError:
+        return None
+    if not trusted:
+        return None
+    errors = state.get("errors") if isinstance(state.get("errors"), list) else []
+    text = re.sub(r"\s+", "", " ".join([str(state.get("text") or ""), *(str(item) for item in errors)]).casefold())
+    markers = (
+        "アカウントの保護を強化するため、パスワードを変更して再度ログインしてください",
+        "để bảo vệ tài khoản tốt hơn, vui lòng thay đổi mật khẩu và đăng nhập lại",
+        "to better protect your account, please change your password and log in again",
+        "为了加强账户保护，请更改密码后重新登录",
+        "為了加強帳戶保護，請變更密碼後重新登入",
+        "계정 보호를 강화하려면 비밀번호를 변경한 후 다시 로그인하세요",
+        "para proteger mejor tu cuenta, cambia tu contraseña y vuelve a iniciar sesión",
+        "pour mieux protéger votre compte, veuillez modifier votre mot de passe et vous reconnecter",
+    )
+    if any(re.sub(r"\s+", "", marker.casefold()) in text for marker in markers):
+        return PasswordPageError("password_change_required", "OpenAI 要求修改密码后重新登录")
+    if errors:
+        return PasswordPageError("password_page_error", "密码登录页显示错误，具体原因未识别")
+    return None
+
+
+def _login_password_error_signature(state: dict, error: PasswordPageError) -> tuple[str, str]:
+    errors = state.get("errors") if isinstance(state.get("errors"), list) else []
+    text = "\n".join(str(item) for item in errors)
+    return error.code, hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 class ProfileAccountAlreadyExistsError(RuntimeError):
@@ -1052,15 +1098,38 @@ def _fill_password_page_if_present(
     pre_submit_recovery_checked = False
     pre_submit_recovery_used = False
     transition_deadline = None
+    baseline_login_error = None
+
+    def check_login_error(snapshot, *, receipt=None):
+        nonlocal baseline_login_error
+        if not existing_password or not _is_login_password_page(driver):
+            return
+        error = _login_password_page_error(snapshot)
+        if error and baseline_login_error == _login_password_error_signature(snapshot, error):
+            return
+        if error is None:
+            baseline_login_error = None
+        if error and error.code == "password_change_required":
+            record_browser_submission_fact(
+                driver, "unknown", receipt=receipt, result="failure", error_type=error.code,
+            )
+            raise error
+        if callable(login_rejection_detector) and login_rejection_detector(snapshot):
+            record_browser_submission_fact(
+                driver, "rejected", receipt=receipt, result="failure", error_type="PasswordRejectedError",
+            )
+            raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
+        if error:
+            record_browser_submission_fact(
+                driver, "unknown", receipt=receipt, result="failure", error_type=error.code,
+            )
+            raise error
+
     while time.time() < end:
         if saved_form_recoveries:
             recovered_snapshot = _password_page_state(driver)
             recovered_state = classify_page(recovered_snapshot)
-            if callable(login_rejection_detector) and login_rejection_detector(recovered_snapshot):
-                record_browser_submission_fact(
-                    driver, "rejected", result="failure", error_type="PasswordRejectedError",
-                )
-                raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
+            check_login_error(recovered_snapshot)
             if (recovered_state in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.PROFILE}
                     and has_visible_auth_inputs(recovered_snapshot, allow_password=False)) or _has_access_token(driver):
                 return existing_password
@@ -1156,6 +1225,12 @@ def _fill_password_page_if_present(
                 return None
             time.sleep(0.5)
             continue
+        if is_login_password and existing_password:
+            initial_error = _login_password_page_error(last)
+            if initial_error and initial_error.code == "password_change_required":
+                initial_error.not_submitted = True
+                raise initial_error
+            baseline_login_error = _login_password_error_signature(last, initial_error) if initial_error else None
         passwordless = (
             _click_passwordless_signup_if_present(driver)
             if auth_mode == 'otp' and not existing_password
@@ -1516,13 +1591,8 @@ def _fill_password_page_if_present(
         def observe_recovery(_budget):
             snapshot = _password_page_state(driver)
             recovered_state = classify_page(snapshot)
-            if (existing_password and is_login_password and callable(login_rejection_detector)
-                    and login_rejection_detector(snapshot)):
-                record_browser_submission_fact(
-                    driver, "rejected", receipt=submission_receipt, result="failure",
-                    error_type="PasswordRejectedError",
-                )
-                raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
+            if is_login_password:
+                check_login_error(snapshot, receipt=submission_receipt)
             next_form = recovered_state in {PageState.OTP_EMAIL, PageState.PROFILE} or (
                 existing_password and recovered_state == PageState.MFA_TOTP
             )
@@ -1535,6 +1605,8 @@ def _fill_password_page_if_present(
             nonlocal recovery_attempted
             if recovery_attempted:
                 return None
+            if is_login_password:
+                check_login_error(_password_page_state(driver), receipt=submission_receipt)
             recovery_attempted = True
             if recover_saved_form:
                 def form_ready():
@@ -1593,19 +1665,15 @@ def _fill_password_page_if_present(
                     raise RuntimeError("password_form_not_ready: 提交前密码表单发生变化，已取消点击并保留原密码")
                 if receipt_phase == "dispatch_unknown":
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
+                    if is_login_password:
+                        check_login_error(_password_page_state(driver), receipt=submission_receipt)
                     raise _PasswordTransitionTimeout("request_unknown: 密码点击后回执异常，已保留原密码且未重复提交")
                 if receipt_phase == "dispatched":
                     record_browser_submission_fact(driver, "ui_dispatched", receipt=submission_receipt)
                 post_submit_state = _password_page_state(driver)
-                # 已保存密码的登录可识别明确拒绝，立即交给调用方处理；
-                # 注册创建密码和未提供检测器的入口继续沿用原有观察契约。
-                if (existing_password and is_login_password and callable(login_rejection_detector)
-                        and login_rejection_detector(post_submit_state)):
-                    record_browser_submission_fact(
-                        driver, "rejected", receipt=submission_receipt, result="failure",
-                        error_type="PasswordRejectedError",
-                    )
-                    raise PasswordRejectedError("远端已明确拒绝已保存的登录密码")
+                # 已保存密码的登录检查当前页面错误；创建密码不使用此判断。
+                if is_login_password:
+                    check_login_error(post_submit_state, receipt=submission_receipt)
                 if _password_submit_error_marker(post_submit_state):
                     raise _PasswordTransitionTimeout(
                         "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"
@@ -1648,6 +1716,8 @@ def _fill_password_page_if_present(
             )
             continue
         stuck_state = _password_page_state(driver)
+        if is_login_password:
+            check_login_error(stuck_state, receipt=submission_receipt)
         log_submission_diagnostics(driver, "password", "timeout", receipt=submission_receipt,
                                    ui=last_submission_snapshot)
         submission_snapshot = _password_submission_snapshot(driver, submission_receipt, stop_observing=True)

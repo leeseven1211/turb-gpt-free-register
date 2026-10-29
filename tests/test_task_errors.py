@@ -443,6 +443,34 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(message, info["summary"])
                 self.assertEqual("manual_reconcile", info["next_action"])
 
+    def test_password_page_failure_displays_change_required_and_other_error(self):
+        info = classify_task_error(
+            "Roxy PasswordPageError: OpenAI 要求修改密码后重新登录",
+            task_type="token_refresh", stage="login_password", error_code="password_change_required",
+            result_summary={"cause_code": "password_change_required"},
+        )
+        self.assertEqual("password_change_required", info["code"])
+        self.assertEqual("OpenAI 要求修改密码后重新登录", info["summary"])
+        info = classify_task_error(
+            "Roxy PasswordPageError: 密码登录页返回明确错误：账号暂时不可登录",
+            task_type="token_refresh", stage="login_password", error_code="password_page_error",
+            result_summary={"cause_code": "password_page_error"},
+        )
+        self.assertEqual("password_page_error", info["code"])
+        self.assertEqual("密码登录页返回明确错误", info["summary"])
+        info = classify_task_error(
+            "密码登录页返回明确错误：请检查 user@example.com https://example.com/a?token=secret",
+            task_type="token_refresh", result_summary={"cause_code": "password_page_error"},
+        )
+        self.assertNotIn("user@example.com", info["summary"])
+        self.assertNotIn("example.com", info["summary"])
+        info = classify_task_error(
+            "密码登录页返回明确错误：密码：private-secret",
+            task_type="token_refresh", result_summary={"cause_code": "password_page_error"},
+        )
+        self.assertEqual("密码登录页返回明确错误", info["summary"])
+        self.assertNotIn("private-secret", str(info))
+
     def test_proxy_pool_wait_and_reuse_exhaustion_show_specific_reasons(self):
         for message, expected in (
             ("ProxyPoolTimeout: 代理池暂时没有符合要求的可用线路，领取等待超时", "等待可用线路超时"),
