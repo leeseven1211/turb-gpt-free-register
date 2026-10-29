@@ -33,6 +33,82 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_plan_country_failure_uses_latest_evidence_from_current_run():
+    def record(event_id, country, ok, error=None, http_status=None, run_id=2):
+        event = _event(event_id, "plan_check", detail={
+            "country": country, "ok": ok, "error": error, "http_status": http_status,
+        })
+        event.update(event_type="promotion.query.recorded", run_id=run_id)
+        return event
+
+    events = [
+        record(1, "JP", False, "AT已过期/失效，请手动查活刷新"),
+        record(2, "VN", False, "ProxyError: curl: (56) Proxy CONNECT aborted"),
+        record(3, "IN", False, "AT已过期/失效，请手动查活刷新", 401),
+        record(4, "JP", True),
+        record(5, "VN", False, "HTTP 403", 403, run_id=99),
+        _event(6, "plan_check", "failed", message="国家查询完成：1/3 成功"),
+    ]
+    events[-1]["run_id"] = 2
+    run = _run("partial_success", result_summary={"failed_countries": ["VN", "IN"]})
+    snapshot = build_progress_snapshot(1, 2, "plan_check", run, events)
+    failures = snapshot["failure"]["country_failures"]
+    assert [(f["country"], f["code"]) for f in failures] == [
+        ("VN", "proxy_connect_failed"), ("IN", "token_http_401"),
+    ]
+    assert "VN" in snapshot["failure"]["message"]
+    assert "IN" in snapshot["failure"]["message"]
+    assert "JP" not in snapshot["failure"]["message"]
+
+
+def test_plan_country_failure_distinguishes_local_expiry_and_missing_detail():
+    events = []
+    for index, (country, error, status) in enumerate((
+        ("JP", "AT已过期/失效，请手动查活刷新", None),
+        ("VN", "ConnectionError: curl: (7) CONNECT tunnel failed, response 502", None),
+        ("IN", "TimeoutError: 读取超时", None),
+        ("US", "Bearer secret-value https://example.invalid", None),
+    ), 1):
+        event = _event(index, "plan_check", detail={
+            "country": country, "ok": False, "error": error, "http_status": status,
+        })
+        event["event_type"] = "promotion.query.recorded"
+        events.append(event)
+    events.append(_event(5, "plan_check", "failed", message="全部国家查询失败"))
+    snapshot = build_progress_snapshot(1, 2, "plan_check", _run("failed"), events)
+    failures = snapshot["failure"]["country_failures"]
+    assert [f["code"] for f in failures] == ["token_local_expired", "proxy_tunnel_failed", "timeout", "detail_unclassified"]
+    assert "本地" in failures[0]["summary"]
+    assert "secret-value" not in str(snapshot["failure"])
+    assert "example.invalid" not in str(snapshot["failure"])
+
+
+def test_plan_country_warning_without_http_evidence_does_not_infer_local_expiry():
+    events = [
+        {**_event(1, "plan_check", detail={"country": "JP", "ok": False,
+                                            "error": "AT已过期/失效，请手动查活刷新"}),
+         "event_type": "note.warning"},
+        _event(2, "plan_check", "failed", message="全部国家查询失败"),
+    ]
+    failure = build_progress_snapshot(1, 2, "plan_check", _run("failed"), events)["failure"]
+    assert failure["country_failures"][0]["code"] == "token_expired_or_rejected"
+    assert "未发起" not in failure["message"]
+
+
+def test_partial_plan_success_reports_failed_countries_without_changing_outcome():
+    events = [
+        {**_event(1, "plan_check", detail={"country": "JP", "ok": True}),
+         "event_type": "promotion.query.recorded"},
+        {**_event(2, "plan_check", detail={"country": "VN", "ok": False, "http_status": 403}),
+         "event_type": "promotion.query.recorded"},
+        _event(3, "plan_check", "success", message="国家查询完成：1/2 成功"),
+    ]
+    snapshot = build_progress_snapshot(1, 2, "plan_check", _run("partial_success"), events)
+    assert snapshot["failure"]["country_failures"][0]["country"] == "VN"
+    assert "HTTP 403" in snapshot["failure"]["message"]
+    assert snapshot["outcome"]["status"] == "partial_success"
+
+
 def test_historical_mfa_diagnostic_corrects_only_matching_failed_stage():
     for previous, message in (("login_password", "Protocol v2 密码认证未完成"), ("email_otp", "邮箱验证码未完成")):
         events = [

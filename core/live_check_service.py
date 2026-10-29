@@ -203,6 +203,14 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
     safe: dict = {}
+    from core.http_response_diagnostics import safe_auth_error, safe_response_headers
+
+    auth_error = safe_auth_error(value.get("auth_error"))
+    headers = safe_response_headers(value.get("response_headers"))
+    if auth_error:
+        safe["auth_error"] = auth_error
+    if headers:
+        safe["response_headers"] = headers
     for key in ("operation", "cause_operation"):
         text = str(value.get(key) or "").strip()
         if text in _SAFE_AUTH_DIAGNOSTIC_OPERATIONS:

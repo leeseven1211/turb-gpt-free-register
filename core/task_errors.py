@@ -1227,6 +1227,12 @@ def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) ->
             code_suffix, message = "http_rejected", f"{label}被拒绝（HTTP {status}）"
         else:
             code_suffix, message = "http_error", f"{label}请求返回 HTTP {status}"
+        from core.http_response_diagnostics import safe_auth_error
+
+        auth_error = safe_auth_error(diagnostics.get("auth_error"))
+        auth_code = auth_error.get("code")
+        if auth_code and auth_code != "unknown":
+            message += f"（服务端错误码：{auth_code}）"
         return {
             "cause_code": f"{operation}_{code_suffix}",
             "cause_display_code": f"{http_prefix}-{status}", "cause_summary": message,

@@ -248,6 +248,22 @@ test('详情失败位置优先采用有具体证据纠正的阶段', () => {
   assert.match(sandbox.result.uncorrected, /校验 Token · access_token/);
 });
 
+test('套餐查询失败在详情展示每个国家的具体原因并转义文本', () => {
+  const progress = {failure:{label:'查询套餐', stage:'plan_request', message:'JP：本地 AT 已过期；VN：服务端返回 HTTP 401',
+    country_failures:[
+      {country:'JP', code:'token_local_expired', summary:'本地检查发现 AT 已过期，未发起套餐请求', event_id:'1'},
+      {country:'VN', code:'http_401', summary:'服务端返回 HTTP 401 <拒绝>', event_id:'2'},
+      {country:'IN'},
+    ]}};
+  const sandbox = runVm(`${progressFunctions}\nresult = accountTaskFailureSummary(progress);`, {
+    progress, esc: htmlEscape, attrEsc: htmlEscape,
+  });
+  assert.match(sandbox.result, /JP：本地检查发现 AT 已过期，未发起套餐请求/);
+  assert.match(sandbox.result, /VN：服务端返回 HTTP 401 &lt;拒绝&gt;/);
+  assert.match(sandbox.result, /IN：未记录具体原因/);
+  assert.doesNotMatch(sandbox.result, /JP：本地 AT 已过期；VN：服务端返回 HTTP 401/);
+});
+
 test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全量运行日志', () => {
   const events = [
     {id: 1, main_step_id: 'step-auth', stage_label: '授权', message: '主步骤'},

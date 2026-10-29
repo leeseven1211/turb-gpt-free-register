@@ -1001,6 +1001,57 @@ def _correct_historical_mfa_events(task_type: str, run: dict[str, Any], events: 
     return corrected
 
 
+def _plan_country_failures(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按当前 Run 的最后一次逐国回执投影固定错误分类。"""
+    from config.countries import ISO_3166_ALPHA2
+
+    latest: dict[str, dict[str, Any]] = {}
+    fallback: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if _raw_stage(event) != "plan_check":
+            continue
+        detail = _event_detail(event)
+        country = str(detail.get("country") or "").upper()
+        if country not in ISO_3166_ALPHA2 or type(detail.get("ok")) is not bool:
+            continue
+        event_type = str(event.get("event_type") or "")
+        if event_type == "promotion.query.recorded":
+            latest[country] = event
+        elif event_type == "note.warning" and detail.get("ok") is False:
+            fallback[country] = event
+
+    for country, event in fallback.items():
+        latest.setdefault(country, event)
+    failures = []
+    for country, event in latest.items():
+        detail = _event_detail(event)
+        if detail.get("ok") is not False:
+            continue
+        raw = str(detail.get("error") or "")
+        text = raw.lower()
+        status = detail.get("http_status")
+        status = status if type(status) is int and 100 <= status <= 599 else None
+        if status == 401:
+            code, summary = "token_http_401", "套餐接口返回 HTTP 401，AT 未通过验证"
+        elif status is not None:
+            code, summary = "plan_http_error", f"套餐接口返回 HTTP {status}"
+        elif raw == "AT已过期/失效，请手动查活刷新":
+            if str(event.get("event_type") or "") == "promotion.query.recorded" and "http_status" in detail:
+                code, summary = "token_local_expired", "本地检查发现 AT 已过期，未发起套餐请求"
+            else:
+                code, summary = "token_expired_or_rejected", "AT 已过期或未通过验证，未保存 HTTP 状态"
+        elif "connect tunnel failed" in text:
+            code, summary = "proxy_tunnel_failed", "代理隧道连接失败"
+        elif "proxyerror" in text or "proxy connect aborted" in text:
+            code, summary = "proxy_connect_failed", "代理连接失败"
+        elif "timeout" in text or "timed out" in text or "超时" in raw:
+            code, summary = "timeout", "套餐查询超时，具体故障位置未记录"
+        else:
+            code, summary = "detail_unclassified", "套餐查询失败，具体原因未识别"
+        failures.append({"country": country, "code": code, "summary": summary, "event_id": _event_id(event)})
+    return failures
+
+
 def build_progress_snapshot(
     task_id: int,
     run_id: int,
@@ -1148,9 +1199,18 @@ def build_progress_snapshot(
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
     source = "explicit" if explicit else "legacy_derived" if activity or task_lifecycle else "insufficient_evidence"
     failure = _failure(task_key, run_value, current_attempts, current_activity)
+    if task_key == "plan_check" and str(run_value.get("status") or "").lower() in {"failed", "partial_success"}:
+        country_failures = _plan_country_failures(source_events)
+        if country_failures:
+            if failure is None:
+                failure = {"step_id": "plan_check", "stage": "plan_check", "label": stage_label("plan_check"),
+                           "event_id": None, "evidence": "explicit", "error_info": None,
+                           "reconcile_required": False, "child_task_id": None, "child_run_id": None}
+            failure["country_failures"] = country_failures
+            failure["message"] = "；".join(f"{item['country']}：{item['summary']}" for item in country_failures)
     current = _current(ordered, current_activity, str(run_value.get("status") or ""))
     debug_pause = _project_debug_pause(ordered, run_value, current)
-    payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
+    payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "failure": failure, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
     payload["debug_pause"] = debug_pause
     payload["task_lifecycle"] = list(task_lifecycle.values())
     revision = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]

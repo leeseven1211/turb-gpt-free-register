@@ -177,11 +177,18 @@ function accountTaskFailureLocation(failure) {
     ? (typeof facetLabel === 'function' ? facetLabel('stage', correctedStage) : correctedStage)
     : [failure.label || failure.step_id || '位置待确认', failure.stage].filter(Boolean).join(' · ');
 }
+function accountTaskCountryFailures(progress) {
+  const rows = Array.isArray(progress?.failure?.country_failures) ? progress.failure.country_failures : [];
+  const items = rows.filter(row => row && typeof row === 'object' && String(row.country || '').trim());
+  if (!items.length) return '';
+  return `<ul class="account-task-country-failures">${items.map(row => `<li>${esc(String(row.country).trim())}：${esc(String(row.summary || '').trim() || '未记录具体原因')}</li>`).join('')}</ul>`;
+}
 function accountTaskFailureSummary(progress) {
   const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
   if (!failure) return '';
   const location = accountTaskFailureLocation(failure);
   const message = failure.message || (typeof failure.evidence === 'string' ? failure.evidence : '') || '失败位置待确认';
+  const countries = accountTaskCountryFailures(progress);
   const reconcile = failure.reconcile_required || ['request_unknown', 'attention_required'].includes(String(progress?.outcome?.status || '').toLowerCase());
   const inferred = failure.inferred === true || failure.evidence?.inferred === true || failure.evidence?.source === 'inferred' || failure.evidence?.kind === 'inferred' || failure.evidence === 'inferred' || failure.evidence === 'legacy' || failure.evidence === 'unobserved';
   const locationTitle = inferred || (!failure.step_id && !failure.label && !failure.event_id) ? '待确认位置' : '失败位置';
@@ -193,7 +200,7 @@ function accountTaskFailureSummary(progress) {
   const technical = failure.error_info || (failure.evidence && typeof failure.evidence === 'object')
     ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
     : '';
-  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong><span>${esc(message)}</span>${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
+  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${countries || `<span>${esc(message)}</span>`}${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
 }
 function accountTaskStepTooltipText(step) {
   return taskProgressStepTooltip(step);
@@ -372,7 +379,9 @@ function renderAccountTaskProgressSnapshot(progress) {
   const pager = page.pages > 1
     ? `<span>共 ${stages.length} 步 · ${page.start + 1}–${page.start + page.steps.length}</span><div><button type="button" data-account-task-step-page="${page.page - 1}"${page.page === 0 ? ' disabled' : ''} aria-label="上一页步骤">上一页</button><span aria-live="polite">${page.page + 1} / ${page.pages}</span><button type="button" data-account-task-step-page="${page.page + 1}"${page.page + 1 === page.pages ? ' disabled' : ''} aria-label="下一页步骤">下一页</button></div>`
     : `<span>共 ${stages.length} 步</span><span>已全部显示</span>`;
-  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(sourceText || '按实际执行记录排列，未执行步骤在后')}">${esc(sourceText || '按实际执行记录排列')}</small></div>${accountTaskProgressBrief(progress)}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div><div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>`;
+  const countryFailures = accountTaskCountryFailures(progress);
+  panel.classList.toggle('has-country-failures', Boolean(countryFailures));
+  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(sourceText || '按实际执行记录排列，未执行步骤在后')}">${esc(sourceText || '按实际执行记录排列')}</small></div>${accountTaskProgressBrief(progress)}${countryFailures}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div><div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>`;
   panel.classList.remove('hidden');
   const restore = Array.from(panel.querySelectorAll('button')).find(item => focusedFilter ? item.getAttribute('data-account-task-step-filter') === focusedFilter : focusedDetails ? item.getAttribute('data-account-task-step-details') === focusedDetails && item.getAttribute('data-step-detail-tab') === focusedTab : focusedPage != null && item.getAttribute('data-account-task-step-page') === focusedPage);
   if (restore) restore.focus({preventScroll:true});

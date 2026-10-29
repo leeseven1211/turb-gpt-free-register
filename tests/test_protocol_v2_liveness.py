@@ -358,6 +358,31 @@ class ProtocolV2LivenessTests(unittest.TestCase):
                 self.assertFalse(result["roxy_fallback_allowed"])
                 session.post.assert_called_once()
 
+    def test_password_http_error_retains_only_structured_response_diagnostics(self):
+        from core import live_check_service, protocol_v2_liveness as v2
+
+        response = _Response(401, text='{"error":{"code":"session_expired","type":"authentication_error","message":"private-secret"}}')
+        response.headers = {"content-type": "application/json", "server": "cloudflare", "set-cookie": "private-secret"}
+        exc = RuntimeError("private-secret")
+        exc.response = response
+        diagnostics = v2._request_diagnostics(exc, operation="password_verify", response_observed=True)
+        safe = live_check_service._safe_refresh_auth_diagnostics(diagnostics)
+        self.assertEqual("session_expired", safe["auth_error"]["code"])
+        self.assertEqual("cloudflare", safe["response_headers"]["server"])
+        self.assertNotIn("private-secret", json.dumps(safe))
+
+    def test_password_http_error_does_not_persist_unrecognized_response_content(self):
+        from core import live_check_service, protocol_v2_liveness as v2
+
+        response = _Response(401, text='{"error":{"code":"private-secret","type":"private-secret","message":"private-secret"}}')
+        response.headers = {"authorization": "private-secret", "server": "private-secret"}
+        exc = RuntimeError("private-secret")
+        exc.response = response
+        safe = live_check_service._safe_refresh_auth_diagnostics(
+            v2._request_diagnostics(exc, operation="password_verify", response_observed=True)
+        )
+        self.assertNotIn("private-secret", json.dumps(safe))
+
     def test_credentials_reader_never_uses_email_provider_password(self):
         from core import account_credentials
 

@@ -45,6 +45,7 @@ from core.openai_auth import (
 from core.account_credentials import account_email_is_invalid, get_account_login_credentials
 from core.auth_fingerprint import build_safe_fingerprint_summary
 from core.auth_challenge import auth_result_for_operation
+from core.http_response_diagnostics import auth_error_from_body, safe_response_headers
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,13 @@ def _request_diagnostics(exc: BaseException, *, operation: str, response_observe
         "http_status": status,
         "response_observed": bool(response_observed),
     }
+    if response_observed and response is not None:
+        auth_error = auth_error_from_body(_response_text(response))
+        headers = safe_response_headers(getattr(response, "headers", None))
+        if auth_error:
+            result["auth_error"] = auth_error
+        if headers:
+            result["response_headers"] = headers
     # 只读取 curl 稳定数值，不透传含 Token、代理或 URL 的异常原文。
     curl_code = getattr(exc, "code", None)
     if not isinstance(curl_code, int) or isinstance(curl_code, bool):

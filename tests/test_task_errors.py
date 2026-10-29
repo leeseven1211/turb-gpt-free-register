@@ -309,6 +309,17 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("密码验证请求返回 HTTP 401", info["cause_summary"])
         self.assertEqual("login_password", info["stage"])
 
+    def test_auth_error_summary_includes_only_recognized_server_code(self):
+        summary = {"cause_code": "password_result_unknown", "auth_diagnostics": {
+            "operation": "password_verify", "failure_kind": "http_error", "http_status": 401,
+            "auth_error": {"code": "session_expired", "type": "authentication_error"},
+        }}
+        info = classify_task_error("密码验证失败", task_type="token_refresh", result_summary=summary)
+        self.assertEqual("密码验证请求返回 HTTP 401（服务端错误码：session_expired）", info["summary"])
+        summary["auth_diagnostics"]["auth_error"]["code"] = "private-secret"
+        info = classify_task_error("密码验证失败", task_type="token_refresh", result_summary=summary)
+        self.assertNotIn("private-secret", str(info))
+
     def test_mfa_403_diagnostics_override_incorrect_saved_password_stage(self):
         info = classify_task_error(
             "账号已停用", task_type="token_refresh", stage="login_password",
