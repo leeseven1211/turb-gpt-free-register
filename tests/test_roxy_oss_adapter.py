@@ -158,6 +158,24 @@ def test_driver_identity_and_saved_credentials_survive_local_resume_and_checkpoi
     mocks["release"].assert_not_called()
 
 
+def test_saved_password_resume_initial_get_keeps_roxy_oss_native_entry():
+    from tests import test_registration_resume_session as fixtures
+
+    harness = fixtures.ResumeSessionFlowTests()
+    with harness.run_context(opened_profile="replacement-profile") as (_, mocks):
+        result = run_roxy_oss_registration(
+            fixtures.EMAIL, "测试用户", "1990-01-02", proxy="http://pool.example:8080",
+            existing_password="unit-original-password", profile_id="unit-profile",
+            registration_options={"password_enabled": True, "twofa_enabled": False,
+                                  "codex_enabled": False, "plan_check_enabled": False},
+        )
+    assert result["success"] is False
+    mocks["navigate"].assert_called_once()
+    assert mocks["navigate"].call_args.args[1] == "https://chatgpt.com/auth/login_with?callback_path=/"
+    mocks["persist"].assert_not_called()
+    mocks["_fill_password_page_if_present"].assert_not_called()
+
+
 def test_failure_keeps_independent_auth_method_and_original_local_cleanup():
     from tests import test_registration_resume_session as fixtures
 

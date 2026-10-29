@@ -240,18 +240,25 @@ class ResumeSessionFlowTests(unittest.TestCase):
         args.update(kwargs)
         return roxy.run_roxy_registration(args.pop("email", EMAIL), "Example User", "2000-01-02", **args)
 
-    def test_initial_get_uses_native_login_only_for_validated_saved_password_resume(self):
+    def test_local_resume_initial_get_uses_official_form_and_helpers_keep_native_entry(self):
+        helpers = SimpleNamespace(driver_name="unit-helper", complete_profile_page=Mock(),
+                                  submit_email_and_wait_next=Mock())
         cases = (
-            ({}, "unit-original-password", "https://chatgpt.com/auth/login_with?callback_path=/"),
-            ({"status": "queued"}, "unit-original-password", "https://chatgpt.com/auth/login_with?callback_path=/"),
-            ({"action": "registration"}, "unit-original-password", "https://chatgpt.com/auth/login"),
-            ({"status": "success"}, "unit-original-password", "https://chatgpt.com/auth/login"),
-            ({}, None, "https://chatgpt.com/auth/login"),
+            ({}, "unit-original-password", None, "https://chatgpt.com/auth/login"),
+            ({"status": "queued"}, "unit-original-password", None, "https://chatgpt.com/auth/login"),
+            ({"action": "registration"}, "unit-original-password", None, "https://chatgpt.com/auth/login"),
+            ({"status": "success"}, "unit-original-password", None, "https://chatgpt.com/auth/login"),
+            ({}, None, None, "https://chatgpt.com/auth/login"),
+            ({}, "unit-original-password", helpers, "https://chatgpt.com/auth/login_with?callback_path=/"),
+            ({"status": "queued"}, "unit-original-password", helpers, "https://chatgpt.com/auth/login_with?callback_path=/"),
+            ({"action": "registration"}, "unit-original-password", helpers, "https://chatgpt.com/auth/login"),
+            ({"status": "success"}, "unit-original-password", helpers, "https://chatgpt.com/auth/login"),
+            ({}, None, helpers, "https://chatgpt.com/auth/login"),
         )
-        for context, password, expected_url in cases:
-            with self.subTest(context=context, password=bool(password)), self.run_context(**context) as (driver, mocks):
+        for context, password, browser_helpers, expected_url in cases:
+            with self.subTest(context=context, password=bool(password), helper=bool(browser_helpers)), self.run_context(**context) as (driver, mocks):
                 driver.current_url = "https://auth.openai.com/log-in"
-                self.run_registration(existing_password=password)
+                self.run_registration(existing_password=password, _browser_helpers=browser_helpers)
             mocks["navigate"].assert_called_once()
             self.assertEqual(mocks["navigate"].call_args.args[1], expected_url)
             mocks["_submit_email_and_wait_next"].assert_not_called()
@@ -412,7 +419,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
                 result = self.run_registration()
         self.assertFalse(result["success"])
         mocks["navigate"].assert_called_once()
-        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login_with?callback_path=/")
+        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
         mocks["_submit_email_and_wait_next"].assert_not_called()
 
     def test_verified_resume_skips_all_auth_submissions_and_reuses_shared_persist(self):
@@ -780,7 +787,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
         mocks["_fetch_chatgpt_session"].assert_not_called()
         driver.execute_async_script.assert_called_once()
         self.assertEqual([c.args[1] for c in mocks["navigate"].call_args_list], [
-            "https://chatgpt.com/auth/login_with?callback_path=/", "https://chatgpt.com/api/auth/session",
+            "https://chatgpt.com/auth/login", "https://chatgpt.com/api/auth/session",
         ])
         self.assertEqual(mocks["navigate"].call_args.kwargs["attempts"], 1)
         self.assertEqual(receipt.phase, "rejected")
@@ -832,7 +839,7 @@ class ResumeSessionFlowTests(unittest.TestCase):
             result = self.run_registration()
         self.assertFalse(result["success"])
         mocks["_complete_profile_page"].assert_called_once()
-        self.assertEqual([c.args[1] for c in mocks["navigate"].call_args_list], ["https://chatgpt.com/auth/login_with?callback_path=/"])
+        self.assertEqual([c.args[1] for c in mocks["navigate"].call_args_list], ["https://chatgpt.com/auth/login"])
         driver.execute_async_script.assert_not_called()
 
     def test_existing_profile_session_reconciliation_rejects_changed_or_untrusted_target(self):
@@ -1271,7 +1278,7 @@ class RetainedWindowFlowTests(unittest.TestCase):
         self.assertTrue(result["success"], result.get("error"))
         mocks["opened"].assert_not_called()
         mocks["navigate"].assert_called_once()
-        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login_with?callback_path=/")
+        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
         mocks["_submit_email_and_wait_next"].assert_called_once()
         self.assertTrue(mocks["_submit_email_and_wait_next"].call_args.kwargs["allow_login_password"])
         mocks["_fill_password_page_if_present"].assert_called_once()

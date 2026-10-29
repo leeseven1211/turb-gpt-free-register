@@ -1511,10 +1511,11 @@ def run_roxy_registration(
             report_job_progress("page", "skipped", "已接管原失败窗口，从当前认证页面继续")
         else:
             report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
-            # 已核验的原身份恢复走原生登录入口，避免已有账号被导向创建密码。
+            # 本地恢复先经官方表单携带邮箱上下文；其他页面辅助保留现有原生入口。
             entry_url = (
                 "https://chatgpt.com/auth/login_with?callback_path=/"
-                if resume_scope and existing_password else "https://chatgpt.com/auth/login"
+                if _browser_helpers is not None and resume_scope and existing_password
+                else "https://chatgpt.com/auth/login"
             )
             logger.info("[Roxy注册] 打开登录页：%s", entry_url)
             if native_signin_diagnostics is not None and _is_native_signin_page(entry_url):

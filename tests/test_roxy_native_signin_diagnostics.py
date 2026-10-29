@@ -60,6 +60,10 @@ class NativeSigninDiagnosticsTests(unittest.TestCase):
         })
         self.assertNotIn("private-token", repr(result))
         self.assertEqual(self.shared.observe_network.call_count, 3)
+        info = classify_task_error("StageTimeout: 邮箱输入准备超时", task_type="registration", stage="submit_email",
+                                   error_code="registration_failed", result_summary=result)
+        self.assertEqual(info["code"], "auth_cloudflare_challenge")
+        self.assertEqual(info["display_code"], "OA-AUTH-CF-CHALLENGE")
 
     def test_unrelated_tab_challenge_cannot_replace_current_target(self):
         self.start()
@@ -214,7 +218,8 @@ class NativeSigninFlowTests(unittest.TestCase):
             def navigate(_driver, url, **_kwargs):
                 driver.current_url = url
                 observe = capture.set_auth_diagnostic_observer.call_args.args[0]
-                observe(navigation(), phase="request")
+                observe(event("document", url=url, method="GET", started=10.0,
+                              resource_type="Document"), phase="request")
                 observe(event("signin"), phase="request")
                 observe(event("signin", status=response_status, headers=response_headers), phase="response")
 
@@ -223,20 +228,16 @@ class NativeSigninFlowTests(unittest.TestCase):
             result = flow.run_registration(**({"_browser_helpers": helpers} if helpers is not None else {}))
         return result, mocks
 
-    def test_final_timeout_has_challenge_cause_and_preserves_original_execution(self):
+    def test_local_form_timeout_does_not_claim_native_challenge_and_preserves_execution(self):
         result, mocks = self.run_failure(response_headers={"cf-mitigated": "challenge"})
         self.assertFalse(result["success"])
-        self.assertEqual(result.get("cause_code"), "auth_cloudflare_challenge")
-        self.assertIn("HTTP 403", result["error"])
-        self.assertIn("Cloudflare", result["error"])
+        self.assertNotIn("cause_code", result)
+        self.assertNotIn("Cloudflare", result["error"])
         self.assertIn("StageTimeout", result["error"])
-        info = classify_task_error(result["error"], task_type="registration", stage="submit_email",
-                                   error_code=result["error_code"], result_summary=result)
-        self.assertEqual(info["code"], "auth_cloudflare_challenge")
-        self.assertEqual(info["display_code"], "OA-AUTH-CF-CHALLENGE")
         self.assertEqual(result["error_code"], "registration_failed")
         self.assertFalse(result["request_unknown"])
         mocks["navigate"].assert_called_once()
+        self.assertEqual(mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
         self.assertEqual(mocks["navigate"].call_args.kwargs["attempts"], 2)
         mocks["_submit_email_and_wait_next"].assert_called_once()
         self.assertEqual(mocks["_submit_email_and_wait_next"].call_args.kwargs["attempts"], 3)
