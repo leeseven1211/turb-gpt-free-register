@@ -645,6 +645,12 @@ def _executor():
     return executor
 
 
+def _extract_executor():
+    from core.account_operation_executor import extract_executor
+
+    return extract_executor
+
+
 _OPERATION_HANDLER_ALLOWLISTS: dict[str, Iterable[str] | Mapping[str, str]] = {}
 
 
@@ -667,8 +673,8 @@ def register_operation_handler(
 ) -> None:
     """Register the reusable context-based durable handler contract.
 
-    The handler is submitted to the process-wide ``AccountOperationExecutor``
-    by the existing dispatcher. It receives a context only after the worker
+    The handler is submitted to its task type's executor by the dispatcher.
+    It receives a context only after the worker
     atomically claims the Run; it must perform business writeback and then
     return or call ``context.finish`` with an explicit result.
     """
@@ -1539,7 +1545,7 @@ def _reserve_dispatch_capacity(
     run: Mapping[str, Any],
     handler: tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]] | None,
 ) -> tuple[bool, tuple[tuple[str, str], ...] | None]:
-    """在占用共享 worker 前，一次预约平台和批次等全部容量维度。
+    """在占用执行池 worker 前，一次预约平台和批次等全部容量维度。
 
     旧 key 回调仍可返回字符串；多个门限使用 key 到 limit 的映射。
     """
@@ -1596,12 +1602,22 @@ def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
 
 
 def dispatch_registered_once(*, limit: int | None = None) -> int:
-    """Submit a finite batch of registered durable runs through the budget."""
-    global _PREFER_EXTRACT_CONTINUATIONS
+    """分别调度提链和其他账号操作，避免任一队列占满另一类扫描窗口。"""
     handlers, capacity_handlers = _run_handler_snapshot()
-    if not handlers:
-        return 0
-    slots = _executor().available_slots()
+    submitted = 0
+    for extraction in (False, True):
+        group = {name: handler for name, handler in handlers.items()
+                 if (name == "extract_link") == extraction}
+        if not group:
+            continue
+        pool = _extract_executor() if extraction else _executor()
+        submitted += _dispatch_registered_group(group, capacity_handlers, pool, limit=limit)
+    return submitted
+
+
+def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int | None = None) -> int:
+    global _PREFER_EXTRACT_CONTINUATIONS
+    slots = pool.available_slots()
     if slots <= 0:
         return 0
     source_systems: set[str] = set()
@@ -1653,7 +1669,7 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
             release_dispatch(int(run["id"]))
             continue
         try:
-            future = _executor().try_submit(handler, int(run["id"]))
+            future = pool.try_submit(handler, int(run["id"]))
         except Exception:
             release_dispatch(int(run["id"]))
             _release_dispatch_capacity(capacity_token)

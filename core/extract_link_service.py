@@ -27,7 +27,7 @@ from config.schema import get_config_snapshot, validate_value
 from core import db
 from core.operation_runtime import OperationCancelled
 from core import task_run_log
-from core.account_operation_executor import configured_workers
+from core.account_operation_executor import configured_extract_workers
 from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 
@@ -621,12 +621,12 @@ def _cdk(value: str | None = None) -> str:
     return cdk
 
 
-_QUEUE_LIMIT = _int_setting("EXTRACT_LINK_QUEUE_LIMIT", 500, configured_workers(), 5000)
+_QUEUE_LIMIT = _int_setting("EXTRACT_LINK_QUEUE_LIMIT", 500, 1, 5000)
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)
 
 
 def queue_settings() -> dict:
-    return {"workers": configured_workers(), "queue_limit": _QUEUE_LIMIT}
+    return {"workers": configured_extract_workers(), "queue_limit": _QUEUE_LIMIT}
 
 
 def _session():
@@ -1807,7 +1807,7 @@ def _provider_dispatch_capacity_key(run: dict) -> str | dict[str, int]:
     provider_id = provider_id if provider_id in _PROVIDER_SETTINGS else "invalid"
     workers = run.get("batch_workers")
     if run.get("batch_id") and isinstance(workers, int) and not isinstance(workers, bool) and 1 <= workers <= 50:
-        # 一次预约两个维度，批次满额时不消耗平台或共享 worker。
+        # 一次预约两个维度，批次满额时不消耗平台或提链 worker。
         return {provider_id: _provider_dispatch_capacity_limit(provider_id),
                 f"batch:{int(run['batch_id'])}": workers}
     return provider_id

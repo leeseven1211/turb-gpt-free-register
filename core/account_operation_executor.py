@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared executor for post-registration account operations.
-
-Registration has its own worker pools and must not consume the account
-operation concurrency budget. All account-page and account-maintenance
-operations submit through this executor so one batch cannot create one raw
-thread per account.
-"""
+"""注册后的账号操作与提链任务使用独立的并发执行池。"""
 from __future__ import annotations
 
 import threading
@@ -69,8 +63,17 @@ def configured_workers() -> int:
     return max(_MIN_WORKERS, value)
 
 
+def configured_extract_workers() -> int:
+    """按各平台上限计算提链池容量，实际运行仍受平台及批次限制。"""
+    from core.extract_link_service import _provider_dispatch_capacity_limit
+
+    return sum(_provider_dispatch_capacity_limit(provider) for provider in (
+        "legacy", "lumen_flow", "huanguang",
+    ))
+
+
 class AccountOperationExecutor:
-    """A lazily-created account-operation pool with one process-wide budget.
+    """A lazily-created operation pool with one process-wide budget.
 
     A worker-count reload deliberately leaves already accepted work on the old
     pool.  That is useful for draining a batch, but it means the pool generation
@@ -79,7 +82,10 @@ class AccountOperationExecutor:
     so an old and a new generation still share one budget.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, worker_provider: Callable[[], int] | None = None, *,
+                 thread_name_prefix: str = "account-op") -> None:
+        self._worker_provider = worker_provider
+        self._thread_name_prefix = thread_name_prefix
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._executor: ThreadPoolExecutor | None = None
@@ -91,7 +97,7 @@ class AccountOperationExecutor:
         self._active = 0
 
     def _refresh_budget_locked(self, requested: int | None = None) -> int:
-        value = configured_workers() if requested is None else int(requested)
+        value = self.workers() if requested is None else int(requested)
         value = max(_MIN_WORKERS, value)
         if self._budget_limit != value:
             self._budget_limit = value
@@ -122,7 +128,7 @@ class AccountOperationExecutor:
                 self._condition.notify_all()
 
     def _current_executor(self) -> ThreadPoolExecutor:
-        requested = configured_workers()
+        requested = self.workers()
         with self._condition:
             self._refresh_budget_locked(requested)
             if self._executor is None or requested != self._workers:
@@ -137,7 +143,7 @@ class AccountOperationExecutor:
                 self._workers = requested
                 self._executor = ThreadPoolExecutor(
                     max_workers=requested,
-                    thread_name_prefix=f"account-op-{self._generation}",
+                    thread_name_prefix=f"{self._thread_name_prefix}-{self._generation}",
                 )
             return self._executor
 
@@ -205,7 +211,7 @@ class AccountOperationExecutor:
         return future
 
     def workers(self) -> int:
-        return configured_workers()
+        return (self._worker_provider or configured_workers)()
 
     def available_slots(self) -> int:
         """Return slots not already accepted by any pool generation."""
@@ -218,7 +224,7 @@ class AccountOperationExecutor:
         with self._condition:
             limit = self._refresh_budget_locked()
             return {
-                "configured_workers": configured_workers(),
+                "configured_workers": self.workers(),
                 "budget": limit,
                 "accepted": self._accepted,
                 "active": self._active,
@@ -243,6 +249,7 @@ class AccountOperationExecutor:
 
 
 executor = AccountOperationExecutor()
+extract_executor = AccountOperationExecutor(configured_extract_workers, thread_name_prefix="extract-link")
 
 
-__all__ = ["AccountOperationExecutor", "configured_workers", "executor", "operation_log_context"]
+__all__ = ["AccountOperationExecutor", "configured_workers", "configured_extract_workers", "executor", "extract_executor", "operation_log_context"]

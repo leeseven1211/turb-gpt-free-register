@@ -256,7 +256,7 @@ function extractWorkbenchRenderBatchWorkers() {
   const hint = extractWorkbenchNode('[data-workbench-concurrency-hint]');
   const workers = extractWorkbenchBatchWorkers();
   if (hint) hint.textContent = workers
-    ? `本批最多同时运行 ${workers} 个账号，仍受平台与共享执行额度限制。`
+    ? `本批最多同时运行 ${workers} 个账号，实际并发还受平台并发限制。`
     : `批次并发请输入 1 到 ${extractWorkbenchBatchWorkersMax()} 的整数。`;
 }
 

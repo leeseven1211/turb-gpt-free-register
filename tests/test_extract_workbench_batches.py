@@ -453,7 +453,7 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         operation.finish_run(retried["id"], status="cancelled", execution_id="retry", lease_token=retry_lease)
         self.assertIsNotNone(operation.claim_run(queued["run"]["id"], execution_id="released", worker_pid=os.getpid()))
 
-    def test_dispatch_reserves_batch_and_provider_capacity_before_shared_workers(self):
+    def test_dispatch_reserves_batch_and_provider_capacity_before_extract_workers(self):
         for provider_limit, shared_workers, expected_first in ((4, 4, 3), (2, 4, 2), (4, 2, 2)):
             with self.subTest(provider_limit=provider_limit, shared_workers=shared_workers):
                 self.assert_dispatch_capacity(provider_limit, shared_workers, expected_first)
@@ -498,7 +498,7 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         try:
             with (
                 patch("core.account_operation_executor.configured_workers", return_value=shared_workers),
-                patch.object(task_gateway, "_executor", return_value=executor),
+                patch.object(task_gateway, "_extract_executor", return_value=executor),
                 patch.dict(task_gateway._DISPATCH_HANDLERS, {}, clear=True),
                 patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True),
                 patch.dict(task_gateway._DISPATCH_CAPACITY_COUNTS, {}, clear=True),

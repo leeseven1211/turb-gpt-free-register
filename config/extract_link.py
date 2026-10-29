@@ -12,7 +12,7 @@ EXTRACT_LINK_CDK: str = schema_default("EXTRACT_LINK_CDK")
 # 提链类型：以提链网站 /api/link-types 当前启用项为准
 EXTRACT_LINK_TYPE: str = schema_default("EXTRACT_LINK_TYPE")
 
-# 提链队列容量与超时；共享执行预算仍使用 config.codex.ACCOUNT_BATCH_WORKERS
+# 提链队列容量与超时；提链并发由批次和平台设置控制
 EXTRACT_LINK_QUEUE_LIMIT: int = schema_default("EXTRACT_LINK_QUEUE_LIMIT")
 EXTRACT_LINK_REQUEST_TIMEOUT: int = schema_default("EXTRACT_LINK_REQUEST_TIMEOUT")
 EXTRACT_LINK_EVENT_TIMEOUT: int = schema_default("EXTRACT_LINK_EVENT_TIMEOUT")

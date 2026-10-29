@@ -490,7 +490,7 @@ _FIELD_DEFINITIONS = [
     # ---- 通用配置 ----
     {
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
-        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件、Codex 和提链共用的并发数，填写不小于 1 的整数，由用户自行控制，无固定上限；默认 3，注册线程数另行设置",
+        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件和 Codex 共用的并发数，填写不小于 1 的整数，由用户自行控制，无固定上限；默认 3，注册和提链并发另行设置",
     },
     # ---- 定时任务 ----
     {
@@ -1538,7 +1538,7 @@ _FIELD_DEFINITIONS = [
     {"key": "EXTRACT_LINK_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "启用提链工作台", "help": "关闭后禁止新的提链与后续动作"},
     {"key": "EXTRACT_LINK_DEFAULT_PROVIDER", "file": "extract_link.py", "type": "str", "group": "提链", "label": "默认提链平台", "help": "未指定平台时使用的提链服务"},
     {"key": "EXTRACT_LINK_DEFAULT_MODE", "file": "extract_link.py", "type": "str", "group": "提链", "label": "默认执行模式", "help": "默认只提取链接；支付及后续检查需分别显式开启"},
-    {"key": "EXTRACT_LINK_BATCH_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链", "label": "提链批次默认并发", "help": "新批次默认同时运行账号数，范围 1-50；每批可覆盖，仍受平台并发和共享账号操作预算限制"},
+    {"key": "EXTRACT_LINK_BATCH_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链", "label": "提链批次默认并发", "help": "新批次默认同时运行账号数，范围 1-50；每批可覆盖，实际并发还受平台并发限制"},
     {"key": "EXTRACT_LINK_EXTRACT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "允许提取链接", "help": "全局提取能力开关，与平台开关共同生效"},
     {"key": "EXTRACT_LINK_PREFLIGHT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "提链前预检", "help": "提链前检查账号与 AT 状态；默认开启，关闭后直接使用库中保存的 AT"},
     {"key": "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED", "file": "extract_link.py", "type": "bool", "group": "提链", "label": "预检失败时刷新 AT", "help": "需同时开启提链前预检；仅当预检确认 AT 失效时刷新，默认开启"},
