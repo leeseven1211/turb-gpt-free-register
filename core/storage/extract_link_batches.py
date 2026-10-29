@@ -12,9 +12,9 @@ from core.storage import operation
 
 MAX_BATCH_SIZE = 5000
 MAX_BATCH_WORKERS = 50
-_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
+_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion", "never_provider"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
-_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none"}
+_PROMOTION_FILTERS = {"eligible", "all", "free_trial", "half_price", "other_discount", "other_promo", "none"}
 
 
 def sync_cancelled_account_extraction(run_id: int, *, expected_account_version: str | None = None) -> bool:
@@ -121,6 +121,8 @@ def normalize_filters(filters: dict | None) -> dict[str, str]:
     result["promotion"] = result["promotion"] or "eligible"
     if result["promotion"] not in _PROMOTION_FILTERS:
         raise ValueError("套餐优惠筛选无效")
+    if result["never_provider"] not in {"", "legacy", "lumen_flow", "huanguang"}:
+        raise ValueError("历史提链平台筛选无效")
     for key in ("date_from", "date_to"):
         if result[key]:
             try:
@@ -174,7 +176,20 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
         where.append(f"{status} = ''")
     elif requested_status == "success":
         where.append(f"{status} = 'success'")
-    if selected_filters["promotion"] == "eligible":
+    if selected_filters["never_provider"]:
+        # 检查全部历史执行，包含用户删除展示的任务及更早的 Run；旧记录缺省为虾扯蛋链。
+        where.append(f"""NOT EXISTS (
+            SELECT 1 FROM {operation._table('operation_tasks')} history
+            LEFT JOIN {operation._table('operation_runs')} history_run ON history_run.task_id=history.id
+            LEFT JOIN {operation._table('extract_link_provider_jobs')} history_job ON history_job.run_id=history_run.id
+            WHERE history.account_id=a.id AND history.task_type='extract_link'
+              AND COALESCE(history_job.provider_id, NULLIF(history_run.data->>'provider_id', ''),
+                           NULLIF(history.data->>'provider_id', ''), 'legacy')=%s
+        )""")
+        params.append(selected_filters["never_provider"])
+    if selected_filters["promotion"] == "all":
+        where.append("a.account_promotion_value IN ('free_trial', 'half_price', 'other_discount', 'other_promo', 'none')")
+    elif selected_filters["promotion"] == "eligible":
         where.append("a.account_promotion_value IN ('free_trial', 'half_price', 'other_discount', 'other_promo')")
     else:
         where.append("a.account_promotion_value=%s")

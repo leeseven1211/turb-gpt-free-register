@@ -376,6 +376,39 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         self.assertTrue(task["data"]["allow_no_promotion"])
         self.assertTrue(task["runs"][0]["data"]["allow_no_promotion"])
 
+    def test_never_provider_checks_deleted_and_older_platform_runs(self):
+        ids = self.accounts([{}, {}, {}, {}, {}])
+        for index, provider in ((0, "legacy"), (1, "huanguang"), (2, None), (3, "legacy")):
+            created = operation.create_runtime_task(
+                task_type="extract_link", account_id=ids[index], email="history@example.test",
+                data={"provider_id": provider} if provider else {},
+            )
+            operation.request_run_cancel(created["run"]["id"])
+            if index == 0:
+                operation.retry_runtime_task(created["run"]["task_id"], data={"provider_id": "huanguang"})
+                task = operation.get_task(created["run"]["task_id"])
+                operation.request_run_cancel(task["last_run_id"])
+            if index == 3:
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_tasks')} SET data=data || %s::jsonb WHERE id=%s",
+                                ('{"deleted_by_user":true}', created["run"]["task_id"]))
+        result = extract_link_batches.candidate_accounts(
+            filters={"extract_status": "all", "never_provider": "legacy"}, limit=100,
+        )
+        self.assertEqual({ids[1], ids[4]}, {item["account_id"] for item in result["items"]})
+
+    def test_all_promotions_creates_one_batch_with_known_offers_and_none(self):
+        ids = self.accounts([{}, {"plus_promo_kind": "none"}, {"plus_promo_kind": "unknown"}])
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_batch(
+                provider_id="legacy", mode="auto_payment",
+                filters={"promotion": "all", "extract_status": "all", "never_provider": "legacy"}, limit=100,
+            )
+        self.assertEqual(2, result["started"])
+        tasks = operation.list_tasks(batch_id=result["batch_id"])["items"]
+        self.assertEqual(set(ids[:2]), {item["account_id"] for item in tasks})
+        self.assertTrue(all(operation.get_task(item["id"])["data"]["allow_no_promotion"] for item in tasks))
+
     def test_batch_workers_are_persisted_and_old_batches_keep_existing_limits(self):
         self.accounts([{}, {}])
         with self.provider_patches():

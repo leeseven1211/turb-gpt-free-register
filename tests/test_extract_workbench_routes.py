@@ -271,6 +271,47 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("none", response.get_json()["items"][0]["account_promotion_value"])
 
+    def test_candidate_preview_accepts_provider_history_and_all_known_promotions(self):
+        for provider in ("legacy", "lumen_flow", "huanguang"):
+            with self.subTest(provider=provider), patch.object(
+                extract_workbench.extract_link_service, "preview_workbench_candidates",
+                return_value={"total": 0, "selected_count": 0, "items": []},
+            ) as preview:
+                response = self.client.get(
+                    f"/api/extract-workbench/candidates?extract_status=all&never_provider={provider}&promotion=all"
+                )
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(provider, preview.call_args.kwargs["filters"]["never_provider"])
+                self.assertEqual("all", preview.call_args.kwargs["filters"]["promotion"])
+
+    def test_batch_accepts_provider_history_and_all_known_promotions(self):
+        with patch.object(extract_workbench.extract_link_service, "create_workbench_batch",
+                          return_value={"batch_id": 7, "requested": 1, "started": 1}) as create:
+            response = self.client.post("/api/extract-workbench/batches", json={
+                "provider_id": "legacy", "mode": "auto_payment", "type": "upi",
+                "submission_id": "44daab12-8f2e-49a9-af4e-d9347a8ef770",
+                "filters": {"extract_status": "all", "never_provider": "legacy", "promotion": "all"},
+            })
+        self.assertEqual(202, response.status_code)
+        self.assertEqual("legacy", create.call_args.kwargs["filters"]["never_provider"])
+        self.assertEqual("all", create.call_args.kwargs["filters"]["promotion"])
+
+    def test_provider_history_rejects_invalid_values_before_service(self):
+        valid = {"provider_id": "legacy", "mode": "auto_payment",
+                 "submission_id": "44daab12-8f2e-49a9-af4e-d9347a8ef770"}
+        for provider in ("unknown", "LEGACY", "legacy,huanguang", "x" * 65):
+            with self.subTest(provider=provider), patch.object(
+                extract_workbench.extract_link_service, "preview_workbench_candidates",
+            ) as preview, patch.object(extract_workbench.extract_link_service, "create_workbench_batch") as create:
+                self.assertEqual(400, self.client.get(
+                    "/api/extract-workbench/candidates", query_string={"never_provider": provider}
+                ).status_code)
+                self.assertEqual(400, self.client.post(
+                    "/api/extract-workbench/batches", json={**valid, "filters": {"never_provider": provider}}
+                ).status_code)
+                preview.assert_not_called()
+                create.assert_not_called()
+
     def test_create_batch_submits_filters_and_returns_batch_counts(self):
         with patch.object(
             extract_workbench.extract_link_service, "create_workbench_batch", create=True,

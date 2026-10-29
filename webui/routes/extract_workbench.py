@@ -27,9 +27,10 @@ _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
 _MAX_BATCH_SIZE = 5000
 _MAX_BATCH_WORKERS = 50
-_CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
+_CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion", "never_provider"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
-_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none"}
+_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none", "all"}
+_NEVER_PROVIDERS = {"", "legacy", "lumen_flow", "huanguang"}
 _BATCH_COUNT_FIELDS = (
     "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
     "plus_confirmed", "needs_attention",
@@ -133,6 +134,11 @@ def _candidate_filters(value: Any) -> dict[str, str] | None:
     result["promotion"] = result["promotion"] or "eligible"
     if result["promotion"] not in _PROMOTION_FILTERS:
         return None
+    if "never_provider" in value:
+        provider = value["never_provider"]
+        if not isinstance(provider, str) or provider.strip() not in _NEVER_PROVIDERS:
+            return None
+        result["never_provider"] = provider.strip()
     for field in ("date_from", "date_to"):
         if result[field]:
             if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", result[field]):

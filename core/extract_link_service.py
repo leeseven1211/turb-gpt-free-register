@@ -2570,7 +2570,7 @@ def create_workbench_batch(
         )
         batch_id = int(batch["id"])
     skipped = failed = started = 0
-    allow_no_promotion = extract_link_batches.normalize_filters(filters)["promotion"] == "none"
+    allow_no_promotion = extract_link_batches.normalize_filters(filters)["promotion"] in {"none", "all"}
     complete = False
     try:
         # 同一批次捕获一次原始配置；gateway 按 allowlist 完成唯一一次键名投影。
