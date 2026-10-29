@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 from core import record_store
 from core.extract_link_providers.contracts import safe_links, safe_payment_artifact
+from core.extract_link_providers.payment_confirmation import huanguang_scan_completed
 from core.storage import operation as operation_store
+
+
+logger = logging.getLogger(__name__)
 
 
 _SUMMARY_FIELDS = frozenset({
@@ -19,7 +25,7 @@ _SUMMARY_FIELDS = frozenset({
     "completed_steps", "total_steps", "run_attempt", "step_attempt", "failure_code",
     "failure_type", "last_event", "plus_verification_status", "automatic_payment_status",
     "automatic_payment_terminal", "automatic_payment_requires_reconcile", "remote_polling",
-    "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred",
+    "payment_check_status", "platform_plus_status", "entitlement_active", "entitlement_inferred", "xxsyun_status",
     "payment_confirmation_source", "payment_confirmed_plan_checked_at",
     "queue_position", "max_attempts", "cdk_state",
     "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
@@ -444,6 +450,137 @@ def independent_plus_is_confirmed(account: dict | None, *, task_created_at: Any)
     )
     created_at = _workbench_timestamp(task_created_at)
     return checked_at is not None and created_at is not None and checked_at > created_at
+
+
+def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
+    """在同一事务内核实最新终态与套餐事实，再补齐本地任务记录。"""
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (run_id,))
+        run = cur.fetchone()
+        if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown"}:
+            return False
+        if run["cancel_requested_at"] is not None:
+            return False
+        intent = operation_store._remote_write_checkpoint(run.get("data"))
+        if intent and str(intent.get("receipt_state") or intent.get("state") or "started") != "confirmed":
+            return False
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_tasks')} WHERE id=%s FOR UPDATE", (run["task_id"],))
+        task = cur.fetchone()
+        if not task or task["last_run_id"] != run_id or task["source_system"] != "native_operations" or task["task_type"] != "extract_link":
+            return False
+        if task["status"] not in {"attention_required", "request_unknown"} or not task["account_id"]:
+            return False
+        data = _json_object(task["data"], field_name="任务数据")
+        if data.get("provider_id") != "huanguang" or data.get("mode") != "auto_payment":
+            return False
+        cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=%s FOR UPDATE", (run_id,))
+        job = cur.fetchone()
+        if not job or job["provider_id"] != "huanguang" or job["job_id"] != expected_job_id or not job["job_id"]:
+            return False
+        state = _json_object(job["public_state"], field_name="平台公开状态")
+        if job["payment_state"] != "unknown" or not huanguang_scan_completed(state):
+            return False
+        account = record_store.get_row(record_store.ACCOUNTS, int(task["account_id"]), conn=conn, for_update=True)
+        cur.execute(f"""SELECT 1 FROM {operation_store._table('operation_tasks')} newer
+            LEFT JOIN {operation_store._table('operation_runs')} related ON related.task_id=newer.id
+            WHERE newer.account_id=%s AND newer.task_type='extract_link'
+              AND (newer.id>%s OR related.id>%s) LIMIT 1""", (task["account_id"], task["id"], run_id))
+        if cur.fetchone():
+            return False
+        if not independent_plus_is_confirmed(account, task_created_at=task["created_at"]):
+            return False
+        checked_at = str(account.get("plan_checked_at") or "").strip(" ") or str(account.get("plan_last_success_at") or "").strip(" ")
+        checked_time = _workbench_timestamp(checked_at)
+        boundaries = [_workbench_timestamp(value) for value in (task["created_at"], job["updated_at"], run["completed_at"])]
+        # 这里只补齐任务结束后的独立查询；扫码前或原任务内的查询不能反推本次付款。
+        if any(value is None for value in boundaries) or checked_time <= max(boundaries):
+            return False
+        summary = dict(state.get("summary") or {})
+        message = "原单扫码已完成，后续独立套餐查询确认 Plus 到账"
+        for key in ("local_reconcile_reason", "local_reconcile_halted_at", "failure_message", "failure_code", "failure_type"):
+            summary.pop(key, None)
+        summary.update({
+            "payment_confirmation_source": "local_plan_check", "payment_confirmed_plan_checked_at": checked_at,
+            "automatic_payment_requires_reconcile": False, "local_plan_check_pending": False,
+            "local_reconcile_halted": False, "current_step": message, "percent": 100,
+            "outcome": "success", "plus_status": "confirmed",
+        })
+        state.update(payment_state="succeeded", plus_status="confirmed", summary=summary, message=message)
+        result_summary = _json_object(run.get("result_summary") or {}, field_name="执行摘要")
+        for key in ("failure_stage", "failure_event_id", "failure_evidence", "requested_status"):
+            result_summary.pop(key, None)
+        result_summary.update({
+            "extraction_status": "succeeded", "payment_status": "succeeded", "plus_status": "confirmed",
+            "payment_confirmation_source": "local_plan_check", "payment_confirmed_plan_checked_at": checked_at,
+            "outcome": "success", "reconcile_required": False, "message": message,
+        })
+        cur.execute(f"""UPDATE {operation_store._table('extract_link_provider_jobs')}
+            SET payment_state='succeeded', public_state=%s::jsonb, updated_at=now() WHERE run_id=%s""", (_dump(state), run_id))
+        failure_keys = ['failure_stage', 'failure_event_id', 'failure_evidence']
+        cur.execute(f"""UPDATE {operation_store._table('operation_runs')}
+            SET status='success', progress_stage='complete', error_category=NULL, error_code=NULL,
+                error_message=NULL, result_summary=%s::jsonb, data=data - %s::text[] WHERE id=%s""",
+            (_dump(result_summary), failure_keys, run_id))
+        cur.execute(f"""UPDATE {operation_store._table('operation_tasks')}
+            SET status='success', target_status='completed', current_stage='complete', updated_at=now(),
+                error_category=NULL, error_code=NULL, error_message=NULL, next_actions='[]'::jsonb,
+                data=data - %s::text[] WHERE id=%s AND last_run_id=%s""", (failure_keys, task["id"], run_id))
+        event_id = uuid.uuid4().hex
+        cur.execute(f"""INSERT INTO {operation_store._table('operation_events')}
+            (event_uuid, task_id, run_id, source_system, source_id, level, stage, event_type, message, detail)
+            VALUES (%s,%s,%s,'native_operations',%s,'INFO','payment','payment.local_reconciled',%s,%s::jsonb)""",
+            (event_id, task["id"], run_id, event_id, message, _dump({
+                "previous_status": run["status"], "payment_confirmation_source": "local_plan_check",
+                "payment_confirmed_plan_checked_at": checked_at, "payment_status": "succeeded", "plus_status": "confirmed",
+                "step_state": "success", "percent": 100,
+            })))
+        # 同一 Run 的后续独立证据解除原失败阶段；历史事件继续保留用于排查。
+        for stage, stage_message in (("plan_check", "后续独立套餐查询已确认 Plus 到账"), ("plus", "Plus 到账已由独立套餐查询核实")):
+            stage_event_id = uuid.uuid4().hex
+            cur.execute(f"""INSERT INTO {operation_store._table('operation_events')}
+                (event_uuid, task_id, run_id, source_system, source_id, level, stage, event_type, message, detail)
+                VALUES (%s,%s,%s,'native_operations',%s,'INFO',%s,'stage.success',%s,%s::jsonb)""",
+                (stage_event_id, task["id"], run_id, stage_event_id, stage, stage_message, _dump({
+                    "step_state": "success", "payment_confirmation_source": "local_plan_check",
+                    "payment_confirmed_plan_checked_at": checked_at,
+                })))
+        if task["batch_id"]:
+            operation_store._refresh_batches(cur, [int(task["batch_id"])])
+        return True
+
+
+def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, int]:
+    """用已保存的原单及后续 Plus 查询补齐支付状态，不发起网络请求或重跑。"""
+    if account_id is not None and (isinstance(account_id, bool) or not isinstance(account_id, int) or account_id < 1):
+        raise ValueError("account_id 参数无效")
+    operation_store.init()
+    where = [
+        "task.source_system='native_operations'", "task.task_type='extract_link'",
+        "task.data->>'provider_id'='huanguang'", "task.data->>'mode'='auto_payment'",
+        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown')",
+        "task.status IN ('attention_required','request_unknown')", "run.cancel_requested_at IS NULL",
+        "job.provider_id='huanguang'", "job.payment_state='unknown'", "COALESCE(job.job_id,'')<>''",
+    ]
+    params = []
+    if account_id is not None:
+        where.append("task.account_id=%s")
+        params.append(account_id)
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""SELECT run.id, job.job_id FROM {operation_store._table('operation_tasks')} task
+            JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
+            JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+            WHERE {' AND '.join(where)} ORDER BY run.id""", tuple(params))
+        candidates = [dict(row) for row in cur.fetchall()]
+    result = {"confirmed": 0, "skipped": 0, "failed": 0}
+    for candidate in candidates:
+        try:
+            confirmed = _reconcile_completed_payment(int(candidate["id"]), expected_job_id=str(candidate["job_id"]))
+        except Exception as exc:
+            result["failed"] += 1
+            logger.warning("[提链] 本地支付状态补齐失败：run_id=%s error_type=%s", candidate["id"], type(exc).__name__)
+        else:
+            result["confirmed" if confirmed else "skipped"] += 1
+    return result
 
 
 def _workbench_timestamp_sql(value_sql: str) -> str:
