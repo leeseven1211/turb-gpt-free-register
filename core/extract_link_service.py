@@ -32,6 +32,7 @@ from core.operations import task_gateway as account_task_store
 from core.task_reporter import TaskReporter
 
 logger = logging.getLogger(__name__)
+_WORKBENCH_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 _RUNTIME_ENV_LOAD_LOCK = threading.RLock()
 _RUNTIME_ENV_SIGNATURE = None
 _HUANGUANG_QUOTA_LOCK = threading.RLock()
@@ -2564,6 +2565,94 @@ def workbench_batch_detail(batch_id: int) -> dict | None:
         return None
     counts = extract_link_batches.batch_task_counts([int(batch_id)])
     return _workbench_batch_summary(batches[0], counts.get(int(batch_id), {}))
+
+
+def cancel_workbench_batch(batch_id: int) -> dict | None:
+    """取消指定工作台批次的排队 Run，保留已经开始执行的任务。"""
+    from core import record_store
+    from core.storage import extract_link_batches, operation
+
+    if isinstance(batch_id, bool) or not isinstance(batch_id, int) or batch_id < 1:
+        raise ValueError("batch_id 参数无效")
+    batches = extract_link_batches.batch_rows(batch_id=batch_id).get("items") or []
+    if not batches:
+        return None
+    batch = batches[0]
+    data = batch.get("data") if isinstance(batch.get("data"), dict) else {}
+    if (data.get("submission_complete") is False
+            and data.get("submission_skipped") is None and data.get("submission_failed") is None):
+        try:
+            created_at = datetime.fromisoformat(str(batch.get("created_at") or "").replace("Z", "+00:00"))
+            created_at = created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at
+        except ValueError:
+            created_at = _WORKBENCH_PROCESS_STARTED_AT
+        # 当前服务仍可能继续入队；重启前遗留的未收尾批次可以取消现存队列。
+        if created_at >= _WORKBENCH_PROCESS_STARTED_AT:
+            raise ValueError("批次正在入队，请等待入队结束后再取消")
+
+    # 先读取完整批次快照，再执行取消，避免列表缩短后翻页漏项。
+    # 读取时不按排队状态筛选，worker 开始执行不会挤动后续分页。
+    queued_runs = {}
+    cancelled_runs = set()
+    page = 1
+    page_size = 200
+    while True:
+        tasks = operation.list_tasks(
+            batch_id=batch_id, task_type="extract_link", source="native_operations",
+            page=page, page_size=page_size,
+        )
+        items = tasks["items"]
+        for task in items:
+            run_id = task.get("last_run_id")
+            if not run_id:
+                continue
+            if task.get("status") == "queued":
+                queued_runs[int(run_id)] = int(task.get("account_id") or 0)
+            elif task.get("status") == "cancelled" and task.get("account_id"):
+                cancelled_runs.add(int(run_id))
+        if page * page_size >= tasks["total"] or len(items) < page_size:
+            break
+        page += 1
+
+    cancelled = skipped = failed = 0
+    changed = False
+    for run_id, account_id in sorted(queued_runs.items()):
+        try:
+            account = record_store.get_row(record_store.ACCOUNTS, account_id, include_version=True) if account_id else None
+            version = account.get("__record_version") if account else None
+            result = operation.request_run_cancel(
+                run_id, reason="用户取消提链批次的排队任务", expected_status="queued",
+            )
+            if result.get("cancel_skipped") or result.get("status") != "cancelled":
+                skipped += 1
+                continue
+            changed = True
+            if account_id and not extract_link_batches.sync_cancelled_account_extraction(
+                run_id, expected_account_version=version,
+            ):
+                failed += 1
+                logger.warning("[提链] 批次取消后的账号状态未同步：batch_id=%s run_id=%s", batch_id, run_id)
+                continue
+            cancelled += 1
+        except LookupError:
+            skipped += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("[提链] 批次排队取消失败：batch_id=%s run_id=%s error_type=%s",
+                batch_id, run_id, type(exc).__name__)
+    # 重复操作只补齐已取消任务的账号状态，不重复统计为本次新取消。
+    for run_id in sorted(cancelled_runs):
+        try:
+            if not extract_link_batches.sync_cancelled_account_extraction(run_id):
+                failed += 1
+                logger.warning("[提链] 批次已取消任务的账号状态未同步：batch_id=%s run_id=%s", batch_id, run_id)
+        except Exception as exc:
+            failed += 1
+            logger.warning("[提链] 批次已取消任务的账号状态同步失败：batch_id=%s run_id=%s error_type=%s",
+                batch_id, run_id, type(exc).__name__)
+    if changed:
+        account_task_store.notify_dispatch()
+    return {"batch_id": batch_id, "cancelled": cancelled, "skipped": skipped, "failed": failed}
 
 
 def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:

@@ -1,7 +1,7 @@
 const EXTRACT_WORKBENCH_PAGE_SIZE = 10;
 let EXTRACT_WORKBENCH_ROOT = null;
 let EXTRACT_WORKBENCH_CONFIG = null;
-let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
+let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, cancellingBatch:'', preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
 let EXTRACT_WORKBENCH_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_CONFIG_PROMISE = null;
@@ -356,6 +356,18 @@ function extractWorkbenchBatchStatus(status) {
   return ({queued:'排队中',running:'运行中',success:'已完成',partial_success:'部分成功',partial:'部分完成',partial_submission:'部分入队',failed:'失败',attention_required:'待处理',cancelled:'已取消',completed:'已完成'})[status] || extractWorkbenchStatusLabel(status);
 }
 
+function extractWorkbenchRenderBatchCancel() {
+  const button = extractWorkbenchNode('[data-workbench-cancel-batch]');
+  if (!button) return;
+  const cancelling = Boolean(EXTRACT_WORKBENCH_STATE.cancellingBatch);
+  button.disabled = cancelling || !EXTRACT_WORKBENCH_STATE.batch;
+  button.textContent = cancelling ? '取消中…' : '取消批次';
+  button.title = cancelling ? `正在取消批次 #${EXTRACT_WORKBENCH_STATE.cancellingBatch} 的排队任务，请稍候`
+    : EXTRACT_WORKBENCH_STATE.batch ? '取消当前整批排队任务（含 CDK 额度等待），运行中与已完成任务保留'
+    : '请先选择一个具体批次，全部任务视图不能取消批次';
+  button.setAttribute('aria-busy', String(cancelling));
+}
+
 function extractWorkbenchRenderBatches() {
   const select = extractWorkbenchNode('[data-workbench-batch-select]');
   if (select) {
@@ -372,6 +384,7 @@ function extractWorkbenchRenderBatches() {
   const next = extractWorkbenchNode('[data-workbench-batch-page="next"]');
   if (previous) previous.disabled = EXTRACT_WORKBENCH_STATE.batchPage <= 1;
   if (next) next.disabled = EXTRACT_WORKBENCH_STATE.batchPage >= pages;
+  extractWorkbenchRenderBatchCancel();
 }
 
 function extractWorkbenchSwitchBatch(batchId) {
@@ -381,7 +394,38 @@ function extractWorkbenchSwitchBatch(batchId) {
     const node = extractWorkbenchNode(selector);
     if (node) node.value = '';
   }
+  extractWorkbenchRenderBatchCancel();
   return loadExtractWorkbench({force:true});
+}
+
+async function extractWorkbenchCancelBatch() {
+  const batchId = EXTRACT_WORKBENCH_STATE.batch;
+  if (!batchId || EXTRACT_WORKBENCH_STATE.cancellingBatch) return;
+  const batch = EXTRACT_WORKBENCH_STATE.batches.find(item => String(item.batch_id) === String(batchId)) || EXTRACT_WORKBENCH_STATE.batchDetail;
+  const title = batch?.title || `批次 #${batchId}`;
+  if (!window.confirm(`确认取消「${title}」整批尚未开始的排队任务（包含 CDK 额度等待）？\n此操作覆盖整个批次，不受当前筛选或分页限制；运行中与已完成任务保留。`)) return;
+  EXTRACT_WORKBENCH_STATE.cancellingBatch = batchId;
+  extractWorkbenchRenderBatchCancel();
+  try {
+    const result = await extractWorkbenchRequest(`/api/extract-workbench/batches/${encodeURIComponent(batchId)}/cancel`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}),
+    });
+    if (result?.ok !== true) throw new Error(result?.error || '取消批次失败，请重试');
+    const cancelled = Number(result.cancelled || 0);
+    const skipped = Number(result.skipped || 0);
+    const failed = Number(result.failed || 0);
+    const message = failed > 0
+      ? `批次 #${batchId}：已取消 ${cancelled} 个排队任务，跳过 ${skipped} 个，失败 ${failed} 个，可再次点击完成剩余处理。`
+      : cancelled > 0 ? `批次 #${batchId}：已取消 ${cancelled} 个排队任务，跳过 ${skipped} 个。`
+      : `批次 #${batchId}：没有可取消的排队任务，跳过 ${skipped} 个。`;
+    await loadExtractWorkbench({force:true});
+    if (typeof showToast === 'function') showToast(message);
+  } catch (error) {
+    if (typeof showToast === 'function') showToast(error?.message || '取消批次失败，请重试');
+  } finally {
+    EXTRACT_WORKBENCH_STATE.cancellingBatch = '';
+    extractWorkbenchRenderBatchCancel();
+  }
 }
 
 function extractWorkbenchScheduleRefresh({retry = false} = {}) {
@@ -1005,6 +1049,8 @@ function extractWorkbenchBindEvents() {
     if (paymentEntry) { void extractWorkbenchShowPaymentEntry(paymentEntry.dataset.workbenchPaymentEntry, paymentEntry); return; }
     const allBatches = event.target.closest('[data-workbench-all-batches]');
     if (allBatches) { void extractWorkbenchSwitchBatch(''); return; }
+    const cancelBatch = event.target.closest('[data-workbench-cancel-batch]');
+    if (cancelBatch) { void extractWorkbenchCancelBatch(); return; }
     const batchPage = event.target.closest('[data-workbench-batch-page]');
     if (batchPage) {
       EXTRACT_WORKBENCH_STATE.batchPage = Math.max(1, EXTRACT_WORKBENCH_STATE.batchPage + (batchPage.dataset.workbenchBatchPage === 'next' ? 1 : -1));

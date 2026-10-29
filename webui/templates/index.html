@@ -9,7 +9,7 @@
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261022-five-by-two-v3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261029-cancel-batch-v1') }}">
   <style>
     #butlerImportModal { padding: 0; margin: auto; width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); color: var(--ui-color-text); }
     #butlerImportModal:not([open]) { display: none; }
@@ -374,6 +374,7 @@
         <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         <div class="extract-workbench-batch-query">
           <label class="extract-workbench-batch-picker"><span>批次查询</span><select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
+          <button type="button" class="btn extract-workbench-cancel-batch" data-workbench-cancel-batch disabled aria-busy="false" title="请先选择一个具体批次，全部任务视图不能取消批次">取消批次</button>
           <button type="button" class="btn extract-workbench-all-batches" data-workbench-all-batches>全部任务</button>
           <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
         </div>
@@ -1135,6 +1136,6 @@
 <script src="{{ url_for('static', filename='js/modern/butler-import.js', v='20261028-import-progress-v3') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}?v=20261027-mail-boundary-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261023-progress-refresh-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261029-cancel-batch-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

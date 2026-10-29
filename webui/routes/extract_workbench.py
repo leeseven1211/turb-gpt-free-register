@@ -315,6 +315,26 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             return _error("提链批次详情暂不可用", 503)
         return jsonify({"item": item})
 
+    @bp.post("/api/extract-workbench/batches/<int:batch_id>/cancel")
+    def cancel_extract_workbench_batch(batch_id: int):
+        if batch_id < 1:
+            return _error("batch_id 参数无效", 400)
+        _, error = _parse_object_body(set())
+        if error is not None:
+            return error
+        try:
+            result = extract_link_service.cancel_workbench_batch(batch_id)
+        except ValueError:
+            return _error("批次正在入队，请等待入队结束后再取消", 409)
+        except Exception as exc:
+            return _service_error("取消批次", exc)
+        if result is None:
+            return _error("批次不存在", 404)
+        if not isinstance(result, dict):
+            return _error("提链批次取消结果暂不可用", 503)
+        return jsonify({"ok": True, "batch_id": batch_id,
+            **{name: _safe_count(result.get(name)) for name in ("cancelled", "skipped", "failed")}})
+
     @bp.post("/api/extract-workbench/batches")
     def create_extract_workbench_batch():
         data, error = _parse_object_body({"title", "provider_id", "mode", "type", "options", "filters", "limit", "submission_id", "workers"})

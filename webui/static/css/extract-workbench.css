@@ -57,6 +57,7 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
 .extract-workbench-page .btn:hover { border-color: #aab8b3; background: #f8fbfa; }
 .extract-workbench-page .btn.extract-workbench-primary { border-color: #176f5e; color: #fff; background: #176f5e; }
 .extract-workbench-page .btn.extract-workbench-primary:hover { border-color: #125d4e; background: #125d4e; }
+.extract-workbench-page .btn.extract-workbench-cancel-batch { color: var(--ew-red); }
 .extract-workbench-page button:disabled { opacity: .48; cursor: not-allowed; }
 .extract-workbench-page svg { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .extract-workbench-page :is(button, select, input, summary):focus-visible { outline: 3px solid #397a70; outline-offset: 2px; }

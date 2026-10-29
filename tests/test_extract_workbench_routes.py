@@ -20,6 +20,42 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         app.register_blueprint(extract_workbench.create_extract_workbench_blueprint(context))
         self.client = app.test_client()
 
+    def test_cancel_batch_returns_only_result_counts(self):
+        with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch", create=True,
+            return_value={"batch_id": 7, "cancelled": 803, "skipped": 2, "failed": 1, "private_data": "private"}) as cancel:
+            response = self.client.post("/api/extract-workbench/batches/7/cancel", json={})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "batch_id": 7, "cancelled": 803, "skipped": 2, "failed": 1}, response.get_json())
+        cancel.assert_called_once_with(7)
+
+    def test_cancel_batch_rejects_invalid_or_extra_fields(self):
+        with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch", create=True) as cancel:
+            for path, body in (("/api/extract-workbench/batches/0/cancel", {}),
+                ("/api/extract-workbench/batches/7/cancel", {"all": True})):
+                with self.subTest(path=path, body=body):
+                    self.assertEqual(400, self.client.post(path, json=body).status_code)
+            self.assertEqual(400, self.client.post("/api/extract-workbench/batches/7/cancel", json=[]).status_code)
+        cancel.assert_not_called()
+
+    def test_cancel_batch_missing_returns_not_found(self):
+        with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch", create=True, return_value=None):
+            self.assertEqual(404, self.client.post("/api/extract-workbench/batches/7/cancel", json={}).status_code)
+
+    def test_cancel_batch_errors_do_not_expose_internal_details(self):
+        with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch", create=True,
+            side_effect=RuntimeError("private-secret")):
+            response = self.client.post("/api/extract-workbench/batches/7/cancel", json={})
+        self.assertEqual(503, response.status_code)
+        self.assertNotIn("private-secret", response.get_data(as_text=True))
+
+    def test_cancel_batch_still_submitting_returns_conflict(self):
+        with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch",
+            side_effect=ValueError("private-detail")):
+            response = self.client.post("/api/extract-workbench/batches/7/cancel", json={})
+        self.assertEqual(409, response.status_code)
+        self.assertIn("正在入队", response.get_json()["error"])
+        self.assertNotIn("private-detail", response.get_data(as_text=True))
+
     def test_config_returns_only_public_provider_fields(self):
         config = {
             "default_provider": "lumen_flow",

@@ -11,6 +11,8 @@ function createView({timers = null} = {}) {
   const nodes = new Map();
   const requests = [];
   const copied = [];
+  const toasts = [];
+  const confirmations = [];
   const document = {
     getElementById(id) { return nodes.get(id) || null; },
     querySelector() { return null; },
@@ -20,6 +22,7 @@ function createView({timers = null} = {}) {
   const timerApi = timers || {setTimeout, clearTimeout};
   const window = {
     crypto: require('node:crypto').webcrypto,
+    confirm(message) { confirmations.push(message); return true; },
     __EXTRACT_WORKBENCH_DATA_SOURCE__(endpoint, options = {}) {
       requests.push({endpoint, options});
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
@@ -27,7 +30,7 @@ function createView({timers = null} = {}) {
   };
   const context = {document, window, URL, URLSearchParams, setTimeout:timerApi.setTimeout, clearTimeout:timerApi.clearTimeout,
     LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
-    navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast() {}};
+    navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast(message) { toasts.push(message); }};
   vm.createContext(context);
   vm.runInContext(`${source}\n;globalThis.workbench = {
     renderCard: typeof renderExtractWorkbenchTaskCard === 'function' ? renderExtractWorkbenchTaskCard : undefined,
@@ -47,6 +50,7 @@ function createView({timers = null} = {}) {
     candidateFilters: extractWorkbenchCandidateFilters,
     invalidatePreview: extractWorkbenchInvalidatePreview,
     switchBatch: extractWorkbenchSwitchBatch,
+    cancelBatch: typeof extractWorkbenchCancelBatch === 'function' ? extractWorkbenchCancelBatch : undefined,
     renderBatches: extractWorkbenchRenderBatches,
     renderProviders: extractWorkbenchRenderProviders,
     renderLinkTypes: extractWorkbenchRenderLinkTypes,
@@ -66,7 +70,23 @@ function createView({timers = null} = {}) {
     state: () => typeof EXTRACT_WORKBENCH_STATE === 'undefined' ? {} : ({...EXTRACT_WORKBENCH_STATE}),
     setState(value) { if (typeof EXTRACT_WORKBENCH_STATE !== 'undefined') EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, ...value}; },
   };`, context);
-  return {api: context.workbench, nodes, requests, window, copied, document};
+  return {api: context.workbench, nodes, requests, window, copied, document, toasts, confirmations};
+}
+
+function createBatchCancelView() {
+  const view = createView();
+  const button = {disabled: true, textContent: '取消批次', title: '', attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value); }};
+  const select = {innerHTML: '', value: ''};
+  const tasks = {innerHTML: '', scrollTop: 0};
+  const selectors = {'[data-workbench-cancel-batch]': button, '[data-workbench-batch-select]': select,
+    '[data-workbench-tasks]': tasks};
+  const listeners = {};
+  view.api.setRoot({querySelector: selector => selectors[selector] || null,
+    addEventListener(name, callback) { listeners[name] = callback; }});
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true});
+  return {...view, button, select, tasks, listeners};
 }
 
 function createFakeTimers() {
@@ -435,6 +455,139 @@ test('批次历史 31 条仍分为两页并保留独立翻页状态', () => {
   assert.equal(label.textContent, '第 2 / 2 页');
   assert.equal(previous.disabled, false);
   assert.equal(next.disabled, true);
+});
+
+test('取消批次仅在选择具体批次后启用，全部任务和放弃确认均不发请求', async () => {
+  const {api, button, requests, window, confirmations} = createBatchCancelView();
+  api.renderBatches();
+  assert.equal(button.disabled, true);
+  assert.match(button.title, /选择.*批次/);
+  assert.equal(typeof api.cancelBatch, 'function');
+  await api.cancelBatch();
+  assert.equal(requests.length, 0);
+  assert.equal(confirmations.length, 0);
+  api.setState({batch: '7', batches: [{batch_id: 7, title: '十月提链'}]});
+  api.renderBatches();
+  assert.equal(button.disabled, false);
+  assert.match(button.title, /整批.*排队/);
+  window.confirm = message => { confirmations.push(message); return false; };
+  await api.cancelBatch();
+  assert.equal(requests.length, 0);
+  assert.match(confirmations[0], /十月提链/);
+  assert.match(confirmations[0], /CDK/);
+  assert.match(confirmations[0], /运行中.*已完成.*保留/);
+  assert.equal(button.disabled, false);
+});
+
+test('取消批次提交整批 API 并刷新摘要和任务，保留当前批次与筛选', async () => {
+  const view = createBatchCancelView();
+  const {api, button, select, tasks, window, toasts} = view;
+  const requests = [];
+  api.setState({batch: '7', batches: [{batch_id: 7, title: '十月提链'}], page: 4,
+    status: 'processing', provider: 'legacy', mode: 'auto_payment', query: '查找'});
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async (endpoint, options = {}) => {
+    requests.push({endpoint, options});
+    if (endpoint.endsWith('/cancel')) return {ok: true, batch_id: 7, cancelled: 147, skipped: 3, failed: 0};
+    if (endpoint === '/api/extract-workbench/config') return {providers: []};
+    if (endpoint.includes('/batches?')) return {items: [{batch_id: 7, title: '十月提链', status: 'cancelled'}], total: 1};
+    return {items: [{task_id: 42, task_status: 'cancelled'}], counts: {all: 1}, total: 1, page: 4};
+  };
+  assert.equal(typeof api.cancelBatch, 'function');
+  await api.cancelBatch();
+  const posted = requests.filter(request => request.options.method === 'POST');
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].endpoint, '/api/extract-workbench/batches/7/cancel');
+  assert.deepEqual(JSON.parse(posted[0].options.body), {});
+  assert.equal(posted[0].options.headers['Content-Type'], 'application/json');
+  const filters = new URLSearchParams(requests.find(request => request.endpoint.includes('/tasks?')).endpoint.split('?')[1]);
+  assert.equal(filters.get('batch_id'), '7');
+  assert.equal(filters.get('page'), '4');
+  assert.equal(filters.get('status'), 'processing');
+  assert.equal(filters.get('provider_id'), 'legacy');
+  assert.equal(filters.get('mode'), 'auto_payment');
+  assert.equal(filters.get('query'), '查找');
+  assert.equal(select.value, '7');
+  assert.equal(api.state().batchDetail.status, 'cancelled');
+  assert.match(tasks.innerHTML, /任务 #42/);
+  assert.match(toasts.at(-1), /取消 147/);
+  assert.match(toasts.at(-1), /跳过 3/);
+  assert.equal(button.disabled, false);
+});
+
+test('取消请求未完成时禁止重复提交，切换批次不改变已提交目标或回跳', async () => {
+  const {api, button, window, confirmations} = createBatchCancelView();
+  const posted = [];
+  let finishCancel;
+  api.setState({batch: '7', batches: [{batch_id: 7, title: '旧批次'}]});
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async (endpoint, options = {}) => {
+    if (endpoint.endsWith('/cancel')) {
+      posted.push(endpoint);
+      return new Promise(resolve => { finishCancel = resolve; });
+    }
+    if (endpoint === '/api/extract-workbench/config') return {providers: []};
+    if (endpoint.includes('/batches?')) return {items: [{batch_id: 22, title: '新批次'}], total: 1};
+    return {items: [], counts: {}, total: 0, page: 1};
+  };
+  assert.equal(typeof api.cancelBatch, 'function');
+  const cancelling = api.cancelBatch();
+  assert.equal(button.disabled, true);
+  assert.match(button.textContent, /取消中/);
+  assert.equal(button.attributes['aria-busy'], 'true');
+  await api.switchBatch('22');
+  assert.equal(button.disabled, true);
+  await api.cancelBatch();
+  assert.equal(confirmations.length, 1);
+  assert.deepEqual(posted, ['/api/extract-workbench/batches/7/cancel']);
+  finishCancel({ok: true, batch_id: 7, cancelled: 4, skipped: 0, failed: 0});
+  await cancelling;
+  assert.equal(api.state().batch, '22');
+  assert.equal(api.state().batchDetail.title, '新批次');
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '取消批次');
+  assert.equal(button.attributes['aria-busy'], 'false');
+});
+
+test('取消批次对零取消、部分失败和接口失败分别反馈并恢复操作', async () => {
+  for (const [response, error, expected] of [
+    [{ok: true, batch_id: 7, cancelled: 0, skipped: 3, failed: 0}, null, /没有可取消.*跳过 3/],
+    [{ok: true, batch_id: 7, cancelled: 4, skipped: 1, failed: 2}, null, /取消 4.*失败 2/],
+    [{ok: false, error: '批次不存在'}, null, /批次不存在/],
+    [null, new Error('网络暂不可用'), /网络暂不可用/],
+  ]) {
+    const {api, button, window, toasts} = createBatchCancelView();
+    api.setState({batch: '7'});
+    window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+      if (endpoint.endsWith('/cancel')) {
+        if (error) throw error;
+        return response;
+      }
+      if (endpoint === '/api/extract-workbench/config') return {providers: []};
+      return {items: [], counts: {}, total: 0, page: 1};
+    };
+    assert.equal(typeof api.cancelBatch, 'function');
+    await api.cancelBatch();
+    assert.match(toasts.at(-1), expected);
+    assert.doesNotMatch(toasts.at(-1), /全部取消/);
+    assert.equal(button.disabled, false);
+  }
+});
+
+test('取消批次按钮点击事件提交所选批次', async () => {
+  const {api, button, listeners, window} = createBatchCancelView();
+  const posted = [];
+  api.setState({batch: '7'});
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async (endpoint, options = {}) => {
+    if (options.method === 'POST') posted.push(endpoint);
+    if (endpoint.endsWith('/cancel')) return {ok: true, batch_id: 7, cancelled: 1, skipped: 0, failed: 0};
+    if (endpoint === '/api/extract-workbench/config') return {providers: []};
+    if (endpoint === '/api/extract-workbench/batches/7') return {item: {batch_id: 7}};
+    return {items: [], counts: {}, total: 0, page: 1};
+  };
+  await api.load();
+  button.closest = selector => selector === '[data-workbench-cancel-batch]' ? button : null;
+  listeners.click({target: button});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(posted, ['/api/extract-workbench/batches/7/cancel']);
 });
 
 test('quiet DOM 同步按 task_id 复用卡片、详情按钮和详情内容节点，并支持重排', () => {

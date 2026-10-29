@@ -5,6 +5,7 @@ import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +15,118 @@ from tests.support_pg import PostgresTestCase
 
 
 class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
+    def test_cancel_batch_rejects_invalid_id_before_reading_storage(self):
+        for batch_id in (0, -1, True, "1"):
+            with self.subTest(batch_id=batch_id), patch.object(extract_link_batches, "batch_rows") as batches:
+                with self.assertRaises(ValueError):
+                    extract_link_service.cancel_workbench_batch(batch_id)
+                batches.assert_not_called()
+
+    def test_cancel_batch_missing_or_foreign_batch_does_not_touch_tasks(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": []}),
+            patch.object(operation, "list_tasks") as tasks,
+            patch.object(operation, "request_run_cancel") as cancel,
+        ):
+            self.assertIsNone(extract_link_service.cancel_workbench_batch(91))
+        tasks.assert_not_called()
+        cancel.assert_not_called()
+
+    def test_cancel_batch_continues_after_one_cancel_error_and_counts_skips(self):
+        rows = [{"last_run_id": value, "status": "queued"} for value in range(1, 5)]
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{"id": 91}]}),
+            patch.object(operation, "list_tasks", return_value={"items": rows, "total": len(rows)}),
+            patch.object(operation, "request_run_cancel", side_effect=[
+                RuntimeError("private-detail"), LookupError("missing"),
+                {"status": "running", "cancel_skipped": True}, {"status": "cancelled"},
+            ]),
+            patch.object(extract_link_service.account_task_store, "notify_dispatch"),
+        ):
+            result = extract_link_service.cancel_workbench_batch(91)
+        self.assertEqual({"batch_id": 91, "cancelled": 1, "skipped": 2, "failed": 1}, result)
+
+    def test_cancel_batch_waits_for_submission_to_finish(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{
+                "id": 91, "created_at": datetime.now(timezone.utc),
+                "data": {"submission_complete": False},
+            }]}),
+            patch.object(operation, "list_tasks") as tasks,
+            self.assertRaisesRegex(ValueError, "正在入队"),
+        ):
+            extract_link_service.cancel_workbench_batch(91)
+        tasks.assert_not_called()
+
+    def test_cancel_batch_allows_unfinished_submission_from_previous_process(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{
+                "id": 91, "created_at": datetime.now(timezone.utc) - timedelta(days=1),
+                "data": {"submission_complete": False},
+            }]}),
+            patch.object(operation, "list_tasks", return_value={"items": [], "total": 0}),
+        ):
+            result = extract_link_service.cancel_workbench_batch(91)
+        self.assertEqual(0, result["failed"])
+
+    def test_cancel_batch_allows_submission_that_finished_with_an_error(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{
+                "id": 91, "data": {"submission_complete": False,
+                    "submission_skipped": 0, "submission_failed": 1},
+            }]}),
+            patch.object(operation, "list_tasks", return_value={"items": [], "total": 0}),
+        ):
+            result = extract_link_service.cancel_workbench_batch(91)
+        self.assertEqual(0, result["failed"])
+
+    def test_cancel_batch_syncs_account_with_version_captured_before_cancel(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{"id": 91}]}),
+            patch.object(operation, "list_tasks", return_value={"items": [{
+                "last_run_id": 12, "status": "queued", "account_id": 8,
+            }], "total": 1}),
+            patch.object(record_store, "get_row", return_value={"__record_version": "123"}) as snapshot,
+            patch.object(operation, "request_run_cancel", return_value={"status": "cancelled"}) as cancel,
+            patch.object(extract_link_batches, "sync_cancelled_account_extraction", create=True, return_value=True) as sync,
+            patch.object(extract_link_service.account_task_store, "notify_dispatch"),
+        ):
+            cancel.side_effect = lambda *args, **kwargs: (
+                snapshot.assert_called_once_with(record_store.ACCOUNTS, 8, include_version=True)
+                or {"status": "cancelled"})
+            result = extract_link_service.cancel_workbench_batch(91)
+        sync.assert_called_once_with(12, expected_account_version="123")
+        self.assertEqual(1, result["cancelled"])
+
+    def test_cancel_batch_retries_account_sync_for_already_cancelled_run(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{"id": 91}]}),
+            patch.object(operation, "list_tasks", return_value={"items": [{
+                "last_run_id": 12, "status": "cancelled", "account_id": 8,
+            }], "total": 1}),
+            patch.object(operation, "request_run_cancel") as cancel,
+            patch.object(extract_link_batches, "sync_cancelled_account_extraction", create=True, return_value=True) as sync,
+        ):
+            result = extract_link_service.cancel_workbench_batch(91)
+        cancel.assert_not_called()
+        sync.assert_called_once_with(12)
+        self.assertEqual({"batch_id": 91, "cancelled": 0, "skipped": 0, "failed": 0}, result)
+
+    def test_cancel_batch_reports_account_sync_failure_and_continues(self):
+        with (
+            patch.object(extract_link_batches, "batch_rows", return_value={"items": [{"id": 91}]}),
+            patch.object(operation, "list_tasks", return_value={"items": [
+                {"last_run_id": value, "status": "queued", "account_id": value} for value in (1, 2)
+            ], "total": 2}),
+            patch.object(record_store, "get_row", return_value={"__record_version": "123"}),
+            patch.object(operation, "request_run_cancel", return_value={"status": "cancelled"}),
+            patch.object(extract_link_batches, "sync_cancelled_account_extraction", create=True,
+                side_effect=[False, True]),
+            patch.object(extract_link_service.account_task_store, "notify_dispatch"),
+        ):
+            result = extract_link_service.cancel_workbench_batch(91)
+        self.assertEqual({"batch_id": 91, "cancelled": 1, "skipped": 0, "failed": 1}, result)
+
     def test_invalid_filters_and_quantities_are_rejected(self):
         for filters in ({"access_token": "private"}, {"date_from": "2026-1-01"},
                         {"date_from": "2026-10-22", "date_to": "2026-10-14"},
@@ -121,6 +234,51 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
 
     def setUp(self):
         operation.init()
+
+    def test_cancel_batch_covers_all_pages_and_preserves_other_tasks(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="待取消批次", requested_count=203,
+            data={"workbench_batch": True, "submission_complete": True})
+        other = operation.create_runtime_batch(batch_type="extract_link", title="其他批次", requested_count=1,
+            data={"workbench_batch": True, "submission_complete": True})
+        def create(batch_id, task_type="extract_link"):
+            return operation.create_runtime_task(task_type=task_type, account_id=None, email="cancel@example.test",
+                batch_id=batch_id, data={"provider_id": "huanguang"})
+        queued = [create(batch["id"]) for _ in range(201)]
+        running = create(batch["id"])
+        claimed = operation.claim_run(running["run"]["id"], execution_id="cancel-test", worker_pid=os.getpid())
+        self.assertIsNotNone(claimed)
+        completed = create(batch["id"])
+        operation.request_run_cancel(completed["run"]["id"])
+        other_task = create(other["id"])
+        other_type = create(batch["id"], "live_check")
+        with patch.object(extract_link_service.account_task_store, "notify_dispatch"):
+            result = extract_link_service.cancel_workbench_batch(batch["id"])
+            repeated = extract_link_service.cancel_workbench_batch(batch["id"])
+        self.assertEqual({"batch_id": batch["id"], "cancelled": 201, "skipped": 0, "failed": 0}, result)
+        self.assertEqual(0, repeated["cancelled"])
+        for task in queued:
+            self.assertEqual("cancelled", operation.get_run(task["run"]["id"])["status"])
+        self.assertEqual("running", operation.get_run(running["run"]["id"])["status"])
+        self.assertEqual("cancelled", operation.get_run(completed["run"]["id"])["status"])
+        self.assertEqual("queued", operation.get_run(other_task["run"]["id"])["status"])
+        self.assertEqual("queued", operation.get_run(other_type["run"]["id"])["status"])
+
+    def test_cancel_batch_skips_run_claimed_after_listing(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="取消竞争", requested_count=1,
+            data={"workbench_batch": True, "submission_complete": True})
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="race@example.test",
+            batch_id=batch["id"], data={"provider_id": "huanguang"})
+        original_cancel = operation.request_run_cancel
+        def claim_before_cancel(run_id, **kwargs):
+            claimed = operation.claim_run(run_id, execution_id="racing-worker", worker_pid=os.getpid())
+            self.assertIsNotNone(claimed)
+            return original_cancel(run_id, **kwargs)
+        with patch.object(operation, "request_run_cancel", side_effect=claim_before_cancel):
+            result = extract_link_service.cancel_workbench_batch(batch["id"])
+        self.assertEqual({"batch_id": batch["id"], "cancelled": 0, "skipped": 1, "failed": 0}, result)
+        run = operation.get_run(task["run"]["id"])
+        self.assertEqual("running", run["status"])
+        self.assertIsNone(run.get("cancel_requested_at"))
 
     def accounts(self, overrides):
         return self.seed(record_store.ACCOUNTS, [{
@@ -323,6 +481,25 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         self.assertEqual(2, detail["started_count"])
         self.assertFalse(detail["submission_incomplete"])
         self.assertNotIn("test-private-at", repr(detail))
+
+    def test_cancel_batch_releases_real_account_claims_for_next_batch(self):
+        ids = self.accounts([{}, {}])
+        with self.provider_patches():
+            batch = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="extract_only", limit=2,
+            )
+            result = extract_link_service.cancel_workbench_batch(batch["batch_id"])
+            repeated = extract_link_service.cancel_workbench_batch(batch["batch_id"])
+            candidates = extract_link_batches.candidate_accounts()
+            next_batch = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="extract_only", limit=1,
+            )
+        self.assertEqual({"batch_id": batch["batch_id"], "cancelled": 2, "skipped": 0, "failed": 0}, result)
+        self.assertEqual(0, repeated["cancelled"])
+        self.assertEqual(0, repeated["failed"])
+        self.assertEqual(set(ids), {item["account_id"] for item in candidates["items"]})
+        self.assertEqual(1, next_batch["started"])
+        self.assertEqual("cancelled", record_store.get_row(record_store.ACCOUNTS, ids[1])["extract_link_status"])
 
     def test_failed_unpaid_account_with_historical_create_intent_can_enter_new_auto_payment_batch(self):
         account_id = self.accounts([{"extract_link_status": "failed"}])[0]
