@@ -302,6 +302,34 @@ class AdminRepositoryTests(PostgresTestCase):
         item = next(row for row in result["items"] if row["id"] == account_id)
         self.assertNotIn("chatgpt_session", item)
 
+    def test_compact_status_bounds_payload_and_clears_removed_state(self):
+        promotion = {"plan": "plus", "kind": "discount", "discount_percentage": 50,
+                     "campaign_id": "campaign", "stale": True, "summary": "详情" * 1500,
+                     "checkout_status": "success", "payment_method_types": ["card"]}
+        countries = [{"country": country, "status": "success", "result": {
+            "account_promotions": [promotion], "promotion_query_snapshot": {"raw": "x" * 20000}}}
+            for country in ("US", "IN", "JP", "GB", "CA", "AU", "DE", "FR", "BR", "MX")]
+        for index in range(10):
+            rs.insert_row(rs.ACCOUNTS, {"email": f"compact{index}@example.test",
+                "plan_check_status": "success", "account_promotions": [promotion],
+                "plan_check_countries": ["US", "IN", "JP"], "plan_check_country_results": countries})
+        result = repo.list_account_statuses(repo.PageRequest(1, 10, {}), compact=True)
+        self.assertLess(len(json.dumps(result).encode()), 20000)
+        item = result["items"][0]
+        self.assertNotIn("account_promotions", item)
+        self.assertNotIn("plan_check_country_results", item)
+        self.assertEqual(item["plan_summary"]["countries"][1]["country"], "IN")
+        self.assertEqual(item["plan_summary"]["countries"][1]["promotions"][0]["discount_percentage"], 50)
+        self.assertTrue(item["plan_details_revision"])
+        self.assertIs(item["plan_summary"]["promotions"][0]["stale"], True)
+        rs.patch_row(rs.ACCOUNTS, item["id"], {"account_promotions": [], "plan_check_countries": [],
+            "plan_check_country_results": [], "plan_check_error": None, "extract_link_error": None})
+        refreshed = repo.list_account_statuses(repo.PageRequest(1, 10, {}), compact=True)["items"][0]
+        self.assertEqual(refreshed["plan_summary"], {"promotions": [], "countries": []})
+        self.assertIsNone(refreshed["plan_check_error"])
+        self.assertIsNone(refreshed["extract_link_error"])
+        self.assertNotEqual(item["plan_details_revision"], refreshed["plan_details_revision"])
+
     def test_account_promotions_are_returned_by_list_and_status_projection(self):
         promotions = [{
             "plan": "go", "kind": "free_trial", "eligible": True,
@@ -595,6 +623,17 @@ class AdminRepositoryTests(PostgresTestCase):
         result = repo.dashboard_aggregates()
 
         self.assertEqual(result["codex"], {"total": 2, "exported": 1, "pending": 1})
+
+    def test_jobs_poll_skips_facets_without_changing_rows(self):
+        request = repo.PageRequest(1, 10, {})
+        before = repo.list_jobs(request, view="table")
+        with _QueryCounter() as counter:
+            after = repo.list_jobs(request, view="table", include_facets=False)
+        self.assertEqual([row["id"] for row in before["items"]], [row["id"] for row in after["items"]])
+        self.assertEqual(before["revision"], after["revision"])
+        self.assertNotIn("facets", after)
+        self.assertNotIn("status_counts", after)
+        self.assertFalse(any("SELECT 'status' AS facet" in query for query in counter.queries))
 
     def test_revision_changes_when_state_changes_inside_same_second(self):
         before_accounts = repo.list_account_statuses(repo.PageRequest(page=1, page_size=20))

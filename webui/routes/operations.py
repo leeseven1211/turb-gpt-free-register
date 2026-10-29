@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import logging
 import os
@@ -210,7 +211,10 @@ def create_operations_blueprint(context: WebUIContext):
     @bp.get("/api/operations")
     def api_operations():
         """统一任务中心列表：注册、恢复、Codex 与账号操作共用一个读模型。"""
+        include_facets = str(request.args.get("include_facets") or "1").lower() not in {"0", "false", "no"}
+        include_batches = str(request.args.get("include_batches") or "1").lower() not in {"0", "false", "no"}
         result = operation_task_store.list_tasks(
+            include_facets=include_facets,
             page=request.args.get("page", default=1, type=int),
             page_size=request.args.get("page_size", default=50, type=int),
             task_type=str(request.args.get("type") or "").strip(),
@@ -228,6 +232,11 @@ def create_operations_blueprint(context: WebUIContext):
             created_to=str(request.args.get("created_to") or "").strip(),
             result=str(request.args.get("result") or "").strip(),
         )
+        result = dict(result)
+        if not include_batches:
+            result.pop("batches", None)
+        if not include_facets:
+            result.pop("facets", None)
         svc.attach_registration_resume_retry_info(result.get("items") or [])
         for task in result.get("items") or []:
             if task.get("error_message"):
@@ -239,7 +248,16 @@ def create_operations_blueprint(context: WebUIContext):
                     result_summary=task.get("result_summary"),
                     task_status=str(task.get("status") or ""),
                 )
-        result["batches"] = operation_task_store.list_batches(limit=50)
+        if include_batches:
+            # 批次导航只读取标识和显示属性，配置/提交目标留在详情接口。
+            fields = {"id", "batch_uuid", "title", "batch_type", "status", "created_at"}
+            result["batches"] = [
+                {key: value for key, value in batch.items() if key in fields}
+                for batch in operation_task_store.list_batches(limit=50)
+            ]
+        result["revision"] = hashlib.sha256(json.dumps(
+            [result.get("total"), result.get("items")], sort_keys=True, default=str,
+        ).encode()).hexdigest()[:20]
         return jsonify(result)
 
     @bp.get("/api/operations/<int:task_id>")

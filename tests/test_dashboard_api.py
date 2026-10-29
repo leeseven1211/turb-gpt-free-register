@@ -939,6 +939,36 @@ console.log('ok');
         self.assertIn("function containVerticalScroll(el)", html)
         self.assertIn("event.preventDefault();", html)
 
+    def test_operation_poll_can_omit_navigation_and_keeps_compact_batches(self):
+        import json
+        from core import operation_task_store
+        batches = [{"id": index, "batch_uuid": str(index), "title": "批次", "status": "success",
+                    "data": {"request": "x" * 5000}} for index in range(50)]
+        with patch.object(operation_task_store, "list_tasks", return_value={"ok": True, "items": [{"id": index, "result_summary": {"message": "x" * 1200}} for index in range(20)], "total": 20}) as listing, \
+             patch.object(operation_task_store, "list_batches", return_value=batches) as batch_listing:
+            response = self.client.get("/api/operations?page_size=20", headers=self.headers)
+            payload = response.get_json()
+            self.assertLess(len(json.dumps(payload)), 50000)
+            self.assertLess(len(json.dumps(payload["batches"])), 10000)
+            self.assertEqual(payload["batches"][0]["title"], "批次")
+            self.assertNotIn("data", payload["batches"][0])
+            self.assertTrue(payload["revision"])
+            batch_listing.reset_mock()
+            response = self.client.get("/api/operations?include_batches=0&include_facets=0", headers=self.headers)
+            self.assertNotIn("batches", response.get_json())
+            batch_listing.assert_not_called()
+            self.assertFalse(listing.call_args.kwargs["include_facets"])
+
+    def test_plan_details_are_read_on_demand_with_empty_state(self):
+        self.seed(record_store.ACCOUNTS, [{"email": "detail@example.test", "account_promotions": [],
+            "plan_check_country_results": [], "promotion_query_snapshot": {"version": 1}}])
+        account = db.get_account_by_email("detail@example.test")
+        response = self.client.get(f"/api/accounts/{account['id']}/plan-details", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["item"]["account_promotions"], [])
+        self.assertEqual(response.get_json()["item"]["promotion_query_snapshot"], {"version": 1})
+        self.assertEqual(self.client.get("/api/accounts/999999/plan-details", headers=self.headers).status_code, 404)
+
     def test_accounts_column_filters_are_combined(self):
         self.seed(record_store.ACCOUNTS, [
             {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "quota_status": "success", "quota_type": "月限额", "quota_windows": [{"kind": "monthly", "label": "月限额", "used_percent": 25, "remaining_percent": 75}], "extra_json": '{"account_password":"Account123!abcd"}'},

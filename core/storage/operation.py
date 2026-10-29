@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -2903,6 +2904,7 @@ def list_tasks(
     source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
     target: str = "", target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
+    include_facets: bool = True,
 ) -> dict:
     init()
     page = max(1, int(page or 1))
@@ -2992,7 +2994,7 @@ def list_tasks(
             ),
         )
         facets: dict[str, list[dict[str, Any]]] = {}
-        for facet_name, expression, exclude in facet_specs:
+        for facet_name, expression, exclude in (facet_specs if include_facets else ()):
             facet_where, facet_params = _operation_task_where(
                 task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
                 task_id=task_id, target=target, target_status=target_status, batch=batch,
@@ -3018,7 +3020,8 @@ def list_tasks(
                 }
                 for row in cur.fetchall()
             ]
-    return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size, "facets": facets}
+    return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size,
+            **({"facets": facets} if include_facets else {})}
 
 
 def get_task_types(task_ids: Iterable[int]) -> dict[int, str]:
@@ -4039,16 +4042,19 @@ def _insert_runtime_run(
     resource_family: str,
     data: dict | None,
     initial_status: str = "queued",
+    task_uuid: str | None = None,
 ) -> dict:
     status_value = "waiting" if str(initial_status or "").strip().lower() == "waiting" else "queued"
     run_uuid = uuid.uuid4().hex
     cancellation_token = uuid.uuid4().hex
-    cur.execute(f"SELECT task_uuid FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
-    task_row = cur.fetchone()
-    if not task_row:
-        raise LookupError("任务不存在")
+    if not task_uuid:
+        cur.execute(f"SELECT task_uuid FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
+        task_row = cur.fetchone()
+        if not task_row:
+            raise LookupError("任务不存在")
+        task_uuid = str(task_row["task_uuid"])
     log_file = task_run_log.build_path(
-        task_uuid=str(task_row["task_uuid"]), run_no=int(run_no), run_uuid=run_uuid,
+        task_uuid=str(task_uuid), run_no=int(run_no), run_uuid=run_uuid,
     )
     cur.execute(
         f"""
@@ -4102,6 +4108,7 @@ def create_runtime_task(
     source_system: str = "native_operations",
     source_id: str | None = None,
     idempotency_key: str | None = None,
+    conn=None,
 ) -> dict:
     """原子创建逻辑任务和第一次执行。
 
@@ -4115,7 +4122,7 @@ def create_runtime_task(
     source_system_value = str(source_system or "native_operations").strip()[:120] or "native_operations"
     source_value = str(source_id or idempotency_key or "").strip() or task_uuid
     account_value = int(account_id) if account_id else None
-    with _connect() as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         if account_value:
             account = record_store.get_row(
                 record_store.ACCOUNTS,
@@ -4188,6 +4195,7 @@ def create_runtime_task(
             cur,
             task_id=int(task["id"]),
             run_no=1,
+            task_uuid=task_uuid,
             source_system=source_system_value,
             account_id=account_value,
             batch_id=int(batch_id) if batch_id else None,
@@ -4476,9 +4484,9 @@ def mark_runtime_run_projection_reconciled(run_id: int, *, repaired_count: int =
         return cur.fetchone() is not None
 
 
-def active_run_for_account(account_id: int, resource_family: str = "openai_interactive") -> dict | None:
+def active_run_for_account(account_id: int, resource_family: str = "openai_interactive", *, conn=None) -> dict | None:
     init()
-    with _connect() as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT r.*, t.email_snapshot, t.task_type

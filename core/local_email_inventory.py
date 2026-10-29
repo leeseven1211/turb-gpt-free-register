@@ -133,18 +133,34 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     return ' AND '.join(conditions), params
 
 
-def summary(source: str | None = None) -> dict:
+def summary(source: str | None = None, *, include_next_expiry: bool = False) -> dict:
     """只汇总本地五池；available 使用与领取一致的健康和占用过滤。"""
     selected = [source] if source is not None else list(TABLES)
     rows = []
+    expiries = []
     with _connection() as conn, conn.cursor() as cursor:
         for item in selected:
             table = postgres_store.qualified(_table(item).name)
             eligible, params = _eligibility(item)
-            cursor.execute(f"SELECT count(*) AS total, count(*) FILTER (WHERE {eligible}) AS available, count(*) FILTER (WHERE p.status IN ('used','reserved','registered','request_unknown','unknown','replaced')) AS used, count(*) FILTER (WHERE p.status = 'failed') AS failed, count(*) FILTER (WHERE p.status = 'disabled') AS disabled FROM {table} p", params)
+            expiry_column = ""
+            if include_next_expiry:
+                # 展示缓存不能跨过可用库存的绝对有效期；畸形字段不参与数值转换。
+                epoch = "p.data->>'expires_at_epoch'"
+                expiry_column = (
+                    f", MIN(CASE WHEN p.status='available' AND {epoch} ~ '^[0-9]+([.][0-9]+)?$' "
+                    f"THEN CASE WHEN ({epoch})::numeric > EXTRACT(EPOCH FROM statement_timestamp()) "
+                    f"AND ({epoch})::numeric <= 253402300799.999999 THEN ({epoch})::double precision "
+                    "END END) AS next_expiry_epoch"
+                )
+            cursor.execute(f"SELECT count(*) AS total, count(*) FILTER (WHERE {eligible}) AS available, count(*) FILTER (WHERE p.status IN ('used','reserved','registered','request_unknown','unknown','replaced')) AS used, count(*) FILTER (WHERE p.status = 'failed') AS failed, count(*) FILTER (WHERE p.status = 'disabled') AS disabled{expiry_column} FROM {table} p", params)
             counts = cursor.fetchone()
             rows.append({'source': item, **{field: int(counts[field] or 0) for field in _COUNT_FIELDS}})
-    return {**{field: sum(row[field] for row in rows) for field in _COUNT_FIELDS}, 'sources': rows}
+            if include_next_expiry and counts.get('next_expiry_epoch') is not None:
+                expiries.append(float(counts['next_expiry_epoch']))
+    result = {**{field: sum(row[field] for row in rows) for field in _COUNT_FIELDS}, 'sources': rows}
+    if include_next_expiry:
+        result['next_expiry_epoch'] = min(expiries) if expiries else None
+    return result
 
 
 def has_claim(address: str, *, conn=None) -> bool:

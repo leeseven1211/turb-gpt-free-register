@@ -388,6 +388,7 @@ def list_accounts(
 def list_account_statuses(
     request: PageRequest,
     *,
+    compact: bool = False,
     archived: str = "0",
     plan: str = "",
     q: str = "",
@@ -414,7 +415,7 @@ def list_account_statuses(
         "plus_promo_promotion_type_label", "plan_check_ok", "plan_last_success_at",
         "codex_status", "codex_credential_state", "codex_execution_status",
         "codex_last_run_status", "codex_active_run_id",
-        "plan_check_status", "extract_link_status", "updated_at", "data",
+        "plan_check_status", "extract_link_status", "updated_at",
     )
     selected = ", ".join(f"a.{postgres_store.quote_identifier(name)}" for name in fields)
     selected += (
@@ -471,6 +472,34 @@ def list_account_statuses(
         promotion_country = promotion_country_from_row(row)
         # 轮询结果必须显式返回 null，前端 Object.assign 才能清除旧单国投影。
         item["plan_promotion_country"] = promotion_country
+        if compact:
+            details = {key: item.pop(key, None) for key in (
+                "account_promotions", "promotion_query_snapshot", "plan_check_country_results",
+            )}
+            item["plan_details_revision"] = hashlib.sha256(
+                json.dumps(details, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            # 账号列表仅显示 Plus，Go 与结账信息在按需详情中保留。
+            def promotions(rows):
+                fields = {"kind", "country", "stale", "discount_percentage", "duration_num_periods", "duration_period"}
+                return [{key: value for key, value in row.items() if key in fields}
+                        for row in rows if isinstance(row, dict) and row.get("plan") == "plus"] if isinstance(rows, list) else None
+            countries = []
+            for country in details["plan_check_country_results"] or []:
+                summary = {key: value for key, value in country.items() if key in {
+                    "country", "status", "checked_at", "last_success_at", "http_status", "error"}}
+                result = country.get("result")
+                if isinstance(result, dict):
+                    summary["promotions"] = promotions(result.get("account_promotions"))
+                    if summary["promotions"] is None:
+                        # 历史快照可能仅有 plus_* 投影，不能将其误显示为未知优惠。
+                        summary["result"] = {key: value for key, value in result.items()
+                            if key.startswith("plus_") or key in {"plan_type", "current_plan_type"}}
+                countries.append(summary)
+            item["plan_summary"] = {"promotions": promotions(details["account_promotions"]), "countries": countries}
+            # 可清空字段必须显式返回，不能让上一轮错误/状态留在页面。
+            for key in ("plan_check_error", "extract_link_error", "extract_link_message", "codex_error"):
+                item[key] = row.get(key)
         items.append(item)
     total = int(aggregate["total"] or 0)
     return {
@@ -480,6 +509,7 @@ def list_account_statuses(
         "page": max(1, int(request.page or 1)),
         "page_size": request.limit,
         "revision": _revision(total, aggregate["latest"], items),
+        **({"status_fields": sorted((wanted | {"plan_type", "current_plan_type", "plus_trial_eligible"}) - {"account_promotions", "promotion_query_snapshot", "plan_check_country_results"})} if compact else {}),
     }
 
 
@@ -578,7 +608,7 @@ def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
     return where, params
 
 
-def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "") -> dict:
+def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "", include_facets: bool = True) -> dict:
     from core import registration_service as service
 
     jobs = _q(record_store.JOBS)
@@ -614,19 +644,20 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                 (*params, request.limit, request.offset),
             )
             raw_page = cur.fetchall()
-            facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
-            facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
-            cur.execute(
-                f"""
-                SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
-                  {from_sql}{facet_clause} GROUP BY 2
-                UNION ALL
-                SELECT 'email_source', LOWER(COALESCE(j.job_email_source, '')), COUNT(*)
-                  {from_sql}{facet_clause} GROUP BY 2
-                """,
-                facet_params * 2,
-            )
-            facets = _facet_dict(cur.fetchall())
+            if include_facets:
+                facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
+                facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
+                cur.execute(
+                    f"""
+                    SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
+                      {from_sql}{facet_clause} GROUP BY 2
+                    UNION ALL
+                    SELECT 'email_source', LOWER(COALESCE(j.job_email_source, '')), COUNT(*)
+                      {from_sql}{facet_clause} GROUP BY 2
+                    """,
+                    facet_params * 2,
+                )
+                facets = _facet_dict(cur.fetchall())
         if view != "table":
             has_operation_runs = bool(aggregate.get("operation_runs_relation"))
             progress_data = _progress_data_sql(has_operation_runs)
@@ -773,8 +804,7 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
         "offset": request.offset,
         "limit": request.limit,
         "revision": _revision(total, aggregate["latest"], [*page_rows, *progress_rows]),
-        "facets": facets,
-        "status_counts": status_counts,
+        **({"facets": facets, "status_counts": status_counts} if include_facets or view == "batch" else {}),
         "progress_rows": progress_rows,
         "progress_batches": progress_batches,
     }

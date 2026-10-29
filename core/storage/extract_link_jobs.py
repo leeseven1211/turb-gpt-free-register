@@ -1,6 +1,8 @@
 """提链 Provider 的远端任务状态与私有恢复凭据存储。"""
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import json
 import logging
 import re
@@ -324,10 +326,10 @@ def get_provider_job_public(run_id: int) -> dict | None:
     return result
 
 
-def has_unresolved_auto_payment(account_id: int) -> bool:
+def has_unresolved_auto_payment(account_id: int, *, conn=None) -> bool:
     """检查真实付款状态及活动提链意向，终态未付款的历史请求允许重跑。"""
     operation_store.init()
-    with operation_store._connect() as conn, conn.cursor() as cur:
+    with (operation_store._connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT EXISTS (

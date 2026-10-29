@@ -22,6 +22,8 @@ _threads: list[threading.Thread] = []
 _profiles: dict[str, "Profile"] = {}
 _prewarm = False
 _maintenance_turn = 0
+_global_maintenance_lock = threading.Lock()
+_global_maintenance_due = 0.0
 
 
 class ProxyPoolTimeout(TimeoutError):
@@ -652,7 +654,27 @@ def _check(resource: dict, policy: dict) -> None:
         _retire(resource)
 
 
-def maintain_once(*, role: str = "all") -> bool:
+def _maintain_global(policy: dict, warm: set[str], *, interval: float) -> None:
+    """借数据库连接前合并重复维护，供给和复检继续各自并发。"""
+    global _global_maintenance_due
+    if not _global_maintenance_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if interval and now < _global_maintenance_due:
+            return
+        if interval:
+            _global_maintenance_due = now + interval
+        for resource in store.maintenance(
+            max_age=policy["max_age"], max_idle=policy["max_idle"], min_ready=policy["min_ready"],
+            min_ttl=policy["min_ttl"], max_size=policy["max_size"], warm_profiles=warm,
+        ):
+            _retire(resource)
+    finally:
+        _global_maintenance_lock.release()
+
+
+def maintain_once(*, role: str = "all", _maintenance_interval: float = 0) -> bool:
     """一轮检查一条或补充小窗口，逐条交付，不等待整批。"""
     from config import proxy as cfg
     from core import proxy_provider as provider
@@ -664,9 +686,7 @@ def maintain_once(*, role: str = "all") -> bool:
         warm = {item.key for item in _profiles.values()
                 if _profile_is_current(item, current_keys)
                 and (item.waiting or time.monotonic() - item.touched <= policy["max_idle"])}
-    for resource in store.maintenance(max_age=policy["max_age"], max_idle=policy["max_idle"], min_ready=policy["min_ready"],
-                                      min_ttl=policy["min_ttl"], max_size=policy["max_size"], warm_profiles=warm):
-        _retire(resource)
+    _maintain_global(policy, warm, interval=_maintenance_interval)
     with _lock:
         profiles = sorted(_profiles.values(), key=lambda item: (
             not bool(item.waiting), item.last_served, -item.waiting, item.touched,
@@ -778,7 +798,8 @@ def _worker(index: int) -> None:
             if workers == 1:
                 role = "supply" if turn % 2 == 0 else "check"
                 turn += 1
-            worked = maintain_once(role=role)
+            # worker 的空闲节拍原为一秒；忙碌供给也只触发同一份全局维护。
+            worked = maintain_once(role=role, _maintenance_interval=1.0)
         except Exception as exc:
             logger.warning("代理池维护暂不可用：%s", type(exc).__name__)
             worked = False

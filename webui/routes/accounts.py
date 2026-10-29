@@ -285,6 +285,19 @@ def create_accounts_blueprint(context: WebUIContext):
         result = backfill_account_profile_ids(profile_bindings)
         return jsonify({"ok": True, "source_profile_ids": len(profile_bindings), **result})
 
+    @bp.get("/api/accounts/<int:acc_id>/plan-details")
+    def api_account_plan_details(acc_id: int):
+        """优惠与逐国查询明细按需读取，列表轮询只携带摘要。"""
+        account = db.get_account(acc_id)
+        if not account:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        from core.plan_check_countries import public_country_results
+        return jsonify({"ok": True, "item": {
+            "account_promotions": account.get("account_promotions"),
+            "promotion_query_snapshot": account.get("promotion_query_snapshot"),
+            "plan_check_country_results": public_country_results(account.get("plan_check_country_results")),
+        }})
+
     @bp.get("/api/accounts/plan-check-status")
     def api_account_plan_check_status():
         """套餐查询轻量状态，不返回 Token、邮箱密码等敏感字段。"""
@@ -304,6 +317,7 @@ def create_accounts_blueprint(context: WebUIContext):
         page_size = max(1, min(500, int(page_size_arg or limit or 50)))
         snapshot = admin_repository.list_account_statuses(
             admin_repository.PageRequest(page=page, page_size=page_size, filters=column_filters),
+            compact=str(request.args.get("compact") or "").lower() in {"1", "true"},
             archived=archived,
             plan=plan_filter,
             q=q,

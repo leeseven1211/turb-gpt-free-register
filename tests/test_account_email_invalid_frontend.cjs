@@ -171,7 +171,7 @@ test('筛选变更和清筛重置邮箱状态并复用原有重载行为', () =>
 test('轻量轮询用false和null移除当前页旧邮箱失效显示且不改账号状态', async () => {
   const account = {id: 7, email: 'current@example.test', account_status: 'active', email_invalid: true, email_invalid_reason: '旧原因', email_invalid_at: '旧时间'};
   const calls = {renders: 0, reloads: 0};
-  const context = load(['pollAccountPlanStatuses'], {
+  const context = load(['applyAccountStatusSnapshot', 'pollAccountPlanStatuses'], {
     planStatusLoading: false, accountsLoading: false, accountSearchErrorQuery: null,
     accountAdvancedSearchQuery: '', planStatusRevision: 'before',
     accountListQueryParams: () => new URLSearchParams('email_status='), URLSearchParams,

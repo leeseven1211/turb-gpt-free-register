@@ -34,6 +34,7 @@ from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
+from webui.display_statistics import DisplayStatisticsCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,17 @@ def create_dashboard_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("dashboard", __name__)
     logger = context.logger
     _prepared_downloads = context.prepared_downloads
+    statistics = DisplayStatisticsCache(ttl=15)
+
+    def display_supply():
+        from core.email_supply import email_supply_summary
+        return statistics.get("email_supply", lambda: email_supply_summary(include_next_expiry=True))
+
+    @bp.after_app_request
+    def invalidate_changed_statistics(response):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and response.status_code < 400:
+            statistics.invalidate()
+        return response
 
     @bp.get("/api/downloads/<download_id>")
     def api_prepared_download(download_id: str):
@@ -74,8 +86,7 @@ def create_dashboard_blueprint(context: WebUIContext):
 
     @bp.get("/api/summary")
     def api_summary():
-        from core.email_supply import email_supply_summary
-        pool = email_supply_summary()
+        pool = display_supply()
         domain_pool = next((row for row in pool['sources'] if row['source'] == 'cloudflare_domain'), {})
         return jsonify({
             "email_supply": pool,
@@ -103,8 +114,7 @@ def create_dashboard_blueprint(context: WebUIContext):
         job_counts["active"] = sum(int(job_counts.get(key, 0) or 0) for key in ("pending", "running", "stopping"))
         today = datetime.now().date().isoformat()
         today_counts = {key: int(aggregates["jobs"]["today_counts"].get(key, 0) or 0) for key in ("success", "partial_success", "failed")}
-        from core.email_supply import email_supply_summary
-        supply = email_supply_summary()
+        supply = display_supply()
         pool_rows = [{**row, 'dependency': False, 'dependency_reason': '',
                       'history_available': bool(row.get('total')), 'default_visible': bool(row.get('total'))}
                      for row in supply['sources']]

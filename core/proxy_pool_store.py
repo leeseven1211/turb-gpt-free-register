@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
+import threading
+import time
 import uuid
 
 from core import postgres_store, record_store
@@ -12,6 +15,8 @@ LEASES = record_store.PROXY_LEASES
 LIVE = ("fetching", "checking", "ready", "leased", "shared", "rotation_wait")
 TERMINAL = ("failed", "retired", "expired")
 _HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_maintenance_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _stamp(seconds: float = 0) -> str:
@@ -93,7 +98,8 @@ def _available_rows(conn, profile_key: str, *, min_ttl: float, max_age: float,
                                            source_urls=source_urls, required_region=required_region)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            f"SELECT r.id, r.state FROM {resources} r LEFT JOIN {leases} anchor "
+            f"SELECT r.id, r.state, r.checked_at, r.anchor_lease_id, r.expires_at, "
+            f"anchor.expires_at AS anchor_expires_at FROM {resources} r LEFT JOIN {leases} anchor "
             "ON anchor.lease_id = r.anchor_lease_id WHERE ("
             "(r.profile_key = %s AND r.state = 'fetching' AND r.expires_at > %s) OR "
             f"(({scope}) AND r.state IN ('ready', 'checking') AND r.expires_at > %s "
@@ -418,45 +424,75 @@ def release(lease, *, reason: str, fault: bool = False, cooldown: float = 0,
 def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: float = 0,
                 max_size: int | None = None, warm_profiles: set[str] | None = None) -> list[dict]:
     """回收过期/空闲库存，并恢复中断的检查；绝不将失联任务租约再次分配。"""
-    record_store.init()
+    # 直接调用存储维护也先合并，避免同进程的重复调用先借连接再竞争锁。
+    if not _maintenance_lock.acquire(blocking=False):
+        return []
+    try:
+        record_store.init()
+        retired = _maintain_active(
+            max_age=max_age, max_idle=max_idle, min_ready=min_ready, min_ttl=min_ttl,
+            max_size=max_size, warm_profiles=warm_profiles,
+        )
+        try:
+            _maintain_terminal_history()
+        except Exception as exc:
+            # 活动状态已提交；历史整理失败留待下一轮，仍交付本轮的内存索引收口。
+            logger.warning("代理池历史维护失败：code=proxy_pool_history_maintenance_failed error=%s", type(exc).__name__)
+        return retired
+    finally:
+        _maintenance_lock.release()
+
+
+def _maintain_active(*, max_age: float, max_idle: float, min_ready: int, min_ttl: float,
+                     max_size: int | None, warm_profiles: set[str] | None) -> list[dict]:
+    """容量状态使用短事务；忙碌的重复维护不等待容量锁或业务资源行锁。"""
     retired = []
+    started = time.monotonic()
     with record_store.transaction() as conn:
-        record_store.advisory_xact_lock(conn, "proxy-pool-capacity")
-        rows = record_store.list_rows(
-            RESOURCES,
-            where="state = ANY(%s)",
-            params=(list(LIVE) + ["cooldown", "quarantine"],),
-            conn=conn,
-        )
-        # 终态只做有界的 anchor 修复和历史清理，避免每轮维护全表扫描。
-        terminal_repair = record_store.list_rows(
-            RESOURCES,
-            where="state = ANY(%s) AND anchor_lease_id IN ("
-                  f"SELECT lease_id FROM {postgres_store.qualified(LEASES.name)} "
-                  "WHERE state IN ('pending', 'leased'))",
-            params=(list(TERMINAL),), conn=conn, limit=200, order_by="id",
-        )
-        terminal_cleanup = record_store.list_rows(
-            RESOURCES,
-            where="state = ANY(%s) AND updated_at <= %s",
-            params=(list(TERMINAL), _stamp(-_HISTORY_RETENTION_SECONDS)),
-            conn=conn, limit=200, order_by="updated_at, id",
-        )
-        terminal_rows = {int(row["id"]): row for row in (*terminal_repair, *terminal_cleanup)}
-        live_count = sum(row["state"] in LIVE for row in rows)
-        for candidate in (*rows, *terminal_rows.values()):
-            row = record_store.get_row_by(RESOURCES, "resource_id", candidate["resource_id"], conn=conn, for_update=True)
-            if row["state"] not in (*LIVE, "cooldown", "quarantine"):
-                if row["state"] in TERMINAL:
-                    _close_anchor(conn, row, reason="pool_terminal_reconcile")
-                    if int(row["id"]) in terminal_rows and _terminal_is_old(row):
-                        _purge_old_terminal(conn, row)
-                continue
+        connected = time.monotonic()
+        if not record_store.try_advisory_xact_lock(conn, "proxy-pool-capacity"):
+            return retired
+        locked = time.monotonic()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
+                "WHERE state IN ('fetching','checking','ready','leased','shared','rotation_wait','cooldown','quarantine') "
+                "ORDER BY id DESC FOR UPDATE SKIP LOCKED",
+            )
+            rows = [record_store.merge_row(RESOURCES, row) for row in cur.fetchall()]
+            anchor_ids = list({row["anchor_lease_id"] for row in rows if row.get("anchor_lease_id")})
+            cur.execute(
+                "WITH locked AS MATERIALIZED (SELECT lease_id FROM "
+                f"{postgres_store.qualified(LEASES.name)} WHERE lease_id = ANY(%s) "
+                "ORDER BY id FOR UPDATE SKIP LOCKED) "
+                "SELECT anchor.lease_id, locked.lease_id IS NOT NULL AS locked FROM "
+                f"{postgres_store.qualified(LEASES.name)} anchor LEFT JOIN locked USING (lease_id) "
+                "WHERE anchor.lease_id = ANY(%s)", (anchor_ids, anchor_ids),
+            )
+            busy_anchors = {anchor["lease_id"] for anchor in cur.fetchall() if not anchor["locked"]}
+        # 与领取一致先锁资源再锁锚点；跳过忙碌锚点，不在持有容量锁时等待业务租约。
+        rows = [row for row in rows if row.get("anchor_lease_id") not in busy_anchors]
+        locked_resource_ids = {row["id"] for row in rows}
+        # 被其他任务锁定的资源仍计入容量，跳过维护不允许产生额外槽位。
+        live_count = record_store.count_rows(RESOURCES, where="state = ANY(%s)", params=(list(LIVE),), conn=conn)
+        ready_by_profile: dict[str, list[dict]] = {}
+        closed_ready_ids: set[int] = set()
+        anchor_resource_ids: dict[str, set[int]] = {}
+        for row in rows:
+            if row.get("anchor_lease_id"):
+                anchor_resource_ids.setdefault(row["anchor_lease_id"], set()).add(row["id"])
+
+        def remove_closed(row):
+            ids = anchor_resource_ids.get(row.get("anchor_lease_id"), {row["id"]})
+            closed_ready_ids.update(ids)
+
+        for row in rows:
             expired = row["expires_at"] <= _stamp()
             if row["state"] in {"cooldown", "quarantine"}:
                 if expired:
                     record_store.patch_row(RESOURCES, row["id"], {"state": "expired"}, conn=conn)
                     _close_anchor(conn, row, reason="pool_expired")
+                    remove_closed(row)
                     retired.append(row)
                 elif (row["state"] == "quarantine" and row["expires_at"] > _stamp(min_ttl)
                       and not _children(conn, row.get("anchor_lease_id", ""))):
@@ -469,8 +505,10 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                     record_store.patch_row(RESOURCES, row["id"], {"state": state}, conn=conn)
                     if state == "ready":
                         live_count += 1
+                        ready_by_profile.pop(row["profile_key"], None)
                     else:
                         _close_anchor(conn, row, reason="pool_capacity_retired")
+                        remove_closed(row)
                         retired.append(row)
                 continue
             if row["state"] == "shared" and not _children(conn, row["anchor_lease_id"]) and not expired:
@@ -481,6 +519,7 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                 else:
                     record_store.patch_row(RESOURCES, row["id"], {"state": "ready"}, conn=conn)
                     row["state"] = "ready"
+                    ready_by_profile.pop(row["profile_key"], None)
             if row["state"] == "checking" and str(row.get("check_deadline") or row["expires_at"]) <= _stamp():
                 record_store.patch_row(RESOURCES, row["id"], {
                     "state": "rotation_wait", "owner_token": None, "check_deadline": None,
@@ -489,16 +528,24 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                 row["state"] = "rotation_wait"
             idle = row["state"] == "ready" and row["last_used_at"] < _stamp(-max_idle)
             if idle:
-                available = {item["id"] for item in _available_rows(
-                    conn, row["profile_key"], min_ttl=min_ttl, max_age=max_age,
-                ) if item["state"] == "ready"}
+                if row["profile_key"] not in ready_by_profile:
+                    ready = [item for item in _available_rows(
+                        conn, row["profile_key"], min_ttl=min_ttl, max_age=max_age, include_stale=True,
+                    ) if item["state"] == "ready" and item["id"] in locked_resource_ids]
+                    for item in ready:
+                        anchor_resource_ids.setdefault(item["anchor_lease_id"], set()).add(item["id"])
+                    ready_by_profile[row["profile_key"]] = ready
+                ttl_cutoff, health_cutoff = _stamp(min_ttl), _stamp(-max_age)
+                ready = ready_by_profile[row["profile_key"]]
+                # 只复用已锁定的状态；绝对寿命和健康期限仍在每次使用时判定。
+                recoverable = {item["id"] for item in ready if item["id"] not in closed_ready_ids
+                               and item["expires_at"] > ttl_cutoff and item["anchor_expires_at"] > ttl_cutoff}
+                available = {item["id"] for item in ready if item["id"] in recoverable
+                             and str(item.get("checked_at") or "") >= health_cutoff}
                 minimum = min_ready if warm_profiles is None or row["profile_key"] in warm_profiles else 0
                 if row["id"] in available:
                     idle = len(available) > minimum
                 else:
-                    recoverable = {item["id"] for item in _available_rows(
-                        conn, row["profile_key"], min_ttl=min_ttl, max_age=max_age, include_stale=True,
-                    ) if item["state"] == "ready"}
                     # 检测过期的底数库存先保留供复检，不让供给故障期间丢掉健康旧线路。
                     idle = row["id"] not in recoverable or len(recoverable) > minimum
             too_short = row["state"] in {"ready", "rotation_wait"} and row["expires_at"] <= _stamp(min_ttl)
@@ -509,9 +556,44 @@ def maintenance(*, max_age: float, max_idle: float, min_ready: int, min_ttl: flo
                 state = "expired" if expired else "retired"
                 record_store.patch_row(RESOURCES, row["id"], {"state": state, "owner_token": None}, conn=conn)
                 _close_anchor(conn, row, reason="pool_expired" if expired else "pool_retired")
+                # 同锚点的库存同时失去准入；在本轮集合中扣除，避免逐行重复查询。
+                remove_closed(row)
                 retired.append(row)
                 live_count -= 1
+    finished = time.monotonic()
+    logger.debug("代理池活动维护：资源=%s 连接等待=%.2fms 容量锁获取=%.2fms 持锁及提交=%.2fms",
+                 len(rows), (connected - started) * 1000, (locked - connected) * 1000, (finished - locked) * 1000)
     return retired
+
+
+def _maintain_terminal_history() -> None:
+    """历史修复与清理独立于容量锁，有界处理且保留活跃子租约。"""
+    with record_store.transaction() as conn:
+        if not record_store.try_advisory_xact_lock(conn, "proxy-pool-history"):
+            return
+        terminal_repair = record_store.list_rows(
+            RESOURCES,
+            where="state IN ('failed','retired','expired') AND anchor_lease_id IN ("
+                  f"SELECT lease_id FROM {postgres_store.qualified(LEASES.name)} "
+                  "WHERE state IN ('pending', 'leased'))",
+            conn=conn, limit=200, order_by="id",
+        )
+        terminal_cleanup = record_store.list_rows(
+            RESOURCES, where="state IN ('failed','retired','expired') AND updated_at <= %s",
+            params=(_stamp(-_HISTORY_RETENTION_SECONDS),), conn=conn, limit=200, order_by="updated_at, id",
+        )
+        ids = list({int(row["id"]) for row in (*terminal_repair, *terminal_cleanup)})
+        if not ids:
+            return
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {postgres_store.qualified(RESOURCES.name)} "
+                        "WHERE id = ANY(%s) AND state IN ('failed','retired','expired') "
+                        "ORDER BY id FOR UPDATE SKIP LOCKED", (ids,))
+            rows = [record_store.merge_row(RESOURCES, row) for row in cur.fetchall()]
+        for row in rows:
+            _close_anchor(conn, row, reason="pool_terminal_reconcile")
+            if _terminal_is_old(row):
+                _purge_old_terminal(conn, row)
 
 
 def take_check(profile_key: str, *, max_age: float, timeout: float, min_ttl: float = 0) -> dict | None:

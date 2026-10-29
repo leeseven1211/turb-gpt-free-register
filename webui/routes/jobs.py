@@ -158,6 +158,7 @@ def create_jobs_blueprint(context: WebUIContext):
             ),
             progress_batch_id=progress_batch_id,
             **({"view": view} if view else {}),
+            **({"include_facets": False} if request.args.get("include_facets", "1").lower() in {"0", "false", "no"} else {}),
         )
         rows = result.get("items") or []
         progress_rows = result.pop("progress_rows", [])

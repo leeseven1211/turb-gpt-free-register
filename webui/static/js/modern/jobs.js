@@ -744,7 +744,10 @@ async function refreshJobs({automatic = false, coalesce = false} = {}) {
   if ((automatic || coalesce) && jobsLoading && jobsRequestSignature === requestSignature) return jobsRequestPromise;
   // 显式操作必须读取操作后的状态，不能复用同批次操作前的 GET。
   const requestGeneration = automatic ? jobsRequestGeneration : ++jobsRequestGeneration;
-  const requestUrl = `${requestSignature}&refresh_generation=${requestGeneration}`;
+  const previousFacets = refreshJobs.tableFacets;
+  const includeFacets = view !== 'table' || !automatic
+    || previousFacets?.signature !== requestSignature || Date.now() - previousFacets.loadedAt >= 30000;
+  const requestUrl = `${requestSignature}&refresh_generation=${requestGeneration}${includeFacets ? '' : '&include_facets=0'}`;
   // 参数变化立即读取；序列号隔离旧响应，避免切批次被慢请求挡住。
   const requestSequence = ++jobsRequestSequence;
   jobsRequestSignature = requestSignature;
@@ -756,7 +759,7 @@ async function refreshJobs({automatic = false, coalesce = false} = {}) {
     try {
       const res = await api(requestUrl);
       if (requestSequence !== jobsRequestSequence) return;
-      JOB_STATUS_COUNTS = res.status_counts || {};
+      if (Object.prototype.hasOwnProperty.call(res, 'status_counts')) JOB_STATUS_COUNTS = res.status_counts || {};
       if (view === 'batch') {
         JOB_PROGRESS_BATCHES = res.progress_batches || [];
         const batch = res.progress_batch || null;
@@ -772,7 +775,10 @@ async function refreshJobs({automatic = false, coalesce = false} = {}) {
       } else {
         const nextJobs = res.items || [];
         JOBS_TOTAL = Number(res.total || nextJobs.length || 0);
-        updateJobStatusFilters(res.facets || {});
+        if (Object.prototype.hasOwnProperty.call(res, 'facets')) {
+          updateJobStatusFilters(res.facets || {});
+          refreshJobs.tableFacets = {signature: requestSignature, loadedAt: Date.now()};
+        }
         const totalPages = Math.max(1, Math.ceil(JOBS_TOTAL / p.size));
         if (p.page > totalPages) {
           p.page = totalPages;

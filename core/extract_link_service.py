@@ -10,7 +10,7 @@ import re
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -2363,6 +2363,7 @@ def create_workbench_tasks(
     *, account_ids: list[int], provider_id: str, mode: str,
     type: str | None = None, options: dict | None = None,
     batch_id: int | None = None, dispatch: bool = True, allow_no_promotion: bool = False,
+    _submission_context: dict | None = None,
 ) -> dict:
     provider_id = str(provider_id or "").strip().lower()
     mode = str(mode or "").strip().lower()
@@ -2383,74 +2384,81 @@ def create_workbench_tasks(
 
     started = skipped = failed = 0
     from core import plus_promotion
-    from core.storage import extract_link_jobs
+    from core.storage import extract_link_jobs, operation
     register_operation_handlers()
     for account_id in ids:
-        account = db.get_account(account_id)
-        if not account or account.get("archived") or db.account_is_deactivated(account):
-            skipped += 1
-            continue
-        try:
-            if not (plus_promotion.is_extract_link_eligible(account) or (
-                allow_no_promotion and plus_promotion.is_extract_link_eligible(account, allow_no_promotion=True)
-            )):
+        # 批次逐项提交使用短事务，资格、占用及持久化共享当前账号行锁。
+        with (operation._connect() if _submission_context is not None else nullcontext(None)) as conn:
+            account = db.get_account(account_id, **({"conn": conn, "for_update": True} if conn is not None else {}))
+            if not account or account.get("archived") or db.account_is_deactivated(account):
                 skipped += 1
                 continue
-        except Exception:
-            skipped += 1
-            continue
-        if mode == "auto_payment" and extract_link_jobs.has_unresolved_auto_payment(account_id):
-            skipped += 1
-            continue
-        if not str(account.get("access_token") or "").strip():
-            skipped += 1
-            continue
-        if not db.claim_account_extract(account_id, trigger="extract_workbench", link_type=link_type):
-            skipped += 1
-            continue
-        email = str(account.get("email") or "").strip()
-        data = {
-            "provider_id": provider_id,
-            "mode": mode,
-            "link_type": link_type,
-            "options": safe_options,
-            "workbench_action": "create",
-        }
-        if allow_no_promotion:
-            data["allow_no_promotion"] = True
-        try:
-            submitted = account_task_store.submit_durable_operation(
-                task_type="extract_link",
-                account_id=account_id,
-                email=email,
-                trigger="extract_workbench",
-                source_system="native_operations",
-                source_id=f"extract-workbench:{account_id}:{uuid.uuid4().hex}",
-                resource_family="openai_interactive",
-                data=data,
-                config_snapshot_provider=get_config_snapshot,
-                config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
-                dispatch=dispatch,
-                **({"batch_id": int(batch_id)} if batch_id is not None else {}),
-            )
-        except Exception:
+            try:
+                if not (plus_promotion.is_extract_link_eligible(account) or (
+                    allow_no_promotion and plus_promotion.is_extract_link_eligible(account, allow_no_promotion=True)
+                )):
+                    skipped += 1
+                    continue
+            except Exception:
+                skipped += 1
+                continue
+            if mode == "auto_payment" and extract_link_jobs.has_unresolved_auto_payment(account_id, **({"conn": conn} if conn is not None else {})):
+                skipped += 1
+                continue
+            if not str(account.get("access_token") or "").strip():
+                skipped += 1
+                continue
+            if not db.claim_account_extract(account_id, trigger="extract_workbench", link_type=link_type, **({"conn": conn} if conn is not None else {})):
+                skipped += 1
+                continue
+            email = str(account.get("email") or "").strip()
+            data = {
+                "provider_id": provider_id,
+                "mode": mode,
+                "link_type": link_type,
+                "options": safe_options,
+                "workbench_action": "create",
+            }
+            if allow_no_promotion:
+                data["allow_no_promotion"] = True
+            try:
+                submitted = account_task_store.submit_durable_operation(
+                    task_type="extract_link",
+                    account_id=account_id,
+                    email=email,
+                    trigger="extract_workbench",
+                    source_system="native_operations",
+                    source_id=f"extract-workbench:{account_id}:{uuid.uuid4().hex}",
+                    resource_family="openai_interactive",
+                    data=data,
+                    **({"config_snapshot": _submission_context["config_snapshot"]}
+                       if _submission_context is not None else {"config_snapshot_provider": get_config_snapshot}),
+                    **({"conn": conn, "batch_ordinal": int(_submission_context["next_ordinal"])}
+                       if conn is not None else {}),
+                    config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
+                    dispatch=dispatch,
+                    **({"batch_id": int(batch_id)} if batch_id is not None else {}),
+                )
+            except Exception:
+                db.update_account_extract(account_id, {
+                    "status": "failed", "ok": False, "link_type": link_type,
+                    "message": "提链任务持久化失败", "error": "提链任务持久化失败",
+                }, **({"conn": conn} if conn is not None else {}))
+                failed += 1
+                continue
+            if not submitted.get("accepted"):
+                db.update_account_extract(account_id, {
+                    "status": "failed", "ok": False, "link_type": link_type,
+                    "message": "提链任务未能入队", "error": str(submitted.get("error") or "提链任务未能入队")[:300],
+                }, **({"conn": conn} if conn is not None else {}))
+                skipped += 1
+                continue
             db.update_account_extract(account_id, {
-                "status": "failed", "ok": False, "link_type": link_type,
-                "message": "提链任务持久化失败", "error": "提链任务持久化失败",
-            })
-            failed += 1
-            continue
-        if not submitted.get("accepted"):
-            db.update_account_extract(account_id, {
-                "status": "failed", "ok": False, "link_type": link_type,
-                "message": "提链任务未能入队", "error": str(submitted.get("error") or "提链任务未能入队")[:300],
-            })
-            skipped += 1
-            continue
-        db.update_account_extract(account_id, {
-            "status": "queued", "ok": False, "link_type": link_type, "message": "已入队",
-        })
-        started += 1
+                "status": "queued", "ok": False, "link_type": link_type, "message": "已入队",
+            }, **({"conn": conn} if conn is not None else {}))
+            started += 1
+            if _submission_context is not None:
+                _submission_context["next_ordinal"] += 1
     return {"started": started, "skipped": skipped, "failed": failed}
 
 
@@ -2565,10 +2573,16 @@ def create_workbench_batch(
     allow_no_promotion = extract_link_batches.normalize_filters(filters)["promotion"] == "none"
     complete = False
     try:
+        # 同一批次捕获一次原始配置；gateway 按 allowlist 完成唯一一次键名投影。
+        submission_context = {
+            "config_snapshot": get_config_snapshot(),
+            "next_ordinal": 1,
+        }
         for offset in range(0, len(ids), 500):
             result = create_workbench_tasks(
                 account_ids=ids[offset:offset + 500], provider_id=provider_id, mode=mode,
                 type=link_type, options=safe_options, batch_id=batch_id, dispatch=False,
+                _submission_context=submission_context,
                 **({"allow_no_promotion": True} if allow_no_promotion else {}),
             )
             skipped += int(result.get("skipped") or 0)

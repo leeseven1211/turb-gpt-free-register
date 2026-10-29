@@ -1186,11 +1186,12 @@ def _stage_claim_guard(prefix: str, *, require_alive: bool = False) -> tuple[str
     return guard, params
 
 
-def _claim_account_stage(acc_id: int, prefix: str, changes: dict, *, require_alive: bool = False) -> bool:
+def _claim_account_stage(acc_id: int, prefix: str, changes: dict, *, require_alive: bool = False, conn=None) -> bool:
     guard, params = _stage_claim_guard(prefix, require_alive=require_alive)
     return record_store.claim_row(
         record_store.ACCOUNTS, int(acc_id),
         changes=changes, guard=guard, guard_params=params,
+        **({"conn": conn} if conn is not None else {}),
     )
 
 
@@ -1394,7 +1395,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
     return _patch_account(int(row["id"]), changes, conn=conn)
 
 
-def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:
+def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix", *, conn=None) -> bool:
     """原子占用账号提链任务；已有未超时任务时返回 False。"""
     now = _now()
     return _claim_account_stage(acc_id, "extract_link", {
@@ -1408,7 +1409,7 @@ def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str =
         "extract_link_error": None,
         "extract_link_message": "已入队",
         "updated_at": now,
-    })
+    }, **({"conn": conn} if conn is not None else {}))
 
 
 def mark_account_extract_running(acc_id: int) -> bool:
@@ -1423,10 +1424,10 @@ def mark_account_extract_running(acc_id: int) -> bool:
     })
 
 
-def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
+def update_account_extract(acc_id: int, result: dict | None = None, *, conn=None) -> bool:
     """更新账号提链任务结果/进度。"""
     result = result or {}
-    if record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
+    if conn is None and record_store.get_row(record_store.ACCOUNTS, int(acc_id)) is None:
         return False
     now = _now()
     status = str(result.get("status") or ("success" if result.get("ok") else "failed"))
@@ -1457,7 +1458,7 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
         })
         if payload.get("cdk_remaining") is not None:
             changes["extract_link_cdk_remaining"] = payload.get("cdk_remaining")
-    return _patch_account(int(acc_id), changes)
+    return _patch_account(int(acc_id), changes, **({"conn": conn} if conn is not None else {}))
 
 
 def mark_extract_link_type_failed(acc_id: int, link_type: str, error: str | None = None) -> bool:
@@ -1670,10 +1671,11 @@ def list_accounts_page(limit: int = 50, offset: int = 0, archived: str | bool | 
         return {"items": items, "total": total, "offset": offset, "limit": limit, "revision": f"{total}:{latest}"}
 
 
-def get_account(acc_id: int) -> dict | None:
+def get_account(acc_id: int, *, conn=None, for_update: bool = False) -> dict | None:
     # 单行查询而不是加载全表：get_retry_info 之类会对每条任务调一次，
     # 全表读会退化成 N+1。
-    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id),
+                               **({"conn": conn, "for_update": for_update} if conn is not None or for_update else {}))
     return _decorate_account(row) if row else None
 
 

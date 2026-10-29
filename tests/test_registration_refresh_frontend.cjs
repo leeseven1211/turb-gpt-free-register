@@ -133,6 +133,39 @@ test('结束批次停止自动轮询，显式刷新和新任务主动选择仍�
   assert.equal(h.context.shouldPollJobs(), true);
 });
 
+test('任务表自动轮询低频更新筛选统计，换筛选和手动刷新立即更新', async () => {
+  const h = harness();
+  h.register.dataset.moduleView = 'tasks';
+  const facets = [];
+  h.context.updateJobStatusFilters = value => facets.push(value);
+  const initial = h.context.refreshJobs();
+  h.calls[0].resolve({items: [], total: 0, revision: 'first', facets: {status: ['running']}, status_counts: {running: 7}});
+  await initial;
+  const poll = h.context.refreshJobs({automatic: true});
+  assert.equal(new URL(h.calls[1].url, 'http://local').searchParams.get('include_facets'), '0');
+  h.calls[1].resolve({items: [], total: 0, revision: 'second'});
+  await poll;
+  assert.equal(facets.length, 1);
+  assert.equal(h.read('JOB_STATUS_COUNTS.running'), 7);
+
+  h.context.refreshJobs.tableFacets.loadedAt -= 31000;
+  const expired = h.context.refreshJobs({automatic: true});
+  assert.notEqual(new URL(h.calls[2].url, 'http://local').searchParams.get('include_facets'), '0');
+  h.calls[2].resolve({items: [], total: 0, revision: 'third', facets: {}, status_counts: {}});
+  await expired;
+  assert.equal(h.read('Object.keys(JOB_STATUS_COUNTS).length'), 0);
+
+  h.set("JOB_EMAIL_FILTER = 'new-filter'");
+  const filtered = h.context.refreshJobs({automatic: true});
+  assert.notEqual(new URL(h.calls[3].url, 'http://local').searchParams.get('include_facets'), '0');
+  h.calls[3].resolve({items: [], total: 0, facets: {}});
+  await filtered;
+  const manual = h.context.refreshJobs();
+  assert.notEqual(new URL(h.calls[4].url, 'http://local').searchParams.get('include_facets'), '0');
+  h.calls[4].resolve({items: [], total: 0, facets: {}});
+  await manual;
+});
+
 test('自动刷新只读取可见注册视图，bootstrap 使用自动模式', async () => {
   const h = harness();
   h.context.document.hidden = true;

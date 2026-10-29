@@ -13,7 +13,9 @@ function emailSupplyValue(supply, key) {
 }
 
 function emailSupplyHint(supply) {
-  return `仅统计本地库存；用完后请手动导入邮箱。邮箱由 Email Butler 等邮箱服务准备${supply?.reason ? `；${supply.reason}` : ''}`;
+  const updated = supply?.statistics_updated_at;
+  const freshness = updated ? `；统计于 ${new Date(updated).toLocaleTimeString()} 更新` : '';
+  return `仅统计本地库存；用完后请手动导入邮箱。邮箱由 Email Butler 等邮箱服务准备${supply?.reason ? `；${supply.reason}` : ''}${freshness}`;
 }
 
 function renderRegistrationEmailSupply(supply) {

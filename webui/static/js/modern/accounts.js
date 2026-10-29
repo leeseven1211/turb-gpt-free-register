@@ -4,6 +4,11 @@ let accountsReloadQueued = false;
 let accountsRenderedQuery = '';
 let planStatusLoading = false;
 let planStatusRevision = '';
+let accountTaskForceMetadataQueued = false;
+let accountTaskMetadataAt = 0;
+let accountTaskMetadataQuery = '';
+let accountTaskListSignature = '';
+let accountTaskRecentBatchCount = 0;
 let accountSessionDownloadLoading = false;
 let ACCOUNT_BATCH_WORKERS = 3;
 let emailChangeReturnFocus = null;
@@ -529,9 +534,10 @@ function renderAccountTasks() {
     }
   }
 }
-async function loadAccountTasks() {
+async function loadAccountTasks({forceMetadata = false} = {}) {
   if (accountTasksLoading) {
     accountTasksReloadQueued = true;
+    accountTaskForceMetadataQueued = accountTaskForceMetadataQueued || forceMetadata;
     return;
   }
   accountTasksLoading = true;
@@ -553,8 +559,20 @@ async function loadAccountTasks() {
     result: $('#accountTaskResultFilterV2')?.value.trim() || '',
   });
   try {
+    const query = params.toString();
+    const refreshMetadata = forceMetadata || accountTaskMetadataQuery !== query || Date.now() - accountTaskMetadataAt >= 30000;
+    params.set('include_facets', refreshMetadata ? '1' : '0');
+    params.set('include_batches', refreshMetadata ? '1' : '0');
     const result = await api(`/api/operations?${params.toString()}`);
-    updateAccountTaskFilters(result.facets || {});
+    if (result.facets) updateAccountTaskFilters(result.facets);
+    if (refreshMetadata) {
+      accountTaskMetadataAt = Date.now();
+      accountTaskMetadataQuery = query;
+      accountTaskRecentBatchCount = Number((result.batches || []).length);
+    }
+    const signature = JSON.stringify([query, result.revision || [result.total, result.items]]);
+    const unchanged = accountTaskListSignature === signature;
+    accountTaskListSignature = signature;
     ACCOUNT_TASKS = result.items || [];
     ACCOUNT_TASKS_TOTAL = Number(result.total || 0);
     const totalPages = Math.max(1, Math.ceil(ACCOUNT_TASKS_TOTAL / p.size));
@@ -563,10 +581,11 @@ async function loadAccountTasks() {
       accountTasksLoading = false;
       return loadAccountTasks();
     }
-    if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = `最近批次 ${Number((result.batches || []).length)} 个 · 共 ${ACCOUNT_TASKS_TOTAL} 个任务`;
-    renderAccountTasks();
+    if ($('#accountTaskRefreshHint')) $('#accountTaskRefreshHint').textContent = `最近批次 ${accountTaskRecentBatchCount} 个 · 共 ${ACCOUNT_TASKS_TOTAL} 个任务`;
+    if (!unchanged) renderAccountTasks();
     markViewReady('account-tasks');
   } catch (e) {
+    accountTaskListSignature = '';
     if (!ACCOUNT_TASKS.length) $('#accountTasksBody').innerHTML = renderTableStateRow(12, '任务记录加载失败', '请检查服务状态后刷新列表。', 'error');
     showToast('加载任务中心失败: ' + e.message);
   }
@@ -575,7 +594,9 @@ async function loadAccountTasks() {
     setListBusy('accountTasksPanel', false);
     if (accountTasksReloadQueued) {
       accountTasksReloadQueued = false;
-      void loadAccountTasks();
+      const forceMetadata = accountTaskForceMetadataQueued;
+      accountTaskForceMetadataQueued = false;
+      void loadAccountTasks({forceMetadata});
     }
   }
 }
@@ -1108,7 +1129,7 @@ function scheduleAccountTaskFilterReload(immediate = false) {
   }
   accountTaskFilterTimer = setTimeout(loadAccountTasks, 260);
 }
-$('#btnRefreshAccountTasks')?.addEventListener('click', loadAccountTasks);
+$('#btnRefreshAccountTasks')?.addEventListener('click', () => loadAccountTasks({forceMetadata:true}));
 $('#btnRetrySelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('retry'));
 $('#btnCancelSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('cancel'));
 $('#btnTerminateSelectedAccountTasksV2')?.addEventListener('click', () => bulkAccountTasks('terminate'));
@@ -1306,12 +1327,45 @@ async function loadAccounts() {
     }
   }
 }
+function applyAccountStatusSnapshot(account, item, statusFields = []) {
+  const revision = account.plan_details_revision;
+  // 缺失字段也是权威清空，避免 Object.assign 遗留上轮状态。
+  statusFields.forEach(key => { delete account[key]; });
+  Object.assign(account, item);
+  if (item.plan_summary && revision !== item.plan_details_revision) {
+    const promotions = rows => Array.isArray(rows) ? rows.map(item => ({...item, plan: 'plus'})) : null;
+    account.account_promotions = promotions(item.plan_summary.promotions);
+    account.plan_check_country_results = item.plan_summary.countries.map(country => {
+      const {promotions: items, ...state} = country;
+      return {...state, ...(Array.isArray(items) ? {result: {account_promotions: promotions(items)}} : {})};
+    });
+    delete account.promotion_query_snapshot;
+    account._planDetailsPending = true;
+  }
+}
+function loadAccountPlanDetails(account) {
+  if (!account?._planDetailsPending) return Promise.resolve(account);
+  if (account._planDetailsRequest) return account._planDetailsRequest;
+  const revision = account.plan_details_revision;
+  const request = api(`/api/accounts/${encodeURIComponent(account.id)}/plan-details`).then(result => {
+    if (account.plan_details_revision === revision) {
+      Object.assign(account, result.item || {});
+      account._planDetailsPending = false;
+      return account;
+    }
+    // 等待期间有新摘要时，让当前打开动作继续等待最新明细。
+    if (account._planDetailsRequest === request) delete account._planDetailsRequest;
+    return loadAccountPlanDetails(account);
+  }).finally(() => { if (account._planDetailsRequest === request) delete account._planDetailsRequest; });
+  account._planDetailsRequest = request;
+  return request;
+}
 async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading || accountSearchErrorQuery === accountAdvancedSearchQuery) return;
   planStatusLoading = true;
   try {
     const params = accountListQueryParams().toString();
-    const snapshot = await api(`/api/accounts/plan-check-status?${params}`);
+    const snapshot = await api(`/api/accounts/plan-check-status?${params}&compact=1`);
     if (accountsLoading || params !== accountListQueryParams().toString()) return;
     const items = snapshot.items || [];
     const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
@@ -1331,7 +1385,7 @@ async function pollAccountPlanStatuses() {
         const isExtracting = ['queued', 'running'].includes(item.extract_link_status);
         if (wasChecking && !isChecking) needsFullReload = true;
         if (wasExtracting && !isExtracting) needsFullReload = true;
-        Object.assign(account, item);
+        applyAccountStatusSnapshot(account, item, snapshot.status_fields || []);
       });
       planStatusRevision = snapshot.revision || '';
       if (needsFullReload) await loadAccounts();
@@ -1472,6 +1526,20 @@ function _scheduleAccountsTooltipHide() {
 }
 
 function _showAccountsTooltip(target) {
+  const accountId = target?.closest?.('tr')?.querySelector?.('[data-account-id]')?.dataset?.accountId;
+  const account = ACCOUNTS.find(item => Number(item.id) === Number(accountId));
+  if (target?.closest?.('.col-trial') && account?._planDetailsPending && !target._planDetailsLoading) {
+    target._planDetailsLoading = true;
+    const index = [...target.closest('.col-trial').querySelectorAll('[data-accounts-tooltip]')].indexOf(target);
+    void loadAccountPlanDetails(account).then(() => {
+      if (!target.isConnected || account._planDetailsPending) return;
+      const holder = document.createElement('div');
+      holder.innerHTML = _promotionCell(account);
+      const fresh = holder.querySelectorAll('[data-accounts-tooltip]')[index];
+      if (fresh) target.dataset.accountsTooltip = fresh.dataset.accountsTooltip;
+      if (_accountsTooltipTarget === target) _showAccountsTooltip(target);
+    }).catch(() => {}).finally(() => { target._planDetailsLoading = false; });
+  }
   const message = target?.dataset?.accountsTooltip || '';
   if (!message || !target.isConnected || !target.getClientRects().length) return;
   _hideAccountsTooltip();
@@ -2470,7 +2538,13 @@ function openAccountDetail(id) {
   $('#accountDetailBackdrop').setAttribute('aria-hidden', 'false');
   updateModalScrollLock();
   $('#btnCloseAccountDetail')?.focus({preventScroll:true});
-  void refreshAccountRoxyProfile(account);
+  void loadAccountPlanDetails(account).then(() => {
+    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) return refreshAccountRoxyProfile(account);
+  }).catch(() => {
+    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
+      showToast('优惠详情加载失败，请重新打开详情重试');
+    }
+  });
 }
 function closeAccountDetail() {
   $('#accountDetailDrawer')?.classList.add('hidden');

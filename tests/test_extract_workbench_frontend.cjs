@@ -1445,3 +1445,28 @@ test('批次摘要行已移除，批次选择和分页仍可用', () => {
   assert.equal(previous.disabled,false);
   assert.equal(next.disabled,true);
 });
+
+
+test('静默轮询低频刷新批次导航，当前批次摘要每轮读取，相同任务不重绘', async () => {
+  const view = createView({timers: createFakeTimers()});
+  const tasks = {innerHTML: '', scrollTop: 0};
+  const select = {innerHTML: '', value: ''};
+  view.api.setRoot({querySelector: selector => ({'[data-workbench-tasks]': tasks, '[data-workbench-batch-select]': select})[selector] || null, addEventListener() {}});
+  view.api.setConfig({providers: []});
+  view.api.setState({batchInitialized: true, batch: '7'});
+  const calls = [];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    calls.push(endpoint);
+    if (endpoint.includes('/batches?')) return {items: [{batch_id: 7, title: '批次', counts: {running: 1}}], total: 1};
+    if (endpoint === '/api/extract-workbench/batches/7') return {item: {batch_id: 7, title: '批次', counts: {running: 0}}};
+    return {items: [], counts: {}, total: 0, page: 1};
+  };
+  await view.api.load({quiet: true});
+  let writes = 0;
+  Object.defineProperty(tasks, 'innerHTML', {get() { return ''; }, set() { writes += 1; }});
+  await view.api.load({quiet: true});
+  assert.equal(calls.filter(url => url.includes('/batches?')).length, 1);
+  assert.equal(calls.filter(url => url === '/api/extract-workbench/batches/7').length, 1);
+  assert.equal(view.api.state().batchDetail.counts.running, 0);
+  assert.equal(writes, 0);
+});

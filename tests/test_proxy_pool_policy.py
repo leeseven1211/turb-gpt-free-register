@@ -179,6 +179,56 @@ def test_two_workers_reserve_different_waiting_profiles_before_network_work():
     assert set(seen) == {"first", "second"}
 
 
+def test_twenty_workers_merge_global_maintenance_before_database_work():
+    started = threading.Barrier(20)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def maintain(**kwargs):
+        calls.append(threading.get_ident())
+        entered.set()
+        assert release.wait(5)
+        return []
+
+    def run(_):
+        started.wait(timeout=5)
+        return proxy_pool.maintain_once(role="check")
+
+    with patch.object(proxy_pool, "_profiles", {}), \
+         patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool, "_current_profile_keys", return_value=set()), \
+         patch.object(proxy_pool.store, "maintenance", side_effect=maintain), \
+         ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(run, index) for index in range(20)]
+        try:
+            assert entered.wait(3)
+            # 重复请求可继续执行各自的复检/供给，不等全局维护完成。
+            from concurrent.futures import wait
+            finished, _ = wait(futures, timeout=0.5)
+            completed_while_maintenance_runs = len(finished)
+        finally:
+            release.set()
+        assert all(future.result(timeout=5) is False for future in futures)
+    assert completed_while_maintenance_runs == 19
+    assert len(calls) == 1
+
+
+def test_busy_worker_merges_repeated_global_maintenance_within_one_tick():
+    policy = dict(proxy_pool.settings(), workers=20)
+    with patch.object(proxy_pool, "settings", return_value=policy), \
+         patch.object(proxy_pool, "_profiles", {}), \
+         patch.object(proxy_pool, "_global_maintenance_due", 0), \
+         patch.object(proxy_pool, "_prewarm", False), \
+         patch.object(proxy_pool, "_current_profile_keys", return_value=set()), \
+         patch.object(proxy_pool.time, "monotonic", return_value=1000), \
+         patch.object(proxy_pool._stop, "is_set", side_effect=[False, False, False, True]), \
+         patch.object(proxy_pool._wake, "wait"), \
+         patch.object(proxy_pool.store, "maintenance", return_value=[]) as maintain:
+        proxy_pool._worker(19)
+    assert maintain.call_count == 1
+
+
 def test_impossible_lifetime_fails_before_start_or_supplier_request():
     with patch.object(proxy_pool, "start") as start, patch.object(cfg, "PROXY_POOL_MIN_TTL", 300):
         with pytest.raises(proxy_pool.ProxyPoolConfigurationError):

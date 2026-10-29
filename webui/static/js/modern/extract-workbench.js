@@ -3,6 +3,9 @@ let EXTRACT_WORKBENCH_ROOT = null;
 let EXTRACT_WORKBENCH_CONFIG = null;
 let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, cancellingBatch:'', preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
 let EXTRACT_WORKBENCH_SEQUENCE = 0;
+let EXTRACT_WORKBENCH_BATCHES_AT = 0;
+let EXTRACT_WORKBENCH_BATCHES_PAGE = 0;
+let EXTRACT_WORKBENCH_RENDER_SIGNATURE = "";
 let EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_CONFIG_PROMISE = null;
 let EXTRACT_WORKBENCH_BOUND = false;
@@ -669,10 +672,13 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
     await extractWorkbenchLoadConfig(force);
     if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
     extractWorkbenchRenderProviders();
-    let batchItems = [];
-    if (extractWorkbenchNode('[data-workbench-batch-select]')) {
+    let batchItems = EXTRACT_WORKBENCH_STATE.batches || [];
+    const refreshBatches = force || !quiet || EXTRACT_WORKBENCH_BATCHES_PAGE !== EXTRACT_WORKBENCH_STATE.batchPage || Date.now() - EXTRACT_WORKBENCH_BATCHES_AT >= 30000;
+    if (extractWorkbenchNode('[data-workbench-batch-select]') && refreshBatches) {
       const batches = await extractWorkbenchRequest(`/api/extract-workbench/batches?page=${EXTRACT_WORKBENCH_STATE.batchPage}&page_size=20`);
       if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
+      EXTRACT_WORKBENCH_BATCHES_AT = Date.now();
+      EXTRACT_WORKBENCH_BATCHES_PAGE = EXTRACT_WORKBENCH_STATE.batchPage;
       batchItems = batches?.items || [];
       EXTRACT_WORKBENCH_STATE.batches = batchItems;
       EXTRACT_WORKBENCH_STATE.batchTotal = Number(batches?.total || 0);
@@ -682,23 +688,27 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
       }
     }
     const batchId = EXTRACT_WORKBENCH_STATE.batch;
-    const batchSummary = batchItems.find(batch => String(batch?.batch_id || '') === String(batchId || '')) || null;
+    const batchSummary = refreshBatches ? batchItems.find(batch => String(batch?.batch_id || '') === String(batchId || '')) || null : null;
     const [result, detail] = await Promise.all([
       extractWorkbenchRequest(extractWorkbenchListUrl({...EXTRACT_WORKBENCH_STATE})),
       batchId && !batchSummary ? extractWorkbenchRequest(`/api/extract-workbench/batches/${encodeURIComponent(batchId)}`) : Promise.resolve(batchSummary ? {item: batchSummary} : null),
     ]);
     if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
     EXTRACT_WORKBENCH_STATE = {...EXTRACT_WORKBENCH_STATE, batchDetail:detail?.item || null, items: result?.items || [], counts: result?.counts || {}, total: Number(result?.total || 0), page: Number(result?.page || EXTRACT_WORKBENCH_STATE.page)};
-    const quietSnapshot = quiet ? extractWorkbenchCaptureQuietState(tasksNode) : null;
+    const signature = JSON.stringify([extractWorkbenchListUrl({...EXTRACT_WORKBENCH_STATE}), result?.revision || result]);
+    const unchanged = quiet && EXTRACT_WORKBENCH_RENDER_SIGNATURE === signature;
+    EXTRACT_WORKBENCH_RENDER_SIGNATURE = signature;
+    const quietSnapshot = quiet && !unchanged ? extractWorkbenchCaptureQuietState(tasksNode) : null;
     extractWorkbenchRenderBatches();
     const scrollTop = quiet ? tasksNode?.scrollTop || 0 : 0;
     if (quiet && quietSnapshot && tasksNode) quietSnapshot.scrollTop = tasksNode.scrollTop ?? quietSnapshot.scrollTop;
-    extractWorkbenchRenderTasks({quiet});
-    if (quiet) extractWorkbenchRestoreQuietState(tasksNode, quietSnapshot);
+    if (!unchanged) extractWorkbenchRenderTasks({quiet});
+    if (quiet && !unchanged) extractWorkbenchRestoreQuietState(tasksNode, quietSnapshot);
     else if (tasksNode) tasksNode.scrollTop = scrollTop;
     extractWorkbenchScheduleRefresh();
     if (typeof markViewReady === 'function') markViewReady('extract-workbench');
   } catch (error) {
+    EXTRACT_WORKBENCH_RENDER_SIGNATURE = '';
     if (sequence !== EXTRACT_WORKBENCH_SEQUENCE) return;
     if (quiet) {
       const summary = extractWorkbenchNode('[data-workbench-summary]');

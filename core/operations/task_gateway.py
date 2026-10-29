@@ -1002,6 +1002,7 @@ def submit_durable_operation(
     config_snapshot_provider: Callable[[], Any] | None = None,
     config_allowlist: Iterable[str] | Mapping[str, str] | None = None,
     dispatch: bool = True,
+    conn=None,
 ) -> dict[str, Any]:
     """Persist one task/run and optionally wake the shared durable scanner.
 
@@ -1030,20 +1031,23 @@ def submit_durable_operation(
     if captured_config is not None:
         payload["config_snapshot"] = captured_config
     try:
-        created = _operation().create_runtime_task(
-            task_type=name,
-            account_id=account_id,
-            email=str(email or "").strip(),
-            trigger=str(trigger or "manual"),
-            source_system=str(source_system or "native_operations"),
-            source_id=source_id,
-            idempotency_key=idempotency_key,
-            parent_task_id=parent_task_id,
-            batch_id=batch_id,
-            batch_ordinal=batch_ordinal,
-            resource_family=str(resource_family or "openai_interactive"),
-            data=payload,
-        )
+        # 外层逐项事务持有账号锁；保存点保证约束冲突不会污染账号状态回写。
+        with (conn.transaction() if conn is not None else nullcontext()):
+            created = _operation().create_runtime_task(
+                task_type=name,
+                account_id=account_id,
+                email=str(email or "").strip(),
+                trigger=str(trigger or "manual"),
+                source_system=str(source_system or "native_operations"),
+                source_id=source_id,
+                idempotency_key=idempotency_key,
+                parent_task_id=parent_task_id,
+                batch_id=batch_id,
+                batch_ordinal=batch_ordinal,
+                resource_family=str(resource_family or "openai_interactive"),
+                data=payload,
+                **({"conn": conn} if conn is not None else {}),
+            )
     except Exception as exc:
         if isinstance(exc, OperationAccountDeactivated):
             return {
@@ -1056,6 +1060,7 @@ def submit_durable_operation(
         if "uq_operation_runs_active_account_family" in str(exc) or "duplicate key" in str(exc).lower():
             active = _operation().active_run_for_account(
                 int(account_id), str(resource_family or "openai_interactive"),
+                **({"conn": conn} if conn is not None else {}),
             ) if account_id else None
             return {
                 "accepted": False,

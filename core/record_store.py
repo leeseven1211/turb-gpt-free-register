@@ -868,6 +868,25 @@ def init() -> None:
                             f"ON {_qualified(spec)} (state) "
                             "WHERE state IN ('fetching','checking','ready','leased','shared','rotation_wait')"
                         )
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS "
+                            f"{postgres_store.quote_identifier('idx_proxy_pool_resources_maintenance_state')} "
+                            f"ON {_qualified(spec)} (state, id) "
+                            "WHERE state IN ('fetching','checking','ready','leased','shared','rotation_wait','cooldown','quarantine')"
+                        )
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS "
+                            f"{postgres_store.quote_identifier('idx_proxy_pool_resources_terminal_cleanup')} "
+                            f"ON {_qualified(spec)} (updated_at, id) "
+                            "WHERE state IN ('failed','retired','expired')"
+                        )
+                    if spec is PROXY_LEASES:
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS "
+                            f"{postgres_store.quote_identifier('idx_proxy_leases_active_children')} "
+                            f"ON {_qualified(spec)} ((data->>'pool_anchor_id'), expires_at) "
+                            "WHERE state IN ('shared_leased','pool_leased')"
+                        )
         # 日常查询没有使用 jsonb 的 @> / ? 操作符，只有一次性回填会用到 GIN。
         # 这些索引会随每次账号/任务写入维护，registration_jobs 的一个索引曾占
         # 56 MB；统一清掉，避免写放大和无效 WAL。
@@ -1528,6 +1547,14 @@ def advisory_xact_lock(conn, key: str) -> None:
     """
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(key),))
+
+
+def try_advisory_xact_lock(conn, key: str) -> bool:
+    """只用于可跳过的重复工作；容量预留等权威写入仍使用阻塞事务锁。"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS acquired", (str(key),))
+        row = cur.fetchone()
+        return bool(row["acquired"] if isinstance(row, dict) else row[0])
 
 
 def _sync_identity_cursor(cur, spec: TableSpec) -> int:
