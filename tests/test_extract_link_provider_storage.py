@@ -303,6 +303,57 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
                 expected.add(task["id"])
         self.assertEqual(expected, {row["task_id"] for row in extract_link_jobs.list_recoverable_workbench_jobs()})
 
+    def test_legacy_paid_initial_run_recovers_verification_after_worker_exit(self):
+        from core.storage import extract_link_jobs
+
+        for receipt in (None, {"kind": "remote_write", "state": "confirmed", "receipt_state": "confirmed"}):
+            with self.subTest(confirmed_receipt=bool(receipt)):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=77,
+                    email="paid-recovery@example.test", data={"provider_id": "legacy", "mode": "auto_payment",
+                        **({"remote_intent": receipt} if receipt else {})})
+                run_id = task["run"]["id"]
+                extract_link_jobs.save_provider_job(run_id, "legacy", "paid-original",
+                    {"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "pending",
+                     "summary": {"local_plan_check_pending": True, "automatic_payment_status": "COMPLETED"}},
+                    {"local_reconcile": {"started_at": "2026-10-29T00:00:00Z"}})
+                operation.claim_run(run_id, execution_id=f"paid-crashed-{run_id}", worker_pid=92)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                candidates = {row["task_id"]: row for row in extract_link_jobs.list_recoverable_workbench_jobs()}
+                self.assertIn(task["id"], candidates)
+                self.assertEqual(run_id, candidates[task["id"]]["provider_job_run_id"])
+
+    def test_legacy_paid_recovery_requires_interrupted_verification_and_respects_paused_batch(self):
+        from core.storage import extract_link_jobs
+
+        cases = (
+            ("pending", {}, {"local_reconcile": {}}, "interrupted", "waiting", True),
+            ("pending", {"local_plan_check_pending": True}, {}, "attention_required", "waiting", True),
+            ("pending", {}, {"local_reconcile": {}}, "attention_required", "waiting", False),
+            ("confirmed", {"local_plan_check_pending": True}, {"local_reconcile": {}}, "interrupted", "waiting", False),
+            ("pending", {"local_plan_check_pending": True}, {"local_reconcile": {}}, "interrupted", "paused", False),
+            ("pending", {}, {}, "interrupted", "waiting", False),
+            ("pending", {"local_plan_check_pending": True, "automatic_payment_status": "FAILED_REFUNDED"},
+             {"local_reconcile": {}}, "interrupted", "waiting", False),
+        )
+        expected = set()
+        for plus, summary, private, status, batch_status, allowed in cases:
+            with self.subTest(plus=plus, summary=summary, status=status, batch_status=batch_status):
+                batch = operation.create_runtime_batch(batch_type="extract_link", title="到账中断恢复", requested_count=1)
+                task = operation.create_runtime_task(task_type="extract_link", account_id=77,
+                    email="paid-candidate@example.test", batch_id=batch["id"],
+                    data={"provider_id": "legacy", "mode": "auto_payment"})
+                extract_link_jobs.save_provider_job(task["run"]["id"], "legacy", "paid-original",
+                    {"extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": plus,
+                     "summary": summary}, private)
+                operation.finish_run(task["run"]["id"], status=status, message="到账核验中断")
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_batches')} SET status=%s WHERE id=%s", (batch_status, batch["id"]))
+                if allowed:
+                    expected.add(task["id"])
+        self.assertEqual(expected, {row["task_id"] for row in extract_link_jobs.list_recoverable_workbench_jobs()})
+
     def test_provider_terminal_failure_evidence_is_preserved_without_private_fields(self):
         from core.storage import extract_link_jobs
 

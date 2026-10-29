@@ -1001,6 +1001,10 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "extract_payment_submit_failed": ("LINK-PAYMENT-SUBMIT", "提链平台报告支付提交失败，具体原因未记录"),
     "extract_sentinel_failed": ("LINK-SENTINEL", "Sentinel 校验发生网络或上游异常，具体原因未记录"),
     "extract_connection_failed": ("NET-LINK-CONNECT", "提链平台报告网络连接失败"),
+    "extract_provider_connection_error": ("NET-LINK-CLIENT-CONNECT", "提链平台请求连接失败"),
+    "extract_provider_dns_error": ("NET-LINK-DNS", "提链平台请求域名解析失败"),
+    "extract_provider_request_error": ("LINK-REQUEST-ERROR", "提链平台请求发生异常，具体原因见异常类型"),
+    "extract_provider_response_error": ("LINK-RESPONSE-ERROR", "提链平台响应无效或读取异常"),
     "extract_payment_approval_blocked": ("LINK-PAYMENT-APPROVAL", "支付授权或审批被阻止，具体原因未记录"),
     "extract_checkout_unusual_activity": ("LINK-CHECKOUT-ACTIVITY", "Checkout HTTP 400：上游提示异常活动"),
     "extract_payment_method_failed": ("LINK-PAYMENT-METHOD", "支付方式设置流程失败，具体原因未记录"),
@@ -1538,13 +1542,27 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     if task_key == "plan_check" and raw.startswith("全部国家查询失败"):
         code = "plan_country_queries_failed"
     elif task_key == "extract_link":
+        for prefix, provider_code in (
+            ("Provider TLS 证书校验失败", "extract_certificate_error"),
+            ("Provider TLS 连接失败", "extract_tls_error"),
+            ("Provider 请求超时", "extract_request_timeout"),
+            ("Provider 域名解析失败", "extract_provider_dns_error"),
+            ("Provider 连接失败", "extract_provider_connection_error"),
+            ("Provider 请求异常", "extract_provider_request_error"),
+            ("Provider 响应读取异常", "extract_provider_response_error"),
+            ("Provider 响应状态码无效", "extract_provider_response_error"),
+            ("Provider 返回格式无效", "extract_provider_response_error"),
+        ):
+            if raw == prefix or raw.startswith(prefix + "（异常类型："):
+                code = provider_code
+                break
         if summary.get("cause_code") == "extract_reconcile_halted":
             code = {
                 "remote_not_found": "extract_order_not_found",
                 "timeout": "extract_order_polling_timeout",
                 "query_failures": "extract_order_query_failures",
                 "no_progress": "extract_order_no_progress",
-            }.get(summary.get("local_reconcile_reason"), "")
+            }.get(summary.get("local_reconcile_reason"), code)
         if not code and (summary.get("cause_code") == "extract_provider_failed" or "平台提链失败" in raw):
             if "checkout approval" in lower and "result=blocked" in lower:
                 code = "extract_checkout_blocked"

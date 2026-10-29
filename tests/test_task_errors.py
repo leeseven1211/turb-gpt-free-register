@@ -87,6 +87,59 @@ class TaskErrorClassificationTests(unittest.TestCase):
                                            error_code="extract_provider_failed")
                 self.assertEqual("extract_provider_failed", info["code"])
 
+    def test_extract_sync_provider_errors_keep_specific_causes_in_storage_projection(self):
+        from core.storage.operation import _error_fields
+
+        for raw, code in (
+            ("Provider TLS 连接失败（异常类型：SSLError）", "extract_tls_error"),
+            ("Provider TLS 证书校验失败（异常类型：SSLError）", "extract_certificate_error"),
+            ("Provider 请求超时（异常类型：Timeout）", "extract_request_timeout"),
+            ("Provider 域名解析失败（异常类型：ConnectionError）", "extract_provider_dns_error"),
+            ("Provider 连接失败（异常类型：ConnectionError）", "extract_provider_connection_error"),
+            ("Provider 请求异常（异常类型：ValueError）", "extract_provider_request_error"),
+            ("Provider 响应读取异常（异常类型：ValueError）", "extract_provider_response_error"),
+            ("Provider 响应状态码无效", "extract_provider_response_error"),
+            ("Provider 返回格式无效", "extract_provider_response_error"),
+        ):
+            with self.subTest(raw=raw):
+                info = classify_task_error(raw, task_type="extract_link", stage="remote_sync",
+                                           error_code="unknown.unclassified", task_status="failed",
+                                           result_summary={"message": "同步状态失败，已保留上次平台结果"})
+                self.assertEqual(code, info["code"])
+                self.assertEqual("external", info["source"])
+                self.assertEqual(("external", code, raw), _error_fields(
+                    raw, stage="remote_sync", task_type="extract_link", task_status="failed",
+                    result_summary={"message": "同步状态失败，已保留上次平台结果"}))
+
+    def test_provider_tls_transport_error_flows_into_extract_task_classification(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from curl_cffi.requests.exceptions import SSLError
+        from core.extract_link_providers.contracts import ProviderError, request
+
+        transport = SimpleNamespace(request=Mock(side_effect=SSLError("private-error", code=35)))
+        with self.assertRaises(ProviderError) as caught:
+            request(transport, "GET", "/status")
+        info = classify_task_error(str(caught.exception), task_type="extract_link", stage="remote_sync")
+        self.assertEqual("extract_tls_error", info["code"])
+        self.assertEqual("external", info["source"])
+        self.assertNotIn("private-error", str(caught.exception))
+
+    def test_extract_reconcile_reason_only_overrides_provider_error_when_known(self):
+        raw = "Provider TLS 连接失败（异常类型：SSLError）"
+        for reason_fields in ({}, {"local_reconcile_reason": None}, {"local_reconcile_reason": "unexpected"}):
+            with self.subTest(reason_fields=reason_fields):
+                info = classify_task_error(
+                    raw, task_type="extract_link",
+                    result_summary={"cause_code": "extract_reconcile_halted", **reason_fields},
+                )
+                self.assertEqual("extract_tls_error", info["code"])
+        info = classify_task_error(
+            raw, task_type="extract_link",
+            result_summary={"cause_code": "extract_reconcile_halted", "local_reconcile_reason": "remote_not_found"},
+        )
+        self.assertEqual("extract_order_not_found", info["code"])
+
     def test_butler_cutover_and_report_failures_are_classified(self):
         for code in ("email_cutover_target_invalid", "email_cutover_route_changed", "icloud_result_conflict", "icloud_identity_not_found"):
             with self.subTest(code=code):

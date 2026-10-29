@@ -4,7 +4,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from core import extract_link_service as service
-from core.extract_link_providers.contracts import ProviderJob
+from core.extract_link_providers.contracts import ProviderError, ProviderJob
 from tests import test_extract_link_provider_flow as fixtures
 
 
@@ -12,10 +12,12 @@ class LegacyContinuationTests(TestCase):
     _scenario = fixtures.ExtractLinkTerminalFailureFlowTests._scenario
 
     @contextmanager
-    def scenario(self, job=None, *, error=None, initial=False):
+    def scenario(self, job=None, *, error=None, initial=False, prior_state=None):
         prior = {"job_id": "fixture-job", "private_data": {"mode": "auto_payment", "link_type": "upi"},
                  "public_state": {"extraction_state": "running", "payment_state": "pending",
                                   "preflight_status": "passed", "summary": {}}}
+        if prior_state is not None:
+            prior["public_state"].update(prior_state)
         with self._scenario(failed_job=job, poll_error=error) as case:
             case.context.defer = Mock()
             case.context.run["data"].update({"provider_id": "legacy", "mode": "auto_payment", "link_type": "upi"})
@@ -50,6 +52,32 @@ class LegacyContinuationTests(TestCase):
         self.assertEqual("running", case.save_job.call_args.args[3]["extraction_state"])
         self.assertEqual("fixture-job", case.save_job.call_args.args[2])
         case.provider.create_job.assert_not_called()
+
+    def test_manual_sync_query_failure_preserves_pending_snapshot_and_continues(self):
+        for extraction, payment in (("running", "pending"), ("succeeded", "succeeded")):
+            with self.subTest(extraction=extraction, payment=payment), self.scenario(
+                error=ProviderError("Provider TLS 连接失败（异常类型：SSLError）"),
+                prior_state={"extraction_state": extraction, "payment_state": payment},
+            ) as case:
+                case.context.run["data"].pop("extract_poll_continuation")
+                service._handle_provider_operation(case.context)
+                case.context.finish.assert_not_called()
+                case.context.defer.assert_called_once()
+                self.assertTrue(case.context.defer.call_args.kwargs["data"]["extract_poll_continuation"])
+                self.assertEqual(extraction, case.save_job.call_args.args[3]["extraction_state"])
+                self.assertEqual(payment, case.save_job.call_args.args[3]["payment_state"])
+                case.provider.create_job.assert_not_called()
+                case.provider.start_payment.assert_not_called()
+
+    def test_manual_sync_query_failure_does_not_resume_known_failed_order(self):
+        with self.scenario(error=ProviderError("Provider TLS 连接失败（异常类型：SSLError）"),
+                prior_state={"extraction_state": "failed", "payment_state": "not_started",
+                    "summary": {"remote_terminal_failure": True}}) as case:
+            case.context.run["data"].pop("extract_poll_continuation")
+            service._handle_provider_operation(case.context)
+        case.context.defer.assert_not_called()
+        self.assertEqual("failed", case.context.finish.call_args.kwargs["status"])
+        self.assertTrue(case.save_job.call_args.args[3]["summary"]["remote_terminal_failure"])
 
     def test_terminal_failure_finishes_without_defer(self):
         job = ProviderJob(job_id="fixture-job", extraction_state="failed", payment_state="failed",
@@ -87,6 +115,31 @@ class LegacyContinuationTests(TestCase):
         self.assertEqual("local_plan_check", result["payment_confirmation_source"])
         aftercare.assert_not_called()
         plan.assert_not_called()
+
+    def test_recovered_paid_original_without_saved_plus_runs_independent_verification(self):
+        account = {"id": 77, "email": "fixture@example.test", "access_token": "fixture-at",
+                   "plan_check_status": "success", "current_plan_type": "free"}
+
+        def verify(**_kwargs):
+            account.update(current_plan_type="plus", plan_checked_at="2026-10-29T02:00:00+00:00")
+            return {"accepted": True, "result": {"ok": True}}
+
+        job = ProviderJob(job_id="fixture-job", extraction_state="succeeded", payment_state="succeeded",
+                          summary={"automatic_payment_status": "COMPLETED", "automatic_payment_terminal": True})
+        with self.scenario(job, prior_state={"extraction_state": "succeeded", "payment_state": "succeeded",
+                "plus_status": "pending", "summary": {"local_plan_check_pending": True}}) as case, \
+                patch("core.storage.operation.get_task", return_value={"created_at": "2026-10-29T01:00:00+00:00"}), \
+                patch.object(service.db, "get_account", return_value=account), \
+                patch.object(service, "_bool_setting", return_value=True), \
+                patch.object(service, "_payment_aftercare", return_value=("skipped", "fixture-at", False)), \
+                patch("core.plan_check_service.run_account_plan_check_inline", side_effect=verify) as plan:
+            service._handle_provider_operation(case.context)
+        plan.assert_called_once()
+        case.provider.get_status.assert_called_once()
+        case.provider.create_job.assert_not_called()
+        case.provider.start_payment.assert_not_called()
+        self.assertEqual("confirmed", case.context.finish.call_args.kwargs["result_summary"]["plus_status"])
+        self.assertEqual("success", case.context.finish.call_args.kwargs["status"])
 
     def test_unknown_payment_is_not_confirmed_by_account_plus_alone(self):
         state = {"extraction_state": "succeeded", "payment_state": "pending", "summary": {}}

@@ -189,6 +189,7 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
         with (
             patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
             patch.object(task_gateway, "_executor", return_value=Executor()),
+            patch.object(task_gateway, "_extract_executor", return_value=Executor()),
         ):
             previous = task_gateway._run_handler_snapshot()[0].get("extract_link")
             previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
@@ -276,6 +277,7 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
             with (
                 patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
                 patch.object(task_gateway, "_executor", return_value=Executor()),
+                patch.object(task_gateway, "_extract_executor", return_value=Executor()),
             ):
                 task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
                     dispatch_capacity_key=lambda _run: {"huanguang": 10, "batch:1": 10},
@@ -347,7 +349,8 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
         previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
         try:
             with (patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
-                  patch.object(task_gateway, "_executor", return_value=Executor())):
+                  patch.object(task_gateway, "_executor", return_value=Executor()),
+                  patch.object(task_gateway, "_extract_executor", return_value=Executor())):
                 task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
                     dispatch_capacity_key=lambda _run: "legacy", dispatch_capacity_limit=lambda _key: 1)
                 for _ in range(4):

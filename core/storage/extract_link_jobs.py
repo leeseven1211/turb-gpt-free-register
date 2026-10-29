@@ -307,16 +307,27 @@ def list_recoverable_workbench_jobs() -> list[dict]:
               AND run.cancel_requested_at IS NULL
               AND (batch.id IS NULL OR batch.status NOT IN ('cancelled', 'stopped', 'paused'))
               AND (job.provider_id<>'legacy' OR run.data->>'extract_poll_continuation'='true'
-                   OR jsonb_typeof(job.private_data->'local_reconcile')='object')
+                   OR jsonb_typeof(job.private_data->'local_reconcile')='object'
+                   OR job.public_state->'summary'->'local_plan_check_pending'='true'::jsonb)
               AND (job.provider_id<>'legacy' OR (
                   job.extraction_state <> 'failed'
-                  AND job.payment_state NOT IN ('failed', 'succeeded')
                   AND COALESCE(job.public_state->'summary'->>'outcome', '') <> 'REJECTED'
                   AND job.public_state->'summary'->'remote_terminal_failure' IS DISTINCT FROM 'true'::jsonb
-                  AND (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
-                       OR (COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only')='auto_payment'
-                           AND job.payment_state IN ('pending', 'not_started', 'unknown')
-                           AND job.public_state->'summary'->'automatic_payment_terminal' IS DISTINCT FROM 'true'::jsonb))
+                  AND (
+                      (job.payment_state NOT IN ('failed', 'succeeded')
+                       AND (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
+                            OR (COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only')='auto_payment'
+                                AND job.payment_state IN ('pending', 'not_started', 'unknown')
+                                AND job.public_state->'summary'->'automatic_payment_terminal' IS DISTINCT FROM 'true'::jsonb)))
+                      OR (job.payment_state='succeeded'
+                          AND COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') IN ('auto_payment', 'manual_payment')
+                          AND job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed'
+                          AND COALESCE(job.public_state->'summary'->>'remote_chain_error', '')=''
+                          AND UPPER(COALESCE(job.public_state->'summary'->>'automatic_payment_status', ''))
+                              NOT IN ('FAILED', 'FAILED_REFUNDED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'NEED_REUPLOAD')
+                          AND (run.status='interrupted' OR run.result_summary->>'cause_code'='worker_interrupted'
+                               OR job.public_state->'summary'->'local_plan_check_pending'='true'::jsonb))
+                  )
               ))
               AND (job.provider_id<>'huanguang'
                    OR job.public_state->'summary'->'local_reconcile_halted' IS DISTINCT FROM 'true'::jsonb)
@@ -472,7 +483,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (run_id,))
         run = cur.fetchone()
-        if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown", "partial_success", "success"}:
+        if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown", "partial_success", "success", "interrupted"}:
             return False
         if run["cancel_requested_at"] is not None:
             return False
@@ -483,7 +494,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         task = cur.fetchone()
         if not task or task["last_run_id"] != run_id or task["source_system"] != "native_operations" or task["task_type"] != "extract_link":
             return False
-        if task["status"] not in {"attention_required", "request_unknown", "partial_success", "success"} or not task["account_id"]:
+        if task["status"] not in {"attention_required", "request_unknown", "partial_success", "success", "interrupted"} or not task["account_id"]:
             return False
         data = _json_object(task["data"], field_name="任务数据")
         if data.get("mode") not in {"auto_payment", "manual_payment"}:
@@ -499,13 +510,33 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             return False
         if job["payment_state"] not in {"unknown", "succeeded"} or not payment_scan_completed(state, provider_id=job["provider_id"]):
             return False
+        summary = state.get("summary") or {}
+        private = _json_object(job["private_data"], field_name="平台恢复数据")
+        result_summary = _json_object(run.get("result_summary") or {}, field_name="执行摘要")
+        interrupted_verification = (
+            job["provider_id"] == "legacy" and job["payment_state"] == "succeeded"
+            and (run["status"] == "interrupted" or result_summary.get("cause_code") == "worker_interrupted")
+            and (isinstance(private.get("local_reconcile"), dict) or summary.get("local_plan_check_pending") is True)
+        )
+        if (run["status"] == "interrupted" or task["status"] == "interrupted") and not interrupted_verification:
+            return False
+        if interrupted_verification and task["batch_id"]:
+            cur.execute(f"SELECT status FROM {operation_store._table('operation_batches')} WHERE id=%s", (task["batch_id"],))
+            batch = cur.fetchone()
+            if batch and batch["status"] in {"paused", "stopped", "cancelled"}:
+                return False
+        saved_arrival = (interrupted_verification and state.get("plus_status") == "confirmed"
+                         and summary.get("payment_confirmation_source") == "local_plan_check")
         account = record_store.get_row(record_store.ACCOUNTS, int(task["account_id"]), conn=conn, for_update=True)
         cur.execute(f"""SELECT 1 FROM {operation_store._table('operation_tasks')} newer
             LEFT JOIN {operation_store._table('operation_runs')} related ON related.task_id=newer.id
             WHERE newer.account_id=%s AND newer.task_type='extract_link'
               AND (newer.id>%s OR related.id>%s) LIMIT 1""", (task["account_id"], task["id"], run_id))
-        if cur.fetchone():
+        if cur.fetchone() and not saved_arrival:
             return False
+        if saved_arrival:
+            account = {"plan_check_status": "success", "current_plan_type": "plus",
+                       "plan_checked_at": summary.get("payment_confirmed_plan_checked_at")}
         if not independent_plus_is_confirmed(account, task_created_at=task["created_at"]):
             return False
         checked_at = str(account.get("plan_checked_at") or "").strip(" ") or str(account.get("plan_last_success_at") or "").strip(" ")
@@ -525,7 +556,12 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
                 boundary_job = original
                 boundary_run = {"completed_at": original["original_completed_at"]}
         boundaries = [_workbench_timestamp(value) for value in (task["created_at"], boundary_job["updated_at"], boundary_run["completed_at"])]
-        # 这里只补齐任务结束后的独立查询；扫码前或原任务内的查询不能反推本次付款。
+        if interrupted_verification:
+            # 重启收口时间不是付款时间；已写入的独立到账证据不能因此失效。
+            boundaries = [_workbench_timestamp(task["created_at"])]
+            if not saved_arrival:
+                boundaries.append(_workbench_timestamp(boundary_job["updated_at"]))
+        # 普通终态只接受结束后的独立查询；中断核验仍须晚于任务及已支付快照。
         if any(value is None for value in boundaries) or checked_time <= max(boundaries):
             return False
         summary = dict(state.get("summary") or {})
@@ -590,8 +626,8 @@ def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, 
     where = [
         "task.source_system='native_operations'", "task.task_type='extract_link'",
         "task.data->>'mode' IN ('auto_payment','manual_payment')",
-        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success')",
-        "task.status IN ('attention_required','request_unknown','partial_success','success')", "run.cancel_requested_at IS NULL",
+        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success','interrupted')",
+        "task.status IN ('attention_required','request_unknown','partial_success','success','interrupted')", "run.cancel_requested_at IS NULL",
         "job.provider_id IN ('huanguang','legacy','lumen_flow')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
         "(run.status<>'success' OR job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed')",
     ]

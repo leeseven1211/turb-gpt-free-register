@@ -285,6 +285,57 @@ class ExtractPaymentReconcileStorageTests(PostgresTestCase):
         self.assertEqual("succeeded", job["extraction_state"])
         self.assertEqual("succeeded", job["public_state"]["extraction_state"])
 
+    def test_worker_exit_after_arrival_writeback_reconciles_without_network_or_new_run(self):
+        for status, already_confirmed in (("interrupted", False), ("attention_required", False), ("interrupted", True)):
+            with self.subTest(status=status, already_confirmed=already_confirmed):
+                summary = ({"payment_confirmation_source": "local_plan_check",
+                            "payment_confirmed_plan_checked_at": "2026-10-28T16:01:00Z"}
+                           if already_confirmed else {"local_plan_check_pending": True})
+                task = self.task(self.account(), status=status, provider="legacy", state={
+                    "extraction_state": "succeeded", "payment_state": "succeeded",
+                    "plus_status": "confirmed" if already_confirmed else "pending", "summary": summary})
+                run_id = task["run"]["id"]
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET completed_at=now(), "
+                                "result_summary=result_summary || %s::jsonb WHERE id=%s",
+                                (json.dumps({"cause_code": "worker_interrupted"}), run_id))
+                    cur.execute(f"UPDATE {operation._table('extract_link_provider_jobs')} "
+                                "SET private_data=private_data || %s::jsonb, "
+                                "updated_at=CASE WHEN %s THEN '2026-10-28T16:02:00Z'::timestamptz ELSE updated_at END "
+                                "WHERE run_id=%s", (json.dumps({"local_reconcile": {}}), already_confirmed, run_id))
+                self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+                self.assertEqual("success", operation.get_task(task["id"])["status"])
+                self.assertEqual("success", operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(task["id"])["last_run_id"])
+                self.assertEqual(0, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+
+    def test_paid_interrupted_arrival_does_not_revive_paused_batch_or_unmarked_history(self):
+        for marked, batch_status in ((True, "paused"), (False, "waiting")):
+            with self.subTest(marked=marked, batch_status=batch_status):
+                task = self.task(self.account(), status="interrupted", provider="legacy", state={
+                    "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "pending",
+                    "summary": {"local_plan_check_pending": True} if marked else {}})
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_batches')} SET status=%s WHERE id=%s", (batch_status, task["batch_id"]))
+                self.assertEqual(0, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+                self.assertEqual("interrupted", operation.get_run(task["run"]["id"])["status"])
+
+    def test_saved_original_arrival_survives_newer_extract_task(self):
+        task = self.task(self.account(), status="interrupted", provider="legacy", state={
+            "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "confirmed",
+            "summary": {"payment_confirmation_source": "local_plan_check",
+                        "payment_confirmed_plan_checked_at": "2026-10-28T16:01:00Z"}})
+        run_id = task["run"]["id"]
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('extract_link_provider_jobs')} "
+                        "SET private_data=private_data || %s::jsonb, updated_at=now() WHERE run_id=%s",
+                        (json.dumps({"local_reconcile": {}}), run_id))
+        newer = operation.create_runtime_task(task_type="extract_link", account_id=task["account_id"],
+            email="newer-extract@example.test", data={"provider_id": "legacy", "mode": "extract_only"})
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+        self.assertEqual("success", operation.get_run(run_id)["status"])
+        self.assertEqual("queued", operation.get_task(newer["id"])["status"])
+
     def test_item_failure_rolls_back_all_changes_and_continues_other_items(self):
         first = self.task(self.account())
         second = self.task(self.account())

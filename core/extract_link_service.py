@@ -3332,6 +3332,7 @@ def _handle_provider_operation(context):
     terminal_status = "failed"
     status_message = "提链失败"
     safe_error = ""
+    sync_query_succeeded = False
 
     with context.lease(resource_family="openai_interactive"), _huanguang_create_quota(
         context, runtime, provider_id=provider_id, mode=mode, action=action,
@@ -3489,6 +3490,7 @@ def _handle_provider_operation(context):
                 _update_provider_job(context, provider_id, job_id or None, state, prior_private)
                 context.report(stage="extraction", message=f"正在读取已有远端任务状态，本次请求最多等待 {runtime.timeout} 秒")
                 job = provider.get_status(job_id, private_data=_provider_resume_private(provider_id, prior_private, state))
+                sync_query_succeeded = True
                 context.checkpoint()
                 job_id = str(job.job_id or job_id or "").strip()
                 saved_state = prior_job.get("public_state") if isinstance(prior_job.get("public_state"), dict) else {}
@@ -3825,8 +3827,13 @@ def _handle_provider_operation(context):
             return None
         except Exception as exc:
             safe_error = task_run_log.redact_text(str(exc), 500)
+            from core.extract_link_providers.payment_confirmation import payment_scan_completed
+
             if (provider_id == "legacy" and job_id and callable(getattr(context, "defer", None))
-                    and _legacy_needs_continuation(state, mode=mode)):
+                    and (_legacy_needs_continuation(state, mode=mode)
+                         or (action == "sync_status" and not sync_query_succeeded
+                             and state.get("plus_status") != "confirmed"
+                             and payment_scan_completed(state, provider_id=provider_id)))):
                 context.checkpoint()
                 private = {**prior_private, **(job.private_data if "job" in locals() else {})}
                 private = _record_huanguang_reconcile(context, private, state, succeeded=False,
