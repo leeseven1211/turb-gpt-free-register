@@ -396,6 +396,29 @@ test('候选筛选提交套餐优惠并更新资格说明', () => {
   assert.equal(api.candidateFilters().promotion, 'eligible');
 });
 
+test('无优惠筛选按本地结果预览并提交', async () => {
+  const {api, window} = createView();
+  const template = fs.readFileSync(path.join(__dirname, '../webui/templates/index.html'), 'utf8');
+  assert.match(template, /<option value="none">无优惠<\/option>/);
+  const promotion = {value:'none'};
+  const hint = {textContent:''};
+  const accounts = {innerHTML:''};
+  const selectors = {'[data-workbench-promotion]':promotion, '[data-workbench-candidate-hint]':hint,
+    '[data-workbench-accounts]':accounts};
+  api.setRoot({querySelector:selector => selectors[selector] || null});
+  let requested = '';
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    requested = endpoint;
+    return {ok:true, total:1, selected_count:1, items:[{account_id:1, account_promotion_value:'none'}]};
+  };
+  api.renderCandidatePromotion();
+  assert.equal(api.candidateFilters().promotion, 'none');
+  assert.match(hint.textContent, /上次查询.*无优惠/);
+  await api.loadAccounts();
+  assert.equal(new URLSearchParams(requested.split('?')[1]).get('promotion'), 'none');
+  assert.match(accounts.innerHTML, /<td>无优惠<\/td>/);
+});
+
 test('页面刷新查询列表和能力配置，列表不请求敏感链接', async () => {
   const {api, requests} = createView();
   api.setRoot({innerHTML: '', addEventListener() {}, querySelector() { return null; }});

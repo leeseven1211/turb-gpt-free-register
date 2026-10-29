@@ -417,7 +417,7 @@
           <label class="extract-workbench-account-search">账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱" autocomplete="off"></label>
           <label>邮箱来源<select data-workbench-account-source><option value="">全部来源</option></select></label>
           <label>提链状态<select data-workbench-extract-status><option value="not_succeeded">未成功提链</option><option value="all">全部可用账号</option><option value="failed">失败 / 待确认</option><option value="never">从未提链</option><option value="success">已成功提链</option></select></label>
-          <label>套餐优惠<select data-workbench-promotion><option value="eligible" selected>全部可提链优惠</option><option value="free_trial">免费试用</option><option value="half_price">半价</option><option value="other_discount">其他折扣</option><option value="other_promo">其他优惠</option></select></label>
+          <label>套餐优惠<select data-workbench-promotion><option value="eligible" selected>全部可提链优惠</option><option value="free_trial">免费试用</option><option value="half_price">半价</option><option value="other_discount">其他折扣</option><option value="other_promo">其他优惠</option><option value="none">无优惠</option></select></label>
           <label>注册日期从<input type="date" data-workbench-date-from></label>
           <label>注册日期至<input type="date" data-workbench-date-to></label>
           <label>本批运行数量<input type="number" data-workbench-batch-limit value="100" min="1" max="5000" step="1" inputmode="numeric"></label>
@@ -1136,6 +1136,6 @@
 <script src="{{ url_for('static', filename='js/modern/butler-import.js', v='20261028-import-progress-v3') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}?v=20261027-mail-boundary-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261029-cancel-batch-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261029-promotion-none-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>

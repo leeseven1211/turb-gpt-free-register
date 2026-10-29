@@ -315,11 +315,16 @@ def is_free_trial_record(record: Mapping[str, Any] | None) -> bool:
     return plan == "free" and promotion_kind_from_record(row) == FREE_TRIAL
 
 
-def is_extract_link_eligible(record: Mapping[str, Any] | None) -> bool:
-    """仅确认有明确 Plus 优惠的 free 账号可进入提链流程。"""
+def is_extract_link_eligible(record: Mapping[str, Any] | None, *, allow_no_promotion: bool = False) -> bool:
+    """允许明确优惠；批次显式选择时也允许已查询的无优惠账号。"""
     row = record or {}
     plan = _text(row.get("current_plan_type") or row.get("plan_type")).lower()
-    return plan == "free" and promotion_kind_from_record(row) in ELIGIBLE_PROMO_KINDS
+    kind = promotion_kind_from_record(row)
+    checked = (row.get("plan_check_status") == "success" or row.get("plan_check_ok") is True
+               or bool(row.get("plan_last_success_at")))
+    return plan == "free" and (kind in ELIGIBLE_PROMO_KINDS or (
+        allow_no_promotion and kind == NO_PROMO and checked
+    ))
 
 
 def promotion_label(record: Mapping[str, Any] | None) -> str:

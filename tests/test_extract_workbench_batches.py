@@ -346,12 +346,15 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
             {"plus_promo_kind": "discount", "plus_promo_discount_percentage": 20},
             {"plus_promo_kind": "other_promo"},
             {"plus_promo_kind": "unknown"},
+            {"plus_promo_kind": "none"},
+            {"plus_promo_kind": "none", "plan_check_status": "failed", "plan_check_ok": False},
         ])
         for promotion, expected in (
             ("free_trial", ids[0]),
             ("half_price", ids[1]),
             ("other_discount", ids[2]),
             ("other_promo", ids[3]),
+            ("none", ids[5]),
         ):
             with self.subTest(promotion=promotion):
                 result = extract_link_service.preview_workbench_candidates(
@@ -360,6 +363,18 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                 self.assertEqual([expected], [item["account_id"] for item in result["items"]])
         all_result = extract_link_service.preview_workbench_candidates(filters={"promotion": "eligible"}, limit=100)
         self.assertEqual(set(ids[:4]), {item["account_id"] for item in all_result["items"]})
+
+    def test_no_promotion_batch_persists_permission_to_extract(self):
+        self.accounts([{"plus_promo_kind": "none"}])
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="extract_only", filters={"promotion": "none"}, limit=1,
+            )
+        self.assertEqual(1, result["started"])
+        tasks = operation.list_tasks(batch_id=result["batch_id"])["items"]
+        task = operation.get_task(tasks[0]["id"])
+        self.assertTrue(task["data"]["allow_no_promotion"])
+        self.assertTrue(task["runs"][0]["data"]["allow_no_promotion"])
 
     def test_batch_workers_are_persisted_and_old_batches_keep_existing_limits(self):
         self.accounts([{}, {}])

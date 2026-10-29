@@ -14,7 +14,7 @@ MAX_BATCH_SIZE = 5000
 MAX_BATCH_WORKERS = 50
 _FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
-_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
+_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none"}
 
 
 def sync_cancelled_account_extraction(run_id: int, *, expected_account_version: str | None = None) -> bool:
@@ -159,7 +159,6 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
     where.extend((
         "a.deactivated IS FALSE",
         "a.account_has_access_token IS TRUE",
-        "a.account_promotion_value IN ('free_trial', 'half_price', 'other_discount', 'other_promo')",
         "LOWER(COALESCE(a.extract_link_status, '')) NOT IN ('queued', 'running')",
         f"""NOT EXISTS (SELECT 1 FROM {operation._table('operation_runs')} active
             WHERE active.account_id=a.id AND active.resource_family='openai_interactive'
@@ -175,7 +174,9 @@ def candidate_accounts(*, filters: dict | None = None, limit: int = 100, conn=No
         where.append(f"{status} = ''")
     elif requested_status == "success":
         where.append(f"{status} = 'success'")
-    if selected_filters["promotion"] != "eligible":
+    if selected_filters["promotion"] == "eligible":
+        where.append("a.account_promotion_value IN ('free_trial', 'half_price', 'other_discount', 'other_promo')")
+    else:
         where.append("a.account_promotion_value=%s")
         params.append(selected_filters["promotion"])
     accounts = admin_repository._q(record_store.ACCOUNTS)

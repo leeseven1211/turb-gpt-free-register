@@ -20,7 +20,7 @@ const EXTRACT_WORKBENCH_LINK_TYPE_LABELS = {
 };
 const EXTRACT_WORKBENCH_PROMOTION_LABELS = {
   eligible: '全部可提链优惠', free_trial: '免费试用', half_price: '半价',
-  other_discount: '其他折扣', other_promo: '其他优惠',
+  other_discount: '其他折扣', other_promo: '其他优惠', none: '无优惠',
 };
 
 const EXTRACT_WORKBENCH_STATUS_LABELS = {
@@ -349,7 +349,9 @@ function extractWorkbenchRenderCandidatePromotion() {
   const label = extractWorkbenchPromotionLabel(promotion);
   hint.textContent = promotion === 'eligible'
     ? '仅匹配活跃、未归档且具备任一可提链优惠的 free 账号；提交前仍会在线查活。'
-    : `仅匹配活跃、未归档且具备「${label}」优惠的 free 账号；提交前仍会在线查活。`;
+    : promotion === 'none'
+      ? '仅匹配活跃、未归档且上次查询无优惠的 free 账号；当前优惠由提链平台判断，提交前仍会在线查活。'
+      : `仅匹配活跃、未归档且具备「${label}」优惠的 free 账号；提交前仍会在线查活。`;
 }
 
 function extractWorkbenchBatchStatus(status) {
@@ -751,7 +753,7 @@ async function extractWorkbenchLoadAccounts() {
     target.innerHTML = accounts.length ? `<table><thead><tr><th>账号</th><th>来源</th><th>注册时间</th><th>套餐优惠</th><th>提链状态</th></tr></thead><tbody>${accounts.map(account => {
       const email = extractWorkbenchEscape(account.email || '账号未记录');
       const source = extractWorkbenchAccountSources()[account.email_source] || account.email_source || '未记录';
-      const promotion = ['free_trial', 'half_price', 'other_discount', 'other_promo'].includes(String(account.account_promotion_value || ''))
+      const promotion = ['free_trial', 'half_price', 'other_discount', 'other_promo', 'none'].includes(String(account.account_promotion_value || ''))
         ? extractWorkbenchPromotionLabel(account.account_promotion_value) : '—';
       return `<tr><td title="${email}">${email}</td><td>${extractWorkbenchEscape(source)}</td><td>${extractWorkbenchEscape(String(account.created_at || '').slice(0, 10) || '—')}</td><td>${extractWorkbenchEscape(promotion)}</td><td>${extractWorkbenchEscape(account.extract_link_status ? extractWorkbenchStatusLabel(account.extract_link_status) : '尚未提链')}</td></tr>`;
     }).join('')}</tbody></table>` : '<p class="extract-workbench-empty">没有匹配的可用账号，请调整筛选条件</p>';

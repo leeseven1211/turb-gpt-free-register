@@ -2302,7 +2302,7 @@ def _workbench_status_matches(item: dict, status: str) -> bool:
 def create_workbench_tasks(
     *, account_ids: list[int], provider_id: str, mode: str,
     type: str | None = None, options: dict | None = None,
-    batch_id: int | None = None, dispatch: bool = True,
+    batch_id: int | None = None, dispatch: bool = True, allow_no_promotion: bool = False,
 ) -> dict:
     provider_id = str(provider_id or "").strip().lower()
     mode = str(mode or "").strip().lower()
@@ -2331,7 +2331,9 @@ def create_workbench_tasks(
             skipped += 1
             continue
         try:
-            if not plus_promotion.is_extract_link_eligible(account):
+            if not (plus_promotion.is_extract_link_eligible(account) or (
+                allow_no_promotion and plus_promotion.is_extract_link_eligible(account, allow_no_promotion=True)
+            )):
                 skipped += 1
                 continue
         except Exception:
@@ -2354,6 +2356,8 @@ def create_workbench_tasks(
             "options": safe_options,
             "workbench_action": "create",
         }
+        if allow_no_promotion:
+            data["allow_no_promotion"] = True
         try:
             submitted = account_task_store.submit_durable_operation(
                 task_type="extract_link",
@@ -2498,12 +2502,14 @@ def create_workbench_batch(
         )
         batch_id = int(batch["id"])
     skipped = failed = started = 0
+    allow_no_promotion = extract_link_batches.normalize_filters(filters)["promotion"] == "none"
     complete = False
     try:
         for offset in range(0, len(ids), 500):
             result = create_workbench_tasks(
                 account_ids=ids[offset:offset + 500], provider_id=provider_id, mode=mode,
                 type=link_type, options=safe_options, batch_id=batch_id, dispatch=False,
+                **({"allow_no_promotion": True} if allow_no_promotion else {}),
             )
             skipped += int(result.get("skipped") or 0)
             failed += int(result.get("failed") or 0)
@@ -2807,6 +2813,8 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
                 "options": data.get("options") if isinstance(data.get("options"), dict) else {},
                 "extract_poll_continuation": False,
             })
+            if data.get("allow_no_promotion") is True:
+                run_data["allow_no_promotion"] = True
     elif requested_action in {"sync_status", "manual_payment", "auto_payment"}:
         expected_mode = {
             "manual_payment": "manual_payment",
@@ -3242,7 +3250,10 @@ def _handle_provider_operation(context):
         context.finish(status="cancelled", message="账号已停用，取消提链", error="账号已停用")
         return None
     from core import plus_promotion
-    if action == "create" and not plus_promotion.is_extract_link_eligible(account):
+    if action == "create" and not (plus_promotion.is_extract_link_eligible(account) or (
+        data.get("allow_no_promotion") is True
+        and plus_promotion.is_extract_link_eligible(account, allow_no_promotion=True)
+    )):
         context.finish(status="failed", message="账号已不符合 Plus 优惠资格，未提交提链", error="账号不符合提链资格")
         return None
     if provider_id not in _PROVIDER_SETTINGS or not _provider_enabled(provider_id):

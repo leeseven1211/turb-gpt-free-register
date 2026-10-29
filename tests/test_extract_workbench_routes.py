@@ -263,6 +263,14 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
                 self.assertNotIn("must-not-return", response.get_data(as_text=True))
                 preview.assert_not_called()
 
+    def test_candidate_preview_accepts_and_projects_no_promotion(self):
+        with patch.object(extract_workbench.extract_link_service, "preview_workbench_candidates", return_value={
+            "total": 1, "selected_count": 1, "items": [{"account_id": 77, "account_promotion_value": "none"}],
+        }):
+            response = self.client.get("/api/extract-workbench/candidates?promotion=none")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("none", response.get_json()["items"][0]["account_promotion_value"])
+
     def test_create_batch_submits_filters_and_returns_batch_counts(self):
         with patch.object(
             extract_workbench.extract_link_service, "create_workbench_batch", create=True,

@@ -564,7 +564,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             "account_id": 78,
             "batch_id": 303,
             "data": {"provider_id": "huanguang", "mode": "auto_payment", "link_type": "upi",
-                     "options": {"retry_count": 3}},
+                     "options": {"retry_count": 3}, "allow_no_promotion": True},
             "runs": [{"id": 23, "run_no": 1}],
             "last_run_id": 23,
         }
@@ -587,6 +587,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         self.assertEqual("create", payload["workbench_action"])
         self.assertEqual("auto_payment", payload["mode"])
         self.assertEqual({"retry_count": 3}, payload["options"])
+        self.assertIs(True, payload["allow_no_promotion"])
         self.assertIs(False, payload["extract_poll_continuation"])
         self.assertIsNone(payload["provider_job_run_id"])
         self.assertEqual((12,), retry.call_args.args)
@@ -746,6 +747,22 @@ class ExtractLinkPreflightConfigurationTests(unittest.TestCase):
     def _states(scenario, stage):
         return [call.kwargs["state"] for call in scenario.context.report.call_args_list
                 if call.kwargs.get("stage") == stage and call.kwargs.get("state")]
+
+    def test_confirmed_no_promotion_requires_batch_permission_during_execution(self):
+        from core import extract_link_service, plus_promotion
+
+        eligibility = plus_promotion.is_extract_link_eligible
+        for allowed in (False, True):
+            with self.subTest(allowed=allowed), self._scenario(
+                provider_id="lumen_flow", preflight_enabled=False, refresh_at_enabled=False, inline_results=[],
+            ) as scenario:
+                scenario.context.run["data"]["allow_no_promotion"] = allowed
+                account = {"id": 77, "email": scenario.context.email, "access_token": "fixture-token",
+                           "current_plan_type": "free", "plus_promo_kind": "none", "plan_check_status": "success"}
+                scenario.get_account.side_effect = [account, account]
+                plus_promotion.is_extract_link_eligible.side_effect = eligibility
+                extract_link_service._handle_provider_operation(scenario.context)
+                self.assertEqual(allowed, scenario.provider.create_job.called)
 
     def test_huanguang_configured_proxy_pools_reach_provider_without_auto_allocation(self):
         from core import extract_link_service

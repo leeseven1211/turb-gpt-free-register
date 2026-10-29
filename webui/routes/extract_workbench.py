@@ -28,7 +28,7 @@ _MAX_BATCH_SIZE = 5000
 _MAX_BATCH_WORKERS = 50
 _CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
-_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
+_PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none"}
 _BATCH_COUNT_FIELDS = (
     "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
     "plus_confirmed", "needs_attention",
@@ -269,7 +269,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
                 if key in item
             }
             promotion = item.get("account_promotion_value")
-            if promotion in {"free_trial", "half_price", "other_discount", "other_promo"}:
+            if promotion in {"free_trial", "half_price", "other_discount", "other_promo", "none"}:
                 projected["account_promotion_value"] = promotion
             items.append(_safe_tree(projected))
         return jsonify({

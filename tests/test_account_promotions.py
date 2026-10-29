@@ -77,6 +77,15 @@ class AccountPromotionsTests(unittest.TestCase):
             "current_plan_type": "plus", "plus_promo_kind": "free_trial",
         }))
 
+    def test_workbench_accepts_no_promotion_only_when_explicitly_selected_and_previously_checked(self):
+        record = {"current_plan_type": "free", "plus_promo_kind": "none", "plan_check_status": "success"}
+        self.assertFalse(is_extract_link_eligible(record))
+        self.assertTrue(is_extract_link_eligible(record, allow_no_promotion=True))
+        self.assertFalse(is_extract_link_eligible({"current_plan_type": "free"}, allow_no_promotion=True))
+        self.assertFalse(is_extract_link_eligible({**record, "plus_promo_kind": "unknown"}, allow_no_promotion=True))
+        self.assertFalse(is_extract_link_eligible({**record, "current_plan_type": "plus"}, allow_no_promotion=True))
+        self.assertTrue(is_extract_link_eligible({**record, "plan_check_status": "failed", "plan_last_success_at": "2026-10-01"}, allow_no_promotion=True))
+
     def test_partial_metadata_can_still_classify_explicit_free_activity(self):
         promotions, _ = parse_account_promotions({"go": {"id": "go-one-month-free"}}, is_free=True)
         self.assertEqual(promotions[0]["kind"], "free_trial")
