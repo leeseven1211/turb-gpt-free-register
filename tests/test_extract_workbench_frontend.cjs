@@ -53,6 +53,8 @@ function createView({timers = null} = {}) {
     cancelBatch: typeof extractWorkbenchCancelBatch === 'function' ? extractWorkbenchCancelBatch : undefined,
     renderBatches: extractWorkbenchRenderBatches,
     renderProviders: extractWorkbenchRenderProviders,
+    renderModes: extractWorkbenchRenderModes,
+    renderBatchWorkers: extractWorkbenchRenderBatchWorkers,
     renderLinkTypes: extractWorkbenchRenderLinkTypes,
     renderCandidatePromotion: extractWorkbenchRenderCandidatePromotion,
     accountSources: extractWorkbenchAccountSources,
@@ -1305,12 +1307,12 @@ test('批次配置初始化默认并发，刷新保留用户已编辑的值', as
   const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-concurrency-hint]':hint};
   api.setRoot({querySelector:selector=>selectors[selector] || null,addEventListener(){}});
   window.__EXTRACT_WORKBENCH_DATA_SOURCE__=async endpoint=>endpoint.endsWith('/config')
-    ? {providers:[],batch_workers_default:4,batch_workers_max:16}
+    ? {providers:[],batch_workers_default:4,batch_workers_max:50}
     : {items:[],counts:{},total:0,page:1};
   await api.load({force:true});
   assert.equal(workers.value,'4');
   assert.equal(workers.min,'1');
-  assert.equal(workers.max,'16');
+  assert.equal(workers.max,'50');
   assert.match(hint.textContent,/并发|同时/);
   workers.value='7';
   await api.load({force:true});
@@ -1319,9 +1321,9 @@ test('批次配置初始化默认并发，刷新保留用户已编辑的值', as
 
 test('提交携带批次并发，连接失败重试保留标识，修改并发生成新标识', async () => {
   const {api,window}=createView();
-  const workers={value:'4'};
+  const workers={value:'20'};
   const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-provider]':{value:'lumen_flow'},'[data-workbench-mode]':{value:'extract_only'}};
-  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:16});
+  api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:50});
   api.setRoot({querySelector:selector=>selectors[selector] || null});
   api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
   const posted=[];
@@ -1330,26 +1332,54 @@ test('提交携带批次并发，连接失败重试保留标识，修改并发�
   };
   await api.submit();
   await api.submit();
-  assert.equal(posted[0].workers,4);
+  assert.equal(posted.length,2,'并发20应允许提交和重试');
+  assert.equal(posted[0].workers,20);
   assert.equal(posted[0].submission_id,posted[1].submission_id);
-  workers.value='8';
+  workers.value='50';
   await api.submit();
-  assert.equal(posted[2].workers,8);
+  assert.equal(posted.length,3,'并发50应允许提交');
+  assert.equal(posted[2].workers,50);
   assert.notEqual(posted[0].submission_id,posted[2].submission_id);
 });
 
 test('批次并发空值、非整数和超范围时不发送创建请求', async () => {
-  for (const value of ['', '0', '17', '1.5', 'abc']) {
+  for (const value of ['', '0', '-1', '51', '1.5', 'abc']) {
     const {api,requests}=createView();
     const feedback={textContent:''};
     const selectors={'[data-workbench-batch-workers]':{value},'[data-workbench-provider]':{value:'lumen_flow'},
       '[data-workbench-mode]':{value:'extract_only'},'[data-workbench-create-feedback]':feedback};
-    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:16});
+    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],batch_workers_default:1,batch_workers_max:50});
     api.setRoot({querySelector:selector=>selectors[selector] || null});
     api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature()});
     await api.submit();
     assert.equal(requests.length,0,`非法并发 ${value} 不应发起请求`);
-    assert.match(feedback.textContent,/并发.*1.*16/);
+    assert.match(feedback.textContent,/并发.*1.*50/);
+  }
+});
+
+test('批次并发有效范围、按钮和提示在配置缺失或非法时保持一致', () => {
+  for (const maximum of [50, undefined, 51, '50']) {
+    const {api}=createView();
+    const workers={value:'1'};
+    const hint={textContent:''};
+    const button={disabled:true};
+    const selectors={'[data-workbench-batch-workers]':workers,'[data-workbench-concurrency-hint]':hint,
+      '[data-workbench-create]':button,'[data-workbench-provider]':{value:'lumen_flow'},
+      '[data-workbench-mode]':{value:'extract_only'}};
+    api.setConfig({providers:[{id:'lumen_flow',modes:['extract_only'],default_type:'momo',link_types:['momo']}],
+      batch_workers_default:1,batch_workers_max:maximum});
+    api.setRoot({querySelector:selector=>selectors[selector] || null});
+    api.setState({preview:{selected_count:100},previewSignature:api.candidateSignature(),batchWorkersInitialized:true});
+    for (const value of ['20', '50', '51', '', '0', '1.5', 'abc']) {
+      workers.value=value;
+      api.renderBatchWorkers();
+      api.renderModes();
+      const valid=['20','50'].includes(value);
+      assert.equal(workers.max,'50');
+      assert.equal(button.disabled,!valid,`上限 ${maximum}、输入 ${value} 的按钮状态`);
+      if (valid) assert.match(hint.textContent,new RegExp(`同时运行 ${value} 个账号`));
+      else assert.match(hint.textContent,/并发.*1.*50/);
+    }
   }
 });
 

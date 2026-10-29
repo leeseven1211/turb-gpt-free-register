@@ -350,7 +350,7 @@ def _provider_configuration(provider_id: str):
         api_base=api_base,
         cdk=cdk,
         capabilities=capabilities,
-        concurrency=_int_setting(settings["concurrency_key"], 1, 1, 32),
+        concurrency=_int_setting(settings["concurrency_key"], 1, 1, 50),
         timeout=timeout,
         payment_cdk=(str(_runtime_setting(f"EXTRACT_LINK_{provider_id.upper()}_PAYMENT_CDK", "") or "").strip()
                      if provider_id in {"legacy", "huanguang"} else ""),
@@ -501,8 +501,8 @@ def workbench_config() -> dict:
     if provider and not default_mode:
         default_mode = "extract_only" if "extract_only" in provider["modes"] else provider["modes"][0]
     return {
-        "batch_workers_default": _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 16),
-        "batch_workers_max": 16,
+        "batch_workers_default": _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 50),
+        "batch_workers_max": 50,
         "default_provider": default_provider,
         "default_mode": default_mode,
         "providers": providers,
@@ -1806,7 +1806,7 @@ def _provider_dispatch_capacity_key(run: dict) -> str | dict[str, int]:
     provider_id = str((data or {}).get("provider_id") or "legacy").strip().lower()
     provider_id = provider_id if provider_id in _PROVIDER_SETTINGS else "invalid"
     workers = run.get("batch_workers")
-    if run.get("batch_id") and isinstance(workers, int) and not isinstance(workers, bool) and 1 <= workers <= 16:
+    if run.get("batch_id") and isinstance(workers, int) and not isinstance(workers, bool) and 1 <= workers <= 50:
         # 一次预约两个维度，批次满额时不消耗平台或共享 worker。
         return {provider_id: _provider_dispatch_capacity_limit(provider_id),
                 f"batch:{int(run['batch_id'])}": workers}
@@ -1817,7 +1817,7 @@ def _provider_dispatch_capacity_limit(provider_id: str) -> int:
     settings = _PROVIDER_SETTINGS.get(str(provider_id or "").strip().lower())
     if not settings:
         return 0
-    return _int_setting(settings["concurrency_key"], 1, 1, 32)
+    return _int_setting(settings["concurrency_key"], 1, 1, 50)
 
 
 def _provider_link_type(provider_id: str, value: object, default: str) -> str:
@@ -2456,7 +2456,7 @@ def create_workbench_batch(
 
     submission_id = extract_link_batches.normalize_submission_id(submission_id)
     selected_workers = extract_link_batches.normalize_workers(
-        _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 16) if workers is None else workers,
+        _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 50) if workers is None else workers,
     )
     if submission_id:
         existing = extract_link_batches.submission_result(submission_id)
@@ -2536,7 +2536,7 @@ def _workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
         status = "success" if counts["all"] else "failed"
     created_at = batch.get("created_at")
     workers = data.get("workers")
-    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 16:
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 50:
         workers = None
     return {
         "batch_id": int(batch["id"]), "title": str(batch.get("title") or "提链批次")[:240],

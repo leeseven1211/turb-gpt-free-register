@@ -1140,7 +1140,7 @@ function getAccountsQuery() {
 }
 function getAccountOperationWorkers() {
   const configured = CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
-  return Math.max(1, Math.min(32, Number(configured?.value ?? ACCOUNT_BATCH_WORKERS) || 3));
+  return Math.max(1, Math.min(50, Number(configured?.value ?? ACCOUNT_BATCH_WORKERS) || 3));
 }
 function configuredLiveCheckDriver() {
   const configured = CONFIG.find(item => item.key === 'ACCOUNT_LIVE_CHECK_DRIVER');
@@ -1170,7 +1170,7 @@ async function loadAccountAtRefreshUiSettings() {
 async function loadRuntimeUiSettings() {
   try {
     const settings = await apiCached('/api/ui-settings', {}, 30000);
-    ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(32, Number(settings.account_batch_workers) || 3));
+    ACCOUNT_BATCH_WORKERS = Math.max(1, Math.min(50, Number(settings.account_batch_workers) || 3));
   } catch(e) {}
 }
 function accountListQueryParams() {

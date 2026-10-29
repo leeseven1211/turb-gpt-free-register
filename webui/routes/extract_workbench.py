@@ -25,7 +25,7 @@ _LINK_KINDS = {"extract", "payment"}
 _MAX_ACCOUNT_IDS = 500
 _MAX_PAGE_SIZE = 200
 _MAX_BATCH_SIZE = 5000
-_MAX_BATCH_WORKERS = 16
+_MAX_BATCH_WORKERS = 50
 _CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}
@@ -355,7 +355,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         limit = data.get("limit", 100)
         link_type, options = data.get("type"), data.get("options", {})
         if "workers" in data and not _valid_batch_workers(data["workers"]):
-            return _error("批次并发必须是 1 到 16 的整数", 400)
+            return _error(f"批次并发必须是 1 到 {_MAX_BATCH_WORKERS} 的整数", 400)
         if not isinstance(title, str) or len(title) > 120:
             return _error("批次名称最多 120 个字符", 400)
         if not _valid_identifier(provider_id) or not isinstance(mode, str) or mode not in _MODES:

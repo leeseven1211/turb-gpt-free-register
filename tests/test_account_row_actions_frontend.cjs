@@ -27,8 +27,8 @@ function loadFunctions(names, dependencies = {}) {
   return context;
 }
 
-test('账号共享并发配置保留20和32，越界值限制在1至32', () => {
-  for (const [configured, expected] of [[20, 20], [32, 32], [33, 32], [-1, 1]]) {
+test('账号共享并发配置保留20至50，越界值限制在1至50', () => {
+  for (const [configured, expected] of [[20, 20], [32, 32], [33, 33], [50, 50], [51, 50], [-1, 1], [undefined, 3]]) {
     const context = loadFunctions(['getAccountOperationWorkers'], {
       CONFIG: [{key: 'ACCOUNT_BATCH_WORKERS', value: configured}], ACCOUNT_BATCH_WORKERS: 3,
     });
@@ -36,13 +36,15 @@ test('账号共享并发配置保留20和32，越界值限制在1至32', () => {
   }
 });
 
-test('运行配置的20并发在尚未加载配置页时仍原样使用', async () => {
-  const context = loadFunctions(['getAccountOperationWorkers', 'loadRuntimeUiSettings'], {
-    CONFIG: [], ACCOUNT_BATCH_WORKERS: 3,
-    apiCached: async () => ({account_batch_workers: 20}),
-  });
-  await context.loadRuntimeUiSettings();
-  assert.equal(context.getAccountOperationWorkers(), 20);
+test('运行配置并发在尚未加载配置页时保留20和50并约束越界值', async () => {
+  for (const [configured, expected] of [[20, 20], [50, 50], [51, 50], [-1, 1], [undefined, 3]]) {
+    const context = loadFunctions(['getAccountOperationWorkers', 'loadRuntimeUiSettings'], {
+      CONFIG: [], ACCOUNT_BATCH_WORKERS: 3,
+      apiCached: async () => ({account_batch_workers: configured}),
+    });
+    await context.loadRuntimeUiSettings();
+    assert.equal(context.getAccountOperationWorkers(), expected);
+  }
 });
 
 test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示成功', () => {

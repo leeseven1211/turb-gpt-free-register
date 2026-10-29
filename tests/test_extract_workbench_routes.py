@@ -60,7 +60,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         config = {
             "default_provider": "lumen_flow",
             "default_mode": "extract_only",
-            "batch_workers_default": 4, "batch_workers_max": 16,
+            "batch_workers_default": 4, "batch_workers_max": 50,
             "api_key": "provider-secret",
             "providers": [{
                 "id": "lumen_flow",
@@ -89,7 +89,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual("lumen_flow", payload["default_provider"])
         self.assertEqual("extract_only", payload["default_mode"])
         self.assertEqual(4, payload["batch_workers_default"])
-        self.assertEqual(16, payload["batch_workers_max"])
+        self.assertEqual(50, payload["batch_workers_max"])
         self.assertEqual(
             [{"id": "lumen_flow", "label": "流光", "default_type": "trial", "link_types": ["momo", "pix"], "modes": ["extract_only"]}],
             payload["providers"],
@@ -284,7 +284,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
     def test_batch_workers_requires_integer_in_range_and_passes_to_service(self):
         valid = {"provider_id": "lumen_flow", "mode": "extract_only",
                  "submission_id": "44daab12-8f2e-49a9-af4e-d9347a8ef770"}
-        for workers in (1, 4, 16):
+        for workers in (1, 4, 16, 20, 50):
             with self.subTest(workers=workers), patch.object(
                 extract_workbench.extract_link_service, "create_workbench_batch", create=True,
                 return_value={"batch_id": 7, "requested": 1, "started": 1},
@@ -292,14 +292,24 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
                 response = self.client.post("/api/extract-workbench/batches", json={**valid, "workers": workers})
                 self.assertEqual(202, response.status_code)
                 self.assertEqual(workers, create_batch.call_args.kwargs["workers"])
-        for workers in (None, True, False, 0, 17, 1.5, "4", [], {}):
+        for workers in (None, True, False, 0, -1, 51, 1.5, "4", [], {}):
             with self.subTest(workers=workers), patch.object(
                 extract_workbench.extract_link_service, "create_workbench_batch", create=True,
             ) as create_batch:
                 response = self.client.post("/api/extract-workbench/batches", json={**valid, "workers": workers})
                 self.assertEqual(400, response.status_code)
-                self.assertIn("并发", response.get_json()["error"])
+                self.assertIn("1 到 50", response.get_json()["error"])
                 create_batch.assert_not_called()
+
+    def test_batch_summary_preserves_twenty_and_fifty_workers(self):
+        for workers in (20, 50):
+            with self.subTest(workers=workers), patch.object(
+                extract_workbench.extract_link_service, "workbench_batch_detail", create=True,
+                return_value={"batch_id": 7, "workers": workers},
+            ):
+                response = self.client.get("/api/extract-workbench/batches/7")
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(workers, response.get_json()["item"]["workers"])
 
     def test_old_batch_summary_keeps_unspecified_workers_null(self):
         with patch.object(extract_workbench.extract_link_service, "workbench_batch_detail", create=True,

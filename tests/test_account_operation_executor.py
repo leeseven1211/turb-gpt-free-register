@@ -40,7 +40,17 @@ class AccountOperationExecutorTests(unittest.TestCase):
         with patch("config.codex.ACCOUNT_BATCH_WORKERS", 7):
             self.assertEqual(7, account_operation_executor.configured_workers())
 
-    def test_twenty_workers_run_together_and_the_next_submission_waits_for_budget(self):
+    def test_common_executor_clamps_configured_budget_to_fifty(self):
+        from core.account_operation_executor import AccountOperationExecutor, configured_workers
+
+        operation_executor = AccountOperationExecutor()
+        for configured, expected in ((50, 50), (51, 50)):
+            with self.subTest(configured=configured), patch("config.codex.ACCOUNT_BATCH_WORKERS", configured):
+                self.assertEqual(expected, configured_workers())
+                self.assertEqual(expected, operation_executor.available_slots())
+                self.assertEqual(expected, operation_executor.status()["budget"])
+
+    def test_fifty_workers_run_together_and_the_next_submission_waits_for_budget(self):
         from core.account_operation_executor import AccountOperationExecutor
 
         started = threading.Condition()
@@ -56,18 +66,18 @@ class AccountOperationExecutorTests(unittest.TestCase):
             release.wait(5)
 
         try:
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 20):
-                futures = [operation_executor.try_submit(work) for _ in range(20)]
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 50):
+                futures = [operation_executor.try_submit(work) for _ in range(50)]
                 self.assertTrue(all(future is not None for future in futures))
                 with started:
-                    self.assertTrue(started.wait_for(lambda: entered == 20, timeout=3))
-                self.assertEqual(20, operation_executor.status()["active"])
+                    self.assertTrue(started.wait_for(lambda: entered == 50, timeout=3))
+                self.assertEqual(50, operation_executor.status()["active"])
                 self.assertEqual(0, operation_executor.available_slots())
                 self.assertIsNone(operation_executor.try_submit(work))
                 release.set()
                 for future in futures:
                     future.result(timeout=3)
-                self.assertEqual(20, operation_executor.available_slots())
+                self.assertEqual(50, operation_executor.available_slots())
         finally:
             release.set()
             operation_executor.shutdown()

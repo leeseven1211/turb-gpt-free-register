@@ -137,6 +137,14 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
             with self.subTest(limit=limit), self.assertRaises(ValueError):
                 extract_link_batches.normalize_limit(limit)
 
+    def test_batch_workers_accept_twenty_and_fifty_but_reject_out_of_range_or_non_integer(self):
+        for workers in (1, 16, 20, 50):
+            with self.subTest(workers=workers):
+                self.assertEqual(workers, extract_link_batches.normalize_workers(workers))
+        for workers in (True, 0, -1, 51, "20", 20.0, None):
+            with self.subTest(workers=workers), self.assertRaises(ValueError):
+                extract_link_batches.normalize_workers(workers)
+
     def test_disabled_platform_is_rejected_before_creating_batch_or_reading_accounts(self):
         with (
             patch.object(extract_link_service, "_provider_mode_enabled", return_value=False),
@@ -157,12 +165,25 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
         self.assertEqual(value, extract_link_batches.normalize_submission_id(value.upper()))
 
     def test_workbench_config_exposes_safe_batch_worker_defaults(self):
-        with patch.object(extract_link_service, "_bool_setting", return_value=False), patch.object(
-            extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: 7 if key == "EXTRACT_LINK_BATCH_WORKERS" else default,
+        for workers in (7, 20, 50):
+            with self.subTest(workers=workers), patch.object(
+                extract_link_service, "_bool_setting", return_value=False,
+            ), patch.object(
+                extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: workers if key == "EXTRACT_LINK_BATCH_WORKERS" else default,
+            ):
+                result = extract_link_service.workbench_config()
+                self.assertEqual(workers, result["batch_workers_default"])
+                self.assertEqual(50, result["batch_workers_max"])
+
+    def test_dispatch_keeps_fifty_workers_in_batch_and_provider_capacity(self):
+        with patch.object(
+            extract_link_service, "_runtime_setting",
+            side_effect=lambda key, default=None: 50 if key == "EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY" else default,
         ):
-            result = extract_link_service.workbench_config()
-        self.assertEqual(7, result["batch_workers_default"])
-        self.assertEqual(16, result["batch_workers_max"])
+            capacity = extract_link_service._provider_dispatch_capacity_key({
+                "batch_id": 9, "batch_workers": 50, "data": {"provider_id": "lumen_flow"},
+            })
+        self.assertEqual({"lumen_flow": 50, "batch:9": 50}, capacity)
 
     def test_workbench_config_explains_enabled_provider_missing_connection_fields(self):
         def provider_configuration(provider_id):
@@ -344,20 +365,35 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         self.accounts([{}, {}])
         with self.provider_patches():
             created = extract_link_service.create_workbench_batch(
-                provider_id="lumen_flow", mode="extract_only", limit=1, workers=3)
-            with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: 5 if key == "EXTRACT_LINK_BATCH_WORKERS" else default):
+                provider_id="lumen_flow", mode="extract_only", limit=1, workers=50)
+            with patch.object(extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: 20 if key == "EXTRACT_LINK_BATCH_WORKERS" else default):
                 defaulted = extract_link_service.create_workbench_batch(
                     provider_id="lumen_flow", mode="extract_only", limit=1)
-        self.assertEqual(3, extract_link_service.workbench_batch_detail(created["batch_id"])["workers"])
-        self.assertEqual(5, extract_link_service.workbench_batch_detail(defaulted["batch_id"])["workers"])
+        self.assertEqual(50, extract_link_service.workbench_batch_detail(created["batch_id"])["workers"])
+        self.assertEqual(20, extract_link_service.workbench_batch_detail(defaulted["batch_id"])["workers"])
         legacy = operation.create_runtime_batch(batch_type="extract_link", title="并发测试", requested_count=4, data={"workbench_batch": True})
         self.assertIsNone(extract_link_service.workbench_batch_detail(legacy["id"])["workers"])
 
     def test_batch_workers_strictly_validate_before_account_reads(self):
-        for value in (True, 0, 17, "2", 2.0):
+        for value in (True, 0, 51, "2", 2.0):
             with self.subTest(value=value), self.provider_patches(), self.assertRaises(ValueError):
                 extract_link_service.create_workbench_batch(
                     provider_id="lumen_flow", mode="extract_only", workers=value)
+
+    def test_dispatch_projects_twenty_and_fifty_worker_batch_limits(self):
+        expected = {}
+        for workers in (20, 50):
+            batch = operation.create_runtime_batch(
+                batch_type="extract_link", title="批次并发投影", requested_count=1,
+                data={"workbench_batch": True, "workers": workers},
+            )
+            task = operation.create_runtime_task(
+                task_type="extract_link", batch_id=batch["id"], account_id=None,
+                email="workers@example.test", data={"provider_id": "lumen_flow"},
+            )
+            expected[task["run"]["id"]] = workers
+        runs = operation.list_dispatchable_runs(task_types=("extract_link",))
+        self.assertEqual(expected, {run["id"]: run["batch_workers"] for run in runs})
 
     def test_old_and_non_extract_batches_keep_their_existing_claim_behavior(self):
         for batch_type, metadata in (("extract_link", {"workbench_batch": True}),
@@ -407,14 +443,26 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
             with self.subTest(provider_limit=provider_limit, shared_workers=shared_workers):
                 self.assert_dispatch_capacity(provider_limit, shared_workers, expected_first)
 
-    def assert_dispatch_capacity(self, provider_limit, shared_workers, expected_first):
+    def test_dispatch_supports_fifty_workers_and_preserves_lower_capacity_limits(self):
+        for batch_workers, provider_limit, shared_workers, expected_first in (
+            (50, 50, 50, 50), (20, 50, 50, 20), (50, 20, 50, 20), (50, 50, 20, 20),
+        ):
+            with self.subTest(batch_workers=batch_workers, provider_limit=provider_limit, shared_workers=shared_workers):
+                self.assert_dispatch_capacity(
+                    provider_limit, shared_workers, expected_first,
+                    batch_workers=(batch_workers,), tasks_per_batch=51,
+                    expected_indices=range(expected_first),
+                )
+
+    def assert_dispatch_capacity(self, provider_limit, shared_workers, expected_first, *,
+                                 batch_workers=(1, 2), tasks_per_batch=2, expected_indices=None):
         from core.account_operation_executor import AccountOperationExecutor
         from core.operations import task_gateway
 
-        batches = [operation.create_runtime_batch(batch_type="extract_link", title="并发调度", requested_count=2,
-                   data={"workbench_batch": True, "workers": workers}) for workers in (1, 2)]
+        batches = [operation.create_runtime_batch(batch_type="extract_link", title="并发调度", requested_count=tasks_per_batch,
+                   data={"workbench_batch": True, "workers": workers}) for workers in batch_workers]
         tasks = [operation.create_runtime_task(task_type="extract_link", batch_id=batch["id"], account_id=None, email="workers@example.test",
-                     data={"provider_id": "lumen_flow"}) for batch in batches for _ in range(2)]
+                     data={"provider_id": "lumen_flow"}) for batch in batches for _ in range(tasks_per_batch)]
         executor = AccountOperationExecutor()
         release = threading.Event()
         started = threading.Condition()
@@ -444,19 +492,26 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                 task_gateway.register_dispatch_handler("extract_link", handler,
                     dispatch_capacity_key=extract_link_service._provider_dispatch_capacity_key,
                     dispatch_capacity_limit=extract_link_service._provider_dispatch_capacity_limit)
-                self.assertEqual(expected_first, task_gateway.dispatch_registered_once(limit=20))
+                dispatch_limit = max(20, len(tasks))
+                self.assertEqual(expected_first, task_gateway.dispatch_registered_once(limit=dispatch_limit))
                 with started:
                     self.assertTrue(started.wait_for(lambda: len(active) == expected_first, timeout=10))
-                self.assertEqual({task["run"]["id"] for task in ([tasks[0]] + tasks[2:expected_first + 1])}, set(active))
+                if expected_indices is None:
+                    expected_indices = [0, *range(2, expected_first + 1)]
+                self.assertEqual({tasks[index]["run"]["id"] for index in expected_indices}, set(active))
                 self.assertEqual(shared_workers - expected_first, executor.available_slots())
-                self.assertEqual(0, task_gateway.dispatch_registered_once(limit=20))
+                self.assertEqual(0, task_gateway.dispatch_registered_once(limit=dispatch_limit))
                 release.set()
                 # 等待真实 worker 终态与容量回调，再运行剩余任务。
                 with executor._condition:
                     self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
-                self.assertEqual(4 - expected_first, task_gateway.dispatch_registered_once(limit=20))
-                with executor._condition:
-                    self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
+                remaining = len(tasks) - expected_first
+                while remaining:
+                    dispatched = task_gateway.dispatch_registered_once(limit=dispatch_limit)
+                    self.assertGreater(dispatched, 0)
+                    remaining -= dispatched
+                    with executor._condition:
+                        self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
                 self.assertEqual([], errors)
         finally:
             release.set()

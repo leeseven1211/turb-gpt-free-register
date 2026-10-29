@@ -403,6 +403,24 @@ class ConfigSchemaTests(unittest.TestCase):
             if field.module
         }.issubset(reloadable))
 
+    def test_account_and_extract_concurrency_accept_fifty_and_reject_fifty_one(self):
+        keys = (
+            "ACCOUNT_BATCH_WORKERS",
+            "EXTRACT_LINK_BATCH_WORKERS",
+            "EXTRACT_LINK_LEGACY_CONCURRENCY",
+            "EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY",
+            "EXTRACT_LINK_HUANGUANG_CONCURRENCY",
+        )
+        values = {key: 50 for key in keys}
+        self.assertEqual(values, validate_config_updates(values))
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertEqual(1, validate_value(key, 1))
+                with self.assertRaises(ConfigValidationError) as caught:
+                    validate_config_updates({key: 51})
+                self.assertIn(key, caught.exception.errors)
+                self.assertIn("50", caught.exception.errors[key])
+
     def test_invalid_range_option_unknown_and_cross_field_updates_are_rejected(self):
         with self.assertRaises(ConfigValidationError):
             validate_value("ACCOUNT_BATCH_WORKERS", 0)

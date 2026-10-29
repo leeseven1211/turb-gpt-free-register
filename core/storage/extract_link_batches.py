@@ -11,7 +11,7 @@ from core.storage import operation
 
 
 MAX_BATCH_SIZE = 5000
-MAX_BATCH_WORKERS = 16
+MAX_BATCH_WORKERS = 50
 _FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo"}

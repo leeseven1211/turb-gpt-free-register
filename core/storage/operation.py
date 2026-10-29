@@ -4730,7 +4730,7 @@ def _extract_batch_workers_sql(alias: str = "b") -> str:
     return f"""CASE WHEN {alias}.batch_type='extract_link'
         AND {alias}.data->>'workbench_batch'='true'
         AND jsonb_typeof({alias}.data->'workers')='number'
-        AND ({alias}.data->>'workers') ~ '^([1-9]|1[0-6])$'
+        AND ({alias}.data->>'workers') ~ '^([1-9]|[1-4][0-9]|50)$'
         THEN ({alias}.data->>'workers')::integer END"""
 
 

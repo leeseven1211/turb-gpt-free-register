@@ -229,7 +229,7 @@ function extractWorkbenchNode(selector) {
 
 function extractWorkbenchBatchWorkersMax() {
   const maximum = EXTRACT_WORKBENCH_CONFIG?.batch_workers_max;
-  return Number.isInteger(maximum) && maximum >= 1 && maximum <= 16 ? maximum : 16;
+  return Number.isInteger(maximum) && maximum >= 1 && maximum <= 50 ? maximum : 50;
 }
 
 function extractWorkbenchBatchWorkersDefault() {

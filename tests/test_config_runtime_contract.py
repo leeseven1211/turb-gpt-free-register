@@ -16,7 +16,11 @@ from core import plan_check_service, registration_service
 # 对应 registration_service/live_check_service 的换线边界、chatgpt_plan 和
 # plan_check_service 的请求边界，以及 codex_token_refresh_service 的调度边界。
 RUNTIME_RANGES = (
-    ("ACCOUNT_BATCH_WORKERS", 1, 32),
+    ("ACCOUNT_BATCH_WORKERS", 1, 50),
+    ("EXTRACT_LINK_BATCH_WORKERS", 1, 50),
+    ("EXTRACT_LINK_LEGACY_CONCURRENCY", 1, 50),
+    ("EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY", 1, 50),
+    ("EXTRACT_LINK_HUANGUANG_CONCURRENCY", 1, 50),
     ("REGISTRATION_PROXY_RETRIES", 0, 3),
     ("REGISTRATION_PROXY_RETRY_DELAY", 0, 10.0),
     ("ACCOUNT_ACTION_PROXY_RETRIES", 0, 3),
@@ -34,7 +38,7 @@ RUNTIME_RANGES = (
 )
 
 
-@pytest.mark.parametrize("workers", (1, 20, 32))
+@pytest.mark.parametrize("workers", (1, 20, 32, 50))
 def test_saved_shared_account_budget_reaches_executor_without_lower_clamp(workers):
     from core.account_operation_executor import AccountOperationExecutor
 
@@ -83,7 +87,7 @@ def test_extract_provider_payment_switches_are_editable_and_auto_payment_default
     assert schema.schema_default("EXTRACT_LINK_HUANGUANG_ENABLED") is False
     for provider in ("LEGACY", "LUMEN_FLOW", "HUANGUANG"):
         assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].type == "int"
-        assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].range == {"min": 1, "max": 32}
+        assert fields[f"EXTRACT_LINK_{provider}_CONCURRENCY"].range == {"min": 1, "max": 50}
 
 
 def test_extract_link_legacy_environment_names_are_reused_with_separate_payment_cdk():

@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 
 _MIN_WORKERS = 1
-_MAX_WORKERS = 32
+_MAX_WORKERS = 50
 _LOG_SCOPE = ContextVar("operation_log_scope", default=None)
 
 
