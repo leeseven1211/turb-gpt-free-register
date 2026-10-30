@@ -871,7 +871,7 @@ Roxy 新建或安全重开绑定 Profile 时，已领取的代理线路可经过
 - `/api/capabilities` 是前端功能开关的依据，但后端接口仍必须调用同一套可用性检查，不能只靠隐藏/禁用按钮保证安全。
 - 配置保存并热加载后，要同时刷新功能可用性和注册邮箱来源。后台任务启动前读取最新配置，已经运行的任务保持其提交时的邮箱来源和已领取资源，不在途中静默换源。
 - 新增、删除或重命名配置时，必须同步检查 `config/schema.py`、`config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。字段的领域分组由 schema 维护，配置菜单由前端按用途映射；每个字段只保留一个编辑入口。本轮清理范围与保留依据见[配置核查记录](docs/development/configuration-audit.md)。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
-- 主要注册、续跑、查活、AT/Codex 刷新、封号扫描和邮箱来源链路的入口、共享组件、配置键与定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)；修改公共组件时先按地图反查受影响链路。
+- 注册、续跑、查活、AT/Codex 刷新、封号扫描、邮箱来源、提链工作台、账号页及账号任务中心的入口、实现、存储、配置键与定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)；修改公共组件时先按地图反查受影响链路。
 - 提交前完成受影响功能的定向测试和相邻回归，再按风险决定是否扩大范围；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
 
 ---
@@ -1582,11 +1582,13 @@ ENABLE_CODEX_AUTO = False
 │   ├── registration_service.py     # 注册任务线程池与生命周期
 │   ├── registration_debug.py        # 按任务隔离的 CDP/协议抓包、失败诊断、脱敏和 HAR
 │   ├── admin_repository.py         # 管理台查询读模型
-│   ├── db.py                       # 业务数据门面与兼容导出编排
+│   ├── extract_link_service.py     # 提链执行服务与查询兼容入口
+│   ├── extract_link/               # 提链工作台只读查询展示实现
+│   ├── db.py                       # 指向 core.storage.db_legacy 的模块级兼容别名
 │   ├── record_store.py             # PostgreSQL 行级记录存储
 │   ├── postgres_store.py           # 连接、schema 和兼容集合存储
-│   ├── operation_task_store.py     # 统一账号操作任务存储
-│   ├── account_task_store.py       # 历史账号操作任务兼容层
+│   ├── operation_task_store.py     # 指向 core.storage.operation 的模块级兼容别名
+│   ├── account_task_store.py       # 指向历史任务存储的模块级兼容别名
 │   ├── codex_operation_service.py  # Codex 操作编排
 │   ├── email_provider.py           # 邮箱来源调度
 │   ├── sms_provider.py             # 接码平台调度
@@ -1598,15 +1600,18 @@ ENABLE_CODEX_AUTO = False
 │   ├── route_helpers.py             # 路由共享的查询/脱敏/分页辅助函数
 │   ├── runtime.py                   # WebUI 启动恢复、worker 和请求上下文
 │   ├── routes/                      # 按领域拆分的 Flask Blueprint
-│   │   ├── dashboard.py / config.py / email_pool.py
-│   │   ├── accounts.py / jobs.py / operations.py
+│   │   ├── dashboard.py / config.py / email_pool.py / proxy_traffic.py
+│   │   ├── accounts.py / jobs.py / extract_workbench.py / operations.py
 │   │   └── codex.py / integrations.py / health.py
 │   ├── auth.py                     # 登录鉴权
 │   ├── config_editor.py            # 配置白名单、.env 写入与热加载
 │   ├── templates/                  # 现代界面 index.html / 登录页 login.html
 │   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
 │       ├── css/                   # foundation、modern、login 样式
-│       └── js/                    # modern 八段业务脚本、proxy_traffic.js 和 login.js
+│       └── js/
+│           ├── modern/            # 页面脚本；accounts.js 后加载 account-tasks.js、account-email-change.js、account-inspection.js
+│           ├── proxy_traffic.js
+│           └── login.js
 ├── tests/                          # pytest 统一收集，包含 unittest、存储隔离和契约测试
 ├── tools/                          # 迁移、诊断和单独补跑工具
 ├── docs/                           # 架构、流程、规范和路线图
@@ -1614,6 +1619,8 @@ ENABLE_CODEX_AUTO = False
 ```
 
 历史 `accounts/`、`codex_accounts/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
+
+功能入口、实现和定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)。
 
 ---
 

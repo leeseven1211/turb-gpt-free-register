@@ -64,6 +64,33 @@
       "config_keys": ["EMAIL_SOURCE", "USE_EMAIL_SERVICE", "OUTLOOK_FETCH_MODE", "OUTLOOK_API_BASE", "OTP_MAX_WAIT", "OTP_POLL_INTERVAL"],
       "tests": ["tests/test_email_source_selection.py", "tests/test_email_provider_cloudflare.py", "tests/test_email_provider_gptmail.py", "tests/test_webui_gptmail.py", "tests/test_webui_cloudflare.py"],
       "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "extract_workbench",
+      "name": "提链工作台（查询与创建/执行）",
+      "entrypoints": ["webui/routes/extract_workbench.py", "webui/static/js/modern/extract-workbench.js", "core/extract_link_service.py", "core/extract_link/workbench_queries.py"],
+      "shared_components": ["core/storage/extract_link_batches.py", "core/storage/extract_link_jobs.py", "core/db.py", "core/storage/db_legacy.py", "core/operations/task_gateway.py"],
+      "config_keys": ["EXTRACT_LINK_DEFAULT_PROVIDER", "EXTRACT_LINK_DEFAULT_MODE", "EXTRACT_LINK_BATCH_WORKERS", "EXTRACT_LINK_QUEUE_LIMIT"],
+      "tests": ["tests/test_extract_workbench_query.py", "tests/test_extract_workbench_status_semantics.py", "tests/test_extract_workbench_error_details.py", "tests/test_extract_workbench_batches.py", "tests/test_extract_workbench_routes.py", "tests/test_extract_workbench_frontend.cjs"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "account_page_operations",
+      "name": "账号页、邮箱变更与巡检",
+      "entrypoints": ["webui/routes/accounts.py", "webui/static/js/modern/accounts.js", "webui/static/js/modern/account-email-change.js", "webui/static/js/modern/account-inspection.js", "core/email_change_service.py", "core/account_inspection_service.py"],
+      "shared_components": ["core/storage/accounts.py", "core/storage/db_legacy.py", "core/storage/operation.py", "core/storage/account_inspections.py", "core/operations/task_gateway.py"],
+      "config_keys": ["ACCOUNT_BATCH_WORKERS", "ACCOUNT_EMAIL_CHANGE_ENABLED", "ACCOUNT_EMAIL_CHANGE_PROXY_MODE"],
+      "tests": ["tests/test_account_search_api.py", "tests/test_account_multi_filters.py", "tests/test_account_filters_frontend.cjs", "tests/test_account_search_frontend.cjs", "tests/test_email_change_ui.py", "tests/test_email_change_service.py", "tests/test_email_change_auth_guard.py", "tests/test_account_inspection.py", "tests/test_account_inspection_ui.cjs"],
+      "acceptance": ["README.md", "docs/development/release-verification.md"]
+    },
+    {
+      "id": "account_task_center",
+      "name": "账号任务中心",
+      "entrypoints": ["webui/routes/operations.py", "webui/static/js/modern/account-tasks.js"],
+      "shared_components": ["core/storage/operation.py", "core/storage/operation_projection.py", "core/storage/operation_runtime_store.py", "core/operations/task_gateway.py", "core/operation_task_store.py", "core/account_task_store.py", "core/operations/legacy_task_store.py"],
+      "config_keys": ["ACCOUNT_BATCH_WORKERS"],
+      "tests": ["tests/test_account_tasks.py", "tests/test_account_task_cancel_ui.py", "tests/test_route_contract.py"],
+      "acceptance": ["README.md", "docs/development/release-verification.md", "docs/architecture/storage-architecture.md"]
     }
   ]
 }

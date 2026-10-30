@@ -130,14 +130,14 @@ CLI / Web routes
 webui/static/
 ├── css/modern.css  login.css  ui-foundation.css
 └── js/
-    ├── modern/{common,dashboard,jobs,accounts,email,codex,config,bootstrap}.js
+    ├── modern/{common,dashboard,jobs,accounts,account-tasks,account-email-change,account-inspection,email,butler-import,codex,config,extract-workbench,bootstrap}.js
     ├── proxy_traffic.js
     └── login.js
 ```
 
 WebUI 只维护现代页面，使用普通 `<script>` 按
-`common -> dashboard -> jobs -> accounts -> email -> codex -> config -> proxy_traffic -> bootstrap`
-顺序加载。保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，
+`common -> dashboard -> jobs -> accounts -> account-tasks -> account-email-change -> account-inspection -> email -> butler-import -> codex -> config -> extract-workbench -> proxy_traffic -> bootstrap`
+顺序加载。账号功能块脚本依赖 `accounts.js` 的共享状态和页面工具，并在 `bootstrap.js` 初始化前声明全局处理函数；具体加载位置以 `webui/templates/index.html` 为准。保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，
 也不得把业务代码重新塞回模板。后续迁移事件委托或 ES module 时，必须先增加浏览器验收并评估全局 API 兼容范围。
 
 ## 10. 测试规范

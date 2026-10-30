@@ -14,6 +14,10 @@ flowchart LR
   ACCOUNT[账号操作] --> LIVE[普通查活]
   ACCOUNT --> AT[ChatGPT AT 刷新]
   ACCOUNT --> CODEX[Codex OAuth 凭证刷新]
+  ACCOUNT --> EMAILCHANGE[账号邮箱变更]
+  ACCOUNT --> INSPECT[账号巡检]
+  WORKBENCH[提链工作台] --> EXTRACT[提链查询与展示]
+  TASKCENTER[账号任务中心] --> TASK
   MAIL --> REG
   SCHED[持久调度器] --> AT
   SCHED --> CODEX
@@ -39,6 +43,12 @@ flowchart LR
 | Codex 凭证刷新 | `core/codex_token_refresh_service.py` | OAuth 凭证、持久任务、调度状态 | `test_codex_token_refresh.py`、`test_codex_token_refresh_durable.py` |
 | 封号邮件扫描 | `core/deactivation_mail_service.py` | 邮箱服务、批量任务、调度状态 | `test_deactivation_mail.py`、`test_account_operation_deactivation_policy.py` |
 | 邮箱资源与 OTP | `core/email_provider.py` | 邮箱池租约、来源顺序、OTP 轮询 | `test_email_source_selection.py`、对应 provider 测试 |
+| 提链工作台（查询与创建/执行） | `webui/routes/extract_workbench.py`、`webui/static/js/modern/extract-workbench.js`、`core/extract_link_service.py` | 查询投影：`core/extract_link/workbench_queries.py`、`core/storage/extract_link_batches.py`、`core/storage/extract_link_jobs.py`、`core/db.py`（兼容别名，实际账号读取在 `core/storage/db_legacy.py`）；创建/执行：`core/extract_link_service.py`、`core/operations/task_gateway.py` | `test_extract_workbench_query.py`、`test_extract_workbench_status_semantics.py`、`test_extract_workbench_error_details.py`、`test_extract_workbench_batches.py`、`test_extract_workbench_routes.py`、`test_extract_workbench_frontend.cjs` |
+| 账号页与邮箱变更 | `webui/routes/accounts.py`、`webui/static/js/modern/accounts.js`、`webui/static/js/modern/account-email-change.js` | `core/email_change_service.py`、`core/storage/accounts.py`（当前全部公开函数均委托 `core/storage/db_legacy.py`）、`core/storage/operation.py` | `test_account_search_api.py`、`test_account_multi_filters.py`、`test_account_filters_frontend.cjs`、`test_account_search_frontend.cjs`、`test_email_change_ui.py`、`test_email_change_service.py`、`test_email_change_auth_guard.py` |
+| 账号巡检 | `webui/routes/accounts.py`、`webui/static/js/modern/account-inspection.js` | `core/account_inspection_service.py`、`core/storage/account_inspections.py`、`core/storage/accounts.py` | `test_account_inspection.py`、`test_account_inspection_ui.cjs` |
+| 账号任务中心 | `webui/routes/operations.py`、`webui/static/js/modern/account-tasks.js` | `core/storage/operation.py`、`core/storage/operation_projection.py`、`core/storage/operation_runtime_store.py`；`core/operation_task_store.py` 是模块级兼容别名；`core/account_task_store.py` 是兼容别名，实际旧任务存储为 `core/operations/legacy_task_store.py` | `test_account_tasks.py`、`test_account_task_cancel_ui.py` |
+
+提链工作台覆盖只读查询和创建/执行两类路径：`core/extract_link/workbench_queries.py` 负责查询投影；`core/extract_link_service.py` 保留查询兼容门面，并负责创建、执行、支付和重跑。查询投影通过 `core.db` 读取账号；该名称是指向 `core.storage.db_legacy` 的模块级兼容别名。账号页面经 `core.storage.accounts` 调用账号仓储，但当前该模块全部公开函数仍委托 `core.storage.db_legacy`。账号任务读取应从 `core.storage.operation` 追到新任务存储；`core.operation_task_store` 是指向它的模块兼容别名，`core.account_task_store` 是指向 `core.operations.legacy_task_store` 的模块兼容别名。
 
 ## 按改动类型选择验证
 

@@ -1,7 +1,7 @@
 # 文档导航
 
 本目录只承载项目的设计、流程、开发约束和历史决策。日常操作先读根目录
-[`README.md`](../README.md)，代理执行约束见 [`AGENTS.md`](../AGENTS.md)。
+[`README.md`](../README.md)。代理执行约束由工作区提供的 `AGENTS.md` 说明维护，不属于本目录的项目文档索引。
 
 ## 文档状态与权威顺序
 
@@ -19,6 +19,7 @@
 
 - [当前项目架构](architecture/current-architecture.md)：应用入口、分层边界、运行时恢复和兼容层。
 - [存储架构](architecture/storage-architecture.md)：PostgreSQL 事实来源、隔离测试和兼容导出边界。
+- [功能链路与测试影响地图](architecture/functional-map.md)：从路由/页面入口追到真实实现、存储和定向测试。
 - [代码与目录规范](architecture/code-conventions.md)：依赖方向、私有数据保护和开发约定。
 - [兼容入口清单](architecture/compatibility-inventory.md)：兼容门面、观察期和逐文件删除条件。
 
