@@ -516,6 +516,59 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertIn("状态", payload["skipped"][0]["error"])
         request_cancel.assert_not_called()
 
+    def test_bulk_cancel_does_not_load_selected_tasks_event_history(self):
+        client = self._client()
+        tasks = {
+            task_id: self._task(
+                id=task_id, task_type="account_completion", source_system="webui_runtime",
+                status="queued", runs=[{"id": task_id + 100, "status": "queued"}],
+            )
+            for task_id in (41, 42)
+        }
+        reads = []
+
+        def read_without_events(task_id, *, include_events=True):
+            reads.append(task_id)
+            if include_events:
+                raise AssertionError("取消任务不应加载历史事件")
+            return tasks[task_id]
+
+        cancel = Mock(side_effect=lambda task: {"ok": True, "state": "cancelled"})
+        with (
+            patch.object(operations.operation_task_store, "get_task", side_effect=read_without_events),
+            patch.object(task_gateway, "operation_action", return_value=cancel),
+        ):
+            response = client.post(
+                "/api/operations/bulk", json={"action": "cancel", "task_ids": [41, 42]},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(2, response.get_json()["accepted_count"])
+        self.assertEqual(0, response.get_json()["skipped_count"])
+        self.assertEqual({41, 42}, set(reads))
+        self.assertEqual([41, 42], [call.args[0]["id"] for call in cancel.call_args_list])
+
+    def test_single_cancel_and_terminate_do_not_load_event_history(self):
+        client = self._client()
+        task = self._task(status="queued", runs=[{"id": 55, "status": "queued"}])
+
+        def read_without_events(task_id, *, include_events=True):
+            if include_events:
+                raise AssertionError("停止任务不应加载历史事件")
+            return task
+
+        for action in ("cancel", "terminate"):
+            with (
+                self.subTest(action=action),
+                patch.object(operations.operation_task_store, "get_task", side_effect=read_without_events),
+                patch.object(task_gateway, "operation_action", return_value=lambda task: {
+                    "ok": True, "state": "cancelled",
+                }),
+            ):
+                response = client.post(f"/api/operations/41/{action}")
+                self.assertEqual(200, response.status_code)
+                self.assertEqual("cancelled", response.get_json()["state"])
+
     def test_bulk_terminate_skips_queued_task(self):
         client = self._client()
         queued = self._task(status="queued", runs=[{"id": 56, "status": "queued"}])

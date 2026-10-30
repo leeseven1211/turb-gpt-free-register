@@ -47,6 +47,12 @@ def create_operations_blueprint(context: WebUIContext):
         "queued", "running", "stopping", "cancelling", "settling", "waiting",
     }
 
+    def _get_operation_action_task(task_id: int, action: str):
+        """停止前只读任务状态，避免载入与取消无关的完整事件历史。"""
+        if action in {"cancel", "terminate"}:
+            return operation_task_store.get_task(task_id, include_events=False)
+        return operation_task_store.get_task(task_id)
+
     def _perform_operation_action(
         task_id: int,
         action: str,
@@ -55,7 +61,7 @@ def create_operations_blueprint(context: WebUIContext):
         driver_override: str | None = None,
     ):
         """执行统一任务中心的单条动作，供单条和批量入口共用。"""
-        task = operation_task_store.get_task(task_id)
+        task = _get_operation_action_task(task_id, action)
         if not task:
             return {"ok": False, "error": "任务不存在"}, 404
 
@@ -432,7 +438,7 @@ def create_operations_blueprint(context: WebUIContext):
         accepted = []
         skipped = []
         for task_id in task_ids:
-            task = operation_task_store.get_task(task_id)
+            task = _get_operation_action_task(task_id, action)
             if not task:
                 skipped.append({"task_id": task_id, "error": "任务不存在"})
                 continue

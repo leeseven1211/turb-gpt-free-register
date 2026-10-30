@@ -1094,8 +1094,26 @@ async function bulkAccountTasks(action) {
       body: JSON.stringify({action, task_ids: eligible.map(task => Number(task.id))}),
     });
     const skipped = Number(result.skipped_count || 0);
-    showToast(`已${label} ${Number(result.accepted_count || 0)} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
-    ACCOUNT_TASK_SELECTED.clear();
+    if (action === 'cancel') {
+      const accepted = Array.isArray(result.accepted) ? result.accepted : [];
+      const cancelled = accepted.filter(item => item.state === 'cancelled').length;
+      const cancelling = accepted.filter(item => item.state === 'cancelling').length;
+      const other = accepted.length - cancelled - cancelling;
+      const summary = [`已取消 ${cancelled} 个`, `取消中 ${cancelling} 个`];
+      if (other) summary.push(`已受理 ${other} 个`);
+      if (skipped) summary.push(`跳过 ${skipped} 个`);
+      const message = summary.join('，');
+      showToast(message);
+      accepted.forEach(item => ACCOUNT_TASK_SELECTED.delete(Number(item.task_id)));
+      renderAccountTasks();
+      if (skipped) {
+        const details = (result.skipped || []).map(item => `#${item.task_id}：${item.error || '操作未接受'}`);
+        window.alert(`${message}\n\n${details.join('\n')}`);
+      }
+    } else {
+      showToast(`已${label} ${Number(result.accepted_count || 0)} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
+      ACCOUNT_TASK_SELECTED.clear();
+    }
     await loadAccountTasks();
   } catch (e) {
     showToast(`${label}失败: ` + e.message);
