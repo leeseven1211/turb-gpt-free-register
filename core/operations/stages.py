@@ -90,6 +90,7 @@ STAGES: dict[str, dict[str, str]] = {
     "callback": {"label": "接收 OAuth 回调", "group": "codex"},
     "credential_confirm": {"label": "确认远端凭证", "group": "codex"},
     "credential_persist": {"label": "保存凭证", "group": "codex"},
+    "sub2api_sync": {"label": "上传并启用 Sub2API", "group": "codex"},
     "cancelling": {"label": "正在停止", "group": "system"},
     "codex": {"label": "Codex 授权", "group": "codex"},
     "plan": {"label": "生成补全计划", "group": "account"},
@@ -240,6 +241,13 @@ def flow_for(task_type: Any, run: dict[str, Any] | None = None) -> list[dict[str
     flow = TASK_TEMPLATES.get(task_key, _flow())
     summary_value = (run or {}).get("result_summary")
     result_summary = summary_value if isinstance(summary_value, dict) else {}
+    if task_key == "codex_retry":
+        data_value = (run or {}).get("data")
+        data = data_value if isinstance(data_value, dict) else {}
+        config_value = data.get("config_snapshot")
+        config = config_value if isinstance(config_value, dict) else {}
+        if config.get("auto_upload_sub2api") or result_summary.get("sub2api_sync"):
+            flow = (*flow[:-1], _s("sub2api_sync"), flow[-1])
     planned_value = result_summary.get("planned_steps")
     planned_steps = planned_value if isinstance(planned_value, (list, tuple)) else []
     planned = {str(value).strip().lower() for value in planned_steps if str(value).strip()}

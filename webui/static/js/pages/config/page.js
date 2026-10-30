@@ -354,7 +354,7 @@ function codexConfigSectionForKey(key) {
   if (key.startsWith('CPA_')) {
     return ['CPA配置', 'CPA 授权链接生成、回调上传和管理接口配置'];
   }
-  if (['SUB2API_API_BASE','SUB2API_API_KEY','SUB2API_API_TIMEOUT'].includes(key)) {
+  if (['SUB2API_API_BASE','SUB2API_API_KEY','SUB2API_API_TIMEOUT','CODEX_OAUTH_AUTO_UPLOAD_SUB2API'].includes(key)) {
     return ['sub2api', 'sub2api 的 API 基址、鉴权和超时配置；用于 Codex OAuth 授权和凭证上传'];
   }
   return ['基础配置', ''];

@@ -100,6 +100,25 @@ function createConfigView(fields = []) {
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
 
+test('搜索授权后自动上传开关会定位 sub2api 子节并呈现独立开关', () => {
+  const key = 'CODEX_OAUTH_AUTO_UPLOAD_SUB2API';
+  const fields = [
+    field('CODEX_AUTH_URL_SOURCE', 'Codex', {value: 'cpa'}),
+    field('SUB2API_API_BASE', 'Codex'),
+    field(key, 'Codex', {type: 'bool', value: false, label: '授权后自动上传并启用 sub2api'}),
+  ];
+  const {view} = createConfigView(fields);
+  view.search(key);
+  const markup = view.renderDomain('Codex', fields);
+
+  assert.equal(view.state().menu, '服务集成');
+  assert.equal(view.state().codex, 'sub2api');
+  assert.ok(markup.includes('授权后自动上传并启用 sub2api'));
+  assert.ok(markup.includes(`data-key="${key}"`));
+  assert.ok(markup.includes('type="checkbox"'));
+  assert.ok(!markup.includes('data-key="CODEX_AUTH_URL_SOURCE"'));
+});
+
 const xxsyunKey = 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY';
 function createXxsyunQuotaControl(controls, {value = '', clear = false} = {}) {
   const status = {textContent: ''};

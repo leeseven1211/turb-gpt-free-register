@@ -82,6 +82,8 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - Codex 凭证、导出状态和 CPA/sub2 callback 回执仅保存到 PostgreSQL；下载时按需生成 CPA 兼容 JSON。
 - 账号页与 Codex 管理页都可把已经完成的 Codex OAuth 凭证单个或批量上传到 sub2api；旧的 Codex Agent Token 生成链路已经移除，OAuth 凭证是唯一的 Codex 授权产物。
 
+「配置 → 服务集成 → Codex → sub2api」提供「授权后自动上传并启用 sub2api」（`CODEX_OAUTH_AUTO_UPLOAD_SUB2API`，默认关闭）。开启后，新建的 Codex OAuth 任务成功确认真实凭证时，会自动上传并覆盖 sub2api 同账号，再重置错误状态、开启调度。开关在任务入队时固定，保存后对新任务生效；不会主动扫描 sub2api 错误账号或发起重授权。上传或启用失败会保留已成功的 OAuth 凭证并展示具体阶段；Token 刷新后的同步仍由 `CODEX_TOKEN_AUTO_SYNC_SUB2API` 单独控制。
+
 ### WebUI
 
 - 默认进入平台总览，一屏查看账号、套餐、邮箱资源、注册任务、Codex 凭证、代理模式和当前脱敏租约。

@@ -65,6 +65,10 @@ CODEX_TOKEN_REFRESH_MAX_PER_CYCLE: int = schema_default("CODEX_TOKEN_REFRESH_MAX
 # 只有曾由当前版本上传到 sub2api 的凭证才会在刷新后自动同步。
 CODEX_TOKEN_AUTO_SYNC_SUB2API: bool = schema_default("CODEX_TOKEN_AUTO_SYNC_SUB2API")
 
+# 新建 Codex OAuth 任务成功后，自动上传凭证并恢复 sub2api 账号调度。
+# 开关在任务入队时固定，不主动扫描账号或重新发起授权。
+CODEX_OAUTH_AUTO_UPLOAD_SUB2API: bool = schema_default("CODEX_OAUTH_AUTO_UPLOAD_SUB2API")
+
 
 # ============================================================
 # Codex 授权方式（2026-06-15 改造）

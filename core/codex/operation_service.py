@@ -176,6 +176,7 @@ def _legacy_config_snapshot(driver_override: str | None = None) -> dict:
     return {
         "oauth_driver": driver,
         "auth_source": str(getattr(cfg, "CODEX_AUTH_URL_SOURCE", "cpa") or "cpa").strip().lower(),
+        "auto_upload_sub2api": bool(getattr(cfg, "CODEX_OAUTH_AUTO_UPLOAD_SUB2API", False)),
         "sms_provider": str(getattr(cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower(),
         "sms_country": str(getattr(cfg, "SMS_COUNTRY", "") or ""),
         "account_proxy_mode": str(
@@ -356,6 +357,9 @@ def _project_config_snapshot(
         ),
         "account_proxy_mode": str(effective_codex_proxy or action_proxy or "registration"),
         "account_proxy_modes": modes,
+        "auto_upload_sub2api": bool(_snapshot_value(
+            values, "CODEX_OAUTH_AUTO_UPLOAD_SUB2API", "auto_upload_sub2api", default=False,
+        )),
     }
     if revision is not None:
         output[_SNAPSHOT_REVISION_KEY] = revision
@@ -891,6 +895,9 @@ def _execute_run(run_id: int) -> dict:
                 preflight_open = False
                 raise RuntimeError(f"配置预检失败：{reason}")
             snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
+            if not isinstance(raw_data.get("config_snapshot"), dict):
+                # 存量任务没有冻结此开关，不能因升级后的全局设置新增远端写入。
+                snapshot["auto_upload_sub2api"] = False
             report(stage="preflight", message="配置预检通过", state="success", detail={"config_snapshot": snapshot})
             preflight_open = False
             token.checkpoint()
@@ -1139,6 +1146,37 @@ def _execute_run(run_id: int) -> dict:
                 )
                 if not persisted:
                     logger.error("Codex OAuth 废号状态写回失败：account_id=%s run_id=%s", account_id, run_id)
+            if final_status == "success" and snapshot.get("auto_upload_sub2api", False):
+                from core.codex.sub2api_sync import sync_confirmed_credential
+
+                def _assert_sync_lease() -> None:
+                    if lease_guard is not None and lease_guard.lost:
+                        raise task_gateway.OperationLeaseLost("sub2api 同步期间账号租约丢失")
+
+                def _sync_checkpoint() -> None:
+                    _assert_sync_lease()
+                    token.checkpoint()
+
+                report(stage="sub2api_sync", message="开始上传 sub2api、重置错误并开启调度", state="running")
+                synced = sync_confirmed_credential(
+                    result, email=email, checkpoint=_sync_checkpoint, assert_lease=_assert_sync_lease,
+                )
+                sync_ok = synced["status"] == "success"
+                sync_message = (
+                    "Codex 授权成功，已上传 sub2api 并启用调度" if sync_ok
+                    else f"Codex 授权成功；sub2api 自动同步未完成：{synced['error']}"
+                )
+                report(
+                    stage="sub2api_sync", message=sync_message,
+                    state="success" if sync_ok else "failed",
+                    level="INFO" if sync_ok else "WARNING", detail=synced,
+                )
+                result.update({"sub2api_sync": synced, "message": sync_message})
+                run_summary.update({"sub2api_sync": synced, "message": sync_message})
+                persisted = _finish_fenced(
+                    final_status, message=sync_message, error=final_error, summary=run_summary,
+                )
+                return {**result, "status": final_status, "run_id": run_id, "task_persistence_confirmed": persisted}
             operation_task_store.finish_run(
                 run_id,
                 status=final_status,

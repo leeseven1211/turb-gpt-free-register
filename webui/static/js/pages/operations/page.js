@@ -95,7 +95,13 @@ function accountTaskResultText(task, compact = false) {
   }
   if (['account_setup_retry','password_setup','password_change','twofa_setup','twofa_change','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || result.status || '账号配置操作失败');
   if (task.task_type === 'codex_retry') {
-    if (result.ok) return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
+    if (result.ok) {
+      const syncStatus = result.sub2api_sync?.status;
+      if (syncStatus === 'success') return '授权成功 · sub2api 已启用';
+      if (syncStatus === 'failed') return '授权成功 · sub2api 同步失败';
+      if (syncStatus === 'cancelled') return '授权成功 · sub2api 同步已停止';
+      return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
+    }
     if (result.status === 'attention_required') return 'Callback 已接收 · 凭证待确认';
     return result.message || result.status || '补跑失败';
   }

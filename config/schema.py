@@ -241,6 +241,7 @@ _DEFAULTS: dict[str, Any] = {
     "ROXY_PROXY_CHECK_CHANNEL": "IPRust.io",
     "ROXY_DELETE_PATH": "/browser/delete",
     "CODEX_OAUTH_DRIVER": "roxy",
+    "CODEX_OAUTH_AUTO_UPLOAD_SUB2API": False,
     "CODEX_TOKEN_REFRESH_BEFORE_HOURS": 24,
     "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS": 120,
     "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE": 20,
@@ -1584,6 +1585,10 @@ _FIELD_DEFINITIONS = [
     {"key": "EXTRACT_LINK_HUANGUANG_NO_PROGRESS_TIMEOUT", "file": "extract_link.py", "type": "int", "group": "提链", "label": "幻光无进展等待（秒）", "help": "连续没有有效状态变化时停止自动查询，范围 60-86400；重复旧进度或查询失败不会刷新进展时间，停止后可手动同步原单"},
     {"key": "EXTRACT_LINK_HUANGUANG_MAX_QUERY_FAILURES", "file": "extract_link.py", "type": "int", "group": "提链", "label": "幻光连续查询失败上限", "help": "连续查询失败达到上限后转待核验，范围 3-100；连续 3 次 HTTP 404 会提前停止。成功读取会清零失败次数，不影响手动同步或重跑"},
     # ---- Codex 配置 ----
+    {
+        "key": "CODEX_OAUTH_AUTO_UPLOAD_SUB2API", "file": "codex.py", "type": "bool", "group": "Codex",
+        "label": "授权后自动上传并启用 sub2api", "help": "新建 Codex OAuth 任务成功确认真实凭证后，自动上传并覆盖同账号、重置错误状态、开启调度；提交任务时固定开关，不主动扫描或发起重授权，不影响 Token 刷新后的同步设置",
+    },
     {
         "key": "SUB2API_API_BASE", "file": "sub2api.py", "type": "str", "group": "Codex",
         "label": "sub2 API基址", "help": "sub2api 服务地址；用于 Codex OAuth 授权和凭证上传，例如 http://127.0.0.1:8080",

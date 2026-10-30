@@ -20,6 +20,24 @@ from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
+    def test_codex_oauth_sub2api_automation_is_optional_and_webui_editable(self):
+        key = "CODEX_OAUTH_AUTO_UPLOAD_SUB2API"
+        fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
+        self.assertTrue(key in fields, f"缺少配置字段：{key}")
+        field = fields[key]
+        self.assertFalse(field["default"])
+        self.assertEqual("bool", field["type"])
+        self.assertEqual("Codex", field["group"])
+        self.assertEqual("database", field["storage"])
+        self.assertFalse(field["restart"])
+        self.assertEqual("授权后自动上传并启用 sub2api", field["label"])
+        self.assertEqual({key: True}, config_schema.validate_config_updates({key: True}))
+        try:
+            with patch.dict(os.environ, {key: "True"}, clear=False):
+                self.assertTrue(importlib.reload(codex_config).CODEX_OAUTH_AUTO_UPLOAD_SUB2API)
+        finally:
+            importlib.reload(codex_config)
+
     def test_task_center_retention_strategy_is_webui_editable(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
 

@@ -424,7 +424,7 @@ async function codexReauthorize(filenames = null) {
   const note = `确定为选中的 ${selected.length} 个账号重新执行 Codex OAuth 授权吗？\n\n` +
                `每个账号将消耗：\n  • 1 封邮箱 OTP\n  • 1 个接码短信\n\n` +
                `账号操作公共并发：${workers}\n\n` +
-               `授权成功后会更新本地 Codex 凭证；如需同步到 sub2api，请等待成功后再点击“上传 sub2api”。`;
+               `授权成功后会更新本地 Codex 凭证；若“授权后自动上传并启用 sub2api”开关开启，将自动上传并恢复调度；关闭时需在成功后手工点击“上传 sub2api”。`;
   if (!confirm(note)) return;
   const btn = document.getElementById('btnCodexReauthorizeBulkV2');
   if (btn) btn.disabled = true;
