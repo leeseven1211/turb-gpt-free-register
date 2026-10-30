@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""账号管理“补全账号”的纯规划逻辑。
+"""账号管理“补全账号”的规划与同账号注册占用检查。
 
 这里只判断账号缺什么、配置允许补什么；真正执行仍由现有的账号操作服务负责。
 这样单独操作和组合补全共享同一套缺失判断，不会因为前端按钮不同而产生两套规则。
@@ -119,39 +119,28 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
     }
     missing: list[str] = []
     blocked: list[dict] = []
-    registration_resume = needs_registration_resume(account)
-    if registration_resume:
-        if _password_present(account):
-            missing.append("registration_resume")
+    # 补全按当前缺项规划，历史注册检查点不再强制改走注册续跑。
+    if _token_needs_refresh(account):
+        if enabled["refresh_at"]:
+            missing.append("refresh_at")
         else:
-            blocked.append({
-                "step": "registration_resume",
-                "reason": "账号注册尚未完成且缺少已保存密码，不能安全继续注册",
-            })
-    else:
-        if _token_needs_refresh(account):
-            if enabled["refresh_at"]:
-                missing.append("refresh_at")
-            else:
-                blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
-        if enabled["password"] and not _password_present(account):
-            if _password_setup_repeat_blocked(account):
-                if enabled["password_reset"]:
-                    missing.append("password")
-                else:
-                    blocked.append({
-                        "step": "password",
-                        "reason": "设置页已确认没有添加密码入口，已跳过重复重试",
-                    })
-            else:
-                # The cached eligibility probe is advisory only. It can
-                # describe the password-change endpoint while the Security ->
-                # Add flow is still available for passwordless accounts.
+            blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
+    if enabled["password"] and not _password_present(account):
+        if _password_setup_repeat_blocked(account):
+            if enabled["password_reset"]:
                 missing.append("password")
-        if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
-            missing.append("plan_check")
-        if enabled["twofa"] and not _twofa_present(account):
-            missing.append("twofa")
+            else:
+                blocked.append({
+                    "step": "password",
+                    "reason": "设置页已确认没有添加密码入口，已跳过重复重试",
+                })
+        else:
+            # 历史资格探测仅作参考，无密码账号仍可使用设置页的添加密码入口。
+            missing.append("password")
+    if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
+        missing.append("plan_check")
+    if enabled["twofa"] and not _twofa_present(account):
+        missing.append("twofa")
     execution_state = str(account.get("codex_execution_status") or "").strip().lower()
     legacy_codex_state = str(account.get("codex_status") or "").strip().lower()
     credential_state = str(account.get("codex_credential_state") or "").strip().lower()
@@ -161,7 +150,7 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         codex_state = "success"
     else:
         codex_state = legacy_codex_state or credential_state or execution_state
-    if not registration_resume and enabled["codex"] and codex_state not in {"success"}:
+    if enabled["codex"] and codex_state not in {"success"}:
         missing.append("codex")
     return {
         "enabled": enabled,
@@ -169,9 +158,33 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         "missing_steps": missing,
         "missing_labels": [STEP_LABELS[step] for step in missing],
         "blocked": blocked,
-        "registration_resume": registration_resume,
+        "registration_resume": False,
         "ready": not missing and not blocked,
     }
 
 
-__all__ = ["STEP_LABELS", "completion_plan", "needs_registration_resume"]
+def active_registration_job(account_id: int, email: str) -> dict | None:
+    """只检查同账号仍在执行的注册任务，历史结果不阻断补全。"""
+    from core import record_store
+
+    statuses = (
+        "pending", "queued", "running", "stopping", "cancelling", "settling",
+        "waiting", "debug_paused",
+    )
+    jobs = record_store.list_rows(
+        record_store.JOBS,
+        where=(
+            "COALESCE(NULLIF(job_type, ''), 'registration') IN ('registration', 'registration_resume') "
+            "AND status = ANY(%s) "
+            "AND (account_id = %s OR (%s <> '' AND LOWER(BTRIM(email)) = %s))"
+        ),
+        params=(list(statuses), int(account_id), str(email or "").strip().lower(), str(email or "").strip().lower()),
+        limit=1,
+    )
+    if not jobs:
+        return None
+    job = jobs[0]
+    return {"id": job["id"], "status": job.get("status"), "job_type": job.get("job_type") or "registration"}
+
+
+__all__ = ["STEP_LABELS", "active_registration_job", "completion_plan", "needs_registration_resume"]

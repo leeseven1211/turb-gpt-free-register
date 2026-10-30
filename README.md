@@ -1131,6 +1131,8 @@ Roxy 刷新 AT 进入邮箱验证码页后，如果本地保存了密码，会�
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 v2 协议的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
 `LIVE_CHECK_ROXY_FALLBACK_ENABLED` 控制协议刷新 AT 失败后的 Roxy 登录兜底，不影响普通查活。v2 密码认证的 Sentinel 前置步骤失败且已确认密码请求未提交时，可以切换浏览器；密码或验证码已经提交但没有完整回执时，保留具体失败原因和核验记录，不自动重新提交。普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。迁移保留的历史配置 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
 
+“补全账号”只因同账号仍有活跃注册任务而等待，按账号 ID 或邮箱匹配；历史失败、待确认或已结束的注册记录不会强制转成注册续跑。补全按当前缺项与配置执行；开启补全刷新 AT 后，没有现有 Token 的账号也可通过账号认证获取 AT，再继续其余补全步骤。刷新驱动仍遵循 `ACCOUNT_AT_REFRESH_DRIVER`，注册任务本身的续跑规则保持独立。
+
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 
 ```dotenv

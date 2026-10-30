@@ -21,6 +21,12 @@ class WebUIRuntimeTests(unittest.TestCase):
         butler_recovery = patch('core.butler_manual_import.reconcile_interrupted', return_value=1)
         self.butler_recovery = butler_recovery.start()
         self.addCleanup(butler_recovery.stop)
+        registration_guard = patch("core.account_completion_service.active_registration_job", return_value=None, create=True)
+        self.registration_guard = registration_guard.start()
+        self.addCleanup(registration_guard.stop)
+        dependency_write = patch.object(runtime.operation_task_store, "register_task_dependency")
+        dependency_write.start()
+        self.addCleanup(dependency_write.stop)
 
     def tearDown(self):
         runtime._runtime_started = False
@@ -551,7 +557,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             task_types=("live_check", "token_refresh"),
         )
 
-    def test_completion_routes_pending_registration_to_resume_job(self):
+    def test_completion_accepts_pending_registration_without_original_job(self):
         context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))
         account = {
             "id": 591,
@@ -559,30 +565,98 @@ class WebUIRuntimeTests(unittest.TestCase):
             "access_token": "",
             "extra_json": '{"account_password":"Password!123"}',
         }
-        attempt = {
-            "target_status": "email_verification_pending",
-            "remote_account_state": "request_unknown",
-            "checkpoint": "account_request_started",
-        }
-        resume_result = {
-            "ok": True,
-            "created": True,
-            "source_job_id": 836,
-            "job": {"id": 861, "job_type": "registration_resume"},
-            "message": "已继续原注册任务，不执行 AT 刷新",
+        account["registration_target_status"] = "email_verification_pending"
+        settings = {
+            "password_enabled": True, "plan_check_enabled": True,
+            "twofa_enabled": True, "codex_enabled": False, "refresh_at_enabled": True,
         }
         with (
             patch.object(runtime.db, "get_account", return_value=account),
-            patch("core.storage.registration.get_latest_attempt_by_account", return_value=attempt),
-            patch.object(runtime.db, "get_latest_registration_job_for_account", return_value={"id": 836}),
-            patch("core.registration_service.retry_job", return_value=resume_result) as retry_job,
+            patch.object(runtime, "_runtime_execution_settings", return_value=(settings, tuple(settings), settings)),
+            patch.object(runtime, "_register_runtime_handlers"),
+            patch.object(runtime.account_task_store, "submit_durable_operation", return_value={"accepted": True, "task_id": 861}) as submit,
+            patch.object(runtime.db, "get_latest_registration_job_for_account", return_value=None),
+            patch("core.registration_service.retry_job") as retry_job,
         ):
             result = context.enqueue_account_completion(591)
 
         self.assertTrue(result["accepted"])
-        self.assertTrue(result["registration_resume"])
-        self.assertEqual(861, result["job_id"])
-        retry_job.assert_called_once_with(836)
+        self.assertEqual(861, result["task_id"])
+        self.assertEqual(["refresh_at", "plan_check", "twofa"], submit.call_args.kwargs["data"]["planned_steps"])
+        retry_job.assert_not_called()
+
+    def test_completion_blocks_only_when_same_account_registration_is_active(self):
+        context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))
+        account = {"id": 591, "email": "pending@example.test", "access_token": ""}
+        self.registration_guard.return_value = {"id": 836, "status": "running", "job_type": "registration_resume"}
+        with (
+            patch.object(runtime.db, "get_account", return_value=account),
+            patch.object(runtime.account_task_store, "submit_durable_operation") as submit,
+            patch("core.registration_service.retry_job") as retry_job,
+        ):
+            result = context.enqueue_account_completion(591)
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["busy"])
+        self.assertEqual("registration_in_progress", result["error_code"])
+        submit.assert_not_called()
+        retry_job.assert_not_called()
+
+    def test_queued_completion_rechecks_registration_before_dispatch(self):
+        from types import SimpleNamespace
+
+        context = SimpleNamespace(account_id=591, email="pending@example.test", run={})
+        self.registration_guard.return_value = {"id": 836, "status": "running"}
+        with patch.object(runtime, "_run_account_completion_worker") as worker:
+            with self.assertRaises(runtime.task_gateway.OperationLeaseUnavailable):
+                runtime._handle_native_account_completion(context)
+        worker.assert_not_called()
+
+    def test_completion_setup_child_rechecks_registration_before_remote_work(self):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        context = SimpleNamespace(
+            account_id=591, email="pending@example.test", task_id=999, run_id=1000,
+            config_snapshot={}, run={"data": {"completion_auth": True, "steps": ["twofa"]}},
+            lease=lambda **_kwargs: nullcontext(), report=Mock(),
+            remote_request_started=Mock(), remote_request_receipt=Mock(),
+        )
+        self.registration_guard.return_value = {"id": 836, "status": "running"}
+        with (
+            patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={"ok": True, "status": "success"}) as worker,
+            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
+            patch.object(runtime, "_finish_native_context"),
+        ):
+            with self.assertRaises(runtime.task_gateway.OperationLeaseUnavailable):
+                runtime._handle_native_account_setup(context)
+        worker.assert_not_called()
+        context.remote_request_started.assert_not_called()
+
+    def test_pending_history_does_not_cancel_refresh_child(self):
+        account = {
+            "id": 591, "email": "pending@example.test", "access_token": "",
+            "extra_json": '{"registration_checkpoint":"email_verification_pending","account_password":"Password!123"}',
+        }
+        settings = {"refresh_at_enabled": True, "password_enabled": False,
+                    "plan_check_enabled": False, "twofa_enabled": False, "codex_enabled": False}
+        with (
+            patch.object(runtime.account_task_store, "start_task"),
+            patch.object(runtime.account_task_store, "append_event"),
+            patch.object(runtime.account_task_store, "finish_task") as finish,
+            patch.object(runtime.db, "get_account", return_value=account),
+            patch("config.account.completion_settings", return_value=settings),
+            patch.object(runtime.live_check_service, "enqueue_account_live_check", return_value={"accepted": True, "task_id": 1001}) as enqueue,
+            patch.object(runtime.operation_task_store, "register_task_dependency"),
+            patch.object(runtime.codex_retry_service, "release"),
+        ):
+            runtime._run_account_completion_worker(
+                account["email"], account_id=591, task_id=999,
+                task_trigger="manual_account_completion", planned_steps=["refresh_at"], settings=settings,
+            )
+        enqueue.assert_called_once()
+        self.assertTrue(enqueue.call_args.kwargs["allow_missing_token"])
+        self.assertEqual("partial_success", finish.call_args.kwargs["status"])
 
     def test_registration_resume_continues_when_remote_state_is_unknown(self):
         class FakeContext:
@@ -674,7 +748,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         )
         notify.assert_called_once()
 
-    def test_old_refresh_plan_is_stopped_when_switch_is_now_off(self):
+    def test_queued_refresh_respects_frozen_switch_when_current_config_is_off(self):
         account = {
             "id": 591,
             "email": "pending@example.test",
@@ -693,7 +767,7 @@ class WebUIRuntimeTests(unittest.TestCase):
                 "codex_enabled": False,
                 "refresh_at_enabled": False,
             }),
-            patch.object(runtime.live_check_service, "enqueue_account_live_check") as enqueue_live,
+            patch.object(runtime.live_check_service, "enqueue_account_live_check", return_value={"accepted": True, "task_id": 1001}) as enqueue_live,
             patch.object(runtime.codex_retry_service, "release"),
         ):
             runtime._run_account_completion_worker(
@@ -705,9 +779,32 @@ class WebUIRuntimeTests(unittest.TestCase):
                 settings={"refresh_at_enabled": True},
             )
 
-        enqueue_live.assert_not_called()
-        self.assertEqual("cancelled", finish_task.call_args.kwargs["status"])
-        self.assertTrue(finish_task.call_args.kwargs["result_summary"]["stale_plan"])
+        enqueue_live.assert_called_once()
+        self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
+
+    def test_refresh_busy_without_child_returns_completion_to_queue(self):
+        account = {"id": 591, "email": "pending@example.test", "access_token": ""}
+        with (
+            patch.object(runtime.account_task_store, "start_task"),
+            patch.object(runtime.account_task_store, "append_event"),
+            patch.object(runtime.account_task_store, "finish_task") as finish,
+            patch.object(runtime.operation_task_store, "register_task_dependency") as dependency,
+            patch.object(runtime.db, "get_account", return_value=account),
+            patch("config.account.completion_settings", return_value={"refresh_at_enabled": True}),
+            patch.object(runtime.live_check_service, "enqueue_account_live_check", return_value={
+                "accepted": False, "busy": True, "error_code": "registration_in_progress",
+                "error": "该账号仍有注册任务正在执行",
+            }),
+            patch.object(runtime.codex_retry_service, "release"),
+        ):
+            with self.assertRaises(runtime.task_gateway.OperationLeaseUnavailable):
+                runtime._run_account_completion_worker(
+                    account["email"], account_id=591, task_id=999,
+                    task_trigger="manual_account_completion", planned_steps=["refresh_at"],
+                    settings={"refresh_at_enabled": True},
+                )
+        finish.assert_not_called()
+        dependency.assert_not_called()
 
     def test_refresh_submission_is_partial_until_child_finishes(self):
         account = {

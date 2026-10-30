@@ -33,6 +33,11 @@ _DISPATCH_LOCK = threading.RLock()
 _CONFIG_SNAPSHOT_PROVIDER: Callable[..., Any] | None = None
 _CONFIG_PROVIDER_LOCK = threading.RLock()
 
+
+class _CompletionRegistrationPending(task_gateway.OperationLeaseUnavailable):
+    """仅补全入口因同账号仍在注册而等待，其他租约错误保留原处理。"""
+
+
 _ACCOUNT_DEACTIVATED_MARKERS = (
     "account_deactivated",
     "account_deleted",
@@ -475,6 +480,7 @@ def submit(
     dispatch: bool = True,
     driver: str | None = None,
     idempotency_key: str | None = None,
+    completion_auth: bool = False,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -498,7 +504,10 @@ def submit(
             parent_task_id=parent_task_id,
             batch_id=batch_id,
             batch_ordinal=batch_ordinal,
-            data={"config_snapshot": _config_snapshot(driver_override=driver)},
+            data={
+                "config_snapshot": _config_snapshot(driver_override=driver),
+                **({"completion_auth": True} if completion_auth else {}),
+            },
             idempotency_key=idempotency_key,
         )
     except Exception as exc:
@@ -865,6 +874,14 @@ def _execute_run(run_id: int) -> dict:
             token=lease_token,
             ttl_seconds=600,
         )
+        raw_data = current.get("data") if isinstance(current.get("data"), dict) else {}
+        if raw_data.get("completion_auth"):
+            from core.account_completion_service import active_registration_job
+
+            if active_registration_job(account_id, email):
+                raise _CompletionRegistrationPending(
+                    "该账号仍有注册任务正在执行，等待注册结束后补全账号"
+                )
         db.update_account_codex_operation_state(email, execution_status="running", active_run_id=run_id)
         with operation_context(token, reporter=report):
             report(stage="preflight", message="开始执行统一配置预检", state="running")
@@ -873,7 +890,6 @@ def _execute_run(run_id: int) -> dict:
                 report(stage="preflight", message=f"配置预检失败：{reason}", state="failed", level="ERROR")
                 preflight_open = False
                 raise RuntimeError(f"配置预检失败：{reason}")
-            raw_data = current.get("data") if isinstance(current.get("data"), dict) else {}
             snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
             report(stage="preflight", message="配置预检通过", state="success", detail={"config_snapshot": snapshot})
             preflight_open = False
@@ -1133,6 +1149,28 @@ def _execute_run(run_id: int) -> dict:
                 lease_token=lease_token,
             )
             return {**result, "status": final_status, "run_id": run_id}
+    except _CompletionRegistrationPending as exc:
+        requeued = operation_task_store.requeue_claimed_run(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token or None,
+            reason=str(exc),
+            delay_seconds=1.0,
+        )
+        if requeued:
+            db.update_account_codex_operation_state(email, execution_status="queued", active_run_id=run_id)
+            task_gateway.notify_dispatch()
+            return {"status": "deferred", "ok": False, "run_id": run_id, "reason": str(exc)}
+        message = "任务在等待注册结束前收到取消请求"
+        db.update_account_codex_operation_state(
+            email, execution_status="empty", last_run_status="cancelled",
+            error=message, active_run_id=0,
+        )
+        _finish_fenced(
+            "cancelled", error=message,
+            summary={"ok": False, "status": "cancelled", "message": message},
+        )
+        return {"status": "cancelled", "ok": False, "message": message, "run_id": run_id}
     except task_gateway.OperationLeaseLost as exc:
         if preflight_open:
             report(stage="preflight", message="配置预检因租约丢失中断，结果待核验", event_type="note.warning", level="WARNING", detail={"lease_lost": True, "reconcile_required": True})

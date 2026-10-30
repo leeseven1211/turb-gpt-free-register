@@ -146,7 +146,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
         self.assertIn("password", plan["missing_steps"])
         self.assertFalse(plan["blocked"])
 
-    def test_pending_registration_never_plans_at_refresh(self):
+    def test_pending_registration_plans_actual_missing_steps(self):
         account = {
             "access_token": "",
             "registration_target_status": "email_verification_pending",
@@ -161,27 +161,48 @@ class AccountCompletionPlanTests(unittest.TestCase):
             "refresh_at_enabled": True,
         })
 
-        self.assertEqual(["registration_resume"], plan["missing_steps"])
-        self.assertTrue(plan["registration_resume"])
+        self.assertEqual(["refresh_at", "plan_check", "twofa", "codex"], plan["missing_steps"])
+        self.assertFalse(plan["registration_resume"])
         self.assertFalse(plan["blocked"])
 
-    def test_normalized_pending_registration_state_is_used_without_legacy_checkpoint(self):
+    def test_pending_registration_without_saved_password_can_complete(self):
+        for historical_state in (
+            {"registration_target_status": "email_verification_pending"},
+            {"registration_checkpoint": "email_verification_pending"},
+            {"extra_json": '{"registration_checkpoint":"email_verification_pending"}'},
+        ):
+            with self.subTest(historical_state=historical_state):
+                plan = completion_plan(
+                    {"access_token": "", **historical_state},
+                    {
+                        "password_enabled": True,
+                        "plan_check_enabled": True,
+                        "twofa_enabled": True,
+                        "codex_enabled": True,
+                        "refresh_at_enabled": True,
+                    },
+                )
+                self.assertEqual(
+                    ["refresh_at", "password", "plan_check", "twofa", "codex"],
+                    plan["missing_steps"],
+                )
+                self.assertFalse(plan["registration_resume"])
+                self.assertFalse(plan["blocked"])
+
+    def test_pending_registration_still_respects_disabled_completion_steps(self):
         plan = completion_plan(
+            {"access_token": "", "registration_target_status": "email_verification_pending"},
             {
-                "access_token": "",
-                "registration_target_status": "email_verification_pending",
-                "extra_json": '{"account_password":"Password!123"}',
-            },
-            {
-                "password_enabled": True,
-                "plan_check_enabled": True,
-                "twofa_enabled": True,
-                "codex_enabled": True,
-                "refresh_at_enabled": True,
+                "password_enabled": False,
+                "plan_check_enabled": False,
+                "twofa_enabled": False,
+                "codex_enabled": False,
+                "refresh_at_enabled": False,
             },
         )
-
-        self.assertEqual(["registration_resume"], plan["missing_steps"])
+        self.assertEqual([], plan["missing_steps"])
+        self.assertEqual(["refresh_at"], [step["step"] for step in plan["blocked"]])
+        self.assertFalse(plan["registration_resume"])
 
 
 if __name__ == "__main__":

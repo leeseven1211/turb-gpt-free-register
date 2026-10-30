@@ -757,6 +757,7 @@ def _run_live_check(
     proxy_source: str | None = None,
     on_authenticated=None,
     result_writer=None,
+    completion_auth: bool = False,
 ) -> dict:
     def save_result(account_id, result):
         return result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
@@ -1339,7 +1340,7 @@ def _run_live_check(
                 refresh_boundary is None
                 or refresh_boundary.get("receipt_outcome") == "rejected"
             )
-            and bool(saved_access_token)
+            and (bool(saved_access_token) or completion_auth)
             and force_refresh
             and selected_refresh_driver != "browser_roxy"
             and _roxy_fallback_enabled(config_snapshot)
@@ -1779,6 +1780,13 @@ def _handle_live_operation(context):
     # row; using the frozen run family here keeps the lease fence consistent
     # for both paths.
     with context.lease(resource_family=context.resource_family):
+        if data.get("completion_auth"):
+            from core.account_completion_service import active_registration_job
+
+            if active_registration_job(int(context.account_id), email):
+                raise account_task_store.OperationLeaseUnavailable(
+                    "该账号仍有注册任务正在执行，等待注册结束后补全账号"
+                )
         with operation_log_context(context, stage="preflight"):
             _run_live_check(
                 account_id=int(context.account_id),
@@ -1800,6 +1808,7 @@ def _handle_live_operation(context):
                     )
                     or ""
                 ).strip() or None,
+                **({"completion_auth": True} if data.get("completion_auth") else {}),
             )
     return None
 
@@ -1908,6 +1917,7 @@ def _submit_native_live(
     force_refresh: bool, driver: str | None, refresh_driver: str | None,
     explicit_proxy_requested: bool, batch_id: str | None, idempotency_key: str | None,
     resource_family: str = "openai_interactive",
+    allow_missing_token: bool = False,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -1927,6 +1937,8 @@ def _submit_native_live(
         resource_family=str(resource_family or "openai_interactive"),
         data={
             "force_refresh": bool(force_refresh),
+            # 标记补全认证范围，避免带 token 字样的字段被统一脱敏规则丢弃。
+            **({"completion_auth": True} if force_refresh and allow_missing_token else {}),
             "driver": driver,
             "refresh_driver": refresh_driver,
             "proxy_source": _captured_proxy_source(
@@ -2070,6 +2082,7 @@ def enqueue_account_live_check(
     driver: str | None = None,
     idempotency_key: str | None = None,
     resource_family: str = "openai_interactive",
+    allow_missing_token: bool = False,
 ) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
@@ -2093,7 +2106,15 @@ def enqueue_account_live_check(
             "accepted": False, "busy": False, "deactivated": True,
             "error": "账号已标记为封号，停止查活/刷新 AT",
         }
-    if force_refresh and not str(account.get("access_token") or "").strip():
+    if force_refresh and allow_missing_token:
+        from core.account_completion_service import active_registration_job
+
+        if active_registration_job(account_id, email):
+            return {
+                "accepted": False, "busy": True, "error_code": "registration_in_progress",
+                "error": "该账号仍有注册任务正在执行，请等待结束后补全账号",
+            }
+    if force_refresh and not allow_missing_token and not str(account.get("access_token") or "").strip():
         return {
             "accepted": False, "busy": False, "not_registered": True,
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
@@ -2117,6 +2138,7 @@ def enqueue_account_live_check(
             explicit_proxy_requested=proxy is not None,
             batch_id=batch_id, idempotency_key=key,
             resource_family=resource_family,
+            **({"allow_missing_token": True} if force_refresh and allow_missing_token else {}),
         )
     except Exception as exc:
         error = f"查活任务持久化失败: {type(exc).__name__}: {str(exc)[:300]}"

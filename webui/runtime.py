@@ -251,6 +251,7 @@ def _submit_native_account_setup_child(
         resource_family="openai_interactive",
         data={
             "steps": sorted(steps),
+            "completion_auth": True,
             "task_trigger": f"{task_trigger}_account_setup",
             "force_password_reset": "password" in steps and "change" in task_trigger.lower(),
             "force_twofa_change": "twofa" in steps and "change" in task_trigger.lower(),
@@ -495,18 +496,10 @@ def _run_account_completion_worker(
 
         if "refresh_at" in remaining:
             account = db.get_account(int(account_id)) or {}
-            # A queued completion task contains a plan snapshot, but the
-            # destructive boundary is the actual refresh enqueue.  Recheck the
-            # current switch and registration state immediately before it so a
-            # config change cannot make an old task refresh a pending account.
-            from config.account import completion_settings
-
+            # 按本次任务冻结的配置执行，历史注册检查点不取消补全计划。
             current_plan = completion_plan(account, settings)
             if "refresh_at" not in current_plan["missing_steps"]:
-                if current_plan.get("registration_resume"):
-                    stale_message = "账号注册尚未完成，旧补全计划已取消，请重新点击补全账号继续注册"
-                else:
-                    stale_message = "补全时刷新 AT 已关闭，旧补全计划已失效，请重新点击补全账号"
+                stale_message = "补全时刷新 AT 已关闭，旧补全计划已失效，请重新点击补全账号"
                 result_summary["stale_plan"] = True
                 task_store.finish_task(
                     task_id,
@@ -522,7 +515,13 @@ def _run_account_completion_worker(
                 trigger=f"{task_trigger}_refresh_at",
                 proxy=None,
                 force_refresh=True,
+                allow_missing_token=True,
             )
+            if queued.get("busy") and not (queued.get("source_id") or queued.get("task_id")):
+                # 占用尚未对应到持久子任务时退队等待，避免生成无法续接的父任务。
+                raise task_gateway.OperationLeaseUnavailable(
+                    queued.get("error") or "刷新 AT 暂时被占用，等待下一轮派发"
+                )
             result_summary["refresh_at"] = {
                 "accepted": bool(queued.get("accepted")),
                 "busy": bool(queued.get("busy")),
@@ -794,6 +793,7 @@ def _run_account_completion_worker(
                 email,
                 trigger=f"{task_trigger}_codex",
                 driver=str(settings.get("codex_driver") or "same_as_registration"),
+                completion_auth=True,
             )
             result_summary["codex"] = {
                 "accepted": bool(queued.get("accepted")),
@@ -857,6 +857,8 @@ def _run_account_completion_worker(
                 payload=codex_dependency_payload,
             )
         return context.last_result if context is not None else None
+    except task_gateway.OperationLeaseUnavailable:
+        raise
     except Exception as exc:
         result_summary["error"] = f"{type(exc).__name__}: {str(exc)[:220]}"
         if (
@@ -929,6 +931,13 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     )
     request_id = f"account-setup:{context.run_id}"
     with context.lease(resource_family="openai_interactive"):
+        if data.get("completion_auth"):
+            from core.account_completion_service import active_registration_job
+
+            if active_registration_job(int(context.account_id or 0), context.email):
+                raise task_gateway.OperationLeaseUnavailable(
+                    "该账号仍有注册任务正在执行，等待注册结束后补全账号"
+                )
         context.remote_request_started(
             "account_setup",
             intent_kind="remote_write",
@@ -1009,6 +1018,12 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
 
 
 def _handle_native_account_completion(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
+    from core.account_completion_service import active_registration_job
+
+    if active_registration_job(int(context.account_id or 0), context.email):
+        raise task_gateway.OperationLeaseUnavailable(
+            "该账号仍有注册任务正在执行，等待注册结束后补全账号"
+        )
     data = _native_task_data(context)
     continuation = data.get("continuation_payload")
     continuation = dict(continuation) if isinstance(continuation, Mapping) else {}
@@ -1632,7 +1647,7 @@ class WebUIContext:
         trigger: str = "manual_account_completion",
     ) -> dict:
         """Generate and queue the configured missing-account completion plan."""
-        from core.account_completion_service import completion_plan
+        from core.account_completion_service import active_registration_job, completion_plan
         from config.account import completion_settings
 
         try:
@@ -1646,73 +1661,14 @@ class WebUIContext:
             return {"accepted": False, "error": "账号邮箱为空"}
         if db.account_is_deactivated(account):
             return {"accepted": False, "error": "账号已废号，不能补全账号"}
-        # registered_accounts is created before registration is fully complete.
-        # Enrich the account row with the durable Attempt state so a missing
-        # Token cannot be mistaken for a refreshable, already-registered account.
-        try:
-            from core.storage import registration as registration_store
-
-            attempt = registration_store.get_latest_attempt_by_account(int(account["id"]))
-            if attempt:
-                account = dict(account)
-                account["registration_target_status"] = attempt.get("target_status")
-                account["registration_remote_account_state"] = attempt.get("remote_account_state")
-                account["registration_checkpoint"] = account.get("registration_checkpoint") or attempt.get("checkpoint")
-        except Exception:
-            logger.exception("读取账号注册 Attempt 状态失败：account_id=%s", account_id)
+        if active_registration_job(int(account["id"]), email):
+            return {
+                "accepted": False, "busy": True, "error_code": "registration_in_progress",
+                "error": "该账号仍有注册任务正在执行，请等待结束后补全账号",
+            }
         base_settings = completion_settings()
         snapshot, allowlist, settings = _runtime_execution_settings(base_settings)
         plan = completion_plan(account, settings)
-        if "registration_resume" in plan["missing_steps"]:
-            source_job = db.get_latest_registration_job_for_account(int(account["id"]))
-            if not source_job:
-                reason = "账号注册尚未完成，但找不到可继续的原注册任务；为避免误注册，请先从注册任务中心处理"
-                return {
-                    "accepted": False,
-                    "blocked": [{"step": "registration_resume", "reason": reason}],
-                    "plan": plan,
-                    "error": reason,
-                }
-            source_job_id = int(source_job["id"])
-            try:
-                from core import registration_service
-
-                resumed = registration_service.retry_job(source_job_id)
-            except Exception as exc:
-                logger.exception("创建注册续跑任务失败：account_id=%s", account_id)
-                return {
-                    "accepted": False,
-                    "blocked": [{"step": "registration_resume", "reason": f"继续注册入队异常：{type(exc).__name__}"}],
-                    "plan": plan,
-                    "error": f"继续注册入队异常：{type(exc).__name__}: {exc}",
-                }
-            if not resumed.get("ok"):
-                reason = str(resumed.get("error") or "继续注册任务未能入队")
-                return {
-                    "accepted": False,
-                    "blocked": [{"step": "registration_resume", "reason": reason}],
-                    "plan": plan,
-                    "error": reason,
-                }
-            retry_job = resumed.get("job") if isinstance(resumed.get("job"), Mapping) else {}
-            created = bool(resumed.get("created"))
-            reused = bool(resumed.get("reused"))
-            return {
-                "accepted": True,
-                "busy": reused,
-                "reused": reused,
-                "registration_resume": True,
-                "job_id": int(retry_job.get("id") or 0) or None,
-                "source_job_id": source_job_id,
-                "plan": plan,
-                "message": str(
-                    resumed.get("message")
-                    or (
-                        "已创建真实注册续跑任务"
-                        if created else "已有注册续跑任务正在执行"
-                    )
-                ),
-            }
         # 一个步骤被账号能力明确阻塞时，仍允许执行其它未完成步骤。
         # 例如密码资格为 false，但 Authenticator 2FA 仍然可以补齐。
         if plan["blocked"] and not plan["missing_steps"]:
