@@ -8,6 +8,23 @@ from core.accounts.liveness.roxy import flow as roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_explicit_auth_page_error_keeps_concrete_failure_and_unknown_receipt(self):
+        from core.accounts.liveness import service as live_check_service
+
+        for code in ("auth_operation_timeout", "auth_context_missing"):
+            with self.subTest(code=code):
+                error = RuntimeError("认证页面返回明确错误")
+                error.code = code
+                self.assertEqual((code, "auth"), roxy_liveness._refresh_failure_cause(error, "login"))
+                result = {"status": "failed", "error_code": code, "error": str(error)}
+                self.assertEqual(code, live_check_service._safe_refresh_cause_code(result))
+                self.assertFalse(live_check_service._refresh_result_not_submitted(result))
+                self.assertFalse(live_check_service._refresh_result_is_rejected(result))
+                self.assertFalse(live_check_service._unknown_refresh_response_observed(result))
+                self.assertTrue(live_check_service._unknown_refresh_response_observed({
+                    **result, "response_observed": True,
+                }))
+
     def test_login_page_and_preflight_failures_keep_execution_receipts(self):
         from core.accounts.liveness import service as live_check_service
 

@@ -27,7 +27,8 @@ from core.browser.roxy.client import RoxyBrowserClient
 from core.auth.browser.auth_context import AuthExecutionContext, checkpoint as _auth_checkpoint, current_execution_context, execution_context
 from core.auth.browser.email_otp import _clear_confirmed_email_submission, _email_ui_submission_state, _EmailSubmissionUnknown
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
-from core.auth.state_machine import StageBudget, StageTimeout
+from core.auth.state_machine import PageState, StageBudget, StageTimeout, classify_page
+from core.auth.page_errors import AuthPageError, auth_page_error
 from core.auth.browser.password_auth import _PasswordTransitionTimeout
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, click_any as _click_any, click_continue as _click_continue, find_any as _find_any, maybe_accept as _maybe_accept, quit_driver as _quit_driver, type_any as _type_any, type_email_address as _type_email_address, submit_email_step as _submit_email_step, recover_email_submit_if_stuck as _recover_email_submit_if_stuck, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, click_email_entry_option as _click_email_entry_option, type_otp as _type_otp, clear_otp_inputs as _clear_otp_inputs, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, fill_password_page_if_present as _fill_password_page_if_present, click_passwordless_signup_if_present as _click_passwordless_signup_if_present, safe_get as _safe_get, human_click as _human_click, human_type_text as _human_type_text
 from core.auth.challenge import MfaSecretMissingError, PasswordRejectedError
@@ -88,6 +89,8 @@ def _is_empty_auth_challenge_state(state: dict | None) -> bool:
     """Recognize an auth challenge whose controls were temporarily unmounted."""
     if not isinstance(state, dict):
         return False
+    if auth_page_error(state) is not None:
+        return False
     try:
         parsed = urlparse(str(state.get("url") or ""))
     except Exception:
@@ -98,6 +101,34 @@ def _is_empty_auth_challenge_state(state: dict | None) -> bool:
     if not (path.startswith("/mfa-challenge") or path.startswith("/log-in/")):
         return False
     return not (state.get("inputs") or state.get("buttons") or state.get("errors"))
+
+
+def _raise_auth_page_error(driver, state, *, remaining: float | None = None) -> None:
+    """明确页面错误及时交回调用方，当前新回执不能掩盖旧未知提交。"""
+    error = auth_page_error(state)
+    if error is None:
+        return
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    phase = getattr(receipt, "phase", "")
+    unresolved = {"dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown"}
+    history = getattr(driver, "_browser_submission_receipts", ())
+    previous_unknown = isinstance(history, (list, tuple)) and any(
+        getattr(item, "phase", "") in unresolved for item in history
+    )
+    error.submission_unknown = bool(phase in unresolved or previous_unknown)
+    error.not_submitted = bool(phase in {"", "prepared", "not_dispatched"} and not error.submission_unknown)
+    if phase == "prepared":
+        record_browser_submission_fact(driver, "not_dispatched", receipt=receipt, result="cancelled", error_type=error.code)
+    elif phase in unresolved:
+        record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown", error_type=error.code)
+    context = current_execution_context()
+    if context is not None and context.remaining() is not None:
+        remaining = min(remaining, context.remaining()) if remaining is not None else context.remaining()
+    logger.warning(
+        "[Codex][Browser] 页面状态=%s，原因=%s，剩余预算=%s；停止等待旧表单，交回认证入口处理",
+        error.page_state, error.code, f"{max(0.0, remaining):.1f} 秒" if remaining is not None else "由调用方控制",
+    )
+    raise error
 
 
 def _open_offered_saved_password(driver, deadline: float) -> bool:
@@ -505,6 +536,8 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
             driver, email, timeout=60, **fill_kwargs,
         )
     except RuntimeError as exc:
+        if isinstance(exc, AuthPageError):
+            raise
         receipt = getattr(driver, "_browser_submission_receipt", None)
         if (
             "password_form_not_ready" not in str(exc)
@@ -513,6 +546,7 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
         ):
             raise
 
+        _raise_auth_page_error(driver, _login_challenge_state(driver), remaining=deadline - time.monotonic())
         _auth_checkpoint()
         remaining = deadline - time.monotonic()
         if remaining <= 1:
@@ -530,6 +564,7 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
             if isinstance(old_timeout, (int, float)):
                 driver.set_page_load_timeout(old_timeout)
 
+        _raise_auth_page_error(driver, _login_challenge_state(driver), remaining=deadline - time.monotonic())
         if not _is_saved_login_password_route(driver):
             return
         _auth_checkpoint()
@@ -901,16 +936,26 @@ def _submit_saved_login_totp(driver, email: str, totp_secret: str) -> None:
 def _is_login_advanced(driver, state: dict | None = None) -> bool:
     state = state or _login_challenge_state(driver)
     url = str(state.get("url") or "").lower()
-    if _is_terminal_auth_error_page(state):
+    if auth_page_error(state) is not None or _is_terminal_auth_error_page(state):
         return False
     if _is_callback_url(url):
         return True
-    if any(marker in url for marker in ("/add-phone", "/workspace", "/consent")):
-        return True
-    if url.startswith("https://chatgpt.com/") and "/auth/login" not in url:
-        return True
-    if "/oauth/authorize" in url and not state.get("inputs"):
-        return True
+    try:
+        location = urlparse(url)
+        if (location.scheme != "https" or location.port not in (None, 443)
+                or location.username or location.password):
+            return False
+    except ValueError:
+        return False
+    if location.hostname == "chatgpt.com" and not location.path.startswith("/auth/"):
+        return bool(_has_access_token(driver))
+    mounted_controls = any(
+        isinstance(item, dict) and item.get("visible", True)
+        for item in [*(state.get("inputs") or []), *(state.get("buttons") or [])]
+    )
+    if location.hostname == "auth.openai.com" and mounted_controls:
+        # 这里只确认真实页面可交给手机号/工作区/授权处理，Session 成功由调用方核验。
+        return any(marker in location.path for marker in ("/add-phone", "/workspace", "/consent", "/oauth/authorize"))
     return False
 
 
@@ -994,6 +1039,8 @@ def _complete_login_challenge_after_email(
     offered_password_attempted = password_already_submitted
     last_state: dict = {}
     last_url = ""
+    last_wait_state = None
+    next_wait_log_at = 0.0
 
     def reset_password(*, forced: bool = False) -> bool:
         if otp_provider is None:
@@ -1032,11 +1079,12 @@ def _complete_login_challenge_after_email(
             or _has_access_token(driver)
         )
 
-    while time.time() < end:
+    while (loop_now := time.time()) < end:
         # 注册的邮箱验证恢复携带原阶段预算，页面转换不能重新延长它。
         _auth_checkpoint()
         state = _login_challenge_state(driver)
         last_state = state
+        _raise_auth_page_error(driver, state, remaining=end - loop_now)
         dead_code = _detect_account_unusable_login_state(state)
         if dead_code:
             raise AccountUnusableError(f"账号已废（{dead_code}）", error_code=dead_code)
@@ -1054,6 +1102,28 @@ def _complete_login_challenge_after_email(
         if url != last_url:
             logger.info("[Codex][Browser] 邮箱提交后登录分支：path=%s", _auth_path_for_log(url))
             last_url = url
+
+        page_state = classify_page(state)
+        if page_state == PageState.PASSWORD_LOGIN:
+            waiting_for = "等待密码提交后的认证结果" if password_submitted_at else "等待密码表单就绪，随后提交一次并等待认证结果"
+        elif page_state == PageState.MFA_TOTP:
+            waiting_for = "等待 TOTP 提交后的认证结果" if totp_submitted_at else "转入本地 TOTP 验证"
+        elif page_state == PageState.OTP_EMAIL:
+            waiting_for = "转入邮箱验证码处理"
+        elif not state.get("inputs") and not state.get("buttons"):
+            waiting_for = "等待前端加载并挂载认证表单"
+        else:
+            waiting_for = "识别当前认证页面并交给对应处理"
+        wait_state = (page_state, waiting_for)
+        now = loop_now
+        if wait_state != last_wait_state or now >= next_wait_log_at:
+            context = current_execution_context()
+            remaining = max(0.0, end - now)
+            if context is not None and context.remaining() is not None:
+                remaining = min(remaining, context.remaining())
+            logger.info("[Codex][Browser] 页面状态=%s，%s，剩余预算=%.1f 秒", page_state.value, waiting_for, remaining)
+            last_wait_state = wait_state
+            next_wait_log_at = now + 15.0
 
         # Roxy/Chrome occasionally leaves the SPA at /auth/login?email=... after
         # the first submit. Re-submit the same email form once after a short
@@ -1244,6 +1314,7 @@ def _complete_login_challenge_after_email(
                         raise
                     password_unknown_receipt = getattr(driver, "_browser_submission_receipt", None)
                     retry_state = _login_challenge_state(driver)
+                    _raise_auth_page_error(driver, retry_state, remaining=end - time.time())
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
                         if allow_password_reset and reset_password():
@@ -1267,6 +1338,7 @@ def _complete_login_challenge_after_email(
 
                     _refresh_auth_challenge_after_submit(driver, "登录密码")
                     retry_state = _login_challenge_state(driver)
+                    _raise_auth_page_error(driver, retry_state, remaining=end - time.time())
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
                         if allow_password_reset and reset_password():
@@ -1618,7 +1690,10 @@ def _fill_email_and_otp(
         logger.info("[Codex][Browser] 继续识别密码、TOTP 或邮箱 OTP 分支")
     except Exception as exc:
         check_cancelled()
+        if isinstance(exc, AuthPageError):
+            raise
         state = _login_challenge_state(driver)
+        _raise_auth_page_error(driver, state)
         if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
             logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
         elif _is_login_advanced(driver, state):

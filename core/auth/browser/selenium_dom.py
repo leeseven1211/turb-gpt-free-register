@@ -769,6 +769,8 @@ def _password_page_state(driver) -> dict:
 def _is_signup_password_page(driver) -> bool:
     state = _password_page_state(driver)
     classified = classify_page(state)
+    if classified in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+        return False
     if classified == PageState.PASSWORD_LOGIN:
         return False
     if classified == PageState.PASSWORD_CREATE:
@@ -789,17 +791,9 @@ def _is_signup_password_page(driver) -> bool:
     )
 
 def _is_login_password_page(driver) -> bool:
-    try:
-        url = str(driver.current_url or '').lower()
-    except Exception:
-        url = ''
-    if '/log-in/password' in url:
-        return True
+    """旧密码路由不能替代当前文档中的可用密码表单。"""
     state = _password_page_state(driver)
-    if classify_page(state) == PageState.PASSWORD_LOGIN:
-        return True
-    url = str(state.get('url') or '').lower()
-    return '/log-in/password' in url
+    return classify_page(state) == PageState.PASSWORD_LOGIN
 
 def _click_if_enabled_submit(driver, *, before_dispatch=None) -> bool:
     """提交资料页：优先 form.requestSubmit/button[type=submit]，不依赖按钮文字。"""

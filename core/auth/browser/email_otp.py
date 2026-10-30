@@ -1252,6 +1252,7 @@ def _wait_email_submit_next_state(
     budget: StageBudget | None = None,
     blank_shell_grace: float = 0.0,
     on_before_recovery=None,
+    on_page_observed=None,
 ) -> str:
     """邮箱提交后等待进入 password / otp / logged_in；仍停留邮箱页则返回 email_page。
 
@@ -1264,6 +1265,9 @@ def _wait_email_submit_next_state(
     `auth.openai.com/...` 前过早重填，形成“提交 -> 清空 -> 重填”的循环。
     已有前端提交凭据时等待同一预算，结果未知不得重试；仅无当前提交凭据的
     旧原生 GET 路径使用短暂去抖，再由导航证据决定是否允许恢复。
+
+    调用方可通过 ``on_page_observed`` 检查整页错误；异常直接交回调用方处理，
+    不清除已有提交回执。默认不启用，也不额外采集页面快照。
     """
     if budget is None:
         budget = getattr(driver, "_registration_stage_budget", None)
@@ -1284,6 +1288,8 @@ def _wait_email_submit_next_state(
 
     def observe_recovery(recovery_budget):
         snapshot = _page_snapshot(driver)
+        if on_page_observed is not None:
+            on_page_observed(snapshot)
         if classify_page(snapshot) in {PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN, PageState.OTP_EMAIL}:
             if not has_visible_auth_inputs(snapshot):
                 return None
@@ -1299,6 +1305,8 @@ def _wait_email_submit_next_state(
         loop_now = clock()
         if loop_now >= end:
             break
+        if on_page_observed is not None:
+            on_page_observed(_page_snapshot(driver))
         active_receipt = isinstance(getattr(driver, "_email_submission_receipt", None), dict)
         submission_state = _email_ui_submission_state(driver)
         if submission_state in {"queued", "dispatched", "unknown"} and budget is not None:

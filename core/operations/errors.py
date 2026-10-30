@@ -1033,6 +1033,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_rejected": ("AUTH-PWD-002", "账号密码被拒绝"),
     "password_change_required": ("AUTH-PWD-RESET", "OpenAI 要求修改密码后重新登录"),
     "password_page_error": ("AUTH-PWD-PAGE", "密码登录页返回明确错误"),
+    "auth_operation_timeout": ("AUTH-PAGE-TIMEOUT", "认证页面操作超时"),
+    "auth_context_missing": ("AUTH-PAGE-CONTEXT", "登录上下文缺失，需要重新发起登录"),
     "password_rejected_email_fallback_failed": ("AUTH-PWD-003", "密码被拒且邮箱兜底未完成"),
     "password_result_unknown": ("AUTH-PWD-004", "密码提交结果未确认"),
     "password_sentinel_failed": ("AUTH-PWD-005", "密码认证前置检查失败"),
@@ -1537,6 +1539,13 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
     code = ""
+    if "AuthPageError:" in raw:
+        for page_code, page_message in (
+            ("auth_operation_timeout", "认证页面操作超时"),
+            ("auth_context_missing", "登录上下文缺失，需要重新发起登录"),
+        ):
+            if f"AuthPageError: {page_message}" in raw:
+                return _specific_error_cause({"cause_code": page_code})
     if "local_email_inventory_empty" in lower:
         cause = _specific_error_cause({"cause_code": "local_email_inventory_empty"})
         if cause and ("email_butler" in lower or "butler" in lower):

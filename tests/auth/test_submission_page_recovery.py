@@ -156,10 +156,42 @@ class SubmissionPageRecoveryTests(unittest.TestCase):
 
 
 class SubmissionDiagnosticsTests(unittest.TestCase):
+    def test_whole_page_errors_keep_specific_safe_reason_in_diagnostics(self):
+        for code, state, summary in (
+            ("auth_operation_timeout", "AUTH_ERROR", "认证页面操作超时"),
+            ("auth_context_missing", "LOGGED_OUT", "登录上下文缺失，需要重新发起登录"),
+        ):
+            with self.subTest(code=code):
+                driver = _driver("https://auth.openai.com/log-in/password")
+                driver.execute_script.return_value = {
+                    "url": driver.current_url, "ready_state": "complete", "error_markers": [code, "private-token"],
+                    "text": "private@example.test private-password", "controls": [],
+                }
+                with self.assertLogs(recovery.logger, level="INFO") as logs:
+                    safe = recovery.log_submission_diagnostics(driver, "password", "waiting")
+                self.assertEqual(safe["error_markers"], [code])
+                self.assertEqual(safe["page_error"], {"code": code, "state": state, "summary": summary})
+                self.assertEqual(driver._auth_page_error.code, code)
+                self.assertNotIn("private-password", " ".join(logs.output))
+                self.assertNotIn("private@example.test", json.dumps(safe))
+
     def test_readonly_driver_adapter_does_not_fail_when_diagnostics_cannot_be_attached(self):
         safe = recovery.log_submission_diagnostics(object(), "otp", "waiting")
         self.assertEqual(safe['capture_error'], 'AttributeError')
         self.assertFalse(recovery.auth_session_unavailable(object()))
+
+    def test_current_page_diagnostics_clear_previous_error_on_normal_page_or_new_session(self):
+        driver = _driver("https://auth.openai.com/log-in/password")
+        driver.execute_script.return_value = {"url": driver.current_url, "error_markers": ["auth_operation_timeout"]}
+        recovery.log_submission_diagnostics(driver, "password", "waiting")
+        self.assertEqual(driver._auth_page_error.code, "auth_operation_timeout")
+        driver.execute_script.return_value = {"url": driver.current_url, "error_markers": []}
+        recovery.log_submission_diagnostics(driver, "password", "waiting")
+        self.assertIsNone(driver._auth_page_error)
+        driver.execute_script.return_value = {"url": driver.current_url, "error_markers": ["auth_context_missing"]}
+        recovery.log_submission_diagnostics(driver, "password", "waiting")
+        recovery.begin_auth_session(driver)
+        self.assertIsNone(driver._auth_page_error)
 
     def test_diagnostic_capture_has_short_timeout_and_restores_original_setting(self):
         driver = _driver()

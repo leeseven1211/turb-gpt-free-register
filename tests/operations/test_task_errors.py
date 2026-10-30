@@ -5,6 +5,38 @@ from core.operations.errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_auth_page_errors_display_the_page_reason_without_changing_receipt(self):
+        cases = (
+            ("auth_operation_timeout", "AUTH-PAGE-TIMEOUT", "认证页面操作超时"),
+            ("auth_context_missing", "AUTH-PAGE-CONTEXT", "登录上下文缺失，需要重新发起登录"),
+        )
+        for code, display_code, message in cases:
+            with self.subTest(code=code):
+                summary = {"cause_code": code, "outcome": "request_unknown"}
+                info = classify_task_error(
+                    message, task_type="token_refresh", stage="authenticate",
+                    error_code=code, result_summary=summary, task_status="attention_required",
+                )
+                self.assertEqual(code, info["code"])
+                self.assertEqual(display_code, info["display_code"])
+                self.assertEqual(message, info["summary"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual({"cause_code": code, "outcome": "request_unknown"}, summary)
+
+    def test_shared_login_page_exception_has_specific_reason_in_other_task_entries(self):
+        for task_type in ("registration", "codex_retry"):
+            for message, code in (
+                ("认证页面操作超时", "auth_operation_timeout"),
+                ("登录上下文缺失，需要重新发起登录", "auth_context_missing"),
+            ):
+                with self.subTest(task_type=task_type, code=code):
+                    info = classify_task_error(
+                        f"AuthPageError: {message}", task_type=task_type, stage="login_password",
+                        error_code="unknown.unclassified",
+                    )
+                    self.assertEqual(code, info["code"])
+                    self.assertEqual(message, info["summary"])
+
     def test_local_butler_inventory_empty_is_not_unclassified(self):
         info = classify_task_error(
             "RuntimeError: 所选邮箱来源 email_butler 领取失败: local_email_inventory_empty: 本地 Butler 邮箱库存为空，请先手动导入",

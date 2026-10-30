@@ -58,7 +58,8 @@ def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") 
     """先保留认证异常的明确原因，再按实际失败阶段分类并保留异常原文。"""
     code = str(getattr(exc, "code", "") or "")
     if code in {"password_rejected", "password_result_unknown", "password_change_required", "password_page_error",
-                "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed"}:
+                "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed",
+                "auth_operation_timeout", "auth_context_missing"}:
         return code, "auth"
     if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
         return "roxy_proxy_tunnel_failed", "network"
@@ -159,6 +160,14 @@ def _enter_existing_account_otp(
     totp_secret: str = "",
 ) -> str:
     """提交邮箱并完成已有账号登录挑战；返回 ``otp``/``logged_in``。"""
+    from core.auth.page_errors import auth_page_error
+
+    def observe_page(snapshot):
+        error = auth_page_error(snapshot)
+        if error is not None:
+            logger.warning("[查活][Roxy] 邮箱提交后页面识别：%s；立即交给登录恢复", error)
+            raise error
+
     code = _page_account_unusable_code(driver)
     if code:
         raise AccountUnusableError(f"登录页确认账号已停用/封禁: {code}", error_code=code)
@@ -184,13 +193,14 @@ def _enter_existing_account_otp(
                 email,
                 timeout=35,
                 wait_through_transient=True,
+                on_page_observed=observe_page,
             )
     else:
         _submit_email_step(driver, email)
         code = _page_account_unusable_code(driver)
         if code:
             raise AccountUnusableError(f"邮箱提交后页面确认账号已停用/封禁: {code}", error_code=code)
-        state = _wait_email_submit_next_state(driver, email, timeout=30)
+        state = _wait_email_submit_next_state(driver, email, timeout=30, on_page_observed=observe_page)
     if state in {"blank_shell", "email_page", "email_cleared", "unknown"}:
         fallback = _submit_email_via_browser_nextauth(driver, email)
         state = str(fallback.get("state") or "")
@@ -200,6 +210,7 @@ def _enter_existing_account_otp(
                 email,
                 timeout=35,
                 wait_through_transient=True,
+                on_page_observed=observe_page,
             )
         if not fallback.get("ok") and state not in {"otp", "password", "login_password", "logged_in"}:
             raise RuntimeError(f"浏览器 NextAuth 登录导航失败: {fallback}")
@@ -384,6 +395,75 @@ def _with_refresh_execution_context(function):
     return wrapped
 
 
+def _login_existing_account_with_recovery(
+    driver, email: str, *, password: str = "", totp_secret: str = "",
+    timeout: float = 120, on_restart=None,
+) -> str:
+    """明确错误页离开旧文档后重建一次登录，两轮共用原截止时间。"""
+    from dataclasses import replace
+    from core.auth.browser.auth_context import AuthExecutionContext, current_execution_context, execution_context
+    from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+    from core.auth.browser.submission_recovery import begin_auth_session
+    from core.auth.page_errors import AuthPageError
+    from core.auth.state_machine import StageBudget, StageTimeout
+
+    parent = current_execution_context() or AuthExecutionContext()
+    remaining = parent.remaining(float(timeout))
+    budget = parent.budget.child(remaining) if parent.budget else StageBudget.start(remaining, clock=time.monotonic)
+    context = replace(parent, budget=budget)
+    with execution_context(context):
+        for attempt in range(2):
+            context.checkpoint()
+            try:
+                return _enter_existing_account_otp(driver, email, password=password, totp_secret=totp_secret)
+            except AuthPageError as exc:
+                logger.warning("[查活][Roxy] 页面识别：%s；剩余预算=%.1f秒；恢复=%d/1",
+                               str(exc), budget.remaining(), attempt)
+                if attempt or budget.remaining() <= 1:
+                    raise
+                receipt = getattr(driver, "_browser_submission_receipt", None)
+                if isinstance(receipt, BrowserSubmissionReceipt) and receipt.phase in {
+                    "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed",
+                }:
+                    record_browser_submission_fact(
+                        driver, "unknown", receipt=receipt, result="unknown", error_type=exc.code,
+                    )
+                logger.warning("[查活][Roxy] %s；从 ChatGPT 登录入口重建同一账号认证（1/1），原提交回执继续保留",
+                               str(exc))
+                email_barrier = isinstance(getattr(driver, "_email_submission_receipt", None), dict)
+                old_document = driver.execute_script("return performance.timeOrigin;") if email_barrier else None
+                begin_auth_session(driver)
+                driver._auth_page_error = None
+                previous_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
+                try:
+                    # 通用导航最少等待 10 秒；此恢复入口直接使用原预算的剩余时间。
+                    driver.set_page_load_timeout(min(10.0, budget.require("重建登录入口")))
+                    driver.get("https://chatgpt.com/auth/login")
+                    context.checkpoint()
+                    if email_barrier:
+                        new_document = driver.execute_script("return performance.timeOrigin;")
+                        if not (type(old_document) in (int, float) and type(new_document) in (int, float)
+                                and new_document != old_document):
+                            logger.warning("[查活][Roxy] 未确认已离开原认证文档，保留邮箱提交屏障与原错误")
+                            raise exc
+                        # 新文档只释放本地点击屏障，旧 HTTP 提交回执仍保留 unknown。
+                        driver._email_submission_receipt = None
+                        driver._email_submission_diagnostics = None
+                    _page_warmup(driver, reason="live_check_login_recovery")
+                    context.checkpoint()
+                    if callable(on_restart):
+                        on_restart()
+                except StageTimeout:
+                    raise exc
+                finally:
+                    if isinstance(previous_timeout, (int, float)):
+                        try:
+                            driver.set_page_load_timeout(previous_timeout)
+                        except Exception:
+                            logger.debug("[查活][Roxy] 恢复导航后还原加载超时失败")
+        raise RuntimeError("已有账号登录恢复未返回状态")
+
+
 @serialize_email_auth
 @_with_refresh_execution_context
 def refresh_access_token(
@@ -525,11 +605,16 @@ def refresh_access_token(
             on_remote_request_started()
         remote_started = True
         stage("login")
-        state = _enter_existing_account_otp(
+        def restart_otp_boundary():
+            nonlocal otp_after_ts
+            otp_after_ts = time.time()
+
+        state = _login_existing_account_with_recovery(
             driver,
             email,
             password=password,
             totp_secret=totp_secret,
+            on_restart=restart_otp_boundary,
         )
         if state == "otp":
             stage("email_otp")

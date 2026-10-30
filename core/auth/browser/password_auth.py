@@ -16,6 +16,7 @@ from config import roxybrowser as _cfg
 from core.auth.challenge import PasswordRejectedError, PasswordSetupNotReadyError
 from core.auth.humanize import delay as _human_delay
 from core.auth.state_machine import PageState, StageBudget, StageTimeout, classify_page
+from core.auth.page_errors import auth_page_error
 
 from core.auth.browser.auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
@@ -1080,8 +1081,35 @@ def _fill_password_page_if_present(
     transition_deadline = None
     baseline_login_error = None
 
+    def check_page_error(snapshot, *, receipt=None):
+        page_error = auth_page_error(snapshot)
+        if page_error is not None:
+            current_receipt = receipt if receipt is not None else getattr(driver, "_browser_submission_receipt", None)
+            phase = getattr(current_receipt, "phase", "")
+            unresolved = {"dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown"}
+            history = getattr(driver, "_browser_submission_receipts", ())
+            previous_unknown = isinstance(history, (list, tuple)) and any(
+                getattr(item, "phase", "") in unresolved for item in history
+            )
+            page_error.submission_unknown = bool(phase in unresolved or previous_unknown)
+            page_error.not_submitted = bool(phase in {"", "prepared", "not_dispatched"} and not page_error.submission_unknown)
+            if phase == "prepared":
+                record_browser_submission_fact(
+                    driver, "not_dispatched", receipt=current_receipt, result="cancelled", error_type=page_error.code,
+                )
+            elif phase in unresolved:
+                record_browser_submission_fact(
+                    driver, "unknown", receipt=current_receipt, result="unknown", error_type=page_error.code,
+                )
+            logger.warning(
+                "%s 页面状态=%s，原因=%s，剩余预算=%.1f 秒；停止等待密码表单，交回登录调度",
+                _log_prefix(driver), page_error.page_state, page_error.code, max(0.0, end - time.time()),
+            )
+            raise page_error
+
     def check_login_error(snapshot, *, receipt=None):
         nonlocal baseline_login_error
+        check_page_error(snapshot, receipt=receipt)
         if not existing_password or not _is_login_password_page(driver):
             return
         error = _login_password_page_error(snapshot)
@@ -1106,6 +1134,13 @@ def _fill_password_page_if_present(
             raise error
 
     while time.time() < end:
+        current_snapshot = _password_page_state(driver)
+        check_page_error(current_snapshot)
+        current_state = classify_page(current_snapshot)
+        if (existing_password and current_state in {PageState.MFA_TOTP, PageState.PROFILE}
+                and has_visible_auth_inputs(current_snapshot, allow_password=False)):
+            logger.info("%s 页面已进入 %s，停止等待密码表单并交回认证调度", _log_prefix(driver), current_state.value)
+            return existing_password
         if saved_form_recoveries:
             recovered_snapshot = _password_page_state(driver)
             recovered_state = classify_page(recovered_snapshot)
@@ -1197,7 +1232,7 @@ def _fill_password_page_if_present(
             logger.info("%s 已从邮箱验证码页切换到创建密码页：%s", _log_prefix(driver), switched.get("reason"))
             end = max(end, time.time() + min(10, max(3, timeout)))
             continue
-        last = _password_page_state(driver)
+        last = current_snapshot
         is_signup_password = _is_signup_password_page(driver)
         is_login_password = _is_login_password_page(driver)
         if not (is_signup_password or is_login_password):
@@ -1368,6 +1403,7 @@ def _fill_password_page_if_present(
         password_form_url = str(getattr(driver, "current_url", "") or "")
         not_ready_since = None
         not_ready_reason = None
+        last_prepare_log_at = None
         submission_receipt = BrowserSubmissionReceipt(
             kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "password",
             stage="login_password" if is_login_password else "password_create",
@@ -1378,8 +1414,18 @@ def _fill_password_page_if_present(
         log_submission_diagnostics(driver, "password", "before_submit", receipt=submission_receipt)
         last_safe_pre_dispatch_failure = False
         session_restarted_before_submit = False
+        prepare_probe = 0
         while True:
             _check_manual_stop()
+            prepare_snapshot = _password_page_state(driver) if prepare_probe else last
+            prepare_probe += 1
+            check_page_error(prepare_snapshot, receipt=submission_receipt)
+            prepare_state = classify_page(prepare_snapshot)
+            if (existing_password and prepare_state in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.PROFILE}
+                    and has_visible_auth_inputs(prepare_snapshot, allow_password=False)):
+                record_browser_submission_fact(driver, "not_dispatched", receipt=submission_receipt, result="cancelled")
+                logger.info("%s 密码提交前页面已进入 %s，未点击旧表单并交回认证调度", _log_prefix(driver), prepare_state.value)
+                return existing_password
             if (resume_login and submission_receipt.phase == "prepared"
                     and auth_session_missing(driver)):
                 if (urlsplit(password_form_url).path != "/log-in/password"
@@ -1519,6 +1565,14 @@ def _fill_password_page_if_present(
                     "missing_password_input", "missing_password_form", "password_frontend_not_ready",
             } and submission_receipt.phase == "prepared"):
                 now = time.time()
+                if reason != not_ready_reason or last_prepare_log_at is None or now - last_prepare_log_at >= 15.0:
+                    waiting_for = {
+                        "missing_password_input": "等待密码输入框挂载",
+                        "missing_password_form": "等待密码表单挂载",
+                        "password_frontend_not_ready": "等待前端接管密码表单",
+                    }[reason]
+                    logger.info("%s 页面状态=AUTH_TRANSIENT，%s，剩余预算=%.1f 秒", _log_prefix(driver), waiting_for, max(0.0, end - now))
+                    last_prepare_log_at = now
                 if reason != not_ready_reason:
                     not_ready_reason, not_ready_since = reason, now
                 if (not pre_submit_recovery_checked and not_ready_since is not None
@@ -1621,6 +1675,17 @@ def _fill_password_page_if_present(
         continue_saved_login = False
         while time.time() < wait_end:
             _check_manual_stop()
+            transition_state = _password_page_state(driver)
+            if is_login_password:
+                check_login_error(transition_state, receipt=submission_receipt)
+            else:
+                check_page_error(transition_state, receipt=submission_receipt)
+            transition_page = classify_page(transition_state)
+            if (existing_password and transition_page in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.PROFILE}
+                    and has_visible_auth_inputs(transition_state, allow_password=False)):
+                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                logger.info("%s 密码提交后已进入 %s，交回认证调度", _log_prefix(driver), transition_page.value)
+                return password
             if _is_email_verification_page(driver):
                 record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
                 logger.info("%s 密码提交后已进入邮箱验证码页", _log_prefix(driver))
@@ -1650,10 +1715,7 @@ def _fill_password_page_if_present(
                     raise _PasswordTransitionTimeout("request_unknown: 密码点击后回执异常，已保留原密码且未重复提交")
                 if receipt_phase == "dispatched":
                     record_browser_submission_fact(driver, "ui_dispatched", receipt=submission_receipt)
-                post_submit_state = _password_page_state(driver)
-                # 已保存密码的登录检查当前页面错误；创建密码不使用此判断。
-                if is_login_password:
-                    check_login_error(post_submit_state, receipt=submission_receipt)
+                post_submit_state = transition_state
                 if _password_submit_error_marker(post_submit_state):
                     raise _PasswordTransitionTimeout(
                         "request_unknown: 密码提交后页面报告账号创建失败，远端结果待确认"

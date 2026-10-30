@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.auth.browser import email_otp
+from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+from core.auth.page_errors import AuthPageError, auth_page_error
 from core.auth.state_machine import StageBudget
 
 
@@ -47,6 +49,78 @@ const document={querySelectorAll:()=>[input]};
 
 
 class EmailSubmissionReceiptTests(unittest.TestCase):
+    def test_page_observer_rejects_explicit_error_before_waiting_or_clearing_receipt(self):
+        for text, code in (
+            ("Operation timed out", "auth_operation_timeout"),
+            ("इस पेज पर आगे बढ़ने के लिए ज़रूरी जानकारी नहीं है.", "auth_context_missing"),
+        ):
+            with self.subTest(code=code):
+                clock = _Clock()
+                receipt = BrowserSubmissionReceipt(kind="email", stage="submit_email", phase="ui_dispatched")
+                ui_receipt = {"id": "original"}
+                driver = SimpleNamespace(current_url="https://auth.openai.com/log-in/password",
+                                         _email_submission_receipt=ui_receipt, _browser_submission_receipt=receipt)
+                snapshot = {"url": driver.current_url, "text": text, "inputs": []}
+
+                def observe(page):
+                    error = auth_page_error(page)
+                    if error is not None:
+                        raise error
+
+                with patch.object(email_otp, "time", clock), patch.object(
+                    email_otp, "_page_snapshot", return_value=snapshot
+                ) as capture, patch.object(email_otp, "_email_submit_advanced_state") as advanced, patch.object(
+                    email_otp, "_email_ui_submission_state"
+                ) as submission, patch.object(email_otp, "recover_submission_page") as recover, patch.object(
+                    email_otp, "_check_manual_stop"
+                ):
+                    with self.assertRaises(AuthPageError) as caught:
+                        email_otp._wait_email_submit_next_state(
+                            driver, "unit@example.test", timeout=30, budget=StageBudget(30, clock=clock.time),
+                            on_page_observed=observe,
+                        )
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(clock.now, 0)
+                capture.assert_called_once_with(driver)
+                advanced.assert_not_called()
+                submission.assert_not_called()
+                recover.assert_not_called()
+                self.assertIs(driver._email_submission_receipt, ui_receipt)
+                self.assertIs(driver._browser_submission_receipt, receipt)
+                self.assertEqual(receipt.phase, "ui_dispatched")
+
+    def test_page_observer_is_optional_and_default_does_not_capture_extra_snapshot(self):
+        clock = _Clock()
+        driver = SimpleNamespace(_email_submission_receipt={"id": "original"})
+        with patch.object(email_otp, "time", clock), patch.object(
+            email_otp, "_page_snapshot"
+        ) as capture, patch.object(email_otp, "_email_submit_advanced_state", return_value="login_password"), patch.object(
+            email_otp, "_email_ui_submission_state", return_value="dispatched"
+        ), patch.object(email_otp, "_check_manual_stop"):
+            result = email_otp._wait_email_submit_next_state(driver, "unit@example.test", timeout=30)
+        self.assertEqual(result, "login_password")
+        capture.assert_not_called()
+
+    def test_page_observer_sees_current_snapshot_before_next_step_is_confirmed(self):
+        clock = _Clock()
+        driver = SimpleNamespace(_email_submission_receipt={"id": "original"})
+        snapshot = {"url": "https://auth.openai.com/log-in/password", "inputs": [{"type": "password"}]}
+        order = []
+        observer = Mock(side_effect=lambda page: order.append(("observed", page)))
+        with patch.object(email_otp, "time", clock), patch.object(
+            email_otp, "_page_snapshot", return_value=snapshot
+        ), patch.object(email_otp, "_email_submit_advanced_state", side_effect=lambda *_a, **_k: (
+            order.append(("advanced", None)), "login_password"
+        )[1]), patch.object(email_otp, "_email_ui_submission_state", return_value="dispatched"), patch.object(
+            email_otp, "_check_manual_stop"
+        ):
+            result = email_otp._wait_email_submit_next_state(
+                driver, "unit@example.test", timeout=30, on_page_observed=observer,
+            )
+        self.assertEqual(result, "login_password")
+        observer.assert_called_once_with(snapshot)
+        self.assertEqual(order, [("observed", snapshot), ("advanced", None)])
+
     def _submit_script(self):
         driver = SimpleNamespace(execute_script=Mock(return_value={}))
         email_otp._submit_email_form_stable(driver, "unit@example.test")

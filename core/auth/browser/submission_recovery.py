@@ -18,6 +18,7 @@ from core.network.response_diagnostics import auth_submission_endpoint, is_auth_
 from core.auth.browser.auth_context import checkpoint
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.auth.browser.selenium_dom import _check_manual_stop, _log_prefix
+from core.auth.page_errors import AUTH_PAGE_ERROR_MARKERS, auth_page_error
 from core.auth.state_machine import StageBudget
 
 logger = logging.getLogger('core.registration.submission_recovery')
@@ -33,6 +34,7 @@ _SAFE_PATH_PARTS = frozenset({
 _PAGE_SCRIPT = r"""
 const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
 const body = String(document.body?.innerText || '').toLowerCase();
+const markerBody = body.normalize('NFKC').replace(/\s+/g, ' ');
 const markers = {
   invalid_auth_step:['invalid_auth_step'],
   route_content_type:['invalid content type: text/html'],
@@ -43,10 +45,11 @@ const markers = {
   rate_limited:['too many requests','rate limit'],
   challenge:['verify you are human','checking your browser'],
 };
+Object.assign(markers, __AUTH_PAGE_ERROR_MARKERS__);
 return {
   url:location.href, ready_state:document.readyState,
   text_length:body.length, html_length:document.documentElement?.outerHTML.length || 0,
-  error_markers:Object.keys(markers).filter(key => markers[key].some(text => body.includes(text))),
+  error_markers:Object.keys(markers).filter(key => markers[key].some(text => markerBody.includes(text.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ')))),
   controls:[...document.querySelectorAll('input,button,select,textarea')].filter(visible).slice(0,20).map(el => ({
     type:el.type || el.tagName.toLowerCase(), disabled:!!el.disabled,
     read_only:!!el.readOnly, value_present:!!el.value,
@@ -56,7 +59,7 @@ return {
     url:item.name, duration_ms:item.duration, status:item.responseStatus,
   })),
 };
-"""
+""".replace("__AUTH_PAGE_ERROR_MARKERS__", json.dumps(AUTH_PAGE_ERROR_MARKERS, ensure_ascii=False))
 
 
 def _auth_url(value: object) -> str | None:
@@ -217,6 +220,10 @@ def begin_auth_session(driver) -> None:
     """新登录保留旧诊断，旧请求的迟到响应不能判定新会话失效。"""
     diagnostics = diagnostics_for(driver)
     diagnostics.begin_session()
+    try:
+        driver._auth_page_error = None
+    except (AttributeError, TypeError):
+        pass
     driver._registration_previous_auth_session_requests = frozenset(
         item.get("request") for item in diagnostics.recent_network()
         if item.get("origin") == "https://auth.openai.com"
@@ -309,9 +316,19 @@ def log_submission_diagnostics(driver, stage: str, point: str, *, receipt=None, 
         "html_length": _number(raw.get("html_length"), 10_000_000),
         "error_markers": [item for item in raw.get("error_markers", []) if isinstance(item, str) and item in {
             "invalid_auth_step", "route_content_type", "auth_error", "auth_session_ended", "account_create_rejected", "rate_limited", "challenge",
+            *AUTH_PAGE_ERROR_MARKERS,
         }] if isinstance(raw.get("error_markers"), list) else [],
         "controls": controls[:20], "resources": resources[-10:], "network": diagnostics.recent_network(),
     }
+    page_error = auth_page_error({**raw, "url": raw.get("url") or _current_url(driver)})
+    if page_error is not None:
+        safe["page_error"] = {"code": page_error.code, "state": page_error.page_state, "summary": str(page_error)}
+    if not raw.get("capture_error"):
+        try:
+            # 仅保存当前已采集页面原因；新会话或正常页面会清除，不能改变提交回执。
+            driver._auth_page_error = page_error
+        except (AttributeError, TypeError):
+            pass
     if raw.get("capture_error"):
         safe["capture_error"] = raw["capture_error"]
     if isinstance(receipt, BrowserSubmissionReceipt):

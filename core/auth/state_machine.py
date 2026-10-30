@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from core.auth.challenge import AuthCancelledError
+from core.auth.page_errors import auth_page_error
 
 
 class PageState(str, Enum):
@@ -266,6 +267,9 @@ def classify_page(snapshot: Mapping[str, Any] | None, *, access_token: bool = Fa
     url = str(snapshot.get("url") or "").lower()
     if access_token or snapshot.get("accessToken"):
         return PageState.AUTHENTICATED
+    page_error = auth_page_error(snapshot)
+    if page_error is not None:
+        return PageState(page_error.page_state)
     if any(marker in url for marker in ("/auth/error", "oauth_error", "callback_error")):
         return PageState.AUTH_ERROR
     if any(marker in text for marker in (
