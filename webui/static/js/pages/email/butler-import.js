@@ -248,6 +248,23 @@ function renderButlerImportBatch() {
   if (progress) progress.textContent = `已处理 ${processed} / ${total} 个，本次请求 ${Number(batch.requested || 0)} 个。`;
   const reasons = butlerImportElement('butlerImportReasons');
   const errorLabels = {local_email_conflict: '本地已有或被其他任务占用', handoff_rejected: 'Butler 拒绝交接', handoff_unconfirmed: '远端交接结果待确认，可继续原批次核实', import_interrupted: '服务重启导致中断，可继续原批次', original_route_unavailable: '原 Butler 连接或收件配置不可用', fixed_route_unavailable: '原固定收件配置不可用', butler_remote_unavailable: '无法连接 Butler，稍后可继续原批次', handoff_contract_unsupported: 'Butler 消费身份或交接能力不匹配', import_storage_unavailable: '本地数据库暂时不可用，可继续原批次', import_internal_error: '本地导入处理异常，可继续原批次'};
+  Object.assign(errorLabels, {
+    handoff_timeout: 'Butler 交接响应超时，可继续原批次核实',
+    handoff_rate_limited: 'Butler 请求受限，稍后可继续原批次',
+    handoff_remote_unavailable: 'Butler 服务暂时不可用，可继续原批次',
+    handoff_identity_mismatch: 'Butler 回执与原邮箱身份不一致，可继续原批次核实',
+    handoff_response_invalid: 'Butler 回执缺失、重复或格式无效，可继续原批次核实',
+    inventory_batch_invalid: 'Butler 批量请求格式无效',
+    inventory_import_item_invalid: 'Butler 原邮箱交接参数无效',
+    inventory_policy_forbidden: 'Butler 消费策略不允许交接此邮箱',
+    inventory_client_required: 'Butler 未确认消费客户端身份',
+    icloud_identity_not_found: 'Butler 未找到原完整邮箱身份',
+    inventory_candidate_unavailable: 'Butler 原邮箱库存当前不可交接',
+    acquisition_owner_mismatch: 'Butler 原交接归属不一致',
+    acquisition_identity_mismatch: 'Butler 原交接对应的邮箱身份不一致',
+    icloud_identity_unavailable: 'Butler 原邮箱身份当前不可用',
+    inventory_storage_unavailable: 'Butler 数据库暂时不可用，可继续原批次',
+  });
   if (reasons) {
     const errors = Object.entries(batch.error_counts || {}).map(([code, count]) => `${errorLabels[code] || `处理异常（${code}）`}：${Number(count)} 个`);
     if (batch.error_code) errors.unshift(errorLabels[batch.error_code] || `批次异常（${batch.error_code}）`);
