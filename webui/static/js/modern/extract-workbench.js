@@ -22,7 +22,7 @@ const EXTRACT_WORKBENCH_LINK_TYPE_LABELS = {
   ph_short: 'PH Short',
 };
 const EXTRACT_WORKBENCH_PROMOTION_LABELS = {
-  eligible: '全部可提链优惠', free_trial: '免费试用', half_price: '半价',
+  eligible: '全部可提链优惠', all: '全部（有无优惠）', free_trial: '免费试用', half_price: '半价',
   other_discount: '其他折扣', other_promo: '其他优惠', none: '无优惠',
 };
 
@@ -350,11 +350,13 @@ function extractWorkbenchRenderCandidatePromotion() {
   const hint = extractWorkbenchNode('[data-workbench-candidate-hint]');
   if (!hint) return;
   const label = extractWorkbenchPromotionLabel(promotion);
-  hint.textContent = promotion === 'eligible'
-    ? '仅匹配活跃、未归档且具备任一可提链优惠的 free 账号；提交前仍会在线查活。'
-    : promotion === 'none'
-      ? '仅匹配活跃、未归档且上次查询无优惠的 free 账号；当前优惠由提链平台判断，提交前仍会在线查活。'
-      : `仅匹配活跃、未归档且具备「${label}」优惠的 free 账号；提交前仍会在线查活。`;
+  hint.textContent = promotion === 'all'
+    ? '匹配套餐优惠已查明（有或无）的活跃、未归档 free 账号；套餐待查及状态未知的账号不包含，提交前仍会在线查活。'
+    : promotion === 'eligible'
+      ? '仅匹配活跃、未归档且具备任一可提链优惠的 free 账号；提交前仍会在线查活。'
+      : promotion === 'none'
+        ? '仅匹配活跃、未归档且上次查询无优惠的 free 账号；当前优惠由提链平台判断，提交前仍会在线查活。'
+        : `仅匹配活跃、未归档且具备「${label}」优惠的 free 账号；提交前仍会在线查活。`;
 }
 
 function extractWorkbenchBatchStatus(status) {
