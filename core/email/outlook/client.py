@@ -19,7 +19,7 @@ Outlook 邮箱客户端（mail.chatai.codes 双协议）
 只用 Outlook 提供的 refresh_token 调远端的 mail.chatai.codes 服务，
 不直连 Microsoft Graph，因为后者要 access_token + 复杂 OAuth 协议。
 """
-from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, imap_call, request_kwargs
+from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, imap_call, request_kwargs, cooperative_lock
 import base64
 import email as email_lib
 import hashlib
@@ -136,7 +136,7 @@ def _get_security_session(http: CurlSession) -> dict:
     """获取或刷新安全会话（有效期内复用，过期自动续期）。"""
     global _sec_session
     now_ms = int(time.time() * 1000)
-    with _sec_session_lock:
+    with cooperative_lock(_sec_session_lock):
         if _sec_session and _sec_session["expiresAtMs"] - now_ms > 60_000:
             return _sec_session
         resp = http.post(
@@ -210,7 +210,7 @@ def _secure_post(http: CurlSession, url: str, payload: dict, retry: int = 0) -> 
     )
     if resp.status_code in (401, 403) and retry < 1:
         logger.warning(f"[Outlook] {resp.status_code}，刷新安全会话后重试...")
-        with _sec_session_lock:
+        with cooperative_lock(_sec_session_lock):
             _sec_session = None
         return _secure_post(http, url, payload, retry + 1)
 

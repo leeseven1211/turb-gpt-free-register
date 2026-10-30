@@ -2,7 +2,7 @@
 """Email Butler `/v1` 通用邮箱 API 客户端。"""
 from __future__ import annotations
 
-from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout
+from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, cooperative_checkpoint, cooperative_poll_limit
 import hashlib
 import logging
 import math
@@ -733,10 +733,11 @@ def fetch_inbound_otp(
     last_error = "尚未收到新的 OpenAI 验证码邮件"
     chunk_index = 0
     while time.monotonic() < deadline:
+        cooperative_checkpoint()
         remaining = max(0.0, deadline - time.monotonic())
         # 有本机探测时缩短远端等待段，避免邮件已到 Gmail 但尚未入 PG 时
         # 仍被一个长请求挡住很久；纯远端模式继续使用 75 秒网关安全段。
-        chunk_limit = 15 if local_probe is not None else _INBOUND_WAIT_CHUNK_SECONDS
+        chunk_limit = cooperative_poll_limit(15 if local_probe is not None else _INBOUND_WAIT_CHUNK_SECONDS)
         chunk_seconds = max(1, min(chunk_limit, int(math.ceil(remaining))))
         chunk_index += 1
         try:
@@ -753,6 +754,7 @@ def fetch_inbound_otp(
                 # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
                 retry_connection_error=True,
             )
+            cooperative_checkpoint()
             otp = _message_otp(payload)
             if otp:
                 if strict:
@@ -785,6 +787,7 @@ def fetch_inbound_otp(
         if local_probe is not None:
             try:
                 local_otp = str(local_probe() or "").strip()
+                cooperative_checkpoint()
             except WAIT_INTERRUPTED:
                 raise
             except Exception as exc:

@@ -13,7 +13,7 @@ from urllib.parse import quote
 import requests
 
 from config import email as _cfg
-from core.email.mailbox_wait import bounded_sleep, bounded_timeout
+from core.email.mailbox_wait import bounded_sleep, bounded_timeout, cooperative_lock
 from core.storage.email import provider_orders as orders
 
 logger = logging.getLogger('core.mailcode_client')
@@ -313,7 +313,7 @@ def fetch_latest_otp(email, after_ts=None, max_wait=None, poll_interval=None, se
     settle = max(0, int(_cfg.OTP_SETTLE_SECONDS if settle_seconds is None else settle_seconds))
     best, best_order = None, (-1, -1)
     last_error = "尚无新验证码"
-    with account.lock, orders.order_lock("mailcode", f"mailbox:{account.mailbox_id}"):
+    with cooperative_lock(account.lock), orders.order_lock("mailcode", f"mailbox:{account.mailbox_id}"):
         # 其他进程可能推进过游标，进入跨进程锁后重新读取事实。
         row = orders.get_by_email("mailcode", email, identity=_identity())
         private = row["private_json"] or {}

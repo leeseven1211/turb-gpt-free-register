@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, current_budget
+from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, current_budget, cooperative_checkpoint
 import email as email_lib
 import imaplib
 import hashlib
@@ -107,6 +107,7 @@ class _IMAPBudget:
         return min(remaining, self.parent.remaining()) if self.parent is not None else remaining
 
     def require(self) -> float:
+        cooperative_checkpoint()
         if self.parent is not None:
             self.parent.require("本机 IMAP 收码")
         remaining = self.remaining()
@@ -115,9 +116,10 @@ class _IMAPBudget:
         return remaining
 
     def socket_timeout(self) -> float:
-        return min(self.request_timeout, self.require())
+        return bounded_timeout(min(self.request_timeout, self.require()))
 
     def call(self, stage: str, operation, *, mail=None, connection_result: bool = False):
+        cooperative_checkpoint()
         started = time.monotonic()
         outcome = "失败"
         error_type = "-"
@@ -225,10 +227,13 @@ class _IMAPBudget:
 
 
 def _imap_call(mail, stage: str, operation, budget: _IMAPBudget | None = None):
+    cooperative_checkpoint()
     parent = current_budget()
     if budget is None and parent is not None:
         budget = _IMAPBudget(parent.require("本机 IMAP 命令"))
-    return budget.call(stage, operation, mail=mail) if budget is not None else operation()
+    result = budget.call(stage, operation, mail=mail) if budget is not None else operation()
+    cooperative_checkpoint()
+    return result
 
 
 @contextmanager

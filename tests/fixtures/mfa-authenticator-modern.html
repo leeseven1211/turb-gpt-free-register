@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="hi"><meta charset="utf-8"><title>MFA 离线回归</title>
+<body>
+  <main><h1>Security settings</h1><span id="auth-label">ऑथेंटिकेटर ऐप</span>
+    <button role="switch" aria-labelledby="auth-label" aria-checked="false" data-state="unchecked"></button>
+  </main>
+  <section role="dialog" aria-labelledby="enroll-title">
+    <h2 id="enroll-title">ऑथेंटिकेटर ऐप कनेक्ट करें</h2>
+    <form>
+      <svg aria-label="QR code" width="30" height="30"><path d="M0 0h10v10H0z"></path></svg>
+      <p>अपने ऑथेंटिकेटर ऐप से QR कोड स्कैन करें</p>
+      <button type="button" id="manual">स्कैन नहीं कर पा रहे? कोड मैन्युअल रूप से डालें</button>
+      <label>ऑथेंटिकेटर ऐप से 6-अंकों का कोड डालें
+        <input name="verification-code" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+      </label>
+      <button type="submit" disabled>वेरीफाई करें</button>
+    </form>
+  </section>
+  <script>
+    const dialog = document.querySelector('[role="dialog"]');
+    const wire = () => {
+      const field = dialog.querySelector('input');
+      const submit = dialog.querySelector('[type="submit"]');
+      field.addEventListener('input', () => { submit.disabled = !/^\d{6}$/.test(field.value); });
+      dialog.querySelector('form').addEventListener('submit', event => {
+        event.preventDefault();
+        const toggle = document.querySelector('[role="switch"]');
+        toggle.setAttribute('aria-checked', 'true');
+        toggle.setAttribute('data-state', 'checked');
+        dialog.remove();
+        const notice = document.createElement('p');
+        notice.setAttribute('role', 'alert');
+        notice.textContent = 'Authenticator enabled successfully';
+        document.body.append(notice);
+      });
+    };
+    document.querySelector('#manual').addEventListener('click', () => {
+      dialog.querySelector('form').innerHTML = '<p>कोड मैन्युअल रूप से डालें</p>'
+        + '<code class="break-all select-text">JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP</code>'
+        + '<label>ऑथेंटिकेटर ऐप से 6-अंकों का कोड डालें'
+        + '<input name="verification-code" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></label>'
+        + '<button type="submit" disabled>वेरीफाई करें</button>';
+      wire();
+    });
+    wire();
+  </script>
+</body></html>

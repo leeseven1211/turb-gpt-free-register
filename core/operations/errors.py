@@ -1029,6 +1029,14 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "mfa_secret_missing": ("AUTH-MFA-007", "本地缺少 MFA 密钥"),
     "mfa_verify_failed": ("AUTH-MFA-008", "MFA 验证请求未完成"),
     "mfa_verify_invalid_response": ("AUTH-MFA-009", "MFA 验证响应无效"),
+    "mfa_enrollment_page_error": ("AUTH-MFA-PAGE", "MFA 设置页显示明确错误"),
+    "mfa_enrollment_unsupported": ("FLOW-MFA-STEP", "MFA 当前验证步骤暂不支持"),
+    "mfa_otp_provider_not_cooperative": ("SYS-MFA-OTP", "MFA 收码适配器不支持页面协作检查"),
+    "mfa_enrollment_step_changed": ("FLOW-MFA-CHANGED", "MFA 设置期间页面步骤已变化，未继续激活"),
+    "mfa_activation_unconfirmed": ("AUTH-MFA-CONFIRM", "MFA 激活结果尚未通过同邮箱远端核验"),
+    "mfa_network_error": ("NET-MFA-PAGE", "MFA 页面报告网络传输失败"),
+    "totp_rejected": ("AUTH-MFA-TOTP-REJECTED", "Authenticator 验证码未通过验证"),
+    "email_otp_invalid": ("MAIL-OTP-004", "邮箱验证码未通过验证"),
     "network_preflight_failed": ("NET-ROUTE-001", "认证线路预检失败"),
     "oauth_callback_failed": ("AUTH-CALLBACK-001", "OAuth 回调未完成"),
     "password_missing": ("AUTH-PWD-001", "本地缺少账号密码"),
@@ -1552,6 +1560,16 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
     code = ""
+    mfa_network = re.fullmatch(
+        r"(?:registration_failed:\s*)?(?:RuntimeError:\s*)?mfa_network_error:\s*net::"
+        r"(ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|"
+        r"CONNECTION_CLOSED|HTTP2_PING_FAILED|NAME_NOT_RESOLVED))", raw,
+    )
+    if mfa_network:
+        return {
+            "cause_code": "mfa_network_error", "cause_display_code": "NET-MFA-PAGE",
+            "cause_summary": f"MFA 页面网络传输失败（{mfa_network.group(1)}）",
+        }
     if task_key in {"registration", "registration_resume"}:
         if re.search(
             r"(?:^|\n)\s*(?:registration_failed: )?"

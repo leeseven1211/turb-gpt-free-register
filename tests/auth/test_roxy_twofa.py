@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 from core import db, roxy_registration
 from core.accounts.export import TwofaProtocolTransportError
 from core.auth.challenge import PasswordSetupNotReadyError
+from core.auth.browser import mfa_auth
 from core.operations.stages import flow_for
 
 
@@ -529,12 +530,11 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
     def test_mfa_enrollment_detects_direct_qr_totp_step(self):
         totp_field = object()
-        with patch.object(
-            roxy_registration,
-            "_first_visible_css",
-            side_effect=lambda _driver, selector: totp_field if selector == roxy_registration._MFA_TOTP_CODE_SELECTOR else None,
-        ):
-            step, field = roxy_registration._detect_mfa_enrollment_step(object())
+        driver = Mock()
+        driver.execute_script.return_value = {"url": "https://chatgpt.com/#settings/Security", "text": "Scan QR",
+            "dialogs": [{"title": "Connect authenticator app", "text": "Scan QR", "fields": [
+                {"name": "totp_otp", "element": totp_field}]}]}
+        step, field = roxy_registration._detect_mfa_enrollment_step(driver)
         self.assertEqual(step, "totp")
         self.assertIs(field, totp_field)
 
@@ -717,6 +717,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
             roxy_registration,
             "_first_visible_css",
             side_effect=lambda _driver, selector: toggle if selector == '[data-testid="mfa-authenticator-toggle"]' else None,
+        ), patch.object(roxy_registration, "_detect_mfa_enrollment_step", side_effect=lambda _driver:
+            ("complete", None) if toggle.enabled else ("totp", totp_field)
+        ), patch.object(mfa_auth, "_probe_existing_roxy_totp", return_value={"confirmed": True, "reason": "totp_enabled"}
         ):
             result = roxy_registration.setup_roxy_2fa(object(), "new@example.com", on_secret=saved.append)
 
@@ -732,7 +735,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
 
         with patch.object(roxy_registration, "_open_chatgpt_security_settings", return_value=toggle), patch.object(
             roxy_registration, "_human_click"
-        ) as click:
+        ) as click, patch.object(mfa_auth, "_probe_existing_roxy_totp", side_effect=[
+            {"confirmed": False, "reason": "read_failed"}, {"confirmed": True, "reason": "totp_enabled"},
+        ]) as probe, patch.object(roxy_registration, "_detect_mfa_enrollment_step", return_value=("complete", None)):
             result = roxy_registration.setup_roxy_2fa(
                 object(),
                 "new@example.com",
@@ -743,6 +748,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
         self.assertEqual(result, secret)
         self.assertEqual(saved, [])
         click.assert_not_called()
+        self.assertEqual(probe.call_count, 2)
 
     def test_setup_email_reauth_uses_supplied_otp_provider(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -755,10 +761,14 @@ class RoxyTwoFactorTests(unittest.TestCase):
         totp_field = object()
         verify_button = object()
         otp_provider = Mock(return_value="123456")
+        phase = ["email"]
 
         def click(_driver, element, label=""):
-            if element is verify_button:
+            if label == "mfa_reauth_otp_submit":
+                phase[0] = "totp"
+            if label == "totp_verify":
                 toggle.enabled = True
+                phase[0] = "complete"
 
         with patch.object(roxy_registration, "_open_chatgpt_security_settings", return_value=toggle), patch.object(
             roxy_registration, "_wait_mfa_enrollment_step", return_value=("email", email_field)
@@ -772,6 +782,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
             roxy_registration,
             "_first_visible_css",
             side_effect=lambda _driver, selector: toggle if selector == '[data-testid="mfa-authenticator-toggle"]' else None,
+        ), patch.object(roxy_registration, "_detect_mfa_enrollment_step", side_effect=lambda _driver:
+            (phase[0], email_field if phase[0] == "email" else totp_field if phase[0] == "totp" else None)
+        ), patch.object(mfa_auth, "_probe_existing_roxy_totp", return_value={"confirmed": True, "reason": "totp_enabled"}
         ), patch.object(roxy_registration.time, "sleep"):
             result = roxy_registration.setup_roxy_2fa(
                 object(),
@@ -780,7 +793,10 @@ class RoxyTwoFactorTests(unittest.TestCase):
             )
 
         self.assertEqual(result, secret)
-        otp_provider.assert_called_once_with("new@example.com", after_ts=unittest.mock.ANY)
+        otp_provider.assert_called_once()
+        self.assertEqual(otp_provider.call_args.args, ("new@example.com",))
+        self.assertTrue(callable(otp_provider.call_args.kwargs["page_checkpoint"]))
+        self.assertGreater(otp_provider.call_args.kwargs["max_wait"], 0)
 
     def test_protocol_twofa_success_does_not_open_browser_settings(self):
         secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -953,6 +969,9 @@ class RoxyTwoFactorTests(unittest.TestCase):
             roxy_registration, "_button_after_input", return_value=verify_button
         ), patch.object(roxy_registration, "_first_visible_css", side_effect=visible), patch(
             "pyotp.TOTP", return_value=totp
+        ), patch.object(roxy_registration, "_detect_mfa_enrollment_step", side_effect=lambda _driver:
+            ("complete", None) if toggle.enabled else ("totp", totp_field)
+        ), patch.object(mfa_auth, "_probe_existing_roxy_totp", return_value={"confirmed": True, "reason": "totp_enabled"}
         ):
             result = roxy_registration.setup_roxy_2fa(object(), "new@example.com")
 
