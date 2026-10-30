@@ -84,6 +84,108 @@ class AccountMultiFilterTests(PostgresTestCase):
         result = repo.list_accounts(repo.PageRequest())
         self.assertNotIn("free_trial", {item["value"] for item in result["facets"]["promotion"]})
 
+    def test_facets_follow_other_columns_but_exclude_their_own_multiselection(self):
+        for page in (1, 2):
+            result = repo.list_accounts(
+                repo.PageRequest(page=page, page_size=1, filters={
+                    "source": "outlook,icloud_hide", "codex": "success,skipped",
+                }), plan="free",
+            )
+            with self.subTest(page=page):
+                self.assertEqual(result["total"], 2)
+                self.assertEqual(len(result["items"]), 1)
+                counts = {key: {item["value"]: item["count"] for item in rows}
+                          for key, rows in result["facets"].items()}
+                self.assertEqual(counts["source"], {"outlook": 1, "icloud_hide": 1})
+                self.assertEqual(counts["plan"], {"free": 2, "unqueried": 1})
+                self.assertEqual(counts["codex"], {"success": 2})
+                self.assertEqual(counts["password"], {"has": 1, "none": 1})
+
+    def test_empty_results_still_show_alternatives_only_for_the_conflicting_column(self):
+        result = repo.list_accounts(repo.PageRequest(filters={"source": "missing-source"}), plan="free")
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["facets"]["source"], [
+            {"value": "icloud_hide", "count": 1}, {"value": "outlook", "count": 1},
+        ])
+        self.assertEqual(result["facets"].get("plan", []), [])
+        self.assertEqual(result["facets"].get("token", []), [])
+
+    def test_each_enum_facet_excludes_only_its_own_condition(self):
+        rs.patch_row(rs.ACCOUNTS, self.ids["free"], {
+            "registration_driver": "roxy", "deactivation_mail_detected": True,
+        })
+        rs.patch_row(rs.ACCOUNTS, self.ids["empty"], {
+            "registration_driver": "protocol", "account_status": "deactivated", "email_invalid": True,
+        })
+        cases = {
+            "registration_driver": ("roxy", {"roxy": 1, "protocol": 1}),
+            "token": ("has", {"has": 1, "none": 1}),
+            "password": ("has", {"has": 1, "none": 1}),
+            "plan": ("free", {"free": 1, "unqueried": 1}),
+            "promotion": ("free_trial", {"free_trial": 1, "pending": 1}),
+            "totp": ("enabled", {"enabled": 1, "disabled": 1}),
+            "risk": ("detected", {"detected": 1, "pending": 1}),
+            "codex": ("success", {"success": 1, "skipped": 1}),
+            "account_status": ("active", {"active": 1, "deactivated": 1}),
+            "email_status": ("unmarked", {"unmarked": 1, "invalid": 1}),
+        }
+        for key, (selected, expected) in cases.items():
+            filters = {"source": "outlook"}
+            kwargs = {"plan": selected} if key == "plan" else {}
+            if key != "plan":
+                filters[key] = selected
+            result = repo.list_accounts(repo.PageRequest(filters=filters), **kwargs)
+            with self.subTest(column=key):
+                self.assertEqual(result["total"], 1)
+                self.assertEqual({row["value"]: row["count"] for row in result["facets"][key]}, expected)
+                if key != "password":
+                    self.assertEqual(result["facets"]["password"], [{"value": "has", "count": 1}])
+
+    def test_facets_preserve_search_dates_email_and_email_status(self):
+        for name, day in (("free", "01"), ("fallback", "02"), ("empty", "03")):
+            rs.patch_row(rs.ACCOUNTS, self.ids[name], {
+                "note": "目标账号", "created_at": f"2026-10-{day}T08:00:00",
+            })
+        rs.patch_row(rs.ACCOUNTS, self.ids["free"], {"email_invalid": True})
+        result = repo.list_accounts(repo.PageRequest(filters={
+            "email": "example.test", "email_status": "invalid", "source": "outlook",
+        }), q="备注:目标账号", date_from="2026-10-01", date_to="2026-10-02")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["facets"]["source"], [{"value": "outlook", "count": 1}])
+        self.assertEqual(result["facets"]["plan"], [{"value": "free", "count": 1}])
+        changed = repo.list_accounts(repo.PageRequest(filters={
+            "email": "fallback@", "email_status": "invalid", "source": "outlook",
+        }), q="备注:目标账号", date_from="2026-10-01", date_to="2026-10-02")
+        self.assertEqual(changed["facets"].get("source", []), [])
+        by_id = repo.list_accounts(repo.PageRequest(filters={
+            "id": str(self.ids["free"]), "source": "icloud_hide",
+        }))
+        self.assertEqual(by_id["total"], 0)
+        self.assertEqual(by_id["facets"]["source"], [{"value": "outlook", "count": 1}])
+
+    def test_plus_variants_and_promotion_aliases_restrict_other_facets(self):
+        rs.insert_row(rs.ACCOUNTS, {
+            "email": "plus-variant@example.test", "current_plan_type": "chatgpt_plus",
+            "email_source": "generic_api",
+        })
+        rs.insert_row(rs.ACCOUNTS, {
+            "email": "discount@example.test", "current_plan_type": "free",
+            "email_source": "generic_api", "plan_check_status": "success",
+            "plus_promo_kind": "discount", "plus_discount_eligible": True,
+            "plus_promo_discount_percentage": 50,
+        })
+        plus = repo.list_accounts(repo.PageRequest(), plan="plus")
+        self.assertEqual({row["value"]: row["count"] for row in plus["facets"]["source"]},
+                         {"icloud_hide": 1, "generic_api": 1})
+        for key in ("promotion", "trial"):
+            for value, expected in (("eligible", {"outlook": 1}),
+                                    ("discount", {"generic_api": 1})):
+                result = repo.list_accounts(repo.PageRequest(filters={key: value}))
+                with self.subTest(key=key, value=value):
+                    self.assertEqual({row["value"]: row["count"] for row in result["facets"]["source"]}, expected)
+                    self.assertGreater(len(result["facets"]["promotion"]), 1)
+
 
 class AccountRegistrationDriverFilterTests(PostgresTestCase):
     def setUp(self):
@@ -158,12 +260,13 @@ class AccountRegistrationDriverFilterTests(PostgresTestCase):
             endpoint_pages[endpoint] = page_ids
         self.assertEqual(endpoint_pages["/api/accounts"], endpoint_pages["/api/accounts/plan-check-status"])
 
-    def test_driver_facets_cover_the_archive_scope_before_filters_and_pagination(self):
+    def test_driver_facets_exclude_own_filter_and_follow_other_filters_before_pagination(self):
         expected = {"roxy": 1, "roxy_oss": 2, "protocol": 1,
                     "protocol_oss": 2, "protocol_oss_2": 1, "cloakbrowser": 1, "unknown": 3}
         result = self._get("/api/accounts", page_size=1, registration_driver="roxy", source="outlook")
         self.assertEqual(result["total"], 1)
-        self.assertEqual({item["value"]: item["count"] for item in result["facets"]["registration_driver"]}, expected)
+        self.assertEqual({item["value"]: item["count"] for item in result["facets"]["registration_driver"]},
+                         {"roxy": 1, "protocol_oss": 1})
         archived = self._get("/api/accounts", archived="only", registration_driver="unknown")
         self.assertEqual(archived["total"], 0)
         self.assertEqual(archived["facets"]["registration_driver"], [{"value": "protocol_oss_2", "count": 1}])

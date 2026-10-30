@@ -207,6 +207,52 @@ def _account_registration_driver_filter_sql() -> str:
     END"""
 
 
+def _account_facet_expressions() -> dict[str, str]:
+    """列表筛选和选项统计共用同一组账号状态投影。"""
+    return {
+        "source": "LOWER(COALESCE(a.email_source, ''))",
+        "registration_driver": _account_registration_driver_filter_sql(),
+        "token": _ACCOUNT_TOKEN_STATE,
+        "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
+        "plan": _ACCOUNT_PLAN_VALUE,
+        "promotion": _ACCOUNT_PROMOTION_FACET_VALUE,
+        "totp": f"CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END",
+        "risk": _ACCOUNT_RISK_VALUE,
+        "codex": "LOWER(COALESCE(a.codex_status, ''))",
+        "account_status": _ACCOUNT_STATUS,
+        "email_status": _ACCOUNT_EMAIL_STATUS,
+    }
+
+
+def _account_facet_predicates(
+    plan: str, filters: dict[str, str], expressions: dict[str, str],
+) -> list[tuple[str, str, list[Any]]]:
+    """生成带列名的筛选条件，方便统计时仅跳过当前列。"""
+    predicates: list[tuple[str, str, list[Any]]] = []
+    plans = _filter_values(plan)
+    if plans:
+        expression = expressions["plan"]
+        predicate = f"({expression}) = ANY(%s)"
+        params: list[Any] = [plans]
+        if "plus" in plans:
+            # 保留旧版 Plus 入口对 Plus 套餐变体的匹配。
+            predicate = f"({predicate} OR (({expression}) LIKE %s AND ({expression}) NOT LIKE %s))"
+            params.extend(("%plus%", "%free%"))
+        predicates.append(("plan", predicate, params))
+    for key, expression in expressions.items():
+        if key in {"plan", "promotion"}:
+            continue
+        values = _filter_values(filters.get(key))
+        if values:
+            predicates.append((key, f"({expression}) = ANY(%s)", [values]))
+    promotions = _filter_values(filters.get("promotion") or filters.get("trial"))
+    if promotions:
+        aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
+        values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
+        predicates.append(("promotion", f"({expressions['promotion']}) = ANY(%s)", [values]))
+    return predicates
+
+
 def _account_where(
     archived: str,
     plan: str,
@@ -222,15 +268,6 @@ def _account_where(
         where.append("a.archived IS TRUE")
     elif archived not in {"all", "include"}:
         where.append("a.archived IS FALSE")
-    plans = _filter_values(plan)
-    if plans:
-        predicate = f"({_ACCOUNT_PLAN_VALUE}) = ANY(%s)"
-        params.append(plans)
-        if "plus" in plans:
-            # 保留旧版 Plus 入口对 Plus 套餐变体的匹配。
-            predicate = f"({predicate} OR (({_ACCOUNT_PLAN_VALUE}) LIKE %s AND ({_ACCOUNT_PLAN_VALUE}) NOT LIKE %s))"
-            params.extend(("%plus%", "%free%"))
-        where.append(predicate)
     for term in parse_account_search(q):
         if term.field == "method":
             predicate, predicate_params = _registration_driver_exists(REGISTRATION_DRIVERS[term.value])
@@ -272,28 +309,9 @@ def _account_where(
     if value:
         where.append("(a.email ILIKE %s OR COALESCE(a.data->>'user_name', '') ILIKE %s)")
         params.extend((f"%{value}%", f"%{value}%"))
-    enum_filters = {
-        "source": "LOWER(COALESCE(a.email_source, ''))",
-        "registration_driver": _account_registration_driver_filter_sql(),
-        "token": _ACCOUNT_TOKEN_STATE,
-        "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
-        "totp": f"CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END",
-        "risk": _ACCOUNT_RISK_VALUE,
-        "codex": "LOWER(COALESCE(a.codex_status, ''))",
-        "account_status": _ACCOUNT_STATUS,
-        "email_status": _ACCOUNT_EMAIL_STATUS,
-    }
-    for key, expression in enum_filters.items():
-        values = _filter_values(filters.get(key))
-        if values:
-            where.append(f"({expression}) = ANY(%s)")
-            params.append(values)
-    promotions = _filter_values(filters.get("promotion") or filters.get("trial"))
-    if promotions:
-        aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
-        values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
-        where.append(f"({_ACCOUNT_PROMOTION_FACET_VALUE}) = ANY(%s)")
-        params.append(values)
+    for _key, predicate, values in _account_facet_predicates(plan, filters, _account_facet_expressions()):
+        where.append(predicate)
+        params.extend(values)
     return where, params
 
 
@@ -311,41 +329,33 @@ def list_accounts(
     accounts = _q(record_store.ACCOUNTS)
     where, params = _account_where(archived, plan, q, date_from, date_to, request.filters)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
-    base_where, base_params = _account_where(archived, "", "", "", "", {})
+    base_where, facet_params = _account_where(
+        archived, "", q, date_from, date_to,
+        {key: request.filters.get(key, "") for key in ("id", "email")},
+    )
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
+    expressions = _account_facet_expressions()
+    facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+    facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
+    facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
+    for key, predicate, values in _account_facet_predicates(
+        plan, request.filters, {key: f"b.{key}" for key in expressions},
+    ):
+        facet_where.append(f"(f.facet = %s OR ({predicate}))")
+        facet_params.extend((key, *values))
     # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
     # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
-    # 复杂 JSON/正则表达式只计算一遍。
+    # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
+    # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
     facet_sql = f"""
         WITH base AS MATERIALIZED (
-            SELECT
-                LOWER(COALESCE(a.email_source, '')) AS source,
-                {_account_registration_driver_filter_sql()} AS registration_driver,
-                {_ACCOUNT_TOKEN_STATE} AS token,
-                CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
-                {_ACCOUNT_PLAN_VALUE} AS plan,
-                {_ACCOUNT_PROMOTION_FACET_VALUE} AS promotion,
-                CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
-                {_ACCOUNT_RISK_VALUE} AS risk,
-                LOWER(COALESCE(a.codex_status, '')) AS codex,
-                {_ACCOUNT_STATUS} AS account_status
+            SELECT {facet_columns}
               FROM {accounts} a{base_clause}
         )
         SELECT f.facet, f.value, COUNT(*) AS count
           FROM base b
-          CROSS JOIN LATERAL (VALUES
-              ('source', b.source),
-              ('registration_driver', b.registration_driver),
-              ('token', b.token),
-              ('password', b.password),
-              ('plan', b.plan),
-              ('promotion', b.promotion),
-              ('totp', b.totp),
-              ('risk', b.risk),
-              ('codex', b.codex),
-              ('account_status', b.account_status)
-          ) AS f(facet, value)
-         WHERE NULLIF(f.value, '') IS NOT NULL
+          CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
+         WHERE {' AND '.join(facet_where)}
          GROUP BY f.facet, f.value
     """
     # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
@@ -369,7 +379,7 @@ def list_accounts(
             (*params, request.limit, request.offset),
         )
         rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
-        cur.execute(facet_sql, base_params)
+        cur.execute(facet_sql, facet_params)
         facets = _facet_dict(cur.fetchall())
     total = int(aggregate["total"] or 0)
     return {
