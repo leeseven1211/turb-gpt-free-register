@@ -81,7 +81,7 @@ python tools/test_isolated.py --profile all -- -q
 ## 4. 数据与日志安全
 
 验证输出只保留排障必要字段并脱敏。不得提交或展示 `.env`、账号、Token、Cookie、OTP、
-完整代理、邮箱池、`logs/`、`run/`、`accounts/` 或 `codex_accounts/` 内容。兼容文件的
+完整代理、邮箱池、`logs/`、`accounts/` 或 `codex_accounts/` 内容。兼容文件的
 存在或生成成功不能替代 PostgreSQL 行级数据的正确性。
 
 历史性能门禁、依赖锁验证和迁移演练记录见

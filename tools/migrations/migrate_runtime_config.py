@@ -163,7 +163,7 @@ def _atomic_env_write(path: Path, text: str) -> None:
 
 
 def _backup_env(root: Path, original: str, backup_dir: Path | str | None) -> None:
-    directory = Path(backup_dir) if backup_dir is not None else Path("run/runtime-config-backups")
+    directory = Path(backup_dir) if backup_dir is not None else Path("logs/run/runtime-config-backups")
     if not directory.is_absolute():
         directory = root / directory
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -283,7 +283,7 @@ def run_migration(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="显式将 .env 运行配置迁入 PostgreSQL")
     parser.add_argument("--source-root", required=True, type=Path, help="待迁移部署目录")
-    parser.add_argument("--backup-dir", type=Path, help="原 .env 的私有备份目录，默认位于源目录 run/runtime-config-backups")
+    parser.add_argument("--backup-dir", type=Path, help="原 .env 的私有备份目录，默认位于源目录 logs/run/runtime-config-backups")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="只输出配置键及统计，不连接数据库或修改文件")
     mode.add_argument("--apply", action="store_true", help="备份并迁库，成功后精简 .env")

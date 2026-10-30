@@ -59,7 +59,7 @@ def _start_asset_cache(opened, *, flow: str, proxy_url: str | None = None, targe
 
         cache = PublicAssetCache(
             getattr(opened, "debugger_address", ""),
-            Path(__file__).resolve().parents[2] / "run" / "public-asset-cache",
+            Path(__file__).resolve().parents[2] / "logs" / "run" / "public-asset-cache",
             mode=mode,
             max_total_bytes=int(_cfg.BROWSER_PUBLIC_ASSET_CACHE_MAX_MB) * 1024 * 1024,
             proxy_url=proxy_url,

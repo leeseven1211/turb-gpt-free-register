@@ -75,7 +75,7 @@ class RuntimeConfigMigrationTests(PostgresTestCase):
             })
             self.assertEqual(stat.S_IMODE((root / ".env").stat().st_mode), 0o600)
             Fernet(values["TURB_CONFIG_ENCRYPTION_KEY"].encode())
-            backups = list((root / "run" / "runtime-config-backups").glob("*.env"))
+            backups = list((root / "logs" / "run" / "runtime-config-backups").glob("*.env"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), original)
             self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
@@ -113,7 +113,7 @@ class RuntimeConfigMigrationTests(PostgresTestCase):
             self.assertEqual(store.read_values()["RUNTIME_TEST_SETTING"], "newer-database-value")
             retained = tool.read_source_values(root)
             self.assertEqual(retained["RUNTIME_TEST_SETTING"], "original-value")
-            self.assertTrue(list((root / "run" / "runtime-config-backups").glob("*.env")))
+            self.assertTrue(list((root / "logs" / "run" / "runtime-config-backups").glob("*.env")))
 
     def test_database_failure_keeps_original_runtime_values_and_persisted_key(self):
         tool = self.tool()
@@ -243,7 +243,7 @@ with module.env_file_lock():
             original = text.replace("\n", "\r\n").encode("utf-8")
             (root / ".env").write_bytes(original)
             tool.run_migration(root, apply=True)
-            backups = list((root / "run/runtime-config-backups").glob("*.env"))
+            backups = list((root / "logs/run/runtime-config-backups").glob("*.env"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_bytes(), original)
 
@@ -299,7 +299,7 @@ with module.env_file_lock():
             with self.assertRaisesRegex(tool.MigrationError, "invalid_env_assignment"):
                 tool.run_migration(root, apply=True)
             self.assertEqual((root / ".env").read_text(encoding="utf-8"), malformed)
-            self.assertFalse((root / "run/runtime-config-backups").exists())
+            self.assertFalse((root / "logs/run/runtime-config-backups").exists())
 
     def test_ambient_different_database_or_schema_refuses_to_migrate_or_prune(self):
         tool = self.tool()
@@ -308,7 +308,7 @@ with module.env_file_lock():
                 with self.assertRaisesRegex(tool.MigrationError, "target_mismatch"):
                     tool.run_migration(root, apply=True)
                 self.assertEqual((root / ".env").read_text(encoding="utf-8"), original)
-                self.assertFalse((root / "run/runtime-config-backups").exists())
+                self.assertFalse((root / "logs/run/runtime-config-backups").exists())
 
     def test_runtime_explicit_environment_override_matches_old_startup(self):
         tool = self.tool()

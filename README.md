@@ -18,7 +18,7 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动�
 - 默认仅监听 `127.0.0.1:5000`；macOS 的 `5000` 端口可能被 Control Center 占用，本机运行优先使用 `8000`。
 - PostgreSQL 是账号、注册任务、邮箱池、代理租约和 Codex 凭证的唯一事实来源；根目录中的兼容导出文件不能替代数据库。
 - 项目代码、注释、日志、界面和文档统一使用中文；配置键、协议字段和第三方产品名保留原名。
-- `.env`、账号、Token、邮箱池、Codex 凭证、日志、`run/` 和 `.venv/` 都属于运行时私有数据，不得提交仓库。
+- `.env`、账号、Token、邮箱池、Codex 凭证、日志、`logs/run/` 和 `.venv/` 都属于运行时私有数据，不得提交仓库。
 
 ---
 
@@ -397,10 +397,10 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
 
 ```bash
 python tools/migrations/migrate_hme_inbox_to_butler.py
-python tools/migrations/migrate_hme_inbox_to_butler.py --apply --receipt run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --receipt logs/run/hme-butler-cutover.json
 # 只读预览回滚；加 --apply 才恢复回执中的原路由
-python tools/migrations/migrate_hme_inbox_to_butler.py --rollback run/hme-butler-cutover.json
-python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --rollback logs/run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback logs/run/hme-butler-cutover.json
 ```
 
 尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。真实母子收码、隔离和性能结果见[生产收件验收](docs/deployment/2026-10-27-hme-receipt-validation.md)。
@@ -846,7 +846,7 @@ PROXY_711_SESSION_MINUTES=30
 
 - `BROWSER_DATA_SAVER_MODE` 是省流量总开关。注册使用 `BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES` 和 `BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS`；认证及资料提交期间自动忽略 script/stylesheet 类型和 ChatGPT/auth CDN 脚本、样式的旧拦截规则。Roxy 核验完整会话并保存账号后，停止首页应用壳加载，保留轻量的 ChatGPT 同源 session 页面，跳过完整首页初始化；协议 2FA 与套餐查询继续执行，需要浏览器 2FA 或协议失败回退时才恢复核心资源并进入安全设置。已自然捕获的套餐结果在页面切换前保留，缺少结果时仍可在同源页面补查。关闭省流量时继续保留并观察正常首页，最多等待 30 秒，超时保留已保存的账号。刷新 AT、旧 AT 浏览器查活、独立 Codex OAuth 和账号操作使用认证安全规则；注册窗口继续执行 Codex OAuth 时按独立标签页切换认证规则。
 - `BROWSER_DATA_SAVER_AUTH_FLOWS` 是可选流程列表，可填写 `token_refresh`、`live_check`、`codex_oauth`、`account_action`；默认全选，填 `[]` 可只保留注册省流量。它和总开关都可以在 WebUI「配置 → 浏览器设置 → 浏览器画像」调整。流程开关同时控制 Roxy 启动参数和 Selenium CDP 拦截。
-- `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制 Roxy 注册及账号认证流程（刷新 AT、普通查活、Codex OAuth、账号操作）：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
+- `BROWSER_PUBLIC_ASSET_CACHE_MODE` 独立控制 Roxy 注册及账号认证流程（刷新 AT、普通查活、Codex OAuth、账号操作）：默认 `off`；`observe` 仅统计候选，不下载或回放；`enabled` 在浏览器原生缓存之外跨 Profile 复用公共 JS/CSS。可在同一配置分组调整；`BROWSER_PUBLIC_ASSET_CACHE_MAX_MB` 默认 256 MiB。缓存位于忽略提交的 `logs/run/public-asset-cache/`，最多 1000 项、单项 10 MiB、有效期不超过响应声明及 24 小时，旧资源自动淘汰。
 - 公共缓存只接受审核过的 ChatGPT/auth CDN 目录下带版本的 JS/CSS，要求 HTTP 200、明确公共缓存、正确 MIME、无 Set-Cookie 和敏感响应变体。仅收录已证实不携带 Cookie/Authorization 的浏览器响应；已完成资源最多等待 250 毫秒收齐 CDP 元数据，优先复用已经下载的正文，不暂停业务请求。明确带凭据的资源不再额外匿名下载；其余注册资源需要匿名验证时，只沿本次新建 Profile 的已知代理下载，不跟重定向、不回退直连。账号认证流程只读取浏览器已经完成的公共响应，不额外发起匿名下载；缓存只连接当前业务页面，复用注册窗口时由注册外层持有并收口，保留窗口也会停止本轮缓存及流量统计。认证 API、HTML、session、OTP 和安全挑战不缓存。原 URL、内容完整性与安全响应头保留，过期、损坏、磁盘或连接异常均回到浏览器正常网络。注册首次填充可能额外下载，不能以冷缓存单次任务承诺省流量比例。
 - 省流量拦截或缓存失败会继续原浏览器业务。「代理与流量」页分别标明浏览器和协议采集来源：浏览器统计已采集的 HTTP/WebSocket 字节及缓存匿名填充下载，排除公共缓存本地回放；协议统计已接入 `BrowserSession` 的业务请求，字节使用后端报告的传输正文大小，不含请求头、TLS 或代理隧道，解码后的正文大小另存。协议请求数按每次 `get/post` 调用累计，自动重定向另计；其他客户端、外部脚本和未接入的请求不在此范围。
 - 今日请求记录按采集记录的开始时间计数，不是 HTTP 请求数；今日新建线路按任务租约获取时间计数，后台库存锚点不计任务线路，日期边界为北京时间零点。旧协议未采集标记保留在 PostgreSQL 排障但不进入可用记录合计。常规协议采集只存聚合统计和任务归属，不存 URL、正文或凭据；计量异常不改变业务结果。浏览器未确认的本地回放不扣减可观测字节，后台填充未收口时记录下界并标记未知。所有可观测字节都不等于代理商账单。
@@ -873,7 +873,7 @@ Roxy 新建或安全重开绑定 Profile 时，已领取的代理线路可经过
 - 配置保存并热加载后，要同时刷新功能可用性和注册邮箱来源。后台任务启动前读取最新配置，已经运行的任务保持其提交时的邮箱来源和已领取资源，不在途中静默换源。
 - 新增、删除或重命名配置时，必须同步检查 `config/schema.py`、`config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。字段的领域分组由 schema 维护，配置菜单由前端按用途映射；每个字段只保留一个编辑入口。本轮清理范围与保留依据见[配置核查记录](docs/development/configuration-audit.md)。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
 - 注册、续跑、查活、AT/Codex 刷新、封号扫描、邮箱来源、提链工作台、账号页及账号任务中心的入口、实现、存储、配置键与定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)；修改公共组件时先按地图反查受影响链路。
-- 提交前完成受影响功能的定向测试和相邻回归，再按风险决定是否扩大范围；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
+- 提交前完成受影响功能的定向测试和相邻回归，再按风险决定是否扩大范围；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`logs/run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
 
 ---
 
@@ -1036,7 +1036,7 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 - 当前默认运行和部署目标是本机工作区 `/Users/lihongwei/code/personal/gpt/turb-gpt-free-register`，本机 WebUI 优先使用 `PORT=8000`。
 - Oracle 主机上旧的项目 WebUI、systemd 服务和 Nginx 站点已经停用，不再把 `ssh oracle` 作为本项目默认部署方式。
 - Oracle 上可能仍运行 Email Butler；它只是本项目可选的外部收信依赖，不是 WebUI 的部署目标。
-- 更新或重启前必须保留 `.env`、PostgreSQL 数据、`accounts/`、`codex_accounts/`、日志、`run/` 和 `.venv/`。提交代码、推送仓库、重启服务和验证实际运行版本是四个独立步骤，不能相互代替。
+- 更新或重启前必须保留 `.env`、PostgreSQL 数据、`accounts/`、`codex_accounts/`、日志、`logs/run/` 和 `.venv/`。提交代码、推送仓库、重启服务和验证实际运行版本是四个独立步骤，不能相互代替。
 
 ### 后续投产清单
 
@@ -1371,6 +1371,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 | PostgreSQL `codex_credentials` / `codex_callback_receipts` | Codex OAuth 凭证、导出/同步状态，以及单独保存的 CPA/sub2 callback 回执 |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |
+| `logs/run/` | 诊断产物、运行状态、迁移备份和浏览器公共资源缓存 |
 
 旧版本生成的 `accounts/` 批次目录仅是历史归档，当前注册流程不会继续创建或读取它；是否清理历史目录应在核对 PostgreSQL 数据后单独执行。
 
