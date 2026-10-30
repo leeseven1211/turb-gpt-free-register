@@ -243,6 +243,97 @@ def otp_record(**changes):
     }
 
 
+def rejected_otp_record(**changes):
+    return otp_record(status=401, failure="", auth_error={
+        "code": "wrong_email_otp_code", "type": "invalid_request_error", "category": "otp_rejected",
+    }, **changes)
+
+
+@pytest.mark.parametrize("job_type", ["registration", "registration_resume"])
+@pytest.mark.parametrize("reason", [
+    "RuntimeError: request_unknown: otp_request_unconfirmed",
+    "StageTimeout: 验证码提交确认预算耗尽", "RuntimeError: 尚未确认下一步",
+])
+def test_current_exact_otp_401_refines_generic_wait_without_changing_job(job_type, reason):
+    value = roxy_email_session(job_type=job_type)
+    value.update_stage("email_otp", state="running")
+    value.record_network(rejected_otp_record())
+    original_job = dict(value.job)
+    info = value._classify_failure(reason)
+    assert info["code"] == "email_otp_code_rejected"
+    assert info["display_code"] == "OA-OTP-CODE-001"
+    assert info["stage"] == "email_otp"
+    assert value.job == original_job
+    if "request_unknown" in reason:
+        assert info["reconcile_required"] is True
+        assert info["retryability"] == "manual_only"
+
+
+@pytest.mark.parametrize("following", [
+    {"status": 200, "failure": "", "auth_error": {}},
+    {"status": 403, "failure": "", "auth_error": {}},
+    {"status": None, "failure": "net::ERR_ABORTED", "auth_error": {}},
+])
+def test_new_auth_outcome_prevents_old_otp_rejection_from_becoming_final(following):
+    value = roxy_email_session()
+    value.update_stage("email_otp", state="running")
+    value.record_network(rejected_otp_record())
+    value.record_network(otp_record(**following))
+    assert value._classify_failure("request_unknown: otp_request_unconfirmed")["code"] != "email_otp_code_rejected"
+
+
+def test_confirmed_progress_prevents_recovered_otp_401_from_becoming_final():
+    value = roxy_email_session()
+    value.update_stage("email_otp", state="running")
+    value.record_network(rejected_otp_record())
+    value.update_stage("email_otp", state="success")
+    value.update_stage("email_otp", state="running")
+    assert value._classify_failure("request_unknown: otp_request_unconfirmed")["code"] != "email_otp_code_rejected"
+
+
+@pytest.mark.parametrize("changes", [
+    {"url": "https://auth.openai.com.evil.test/api/accounts/email-otp/validate"},
+    {"url": "https://auth.openai.com/api/accounts/password/verify"}, {"method": "GET"},
+    {"status": 400}, {"stage": "password"}, {"stage": "browser"},
+    {"failure": "net::ERR_ABORTED"},
+    {"auth_error": {"code": "invalid_otp"}}, {"auth_error": {"code": "wrong_email_otp_code_typo"}},
+    {"auth_error": {"category": "otp_rejected"}},
+])
+def test_otp_rejection_requires_trusted_post_401_exact_code_and_same_stage(changes):
+    value = roxy_email_session()
+    value.update_stage("email_otp", state="running")
+    record = rejected_otp_record()
+    record.update(changes)
+    value.record_network(record)
+    assert value._classify_failure("request_unknown: otp_request_unconfirmed")["code"] != "email_otp_code_rejected"
+
+
+@pytest.mark.parametrize("stage", ["", "browser", "submit_email", "profile", "complete"])
+def test_otp_rejection_does_not_explain_another_final_stage(stage):
+    record = rejected_otp_record()
+    assert debug._pending_auth_failure_cause([record], stage) != "email_otp_code_rejected"
+
+
+def test_otp_rejection_does_not_refine_nonregistration_job():
+    value = roxy_email_session(job_type="twofa_retry")
+    value.update_stage("email_otp", state="running")
+    value.record_network(rejected_otp_record())
+    assert value._classify_failure("request_unknown: otp_request_unconfirmed")["code"] != "email_otp_code_rejected"
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("ValueError: 当前 Run 仍有未决浏览器提交，拒绝重复派发请求", "local_browser_submission_conflict"),
+    ("password_rejected", "password_rejected"),
+    ("ERR_TUNNEL_CONNECTION_FAILED", "roxy_proxy_tunnel_failed"),
+    ("KeyError: 'schema 未定义字段: UNIT_FIELD'", "local_config_schema_mismatch"),
+])
+def test_otp_401_does_not_replace_specific_final_failure(reason, expected):
+    value = roxy_email_session()
+    value.update_stage("email_otp", state="running")
+    value.record_network(rejected_otp_record())
+    assert value._classify_failure(reason)["code"] == expected
+
+
 @pytest.mark.parametrize("failure", ["net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"])
 @pytest.mark.parametrize("stage", ["email_otp", "browser"])
 def test_exact_otp_transport_failure_refines_unconfirmed_receipt_after_password_and_code(session, failure, stage):

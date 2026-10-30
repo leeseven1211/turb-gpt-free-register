@@ -152,6 +152,11 @@ def _pending_auth_failure_cause(network: list[dict], failure_stage: str = "") ->
                 return ""
             if evidence.get("auth_challenge"):
                 return "auth_cloudflare_challenge"
+            if (final_stage == "email_otp" and evidence.get("stage") == final_stage
+                    and evidence.get("auth_endpoint") == "otp_submit" and evidence.get("status") == 401
+                    and not evidence.get("failure")
+                    and safe_auth_error(evidence.get("auth_error")).get("code") == "wrong_email_otp_code"):
+                return "email_otp_code_rejected"
             return "roxy_proxy_tunnel_failed" if evidence.get("transport_cause") == "roxy_proxy_tunnel_failed" else ""
     return ""
 
@@ -582,8 +587,16 @@ class RegistrationDebugSession:
         transport_symptom = code in {
             "email_submit_unconfirmed", "browser_stage_timeout", "email_transition_timeout",
         } or code.endswith("_receipt_missing")
+        otp_wait_symptom = (
+            self.job.get("job_type") in {"registration", "registration_resume"}
+            and (self.failure_stage or self.current_stage) == "email_otp"
+            and (code in {"", "unknown.unclassified", "browser_stage_timeout", "email_submit_unconfirmed"}
+                 or code.endswith("_receipt_missing")
+                 or (code == "external.email" and re.search(r"(?<![\w])otp_request_unconfirmed(?![\w])", str(reason))))
+        )
         if ((cause == "auth_cloudflare_challenge" and (_challenge_explains_error(info) or roxy_email_symptom))
-                or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)):
+                or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)
+                or (cause == "email_otp_code_rejected" and otp_wait_symptom)):
             info = self._classify_error(reason, result_summary={"cause_code": cause}) or info
         self.error_info = info
         return self.error_info

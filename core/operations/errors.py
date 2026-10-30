@@ -971,6 +971,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
     ),
     "email_otp_failed": ("MAIL-OTP-001", "邮箱验证码验证未完成"),
+    "email_otp_code_rejected": ("OA-OTP-CODE-001", "验证码被远端拒绝（wrong_email_otp_code）"),
     "email_otp_send_failed": ("MAIL-SEND-001", "验证码发送请求失败"),
     "email_otp_send_rejected": ("MAIL-SEND-002", "验证码发送请求被拒绝"),
     "email_otp_send_unconfirmed": ("MAIL-SEND-003", "验证码发送结果未获确认"),
@@ -1718,8 +1719,8 @@ def classify_task_error(
     if cause is None:
         # 旧记录可能只把固定原因码写在正文中；只识别整词，不输出任意诊断原文。
         for candidate in sorted(_CAUSE_DETAILS, key=len, reverse=True):
-            if candidate == "auth_cloudflare_challenge":
-                # 挑战原因只接受抓包保存的结构化证据，不由正文中的原因码推断。
+            if candidate in {"auth_cloudflare_challenge", "email_otp_code_rejected"}:
+                # 精确响应原因只接受结构化证据，不由正文中的原因码推断。
                 continue
             if candidate == "auth_route_rejected":
                 # 历史原文的 HTTP 状态继续交给已有授权路由分类读取。
