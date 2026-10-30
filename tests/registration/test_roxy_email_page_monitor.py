@@ -84,6 +84,20 @@ def test_default_wrapper_keeps_observer_absent_for_existing_callers():
     assert "on_page_observed" not in waiting.call_args.kwargs
 
 
+@pytest.mark.parametrize("other_helpers", [False, True])
+def test_email_page_monitor_only_enabled_for_local_roxy_registration(other_helpers):
+    flow = resume.ResumeSessionFlowTests()
+    helpers = SimpleNamespace(driver_name="roxy_oss", submit_email_and_wait_next=Mock(), complete_profile_page=Mock()) if other_helpers else None
+    with flow.run_context() as (driver, mocks):
+        driver.current_url = "https://auth.openai.com/log-in"
+        mocks["navigate"].side_effect = None
+        submit = helpers.submit_email_and_wait_next if helpers is not None else mocks["_submit_email_and_wait_next"]
+        submit.side_effect = RuntimeError("单测在邮箱提交处结束")
+        result = flow.run_registration(_browser_helpers=helpers)
+    assert not result["success"]
+    assert callable(submit.call_args.kwargs.get("on_page_observed")) is (not other_helpers)
+
+
 @pytest.mark.parametrize("text,code", PAGE_ERRORS)
 @pytest.mark.parametrize("phase,history_unknown,expected_phase,unknown,not_submitted", [
     (None, False, None, False, True),

@@ -941,8 +941,34 @@ _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
 }
 
 
+_OTP_PAGE_NETWORK_CAUSES: dict[str, tuple[str, str]] = {
+    "otp_network_tunnel_connection_failed": (
+        "NET-OTP-TUNNEL", "OTP 页面代理隧道连接失败（ERR_TUNNEL_CONNECTION_FAILED）",
+    ),
+    "otp_network_proxy_connection_failed": (
+        "NET-OTP-PROXY", "OTP 页面代理连接失败（ERR_PROXY_CONNECTION_FAILED）",
+    ),
+    "otp_network_connection_reset": (
+        "NET-OTP-RESET", "OTP 页面连接被重置（ERR_CONNECTION_RESET）",
+    ),
+    "otp_network_connection_closed": (
+        "NET-OTP-CLOSED", "OTP 页面连接被关闭（ERR_CONNECTION_CLOSED）",
+    ),
+    "otp_network_http2_ping_failed": (
+        "NET-OTP-HTTP2", "OTP 页面 HTTP/2 连接探测失败（ERR_HTTP2_PING_FAILED）",
+    ),
+    "otp_network_name_not_resolved": (
+        "NET-OTP-DNS", "OTP 页面域名解析失败（ERR_NAME_NOT_RESOLVED）",
+    ),
+    "otp_network_failed_to_fetch": (
+        "NET-OTP-FETCH", "OTP 页面请求读取失败（Failed to fetch）",
+    ),
+}
+
+
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     **_BUTLER_RECIPIENT_CAUSES,
+    **_OTP_PAGE_NETWORK_CAUSES,
     "local_email_inventory_empty": ("MAIL-LOCAL-STOCK-001", "本地邮箱库存为空"),
     "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
     "email_resource_expiry_invalid": ("MAIL-RESOURCE-002", "邮箱有效期格式无效，需要明确带时区的绝对时间"),
@@ -1105,6 +1131,7 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "email_otp_send_no_response",
     "email_otp_send_unknown",
     "email_otp_no_mail",
+    *_OTP_PAGE_NETWORK_CAUSES,
     "post_register_failure",
     "protocol_preauth_transport_failed",
     "protocol_post_otp_transport_failed",
@@ -1273,6 +1300,10 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
                           if isinstance(value := summary.get(key), dict)]
     diagnostics = diagnostic_sources[0] if diagnostic_sources else {}
     code = str(summary.get("cause_code") or "").strip()
+    if code in _OTP_PAGE_NETWORK_CAUSES:
+        # OTP 页面已有明确传输细因时，不拼接其他认证请求的旧诊断。
+        display_code, cause_summary = _OTP_PAGE_NETWORK_CAUSES[code]
+        return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
     registration_cause = registration_diagnostic_cause_code(summary.get("registration_diagnostics"))
     if registration_cause and code in ({"", "registration_failed", "user_register_result_unknown"} | {
         item for item in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES if item.startswith("protocol_")

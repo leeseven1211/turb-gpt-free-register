@@ -74,7 +74,7 @@ def page():
 def test_actual_hindi_dialog_manual_rerender_submit_and_success_toast(page):
     driver = _Driver(page)
     events = []
-    first, field = mfa_auth._detect_mfa_enrollment_step(driver)
+    first, field = mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
     assert first == 'totp'
     assert field.get_attribute('name') == 'verification-code'
     assert mfa_auth._button_after_input(driver, field) is None
@@ -86,17 +86,36 @@ def test_actual_hindi_dialog_manual_rerender_submit_and_success_toast(page):
             patch.object(mfa_auth, '_probe_existing_roxy_totp', side_effect=lambda _driver, email, **kwargs:
                 (events.append(('核验', email)), {'confirmed': True, 'reason': 'totp_enabled'})[1]), \
             patch.object(mfa_auth.time, 'time', return_value=100):
-        secret = mfa_auth.setup_roxy_2fa(driver, 'fixture@example.test',
+        secret = mfa_auth.setup_roxy_2fa(driver, 'fixture@example.test', monitor_mfa_enrollment=True,
             on_secret=lambda _secret: events.append(('pending', page.locator('[role="switch"]').get_attribute('aria-checked'))))
     assert secret == 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
     assert events == [('pending', 'false'), ('核验', 'fixture@example.test')]
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ('complete', None)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ('complete', None)
 
 
 def test_real_hidden_and_sms_fields_never_replace_authenticator_semantics(page):
     driver = _Driver(page)
     page.locator('input').evaluate("el => el.hidden = true")
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ('transition', None)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ('transition', None)
     page.locator('[role="dialog"]').evaluate("el => { el.innerHTML = '<h2>SMS verification</h2><input name=verification-code autocomplete=one-time-code>'; }")
     with pytest.raises(RuntimeError, match='mfa_enrollment_unsupported'):
-        mfa_auth._detect_mfa_enrollment_step(driver)
+        mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
+
+
+def test_default_manual_key_read_keeps_existing_role_dialog(page):
+    page.set_content('<section role="dialog"><form><input name="totp_otp"></form>'
+        '<code>JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP</code></section>')
+    driver = _Driver(page)
+    field = driver.find_elements('css selector', 'input')[0]
+    assert mfa_auth._read_totp_secret_from_dialog(driver, field) == 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
+
+
+def test_hindi_manual_entry_is_available_only_with_explicit_monitor(page):
+    driver = _Driver(page)
+    field = driver.find_elements('css selector', 'input')[0]
+    with pytest.raises(RuntimeError, match='未提供安全可点击的手动密钥入口'):
+        mfa_auth._manual_totp_secret(driver, field)
+    with patch.object(mfa_auth, '_human_click', side_effect=lambda _driver, element, **_kwargs: element.handle.click()):
+        assert mfa_auth._manual_totp_secret(driver, field, monitor_mfa_enrollment=True) == (
+            'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
+        )

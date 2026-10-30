@@ -27,7 +27,7 @@ from core.auth.protocol.session import BrowserSession
 from core.auth.state_machine import PageState, StageBudget, StageTimeout, can_resend_otp, classify_page
 from core.auth.browser.auth_context import AuthExecutionContext
 from core.auth.page_errors import AuthPageError, auth_page_error
-from core.auth.browser.email_otp import _EmailSubmissionUnknown
+from core.auth.browser.email_otp import EmailOtpNetworkError, _EmailSubmissionUnknown
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.auth.browser.submission_recovery import diagnostics_for, log_submission_diagnostics
 from core.auth.browser.selenium_dom import _dispatch_trusted_click
@@ -193,9 +193,18 @@ def _submission_response_fact(endpoint_kind: str, status: object) -> tuple[str, 
     return "response_observed", ""
 
 
-def _make_submission_observer(driver):
+def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
     """为当前浏览器连接配对请求与响应，不发起任何认证请求。"""
     submission_requests = {}
+    otp_target = ""
+    if monitor_otp_network:
+        try:
+            handle = driver.current_window_handle
+            target = handle.removeprefix("CDwindow-") if isinstance(handle, str) else ""
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,160}", target):
+                otp_target = target
+        except Exception:
+            pass
 
     def observe(meta):
         request_key = (
@@ -203,6 +212,9 @@ def _make_submission_observer(driver):
             str(meta.get("request_id") or ""),
         )
         endpoint_kind = str(meta.get("endpoint_kind") or "")
+        if (monitor_otp_network and endpoint_kind == "otp_submit"
+                and (not otp_target or request_key[0] != otp_target)):
+            return
         # 没有 CDP requestId 时无法把 response 与同端点提交绑定。
         if not request_key[1]:
             return
@@ -212,6 +224,13 @@ def _make_submission_observer(driver):
                 # 响应必须沿用请求时已绑定的回执，不重选当前提交或处理重复响应。
                 return
             if receipt.endpoint_kind == "profile_submit" and endpoint_kind != "profile_submit":
+                return
+            if monitor_otp_network and receipt.endpoint_kind == "otp_submit" and endpoint_kind != "otp_submit":
+                return
+            if (monitor_otp_network and receipt.endpoint_kind == "otp_submit"
+                    and receipt.request_binding != request_key):
+                # 已观察到新的当前请求；旧响应不能给它写拒绝或成功事实。
+                submission_requests.pop(request_key, None)
                 return
             submission_requests.pop(request_key, None)
         else:
@@ -223,12 +242,29 @@ def _make_submission_observer(driver):
                 if receipt.request_binding not in (None, request_key):
                     return
                 receipt.request_binding = request_key
+            elif monitor_otp_network and endpoint_kind == "otp_submit":
+                # 当前验证码请求更新后，旧响应不再解释当前表单的拒绝原因。
+                receipt.request_binding = request_key
+                receipt.response_binding = None
+                receipt.auth_error = {}
+                receipt._otp_network_request_unknown = True
+                receipt._otp_network_http_status = None
             submission_requests[request_key] = receipt
-        if endpoint_kind == "profile_submit" and meta.get("response"):
+        if (meta.get("response") and (endpoint_kind == "profile_submit" or (
+                monitor_otp_network and endpoint_kind == "otp_submit"
+                and receipt.endpoint_kind == "otp_submit" and receipt.request_binding == request_key))):
             from core.network.response_diagnostics import safe_auth_error
 
             receipt.response_binding = request_key
             receipt.auth_error = safe_auth_error(meta.get("auth_error"))
+            if monitor_otp_network and endpoint_kind == "otp_submit":
+                receipt._otp_network_http_status = meta.get("http_status")
+                status = receipt._otp_network_http_status
+                # 页面成功可能先于响应正文到达；迟到响应不能重开已收口的未知标记。
+                receipt._otp_network_request_unknown = receipt._otp_network_request_unknown is True and not (
+                    isinstance(status, int) and 400 <= status < 500
+                    and receipt.auth_error.get("code") == "wrong_email_otp_code"
+                )
         phase, response_result = _submission_response_fact(endpoint_kind, meta.get("http_status"))
         error_type = ""
         if (endpoint_kind == "profile_submit" and meta.get("response")
@@ -546,7 +582,8 @@ def _submit_email_otp_current_form(driver) -> dict:
     return result if isinstance(result, dict) else {"clicked": False, "reason": "receipt_unknown"}
 
 def _submit_registration_email_otp(driver, otp_code: str, *, budget: StageBudget,
-                                   expected_email: str, on_refresh_retry=None):
+                                   expected_email: str, on_refresh_retry=None,
+                                   monitor_otp_network: bool = False):
     """每轮验证码刷新后补交原码一次，各次提交保留独立回执和同一总预算。"""
     for submission_attempt in range(2):
         # 某些验证码控件在最后一位输入后可能自动提交；因此在清空/填写
@@ -596,6 +633,7 @@ def _submit_registration_email_otp(driver, otp_code: str, *, budget: StageBudget
             baseline_state=otp_submit_baseline,
             expected_email=expected_email,
             retry_after_refresh=submission_attempt == 0,
+            **({"monitor_otp_network": True} if monitor_otp_network else {}),
         )
         if outcome != "retry_previous_otp":
             return outcome, otp_submission
@@ -638,6 +676,8 @@ def _is_registration_request_unknown(error_text: object) -> bool:
     """Recognize an observed-but-unclassified remote registration state."""
     if isinstance(error_text, _EmailSubmissionUnknown):
         return True
+    if isinstance(error_text, EmailOtpNetworkError):
+        return error_text.request_unknown
     if isinstance(error_text, PasswordPageError):
         return not bool(getattr(error_text, "not_submitted", False))
     if isinstance(error_text, AuthPageError):
@@ -1564,7 +1604,7 @@ def run_roxy_registration(
                 setter(data_saver)
             observe = getattr(traffic_capture, "set_submission_observer", None)
             if callable(observe):
-                observe(_make_submission_observer(driver))
+                observe(_make_submission_observer(driver, monitor_otp_network=_browser_helpers is None))
         from core.registration import plan_capture as registration_plan_capture
         registration_plan_capture.install_selenium(driver)
         report_job_progress("browser", "success", "Roxy 浏览器环境已启动")
@@ -1684,7 +1724,8 @@ def run_roxy_registration(
                 on_submitted=_mark_email_submitted,
                 allow_login_password=resume_scope,
                 on_progress=_report_email_progress,
-                on_page_observed=lambda snapshot: _observe_registration_email_page(driver, snapshot),
+                **({"on_page_observed": lambda snapshot: _observe_registration_email_page(driver, snapshot)}
+                   if _browser_helpers is None else {}),
                 **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
                 **({'on_before_recovery': _handoff_current_cf_challenge}
                    if cf_rotation_context and current_lease_route_verified and retained is None
@@ -1875,7 +1916,10 @@ def run_roxy_registration(
         )
         if retained_state and retained_state.pending_otp:
             # 未确认的原 POST 只观察同一回执；不进入收码、填码或重发分支。
-            outcome = _wait_after_email_otp_submit(driver, timeout=60, budget=otp_budget, expected_email=email)
+            outcome = _wait_after_email_otp_submit(
+                driver, timeout=60, budget=otp_budget, expected_email=email,
+                **({"monitor_otp_network": True} if _browser_helpers is None else {}),
+            )
             if outcome == "session_expired":
                 raise RuntimeError("request_unknown: auth_session_unavailable: 原验证码页认证会话不可用，已保留原 Attempt，需沿用原身份重新登录")
             if outcome not in {"accepted", "email_verified", "totp_required"}:
@@ -2045,6 +2089,7 @@ def run_roxy_registration(
             logger.info("[Roxy注册][OTP] 已收到验证码")
             outcome, otp_submission = _submit_registration_email_otp(
                 driver, current_otp, budget=otp_budget, expected_email=email,
+                **({"monitor_otp_network": True} if _browser_helpers is None else {}),
                 on_refresh_retry=lambda: report_job_progress(
                     "email_otp", "running", "刷新后仍在验证码页，正在使用上次验证码再次验证",
                 ),
@@ -2346,6 +2391,8 @@ def run_roxy_registration(
 
                 twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
                 twofa_kwargs = {"on_secret": _checkpoint_totp_secret}
+                if _browser_helpers is None:
+                    twofa_kwargs["monitor_mfa_enrollment"] = True
                 if selected_email_source is not None:
                     twofa_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
                         address,
@@ -2619,7 +2666,8 @@ def run_roxy_registration(
             error_text,
             create_acknowledged=create_acknowledged,
             account_id=account_id,
-        ) and not (password_result_unknown or email_result_unknown or existing_profile_unverified)
+        ) and not (password_result_unknown or email_result_unknown or existing_profile_unverified
+                   or isinstance(exc, EmailOtpNetworkError))
         request_unknown = (
             password_result_unknown or existing_profile_unverified or _is_registration_request_unknown(exc)
             or (isinstance(exc, PasswordPageError) and bool(existing_password))
@@ -2683,7 +2731,7 @@ def run_roxy_registration(
             if existing_profile_reconciliation
             else
             exc.code
-            if isinstance(exc, (PasswordPageError, AuthPageError))
+            if isinstance(exc, (PasswordPageError, AuthPageError, EmailOtpNetworkError))
             else
             "password_rejected"
             if password_rejected
@@ -2709,6 +2757,7 @@ def run_roxy_registration(
             "success": False,
             **native_failure_diagnostic,
             **({"cause_code": exc.code} if isinstance(exc, AuthPageError) else {}),
+            **({"cause_code": exc.cause_code} if isinstance(exc, EmailOtpNetworkError) else {}),
             'cf_proxy_rotation_ready': cf_proxy_rotation_ready,
             'cf_proxy_rotation_profile_id': cf_proxy_rotation_profile_id if cf_proxy_rotation_ready else '',
             **({'cf_proxy_rotation_context': {key: facts[key] for key in (
@@ -2716,7 +2765,8 @@ def run_roxy_registration(
             )}} if native_failure_diagnostic and cf_rotation_context and current_lease_route_verified else {}),
             **({"cause_code": ProfileAccountAlreadyExistsError.error_type, "register_response_confirmed": True}
                if existing_profile_reconciliation else {}),
-            "proxy_transport_failure": _is_registration_proxy_transport_failure(exc),
+            # OTP页面识别只细化原因，不改变既有换线许可或代理故障惩罚。
+            "proxy_transport_failure": not isinstance(exc, EmailOtpNetworkError) and _is_registration_proxy_transport_failure(exc),
             "current_lease_route_verified": current_lease_route_verified,
             "resume_login_get_transport_failure": resume_login_get_transport_failure,
             "resume_proxy_rotation_ready": resume_proxy_rotation_ready,
@@ -2744,7 +2794,7 @@ def run_roxy_registration(
             ),
             "auth": auth_result_for_registration(
                 {"success": False, "error_code": auth_error_code,
-                 **({"request_unknown": request_unknown} if isinstance(exc, AuthPageError) else {})},
+                 **({"request_unknown": request_unknown} if isinstance(exc, (AuthPageError, EmailOtpNetworkError)) else {})},
                 auth_method=registration_driver,
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,

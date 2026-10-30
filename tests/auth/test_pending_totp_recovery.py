@@ -276,11 +276,6 @@ class PendingTotpBrowserRecoveryTests(unittest.TestCase):
             stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
             stack.enter_context(patch("config.twofa.get_twofa_driver", return_value=executor))
             stack.enter_context(patch.object(mfa_auth, "_open_chatgpt_security_settings", side_effect=open_settings))
-            stack.enter_context(patch.object(mfa_auth, "_detect_mfa_enrollment_step", return_value=("complete", None)))
-            stack.enter_context(patch.object(mfa_auth, "_probe_existing_roxy_totp", side_effect=[
-                {"confirmed": False, "reason": "read_failed"},
-                {"confirmed": enabled, "reason": "totp_enabled" if enabled else "totp_not_enabled"},
-            ]))
             stack.enter_context(patch.object(mfa_auth, "_human_click"))
             stack.enter_context(patch.object(
                 mfa_auth, "_wait_mfa_enrollment_step", side_effect=RuntimeError("远端尚未确认启用"),

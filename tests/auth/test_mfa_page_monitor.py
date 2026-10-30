@@ -28,13 +28,13 @@ def _driver(*, text="", title="", name="verification-code", url="https://chatgpt
 def test_modern_hindi_authenticator_is_totp_before_generic_email_selector():
     driver, field, _ = _driver(title="ऑथेंटिकेटर ऐप कनेक्ट करें",
         text="QR कोड स्कैन करें स्कैन नहीं कर पा रहे? कोड मैन्युअल रूप से डालें ऑथेंटिकेटर ऐप से 6-अंकों का कोड डालें")
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ("totp", field)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ("totp", field)
 
 
 @pytest.mark.parametrize("name", ["totp_otp", "verification-code"])
 def test_legacy_and_modern_authenticator_dialogs_share_identification(name):
     driver, field, _ = _driver(title="Connect authenticator app", text="Scan the QR code and enter a 6-digit code", name=name)
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ("totp", field)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ("totp", field)
 
 
 @pytest.mark.parametrize("url", ["https://auth.openai.com/email-verification", "http://chatgpt.com/settings/security",
@@ -42,44 +42,44 @@ def test_legacy_and_modern_authenticator_dialogs_share_identification(name):
     "https://chatgpt.com:444/settings/security", "https://chatgpt.com/#settings/General"])
 def test_same_named_code_on_untrusted_or_wrong_page_is_not_enrollment(url):
     driver, _, _ = _driver(title="Connect authenticator app", text="Scan the QR code", url=url)
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == (None, None)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == (None, None)
 
 
 def test_ambiguous_visible_dialogs_and_generic_one_time_code_are_not_email():
     for dialogs in (1, 2):
         driver, _, _ = _driver(text="Enter code", dialogs=dialogs)
-        assert mfa_auth._detect_mfa_enrollment_step(driver) == (None, None)
+        assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == (None, None)
 
 
 def test_real_email_challenge_requires_explicit_delivery_semantics():
     driver, field, _ = _driver(title="Check your email", text="Enter the code we sent to your email address", name="code")
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ("email", field)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ("email", field)
 
 
 @pytest.mark.parametrize("text", ["SMS code sent to your phone", "Approve the push notification on your phone"])
 def test_sms_and_push_are_explicitly_unsupported_instead_of_email(text):
     driver, _, _ = _driver(title="Verify your identity", text=text)
     with pytest.raises(RuntimeError, match="mfa_enrollment_unsupported"):
-        mfa_auth._detect_mfa_enrollment_step(driver)
+        mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
 
 
 def test_visible_error_has_priority_over_totp_field():
     driver, _, snapshot = _driver(title="Connect authenticator app", text="Scan the QR code")
     snapshot["alerts"] = ["Something went wrong"]
     with pytest.raises(RuntimeError, match="mfa_enrollment_page_error"):
-        mfa_auth._detect_mfa_enrollment_step(driver)
+        mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
 
 
 def test_success_toast_is_not_an_error_and_ready_security_page_is_explicit():
     driver, _, snapshot = _driver(text="Security settings Authenticator app", dialogs=0)
     snapshot["alerts"] = ["Authenticator enabled successfully"]
-    assert mfa_auth._detect_mfa_enrollment_step(driver) == ("complete", None)
+    assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True) == ("complete", None)
 
 
 def test_unknown_dialog_missing_document_or_conflicting_dialogs_cannot_be_completion():
     for dialogs, text in ((1, "Please wait"), (2, "Security settings"), (0, "")):
         driver, _, _ = _driver(dialogs=dialogs, text=text)
-        assert mfa_auth._detect_mfa_enrollment_step(driver)[0] != "complete"
+        assert mfa_auth._detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)[0] != "complete"
 
 
 def test_mail_wait_observes_totp_transition_on_original_thread_before_candidate_use():
@@ -88,7 +88,7 @@ def test_mail_wait_observes_totp_transition_on_original_thread_before_candidate_
     checks = []
     states = [("email", email_field), ("totp", totp_field)]
 
-    def detect(_driver):
+    def detect(_driver, **_kwargs):
         checks.append(threading.get_ident())
         return states.pop(0) if states else ("totp", totp_field)
 
@@ -118,14 +118,14 @@ def test_manual_key_rerender_reacquires_modern_field_before_secret_read():
     driver.execute_script.return_value = manual
     fields_read = []
 
-    def read(_driver, field):
+    def read(_driver, field, **_kwargs):
         fields_read.append(field)
         return SECRET if field is new_field else None
 
     with patch.object(mfa_auth, "_read_totp_secret_from_dialog", side_effect=read), \
             patch.object(mfa_auth, "_detect_mfa_enrollment_step", return_value=("totp", new_field)), \
             patch.object(mfa_auth, "_human_click"):
-        assert mfa_auth._manual_totp_secret(driver, old_field, timeout=2) == SECRET
+        assert mfa_auth._manual_totp_secret(driver, old_field, timeout=2, monitor_mfa_enrollment=True) == SECRET
     assert fields_read == [old_field, new_field]
     assert "स्कैन नहीं कर पा रहे" in driver.execute_script.call_args.args[0]
 
@@ -145,12 +145,12 @@ def test_activation_uses_reacquired_field_persists_first_and_requires_same_email
     with patch.object(mfa_auth, "_open_chatgpt_security_settings", return_value=toggle), \
             patch.object(mfa_auth, "_wait_mfa_enrollment_step", return_value=("totp", old_field)), \
             patch.object(mfa_auth, "_manual_totp_secret", return_value=SECRET), \
-            patch.object(mfa_auth, "_detect_mfa_enrollment_step", side_effect=lambda _driver: ("complete", None) if enabled[0] else ("totp", fresh_field)), \
+            patch.object(mfa_auth, "_detect_mfa_enrollment_step", side_effect=lambda _driver, **_kwargs: ("complete", None) if enabled[0] else ("totp", fresh_field)), \
             patch.object(mfa_auth, "_find_authenticator_toggle", return_value=toggle), \
             patch.object(mfa_auth, "_human_click", side_effect=click), \
             patch.object(mfa_auth, "_human_type_text", side_effect=lambda _driver, field, *_args, **_kwargs: events.append(("输入", field))), \
             patch.object(mfa_auth, "_button_after_input", return_value=button), \
             patch.object(mfa_auth, "_probe_existing_roxy_totp", side_effect=lambda _driver, email, **_kwargs: (events.append(("核验", email)), {"confirmed": True, "reason": "totp_enabled"})[1]), \
             patch.object(mfa_auth.time, "time", return_value=100):
-        assert mfa_auth.setup_roxy_2fa(object(), "unit@example.test", on_secret=lambda _secret: events.append("已存pending")) == SECRET
+        assert mfa_auth.setup_roxy_2fa(object(), "unit@example.test", monitor_mfa_enrollment=True, on_secret=lambda _secret: events.append("已存pending")) == SECRET
     assert events == ["已存pending", ("输入", fresh_field), "激活", ("核验", "unit@example.test")]

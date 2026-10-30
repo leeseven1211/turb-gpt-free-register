@@ -190,9 +190,6 @@ def test_reconfiguration_and_activation_confirmation_reuse_the_modern_switch():
         patch.object(mfa_auth, "_human_type_text"),
         patch.object(mfa_auth, "_button_after_input", return_value=verify_button),
         patch.object(mfa_auth, "_human_click", side_effect=click) as human_click,
-        patch.object(mfa_auth, "_detect_mfa_enrollment_step", side_effect=lambda _driver:
-            ("complete", None) if toggle.attrs["aria-checked"] == "true" else ("totp", field)),
-        patch.object(mfa_auth, "_probe_existing_roxy_totp", return_value={"confirmed": True, "reason": "totp_enabled"}),
         patch.object(mfa_auth.time, "time", return_value=100.0),
     ):
         result = mfa_auth.setup_roxy_2fa(

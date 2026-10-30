@@ -37,7 +37,7 @@ _MFA_EMAIL_CODE_SELECTOR = (
     'input[autocomplete="one-time-code"]:not([name="totp_otp"])'
 )
 
-_MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"], input[name="verification-code"]'
+_MFA_TOTP_CODE_SELECTOR = 'input[name="totp_otp"]'
 
 _AUTHENTICATOR_TOGGLE_LABELS = frozenset({
     "authenticator", "authenticator app", "ऑथेंटिकेटर ऐप", "身份验证器应用",
@@ -262,8 +262,16 @@ def _wait_visible_css(driver, selector: str, *, timeout: int, label: str):
         time.sleep(0.5)
     raise RuntimeError(f"等待 {label} 超时，当前页面={last_url[:180]}")
 
-def _detect_mfa_enrollment_step(driver):
-    """错误优先；仅在可信安全页的唯一活动弹窗内按真实语义识别步骤。"""
+def _detect_mfa_enrollment_step(driver, *, monitor_mfa_enrollment: bool = False):
+    """默认沿用原字段识别；显式监控才读取实际安全页与活动弹窗语义。"""
+    if not monitor_mfa_enrollment:
+        totp_field = _first_visible_css(driver, _MFA_TOTP_CODE_SELECTOR)
+        if totp_field is not None:
+            return "totp", totp_field
+        email_code_field = _first_visible_css(driver, _MFA_EMAIL_CODE_SELECTOR)
+        if email_code_field is not None:
+            return "email", email_code_field
+        return None, None
     _check_manual_stop()
     snapshot = driver.execute_script(r"""
     const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
@@ -369,7 +377,7 @@ def _wait_mfa_email_code(driver, email, after_ts, provider):
     def page_checkpoint():
         _check_manual_stop()
         budget.require("2FA 邮箱重认证")
-        step, field = _detect_mfa_enrollment_step(driver)
+        step, field = _detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
         if step == "totp":
             raise _MfaStepChanged(field)
 
@@ -382,7 +390,7 @@ def _wait_mfa_email_code(driver, email, after_ts, provider):
             # 候选返回时重判实际字段；转场空壳只占用原预算，不能填旧字段。
             while True:
                 page_checkpoint()
-                step, field = _detect_mfa_enrollment_step(driver)
+                step, field = _detect_mfa_enrollment_step(driver, monitor_mfa_enrollment=True)
                 if step == "email" and field is not None:
                     return "email", field, code
                 bounded_sleep(0.25)
@@ -390,13 +398,15 @@ def _wait_mfa_email_code(driver, email, after_ts, provider):
         logger.info("%s[2FA] 收邮件期间已观察到 Authenticator 页面，结束无关邮件等待", _log_prefix(driver))
         return "totp", changed.field, None
 
-def _wait_mfa_enrollment_step(driver, *, timeout: int = 90):
+def _wait_mfa_enrollment_step(driver, *, timeout: int = 90, monitor_mfa_enrollment: bool = False):
     end = time.time() + max(1, int(timeout))
     last_url = ""
     while time.time() < end:
         _check_manual_stop()
-        step, field = _detect_mfa_enrollment_step(driver)
-        if step in {"email", "totp"}:
+        step, field = _detect_mfa_enrollment_step(
+            driver, **({"monitor_mfa_enrollment": True} if monitor_mfa_enrollment else {}),
+        )
+        if step and (not monitor_mfa_enrollment or step in {"email", "totp"}):
             return step, field
         try:
             last_url = str(driver.current_url or "")
@@ -410,6 +420,7 @@ def _wait_after_mfa_email_submit(
     *,
     timeout: int = 30,
     resubmit_after: float = 8.0,
+    monitor_mfa_enrollment: bool = False,
 ):
     """邮箱重认证提交后等待二维码页；若仍停在原表单，仅补交一次。"""
     started = time.monotonic()
@@ -419,7 +430,9 @@ def _wait_after_mfa_email_submit(
     last_url = ""
     while time.monotonic() < deadline:
         _check_manual_stop()
-        step, field = _detect_mfa_enrollment_step(driver)
+        step, field = _detect_mfa_enrollment_step(
+            driver, **({"monitor_mfa_enrollment": True} if monitor_mfa_enrollment else {}),
+        )
         last_step = step or "transition"
         try:
             last_url = str(driver.current_url or "")
@@ -858,11 +871,13 @@ def _complete_settings_email_reauth(
         time.sleep(0.5)
     raise RuntimeError(f"设置页邮箱重认证后未返回 ChatGPT 设置页：{str(driver.current_url or '')[:180]}")
 
-def _read_totp_secret_from_dialog(driver, field) -> str | None:
+def _read_totp_secret_from_dialog(driver, field, *, monitor_mfa_enrollment: bool = False) -> str | None:
     """Read an Authenticator secret without activating any external-protocol link."""
     values = driver.execute_script(r"""
     const input = arguments[0];
-    const root = input.closest('[role="dialog"],dialog[open]');
+    const monitored = arguments[1] === true;
+    const root = monitored ? input.closest('[role="dialog"],dialog[open]')
+      : (input.closest('[role="dialog"]') || document);
     if (!root) return [];
     const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
       && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
@@ -890,23 +905,26 @@ def _read_totp_secret_from_dialog(driver, field) -> str | None:
       el.getAttribute?.('src'), el.getAttribute?.('srcset'),
       el.getAttribute?.('aria-label'), el.innerText, el.textContent
     ]).map(value => String(value || '').trim()).filter(Boolean);
-    """, field) or []
+    """, field, monitor_mfa_enrollment) or []
     for value in values:
         secret = _totp_secret_candidate(value)
         if secret:
             return secret
     return None
 
-def _manual_totp_secret(driver, field, *, timeout: int = 20) -> str:
+def _manual_totp_secret(driver, field, *, timeout: int = 20, monitor_mfa_enrollment: bool = False) -> str:
     """Read the QR binding URI, or safely switch the dialog to a manual key."""
-    secret = _read_totp_secret_from_dialog(driver, field)
+    monitor_kwargs = {"monitor_mfa_enrollment": True} if monitor_mfa_enrollment else {}
+    secret = _read_totp_secret_from_dialog(driver, field, **monitor_kwargs)
     if secret:
         logger.info("%s[2FA] 已从二维码绑定信息读取 Authenticator key，未打开外部应用", _log_prefix(driver))
         return secret
 
     manual_button = driver.execute_script(r"""
     const input = arguments[0];
-    const root = input.closest('[role="dialog"],dialog[open]');
+    const monitored = arguments[1] === true;
+    const root = monitored ? input.closest('[role="dialog"],dialog[open]')
+      : (input.closest('[role="dialog"]') || input.closest('form') || document);
     if (!root) return null;
     const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
       && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
@@ -920,10 +938,12 @@ def _manual_totp_secret(driver, field, *, timeout: int = 20) -> str:
     const external = el => /^(?:otpauth|web\+otpauth|authenticator):/i.test(
       String((el.closest('a[href]') || el).getAttribute('href') || '').trim()
     );
-    const wanted = /manual|setup.?key|secret.?key|enter.?key|can.?t.?scan|unable.?to.?scan|trouble.*scan|scan.?code|手動|手动|設定キー|セットアップキー|スキャンでき|読み込み.*問題|スキャン.*問題|स्कैन नहीं कर पा रहे|कोड मैन्युअल रूप से डालें/;
+    const wanted = /manual|setup.?key|secret.?key|enter.?key|can.?t.?scan|unable.?to.?scan|trouble.*scan|scan.?code|手動|手动|設定キー|セットアップキー|スキャンでき|読み込み.*問題|スキャン.*問題/;
+    const monitoredWanted = /स्कैन नहीं कर पा रहे|कोड मैन्युअल रूप से डालें/;
     const unwanted = /cancel|close|back|previous|キャンセル|閉じる|戻る|取消|关闭|返回/;
-    return candidates.find(el => wanted.test(attrs(el)) && !unwanted.test(attrs(el)) && !external(el)) || null;
-    """, field)
+    return candidates.find(el => (wanted.test(attrs(el)) || monitored && monitoredWanted.test(attrs(el)))
+      && !unwanted.test(attrs(el)) && !external(el)) || null;
+    """, field, monitor_mfa_enrollment)
     if not manual_button:
         raise RuntimeError("TOTP 设置弹窗未提供安全可点击的手动密钥入口")
     _human_click(driver, manual_button, label="totp_show_manual_secret")
@@ -931,10 +951,13 @@ def _manual_totp_secret(driver, field, *, timeout: int = 20) -> str:
     end = time.time() + max(2, int(timeout))
     while time.time() < end:
         _check_manual_stop()
-        step, current_field = _detect_mfa_enrollment_step(driver)
-        if step == "email":
-            raise RuntimeError("mfa_enrollment_step_changed: 读取密钥时页面返回邮箱重认证，未继续激活")
-        secret = _read_totp_secret_from_dialog(driver, current_field) if step == "totp" and current_field is not None else None
+        if monitor_mfa_enrollment:
+            step, current_field = _detect_mfa_enrollment_step(driver, **monitor_kwargs)
+            if step == "email":
+                raise RuntimeError("mfa_enrollment_step_changed: 读取密钥时页面返回邮箱重认证，未继续激活")
+            secret = _read_totp_secret_from_dialog(driver, current_field, **monitor_kwargs) if step == "totp" and current_field is not None else None
+        else:
+            secret = _read_totp_secret_from_dialog(driver, field)
         if secret:
             return secret
         time.sleep(0.35)
@@ -949,10 +972,12 @@ def setup_roxy_2fa(
     force_reconfigure: bool = False,
     on_disabled=None,
     otp_provider=None,
+    monitor_mfa_enrollment: bool = False,
 ) -> str:
-    """Enable Authenticator MFA in the existing Roxy browser session."""
+    """默认保留共享设置行为；本地 Roxy 注册可显式启用持续页面监控。"""
     import pyotp
 
+    monitor_kwargs = {"monitor_mfa_enrollment": True} if monitor_mfa_enrollment else {}
     recovered = _totp_secret_candidate(existing_secret)
     if recovered and not force_reconfigure:
         evidence = _probe_existing_roxy_totp(driver, email)
@@ -978,24 +1003,30 @@ def setup_roxy_2fa(
         else:
             recovered = _totp_secret_candidate(existing_secret)
             if recovered:
-                step, _field = _detect_mfa_enrollment_step(driver)
-                if step != "complete":
-                    raise RuntimeError("mfa_activation_unconfirmed: 开关已启用但安全页仍有未确认的弹窗步骤")
-                evidence = _probe_existing_roxy_totp(driver, email)
-                if not evidence["confirmed"]:
-                    raise RuntimeError(f"mfa_activation_unconfirmed: 既有密钥远端状态未通过同邮箱只读核验，reason={evidence['reason']}")
-                logger.info("%s[2FA] 已确认开关与同邮箱远端 TOTP，保留本地检查点密钥", _log_prefix(driver))
+                if monitor_mfa_enrollment:
+                    step, _field = _detect_mfa_enrollment_step(driver, **monitor_kwargs)
+                    if step != "complete":
+                        raise RuntimeError("mfa_activation_unconfirmed: 开关已启用但安全页仍有未确认的弹窗步骤")
+                    evidence = _probe_existing_roxy_totp(driver, email)
+                    if not evidence["confirmed"]:
+                        raise RuntimeError(f"mfa_activation_unconfirmed: 既有密钥远端状态未通过同邮箱只读核验，reason={evidence['reason']}")
+                    logger.info("%s[2FA] 已确认开关与同邮箱远端 TOTP，保留本地检查点密钥", _log_prefix(driver))
+                else:
+                    logger.info("%s[2FA] 已确认远端 Authenticator 开关启用，保留本地检查点密钥", _log_prefix(driver))
                 return recovered
             raise RuntimeError("Authenticator 2FA 已启用，但当前流程无法恢复既有 secret")
 
     otp_after_ts = time.time()
     _human_click(driver, toggle, label="mfa_authenticator_toggle")
-    step, field = _wait_mfa_enrollment_step(driver, timeout=90)
+    step, field = _wait_mfa_enrollment_step(driver, timeout=90, **monitor_kwargs)
     if step == "email":
         logger.info("%s[2FA] 当前会话要求邮箱重认证", _log_prefix(driver))
         _check_manual_stop()
         provider = otp_provider or wait_for_otp
-        step, field, email_code = _wait_mfa_email_code(driver, email, otp_after_ts, provider)
+        if monitor_mfa_enrollment:
+            step, field, email_code = _wait_mfa_email_code(driver, email, otp_after_ts, provider)
+        else:
+            email_code = provider(email, after_ts=otp_after_ts)
         if step == "email":
             _human_type_text(driver, field, email_code, clear=True)
             submit_email_code = _button_after_input(driver, field)
@@ -1003,14 +1034,14 @@ def setup_roxy_2fa(
                 raise RuntimeError("2FA 重认证页缺少验证码提交按钮")
             _human_click(driver, submit_email_code, label="mfa_reauth_otp_submit")
             logger.info("%s[2FA] 已提交邮箱重认证验证码", _log_prefix(driver))
-            totp_field = _wait_after_mfa_email_submit(driver, timeout=30, resubmit_after=8)
+            totp_field = _wait_after_mfa_email_submit(driver, timeout=30, resubmit_after=8, **monitor_kwargs)
         else:
             totp_field = field
     else:
         # 刚完成注册时 pwd_auth_time 足够新，OpenAI 会直接展示二维码而不再发邮件。
         logger.info("%s[2FA] 当前登录态仍新鲜，已跳过邮箱重认证并直达二维码设置页", _log_prefix(driver))
         totp_field = field
-    secret = _manual_totp_secret(driver, totp_field)
+    secret = _manual_totp_secret(driver, totp_field, **monitor_kwargs)
     # 必须在激活前持久化：一旦 OpenAI 接受下面的 TOTP，若进程恰好中断，
     # 没有这个 secret 就无法再次登录账号。
     if on_secret is not None:
@@ -1020,9 +1051,10 @@ def setup_roxy_2fa(
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 6:
         time.sleep(remaining + 1)
-    step, totp_field = _detect_mfa_enrollment_step(driver)
-    if step != "totp" or totp_field is None:
-        raise RuntimeError("mfa_enrollment_step_changed: 激活前已不是原 Authenticator 设置步骤，未提交验证码")
+    if monitor_mfa_enrollment:
+        step, totp_field = _detect_mfa_enrollment_step(driver, **monitor_kwargs)
+        if step != "totp" or totp_field is None:
+            raise RuntimeError("mfa_enrollment_step_changed: 激活前已不是原 Authenticator 设置步骤，未提交验证码")
     totp_code = pyotp.TOTP(secret).now()
     _human_type_text(driver, totp_field, totp_code, clear=True)
     verify_button = _button_after_input(driver, totp_field)
@@ -1035,23 +1067,33 @@ def setup_roxy_2fa(
     submitted_code = totp_code
     while time.time() < end:
         _check_manual_stop()
-        step, current_field = _detect_mfa_enrollment_step(driver)
+        if monitor_mfa_enrollment:
+            step, current_field = _detect_mfa_enrollment_step(driver, **monitor_kwargs)
         current_toggle = _find_authenticator_toggle(driver)
         enabled = current_toggle is not None and (
             str(current_toggle.get_attribute("aria-checked") or "").lower() == "true"
             or str(current_toggle.get_attribute("data-state") or "").lower() == "checked"
         )
-        if enabled and step == "complete":
-            evidence = _probe_existing_roxy_totp(driver, email, timeout=min(15.0, max(0.0, end - time.time())))
-            if not evidence["confirmed"]:
-                raise RuntimeError(f"mfa_activation_unconfirmed: 开关已启用但同邮箱只读核验未通过，reason={evidence['reason']}")
-            logger.info("%s[2FA] Authenticator 开关及同邮箱远端 TOTP 均已确认启用", _log_prefix(driver))
+        if monitor_mfa_enrollment:
+            complete = step == "complete"
+        else:
+            complete = enabled and _first_visible_css(driver, 'input[name="totp_otp"]') is None
+        if enabled and complete:
+            if monitor_mfa_enrollment:
+                evidence = _probe_existing_roxy_totp(driver, email, timeout=min(15.0, max(0.0, end - time.time())))
+                if not evidence["confirmed"]:
+                    raise RuntimeError(f"mfa_activation_unconfirmed: 开关已启用但同邮箱只读核验未通过，reason={evidence['reason']}")
+                logger.info("%s[2FA] Authenticator 开关及同邮箱远端 TOTP 均已确认启用", _log_prefix(driver))
+            else:
+                logger.info("%s[2FA] Authenticator 2FA 已启用", _log_prefix(driver))
             return secret
+        if not monitor_mfa_enrollment:
+            current_field = _first_visible_css(driver, _MFA_TOTP_CODE_SELECTOR)
         # The code can cross a 30-second boundary while ChatGPT is processing
         # the first click. If the dialog is still present, submit one fresh
         # code instead of waiting until the whole step times out.
         fresh_code = pyotp.TOTP(secret).now()
-        if step == "totp" and current_field is not None and not resubmitted and fresh_code != submitted_code:
+        if (not monitor_mfa_enrollment or step == "totp") and current_field is not None and not resubmitted and fresh_code != submitted_code:
             _human_type_text(driver, current_field, fresh_code, clear=True)
             retry_button = _button_after_input(driver, current_field)
             if retry_button is not None:
@@ -1073,6 +1115,7 @@ def setup_protocol_2fa_with_browser_fallback(
     existing_secret: str | None = None,
     otp_provider=None,
     before_browser=None,
+    monitor_mfa_enrollment: bool = False,
 ) -> tuple[str, bool]:
     """优先协议开通 2FA，失败时复用当前登录态改走安全设置页。
 
@@ -1140,6 +1183,8 @@ def setup_protocol_2fa_with_browser_fallback(
             )
             if otp_provider is not None:
                 fallback_kwargs["otp_provider"] = otp_provider
+            if monitor_mfa_enrollment:
+                fallback_kwargs["monitor_mfa_enrollment"] = True
             if before_browser is not None:
                 before_browser()
             secret = setup_roxy_2fa(

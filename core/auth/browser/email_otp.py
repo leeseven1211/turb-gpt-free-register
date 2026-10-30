@@ -2067,14 +2067,26 @@ def _email_otp_page_state(driver) -> dict:
         const bodyLower = bodyText.toLowerCase();
         const emailVerified = /email\s+verified|email\s+verification\s+(?:complete|completed)|邮箱已验证|邮箱验证完成|認証が完了/.test(bodyLower);
         const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const currentVisible = el => visible(el) && getComputedStyle(el).visibility !== 'hidden'
+          && getComputedStyle(el).display !== 'none';
+        const nodeText = el => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim();
         const inputs = [...document.querySelectorAll('input')].filter(visible).map(el => {
           const attrs = [el.type, el.name, el.id, el.autocomplete, el.inputMode,
             el.getAttribute('aria-label')].join(' ').toLowerCase();
           const sensitive = /password|one-time|otp|verification|code|token|secret|auth/.test(attrs);
+          const errorIds = [el.getAttribute('aria-errormessage'), el.getAttribute('aria-describedby')]
+            .filter(Boolean).join(' ').split(/\s+/).filter(Boolean);
+          const fieldErrors = errorIds.map(id => document.getElementById(id)).filter(currentVisible).map(nodeText);
+          const sibling = el.nextElementSibling;
+          if (currentVisible(sibling) && sibling.matches('.react-aria-FieldError,[slot="errorMessage"],[id$="-error"]')) {
+            fieldErrors.push(nodeText(sibling));
+          }
           return {
             type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '',
             autocomplete: el.getAttribute('autocomplete') || '', inputmode: el.getAttribute('inputmode') || '',
-            ariaInvalid: el.getAttribute('aria-invalid') || '', value: sensitive ? '<redacted>' : (el.value || '')
+            ariaInvalid: el.getAttribute('aria-invalid') || '', value: sensitive ? '<redacted>' : (el.value || ''),
+            otpFieldVisible: currentVisible(el), otpFieldDisabled: !!el.disabled,
+            otpFieldReadOnly: !!el.readOnly, otpFieldErrors: fieldErrors
           };
         });
         const buttons = [...document.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')].filter(visible).map(el => ({
@@ -2088,7 +2100,17 @@ def _email_otp_page_state(driver) -> dict:
         const challengePresent = [...document.querySelectorAll(
           'iframe[src*="challenges.cloudflare.com"],iframe[src*="captcha"],[data-sitekey],#challenge-running,#challenge-stage'
         )].some(visible);
-        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified, challengePresent, initialization:authInitialization};
+        const errorHeadings = [...document.querySelectorAll('h1,h2,[role="heading"]')].filter(currentVisible)
+          .filter(el => /error|went wrong|could not|couldn't|unable|错误|出错|失敗|失败|エラー|問題|त्रुटि|गड़बड़ी|गड़बड़ी|गलत/i.test(nodeText(el)));
+        const errorRoots = [...document.querySelectorAll('[role="alert"],[aria-live="assertive"],[data-testid="error-page"],.error-page,.error-container,#error-page')]
+          .filter(currentVisible).filter(el => !el.closest('form'));
+        const authErrorPage = errorHeadings.length > 0 || errorRoots.length > 0;
+        const authErrorTexts = authErrorPage ? [...errorRoots,
+          ...errorHeadings.map(el => el.closest('main,[role="main"],section') || el.parentElement).filter(currentVisible),
+          ...[...document.querySelectorAll('[class*="error"],[slot="errorMessage"]')].filter(currentVisible)
+            .filter(el => !el.closest('form'))].map(nodeText).filter(Boolean) : [];
+        return {url: location.href, title: document.title, inputs, buttons, errors, text: bodyText.slice(0, 1200), emailVerified, challengePresent, initialization:authInitialization,
+          authErrorPage, authErrorTexts};
         """) or {}
     except Exception as exc:
         return {"url": getattr(driver, 'current_url', ''), "error": f"{type(exc).__name__}: {exc}"}
@@ -2483,6 +2505,126 @@ def _complete_registration_totp_after_email_otp(
         raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={state}")
     return state
 
+
+_OTP_NETWORK_CAUSES = {
+    "ERR_TUNNEL_CONNECTION_FAILED": "otp_network_tunnel_connection_failed",
+    "ERR_PROXY_CONNECTION_FAILED": "otp_network_proxy_connection_failed",
+    "ERR_CONNECTION_RESET": "otp_network_connection_reset",
+    "ERR_CONNECTION_CLOSED": "otp_network_connection_closed",
+    "ERR_HTTP2_PING_FAILED": "otp_network_http2_ping_failed",
+    "ERR_NAME_NOT_RESOLVED": "otp_network_name_not_resolved",
+    "Failed to fetch": "otp_network_failed_to_fetch",
+}
+
+
+class EmailOtpNetworkError(RuntimeError):
+    """只携带固定传输原因；远端提交是否未知由原回执独立判断。"""
+
+    code = error_code = "otp_page_network_error"
+
+    def __init__(self, network_error: str, *, request_unknown: bool = False):
+        self.cause_code = _OTP_NETWORK_CAUSES[network_error]
+        self.network_error = network_error
+        self.request_unknown = bool(request_unknown)
+        detail = f"net::{network_error}" if network_error.startswith("ERR_") else network_error
+        super().__init__(f"{self.code}: {self.cause_code}: {detail}；验证码页面传输失败，已保留原提交及同一账号上下文")
+
+
+def _otp_trusted_location(state: dict):
+    try:
+        location = urlsplit(str(state.get("url") or ""))
+        if (location.scheme == "https" and location.hostname in {"auth.openai.com", "chatgpt.com", "chat.openai.com"}
+                and location.port in (None, 443) and not location.username and not location.password):
+            return location
+    except ValueError:
+        pass
+    return None
+
+
+def _observe_email_otp_network_error(driver, state: dict) -> None:
+    """只解释当前实际文档的传输错误，不消费历史网络或控制台信息。"""
+    try:
+        location = urlsplit(str(state.get("url") or ""))
+        chrome_error = (location.scheme == "chrome-error" and location.netloc == "chromewebdata"
+                        and location.path in {"", "/"})
+    except ValueError:
+        return
+    network_error = None
+    if chrome_error:
+        current_text = " ".join([str(state.get("text") or ""), *(str(item) for item in state.get("errors") or [])])
+        network_error = next((code for code in _OTP_NETWORK_CAUSES if code.startswith("ERR_")
+                              and re.search(r"\b" + re.escape(code) + r"\b", current_text)), None)
+    elif _otp_trusted_location(state) and state.get("authErrorPage") is True:
+        if any(re.search(r"\bfailed to fetch\b", str(item), re.IGNORECASE)
+               for item in state.get("authErrorTexts") or []):
+            network_error = "Failed to fetch"
+    if network_error is None:
+        return
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    phase = getattr(receipt, "phase", "")
+    unresolved = {"dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown"}
+    history = getattr(driver, "_browser_submission_receipts", ())
+    request_unknown = (phase in unresolved or getattr(receipt, "_otp_network_request_unknown", False) is True
+                      or isinstance(history, (list, tuple)) and any(
+                          getattr(item, "phase", "") in unresolved
+                          or getattr(item, "_otp_network_request_unknown", False) is True for item in history
+                      ))
+    context = getattr(driver, "_registration_fact_context", None)
+    if not request_unknown and isinstance(context, dict) and context.get("attempt_id") is not None:
+        try:
+            from core.storage import registration
+
+            request_unknown = registration.has_unresolved_submission_facts(int(context["attempt_id"]))
+        except Exception:
+            request_unknown = True
+            logger.warning("[OTP] 原 Attempt 未决提交暂不可核验，保留当前传输原因及未知状态")
+    error = EmailOtpNetworkError(network_error, request_unknown=request_unknown)
+    if isinstance(receipt, BrowserSubmissionReceipt) and receipt.endpoint_kind == "otp_submit" and phase in unresolved - {"unknown"}:
+        record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown", error_type=error.cause_code)
+    raise error
+
+
+def _otp_field_rejection_marks(state: dict) -> set[str]:
+    """明确字段拒绝仅属于当前可信邮箱验证码表单，通用 errors 不证明错码。"""
+    location = _otp_trusted_location(state)
+    if location is None or location.hostname != "auth.openai.com" or location.path.rstrip("/") != "/email-verification":
+        return set()
+    marks = set()
+    for index, item in enumerate(state.get("inputs") or []):
+        if (not isinstance(item, dict) or item.get("visible") is False or item.get("otpFieldVisible") is False
+                or item.get("otpFieldDisabled", item.get("disabled")) or item.get("otpFieldReadOnly", item.get("readOnly"))
+                or str(item.get("type") or "").lower() in {"hidden", "password"}):
+            continue
+        name = str(item.get("name") or "").lower()
+        attrs = " ".join(str(item.get(key) or "") for key in ("name", "id", "autocomplete")).lower()
+        if not (name == "code" or any(marker in attrs for marker in ("one-time-code", "otp", "verification"))):
+            continue
+        identity = str(item.get("id") or item.get("name") or index)
+        if str(item.get("ariaInvalid") or "").lower() == "true":
+            marks.add(f"{identity}:invalid")
+        for message in item.get("otpFieldErrors") or []:
+            text = str(message).casefold()
+            if (re.search(r"invalid|incorrect|wrong|expired|无效|不正确|错误|过期|無效|錯誤|過期|無効|正しく|期限|अमान्य|गलत", text)
+                    and re.search(r"code|验证码|驗證碼|コード|कोड", text)):
+                marks.add(f"{identity}:message:{text}")
+    return marks
+
+
+def _otp_current_remote_rejection(receipt) -> bool:
+    """只有本次请求及响应配对的明确 OTP 拒绝可以替代字段证据。"""
+    if not isinstance(receipt, BrowserSubmissionReceipt):
+        return False
+    current_status = getattr(receipt, "_otp_network_http_status", receipt.http_status)
+    current_rejection = (hasattr(receipt, "_otp_network_http_status")
+                         and getattr(receipt, "_otp_network_request_unknown", None) is False)
+    return bool(isinstance(receipt, BrowserSubmissionReceipt) and receipt.endpoint_kind == "otp_submit"
+                and receipt.http_method == "POST" and (current_rejection or receipt.phase in {"response_observed", "rejected"})
+                and isinstance(current_status, int) and 400 <= current_status < 500
+                and isinstance(receipt.request_binding, tuple) and len(receipt.request_binding) == 2
+                and bool(receipt.request_binding[1]) and receipt.response_binding == receipt.request_binding
+                and isinstance(receipt.auth_error, dict) and receipt.auth_error.get("code") == "wrong_email_otp_code")
+
+
 def _wait_after_email_otp_submit(
     driver,
     timeout: int = 60,
@@ -2491,6 +2633,7 @@ def _wait_after_email_otp_submit(
     baseline_state: dict | None = None,
     expected_email: str | None = None,
     retry_after_refresh: bool = False,
+    monitor_otp_network: bool = False,
 ) -> str:
     """提交 OTP 后等待明确的资料页、邮箱已验证提示或登录态。
 
@@ -2526,6 +2669,17 @@ def _wait_after_email_otp_submit(
     last_recovery_state = None
     log_submission_diagnostics(driver, "otp", "submitted", receipt=receipt)
 
+    def current_otp_receipt():
+        active = getattr(driver, "_browser_submission_receipt", None) if monitor_otp_network else receipt
+        return active if isinstance(active, BrowserSubmissionReceipt) and active.endpoint_kind == "otp_submit" else None
+
+    def finish(value):
+        if monitor_otp_network and value in {"accepted", "email_verified", "totp_required"}:
+            active = current_otp_receipt()
+            if active is not None and hasattr(active, "_otp_network_request_unknown"):
+                active._otp_network_request_unknown = False
+        return value
+
     def authenticated_home(read_budget, *, recovery=False):
         nonlocal session_probe_started, session_probe_failed, recovery_session_probes
         if not expected_email:
@@ -2555,6 +2709,9 @@ def _wait_after_email_otp_submit(
             return False
 
     def _new_error_mark(state: dict) -> bool:
+        if monitor_otp_network:
+            return bool(_otp_field_rejection_marks(state) - _otp_field_rejection_marks(baseline_state)
+                        or _otp_current_remote_rejection(current_otp_receipt()))
         errors = tuple(str(item) for item in (state.get("errors") or []))
         invalid = tuple(
             str(item.get("id") or item.get("name") or index)
@@ -2567,6 +2724,8 @@ def _wait_after_email_otp_submit(
         nonlocal last_recovery_state
         state = _email_otp_page_state(driver)
         state = state if isinstance(state, dict) else {}
+        if monitor_otp_network:
+            _observe_email_otp_network_error(driver, state)
         page_state = classify_page(state)
         form_ready = _email_otp_form_is_ready(state)
         recovery_state = (page_state.value, form_ready, bool(state.get("errors")), refreshed)
@@ -2580,14 +2739,14 @@ def _wait_after_email_otp_submit(
         if page_state == PageState.AUTH_ERROR:
             return None
         if state.get("emailVerified"):
-            return "email_verified"
+            return finish("email_verified")
         if has_visible_auth_inputs(state, allow_password=False):
             if page_state == PageState.MFA_TOTP:
-                return "totp_required"
+                return finish("totp_required")
             if page_state == PageState.PROFILE:
-                return "accepted"
+                return finish("accepted")
         if authenticated_home(recovery_budget, recovery=True):
-            return "accepted"
+            return finish("accepted")
         if auth_session_unavailable(driver):
             return "session_expired"
         if form_ready and _new_error_mark(state) and not _email_otp_page_recovery_reason(state):
@@ -2626,7 +2785,7 @@ def _wait_after_email_otp_submit(
         driver._email_otp_submission_recovery_id = recovery_id
         # 收码前的空壳恢复与本次提交的恢复分别计数；补交由注册入口单独记录。
         return recover_submission_page(driver, "otp", observe_recovery, budget=confirmation_budget,
-                                       receipt=receipt, sleeper=time.sleep, on_navigation=after_navigation)
+                                       receipt=current_otp_receipt(), sleeper=time.sleep, on_navigation=after_navigation)
 
     while True:
         _check_manual_stop()
@@ -2644,15 +2803,17 @@ def _wait_after_email_otp_submit(
         last = _email_otp_page_state(driver)
         if not isinstance(last, dict):
             last = {}
+        if monitor_otp_network:
+            _observe_email_otp_network_error(driver, last)
         page_state = classify_page(last)
         if page_state == PageState.MFA_TOTP:
             logger.info("%s[OTP] 邮箱验证码后进入 Authenticator TOTP，交给公共登录状态机", _log_prefix(driver))
-            return "totp_required"
+            return finish("totp_required")
         if last.get("emailVerified"):
-            return "email_verified"
+            return finish("email_verified")
         if (page_state == PageState.PROFILE and (not recovery_attempted or has_visible_auth_inputs(last, allow_password=False))
                 or authenticated_home(confirmation_budget)):
-            return 'accepted'
+            return finish('accepted')
         if page_state == PageState.LOGGED_OUT or auth_session_unavailable(driver):
             log_submission_diagnostics(driver, "otp", "auth_session_unavailable", receipt=receipt)
             return "session_expired"
@@ -2671,14 +2832,19 @@ def _wait_after_email_otp_submit(
                                        or time.monotonic() >= recovery_at):
             recovered = recover_once()
             if recovered:
-                return recovered
+                return finish(recovered)
         if page_state in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
             return 'stuck'
     log_submission_diagnostics(driver, "otp", "timeout", receipt=receipt)
+    if monitor_otp_network:
+        last = _email_otp_page_state(driver)
+        last = last if isinstance(last, dict) else {}
+        _observe_email_otp_network_error(driver, last)
     if _is_email_verification_page(driver):
         # 超时仍停留：有错误标记是 invalid；没有错误标记也说明提交没有产生跳转，
         # 返回 stuck，让上层保留原提交并等待同一 Attempt 恢复。
-        last = _email_otp_page_state(driver)
+        if not monitor_otp_network:
+            last = _email_otp_page_state(driver)
         has_error_mark = _new_error_mark(last)
         if has_error_mark and not _email_otp_page_recovery_reason(last):
             logger.warning("%s[OTP] 提交后仍停留验证码页且存在错误标记，按验证码无效处理 snapshot=%s", _log_prefix(driver), last)
@@ -2689,7 +2855,7 @@ def _wait_after_email_otp_submit(
         )
         return 'stuck'
     if isinstance(last, dict) and last.get("emailVerified"):
-        return "email_verified"
+        return finish("email_verified")
     # 页面离开验证码路由不代表验证成功；空壳或未知跳转保持原提交待确认。
     return 'stuck'
 
