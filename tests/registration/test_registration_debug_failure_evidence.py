@@ -62,6 +62,51 @@ def test_failure_network_evidence_ignores_unbound_or_success_auth_error(changes)
     assert "auth_error" not in evidence
 
 
+@pytest.mark.parametrize("record", [
+    {"url": "https://chatgpt.com/cdn/assets/app.js", "resource_type": "Script",
+     "failure": "net::ERR_HTTP2_PING_FAILED"},
+    {"url": "https://assets.example.test/image.png", "resource_type": "Image",
+     "failure": "net::ERR_SSL_PROTOCOL_ERROR"},
+    {"url": "https://assets.example.test/blocked.js", "resource_type": "Script",
+     "failure": "net::ERR_TUNNEL_CONNECTION_FAILED"},
+    {"url": "https://chatgpt.com/cdn/assets/app.js", "resource_type": "Script",
+     "failure": "network_failed", "status": 403, "_data_saver_blocked": True},
+])
+def test_real_transport_and_http_errors_are_not_hidden_by_data_saver_compatibility(record):
+    with patch("core.browser.data_saver.configured_resource_types", return_value=["image"]), \
+            patch("core.browser.data_saver.configured_url_patterns", return_value=["https://assets.example.test/*"]):
+        assert debug._is_expected_data_saver_failure(record) is False
+
+
+@pytest.mark.parametrize("failure", [
+    "net::ERR_HTTP2_PROTOCOL_ERROR", "net::ERR_PROXY_CONNECTION_FAILED", "net::ERR_TLS13_DOWNGRADE_DETECTED",
+    "net::ERR_CERT_DATE_INVALID", "net::ERR_CONNECTION_RESET", "net::ERR_CONN_RESET", "net::ERR_TIMED_OUT",
+    "net::ERR_NAME_NOT_RESOLVED", "net::ERR_INTERNET_DISCONNECTED",
+])
+def test_known_chromium_transport_families_override_even_explicit_data_saver_marker(failure):
+    assert debug._is_expected_data_saver_failure({"failure": failure, "_data_saver_blocked": True}) is False
+
+
+@pytest.mark.parametrize("failure", [
+    "network_failed", "net::ERR_ABORTED", "net::ERR_BLOCKED_BY_CLIENT",
+    "message net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_RESET trailing", "connection failed",
+])
+def test_existing_marker_compatibility_and_nontransport_errors_keep_behavior(failure):
+    assert debug._is_expected_data_saver_failure({"failure": failure, "_data_saver_blocked": True}) is True
+
+
+def test_http2_asset_failure_remains_in_diagnostic_counts_and_category(session):
+    session.record_network({
+        "method": "GET", "url": "https://chatgpt.com/cdn/assets/app.js", "resource_type": "Script",
+        "failure": "net::ERR_HTTP2_PING_FAILED", "status": 0,
+    })
+    summary = session.summary()
+    assert summary["failed_count"] == 1
+    assert summary["data_saver_blocked_count"] == 0
+    assert summary["network_error_observed"] is True
+    assert category(session, "找不到邮箱输入框") == "network_or_proxy"
+
+
 def test_unresolved_auth_challenge_explains_entry_timeout_without_debug_disk_reads(session):
     session.record_network(challenge_record())
     reason = "StageTimeout: 找不到邮箱输入框"

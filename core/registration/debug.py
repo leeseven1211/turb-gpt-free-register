@@ -32,8 +32,20 @@ logger = logging.getLogger('core.registration_debug')
 
 
 def _is_expected_data_saver_failure(item: dict[str, Any] | None) -> bool:
-    """Treat intentionally blocked optional browser resources as non-errors."""
+    """只忽略主动阻断的可选资源，保留明确传输故障与 HTTP 错误。"""
     record = item if isinstance(item, dict) else {}
+    try:
+        status = int(record.get("status") or 0)
+    except (TypeError, ValueError, OverflowError):
+        status = 0
+    if status >= 400:
+        return False
+    if re.fullmatch(
+        r"net::ERR_(?:(?:HTTP2|TUNNEL|PROXY_CONNECTION|SSL|TLS[0-9]*|CERT|CONNECTION|CONN)_[A-Z0-9_]+"
+        r"|TIMED_OUT|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED)",
+        str(record.get("failure") or ""),
+    ):
+        return False
     if bool(record.get("_data_saver_blocked")):
         return True
     url = str(record.get("url") or "")
