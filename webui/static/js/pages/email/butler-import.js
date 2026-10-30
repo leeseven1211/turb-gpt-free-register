@@ -3,7 +3,7 @@ const BUTLER_IMPORT_STORAGE_KEY = 'turb.butler-import.v1';
 const BUTLER_IMPORT_STATE = {
   preview: null, previewVersion: 0, request: null, batch: null,
   busy: false, polling: false, timer: null, opener: null,
-  maxCount: 200, refreshedImported: -1, storageError: false,
+  refreshedImported: -1, storageError: false,
   previewTimer: null, refreshPromise: null, lastRefreshAt: 0,
   resumePending: null,
 };
@@ -117,8 +117,8 @@ function butlerImportFilters() {
   };
   if (filters.provider !== 'icloud_hme') throw new Error('当前仅支持从 Butler 导入 iCloud HME');
   if (!['all', 'primary', 'plus_alias'].includes(filters.identity_type)) throw new Error('请选择母邮箱、子邮箱或全部');
-  if (!Number.isInteger(filters.count) || filters.count < 1 || filters.count > BUTLER_IMPORT_STATE.maxCount) {
-    throw new Error(`数量须为 1–${BUTLER_IMPORT_STATE.maxCount} 的整数`);
+  if (!Number.isSafeInteger(filters.count) || filters.count < 1) {
+    throw new Error('数量须为大于0的整数');
   }
   return filters;
 }
@@ -143,9 +143,6 @@ async function loadButlerImportOptions() {
   try {
     const data = await api('/api/email-butler/import-options');
     if (data.ok === false) throw new Error(data.error || '无法读取导入选项');
-    BUTLER_IMPORT_STATE.maxCount = Math.min(200, Math.max(1, Number(data.max_count) || 200));
-    const count = butlerImportElement('butlerImportCount');
-    if (count) count.max = String(BUTLER_IMPORT_STATE.maxCount);
     for (const [key, id] of [['domains', 'butlerImportDomains'], ['groups', 'butlerImportGroups']]) {
       const list = butlerImportElement(id);
       if (list) list.innerHTML = (data[key] || []).map(item => {

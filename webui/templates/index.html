@@ -1024,8 +1024,8 @@
       </label>
       <label class="outlook-import-field" for="butlerImportCount">
         <span>导入数量</span>
-        <input id="butlerImportCount" type="number" min="1" max="200" step="1" value="10" inputmode="numeric" aria-describedby="butlerImportCountHint">
-        <small id="butlerImportCountHint" class="outlook-import-hint">每批 1–200 个；不足时按实际可用数量导入。</small>
+        <input id="butlerImportCount" type="number" min="1" step="1" value="10" inputmode="numeric" aria-describedby="butlerImportCountHint">
+        <small id="butlerImportCountHint" class="outlook-import-hint">导入数量不限；不足时按实际可用数量导入。</small>
       </label>
     </div>
     <details>
@@ -1136,7 +1136,7 @@
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-butler-unlimited') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>

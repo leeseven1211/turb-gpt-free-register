@@ -340,7 +340,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             'invalid_request_id': '导入请求编号无效，请重新预览。',
             'invalid_preview_token': '预览编号无效，请重新预览。',
             'invalid_batch_id': '导入批次编号无效。',
-            'invalid_import_count': '每批导入数量须为 1–200 的整数。',
+            'invalid_import_count': '导入数量须为大于 0 的整数。',
             'unsupported_import_type': '请选择当前支持的邮箱类型。',
             'invalid_import_domain': '请检查域名筛选。',
             'invalid_import_group': '请检查分组筛选。',

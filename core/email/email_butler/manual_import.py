@@ -73,7 +73,7 @@ def _filters(data):
     count = data.get('count')
     if provider != 'icloud_hme' or identity_type not in {'all', 'primary', 'plus_alias'}:
         raise ValueError('unsupported_import_type')
-    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 200:
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError('invalid_import_count')
     result = {'provider': provider, 'identity_type': identity_type, 'count': count}
     for field in ('domain', 'group'):
@@ -88,7 +88,7 @@ def _filters(data):
 def options():
     return {'ok': True, 'providers': [{'value': 'icloud_hme', 'label': 'iCloud 隐藏邮箱'}],
             'identity_types': [{'value': 'all', 'label': '全部'}, {'value': 'primary', 'label': '母邮箱'},
-                               {'value': 'plus_alias', 'label': '子邮箱'}], 'max_count': 200,
+                               {'value': 'plus_alias', 'label': '子邮箱'}], 'max_count': None,
             'domains': [], 'groups': []}
 
 
@@ -98,12 +98,12 @@ def preview(data):
     who = _request('GET', '/me', connection)
     client_id = handoff.verify_client(who)
     parameters = {key: value for key, value in filters.items() if key != 'count'}
-    result = _request('GET', '/mailboxes/import-candidates', connection, params={**parameters, 'limit': 5000})
+    result = _request('GET', '/mailboxes/import-candidates', connection, params={**parameters, 'limit': 0})
     if result.get('supported') is not True or result.get('policy_applied') is not True or not isinstance(result.get('candidates'), list):
         raise RemoteError('butler_candidates_contract_unsupported')
     candidates, seen = [], set()
     try:
-        for raw in result['candidates'][:5000]:
+        for raw in result['candidates']:
             item = handoff.validate_candidate(raw, mailbox=connection['mailbox_email'])
             if item['email'] in seen:
                 continue

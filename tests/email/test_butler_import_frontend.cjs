@@ -49,7 +49,7 @@ function createView({saved, handler, storageFails = false, refreshFails = false,
       const call = {url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : undefined};
       requests.push(call);
       if (handler) return handler(call, {storage, node});
-      if (url.endsWith('import-options')) return {ok: true, providers: [{value: 'icloud_hme', label: 'iCloud HME'}], max_count: 200};
+      if (url.endsWith('import-options')) return {ok: true, providers: [{value: 'icloud_hme', label: 'iCloud HME'}], max_count: null};
       if (url.endsWith('import-preview')) return {ok: true, preview_token: 'preview-1', available: 12, selected: 5, count: 5, items: []};
       return {ok: true, batch: {batch_id: 'batch-1', status: 'running', requested: 5, total: 5, imported: 1, skipped: 0, pending: 4}};
     },
@@ -71,7 +71,7 @@ const content = element => `${element.textContent} ${element.innerHTML}`;
 
 test('打开弹窗自动查询可用数量，查询不领取邮箱也不展示地址列表', async () => {
   const h = createView({handler(call) {
-    if (call.url.endsWith('import-options')) return {ok: true, max_count: 200};
+    if (call.url.endsWith('import-options')) return {ok: true, max_count: null};
     assert.ok(call.url.endsWith('import-preview'));
     return {ok: true, preview_token: 'p', available: 12, selected: 5,
       items: [{email: 'private-address@icloud.com'}]};
@@ -112,15 +112,41 @@ test('预览仅调用只读接口，筛选变化使旧预览不能提交', async
 });
 
 test('数量范围和类型在前端校验，未发送无效预览', async () => {
-  for (const value of ['0', '201', '1.5', '']) {
+  for (const value of ['0', '-1', '1.5', '', '9007199254740992', 'Infinity', 'invalid']) {
     const h = createView(); h.node('butlerImportCount').value = value;
     await h.view.preview();
     assert.equal(h.requests.length, 0);
-    assert.match(h.node('butlerImportError').textContent, /1.*200/);
+    assert.equal(h.node('butlerImportError').textContent, '数量须为大于0的整数');
   }
   const h = createView(); h.node('butlerImportProvider').value = 'outlook';
   await h.view.preview();
   assert.equal(h.requests.length, 0);
+});
+
+test('导入数量不限，201与10000均可预览并提交原请求', async () => {
+  for (const count of [201, 10000]) {
+    const h = createView({handler(call) {
+      if (call.url.endsWith('import-options')) return {ok: true, max_count: null};
+      if (call.url.endsWith('import-preview')) {
+        assert.equal(call.body.count, count);
+        return {ok: true, preview_token: `preview-${count}`, available: count, selected: count};
+      }
+      assert.equal(call.url, '/api/email-butler/imports');
+      assert.equal(call.body.preview_token, `preview-${count}`);
+      return {ok: true, batch: {batch_id: `batch-${count}`, status: 'running',
+        requested: count, total: count, imported: 0, pending: count}};
+    }});
+    h.node('butlerImportCount').value = String(count);
+    await h.view.open();
+    assert.equal(h.node('butlerImportCount').max, undefined);
+    assert.equal(h.node('btnApplyButlerImport').disabled, false);
+    assert.match(h.node('btnApplyButlerImport').textContent, new RegExp(String(count)));
+    await h.view.apply();
+    assert.equal(h.view.state.batch.total, count);
+    assert.equal(JSON.parse(h.storage.get('turb.butler-import.v1')).filters.count, count);
+    assert.deepEqual(h.requests.map(call => call.url), ['/api/email-butler/import-options',
+      '/api/email-butler/import-preview', '/api/email-butler/imports']);
+  }
 });
 
 test('提交前持久化请求，响应未知后重开仍重试同一请求并禁止重复点击', async () => {

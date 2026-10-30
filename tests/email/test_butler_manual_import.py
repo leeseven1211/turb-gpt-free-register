@@ -106,6 +106,18 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
         self.assertTrue(all(method == 'GET' for method, _, _ in self.calls))
 
+    def test_preview_accepts_unlimited_count_and_keeps_candidates_after_5000(self):
+        self.addresses = [f'parent+large{index}@icloud.com' for index in range(5001)]
+        result = self.preview(count=10000)
+        self.assertEqual((result['count'], result['selected'], result['available']), (10000, 5001, 5001))
+        snapshot = record_store.get_row_by(record_store.EMAIL_BUTLER_IMPORT_PREVIEWS,
+                                          'preview_token', result['preview_token'])
+        self.assertEqual(snapshot['candidates'][-1]['email'], self.addresses[-1])
+        calls = [kwargs for _, path, kwargs in self.calls if path == '/mailboxes/import-candidates']
+        self.assertEqual(calls[0]['params']['limit'], 0)
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
+        self.assertIsNone(self.service.options()['max_count'])
+
     def test_create_freezes_candidates_and_request_replay_does_not_select_again(self):
         batch, request = self.create()
         frozen = self.items(batch)
@@ -128,18 +140,18 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertNotIn('icloud.com', str(result))
         self.assertNotIn('fixture-secret', str(result))
 
-    def test_bulk_import_splits_200_addresses_into_eight_requests(self):
+    def test_bulk_import_larger_than_200_still_uses_groups_of_25(self):
         self.bulk_supported = True
-        self.addresses = [f'parent+batch{index}@icloud.com' for index in range(200)]
-        preview = self.preview(count=200)
+        self.addresses = [f'parent+batch{index}@icloud.com' for index in range(201)]
+        preview = self.preview(count=201)
         batch = self.service.create({'request_id': str(uuid.uuid4()), 'preview_token': preview['preview_token']})
         self.calls.clear()
         self.service._run_batch(batch['batch_id'])
         result = self.service.get(batch['batch_id'])
-        self.assertEqual((result['status'], result['imported']), ('completed', 200))
+        self.assertEqual((result['status'], result['imported']), ('completed', 201))
         writes = [(path, kwargs) for _, path, kwargs in self.calls if path.startswith('/mailboxes')]
-        self.assertEqual([path for path, _ in writes], ['/mailboxes/import-batch'] * 8)
-        self.assertEqual([len(kwargs['json']['items']) for _, kwargs in writes], [25] * 8)
+        self.assertEqual([path for path, _ in writes], ['/mailboxes/import-batch'] * 9)
+        self.assertEqual([len(kwargs['json']['items']) for _, kwargs in writes], [25] * 8 + [1])
 
     def test_bulk_timeout_preserves_original_items_and_retry_does_not_replace(self):
         self.bulk_supported = True
@@ -237,7 +249,7 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_IMPORT_BATCHES), 0)
 
     def test_validation_never_calls_remote_for_invalid_count_or_provider(self):
-        for data in [{'provider': 'outlook', 'count': 1}, {'count': True}, {'count': 0}, {'count': 201},
+        for data in [{'provider': 'outlook', 'count': 1}, {'count': True}, {'count': 0}, {'count': -1}, {'count': 1.5},
                      {'count': 1, 'identity_type': 'unrecognized'}]:
             with self.subTest(data=data), self.assertRaises(ValueError):
                 self.service.preview(data)
