@@ -50,6 +50,7 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 | `email_inbox_profiles` | 实际收件箱的配置版本和凭据引用，不保存密钥副本 |
 | `email_otp_requests` | 完整派生地址的认证租约、执行 fence、challenge 和候选消息事实，不保存验证码 |
 | `codex_credentials` | Codex OAuth 凭证 |
+| `codex_callback_receipts` | CPA/sub2 callback 提交回执；与可用 OAuth 凭证分开保存 |
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
@@ -191,8 +192,8 @@ RETURNING id
 
 ### 兼容导出
 
-通用 API、域名邮箱和 Codex 的兼容产物由 `core/compat_export.py` 在后台去抖生成。
-账号、注册任务、Outlook 和 iCloud 邮箱池不生成根目录快照，WebUI/API 直接查询 PostgreSQL：
+通用 API、域名邮箱的兼容产物由 `core/compat_export.py` 在后台去抖生成。
+账号、注册任务、Outlook、iCloud 邮箱池和 Codex 不生成自动快照，WebUI/API 直接查询 PostgreSQL：
 
 - 导出器只接收"种类"名，到点自己从库里重读当前状态。合并因此天然正确——最后
   一次渲染写的一定是最新状态，也不必在内存里留几 MB 的快照。
@@ -208,6 +209,28 @@ RETURNING id
 COMPAT_EXPORT_MODE=debounced|sync|off      # 默认 debounced
 COMPAT_EXPORT_DEBOUNCE_SECONDS=5.0
 ```
+
+### Codex 凭证与回执
+
+Codex 的正常业务读写不依赖文件，也不把状态重复写入 `app_collections`。
+
+| 表 | 正式列 | `data JSONB` |
+|---|---|---|
+| `codex_credentials` | `filename`（唯一）、`email`、`plan`、`account_id`、创建/更新时间、`archived`、`exported_count`、OAuth 状态与过期时间 | 完整 `content`、导出时间、sub2 上传次数/时间及同步错误、OAuth 刷新记录、归档时间等 |
+| `codex_callback_receipts` | `filename`（唯一）、`email`、`source`（`cpa` / `sub2`）、创建/更新时间 | 完整回执 `content`，包括 callback、远端提交响应和提交时间 |
+
+导出、sub2 上传计数在数据库端原子递增；凭证更新保留既有统计。callback 被接收仍只代表远端交接完成，回执不进入凭证列表，也不会把待确认授权改为成功。`CPA_SAVE_CALLBACK_RECEIPT` 继续控制是否保存回执，存储目标改为数据库。驱动返回的 `file_path` / `receipt_path` 保留原名称契约，仅用作逻辑标识，不保证磁盘文件存在。
+
+主动下载从数据库即时生成 CPA 兼容 JSON，上传 sub2api 同样直接读取数据库。保存、刷新、归档、计数和删除不再生成或改写 `codex_accounts/`、`core/codex_accounts/`、`codex_导出状态.json`；删除数据库凭证也不删除历史文件。
+
+历史文件通过独立迁移命令显式对账，不能在启动时扫描导入：
+
+```bash
+python tools/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --dry-run
+python tools/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --apply
+```
+
+工具分别读取仓库根目录与 `core/` 下的历史凭证及对应状态文件。`--dry-run` 不创建表或写库，只报告数量及错误分类；`--apply` 仅补齐缺失记录，现存行的 Token、导出次数、归档状态和错误信息全部保留，重复执行新增为零。除文件名外，还按 `account_id`、无 ID 时按邮箱及套餐核对身份；更名前的旧副本计入 `existing_identity_credentials`，不会导入成第二条凭证。写入前取得与授权保存相同的身份锁并重新核对，避免并发授权造成重复。回执单独导入回执表；孤立状态只报告数量，不生成虚假凭证。同名缺失记录内容冲突、新记录身份重复或输入损坏时停止导入，防止部分迁移。文件不会被自动删除或移动，历史文件不替代 PostgreSQL 备份。
 
 ### 没有纯文件模式
 
@@ -265,8 +288,8 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 
 仍保留文件形态、但不作为 Codex 凭证事实来源的兼容产物：
 
-- `codex_accounts/*.json` —— PostgreSQL `codex_credentials` 的 CPA 兼容输出。有真实外部
-  消费者（CPA 按此格式读），因此必须保留按需生成和导出能力。
+- Codex 主动下载的 JSON —— 从 PostgreSQL 按需生成的 CPA 兼容产物；历史
+  `codex_accounts/*.json` 不再由运行时维护。
 - `logs/run/sms_cancel_queue.json` —— 待取消的接码订单队列，带退避重试。这是**欠外部
   平台的动作**，崩溃后必须恢复，本质上和 `account_action_tasks` 同类。
 - `logs/run/roxy_active_profiles.json` —— 孤儿浏览器环境登记表，崩溃恢复用。

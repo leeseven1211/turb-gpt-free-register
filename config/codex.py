@@ -123,7 +123,7 @@ CPA_CREDENTIAL_CONFIRM_TIMEOUT: int = schema_default("CPA_CREDENTIAL_CONFIRM_TIM
 CPA_CALLBACK_SUBMIT_RETRIES: int = 5
 CPA_CALLBACK_SUBMIT_RETRY_DELAY: int = 6
 
-# CPA 未返回完整 auth json 时，是否仍在本地 codex_accounts/ 记录一份回调提交凭据
+# CPA/sub2 未返回完整 auth JSON 时，是否在数据库保存一份 callback 回执
 CPA_SAVE_CALLBACK_RECEIPT: bool = schema_default("CPA_SAVE_CALLBACK_RECEIPT")
 
 # ============================================================

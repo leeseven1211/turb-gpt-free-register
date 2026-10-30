@@ -485,6 +485,19 @@ CODEX_CREDENTIALS = TableSpec(
     indexes=(("archived", "id"), ("email",), ("account_id",), ("oauth_status",)),
 )
 
+CODEX_CALLBACK_RECEIPTS = TableSpec(
+    name="codex_callback_receipts",
+    promoted={
+        "filename": "TEXT NOT NULL",
+        "email": "TEXT",
+        "source": "TEXT NOT NULL",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    },
+    unique=("filename",),
+    indexes=(("email",), ("source",)),
+)
+
 PROXY_LEASES = TableSpec(
     name="proxy_leases",
     promoted={
@@ -610,6 +623,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     EMAIL_USAGE_REPORTS,
     EMAIL_OTP_REQUESTS,
     CODEX_CREDENTIALS,
+    CODEX_CALLBACK_RECEIPTS,
     PROXY_LEASES,
     PROXY_POOL_RESOURCES,
     BROWSER_TRAFFIC,

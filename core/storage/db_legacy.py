@@ -4,8 +4,8 @@
 
 配置 DATABASE_URL 后，PostgreSQL 是业务数据的唯一事实来源。
 
-兼容导出仅保留仍有外部消费者的通用 API 邮箱、域名邮箱和 Codex 凭证产物；
-账号、注册任务、Outlook 和 iCloud 邮箱池均只通过行级表读写。
+兼容导出仅保留仍有外部消费者的通用 API 邮箱和域名邮箱产物；
+账号、注册任务、Codex 凭证、Outlook 和 iCloud 邮箱池均只通过行级表读写。
 """
 import hashlib
 import json
@@ -35,11 +35,9 @@ class SnapshotConflictError(RuntimeError):
 
 _GENERIC_API_EMAIL_JSON = _PROJECT_ROOT / "用于注册的API邮箱.json"
 _GENERIC_API_EMAIL_TXT = _PROJECT_ROOT / "用于注册的API邮箱.txt"
+# 历史路径仅保留给兼容返回字段和隔离测试，不再自动生成或清理文件。
 _CODEX_DIR = _PROJECT_ROOT / "codex_accounts"
-# 导出状态单独存：{ "codex-邮箱-plan.json": {"exported_at": "...", "exported_count": N} }
-# 不污染 CPA 兼容的原文件
 _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
-_CODEX_CREDENTIALS_COLLECTION = "codex_credentials"
 
 _LOCK = threading.RLock()
 _COMPAT_SCHEMA_LOCK_KEY = "turb-compat-schema-init"
@@ -707,8 +705,6 @@ def mark_codex_account_deactivated(
     if conn is None:
         with record_store.transaction() as own:
             changed = mark_codex_account_deactivated(email, reason, checked_at=checked_at, conn=own)
-        if changed:
-            compat_export.schedule("codex_credentials")
         return changed
     normalized_reason = str(reason or "account_deactivated").strip()[:500]
     now = str(checked_at or _now())
@@ -1804,8 +1800,6 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None, *,
     if conn is None:
         with record_store.transaction() as own:
             updated = update_account_deactivation_mail(acc_id, result, conn=own)
-        if updated and str(result.get("status") or "") == "success" and result.get("detected"):
-            compat_export.schedule("codex_credentials")
         return updated
     row = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=True)
     if row is None:
@@ -2001,7 +1995,6 @@ def restore_account_after_deactivation(acc_id: int, *, reason: str) -> bool:
     if not normalized_reason:
         raise ValueError("恢复账号必须填写确认原因")
     operation.init()
-    changed_credentials = False
     with record_store.transaction() as conn:
         account = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=True)
         if account is None:
@@ -2087,9 +2080,6 @@ def restore_account_after_deactivation(acc_id: int, *, reason: str) -> bool:
                 "oauth_refresh_error": "account_restored_reauth_required: 账号访问已恢复，Codex 凭证需重新授权",
                 "updated_at": now,
             }, conn=conn)
-            changed_credentials = True
-    if changed_credentials:
-        compat_export.schedule("codex_credentials")
     return True
 
 
@@ -2860,7 +2850,7 @@ def get_generic_api_email_by_email(email: str) -> dict | None:
 
 
 # ============================================================
-# Codex 授权账号（PostgreSQL 是事实来源，codex_accounts/ 仅为兼容导出）
+# Codex 授权账号（凭证和操作状态均只保存于 PostgreSQL）
 # ============================================================
 
 _CODEX_PLANS = {"free", "plus", "team", "pro", "enterprise"}
@@ -3055,35 +3045,12 @@ def _sync_codex_credentials_collection() -> dict:
     }
 
 
-def _export_codex_credentials() -> None:
-    """从数据库重建 CPA 兼容文件和旧导出状态文件。"""
-    _CODEX_DIR.mkdir(parents=True, exist_ok=True)
-    state: dict[str, dict] = {}
-    for row in record_store.list_rows(record_store.CODEX_CREDENTIALS, order_by="id"):
-        filename = _validate_codex_filename(str(row.get("filename") or ""))
-        content = row.get("content")
-        if not isinstance(content, dict):
-            continue
-        path = _CODEX_DIR / filename
-        temporary = path.with_name(path.name + f".tmp.{uuid.uuid4().hex}")
-        temporary.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
-        metadata = {field: row.get(field) for field in _CODEX_STATE_FIELDS if row.get(field) not in (None, False, 0, "")}
-        if metadata:
-            state[filename] = metadata
-    _write_json(_CODEX_EXPORT_STATE, state)
-
-
-compat_export.register("codex_credentials", _export_codex_credentials)
-
-
 def save_codex_credential_record(filename: str, content: dict) -> None:
-    """原子写入凭证行；兼容文件由后台去抖导出。"""
+    """原子写入凭证行，不生成本地凭证或导出状态快照。"""
     name = _validate_codex_filename(filename)
     if not isinstance(content, dict):
         raise ValueError("Codex 凭证必须是 JSON 对象")
     _upsert_codex_credential_record(name, content)
-    compat_export.schedule("codex_credentials")
 
 
 def write_codex_credential(filename: str, content: dict) -> None:
@@ -3110,7 +3077,6 @@ def _save_codex_export_state(state: dict) -> None:
         row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
         if row:
             record_store.patch_row(record_store.CODEX_CREDENTIALS, int(row["id"]), dict(changes or {}))
-    compat_export.schedule("codex_credentials")
 
 
 def list_codex_accounts(archived: str | bool | None = "0", date_from: str | None = None, date_to: str | None = None) -> list[dict]:
@@ -3145,7 +3111,6 @@ def _patch_codex(filename: str, changes: dict) -> dict | None:
     if row is None:
         return None
     record_store.patch_row(record_store.CODEX_CREDENTIALS, int(row["id"]), changes)
-    compat_export.schedule("codex_credentials")
     return {**row, **changes}
 
 
@@ -3193,7 +3158,6 @@ def _increment_codex_state(filename: str, *, counter: str, timestamp: str, extra
         raw = cur.fetchone()
     if raw is None:
         raise ValueError(f"凭证不存在: {name}")
-    compat_export.schedule("codex_credentials")
     return record_store.merge_row(record_store.CODEX_CREDENTIALS, raw)
 
 
@@ -3234,18 +3198,14 @@ def reset_codex_exported(filename: str) -> None:
 
 
 def delete_codex_credential(filename: str) -> bool:
-    """删除数据库凭证，并精确删除同名兼容文件；不会递归操作目录。"""
+    """只删除数据库凭证，不读取或清理历史兼容文件。"""
     name = _validate_codex_filename(filename)
-    path = _CODEX_DIR / name
     with _LOCK:
         row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", name)
         if row is None:
             return False
         with record_store.transaction() as conn:
             record_store.delete_rows(record_store.CODEX_CREDENTIALS, [int(row["id"])], conn=conn)
-            if path.exists() and path.is_file():
-                path.unlink()
-        compat_export.schedule("codex_credentials")
         return True
 
 

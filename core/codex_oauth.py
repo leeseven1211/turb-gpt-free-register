@@ -1719,7 +1719,7 @@ def _credential_file_name(email: str, plan_type: str) -> str:
 
 
 def save_codex_credential(storage: dict, email: str, plan_type: str) -> Path:
-    """保存 Codex 凭证到数据库；返回对应的 CPA 兼容导出路径。"""
+    """保存 Codex 凭证到数据库；返回兼容路径标识，不生成本地文件。"""
     out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
     fname = _credential_file_name(email, plan_type)
     path = out_dir / fname
@@ -1773,9 +1773,9 @@ def _save_cpa_local_record(
     submit_payload: dict,
 ) -> Path | None:
     """
-    本地记录 CPA 授权结果：
-      1) 如果 CPA 返回完整 auth json，保存为可用 codex-邮箱[-plan].json；
-      2) 否则按配置保存 callback 提交回执，便于追踪 CPA 侧授权文件。
+    在数据库记录 CPA 授权结果：
+      1) 如果 CPA 返回完整 auth json，保存为可用 Codex 凭证；
+      2) 否则按配置单独保存 callback 提交回执，便于追踪 CPA 侧授权文件。
     """
     auth_json = _extract_cpa_auth_json(submit_payload)
     if auth_json:
@@ -1787,7 +1787,6 @@ def _save_cpa_local_record(
         return None
 
     out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
-    out_dir.mkdir(parents=True, exist_ok=True)
     safe_email = (email or "unknown").strip().replace("/", "_").replace("\\", "_")
     path = out_dir / f"codex-{safe_email}-cpa-callback.json"
     record = {
@@ -1799,9 +1798,10 @@ def _save_cpa_local_record(
         "cpa_management_origin": _cpa_management_origin(),
         "cpa_submit_response": submit_payload,
         "submitted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "note": "授权地址由 CPA 生成；callback 已提交给 CPA。若 CPA 响应未包含 token，本文件为本地回执记录。",
+        "note": "授权地址由 CPA 生成；callback 已提交给 CPA。若 CPA 响应未包含 token，本记录仅为数据库回执。",
     }
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from core.storage import codex as codex_store
+    codex_store.save_codex_callback_receipt(path.name, record, source="cpa")
     return path
 
 
@@ -1813,7 +1813,7 @@ def _save_sub2_local_record(
     state: str,
     submit_payload: dict,
 ) -> Path | None:
-    """本地记录 sub2 授权结果；若 sub2 返回完整 auth json，则保存为可用 codex 凭证。"""
+    """在数据库单独记录 sub2 回执；完整 auth json 则保存为可用 Codex 凭证。"""
     auth_json = _extract_cpa_auth_json(submit_payload)
     if auth_json:
         effective_email = auth_json.get("email") or email
@@ -1824,7 +1824,6 @@ def _save_sub2_local_record(
         return None
 
     out_dir = _PROJECT_ROOT / _cfg.CODEX_OUTPUT_DIRNAME
-    out_dir.mkdir(parents=True, exist_ok=True)
     safe_email = (email or "unknown").strip().replace("/", "_").replace("\\", "_")
     path = out_dir / f"codex-{safe_email}-sub2-callback.json"
     try:
@@ -1840,9 +1839,10 @@ def _save_sub2_local_record(
         "sub2_origin": sub2_origin,
         "sub2_submit_response": submit_payload,
         "submitted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "note": "授权地址由 sub2 生成；callback 已上传给 sub2。若 sub2 响应未包含 token，本文件为本地回执记录。",
+        "note": "授权地址由 sub2 生成；callback 已上传给 sub2。若 sub2 响应未包含 token，本记录仅为数据库回执。",
     }
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from core.storage import codex as codex_store
+    codex_store.save_codex_callback_receipt(path.name, record, source="sub2")
     return path
 
 

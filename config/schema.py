@@ -1621,7 +1621,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "CPA_SAVE_CALLBACK_RECEIPT", "file": "codex.py", "type": "bool", "group": "Codex",
-        "label": "保存CPA回执", "help": "CPA 未返回完整授权文件时，本地仍保存一份回调提交记录",
+        "label": "保存CPA回执", "help": "CPA/sub2 未返回完整授权文件时，在数据库单独保存 callback 回执，不作为可用凭证",
     },
 
     {
