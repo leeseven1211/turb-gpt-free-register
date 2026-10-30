@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from core.storage.email import local_imports as imports
 
 logger = logging.getLogger('core.butler_manual_import')
 _ITEM_STATES = ('pending', 'submitting', 'unknown', 'imported', 'skipped', 'failed')
+_HANDOFF_BATCH_SIZE = 25
 
 
 class RemoteError(RuntimeError):
@@ -266,10 +268,26 @@ def _batch_error_code(error):
     return 'import_internal_error'
 
 
-def _process_item(batch, item, profile):
+def _prepare_item(item):
+    """先持久化原交接意图，远端等待期间不占用业务连接。"""
     address = item['address_norm']
-    # Commit submitting before any network. A crash from this point is an
-    # uncertain original handoff, recovered only by explicit retry.
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, 'registered-account:' + address)
+        existing = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, conn=conn)
+        if existing and (existing.get('butler_handoff') or {}).get('acquisition_id') == item['acquisition_id']:
+            _patch_item(item['id'], {'status': 'imported', 'pool_id': existing['id'], 'error_code': None}, conn=conn)
+            return False
+        if store.conflicts([address], conn=conn, exclude_item_id=item['id']):
+            _patch_item(item['id'], {'status': 'skipped' if item['status'] == 'pending' else 'unknown',
+                                    'error_code': 'local_email_conflict'}, conn=conn)
+            return False
+        _patch_item(item['id'], {'status': 'submitting', 'error_code': None}, conn=conn)
+    return True
+
+
+def _finish_item(item, profile, receipt):
+    """远端已确认后重新锁定地址，原子保存本地库存与进度。"""
+    address = item['address_norm']
     with record_store.transaction() as conn:
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
         existing = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, conn=conn)
@@ -277,27 +295,55 @@ def _process_item(batch, item, profile):
             _patch_item(item['id'], {'status': 'imported', 'pool_id': existing['id'], 'error_code': None}, conn=conn)
             return
         if store.conflicts([address], conn=conn, exclude_item_id=item['id']):
-            _patch_item(item['id'], {'status': 'skipped' if item['status'] == 'pending' else 'unknown',
-                                    'error_code': 'local_email_conflict'}, conn=conn)
+            _patch_item(item['id'], {'status': 'unknown', 'error_code': 'local_email_conflict'}, conn=conn)
             return
-        _patch_item(item['id'], {'status': 'submitting', 'error_code': None}, conn=conn)
+        inserted, _ = imports.import_resources([item['candidate']], source='email_butler',
+            _fixed_profile=profile, _handoffs={address: receipt}, _manual_item_id=item['id'], _conn=conn)
+        if not inserted:
+            raise ValueError('local_import_unconfirmed')
+        row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, conn=conn)
+        _patch_item(item['id'], {'status': 'imported', 'pool_id': row['id'], 'error_code': None}, conn=conn)
+
+
+def _record_item_error(item, error_code, *, rejected=False):
+    # 旧交接结果尚未确认时，后续拒绝不能抹掉先前可能已成功的事实。
+    definite = rejected and item['status'] == 'pending'
+    _patch_item(item['id'], {'status': 'failed' if definite else 'unknown', 'error_code': error_code})
+
+
+def _process_item(batch, item, profile, connection=None):
+    if not _prepare_item(item):
+        return
     try:
-        with record_store.transaction() as conn:
-            record_store.advisory_xact_lock(conn, 'registered-account:' + address)
-            receipt = handoff.handoff_selected(item['candidate'], profile,
-                ownership=item['ownership'], client_id=batch['client_id'])
-            inserted, _ = imports.import_resources([item['candidate']], source='email_butler',
-                _fixed_profile=profile, _handoffs={address: receipt}, _manual_item_id=item['id'], _conn=conn)
-            if not inserted:
-                raise ValueError('local_import_unconfirmed')
-            row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, conn=conn)
-            _patch_item(item['id'], {'status': 'imported', 'pool_id': row['id'], 'error_code': None}, conn=conn)
+        receipt = handoff.handoff_selected(item['candidate'], profile,
+            ownership=item['ownership'], client_id=batch['client_id'], connection=connection)
+        _finish_item(item, profile, receipt)
     except Exception as exc:
         code = getattr(exc, 'status_code', None)
         definite = (item['status'] == 'pending' and isinstance(code, int)
                     and 400 <= code < 500 and code not in {408, 425, 429})
-        _patch_item(item['id'], {'status': 'failed' if definite else 'unknown',
-                                'error_code': 'handoff_rejected' if definite else 'handoff_unconfirmed'})
+        _record_item_error(item, 'handoff_rejected' if definite else 'handoff_unconfirmed', rejected=definite)
+
+
+def _process_chunk(batch, items, profile, connection):
+    started = time.monotonic()
+    prepared = [item for item in items if _prepare_item(item)]
+    if not prepared:
+        return
+    prepared_at = time.monotonic()
+    results = handoff.handoff_selected_batch(prepared, profile, client_id=batch['client_id'], connection=connection)
+    received_at = time.monotonic()
+    for item in prepared:
+        outcome = results[item['acquisition_id']]
+        if 'receipt' in outcome:
+            try:
+                _finish_item(item, profile, outcome['receipt'])
+            except Exception as exc:
+                _record_item_error(item, _batch_error_code(exc))
+        else:
+            _record_item_error(item, outcome['error_code'], rejected=outcome['outcome'] == 'failed')
+    logger.info('Butler 批量交接：数量=%s，准备=%.3fs，远端=%.3fs，写入=%.3fs',
+                len(prepared), prepared_at - started, received_at - prepared_at, time.monotonic() - received_at)
 
 
 def _run_batch(batch_id):
@@ -325,12 +371,16 @@ def _run_batch(batch_id):
                 handoff.verify_client(who, client_id=batch['client_id'])
                 record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
                                        {'status': 'running', 'error_code': None})
-                # 批次锁与行级业务连接按 row_factory 分池；小业务池同步降低并发。
-                workers = min(4, max(1, int(os.getenv('TURB_DB_POOL_MAX') or 12)))
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='butler-handoff') as executor:
-                    futures = [executor.submit(_process_item, batch, item, profile) for item in remaining]
-                    for future in futures:
-                        future.result()
+                if 'mailboxes.import_batch.v1' in (who.get('capabilities') or []):
+                    for offset in range(0, len(remaining), _HANDOFF_BATCH_SIZE):
+                        _process_chunk(batch, remaining[offset:offset + _HANDOFF_BATCH_SIZE], profile, connection)
+                else:
+                    # 旧 Butler 保留原并发契约；单次远端等待不持有业务连接。
+                    workers = min(4, max(1, int(os.getenv('TURB_DB_POOL_MAX') or 12)))
+                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='butler-handoff') as executor:
+                        futures = [executor.submit(_process_item, batch, item, profile, connection) for item in remaining]
+                        for future in futures:
+                            future.result()
             states = [item['status'] for item in store.items(batch_id)]
             complete = all(state in {'imported', 'skipped'} for state in states)
             record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],

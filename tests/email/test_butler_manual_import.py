@@ -26,6 +26,7 @@ class ButlerManualImportTests(PostgresTestCase):
         self.timeout_address = None
         self.reject_address = None
         self.wrong_identity = False
+        self.bulk_supported = False
         for target in [
             patch.multiple(config, EMAIL_BUTLER_API_BASE='https://original.example/v1',
                            EMAIL_BUTLER_API_KEY='fixture-secret', ICLOUD_HME_FORWARD_IMAP_EMAIL='final@example.test'),
@@ -47,12 +48,29 @@ class ButlerManualImportTests(PostgresTestCase):
         self.calls.append((method, path, kwargs))
         if path == '/me':
             return {'code': 200, 'id': 'fixture-client', 'policy': {'consumer': 'turb', 'service': 'openai'},
-                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1']}
+                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1']
+                    + (['mailboxes.import_batch.v1'] if self.bulk_supported else [])}
         if path == '/mailboxes/import-candidates':
             self.assertEqual(method, 'GET')
             return {'code': 200, 'supported': True, 'policy_applied': True,
                     'total_available': len(self.addresses), 'returned': len(self.addresses),
                     'candidates': [self.candidate(email) for email in self.addresses]}
+        if path == '/mailboxes/import-batch':
+            results = []
+            for item in kwargs['json']['items']:
+                email = item['requested_email']
+                if email == self.timeout_address:
+                    raise TimeoutError('测试批量响应中断')
+                result = {'requested_email': email, 'acquisition_id': item['acquisition_id']}
+                if email == self.reject_address:
+                    result.update(code=409, error_code='acquisition_conflict')
+                else:
+                    mailbox = {**self.candidate(email), 'lease_id': 'ephemeral-read-lease'}
+                    if self.wrong_identity:
+                        mailbox['identity_id'] = 'replacement-identity'
+                    result.update(code=200, mailbox=mailbox)
+                results.append(result)
+            return {'code': 200, 'results': list(reversed(results))}
         self.assertEqual((method, path), ('POST', '/mailboxes'))
         email = kwargs['json']['requested_email']
         self.assertIn('acquisition_id', kwargs['json'])
@@ -109,6 +127,55 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertEqual(summary('email_butler')['available'], 2)
         self.assertNotIn('icloud.com', str(result))
         self.assertNotIn('fixture-secret', str(result))
+
+    def test_bulk_import_splits_200_addresses_into_eight_requests(self):
+        self.bulk_supported = True
+        self.addresses = [f'parent+batch{index}@icloud.com' for index in range(200)]
+        preview = self.preview(count=200)
+        batch = self.service.create({'request_id': str(uuid.uuid4()), 'preview_token': preview['preview_token']})
+        self.calls.clear()
+        self.service._run_batch(batch['batch_id'])
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual((result['status'], result['imported']), ('completed', 200))
+        writes = [(path, kwargs) for _, path, kwargs in self.calls if path.startswith('/mailboxes')]
+        self.assertEqual([path for path, _ in writes], ['/mailboxes/import-batch'] * 8)
+        self.assertEqual([len(kwargs['json']['items']) for _, kwargs in writes], [25] * 8)
+
+    def test_bulk_timeout_preserves_original_items_and_retry_does_not_replace(self):
+        self.bulk_supported = True
+        batch, _ = self.create()
+        self.timeout_address = self.addresses[1]
+        self.service._run_batch(batch['batch_id'])
+        self.assertEqual(self.service.get(batch['batch_id'])['unknown'], 2)
+        self.timeout_address = None
+        self.reject_address = self.addresses[1]
+        self.service._run_batch(batch['batch_id'])
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual((result['imported'], result['unknown'], result['failed']), (1, 1, 0))
+        writes = [kwargs['json'] for _, path, kwargs in self.calls if path == '/mailboxes/import-batch']
+        self.assertEqual(writes[0], writes[1])
+        self.reject_address = None
+        self.service._run_batch(batch['batch_id'])
+        self.assertEqual(self.service.get(batch['batch_id'])['imported'], 2)
+
+    def test_handoff_wait_does_not_hold_a_business_database_connection(self):
+        batch, _ = self.create()
+        from psycopg.rows import dict_row
+        def remote_without_transaction(method, path, **kwargs):
+            if path == '/mailboxes':
+                business_pool = postgres_store._pool_for(postgres_store.database_url(), {'row_factory': dict_row})
+                stats = business_pool.get_stats()
+                self.assertEqual(stats['pool_available'], stats['pool_size'],
+                                 '等待远端交接时应归还业务数据库连接')
+            return self.remote(method, path, **kwargs)
+        postgres_store.close_pools()
+        try:
+            with patch.dict(os.environ, {'TURB_DB_POOL_MAX': '1'}), \
+                 patch('core.email.email_butler.client._request', side_effect=remote_without_transaction):
+                self.service._run_batch(batch['batch_id'])
+            self.assertEqual(self.service.get(batch['batch_id'])['imported'], 2)
+        finally:
+            postgres_store.close_pools()
 
     def test_timeout_keeps_prior_success_and_retry_uses_original_route_and_acquisition(self):
         batch, _ = self.create()
