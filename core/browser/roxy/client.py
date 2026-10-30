@@ -1,0 +1,1450 @@
+# -*- coding: utf-8 -*-
+"""RoxyBrowser 本地 API 客户端。"""
+from __future__ import annotations
+
+import json
+import logging
+import random
+import re
+import threading
+import time
+from dataclasses import dataclass
+from collections.abc import Callable
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse
+
+import requests
+
+from config import roxybrowser as _cfg
+
+logger = logging.getLogger('core.roxybrowser_client')
+
+_CREATE_SLOT_LOCK = threading.Lock()
+_NEXT_CREATE_SLOT = 0.0
+
+
+def _wait_for_create_slot() -> None:
+    """等待进程内下一个 Roxy Profile 创建时隙。"""
+    global _NEXT_CREATE_SLOT
+
+    interval = max(0.0, float(getattr(_cfg, "ROXY_CREATE_INTERVAL", 1.5) or 0.0))
+    if interval <= 0:
+        return
+
+    with _CREATE_SLOT_LOCK:
+        now = time.monotonic()
+        wait_for = max(0.0, _NEXT_CREATE_SLOT - now)
+        _NEXT_CREATE_SLOT = max(now, _NEXT_CREATE_SLOT) + interval
+
+    if wait_for > 0:
+        logger.info("[Roxy] /browser/create 请求错峰，等待 %.2fs", wait_for)
+        time.sleep(wait_for)
+
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_HTTP_STATUS_RE = re.compile(
+    r"\b(?:http|status\s+code|status)\s*[:=]?\s*(\d{3})\b",
+    re.IGNORECASE,
+)
+
+
+# Roxy 本地 API 同一时刻只接受一个 /browser/create；并发提交会返回
+# “正在创建中，请稍等！”。这里只串行化 Profile 创建，创建完成后的浏览器仍可并发运行。
+_PROFILE_CREATE_LOCK = threading.Lock()
+_PROFILE_OPEN_LOCK = threading.Lock()
+_PROFILE_REGISTRY_LOCK = threading.RLock()
+_PROFILE_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "logs" / "run" / "roxy_active_profiles.json"
+_PROFILE_RELAYS: dict[str, object] = {}
+_PROFILE_RELAYS_LOCK = threading.RLock()
+
+
+def _remember_profile_relay(profile_id: str, relay, *, persist: bool = True) -> None:
+    if relay is not None:
+        from core.proxy.chain import ProxyChainRelay
+        if persist and isinstance(relay, ProxyChainRelay):
+            from core.network.protocol_traffic import current_correlation
+            from core.operations.run_log import current_context
+            correlation = current_correlation()
+            lease_id = correlation.get("proxy_lease_id")
+            relay.origin_lease_id = str(lease_id) if isinstance(lease_id, str) and lease_id else None
+            context = current_context()
+            task_id = context.get("task_id") if context.get("identifier_namespace") == "operation" else None
+            if relay.origin_lease_id or task_id is not None:
+                try:
+                    from core.storage.proxy.leases import bind_browser_relay
+                    saved = bind_browser_relay(
+                        proxy_url=relay.target.raw, profile_id=str(profile_id), listen_port=relay.listen_port,
+                        blocked_hosts=list(relay._blocked_hosts), lease_id=relay.origin_lease_id,
+                        operation_task_id=task_id,
+                    )
+                    if saved:
+                        relay.origin_lease_id = saved
+                        relay.binding_persisted = True
+                        relay.recovery_state = "persisted"
+                    else:
+                        relay.recovery_state = "unavailable"
+                except Exception as exc:
+                    relay.recovery_state = "failed"
+                    logger.warning("[Roxy] 中继私有恢复资料保存失败：%s", type(exc).__name__)
+            if bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False)) and not relay.binding_persisted:
+                relay.close()
+                raise RuntimeError("保留窗口的原代理恢复资料尚未保存，已停止打开窗口；请检查代理租约存储后重试")
+        with _PROFILE_RELAYS_LOCK:
+            previous = _PROFILE_RELAYS.get(str(profile_id))
+            _PROFILE_RELAYS[str(profile_id)] = relay
+        if previous is not None and previous is not relay:
+            previous.close()
+
+
+def _profile_relay(profile_id: str):
+    with _PROFILE_RELAYS_LOCK:
+        return _PROFILE_RELAYS.get(str(profile_id))
+
+
+def _close_profile_relay(profile_id: str) -> None:
+    """仅在 Roxy 已确认关闭后释放端口；保留窗口和关闭不明时继续服务。"""
+    with _PROFILE_RELAYS_LOCK:
+        relay = _PROFILE_RELAYS.pop(str(profile_id), None)
+    if relay is not None:
+        from core.proxy.chain import ProxyChainRelay
+        if isinstance(relay, ProxyChainRelay) and relay.binding_persisted and relay.origin_lease_id:
+            try:
+                from core.storage.proxy.leases import close_browser_relay
+                close_browser_relay(lease_id=relay.origin_lease_id, profile_id=str(profile_id), listen_port=relay.listen_port)
+            except Exception as exc:
+                logger.warning("[Roxy] 中继私有恢复资料收口失败：%s", type(exc).__name__)
+        relay.close()
+
+
+def restore_profile_relay(profile_id: str, *, binding: dict | None = None):
+    """重建原端口和原线路；不修改/关闭窗口，不领取代理或重放业务请求。"""
+    with _PROFILE_RELAYS_LOCK:
+        existing = _PROFILE_RELAYS.get(str(profile_id))
+        if existing is not None:
+            return existing
+        if binding is None:
+            from core.storage.proxy.leases import private_browser_relays
+            try:
+                rows = private_browser_relays(str(profile_id))
+            except Exception:
+                raise RuntimeError("原窗口代理恢复资料读取失败") from None
+            binding = rows[0] if rows else None
+        if not binding:
+            return None
+        metadata = binding.get("browser_relay") or {}
+        if metadata.get("profile_id") != str(profile_id) or metadata.get("open") is not True:
+            return None
+        from core.proxy.chain import ProxyChainRelay
+        try:
+            port = metadata["listen_port"]
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise ValueError("原端口无效")
+            relay = ProxyChainRelay(
+                binding["proxy_url"], listen_port=port,
+                blocked_hosts=metadata.get("blocked_hosts") or (),
+            ).start()
+        except Exception:
+            # 端口被占用时不能另选端口，也不能把原窗口切到另一条租约。
+            raise RuntimeError("原窗口代理中继未能恢复，原端口或线路资料不可用") from None
+        relay.origin_lease_id = str(binding["lease_id"])
+        relay.binding_persisted = True
+        relay.recovery_state = "persisted"
+        relay._traffic_capture_baseline = {}
+        _remember_profile_relay(str(profile_id), relay, persist=False)
+        return relay
+_ROXY_CLOSE_VERIFY_ATTEMPTS = 4
+_ROXY_CLOSE_VERIFY_INTERVAL = 0.5
+
+_ROXY_WINDOW_CAPACITY_MARKERS = (
+    "窗口额度不足",
+    "窗口数量已达上限",
+    "窗口数已达上限",
+    "窗口达到上限",
+    "window quota",
+    "window limit",
+    "maximum number of windows",
+    "too many windows",
+)
+
+_ROXY_PROFILE_NOT_FOUND_MARKERS = (
+    "环境不存在",
+    "环境已删除",
+    "环境不存在或已删除",
+    "profile not found",
+    "profile does not exist",
+    "profile not exist",
+    "dirid不存在",
+    "dir id not found",
+    "profile deleted",
+    "dirid not found",
+)
+
+
+def _is_window_capacity_error(error: object) -> bool:
+    """识别 Roxy 明确返回的窗口容量信息；具体接口由调用方区分。"""
+    text = str(error or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _ROXY_WINDOW_CAPACITY_MARKERS)
+
+
+def _is_profile_not_found_error(error: object) -> bool:
+    """Only classify explicit missing/deleted Profile responses as replaceable."""
+    text = str(error or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _ROXY_PROFILE_NOT_FOUND_MARKERS)
+
+
+def _load_profile_registry_locked() -> list[dict]:
+    try:
+        raw = json.loads(_PROFILE_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        logger.warning("[Roxy] 读取临时环境登记表失败：%s", exc)
+        return []
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
+    return [
+        dict(item) for item in items
+        if isinstance(item, dict) and str(item.get("profile_id") or "").strip()
+    ]
+
+
+def _save_profile_registry_locked(items: list[dict]) -> None:
+    _PROFILE_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _PROFILE_REGISTRY_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps({"version": 1, "items": items, "updated_at": time.time()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(_PROFILE_REGISTRY_PATH)
+
+
+def _track_created_profile(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        if not any(str(item.get("profile_id")) == profile_id for item in items):
+            items.append({
+                "profile_id": profile_id,
+                "workspace_id": str(_workspace_id_value() or ""),
+                "created_at": time.time(),
+                "disposable": True,
+            })
+            _save_profile_registry_locked(items)
+
+
+def _untrack_created_profile(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        remaining = [item for item in items if str(item.get("profile_id")) != profile_id]
+        if len(remaining) != len(items):
+            _save_profile_registry_locked(remaining)
+
+
+def _mark_profile_bound(profile_id: str) -> None:
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+        changed = False
+        for item in items:
+            if str(item.get("profile_id")) == profile_id and not item.get("account_bound"):
+                item["account_bound"] = True
+                changed = True
+        if changed:
+            _save_profile_registry_locked(items)
+
+
+@dataclass
+class RoxyOpenResult:
+    profile_id: str
+    raw: dict
+    debugger_address: str | None = None
+    webdriver_url: str | None = None
+    ws_endpoint: str | None = None
+    created_by_run: bool = False
+    account_bound: bool = False
+    traffic_capture: object | None = None
+    proxy_relay: object | None = None
+    proxy_route_retained: bool = False
+
+
+class RoxyProfileQuotaExceeded(RuntimeError):
+    """Roxy 拒绝创建 Profile 的明确总额度错误，不应等待窗口释放。"""
+
+
+def _strip_slashes(value: str) -> str:
+    return str(value or "").strip().strip("/")
+
+
+def _join_url(base: str, path: str) -> str:
+    return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
+
+
+def _mask_proxy(proxy_url: str) -> str:
+    parsed = urlparse(str(proxy_url or "").strip())
+    if parsed.username or parsed.password:
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://***:***@{host}{port}"
+    return str(proxy_url or "").strip()
+
+
+def _apply_data_saver_open_args(params: dict, flow: str | None = None) -> dict:
+    """Disable Chromium image loading before the first page request when enabled."""
+    try:
+        from config import browser as _browser_cfg
+        if flow is None:
+            enabled = bool(getattr(_browser_cfg, "BROWSER_DATA_SAVER_MODE", False))
+            raw_types = getattr(_browser_cfg, "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ())
+            types = {str(item or "").strip().lower() for item in (raw_types or ())}
+        else:
+            from core.browser.flow_policy import flow_enabled, opening_resource_types
+            enabled = flow_enabled(flow)
+            types = set(opening_resource_types(flow))
+        if enabled and "image" in types:
+            args = list(params.get("args") or [])
+            flag = "--blink-settings=imagesEnabled=false"
+            if flag not in args:
+                args.append(flag)
+            params["args"] = args
+        if enabled and "font" in types:
+            args = list(params.get("args") or [])
+            flag = "--disable-remote-fonts"
+            if flag not in args:
+                args.append(flag)
+            params["args"] = args
+    except Exception:
+        logger.debug("[Roxy] 添加省流量启动参数失败", exc_info=True)
+    return params
+
+
+def _proxy_url_to_roxy_info(proxy_url: str) -> dict:
+    """
+    将 config/proxy.py 里的代理 URL 转成 Roxy /browser/create 的 proxyInfo。
+
+    支持：
+      http://user:pass@host:port
+      https://user:pass@host:port
+      socks5://user:pass@host:port
+      socks5h://user:pass@host:port  -> Roxy 侧按 SOCKS5 处理
+    """
+    text = str(proxy_url or "").strip()
+    if not text:
+        raise ValueError("代理为空")
+    parsed = urlparse(text)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https", "socks5", "socks5h"):
+        raise ValueError(f"Roxy 暂不支持该代理协议: {scheme or '-'}")
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(f"代理格式缺少 host/port: {_mask_proxy(text)}")
+
+    protocol = {
+        "http": "HTTP",
+        "https": "HTTPS",
+        "socks5": "SOCKS5",
+        "socks5h": "SOCKS5",
+    }[scheme]
+    # Roxy /browser/create 官方字段是：
+    # proxyMethod / proxyCategory / ipType / protocol / host / port / proxyUserName / proxyPassword / checkChannel
+    # 之前误用了 proxyType/proxyHost/proxyPort/proxyAccount，Roxy 会忽略，导致创建窗口实际未设置代理。
+    info = {
+        "moduleId": 0,
+        "proxyMethod": "custom",
+        "proxyCategory": protocol,
+        "ipType": "IPV4",
+        "protocol": protocol,
+        "host": parsed.hostname,
+        "port": str(parsed.port),
+    }
+    if parsed.username:
+        info["proxyUserName"] = unquote(parsed.username)
+    if parsed.password:
+        info["proxyPassword"] = unquote(parsed.password)
+    check_channel = str(getattr(_cfg, "ROXY_PROXY_CHECK_CHANNEL", "") or "").strip()
+    if check_channel:
+        info["checkChannel"] = check_channel
+    return info
+
+
+def _dig(payload: dict, *keys: str):
+    cur = payload
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _first(payload: dict, paths: list[tuple[str, ...]]) -> str:
+    for path in paths:
+        value = _dig(payload, *path)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _workspace_id_value() -> str | int:
+    raw = str(getattr(_cfg, "ROXY_WORKSPACE_ID", "") or "").strip()
+    if not raw:
+        return ""
+    return int(raw) if raw.isdigit() else raw
+
+
+def _project_id_value() -> str | int:
+    raw = str(getattr(_cfg, "ROXY_PROJECT_ID", "") or "").strip()
+    if not raw:
+        return ""
+    return int(raw) if raw.isdigit() else raw
+
+
+def _random_roxy_os() -> str:
+    raw = str(getattr(_cfg, "ROXY_RANDOM_OS_CHOICES", "Windows,macOS") or "Windows,macOS")
+    choices = [
+        x.strip()
+        for part in raw.replace("\n", ",").replace(";", ",").split(",")
+        for x in [part]
+        if x.strip()
+    ]
+    valid = {"Windows", "macOS", "Linux", "IOS", "Android"}
+    choices = [x for x in choices if x in valid]
+    if not choices:
+        choices = ["Windows", "macOS"]
+    return random.choice(choices)
+
+
+def _random_roxy_profile_name() -> str:
+    prefix = str(getattr(_cfg, "ROXY_PROFILE_NAME_PREFIX", "rb") or "rb").strip() or "rb"
+    # Roxy 环境名每次创建都不同：前缀 + 毫秒时间戳 + 随机 4 位十六进制。
+    return f"{prefix}-{int(time.time() * 1000)}-{random.randrange(0x10000):04x}"
+
+
+class RoxyBrowserClient:
+    def __init__(self, api_base: str | None = None, token: str | None = None):
+        self.api_base = (api_base or _cfg.ROXY_API_BASE).strip()
+        self.token = (token if token is not None else _cfg.ROXY_API_TOKEN).strip()
+        self.http = requests.Session()
+        if self.token:
+            # 官方文档要求所有接口请求头必须加 token。这里同时兼容 token / Authorization。
+            self.http.headers.update({
+                "token": self.token,
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            })
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if (
+            "timeout" in text
+            or "timed out" in text
+            or "connection" in text
+            or "temporarily" in text
+        ):
+            return True
+        statuses = {int(match) for match in _HTTP_STATUS_RE.findall(text)}
+        return bool(statuses & _RETRYABLE_HTTP_STATUS_CODES)
+
+    def request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> dict:
+        url = _join_url(self.api_base, path)
+        method_u = method.upper()
+        # create 超时后服务端可能已创建环境，直接重试可能产生孤儿环境；默认不重试 create。
+        is_create = str(path or "").rstrip("/").endswith("/create") or "browser/create" in str(path or "")
+        max_attempts = 1 if is_create else max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
+        base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.debug(
+                    "[Roxy] %s %s params=%s body=%s attempt=%s/%s",
+                    method, url, params, json_body, attempt, max_attempts,
+                )
+                resp = self.http.request(
+                    method_u,
+                    url,
+                    params=params or None,
+                    json=json_body if json_body is not None else None,
+                    timeout=max(5, int(getattr(_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+                )
+                text = resp.text or ""
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {"raw": text}
+                if not (200 <= resp.status_code < 300):
+                    raise RuntimeError(f"Roxy API 请求失败 {method_u} {path} HTTP {resp.status_code}: {text[:500]}")
+                if isinstance(payload, dict):
+                    code = payload.get("code")
+                    ok = payload.get("ok")
+                    success = payload.get("success")
+                    if code not in (None, 0, 200, "0", "200") and ok is not True and success is not True:
+                        msg = payload.get("msg") or payload.get("message") or payload.get("error") or json.dumps(payload, ensure_ascii=False)[:500]
+                        raise RuntimeError(f"Roxy API 返回失败 {method_u} {path}: {msg}")
+                if attempt > 1:
+                    logger.info("[Roxy] API 重试成功：%s %s attempt=%s/%s", method_u, path, attempt, max_attempts)
+                return payload if isinstance(payload, dict) else {"data": payload}
+            except Exception as exc:
+                last_exc = exc
+                retryable = self._is_retryable_error(exc)
+                if attempt >= max_attempts or not retryable:
+                    raise
+                delay = base_delay * attempt
+                logger.warning(
+                    "[Roxy] API 请求失败，将在 %.1fs 后重试：%s %s attempt=%s/%s error=%s",
+                    delay, method_u, path, attempt, max_attempts, exc,
+                )
+                time.sleep(delay)
+        raise last_exc or RuntimeError(f"Roxy API 请求失败 {method_u} {path}")
+
+    def try_request(self, method: str, path: str, *, params: dict | None = None, json_body: dict | None = None) -> tuple[bool, dict | str]:
+        """宽松请求：用于探测不同 Roxy 版本接口，失败不抛出。"""
+        try:
+            return True, self.request(method, path, params=params, json_body=json_body)
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _extract_workspace_items(payload: dict) -> list[dict]:
+        """解析 /browser/workspace：团队 rows + project_details 项目列表；兼容递归兜底。"""
+        out = []
+
+        # 官方结构：data.rows[].id/workspaceName/project_details[].projectId/projectName
+        rows = None
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                rows = data.get("rows") or data.get("list") or data.get("records")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                wid = row.get("id") or row.get("workspaceId") or row.get("workspace_id")
+                wname = row.get("workspaceName") or row.get("workspace_name") or row.get("name") or str(wid or "")
+                projects = row.get("project_details") or row.get("projectDetails") or row.get("projects") or []
+                if isinstance(projects, list) and projects:
+                    for proj in projects:
+                        if not isinstance(proj, dict):
+                            continue
+                        pid = proj.get("projectId") or proj.get("project_id") or proj.get("id")
+                        pname = proj.get("projectName") or proj.get("project_name") or proj.get("name") or str(pid or "")
+                        if wid:
+                            out.append({
+                                "id": str(wid),
+                                "name": str(wname),
+                                "projectId": str(pid or ""),
+                                "projectName": str(pname or ""),
+                                "label": f"{wname} / {pname} ({wid}/{pid})" if pid else f"{wname} ({wid})",
+                                "raw": {"workspace": row, "project": proj},
+                            })
+                elif wid:
+                    out.append({
+                        "id": str(wid),
+                        "name": str(wname),
+                        "projectId": "",
+                        "projectName": "",
+                        "label": f"{wname} ({wid})",
+                        "raw": row,
+                    })
+
+        if out:
+            return out
+
+        # 兜底：递归抽 workspace/team/company 结构。
+        def pick_id_name(item: dict) -> tuple[str, str]:
+            wid = _first(item, [
+                ("workspaceId",), ("workspace_id",), ("workspaceID",),
+                ("teamId",), ("team_id",), ("teamID",),
+                ("companyId",), ("company_id",), ("orgId",), ("org_id",),
+                ("id",), ("value",), ("key",),
+            ])
+            name = _first(item, [
+                ("workspaceName",), ("workspace_name",),
+                ("teamName",), ("team_name",),
+                ("companyName",), ("company_name",),
+                ("orgName",), ("org_name",),
+                ("name",), ("label",), ("title",), ("remark",),
+            ])
+            return wid, name
+
+        def looks_like_workspace(item: dict) -> bool:
+            keys = {str(k).lower() for k in item.keys()}
+            joined = " ".join(keys)
+            return any(x in joined for x in ("workspace", "team", "company", "org")) or ("id" in keys and "name" in keys)
+
+        def walk(node):
+            if isinstance(node, dict):
+                wid, name = pick_id_name(node)
+                if wid and looks_like_workspace(node):
+                    out.append({"id": wid, "name": name or wid, "projectId": "", "projectName": "", "label": f"{name or wid} ({wid})", "raw": node})
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        dedup = {}
+        for item in out:
+            raw_keys = {str(k).lower() for k in (item.get("raw") or {}).keys()}
+            if "dirid" in raw_keys and not any(k in raw_keys for k in ("workspaceid", "teamid", "companyid")):
+                continue
+            key = f"{item.get('id')}::{item.get('projectId','')}"
+            dedup[key] = item
+        return list(dedup.values())
+
+    def list_workspaces(self) -> dict:
+        """
+        获取 Roxy 团队/工作区列表。
+        Roxy 不同版本路径可能有差异，因此先试配置路径，再试常见路径。
+        """
+        configured = str(getattr(_cfg, "ROXY_WORKSPACE_LIST_PATH", "") or "").strip()
+        method = str(getattr(_cfg, "ROXY_WORKSPACE_LIST_METHOD", "GET") or "GET").upper()
+        candidates = []
+        if configured:
+            candidates.append((method, configured))
+        candidates.extend([
+            ("GET", "/browser/workspace"),
+            ("POST", "/browser/workspace"),
+            ("GET", "/workspace/list"),
+            ("POST", "/workspace/list"),
+            ("GET", "/workspace"),
+            ("POST", "/workspace"),
+            ("GET", "/team/list"),
+            ("POST", "/team/list"),
+            ("GET", "/team"),
+            ("POST", "/team"),
+            ("GET", "/workspaces"),
+            ("GET", "/teams"),
+            ("GET", "/user/workspace/list"),
+            ("POST", "/user/workspace/list"),
+            ("GET", "/user/team/list"),
+            ("POST", "/user/team/list"),
+            ("GET", "/api/workspace/list"),
+            ("POST", "/api/workspace/list"),
+            ("GET", "/api/team/list"),
+            ("POST", "/api/team/list"),
+            ("GET", "/browser/workspace/list"),
+            ("POST", "/browser/workspace/list"),
+            ("GET", "/browser/team/list"),
+            ("POST", "/browser/team/list"),
+        ])
+
+        errors = []
+        seen = set()
+        for m, path in candidates:
+            key = (m, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            ok, payload = self.try_request(m, path)
+            if not ok:
+                errors.append({"method": m, "path": path, "error": payload})
+                continue
+            items = self._extract_workspace_items(payload if isinstance(payload, dict) else {})
+            if items:
+                return {"ok": True, "path": path, "method": m, "items": items, "raw": payload}
+            errors.append({"method": m, "path": path, "error": "响应中未解析到团队/工作区列表", "payload": payload})
+
+        return {"ok": False, "items": [], "errors": errors}
+
+    @staticmethod
+    def _profile_rows(payload: dict) -> list[dict]:
+        """兼容 Roxy 不同版本的 Profile 列表响应结构。"""
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            for key in ("rows", "list", "records", "items"):
+                rows = data.get(key)
+                if isinstance(rows, list):
+                    return [row for row in rows if isinstance(row, dict)]
+        for key in ("rows", "list", "records", "items"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    def _find_profile_by_name(self, window_name: str) -> str:
+        """按本次唯一名称核对 create 超时前是否已经实际创建成功。"""
+        name = str(window_name or "").strip()
+        if not name:
+            return ""
+        payload = self.request(
+            "GET",
+            "/browser/list_v2",
+            params={
+                "workspaceId": _workspace_id_value(),
+                "windowName": name,
+                "page_index": 1,
+                "page_size": 10,
+            },
+        )
+        for row in self._profile_rows(payload):
+            row_name = _first(row, [("windowName",), ("name",), ("profileName",)])
+            if row_name != name:
+                continue
+            profile_id = _first(row, [
+                ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+            ])
+            if profile_id:
+                return profile_id
+        return ""
+
+    def create_profile(self, payload: dict | None = None) -> str:
+        body = dict(getattr(_cfg, "ROXY_PROFILE_CREATE_PAYLOAD", {}) or {})
+        proxy_source = "profile_payload" if body.get("proxyInfo") else ""
+        random_name_enabled = bool(getattr(_cfg, "ROXY_RANDOM_PROFILE_NAME_ON_CREATE", True))
+        if random_name_enabled:
+            # Roxy 官方字段是 windowName；旧的 name 字段会被 API 忽略。
+            body["windowName"] = _random_roxy_profile_name()
+        random_os_enabled = bool(getattr(_cfg, "ROXY_RANDOM_OS_ON_CREATE", True))
+        if random_os_enabled:
+            # 每次创建环境随机 Windows / macOS；覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 os。
+            body["os"] = _random_roxy_os()
+            # osVersion 跟 os 强绑定，随机 OS 时不沿用固定版本，避免 macOS 版本传给 Windows。
+            body.pop("osVersion", None)
+        else:
+            default_os = str(getattr(_cfg, "ROXY_DEFAULT_OS", "macOS") or "macOS").strip()
+            if default_os:
+                # Roxy 官方枚举大小写敏感：Windows / macOS / Linux / IOS / Android。
+                body.setdefault("os", default_os)
+            default_os_version = str(getattr(_cfg, "ROXY_DEFAULT_OS_VERSION", "") or "").strip()
+            if default_os_version:
+                body.setdefault("osVersion", default_os_version)
+        workspace_id = _workspace_id_value()
+        if workspace_id:
+            # Roxy 官方 /browser/create 要求 workspaceId。
+            body.setdefault("workspaceId", workspace_id)
+        project_id = _project_id_value()
+        if project_id:
+            body.setdefault("projectId", project_id)
+        explicit_proxy_info = bool((payload or {}).get("proxyInfo"))
+        if body.get("proxyInfo") and not explicit_proxy_info:
+            raise RuntimeError(
+                "Roxy Profile 的固定 proxyInfo 已停用，请使用统一代理池已领取线路"
+            )
+        if explicit_proxy_info:
+            # registration_service 为每个任务领取的 1024Proxy/静态池租约优先级最高。
+            # 它必须随新 Profile 一起写入，不能退回 Roxy 配置里的固定代理。
+            proxy_source = "task_lease"
+        if bool(getattr(_cfg, "ROXY_CREATE_USE_PROXY_POOL", False)) and not body.get("proxyInfo") and not explicit_proxy_info:
+            raise RuntimeError(
+                "Roxy Profile 必须绑定统一代理池已领取线路，禁止回退静态 PROXY_POOL"
+            )
+        if payload:
+            body.update(payload)
+        # 兼容用户已有的旧配置，但发给 Roxy 时统一使用官方 windowName。
+        legacy_name = body.pop("name", None)
+        if legacy_name and not body.get("windowName"):
+            body["windowName"] = legacy_name
+        proxy_info = body.get("proxyInfo")
+        if isinstance(proxy_info, dict) and proxy_info.get("host") and proxy_info.get("port"):
+            from core.proxy.provider import mask_endpoint
+
+            logger.info(
+                "[Roxy] 创建环境绑定代理：source=%s protocol=%s endpoint=%s auth=%s checkChannel=%s",
+                proxy_source or "profile_payload",
+                proxy_info.get("protocol") or proxy_info.get("proxyCategory") or "-",
+                mask_endpoint(f"{proxy_info.get('host')}:{proxy_info.get('port')}"),
+                "yes" if proxy_info.get("proxyUserName") or proxy_info.get("proxyPassword") else "no",
+                proxy_info.get("checkChannel") or "-",
+            )
+        if not body.get("workspaceId"):
+            raise RuntimeError(
+                "Roxy 创建环境需要 workspaceId。请在 config/roxybrowser.py 或 WebUI 的 RoxyBrowser 配置中填写 ROXY_WORKSPACE_ID，"
+                "或直接在 ROXY_PROFILE_CREATE_PAYLOAD 里加入 {'workspaceId': '你的工作区ID'}。"
+            )
+        logger.info(
+            "[Roxy] 创建环境参数：workspaceId=%s projectId=%s name=%s random_name=%s os=%s osVersion=%s random_os=%s",
+            body.get("workspaceId"),
+            body.get("projectId") or "-",
+            body.get("windowName") or "-",
+            random_name_enabled,
+            body.get("os") or "-",
+            body.get("osVersion") or "-",
+            random_os_enabled,
+        )
+        # create 不能像普通 GET 一样直接重试：客户端超时时，服务端有可能已经
+        # 创建成功，再发一次会留下重复环境。Roxy 若明确返回业务失败（例如其
+        # 后端 15 秒超时），先用本次唯一 windowName 查询列表；确认没有创建后
+        # 才重试。若列表本身不可用，则保守失败，不冒险重复创建。
+        max_create_attempts = max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
+        base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
+        result = None
+        with _PROFILE_CREATE_LOCK:
+            for attempt in range(1, max_create_attempts + 1):
+                try:
+                    _wait_for_create_slot()
+                    result = self.request(_cfg.ROXY_CREATE_METHOD, _cfg.ROXY_CREATE_PATH, json_body=body)
+                    if attempt > 1:
+                        logger.info(
+                            "[Roxy] 创建环境重试成功：name=%s attempt=%s/%s",
+                            body.get("windowName") or "-", attempt, max_create_attempts,
+                        )
+                    break
+                except Exception as exc:
+                    if _is_window_capacity_error(exc):
+                        raise RoxyProfileQuotaExceeded(
+                            f"Roxy /browser/create Profile 总额度不足，无法创建环境：{str(exc)}"
+                        ) from exc
+                    # “返回失败”说明本地 API 已给出确定的业务响应；requests 自身
+                    # timeout/connection error 属于结果未知，不能安全地重复 create。
+                    error_text = str(exc)
+                    confirmed_failure = (
+                        "Roxy API 返回失败" in error_text
+                        or (
+                            "Roxy API 请求失败" in error_text
+                            and bool(_HTTP_STATUS_RE.search(error_text))
+                        )
+                    )
+                    if (
+                        attempt >= max_create_attempts
+                        or not confirmed_failure
+                        or not self._is_retryable_error(exc)
+                    ):
+                        raise
+                    try:
+                        existing_id = self._find_profile_by_name(str(body.get("windowName") or ""))
+                    except Exception as lookup_exc:
+                        raise RuntimeError(
+                            f"Roxy 创建环境失败，且无法核对是否已创建；为避免重复环境，本次不自动重试：{lookup_exc}"
+                        ) from exc
+                    if existing_id:
+                        logger.warning(
+                            "[Roxy] create 返回失败但环境已存在，复用核对结果：name=%s profile=%s",
+                            body.get("windowName") or "-", existing_id,
+                        )
+                        return existing_id
+                    delay = base_delay * attempt
+                    logger.warning(
+                        "[Roxy] create 明确失败且列表确认无同名环境，将在 %.1fs 后重试：attempt=%s/%s error=%s",
+                        delay, attempt, max_create_attempts, exc,
+                    )
+                    time.sleep(delay)
+        if result is None:
+            raise RuntimeError("Roxy 创建环境未返回结果")
+        profile_id = _first(result, [
+            ("id",), ("dirId",), ("dir_id",), ("profile_id",), ("profileId",), ("browser_id",),
+            ("data", "id"), ("data", "dirId"), ("data", "dir_id"),
+            ("data", "profile_id"), ("data", "profileId"), ("data", "browser_id"),
+        ])
+        if not profile_id:
+            raise RuntimeError(f"Roxy 创建环境成功但未返回 dirId/profile_id: {result}")
+        return profile_id
+
+    @staticmethod
+    def _normalize_profile_id(value: str | None) -> str:
+        text = str(value or "").strip()
+        # WebUI/人工配置里常用 - 表示“未配置”，这里统一按空处理。
+        if text in ("-", "—", "无", "空", "none", "None", "null", "NULL"):
+            return ""
+        return text
+
+    def open_profile(
+        self,
+        profile_id: str | None = None,
+        *,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+        data_saver_flow: str | None = None,
+    ) -> RoxyOpenResult:
+        one_profile = bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
+        explicit_profile = profile_id is not None
+        configured_pid = self._normalize_profile_id(
+            profile_id if explicit_profile else getattr(_cfg, "ROXY_PROFILE_ID", "")
+        )
+        if proxy_url and configured_pid:
+            raise RuntimeError(
+                "不能复用固定 ROXY_PROFILE_ID 覆盖其代理；请让 Profile 使用已保存的代理配置"
+            )
+        if one_profile and configured_pid and not explicit_profile:
+            raise RuntimeError(
+                "已启用 ROXY_ONE_PROFILE_PER_ACCOUNT=True（一号一环境），"
+                "不能配置/传入固定 ROXY_PROFILE_ID；请留空以便每个账号创建新环境。"
+            )
+
+        pid = configured_pid
+        created_by_run = False
+        if not pid:
+            create_payload = None
+            relay = None
+            if proxy_url:
+                from core.proxy.chain import open_browser_proxy
+                effective_proxy, relay = open_browser_proxy(proxy_url, flow=data_saver_flow)
+                create_payload = {"proxyInfo": _proxy_url_to_roxy_info(effective_proxy)}
+            try:
+                pid = self.create_profile(payload=create_payload)
+            except BaseException:
+                if relay is not None:
+                    relay.close()
+                raise
+            created_by_run = True
+            # Roxy 浏览器独立于 WebUI 进程。先持久化登记临时环境；如果 WebUI
+            # 被 SIGTERM 或崩溃，下一次启动可以主动关闭并软删除孤儿环境。
+            try:
+                _track_created_profile(pid)
+                _remember_profile_relay(pid, relay)
+            except BaseException:
+                if relay is not None:
+                    relay.close()
+                # 尚未发送 /browser/open，没有业务页面状态；只回收本轮新建环境。
+                if self.delete_profile(pid):
+                    _untrack_created_profile(pid)
+                raise
+            logger.info("[Roxy] 已创建临时环境（profile 原值不写日志）")
+
+        path = str(_cfg.ROXY_OPEN_PATH).format(profile_id=pid)
+        params = dict(getattr(_cfg, "ROXY_OPEN_EXTRA_PARAMS", {}) or {})
+        # Roxy 官方 /browser/open body: {workspaceId, dirId, args, forceOpen, headless}
+        params.setdefault("workspaceId", _workspace_id_value())
+        params.setdefault("dirId", int(pid) if str(pid).isdigit() else pid)
+        params.setdefault("args", [])
+        params.setdefault("forceOpen", True)
+        _apply_data_saver_open_args(params, data_saver_flow)
+        # ROXY_OPEN_HEADLESS 是显式开关，优先级应高于 ROXY_OPEN_EXTRA_PARAMS，
+        # 否则 extra 里残留 headless=False 会导致 WebUI 保存无头后仍弹窗口。
+        params["headless"] = (
+            bool(getattr(_cfg, "ROXY_OPEN_HEADLESS", False))
+            if headless is None
+            else bool(headless)
+        )
+        logger.info("[Roxy] open 参数：profile=已隐藏 headless=%s keep_open=%s", params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
+        # Roxy 本地 API 并发打开多个环境时会长时间阻塞，严重时 API 服务直接退出。
+        # 这里只串行发送 open 并等待浏览器就绪；已打开的窗口不会因此被串行使用。
+        with _PROFILE_OPEN_LOCK:
+            result = self.request(
+                _cfg.ROXY_OPEN_METHOD,
+                path,
+                params=params if _cfg.ROXY_OPEN_METHOD.upper() == "GET" else None,
+                json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
+            )
+        debugger_address = self._extract_debugger_address(result)
+        logger.info(
+            "[Roxy] open 返回摘要: debugger_present=%s response_keys=%s",
+            bool(debugger_address), sorted(result.keys()) if isinstance(result, dict) else [],
+        )
+        webdriver_url = _first(result, [
+            ("webdriver",), ("webDriver",), ("webdriver_url",), ("webdriverUrl",),
+            ("selenium",), ("selenium_url",), ("seleniumUrl",),
+            ("data", "webdriver"), ("data", "webDriver"), ("data", "webdriver_url"), ("data", "webdriverUrl"),
+            ("data", "selenium"), ("data", "selenium_url"), ("data", "seleniumUrl"),
+        ]) or None
+        ws_endpoint = _first(result, [
+            ("ws",), ("wsEndpoint",), ("ws_endpoint",), ("debuggerWsUrl",),
+            ("data", "ws"), ("data", "wsEndpoint"), ("data", "ws_endpoint"), ("data", "debuggerWsUrl"),
+        ]) or None
+        if not debugger_address and not webdriver_url:
+            raise RuntimeError(f"Roxy 已打开环境但未返回 Selenium/调试地址，请检查 ROXY_OPEN_PATH 或接口响应: {result}")
+        opened = RoxyOpenResult(
+            pid,
+            result,
+            debugger_address=debugger_address,
+            webdriver_url=webdriver_url,
+            ws_endpoint=ws_endpoint,
+            created_by_run=created_by_run,
+            proxy_relay=_profile_relay(pid),
+        )
+        try:
+            from core.browser import traffic as browser_traffic
+
+            browser_traffic.start_roxy_capture(opened, purpose="roxy_browser")
+        except Exception:
+            logger.exception("[浏览器流量] 启动摘要采集失败；浏览器流程继续")
+        return opened
+
+    def open_profile_with_capacity_wait(
+        self,
+        *,
+        profile_id: str | None = None,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+        data_saver_flow: str | None = None,
+        progress_callback: Callable[[str, str, str], object] | None = None,
+        stop_checker: Callable[[], object] | None = None,
+    ) -> RoxyOpenResult:
+        """打开 Roxy 环境；仅对 /browser/open 的临时窗口忙等待。"""
+        timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
+        interval = max(1, int(getattr(_cfg, "ROXY_WINDOW_WAIT_INTERVAL", 10) or 10))
+        started = time.monotonic()
+        attempt = 0
+
+        while True:
+            if stop_checker is not None:
+                stop_checker()
+            attempt += 1
+            try:
+                open_kwargs: dict[str, object] = {"proxy_url": proxy_url}
+                if profile_id is not None:
+                    open_kwargs["profile_id"] = profile_id
+                if headless is not None:
+                    open_kwargs["headless"] = headless
+                if data_saver_flow is not None:
+                    open_kwargs["data_saver_flow"] = data_saver_flow
+                return self.open_profile(**open_kwargs)
+            except Exception as exc:
+                if isinstance(exc, RoxyProfileQuotaExceeded):
+                    raise
+                if not _is_window_capacity_error(exc) or timeout <= 0:
+                    raise
+                elapsed = time.monotonic() - started
+                remaining = timeout - elapsed
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"等待 Roxy 空闲窗口超时（>{timeout}s），最后错误: {str(exc)[:180]}"
+                    ) from exc
+                delay = min(float(interval), remaining)
+                message = (
+                    f"Roxy 窗口已满，等待空闲名额：已等 {int(elapsed)}s，"
+                    f"{int(delay)}s 后重试，最长 {timeout}s"
+                )
+                if progress_callback is not None:
+                    progress_callback("browser", "running", message)
+                logger.warning(
+                    "[Roxy] %s（attempt=%s，剩余 %.1fs）",
+                    message,
+                    attempt,
+                    remaining,
+                )
+                time.sleep(delay)
+
+    def open_profile_for_account(
+        self,
+        *,
+        profile_id: str | None = None,
+        proxy_url: str | None = None,
+        headless: bool | None = None,
+        data_saver_flow: str | None = None,
+        progress_callback: Callable[[str, str, str], object] | None = None,
+        stop_checker: Callable[[], object] | None = None,
+    ) -> RoxyOpenResult:
+        """Reuse an account-bound Profile; create only after an explicit miss."""
+        normalized_profile = self._normalize_profile_id(profile_id)
+        reuse_enabled = bool(getattr(_cfg, "ROXY_REUSE_ACCOUNT_PROFILE", True))
+
+        def open_with(**kwargs):
+            if headless is not None:
+                kwargs["headless"] = headless
+            if progress_callback is not None:
+                kwargs["progress_callback"] = progress_callback
+            if stop_checker is not None:
+                kwargs["stop_checker"] = stop_checker
+            if data_saver_flow is not None:
+                kwargs["data_saver_flow"] = data_saver_flow
+            return self.open_profile_with_capacity_wait(**kwargs)
+
+        def update_bound_profile_proxy() -> None:
+            """只更新绑定 Profile 的代理字段，保留现有身份与登录态。"""
+            if not str(proxy_url or "").strip():
+                return
+            from core.proxy.chain import open_browser_proxy
+            effective_proxy, relay = open_browser_proxy(proxy_url, flow=data_saver_flow)
+            proxy_info = _proxy_url_to_roxy_info(effective_proxy)
+            # 官方接口为 POST /browser/mdf；只提交 workspaceId、dirId、proxyInfo。
+            # 不提交 cookie/fingerInfo/clearCookie，避免更新租约时清理登录态或重置指纹。
+            try:
+                self.request(
+                    "POST",
+                    "/browser/mdf",
+                    json_body={
+                        "workspaceId": _workspace_id_value(),
+                        "dirId": normalized_profile,
+                        "proxyInfo": proxy_info,
+                    },
+                )
+            except BaseException:
+                if relay is not None:
+                    relay.close()
+                raise
+            # 本分支已确认窗口关闭，新租约只写入 Roxy；账号仍保存供应商原线路。
+            _close_profile_relay(normalized_profile)
+            _remember_profile_relay(normalized_profile, relay)
+            logger.info("[Roxy] 已为绑定 Profile 更新本次代理租约（代理内容不写日志）")
+
+        def create_replacement_profile():
+            if not str(proxy_url or "").strip():
+                raise RuntimeError(
+                    "Roxy 新建账号 Profile 必须使用统一代理池已领取线路，禁止无代理创建"
+                )
+            return open_with(profile_id="", proxy_url=proxy_url)
+
+        if normalized_profile and reuse_enabled:
+            try:
+                # Roxy may keep a deleted Profile in its recycle-bin view while
+                # still returning a generic window-quota error from /browser/open.
+                # Probe the active view first so a stale DB binding is replaced
+                # instead of waiting for capacity on an unusable Profile.
+                active_profile = self._find_active_profile_by_id(normalized_profile)
+                if active_profile is None:
+                    logger.warning(
+                        "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
+                    )
+                    return create_replacement_profile()
+                if str(proxy_url or "").strip():
+                    # 列表可能把仍可连接的 Chrome 标为关闭；不能据此跳过 close。
+                    # 换线前始终确认关闭，再更新配置并重开，避免旧窗口沿用已停中继。
+                    if not self.close_profile(normalized_profile):
+                        raise RuntimeError(
+                            "Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开"
+                        )
+                # 绑定 Profile 仍复用其 cookies/指纹，但每次动作必须把新租约
+                # 写入 Roxy，否则 /browser/open 会继续使用旧代理。
+                update_bound_profile_proxy()
+                opened = open_with(profile_id=normalized_profile, proxy_url=None)
+                opened.account_bound = True
+                # A crash can leave the profile in the process registry after
+                # the account row was already committed. Protect it before
+                # any later cleanup or process restart can inspect that file.
+                _mark_profile_bound(normalized_profile)
+                return opened
+            except Exception as exc:
+                if not _is_profile_not_found_error(exc):
+                    raise
+                _close_profile_relay(normalized_profile)
+                logger.warning(
+                    "[Roxy] 账号绑定 Profile 不存在，创建替代环境并回写绑定：%s",
+                    type(exc).__name__,
+                )
+
+        # An explicit empty profile_id bypasses the global ROXY_PROFILE_ID;
+        # account isolation must never silently fall back to a shared Profile.
+        return create_replacement_profile()
+
+    @staticmethod
+    def mark_profile_bound(profile_id: str) -> None:
+        """Protect an account-bound Profile from orphan cleanup."""
+        _mark_profile_bound(profile_id)
+
+    @staticmethod
+    def attach_retained_profile_relay(opened: RoxyOpenResult) -> None:
+        """恢复连接资源，不触碰原页面或改写已经保存的供应商线路。"""
+        opened.proxy_relay = restore_profile_relay(opened.profile_id)
+        opened.proxy_route_retained = True
+
+    def close_profile(self, profile_id: str) -> bool:
+        if not profile_id:
+            return False
+        path = str(_cfg.ROXY_CLOSE_PATH).format(profile_id=profile_id)
+        try:
+            body = {
+                "workspaceId": _workspace_id_value(),
+                "dirId": int(profile_id) if str(profile_id).isdigit() else profile_id,
+            }
+            self.request(
+                _cfg.ROXY_CLOSE_METHOD,
+                path,
+                params=body if str(_cfg.ROXY_CLOSE_METHOD).upper() == "GET" else None,
+                json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
+            )
+            if not self._wait_profile_closed(profile_id):
+                logger.warning("[Roxy] 关闭环境请求已接受，但未确认环境已退出（profile 原值不写日志）")
+                return False
+            logger.info("[Roxy] 已关闭环境（profile 原值不写日志）")
+            _close_profile_relay(profile_id)
+            return True
+        except Exception as exc:
+            logger.warning("[Roxy] 关闭环境失败：%s", exc)
+            return False
+
+    def get_open_profile_connection(self, profile_id: str) -> dict | None:
+        """以进程接口确认打开状态；列表 openStatus 可能滞后，不能据此撤销连接。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            raise ValueError("待核验的 Roxy Profile 不能为空")
+        payload = self.request("GET", "/browser/connection_info", params={"dirIds": normalized})
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError("Roxy 窗口进程信息结构未能核验")
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get("dirId") or "").strip():
+                raise RuntimeError("Roxy 窗口进程信息结构未能核验")
+            if str(row["dirId"]).strip() != normalized:
+                continue
+            pid = row.get("pid")
+            if (isinstance(pid, bool) or not str(pid).isdigit() or int(pid) <= 0
+                    or not isinstance(row.get("http"), str) or not row["http"].strip()):
+                raise RuntimeError("Roxy 窗口进程连接未能核验")
+            return row
+        return None
+
+    def _find_active_profile_by_id(self, profile_id: str) -> dict | None:
+        """按 dirId 查询活动 Profile；回收站中的 Profile 不可复用。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return None
+        value = int(normalized) if normalized.isdigit() else normalized
+        payload = self.request(
+            "GET",
+            "/browser/list_v2",
+            params={
+                "workspaceId": _workspace_id_value(),
+                "dirId": value,
+                "isDelete": 0,
+                "page_index": 1,
+                "page_size": 10,
+            },
+        )
+        for row in self._profile_rows(payload):
+            row_id = _first(row, [
+                ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+            ])
+            if row_id == normalized:
+                return row
+        return None
+
+    def get_active_profile_name(self, profile_id: str) -> str:
+        """读取活动 Profile 的窗口名称；查不到时返回空字符串。"""
+        row = self._find_active_profile_by_id(profile_id)
+        if not row:
+            return ""
+        return str(_first(row, [
+            ("windowName",), ("window_name",), ("name",), ("profileName",),
+        ]) or "").strip()[:200]
+
+    def _find_profile_by_id(self, profile_id: str) -> dict | None:
+        """按 dirId 查询 Profile，兼容活跃列表与回收站列表。"""
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return None
+        value = int(normalized) if normalized.isdigit() else normalized
+        for is_delete in (0, 1):
+            payload = self.request(
+                "GET",
+                "/browser/list_v2",
+                params={
+                    "workspaceId": _workspace_id_value(),
+                    "dirId": value,
+                    # Roxy 当前版本的活动列表与回收站列表是两个过滤视图；
+                    # 关闭确认必须同时覆盖这两种最终状态。
+                    "isDelete": is_delete,
+                    "page_index": 1,
+                    "page_size": 10,
+                },
+            )
+            for row in self._profile_rows(payload):
+                row_id = _first(row, [
+                    ("dirId",), ("dir_id",), ("id",), ("profileId",), ("profile_id",),
+                ])
+                if row_id == normalized:
+                    return row
+        return None
+
+    def _wait_profile_closed(self, profile_id: str) -> bool:
+        """等待 Roxy 的 Profile 状态变成 closed，而不是只相信 close HTTP 2xx。"""
+        attempts = max(1, int(_ROXY_CLOSE_VERIFY_ATTEMPTS))
+        interval = max(0.0, float(_ROXY_CLOSE_VERIFY_INTERVAL))
+        for attempt in range(attempts):
+            try:
+                row = self._find_profile_by_id(profile_id)
+                status = _first(row or {}, [("openStatus",), ("open_status",)])
+                if status.lower() in {"0", "false", "closed", "close"}:
+                    return True
+            except Exception as exc:
+                logger.debug("[Roxy] 关闭状态查询失败 attempt=%s/%s：%s", attempt + 1, attempts, type(exc).__name__)
+            if attempt + 1 < attempts and interval:
+                time.sleep(interval)
+        return False
+
+    def delete_profile(self, profile_id: str) -> bool:
+        if not profile_id:
+            return False
+        path = str(getattr(_cfg, "ROXY_DELETE_PATH", "/browser/delete")).format(profile_id=profile_id)
+        method = str(getattr(_cfg, "ROXY_DELETE_METHOD", "POST") or "POST")
+        try:
+            body = {
+                "workspaceId": _workspace_id_value(),
+                "dirIds": [int(profile_id) if str(profile_id).isdigit() else profile_id],
+                # 临时环境移入 Roxy 回收站即可释放 Profile 配额，同时保留误删恢复能力。
+                "isSoftDelete": True,
+            }
+            self.request(
+                method,
+                path,
+                params=body if method.upper() == "GET" else None,
+                json_body=body if method.upper() != "GET" else None,
+            )
+            logger.info("[Roxy] 已删除环境（profile 原值不写日志）")
+            return True
+        except Exception as exc:
+            logger.warning("[Roxy] 删除环境失败：%s", exc)
+            return False
+
+    def cleanup_profile(self, opened: RoxyOpenResult | None) -> None:
+        """任务结束清理：默认只关闭；删除必须显式开启且仅限本轮创建。"""
+        if not opened or not opened.profile_id:
+            return
+        try:
+            from core.browser import traffic as browser_traffic
+
+            browser_traffic.finish_roxy_capture(opened)
+        except Exception:
+            logger.exception("[浏览器流量] 收口摘要采集失败；继续清理环境")
+        keep_open = bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
+        closed = True
+        if not keep_open:
+            closed = self.close_profile(opened.profile_id)
+
+        should_delete = (
+            bool(getattr(_cfg, "ROXY_ONE_PROFILE_PER_ACCOUNT", True))
+            and bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", False))
+            and bool(opened.created_by_run)
+        )
+        if should_delete:
+            # 删除前尽量确保已关闭；若 keep_open=True 则不删除，便于调试保留现场。
+            if keep_open:
+                logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，跳过删除环境")
+                return
+            if not closed:
+                logger.warning("[Roxy] 环境未能关闭，保留本地登记，不执行删除")
+                return
+            if self.delete_profile(opened.profile_id):
+                _untrack_created_profile(opened.profile_id)
+            else:
+                # Keep the item for a later startup cleanup attempt instead of
+                # losing the only local record of an undeleted Profile.
+                return
+        if opened.account_bound:
+            _mark_profile_bound(opened.profile_id)
+            if closed and opened.created_by_run:
+                # The account row is the durable binding. The registry only
+                # exists for crash recovery while the current process owns a
+                # newly created Profile.
+                _untrack_created_profile(opened.profile_id)
+        elif closed and opened.created_by_run:
+            # The Profile is retained in Roxy, but no longer belongs to the
+            # current process's orphan-recovery registry.
+            _untrack_created_profile(opened.profile_id)
+
+    def discard_profile(self, opened: RoxyOpenResult | None) -> None:
+        """Close and soft-delete one disposable run-created profile.
+
+        This intentionally ignores ``ROXY_KEEP_BROWSER_OPEN``.  It is reserved
+        for failures such as an unusable proxy tunnel where no registration
+        state exists to preserve and retaining the temporary profile would block
+        the bounded proxy retry from acquiring another Roxy slot.
+        """
+        if not opened or not opened.profile_id or not opened.created_by_run:
+            return
+        try:
+            from core.browser import traffic as browser_traffic
+
+            browser_traffic.finish_roxy_capture(opened)
+        except Exception:
+            logger.exception("[浏览器流量] 收口摘要采集失败；继续丢弃环境")
+        self.close_profile(opened.profile_id)
+        if self.delete_profile(opened.profile_id):
+            _untrack_created_profile(opened.profile_id)
+
+    @staticmethod
+    def _extract_debugger_address(payload: dict) -> str | None:
+        value = _first(payload, [
+            ("debuggerAddress",), ("debugger_address",), ("debugAddress",),
+            ("debuggingPortUrl",), ("debugging_port_url",),
+            ("remoteDebuggingAddress",), ("remote_debugging_address",),
+            ("http",), ("debugHttp",), ("debug_http",),
+            ("data", "debuggerAddress"), ("data", "debugger_address"), ("data", "debugAddress"),
+            ("data", "debuggingPortUrl"), ("data", "debugging_port_url"),
+            ("data", "remoteDebuggingAddress"), ("data", "remote_debugging_address"),
+            ("data", "http"), ("data", "debugHttp"), ("data", "debug_http"),
+        ])
+        if value:
+            value = value.strip()
+            # 兼容 http://127.0.0.1:xxxx / 127.0.0.1:xxxx / :xxxx / 9222
+            value = value.replace("http://", "").replace("https://", "").strip("/")
+            if value.startswith(":") and value[1:].isdigit():
+                return f"127.0.0.1{value}"
+            if value.isdigit():
+                return f"127.0.0.1:{value}"
+            if ":" in value and not value.startswith(":"):
+                return value
+        port = _first(payload, [
+            ("debuggingPort",), ("debugging_port",), ("debug_port",), ("port",),
+            ("data", "debuggingPort"), ("data", "debugging_port"), ("data", "debug_port"), ("data", "port"),
+        ])
+        if port:
+            port = str(port).strip()
+            if port.startswith(":"):
+                port = port[1:]
+            if port.isdigit():
+                return f"127.0.0.1:{port}"
+        return None
+
+
+def cleanup_orphaned_profiles() -> dict:
+    """关闭并按显式策略处理上次 WebUI 异常退出后遗留的环境。
+
+    默认只关闭并清理本地登记；只有显式开启删除开关且登记项明确标记为
+    disposable 时才软删除。历史登记项没有这个标记，永不自动删除。
+    """
+    with _PROFILE_REGISTRY_LOCK:
+        items = _load_profile_registry_locked()
+    if bool(getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
+        restored, restore_failed = restore_kept_profile_relays()
+        logger.info("[Roxy] ROXY_KEEP_BROWSER_OPEN=True，启动恢复保留 %s 个环境", len(items))
+        return {"found": len(items), "cleaned": 0, "failed": 0, "kept": len(items),
+                "restored_relays": restored, "relay_restore_failed": restore_failed}
+    if not items:
+        return {"found": 0, "cleaned": 0, "failed": 0}
+
+    client = RoxyBrowserClient()
+    delete_after_run = bool(getattr(_cfg, "ROXY_DELETE_PROFILE_AFTER_RUN", False))
+    cleaned = 0
+    failed = 0
+    try:
+        for item in items:
+            profile_id = str(item.get("profile_id") or "").strip()
+            if not profile_id:
+                continue
+            closed = client.close_profile(profile_id)
+            account_bound = bool(item.get("account_bound"))
+            disposable = bool(item.get("disposable"))
+            if delete_after_run and disposable and client.delete_profile(profile_id):
+                _untrack_created_profile(profile_id)
+                cleaned += 1
+            elif closed and (not delete_after_run or account_bound):
+                _untrack_created_profile(profile_id)
+                cleaned += 1
+            else:
+                failed += 1
+    finally:
+        client.http.close()
+    return {"found": len(items), "cleaned": cleaned, "failed": failed}
+
+
+def restore_kept_profile_relays() -> tuple[int, int]:
+    """WebUI 重启后先恢复仍在运行窗口的原端口；失败留待同窗口续跑再恢复。"""
+    from core.storage.proxy.leases import close_browser_relay, private_browser_relays
+    client = RoxyBrowserClient()
+    restored, failed = 0, 0
+    try:
+        rows = private_browser_relays()
+        seen = set()
+        for row in rows:
+            metadata = row.get("browser_relay") or {}
+            profile_id = str(metadata.get("profile_id") or "")
+            if not profile_id or profile_id in seen:
+                continue
+            seen.add(profile_id)
+            try:
+                connection = client.get_open_profile_connection(profile_id)
+                if connection is None:
+                    close_browser_relay(lease_id=row["lease_id"], profile_id=profile_id, listen_port=metadata["listen_port"])
+                    continue
+                if restore_profile_relay(profile_id, binding=row) is not None:
+                    restored += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning("[Roxy] 保留窗口原中继恢复失败：%s", type(exc).__name__)
+    except Exception as exc:
+        failed += 1
+        logger.warning("[Roxy] 中继恢复清单读取失败：%s", type(exc).__name__)
+    finally:
+        client.http.close()
+    return restored, failed

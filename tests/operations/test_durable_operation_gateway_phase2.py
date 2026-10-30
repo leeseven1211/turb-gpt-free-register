@@ -1,0 +1,1313 @@
+from __future__ import annotations
+
+import threading
+import time
+import tempfile
+from pathlib import Path
+from types import MappingProxyType
+from unittest.mock import patch
+
+from core import account_task_store, db
+from core.storage import records as record_store
+from core.operations import run_log as task_run_log
+from core.operations.runtime import OperationAccountDeactivated
+from core.operations import task_gateway
+from core.storage.operations import store as operation
+from tests.support_pg import PostgresTestCase
+
+
+class _ConfigSnapshot:
+    __slots__ = ("revision", "values", "sources")
+
+    def __init__(self, values: MappingProxyType, revision: int = 41) -> None:
+        self.revision = revision
+        self.values = values
+        self.sources = MappingProxyType({"SYNTHETIC_DRIVER": "test.config"})
+
+    def as_dict(self):
+        return {key: value for key, value in self.values.items()}
+
+
+class DurableOperationGatewayPhase2Tests(PostgresTestCase):
+    def setUp(self):
+        self.task_log_tempdir = tempfile.TemporaryDirectory()
+        self.task_log_root_patch = patch.object(
+            task_run_log, "_LOG_ROOT", Path(self.task_log_tempdir.name),
+        )
+        self.task_log_tasks_patch = patch.object(
+            task_run_log, "_TASK_LOG_ROOT", Path(self.task_log_tempdir.name) / "tasks",
+        )
+        self.task_log_root_patch.start()
+        self.task_log_tasks_patch.start()
+        self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
+        self.ready_patch = patch.object(account_task_store, "_READY_KEY", "")
+        self.schema_patch.start()
+        self.ready_patch.start()
+        account_task_store.init()
+        operation.reset_ready()
+        operation.init()
+        self.handler_types: set[str] = set()
+
+    def tearDown(self):
+        for task_type in self.handler_types:
+            task_gateway.unregister_operation_handler(task_type)
+        task_gateway.stop_dispatcher()
+        self.ready_patch.stop()
+        self.schema_patch.stop()
+        self.task_log_tasks_patch.stop()
+        self.task_log_root_patch.stop()
+        self.task_log_tempdir.cleanup()
+
+    def _register(self, task_type, handler, **kwargs):
+        task_gateway.register_operation_handler(task_type, handler, **kwargs)
+        self.handler_types.add(task_type)
+
+    def _runtime_account(self, email: str) -> int:
+        return record_store.insert_row(record_store.ACCOUNTS, {
+            "email": email,
+            "access_token": "synthetic-access-token",
+            "codex_status": "failed",
+            "created_at": "2026-09-14T10:00:00",
+            "updated_at": "2026-09-14T10:00:00",
+        })
+
+    def _wait_for_status(self, run_id: int, expected: set[str], timeout: float = 5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            run = operation.get_run(run_id) or {}
+            if str(run.get("status") or "") in expected:
+                return run
+            time.sleep(0.02)
+        self.fail(f"run {run_id} did not reach {expected}: {operation.get_run(run_id)}")
+
+    def test_real_submission_scanner_terminal_and_business_writeback(self):
+        account_id = self._runtime_account("synthetic-maintenance@example.test")
+        handler_seen = threading.Event()
+        seen: dict[str, object] = {}
+
+        def handler(context):
+            seen.update({
+                "run_id": context.run_id,
+                "source_system": context.source_system,
+                "driver": context.config_snapshot.get("driver"),
+                "revision": context.config_revision,
+            })
+            context.task_reporter.stage(
+                "preflight", "success", "synthetic preflight complete",
+            )
+            with context.lease(ttl_seconds=120) as lease:
+                self.assertTrue(lease.heartbeat(ttl_seconds=120))
+                self.assertTrue(db.update_account_note(context.account_id, "synthetic writeback"))
+                context.checkpoint()
+            handler_seen.set()
+            return task_gateway.OperationResult.success(
+                {"business_writeback": "account.note"}, message="synthetic complete",
+            )
+
+        self._register(
+            "synthetic_live_check",
+            handler,
+            source_systems=("synthetic_service",),
+            config_allowlist={"driver": "SYNTHETIC_DRIVER"},
+        )
+        submission = task_gateway.submit_durable_operation(
+            task_type="synthetic_live_check",
+            account_id=account_id,
+            email="synthetic-maintenance@example.test",
+            source_system="synthetic_service",
+            source_id="synthetic-live-check-1",
+            idempotency_key="synthetic-live-check-1",
+            config_snapshot=_ConfigSnapshot(MappingProxyType({
+                "SYNTHETIC_DRIVER": "no-network",
+                "UNRELATED_GLOBAL_SETTING": "must-not-persist",
+                "NESTED_UNRELATED": MappingProxyType({"value": "no"}),
+            })),
+            dispatch=False,
+        )
+
+        self.assertTrue(submission["accepted"])
+        self.assertFalse(submission["busy"])
+        self.assertEqual("synthetic_service", submission["source_system"])
+        self.assertEqual(41, submission["config_snapshot_revision"])
+        self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+        self.assertTrue(handler_seen.wait(5))
+        run = self._wait_for_status(int(submission["run_id"]), {"success"})
+
+        account = db.get_account(account_id)
+        detail = operation.get_task(int(submission["task_id"]))
+        self.assertEqual("synthetic writeback", account["note"])
+        self.assertEqual("synthetic_service", run["source_system"])
+        self.assertEqual("success", detail["status"])
+        self.assertEqual("success", detail["runs"][0]["status"])
+        self.assertEqual(41, seen["revision"])
+        self.assertEqual("no-network", seen["driver"])
+        self.assertNotIn("UNRELATED_GLOBAL_SETTING", run["data"]["config_snapshot"])
+        self.assertNotIn("NESTED_UNRELATED", run["data"]["config_snapshot"])
+        self.assertEqual([], operation.active_run_for_account(account_id) or [])
+
+    def test_claimed_handler_context_includes_task_email_snapshot(self):
+        account_id = self._runtime_account("claimed-context@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_context",
+            account_id=account_id,
+            email="claimed-context@example.test",
+            source_system="synthetic_service",
+            source_id="claimed-context-1",
+        )
+
+        claimed = operation.claim_run(
+            int(task["run"]["id"]),
+            execution_id="context-worker",
+            worker_pid=123,
+        )
+        self.assertIsNotNone(claimed)
+        context = task_gateway.OperationHandlerContext(
+            claimed,
+            execution_id="context-worker",
+        )
+
+        self.assertEqual("claimed-context@example.test", context.email)
+
+    def test_new_accept_busy_false_but_idempotent_reuse_is_busy(self):
+        first = task_gateway.submit_durable_operation(
+            task_type="synthetic_dedupe",
+            account_id=None,
+            email="dedupe@example.test",
+            source_system="synthetic_service",
+            idempotency_key="dedupe-request-1",
+            dispatch=False,
+        )
+        second = task_gateway.submit_durable_operation(
+            task_type="synthetic_dedupe",
+            account_id=None,
+            email="dedupe@example.test",
+            source_system="synthetic_service",
+            idempotency_key="dedupe-request-1",
+            dispatch=False,
+        )
+        self.assertTrue(first["accepted"])
+        self.assertFalse(first["busy"])
+        self.assertTrue(second["accepted"])
+        self.assertTrue(second["reused"])
+        self.assertTrue(second["busy"])
+        self.assertEqual(first["task_id"], second["task_id"])
+        self.assertEqual(first["run_id"], second["run_id"])
+
+    def test_handler_return_value_matches_persisted_terminal_result(self):
+        # Polling the database alone misses failures raised after finish_run
+        # commits. Verify the executor's return value as well as DB state.
+        for mode in ("returned", "finished"):
+            with self.subTest(mode=mode):
+                task_type = f"synthetic_result_{mode}"
+
+                def handler(context, *, _mode=mode):
+                    result = task_gateway.OperationResult.success({"receipt": _mode})
+                    if _mode == "finished":
+                        context.finish(result)
+                        return None
+                    return result
+
+                self._register(task_type, handler)
+                submission = task_gateway.submit_durable_operation(
+                    task_type=task_type,
+                    account_id=None,
+                    email="synthetic-return@example.test",
+                    idempotency_key=f"return-contract-{mode}",
+                    dispatch=False,
+                )
+                result = task_gateway._execute_operation_handler(task_type, submission["run_id"])
+                self.assertEqual("success", result["status"])
+                self.assertEqual("success", result["database_status"])
+                self.assertEqual("success", operation.get_run(submission["run_id"])["status"])
+
+    def test_mapping_result_normalization_has_safe_optional_defaults(self):
+        result = task_gateway._coerce_operation_result(
+            {"status": "success", "summary": {"receipt": "synthetic"}},
+            status="failed", message="",
+        )
+        self.assertEqual("success", result.status)
+        self.assertEqual({"receipt": "synthetic"}, result.summary)
+
+    def test_unknown_result_keeps_specific_error_and_returns_failed_business_status(self):
+        result = task_gateway._coerce_operation_result(
+            {"status": "request_unknown", "message": "密码认证未完成", "error": "password_sentinel_failed"},
+            message="",
+        )
+        self.assertEqual("password_sentinel_failed", result.error)
+        context = type("ResultContext", (), {"finished": False, "task_id": 1, "run_id": 2, "source_system": "test"})()
+        payload = task_gateway._operation_handler_result_payload(context, result)
+        self.assertEqual("failed", payload["status"])
+        self.assertEqual("attention_required", payload["database_status"])
+        self.assertEqual("password_sentinel_failed", payload["error"])
+
+    def test_request_unknown_is_retryable_as_a_new_run(self):
+        completed = threading.Event()
+
+        def handler(context):
+            completed.set()
+            return task_gateway.OperationResult.request_unknown(
+                "synthetic remote write has no receipt",
+                {"remote_write_started": True},
+            )
+
+        self._register("synthetic_unknown", handler, source_systems=("synthetic_service",))
+        submission = task_gateway.submit_durable_operation(
+            task_type="synthetic_unknown",
+            account_id=None,
+            email="unknown@example.test",
+            source_system="synthetic_service",
+            idempotency_key="unknown-request-1",
+            dispatch=False,
+        )
+        self.assertFalse(submission["busy"])
+        self.assertEqual(1, task_gateway.dispatch_registered_once(limit=10))
+        self.assertTrue(completed.wait(5))
+        run = self._wait_for_status(int(submission["run_id"]), {"attention_required"})
+        self.assertEqual("request_unknown", run["result_summary"]["outcome"])
+        self.assertTrue(run["result_summary"]["reconcile_required"])
+        self.assertTrue(run["result_summary"]["execution_id"])
+        task = operation.get_task(int(submission["task_id"]))
+        self.assertEqual(
+            [{"action": "retry", "label": "重新执行"}],
+            task["next_actions"],
+        )
+        retry = operation.retry_runtime_task(int(submission["task_id"]), trigger="manual_retry")
+        self.assertEqual(2, retry["run_no"])
+        self.assertEqual(int(submission["task_id"]), retry["task_id"])
+
+    def test_registration_resume_retry_can_override_unknown_fence(self):
+        task = operation.create_runtime_task(
+            task_type="registration_resume",
+            account_id=None,
+            email="registration-resume@example.test",
+            source_system="webui_runtime",
+            source_id="registration-resume-unknown",
+        )
+        operation.finish_run(
+            int(task["run"]["id"]),
+            status="attention_required",
+            result_summary={"outcome": "request_unknown", "reconcile_required": True},
+        )
+
+        retry = operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        self.assertEqual(2, retry["run_no"])
+        self.assertEqual(int(task["id"]), retry["task_id"])
+        self.assertEqual("queued", (operation.get_task(int(task["id"])) or {})["status"])
+
+    def test_active_task_cannot_create_a_parallel_retry_run(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_active_retry",
+            account_id=None,
+            email="active-retry@example.test",
+            source_system="synthetic_service",
+            source_id="active-retry-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "任务仍在执行"):
+            operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual("queued", detail["status"])
+        self.assertEqual([1], [run["run_no"] for run in detail["runs"]])
+
+    def test_active_latest_run_cannot_be_bypassed_by_stale_task_projection(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_stale_active_retry",
+            account_id=None,
+            email="stale-active-retry@example.test",
+            source_system="synthetic_service",
+            source_id="stale-active-retry-1",
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_tasks')} SET status='failed' WHERE id=%s",
+                (int(task["id"]),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "任务仍在执行"):
+            operation.retry_runtime_task(int(task["id"]), trigger="manual_retry")
+
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual([1], [run["run_no"] for run in detail["runs"]])
+
+    def test_stale_execution_or_lease_cannot_overwrite_current_run(self):
+        account_id = self._runtime_account("fenced@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_fenced",
+            account_id=account_id,
+            email="fenced@example.test",
+            source_system="synthetic_service",
+            source_id="fenced-run-1",
+        )
+        run_id = int(task["run"]["id"])
+        claimed = operation.claim_run(run_id, execution_id="worker-current", worker_pid=101)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id, ttl_seconds=120)
+        self.assertTrue(lease)
+        with self.assertRaises(PermissionError):
+            operation.finish_run(
+                run_id, status="success", execution_id="worker-stale", lease_token=lease,
+            )
+        self.assertEqual("running", operation.get_run(run_id)["status"])
+        with self.assertRaises(PermissionError):
+            operation.finish_run(
+                run_id, status="success", execution_id="worker-current", lease_token="wrong",
+            )
+        finished = operation.finish_run(
+            run_id, status="success", execution_id="worker-current", lease_token=lease,
+        )
+        self.assertEqual("success", finished["status"])
+        self.assertEqual("worker-current", finished["execution_id"])
+
+    def test_remote_receipt_contract_requires_local_commit_and_readback_proof(self):
+        account_id = self._runtime_account("receipt-contract@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_remote_receipt",
+            account_id=account_id,
+            email="receipt-contract@example.test",
+            source_system="synthetic_service",
+            source_id="receipt-contract-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "receipt-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=505)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        self.assertTrue(lease_token)
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="synthetic_password_change",
+            request_id="receipt-request-1",
+        )
+        with self.assertRaises(ValueError):
+            operation.record_remote_receipt(
+                run_id,
+                execution_id=execution_id,
+                lease_token=lease_token,
+                outcome="confirmed",
+                action="synthetic_password_change",
+            )
+        received = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="received",
+            action="synthetic_password_change",
+            detail={"remote_response_received": True},
+        )
+        self.assertEqual(
+            "response_received", received["data"]["remote_intent"]["receipt_state"],
+        )
+        local_commit = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            receipt_state="local_commit_required",
+            action="synthetic_password_change",
+            detail={"remote_result_confirmed": True},
+        )
+        self.assertEqual(
+            "local_commit_required",
+            local_commit["data"]["remote_intent"]["receipt_state"],
+        )
+        confirmed = operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="confirmed",
+            action="synthetic_password_change",
+            detail={
+                "remote_result_confirmed": True,
+                "local_business_writeback_confirmed": True,
+                "local_readback_confirmed": True,
+            },
+        )
+        self.assertEqual(
+            "confirmed", confirmed["data"]["remote_intent"]["receipt_state"],
+        )
+        operation.finish_run(
+            run_id,
+            status="success",
+            execution_id=execution_id,
+            lease_token=lease_token,
+            result_summary={"confirmed": True},
+        )
+
+    def _started_refresh(self, source_id):
+        account_id = self._runtime_account(f"{source_id}@example.test")
+        task = operation.create_runtime_task(
+            task_type="token_refresh", account_id=account_id,
+            email=f"{source_id}@example.test", source_system="synthetic_service",
+            source_id=source_id,
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id=source_id, worker_pid=505)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        fence = {"execution_id": source_id, "lease_token": lease}
+        operation.record_remote_intent(run_id, action="token_refresh", **fence)
+        return run_id, fence
+
+    def test_unconfirmed_receipt_preserves_specific_failure(self):
+        run_id, fence = self._started_refresh("specific-failure")
+        operation.append_runtime_event(
+            run_id, stage="email_otp", state="failed", message="邮箱验证码未完成",
+            detail={"error": "email_otp_failed", "cause_code": "email_otp_failed"},
+        )
+        finished = operation.finish_run(
+            run_id, status="failed", message="邮箱验证码未完成", error="email_otp_failed",
+            result_summary={"cause_code": "email_otp_failed"}, **fence,
+        )
+        self.assertEqual("attention_required", finished["status"])
+        self.assertEqual("email_otp_failed", finished["error_code"])
+        self.assertEqual("email_otp_failed", finished["error_message"])
+        self.assertTrue(finished["result_summary"]["reconcile_required"])
+        task = operation.get_task(finished["task_id"])
+        self.assertEqual("email_otp_failed", task["events"][-2]["error_code"])
+        self.assertEqual("邮箱验证码未完成", task["events"][-1]["message"])
+
+    def test_not_submitted_receipt_requires_explicit_proof(self):
+        run_id, fence = self._started_refresh("not-submitted-proof")
+        for detail in ({}, {"mutation_submitted": True}, {"mutation_submitted": False, "action_dispatched": True}):
+            with self.subTest(detail=detail), self.assertRaisesRegex(ValueError, "未提交"):
+                operation.record_remote_receipt(run_id, outcome="not_submitted", detail=detail, **fence)
+
+    def test_not_submitted_cannot_downgrade_current_or_legacy_receipt(self):
+        for legacy in (False, True):
+            for state in ("unknown", "response_received", "local_commit_required", "confirmed"):
+                with self.subTest(legacy=legacy, state=state):
+                    run_id, fence = self._started_refresh(f"prior-{legacy}-{state}")
+                    intent = dict(operation.get_run(run_id)["data"]["remote_intent"])
+                    intent["state"] = state
+                    if legacy:
+                        intent.pop("receipt_state", None)
+                    else:
+                        intent["receipt_state"] = state
+                    with operation._connect() as conn, conn.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE {operation._table('operation_runs')} "
+                            "SET data=jsonb_set(data, '{remote_intent}', %s::jsonb) WHERE id=%s",
+                            (operation._json(intent), run_id),
+                        )
+                    with self.assertRaises(ValueError):
+                        operation.record_remote_receipt(
+                            run_id, outcome="not_submitted",
+                            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+                        )
+                    self.assertEqual(state, operation.get_run(run_id)["data"]["remote_intent"]["state"])
+
+    def test_not_submitted_receipt_closes_failure_and_allows_new_boundary(self):
+        run_id, fence = self._started_refresh("not-submitted-close")
+        operation.record_remote_receipt(
+            run_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+        )
+        finished = operation.finish_run(
+            run_id, status="failed", error="password_sentinel_failed",
+            result_summary={"cause_code": "password_sentinel_failed"}, **fence,
+        )
+        self.assertEqual("failed", finished["status"])
+        self.assertFalse(finished["result_summary"].get("reconcile_required", False))
+        second_id, second_fence = self._started_refresh("not-submitted-next")
+        operation.record_remote_receipt(
+            second_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **second_fence,
+        )
+        next_run = operation.record_remote_intent(
+            second_id, action="browser_refresh", request_id="browser-next", **second_fence,
+        )
+        self.assertEqual("browser-next", next_run["data"]["remote_intent"]["request_id"])
+
+    def test_not_submitted_receipt_recovery_reports_worker_interruption(self):
+        run_id, fence = self._started_refresh("not-submitted-recovery")
+        operation.record_remote_receipt(
+            run_id, outcome="not_submitted",
+            detail={"mutation_submitted": False, "action_dispatched": False}, **fence,
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+            cur.execute(f"UPDATE {operation._table('account_operation_leases')} SET expires_at=now()-interval '1 minute' WHERE run_id=%s", (run_id,))
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        recovered = operation.get_run(run_id)
+        self.assertEqual("interrupted", recovered["status"])
+        self.assertFalse(recovered["result_summary"].get("reconcile_required", False))
+        self.assertNotEqual("request_unknown", recovered["error_code"])
+
+    def test_explicit_remote_rejection_after_confirmed_request_is_terminal_and_retryable(self):
+        account_id = self._runtime_account("unsupported-payment@example.test")
+        task = operation.create_runtime_task(
+            task_type="extract_link",
+            account_id=account_id,
+            email="unsupported-payment@example.test",
+            source_system="native_operations",
+            source_id="unsupported-payment-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "unsupported-payment-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=707)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="extract_job_create",
+            request_id="unsupported-payment-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="confirmed",
+            action="extract_job_create",
+            detail={
+                "remote_result_confirmed": True,
+                "local_business_writeback_confirmed": True,
+                "local_readback_confirmed": True,
+            },
+        )
+
+        finished = operation.finish_run(
+            run_id,
+            status="unsupported",
+            message="当前账号不支持 MoMo 支付方式",
+            error="当前账号不支持 MoMo 支付方式",
+            execution_id=execution_id,
+            lease_token=lease_token,
+            result_summary={"remote_result_state": "rejected"},
+        )
+
+        self.assertEqual("unsupported", finished["status"])
+        detail = operation.get_task(int(task["id"]))
+        self.assertEqual("unsupported", detail["status"])
+        self.assertEqual("account_available", detail["target_status"])
+        self.assertEqual(
+            [{"action": "retry", "label": "重新执行"}],
+            detail["next_actions"],
+        )
+
+    def test_crash_after_http_receipt_never_becomes_retryable(self):
+        account_id = self._runtime_account("receipt-crash@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_remote_crash",
+            account_id=account_id,
+            email="receipt-crash@example.test",
+            source_system="synthetic_service",
+            source_id="receipt-crash-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "crashed-receipt-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=606)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="synthetic_token_refresh",
+            request_id="receipt-crash-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="response_received",
+            action="synthetic_token_refresh",
+            detail={"http_status": 200},
+        )
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_runs')} "
+                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
+                (run_id,),
+            )
+            cur.execute(
+                f"UPDATE {operation._table('account_operation_leases')} "
+                "SET expires_at=now() - interval '1 minute' WHERE run_id=%s",
+                (run_id,),
+            )
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        recovered = operation.get_run(run_id)
+        self.assertEqual("attention_required", recovered["status"])
+        self.assertEqual("request_unknown", recovered["result_summary"]["outcome"])
+        self.assertTrue(recovered["result_summary"]["reconcile_required"])
+        self.assertEqual(
+            "response_received",
+            recovered["result_summary"]["remote_intent_state"],
+        )
+        self.assertEqual(
+            [{"action": "retry", "label": "重新执行"}],
+            (operation.get_task(int(task["id"])) or {})["next_actions"],
+        )
+
+
+    def test_reconciliation_account_query_deduplicates_before_limit(self):
+        account_ids = [
+            self._runtime_account("reconcile-many-a@example.test"),
+            self._runtime_account("reconcile-many-b@example.test"),
+        ]
+        for account_id in account_ids:
+            for ordinal in range(3):
+                task = operation.create_runtime_task(
+                    task_type="codex_token_refresh",
+                    account_id=account_id,
+                    email=f"reconcile-{account_id}-{ordinal}@example.test",
+                    source_system="native_operations",
+                    source_id=f"reconcile-many-{account_id}-{ordinal}",
+                )
+                operation.finish_run(
+                    int(task["run"]["id"]),
+                    status="attention_required",
+                    result_summary={
+                        "outcome": "request_unknown",
+                        "reconcile_required": True,
+                        "ordinal": ordinal,
+                    },
+                )
+
+        rows = operation.list_reconciliation_accounts(
+            task_type="codex_token_refresh", limit=2,
+        )
+        self.assertEqual(account_ids, [int(row["account_id"]) for row in rows])
+        self.assertEqual(
+            account_ids,
+            [
+                int(row["account_id"])
+                for row in operation.list_reconciliation_accounts(
+                    task_type="codex_token_refresh",
+                    account_ids=account_ids,
+                    limit=1,
+                )
+            ],
+        )
+
+    def test_config_allowlist_accepts_only_exact_password_policy_keys(self):
+        values = MappingProxyType({
+            "ACCOUNT_COMPLETION_PASSWORD_ENABLED": True,
+            "ACCOUNT_PASSWORD_RESET_ENABLED": False,
+            "ACCOUNT_PASSWORD_DRIVER": "roxy",
+            "ACCOUNT_PASSWORD_PROXY_MODE": "registration",
+            "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
+            "ACCOUNT_PASSWORD_PROXY_PASSWORD": "must-never-copy",
+        })
+        snapshot = _ConfigSnapshot(values)
+        projected = task_gateway.normalize_config_snapshot(
+            snapshot,
+            allowlist={
+                "password_enabled": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
+                "password_reset_enabled": "ACCOUNT_PASSWORD_RESET_ENABLED",
+                "password_driver": "ACCOUNT_PASSWORD_DRIVER",
+                "password_proxy_mode": "ACCOUNT_PASSWORD_PROXY_MODE",
+                "auth_password_email_fallback": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+            },
+        )
+        self.assertEqual("roxy", projected["password_driver"])
+        self.assertNotIn("password_proxy_password", projected)
+        with self.assertRaises(ValueError):
+            task_gateway.normalize_config_snapshot(
+                snapshot,
+                allowlist={"password_proxy_password": "ACCOUNT_PASSWORD_PROXY_PASSWORD"},
+            )
+        with self.assertRaises(ValueError):
+            task_gateway.normalize_config_snapshot(
+                snapshot,
+                allowlist={"PASSWORD_PROXY_PASSWORD": "ACCOUNT_PASSWORD_PROXY_MODE"},
+            )
+
+    def test_remote_write_exception_cancel_and_premature_result_preserve_unknown_then_allow_retry(self):
+        cases = (
+            ("started", "exception"), ("response_received", "exception"),
+            ("response_received", "cancel_exception"), ("started", "failed"),
+            ("started", "cancelled"), ("started", "success"),
+            ("confirmed", "failed"),
+        )
+        for receipt, ending in cases:
+            with self.subTest(receipt=receipt, ending=ending):
+                kind = f"synthetic_pending_{receipt}_{ending}"
+                account_id = self._runtime_account(f"{kind}@example.test")
+
+                def handler(context, *, _receipt=receipt, _ending=ending):
+                    with context.lease():
+                        context.remote_request_started("synthetic_remote_write")
+                        if _receipt != "started":
+                            context.remote_request_receipt(
+                                outcome=_receipt,
+                                detail={
+                                    "remote_result_confirmed": True,
+                                    "local_business_writeback_confirmed": True,
+                                    "local_readback_confirmed": True,
+                                } if _receipt == "confirmed" else {},
+                            )
+                        if _ending == "exception":
+                            raise RuntimeError("synthetic local writeback failure")
+                        if _ending == "cancel_exception":
+                            raise task_gateway.OperationCancelled("synthetic cancel")
+                        return task_gateway.OperationResult(_ending)
+
+                self._register(kind, handler)
+                submitted = task_gateway.submit_durable_operation(
+                    task_type=kind, account_id=account_id, email=f"{kind}@example.test", dispatch=False,
+                )
+                result = task_gateway._execute_operation_handler(kind, submitted["run_id"])
+                persisted = operation.get_run(submitted["run_id"])
+                self.assertEqual("attention_required", persisted["status"])
+                self.assertEqual("request_unknown", persisted["result_summary"]["outcome"])
+                self.assertEqual("failed", result["status"])
+                self.assertTrue(result["reconcile_required"])
+                self.assertFalse(result["ok"])
+                self.assertEqual("attention_required", result["database_status"])
+                task = operation.get_task(submitted["task_id"])
+                self.assertEqual("retry", task["next_actions"][0]["action"])
+                retry = operation.retry_runtime_task(submitted["task_id"])
+                self.assertEqual(2, retry["run_no"])
+                self.assertEqual(2, len(operation.get_task(submitted["task_id"])["runs"]))
+
+    def test_direct_terminal_write_preserves_unknown_and_allows_a_new_run(self):
+        account_id = self._runtime_account("direct-pending@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_direct", account_id=account_id, email="direct-pending@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="direct-worker", worker_pid=707)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="direct-worker", lease_token=lease, action="synthetic_write",
+        )
+        result = operation.finish_run(
+            run_id, execution_id="direct-worker", lease_token=lease, status="failed",
+        )
+        self.assertEqual("attention_required", result["status"])
+        retry = operation.retry_runtime_task(task["id"], data={"remote_intent": {}})
+        self.assertEqual(2, retry["run_no"])
+        self.assertNotIn("remote_intent", retry["data"])
+
+    def test_deactivated_remote_write_stays_terminal_and_cannot_retry(self):
+        account_id = self._runtime_account("deactivated-write@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_retry", account_id=account_id, email="deactivated-write@example.test",
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="deactivated-worker", worker_pid=708)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="deactivated-worker", lease_token=lease, action="codex_oauth",
+        )
+
+        result = operation.finish_run(
+            run_id,
+            execution_id="deactivated-worker",
+            lease_token=lease,
+            status="deactivated",
+            error="账号已废（account_deleted）",
+        )
+
+        self.assertEqual("deactivated", result["status"])
+        detail = operation.get_task(int(task["id"])) or {}
+        self.assertEqual("account_deactivated", detail["target_status"])
+        self.assertEqual([], detail["next_actions"])
+        with self.assertRaisesRegex(ValueError, "账号已废号"):
+            operation.retry_runtime_task(int(task["id"]))
+
+    def test_currently_deactivated_account_blocks_retry_under_account_lock(self):
+        account_id = self._runtime_account("deactivated-current@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_retry", account_id=account_id, email="deactivated-current@example.test",
+        )
+        operation.finish_run(int(task["run"]["id"]), status="failed", error="temporary failure")
+        self.assertTrue(db.mark_account_deactivated(account_id, reason="account_deleted"))
+
+        with patch.object(record_store, "get_row", wraps=record_store.get_row) as get_row:
+            with self.assertRaisesRegex(ValueError, "账号已废号"):
+                operation.retry_runtime_task(int(task["id"]))
+
+        self.assertTrue(any(
+            call.kwargs.get("conn") is not None and call.kwargs.get("for_update") is True
+            for call in get_row.call_args_list
+        ))
+
+    def test_deactivated_account_is_fenced_before_handler_and_lease(self):
+        account_id = self._runtime_account("deactivated-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_deactivated_fence",
+            account_id=account_id,
+            email="deactivated-fence@example.test",
+            source_system="native_operations",
+            source_id="deactivated-fence-1",
+        )
+        run_id = int(task["run"]["id"])
+        self.assertTrue(db.mark_account_deactivated(account_id, reason="account_deleted"))
+        called = threading.Event()
+
+        def handler(_context):
+            called.set()
+            return task_gateway.OperationResult.success()
+
+        self._register("synthetic_deactivated_fence", handler)
+        result = task_gateway._execute_operation_handler("synthetic_deactivated_fence", run_id)
+        self.assertEqual("not_claimed", result["status"])
+        self.assertFalse(called.is_set())
+        self.assertEqual("deactivated", operation.get_run(run_id)["status"])
+
+        active = operation.create_runtime_task(
+            task_type="synthetic_deactivated_lease",
+            account_id=self._runtime_account("deactivated-lease@example.test"),
+            email="deactivated-lease@example.test",
+            source_system="native_operations",
+            source_id="deactivated-lease-1",
+        )
+        active_run_id = int(active["run"]["id"])
+        operation.claim_run(active_run_id, execution_id="deactivated-lease-worker", worker_pid=709)
+        lease_account_id = int(active["account_id"])
+        self.assertTrue(db.mark_account_deactivated(lease_account_id, reason="account_deleted"))
+        with self.assertRaises(OperationAccountDeactivated):
+            operation.acquire_account_lease(
+                account_id=lease_account_id,
+                run_id=active_run_id,
+            )
+
+    def test_rejected_write_is_retryable_but_new_run_has_no_old_checkpoint(self):
+        account_id = self._runtime_account("rejected-write@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_rejected", account_id=account_id, email="rejected-write@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="rejected-worker", worker_pid=808)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        operation.record_remote_intent(
+            run_id, execution_id="rejected-worker", lease_token=lease, action="synthetic_write",
+        )
+        operation.record_remote_receipt(
+            run_id, execution_id="rejected-worker", lease_token=lease, outcome="rejected",
+        )
+        operation.finish_run(
+            run_id, execution_id="rejected-worker", lease_token=lease, status="failed",
+        )
+        retry = operation.retry_runtime_task(task["id"])
+        self.assertEqual("queued", retry["status"])
+        self.assertNotIn("remote_intent", retry["data"])
+        self.assertNotIn("remote_receipt", retry["data"])
+
+    def test_heartbeat_exception_latches_lease_loss_without_thread_crash(self):
+        with patch.object(threading.Thread, "start"):
+            lease = task_gateway.OperationLease(
+                run_id=1, account_id=1, resource_family="synthetic", token="synthetic",
+                ttl_seconds=120,
+            )
+        with patch.object(operation, "heartbeat_run", side_effect=RuntimeError("synthetic DB loss")):
+            self.assertFalse(lease.heartbeat())
+        self.assertTrue(lease.lost)
+        with patch.object(operation, "heartbeat_run", return_value=True) as heartbeat:
+            self.assertFalse(lease.heartbeat())
+        heartbeat.assert_not_called()
+
+    def test_pending_checkpoint_cannot_be_overwritten_or_receive_another_request_receipt(self):
+        account_id = self._runtime_account("checkpoint-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="synthetic_checkpoint", account_id=account_id, email="checkpoint-fence@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="checkpoint-worker", worker_pid=909)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        fence = {"execution_id": "checkpoint-worker", "lease_token": lease}
+        operation.record_remote_intent(run_id, **fence, action="write", request_id="first")
+        for kind in ("read", "remote_write"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                operation.record_remote_intent(run_id, **fence, action="next", intent_kind=kind)
+        with self.assertRaises(ValueError):
+            operation.record_remote_receipt(run_id, **fence, outcome="rejected", request_id="second")
+        with self.assertRaises(PermissionError):
+            operation.record_remote_receipt(
+                run_id, execution_id="checkpoint-worker", outcome="rejected",
+            )
+        self.assertEqual("started", operation.get_run(run_id)["data"]["remote_intent"]["receipt_state"])
+        operation.finish_run(run_id, **fence, status="attention_required")
+
+    def test_read_only_receipt_does_not_require_an_account_lease(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_read", account_id=None, email="read@example.test",
+        )
+        run_id = task["run"]["id"]
+        operation.claim_run(run_id, execution_id="read-worker", worker_pid=910)
+        operation.record_remote_intent(
+            run_id, execution_id="read-worker", action="read", intent_kind="read",
+        )
+        operation.record_remote_receipt(run_id, execution_id="read-worker", outcome="response_received")
+        result = operation.finish_run(run_id, execution_id="read-worker", status="success")
+        self.assertEqual("success", result["status"])
+
+    def test_reconciliation_account_query_fences_unfinished_native_write(self):
+        account_id = self._runtime_account("producer-fence@example.test")
+        task = operation.create_runtime_task(
+            task_type="codex_token_refresh",
+            account_id=account_id,
+            email="producer-fence@example.test",
+            source_system="native_operations",
+            source_id="producer-fence-1",
+        )
+        run_id = int(task["run"]["id"])
+        execution_id = "producer-fence-worker"
+        operation.claim_run(run_id, execution_id=execution_id, worker_pid=707)
+        lease_token = operation.acquire_account_lease(
+            account_id=account_id, run_id=run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            action="codex_token_refresh",
+            request_id="producer-fence-request",
+        )
+        operation.record_remote_receipt(
+            run_id,
+            execution_id=execution_id,
+            lease_token=lease_token,
+            outcome="response_received",
+            action="codex_token_refresh",
+        )
+        fenced = operation.list_reconciliation_accounts(
+            task_type="codex_token_refresh", account_ids=[account_id],
+        )
+        self.assertEqual([account_id], [row["account_id"] for row in fenced])
+        self.assertEqual("response_received", fenced[0]["remote_intent_state"])
+        self.assertTrue(fenced[0]["reconcile_required"])
+
+        rejected_account_id = self._runtime_account("producer-rejected@example.test")
+        rejected_task = operation.create_runtime_task(
+            task_type="codex_token_refresh",
+            account_id=rejected_account_id,
+            email="producer-rejected@example.test",
+            source_system="native_operations",
+            source_id="producer-rejected-1",
+        )
+        rejected_run_id = int(rejected_task["run"]["id"])
+        rejected_execution = "producer-rejected-worker"
+        operation.claim_run(rejected_run_id, execution_id=rejected_execution, worker_pid=708)
+        rejected_lease = operation.acquire_account_lease(
+            account_id=rejected_account_id, run_id=rejected_run_id, ttl_seconds=120,
+        )
+        operation.record_remote_intent(
+            rejected_run_id,
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            action="codex_token_refresh",
+            request_id="producer-rejected-request",
+        )
+        operation.record_remote_receipt(
+            rejected_run_id,
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            outcome="rejected",
+            action="codex_token_refresh",
+        )
+        self.assertEqual(
+            [],
+            operation.list_reconciliation_accounts(
+                task_type="codex_token_refresh", account_ids=[rejected_account_id],
+            ),
+        )
+        operation.finish_run(
+            rejected_run_id,
+            status="failed",
+            execution_id=rejected_execution,
+            lease_token=rejected_lease,
+            result_summary={"status": "failed"},
+        )
+
+    def test_cancelled_queue_is_not_claimed_by_registered_handler(self):
+        called = threading.Event()
+
+        def handler(_context):
+            called.set()
+            return task_gateway.OperationResult.success()
+
+        self._register("synthetic_cancel", handler, source_systems=("synthetic_service",))
+        submission = task_gateway.submit_durable_operation(
+            task_type="synthetic_cancel",
+            account_id=None,
+            email="cancel@example.test",
+            source_system="synthetic_service",
+            idempotency_key="cancel-request-1",
+            dispatch=False,
+        )
+        cancelled = operation.request_run_cancel(int(submission["run_id"]), reason="test cancel")
+        self.assertEqual("cancelled", cancelled["status"])
+        self.assertEqual(0, task_gateway.dispatch_registered_once(limit=10))
+        self.assertFalse(called.wait(0.2))
+        self.assertEqual("cancelled", operation.get_run(int(submission["run_id"]))["status"])
+
+    def test_custom_native_source_is_recovered_without_touching_compatibility_rows(self):
+        task = operation.create_runtime_task(
+            task_type="synthetic_recovery",
+            account_id=None,
+            email="recovery@example.test",
+            source_system="synthetic_service",
+            source_id="recovery-run-1",
+        )
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="crashed-worker", worker_pid=404)
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {operation._table('operation_runs')} "
+                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
+                (run_id,),
+            )
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        self.assertEqual("interrupted", operation.get_run(run_id)["status"])
+
+    def test_stale_runtime_recovery_tick_is_periodic_and_reconciles_projections(self):
+        previous = getattr(task_gateway, "_LAST_RUNTIME_RECOVERY_AT", None)
+        task_gateway._LAST_RUNTIME_RECOVERY_AT = 0.0
+        try:
+            with (
+                patch.object(task_gateway, "_operation") as operation_module,
+                patch.object(task_gateway, "_reconcile_recovered_projections") as reconcile,
+                patch("core.extract_link.service.resume_known_remote_jobs") as resume_extract,
+            ):
+                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 1
+                self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=60.0))
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=90.0))
+                self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=121.0))
+                self.assertEqual(2, reconcile.call_count)
+                self.assertEqual(2, resume_extract.call_count)
+                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 0
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=182.0))
+                self.assertEqual(3, resume_extract.call_count)
+                self.assertTrue(all(call.kwargs == {"continuous_only": True} for call in resume_extract.call_args_list))
+                self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=200.0))
+                self.assertEqual(3, resume_extract.call_count)
+        finally:
+            task_gateway._LAST_RUNTIME_RECOVERY_AT = previous
+
+    def test_defer_reuses_run_preserves_remote_intent_and_releases_lease(self):
+        account_id = self._runtime_account("deferred@example.test")
+        seen = {}
+
+        def handler(context):
+            with context.lease():
+                context.remote_request_started("extract_link_create")
+                context.defer(delay_seconds=30, reason="等待原单", data={
+                    "extract_poll_continuation": True,
+                    "workbench_action": "sync_status",
+                    "provider_job_run_id": context.run_id,
+                    "job_secret": "不得写入公开运行数据",
+                })
+                seen["deferred"] = context.deferred
+
+        self._register("synthetic_defer", handler)
+        submitted = task_gateway.submit_durable_operation(
+            task_type="synthetic_defer", account_id=account_id,
+            email="deferred@example.test", dispatch=False,
+        )
+        run_id = int(submitted["run_id"])
+        result = task_gateway._execute_operation_handler("synthetic_defer", run_id)
+        run = operation.get_run(run_id)
+        task = operation.get_task(int(submitted["task_id"]))
+        self.assertEqual("deferred", result["status"])
+        self.assertTrue(seen["deferred"])
+        self.assertEqual("queued", run["status"])
+        self.assertIsNone(run["completed_at"])
+        self.assertEqual("remote_sync", run["progress_stage"])
+        self.assertEqual("extract_link_create", run["data"]["remote_intent"]["action"])
+        self.assertTrue(run["data"]["extract_poll_continuation"])
+        self.assertNotIn("job_secret", run["data"])
+        self.assertEqual(run_id, task["last_run_id"])
+        self.assertEqual(1, len(task["runs"]))
+        self.assertIsNone(operation.claim_run(run_id, execution_id="too-early", worker_pid=90))
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM {operation._table('account_operation_leases')} WHERE run_id=%s", (run_id,))
+            self.assertEqual(0, cur.fetchone()["n"])
+
+    def test_defer_does_not_report_a_terminal_email_auth_result(self):
+        from contextlib import contextmanager
+
+        results = []
+
+        @contextmanager
+        def auth_session(_email):
+            yield type("Session", (), {"set_result": lambda _self, result: results.append(result)})()
+
+        def handler(context):
+            context.defer(delay_seconds=1, reason="等待续查")
+
+        self._register("synthetic_defer_auth", handler)
+        submitted = task_gateway.submit_durable_operation(
+            task_type="synthetic_defer_auth", account_id=None,
+            email="deferred-auth@example.test", dispatch=False,
+        )
+        with patch("core.auth.email_guard.email_auth_session", auth_session):
+            result = task_gateway._execute_operation_handler("synthetic_defer_auth", int(submitted["run_id"]))
+        self.assertEqual("deferred", result["status"])
+        self.assertEqual([], results)
+
+    def test_defer_rejects_expired_lease_and_cancel_wins(self):
+        account_id = self._runtime_account("deferred-fence@example.test")
+        task = operation.create_runtime_task(task_type="synthetic_defer_fence", account_id=account_id,
+                                            email="deferred-fence@example.test")
+        run_id = int(task["run"]["id"])
+        operation.claim_run(run_id, execution_id="current", worker_pid=91)
+        lease = operation.acquire_account_lease(account_id=account_id, run_id=run_id)
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="old", lease_token=lease,
+                                         reason="过期执行", data={"extract_poll_continuation": True})
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", reason="缺少租约",
+                                         data={"extract_poll_continuation": True})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('account_operation_leases')} SET expires_at=now()-interval '1 minute' WHERE run_id=%s", (run_id,))
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", lease_token=lease,
+                                         reason="过期租约", data={"extract_poll_continuation": True})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {operation._table('account_operation_leases')} WHERE run_id=%s", (run_id,))
+        with self.assertRaises(PermissionError):
+            operation.requeue_claimed_run(run_id, execution_id="current", reason="丢失租约",
+                                         data={"extract_poll_continuation": True})
+        operation.request_run_cancel(run_id)
+        self.assertIsNone(operation.requeue_claimed_run(
+            run_id, execution_id="current", lease_token=lease, reason="取消优先",
+            data={"extract_poll_continuation": True},
+        ))
+        self.assertEqual("cancelling", operation.get_run(run_id)["status"])
+
+    def test_dispatch_candidates_include_both_lanes_beyond_scan_limit(self):
+        for number in range(70):
+            operation.create_runtime_task(task_type="extract_link", account_id=None, email=f"poll-{number}@example.test", data={
+                "provider_id": "huanguang", "extract_poll_continuation": True,
+            })
+        initial = operation.create_runtime_task(task_type="extract_link", account_id=None, email="initial@example.test",
+                                                data={"provider_id": "huanguang"})
+        initial_id = int(initial["run"]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=False)
+        self.assertEqual(initial_id, rows[0]["id"])
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=True)
+        self.assertTrue(rows[0]["data"].get("extract_poll_continuation"))
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
+
+    def test_legacy_dispatch_candidates_preserve_initial_lane(self):
+        for number in range(70):
+            operation.create_runtime_task(task_type="extract_link", account_id=None, email=f"legacy-poll-{number}@example.test", data={
+                "provider_id": "legacy", "extract_poll_continuation": True,
+            })
+        initial = operation.create_runtime_task(task_type="extract_link", account_id=None, email="legacy-initial@example.test",
+                                                data={"provider_id": "legacy"})
+        initial_id = int(initial["run"]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=False)
+        self.assertEqual(initial_id, rows[0]["id"])
+        rows = operation.list_dispatchable_runs(limit=64, prioritize_continuations=True)
+        self.assertTrue(rows[0]["data"].get("extract_poll_continuation"))
+        self.assertTrue(any(row["id"] == initial_id for row in rows))
+    def test_crashed_huanguang_continuation_requeues_same_known_job(self):
+        from core.storage.extract_link import jobs as extract_link_jobs
+
+        task = operation.create_runtime_task(task_type="extract_link", account_id=None, email="recover-poll@example.test", data={
+            "provider_id": "huanguang", "extract_poll_continuation": True,
+            "workbench_action": "sync_status",
+        })
+        run_id = int(task["run"]["id"])
+        extract_link_jobs.save_provider_job(run_id, "huanguang", "existing-original",
+                                            {"extraction_state": "running"}, {"job_secret": "private"})
+        operation.claim_run(run_id, execution_id="crashed-poll", worker_pid=92)
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+        self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+        run = operation.get_run(run_id)
+        self.assertEqual("queued", run["status"])
+        self.assertIsNone(run["completed_at"])
+        self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+        self.assertIsNotNone(operation.claim_run(run_id, execution_id="restarted-poll", worker_pid=93))
+
+    def test_crashed_legacy_continuation_requires_known_job_and_reuses_run(self):
+        from core.storage.extract_link import jobs as extract_link_jobs
+
+        for job_id, cancelled, expected in (("existing-original", False, "queued"),
+                                             (None, False, "interrupted"),
+                                             ("cancelled-original", True, "interrupted")):
+            with self.subTest(has_job=bool(job_id), cancelled=cancelled):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"legacy-recover-{bool(job_id)}-{cancelled}@example.test", data={
+                        "provider_id": "legacy", "extract_poll_continuation": True,
+                        "workbench_action": "sync_status",
+                    })
+                run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(run_id, "legacy", job_id,
+                    {"extraction_state": "running"}, {"mode": "auto_payment"})
+                operation.claim_run(run_id, execution_id=f"legacy-crash-{run_id}", worker_pid=92)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour', "
+                                "cancel_requested_at=CASE WHEN %s THEN now() ELSE NULL END WHERE id=%s", (cancelled, run_id))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual(expected, operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+
+    def test_crashed_huanguang_receipt_continuation_reuses_original_submission(self):
+        from core.storage.extract_link import jobs as extract_link_jobs
+
+        for pending, secret, expected in ((True, "receipt-only", "queued"),
+                                           (False, "receipt-only", "interrupted"),
+                                           (True, "", "interrupted")):
+            with self.subTest(pending=pending, has_secret=bool(secret)):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"receipt-{pending}-{bool(secret)}@example.test", data={
+                        "provider_id": "huanguang", "extract_poll_continuation": True,
+                        "workbench_action": "sync_status",
+                    })
+                run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(run_id, "huanguang", None,
+                    {"extraction_state": "unknown"},
+                    {"batch_receipt_pending": pending, "batch_receipt_secret": secret})
+                operation.claim_run(run_id, execution_id=f"receipt-{run_id}", worker_pid=94)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual(expected, operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+
+    def test_continuation_lane_orders_by_due_time_before_creation(self):
+        tasks = [operation.create_runtime_task(task_type="extract_link", account_id=None,
+            email=f"due-{number}@example.test", data={
+                "provider_id": "huanguang", "extract_poll_continuation": True,
+            }) for number in range(2)]
+        old_id, due_first_id = [int(task["run"]["id"]) for task in tasks]
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET next_attempt_at=now()-interval '1 second' WHERE id=%s", (old_id,))
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET next_attempt_at=now()-interval '1 minute' WHERE id=%s", (due_first_id,))
+        rows = operation.list_dispatchable_runs(limit=2, prioritize_continuations=True)
+        self.assertEqual([due_first_id, old_id], [row["id"] for row in rows])
+
+    def test_crashed_continuation_recovers_same_task_prior_provider_reference(self):
+        from core.storage.extract_link import jobs as extract_link_jobs
+
+        for provider_id, has_job in (("huanguang", True), ("huanguang", False), ("legacy", True)):
+            with self.subTest(provider_id=provider_id, has_job=has_job):
+                task = operation.create_runtime_task(task_type="extract_link", account_id=None,
+                    email=f"prior-ref-{provider_id}-{has_job}@example.test", data={"provider_id": provider_id})
+                prior_run_id = int(task["run"]["id"])
+                extract_link_jobs.save_provider_job(prior_run_id, provider_id, "original" if has_job else None,
+                    {"extraction_state": "running"},
+                    {} if has_job else {"batch_receipt_pending": True, "batch_receipt_secret": "private-receipt"})
+                operation.finish_run(prior_run_id, status="attention_required")
+                retry = operation.retry_runtime_task(int(task["id"]), data={
+                    "extract_poll_continuation": True, "workbench_action": "sync_status",
+                    "provider_job_run_id": prior_run_id,
+                })
+                run_id = int(retry["id"])
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {operation._table('extract_link_provider_jobs')} WHERE run_id=%s", (run_id,))
+                self.assertIsNone(extract_link_jobs.get_provider_job_private(run_id))
+                operation.claim_run(run_id, execution_id=f"ref-crash-{run_id}", worker_pid=95)
+                with operation._connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operation._table('operation_runs')} SET heartbeat_at=now()-interval '1 hour' WHERE id=%s", (run_id,))
+                self.assertEqual(1, operation.recover_interrupted_runtime_runs())
+                self.assertEqual("queued", operation.get_run(run_id)["status"])
+                self.assertEqual(run_id, operation.get_task(int(task["id"]))["last_run_id"])
+
+
+if __name__ == "__main__":
+    import unittest
+
+    unittest.main()

@@ -6,7 +6,9 @@ from typing import Any
 
 from flask import jsonify, request
 
-from core import browser_traffic, operation_task_store, proxy_lease_store
+from core.browser import traffic as browser_traffic
+from core import operation_task_store
+from core.storage.proxy import leases as proxy_lease_store
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
@@ -141,7 +143,7 @@ def create_proxy_traffic_blueprint(context: WebUIContext):
     def api_proxy_pool():
         """返回独立代理池只读快照；库存详情由核心层统一脱敏。"""
         try:
-            from core import proxy_pool
+            from core.proxy import pool as proxy_pool
 
             snapshot = proxy_pool.snapshot()
             if not isinstance(snapshot, dict):

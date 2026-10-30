@@ -7,7 +7,7 @@ import json
 import logging
 from urllib.parse import urlencode, urlparse, parse_qs
 
-from core.session import BrowserSession
+from core.auth.protocol.session import BrowserSession
 from core.registration.protocol_oss.upstream.config.openai_protocol import (
     OPENAI_CLIENT_ID, OPENAI_SCOPE, OPENAI_AUDIENCE, OPENAI_REDIRECT_URI
 )

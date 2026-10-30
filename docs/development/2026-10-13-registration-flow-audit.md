@@ -84,13 +84,13 @@
 
 | 范围 | 代码入口 |
 |---|---|
-| 调度、邮箱绑定、注册结果及收口 | [registration_service.py](../../core/registration_service.py)、[standalone.py](../../core/registration/standalone.py) |
-| Roxy 主流程、OTP 表单与 session 身份 | [roxy.py](../../core/registration/roxy.py)、[roxy_codex_oauth.py](../../core/roxy_codex_oauth.py) |
-| 邮箱准备、提交、OTP 等待 | [email_otp.py](../../core/registration/email_otp.py) |
-| 密码和资料确认 | [password_auth.py](../../core/registration/password_auth.py) |
-| 核心持久化与恢复围栏 | [registration.py](../../core/storage/registration.py)、[checkpoints.py](../../core/registration/checkpoints.py) |
-| 后置能力的结果语义 | [registration_postprocess.py](../../core/registration_postprocess.py) |
-| 共享阶段与界面投影 | [task_stages.py](../../core/task_stages.py)、[task_progress.py](../../core/task_progress.py)、[common.js](../../webui/static/js/modern/common.js) |
+| 调度、邮箱绑定、注册结果及收口 | [registration_service.py](../../core/registration/service.py)、[standalone.py](../../core/registration/standalone.py) |
+| Roxy 主流程、OTP 表单与 session 身份 | [roxy.py](../../core/registration/roxy/__init__.py)、[roxy_codex_oauth.py](../../core/codex/roxy/oauth.py) |
+| 邮箱准备、提交、OTP 等待 | [email_otp.py](../../core/auth/browser/email_otp.py) |
+| 密码和资料确认 | [password_auth.py](../../core/auth/browser/password_auth.py) |
+| 核心持久化与恢复围栏 | [registration.py](../../core/storage/registration/__init__.py)、[checkpoints.py](../../core/registration/checkpoints.py) |
+| 后置能力的结果语义 | [registration_postprocess.py](../../core/registration/postprocess.py) |
+| 共享阶段与界面投影 | [task_stages.py](../../core/operations/stages.py)、[task_progress.py](../../core/operations/progress.py)、[common.js](../../webui/static/js/shared/common.js) |
 
 共享投影最终定向验证已通过：独立测试库 `turb_dev`、自动生成的 `test_` schema 下，`test_task_progress.py`、`test_job_progress.py`、`test_operation_projection_contract.py`、`test_operation_task_store.py` 和 `test_operation_task_read_optimization.py` 共 **182 passed、18 subtests passed**；前端 `test_task_log_frontend.cjs` **18 passed**，JavaScript 语法与差异空白检查通过。密码提交观测的五文件隔离回归 **96 passed、42 subtests passed**；真实 Chromium 的五种合成表单场景均通过，覆盖正常提交、阻止默认行为、无 submit 事件、提交按钮不匹配和排队后取消。资料会话修复的八文件隔离回归 **147 passed、42 subtests passed**，覆盖响应体延迟、身份缺失或不匹配、共享剩余预算、脚本超时恢复和一次性会话复用。各组覆盖可能重叠，不相加作为全量测试数量，也不能替代真实账号流程验收。
 

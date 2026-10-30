@@ -11,7 +11,7 @@ def run_protocol_oss_2_registration(
     """复用本地生命周期，认证主流程使用独立的上游引擎。"""
     from core.registration.protocol_oss import run_protocol_oss_registration
     from core.registration.protocol_oss_2.runtime import run_upstream_protocol
-    from core.session import BrowserSession
+    from core.auth.protocol.session import BrowserSession
 
     options = dict(registration_options or {})
     options.update(registration_driver="protocol_oss_2", password_enabled=True, password_mode="password")

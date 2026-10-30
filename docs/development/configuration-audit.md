@@ -14,7 +14,7 @@ schema 的领域分组继续用于字段归属。现有 `.env` 和任务配置�
 | `PLAN_CHECK_WORKERS` / `PLAN_CHECK_QUEUE_LIMIT` | 从新配置示例移除，保留模块常量和历史环境变量兼容。它们已退出任务调度，持久账号任务使用 `ACCOUNT_BATCH_WORKERS`。 |
 | Roxy API 默认端口 | schema 帮助、模块说明及示例统一为本项目的 `50100`，与实际默认值一致；连接时仍须以 Roxy 应用配置为准。 |
 
-Cloudflare 的调用证据位于 [cf_temp_mail_client.py](../../core/cf_temp_mail_client.py) 的
+Cloudflare 的调用证据位于 [cloudflare/client.py](../../core/email/cloudflare/client.py) 的
 `_default_domains()`、`_next_domain()` 和 `create_address()`。本次只删除没有执行路径的
 预留字段，不删除 Cloudflare 邮箱来源或创建、收信与封号扫描能力。
 
@@ -48,9 +48,9 @@ Cloudflare 的调用证据位于 [cf_temp_mail_client.py](../../core/cf_temp_mai
   不重新加入配置页。
 - `PLAN_CHECK_MIN_INTERVAL` / `PLAN_CHECK_JITTER` 仍控制套餐查询节奏，不能随旧队列参数一起删除。
 
-代码依据分别见 [chatgpt_plan.py](../../core/chatgpt_plan.py)、
-[account_proxy.py](../../core/account_proxy.py)、[proxy_provider.py](../../core/proxy_provider.py)、
-[plan_check_service.py](../../core/plan_check_service.py) 和
+代码依据分别见 [accounts/plans/client.py](../../core/accounts/plans/client.py)、
+[proxy/account_routes.py](../../core/proxy/account_routes.py)、[proxy/provider.py](../../core/proxy/provider.py)、
+[accounts/plans/service.py](../../core/accounts/plans/service.py) 和
 [config/schema.py](../../config/schema.py) 的 `LEGACY_ENV_OVERRIDE_TYPES`。
 
 ## 验证范围
@@ -60,8 +60,8 @@ Cloudflare 的调用证据位于 [cf_temp_mail_client.py](../../core/cf_temp_mai
 使用独立测试库，不读取生产账号与密钥。
 
 ```bash
-python tools/test_isolated.py --profile all -- tests/test_config_schema.py tests/test_config_defaults.py tests/test_config_runtime_contract.py tests/test_config_ui.py -q
-python tools/test_isolated.py --profile all -- tests/test_cf_temp_mail_client.py tests/test_dashboard_api.py -q
+python tools/test_isolated.py --profile all -- tests/config/test_config_schema.py tests/config/test_config_defaults.py tests/config/test_config_runtime_contract.py tests/config/test_config_ui.py -q
+python tools/test_isolated.py --profile all -- tests/email/test_cf_temp_mail_client.py tests/webui/test_dashboard_api.py -q
 ```
 
 静态契约测试不能替代浏览器验收。菜单切换、字段搜索、未保存值在切换后的保留，以及桌面和

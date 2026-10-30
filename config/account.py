@@ -5,7 +5,7 @@
 只决定账号管理里的“补全账号”要包含哪些缺失能力，避免把两条链路重新耦合。
 """
 from config.env_loader import apply_env_overrides
-from core.twofa_flow import normalize_twofa_mode
+from core.auth.twofa import normalize_twofa_mode
 from config.schema import schema_default
 
 
@@ -78,7 +78,7 @@ apply_env_overrides(globals())
 
 def completion_settings() -> dict[str, object]:
     """Return a small, non-sensitive snapshot used by planning and task data."""
-    from core.protocol_version import configured_protocol_version
+    from core.auth.protocol.version import configured_protocol_version
 
     return {
         "password_enabled": bool(ACCOUNT_COMPLETION_PASSWORD_ENABLED),

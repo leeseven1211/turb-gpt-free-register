@@ -9,10 +9,10 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from config import REGISTER_EMAIL, REGISTER_NAME  # 这两个一般不在 WebUI 改
 # 可热改的，按模块属性方式读
 from config import email as _email_cfg
-from core.email_provider import acquire_email
-from core.humanize import delay as human_delay
-from core.name_samples import random_display_name
-from core.profile_utils import generate_random_birthday
+from core.email.provider import acquire_email
+from core.auth.humanize import delay as human_delay
+from core.registration.name_samples import random_display_name
+from core.registration.profile_utils import generate_random_birthday
 from core.registration.dispatcher import run_registration as _run_registration
 
 # 配置日志
@@ -67,9 +67,9 @@ def prepare_registration_inputs(*, email_source: str | None = None,
         if _email_cfg.USE_EMAIL_SERVICE:
             selected_cli_source = str(email_source or "").strip().lower()
             if not selected_cli_source:
-                from core.email_provider import parse_email_sources
+                from core.email.provider import parse_email_sources
                 selected_cli_source = parse_email_sources(getattr(_email_cfg, "EMAIL_SOURCE", ""))[0]
-            from core.email_provider import requires_acquisition_identity
+            from core.email.provider import requires_acquisition_identity
 
             if (not requires_acquisition_identity(selected_cli_source)
                     and owner_kind is None and owner_id is None and acquisition_id is None):
@@ -143,7 +143,7 @@ def main():
     configure_logging(args.verbose)
 
     # CLI 与 WebUI 写同一份数据；PostgreSQL 连不上就直接退出，避免半路写丢。
-    from core import postgres_store
+    from core.storage import postgres as postgres_store
     postgres_store.require_ready()
 
     if args.count < 1:
@@ -232,12 +232,12 @@ def run_one_batch_item(
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     proxy_lease = None
-    from core import sms_provider
+    from core.sms import provider as sms_provider
 
     if batch_id:
         sms_provider.set_sms_batch_context(batch_id)
     try:
-        from core.proxy_provider import acquire_registration_proxy
+        from core.proxy.provider import acquire_registration_proxy
 
         proxy_lease = acquire_registration_proxy(
             job_id=f"cli-{index + 1}",
@@ -267,11 +267,11 @@ def run_one_batch_item(
                 **({"request_unknown": True, "status": "request_unknown"} if getattr(exc, "request_unknown", False) else {})}
     finally:
         if proxy_lease is not None:
-            from core.proxy_provider import release_proxy
+            from core.proxy.provider import release_proxy
 
             release_proxy(proxy_lease, reason="cli_task_finished")
         if batch_id and total > 1:
-            from core.proxy_provider import finalize_registration_proxy_batch
+            from core.proxy.provider import finalize_registration_proxy_batch
 
             finalize_registration_proxy_batch(batch_id)
         sms_provider.clear_sms_batch_context()
@@ -296,7 +296,7 @@ def run_serial_batch(count: int, delay: float, continue_on_fail: bool,
                 time.sleep(delay)
     finally:
         if count > 1:
-            from core.proxy_provider import discard_registration_proxy_batch
+            from core.proxy.provider import discard_registration_proxy_batch
 
             discard_registration_proxy_batch(batch_id)
     return results
@@ -360,7 +360,7 @@ def run_parallel_batch(
                     pass
     finally:
         if count > 1:
-            from core.proxy_provider import discard_registration_proxy_batch
+            from core.proxy.provider import discard_registration_proxy_batch
 
             discard_registration_proxy_batch(batch_id)
 

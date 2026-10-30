@@ -19,8 +19,9 @@ def run_registration_in_context(
     driver_name: str = "protocol",
 ):
     """复用已有上下文，或为 CLI 建立并收口独立 Attempt/Run。"""
-    from core import registration_service as service
-    from core.storage import registration, registration_standalone
+    from core.registration import service as service
+    from core.storage import registration
+    from core.storage.registration import standalone as registration_standalone
 
     source = str(entrypoint or "protocol_cli").strip() or "protocol_cli"
     persisted_driver = str(driver_name or "protocol").strip() or "protocol"
@@ -69,7 +70,8 @@ def run_registration_in_context(
             if restored.get("existing_password") and restored["existing_password"] != password:
                 raise ValueError("CLI 提供密码与原注册意图不一致")
             restored["existing_password"] = password
-        from core import protocol_traffic, task_run_log
+        from core.network import protocol_traffic
+        from core.operations import run_log as task_run_log
         with task_run_log.stage_context("registration", source_system=source, inherit=False), protocol_traffic.correlation_context(
             inherit=False,
             purpose="registration", registration_attempt_id=int(attempt["id"]), registration_run_id=int(run["id"]),

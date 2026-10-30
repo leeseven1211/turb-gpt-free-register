@@ -183,8 +183,8 @@ def recover_attempt_failed_browser(*, email: str, profile_id: str | None,
     with _LOCK:
         try:
             from core import db
-            from core.registration_service import is_job_worker_active
-            from core.roxybrowser_client import RoxyOpenResult
+            from core.registration.service import is_job_worker_active
+            from core.browser.roxy.client import RoxyOpenResult
             from core.storage import registration
 
             current = db.get_job(current_job_id)
@@ -258,7 +258,7 @@ def take_failed_browser(*, email: str, profile_id: str | None,
             raise _blocked("当前账号环境绑定与原浏览器不一致")
         try:
             from core import db
-            from core.registration_service import is_job_worker_active
+            from core.registration.service import is_job_worker_active
 
             source = db.get_job(candidate.job_id)
             current = db.get_job(current_job_id)
@@ -297,9 +297,9 @@ def recover_bound_failed_browser(*, email: str, profile_id: str | None,
     with _LOCK:
         try:
             from core import db
-            from core.registration_service import is_job_worker_active
-            from core.roxy_profile_binding import _roxy_binding, account_profile_id
-            from core.roxybrowser_client import RoxyBrowserClient, RoxyOpenResult
+            from core.registration.service import is_job_worker_active
+            from core.browser.roxy.profile_binding import _roxy_binding, account_profile_id
+            from core.browser.roxy.client import RoxyBrowserClient, RoxyOpenResult
 
             current = db.get_job(current_job_id)
         except Exception:

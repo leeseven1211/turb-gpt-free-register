@@ -181,8 +181,8 @@ macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryp
 ```bash
 cp .env.example .env
 # 填写 DATABASE_URL、生产库放行项和 WebUI 授权；已有部署保留原值。
-python tools/migrate_runtime_config.py --source-root . --dry-run
-python tools/migrate_runtime_config.py --source-root . --apply
+python tools/migrations/migrate_runtime_config.py --source-root . --dry-run
+python tools/migrations/migrate_runtime_config.py --source-root . --apply
 ```
 
 升级前先停止服务并备份数据库；使用 launchd、systemd 等托管时，还需暂停自动拉起并确认监听已关闭，迁移验收后恢复原托管。迁移工具会以受限权限备份原 `.env`，生成或保留 `TURB_CONFIG_ENCRYPTION_KEY`，加密导入并核对全部显式值，成功后才精简文件。重复执行不会用旧值覆盖现有数据库配置。保留原 `TURB_MAIL_CONSUMER_ID`，以继续识别 Butler 邮箱的远端归属。
@@ -269,7 +269,7 @@ cp 用于注册的邮箱.txt.example /tmp/outlook-import.txt
 email----password----clientId----refreshToken
 ```
 
-也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后只写入 PostgreSQL 的 `email_pool_outlook`，不会保存或改写源文件，也不会创建注册账号或写入 ChatGPT / Codex Token。命令行可使用 `tools/import_outlook_pool.py --file PATH`。
+也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后只写入 PostgreSQL 的 `email_pool_outlook`，不会保存或改写源文件，也不会创建注册账号或写入 ChatGPT / Codex Token。命令行可使用 `tools/maintenance/import_outlook_pool.py --file PATH`。
 
 #### 通用 API 邮箱
 
@@ -395,11 +395,11 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
 桥接默认关闭。启用前先将完整历史身份导入 Butler，再运行受控迁移工具；工具默认只读预览，不初始化表、不写密钥。显式执行只改变原固定 IMAP profile 的引用，保留旧 profile 和版本化密钥，母资源和子地址的所有业务状态保持不变：
 
 ```bash
-python tools/migrate_hme_inbox_to_butler.py
-python tools/migrate_hme_inbox_to_butler.py --apply --receipt run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --receipt run/hme-butler-cutover.json
 # 只读预览回滚；加 --apply 才恢复回执中的原路由
-python tools/migrate_hme_inbox_to_butler.py --rollback run/hme-butler-cutover.json
-python tools/migrate_hme_inbox_to_butler.py --apply --rollback run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --rollback run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback run/hme-butler-cutover.json
 ```
 
 尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。真实母子收码、隔离和性能结果见[生产收件验收](docs/deployment/2026-10-27-hme-receipt-validation.md)。
@@ -574,7 +574,7 @@ REGISTRATION_DRIVER = "roxy_oss"
 REGISTRATION_DRIVER = "protocol"
 ```
 
-本地优化 Protocol 基于 `curl_cffi`、Sentinel/PoW 和代理池，带有本项目维护的阶段预算、密码/注册检查点、错误分类、未知结果保护和同 Attempt 续跑。已有优化与恢复逻辑留在 `core/registration/protocol.py`。
+本地优化 Protocol 基于 `curl_cffi`、Sentinel/PoW 和代理池，带有本项目维护的阶段预算、密码/注册检查点、错误分类、未知结果保护和同 Attempt 续跑。已有优化与恢复逻辑留在 `core/registration/protocol/__init__.py`。
 
 协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。开源protocol-2 的资料提交明确返回 HTTP 409 `invalid_state` 时，任务会显示“资料提交时认证会话已失效”（`account_create_invalid_state`），保留原身份供续跑，不将此前账号创建结果改为未创建。明确返回 HTTP 400 `user_already_exists` 时，任务显示“远端提示账号已存在，完整登录态尚未确认”（`account_create_user_already_exists`），继续保留待确认状态、原邮箱和重跑资格。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
 
@@ -787,9 +787,9 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 #### 代码分层与运行时
 
 - 项目按 `config/`（声明式默认值）→ `core/`（驱动与业务服务）→ `webui/routes/` 和 `main.py`（WebUI / CLI 入口）分层；`core/` 不反向依赖 `webui/`。
-- 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex_oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
+- 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex.oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
 - `webui/app.py` 只负责组装应用；领域路由位于 `webui/routes/`，`webui/runtime.py` 负责启动恢复和后台 worker。新增长期任务时必须补充启动恢复，避免重启后记录永久停在 `running`。
-- WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/modern/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。涉及页面结构、脚本或接口契约的改动，应检查现代界面、相关回归测试及真实浏览器行为。
+- WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/pages/` 与 `webui/static/js/shared/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。涉及页面结构、脚本或接口契约的改动，应检查现代界面、相关回归测试及真实浏览器行为。
 - 配置页保存到运行配置数据库并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
 
 #### 邮件验证码
@@ -809,7 +809,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 
 #### 711Proxy 与统一代理供给
 
-「配置 → 代理与网络 → 代理来源」支持 `1024proxy`、`711proxy` 和 `manual`。供应商的 URL 参数、数量上限和会话寿命由 `core/proxy_sources.py` 管理；`core/proxy_supply.py` 共用提取、候选去重、出口检测和失败回收，业务任务仍只从统一库存领取。切换来源只影响后续领取；旧来源停止补货，已发放租约保持到释放。
+「配置 → 代理与网络 → 代理来源」支持 `1024proxy`、`711proxy` 和 `manual`。供应商的 URL 参数、数量上限和会话寿命由 `core/proxy/sources.py` 管理；`core/proxy/supply.py` 共用提取、候选去重、出口检测和失败回收，业务任务仍只从统一库存领取。切换来源只影响后续领取；旧来源停止补货，已发放租约保持到释放。
 
 711 当前接入[动态住宅代理 GB 的白名单 API](https://docs.711proxy.com/proxies/residential-proxies-gb/markdown)：先在 711 面板将调用 API 的公网 IPv4 加入白名单，选择对应套餐、代理主机并生成完整 URL，然后填入配置页。API 提取绕过系统代理，请核对白名单对应的是服务进程直连出口。
 
@@ -1269,7 +1269,7 @@ WebUI 账号页可单个或批量补跑 Codex；注册任务在账号已创建�
 CLI 单独补跑：
 
 ```bash
-python tools/test_codex_oauth.py --email <已注册邮箱> --verbose
+python tools/maintenance/test_codex_oauth.py --email <已注册邮箱> --verbose
 ```
 
 补跑会消耗：
@@ -1373,7 +1373,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 
 旧版本生成的 `accounts/` 批次目录仅是历史归档，当前注册流程不会继续创建或读取它；是否清理历史目录应在核对 PostgreSQL 数据后单独执行。
 
-历史 `codex_accounts/`、`core/codex_accounts/` 和对应的 `codex_导出状态.json` 不再自动更新，也不参与运行时读取。需要补齐历史文件时，使用 [Codex 文件迁移工具](tools/migrate_codex_files.py) 显式对账和补缺；现存数据库行不会被历史状态覆盖，启动时不自动导入。迁移步骤与表设计见[存储架构](docs/architecture/storage-architecture.md#codex-凭证与回执)。
+历史 `codex_accounts/`、`core/codex_accounts/` 和对应的 `codex_导出状态.json` 不再自动更新，也不参与运行时读取。需要补齐历史文件时，使用 [Codex 文件迁移工具](tools/migrations/migrate_codex_files.py) 显式对账和补缺；现存数据库行不会被历史状态覆盖，启动时不自动导入。迁移步骤与表设计见[存储架构](docs/architecture/storage-architecture.md#codex-凭证与回执)。
 
 ---
 
@@ -1553,7 +1553,7 @@ ROXY_OPEN_HEADLESS = True
 账号会保存，Codex 状态会标记失败。可以在 WebUI 账号页点击补跑，或使用：
 
 ```bash
-python tools/test_codex_oauth.py --email <邮箱> --verbose
+python tools/maintenance/test_codex_oauth.py --email <邮箱> --verbose
 ```
 
 ### Cloudflare Worker 邮箱怎么配？
@@ -1577,52 +1577,54 @@ ENABLE_CODEX_AUTO = False
 
 ```text
 .
-├── main.py                         # CLI 入口与注册兼容门面
-├── web.py                          # WebUI 启动入口
-├── config/                         # 配置默认值、环境覆盖和模块配置
-│   └── registration_debug.py       # 调试抓包、普通失败诊断、现场保留和清理策略
+├── main.py / web.py / webui.sh      # CLI、WebUI 与托管启动入口
+├── config/                         # 配置默认值、环境覆盖、运行配置与热加载
 ├── core/
-│   ├── registration/                # 注册公共入口、驱动分发和协议流程
-│   ├── registration_service.py     # 注册任务线程池与生命周期
-│   ├── registration_debug.py        # 按任务隔离的 CDP/协议抓包、失败诊断、脱敏和 HAR
-│   ├── admin_repository.py         # 管理台查询读模型
-│   ├── extract_link_service.py     # 提链执行服务与查询兼容入口
-│   ├── extract_link/               # 提链工作台只读查询展示实现
-│   ├── db.py                       # 指向 core.storage.db_legacy 的模块级兼容别名
-│   ├── record_store.py             # PostgreSQL 行级记录存储
-│   ├── postgres_store.py           # 连接、schema 和兼容集合存储
-│   ├── operation_task_store.py     # 指向 core.storage.operation 的模块级兼容别名
-│   ├── account_task_store.py       # 指向历史任务存储的模块级兼容别名
-│   ├── codex_operation_service.py  # Codex 操作编排
-│   ├── email_provider.py           # 邮箱来源调度
-│   ├── sms_provider.py             # 接码平台调度
-│   ├── proxy_provider.py           # 代理租约与释放
-│   └── *_registration.py / *_oauth.py / *_client.py # 各驱动和客户端
+│   ├── registration/               # 注册公共编排、调试、检查点、恢复与后处理
+│   │   ├── service.py / dispatcher.py / standalone.py
+│   │   ├── roxy/ / protocol/       # 本地浏览器与协议实现，完整模块保留在 __init__.py
+│   │   ├── roxy_oss/ / protocol_oss/ / protocol_oss_2/ # 开源实现与 upstream 快照
+│   │   └── legacy/                 # browser_use/、skyvern/、cloakbrowser/ 历史实现
+│   ├── accounts/                   # 凭据、补全、导出、AT 刷新与认证上下文清理
+│   │   └── liveness/ / plans/ / inspection/ / email_change/ / deactivation/
+│   ├── codex/                      # OAuth、操作编排、重试与凭证刷新；roxy/、legacy/
+│   ├── email/                      # 来源调度、库存、供给、派生地址、收件和 OTP
+│   │   ├── outlook/ / generic_api/ / cloudflare_domain/ / cloudflare/
+│   │   ├── email_butler/ / icloud_hide/ / gptmail/ / mailnest/
+│   │   └── remail/ / mailcode/ / xigua/ / cloudmail/
+│   ├── extract_link/               # 提链服务、查询、对账、支付确认与公共契约
+│   │   └── legacy/ / lumen_flow/ / huanguang/ # 各平台客户端
+│   ├── proxy/ / sms/               # 代理租约、库存、线路与接码生命周期
+│   ├── operations/                 # 跨业务任务、执行池、进度、取消、日志与保留策略
+│   ├── storage/                    # PostgreSQL 基础设施与按业务归组的仓储
+│   │   ├── postgres.py / records.py / runtime_config.py / db_legacy.py
+│   │   └── accounts/ / registration/ / email/ / codex/ / operations/ / extract_link/ / proxy/
+│   ├── auth/                       # 注册、账号与 Codex 共用认证；browser/、protocol/
+│   ├── browser/                    # 浏览器产品客户端、Profile、资源与流量；roxy/、legacy/
+│   ├── network/ / runtime/ / integrations/ # 网络诊断、持久调度与外部集成
+│   └── db.py / account_task_store.py / operation_task_store.py
+│       roxy_registration.py / browser_use_registration.py # 五个模块对象兼容入口
 ├── webui/
-│   ├── app.py                      # Flask 应用装配
-│   ├── blueprint.py                # 保留旧 endpoint 名称的 Blueprint 基础类
-│   ├── route_helpers.py             # 路由共享的查询/脱敏/分页辅助函数
-│   ├── runtime.py                   # WebUI 启动恢复、worker 和请求上下文
-│   ├── routes/                      # 按领域拆分的 Flask Blueprint
-│   │   ├── dashboard.py / config.py / email_pool.py / proxy_traffic.py
-│   │   ├── accounts.py / jobs.py / extract_workbench.py / operations.py
-│   │   └── codex.py / integrations.py / health.py
-│   ├── auth.py                     # 登录鉴权
-│   ├── config_editor.py            # 配置白名单、数据库写入与热加载
-│   ├── templates/                  # 现代界面 index.html / 登录页 login.html
-│   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
-│       ├── css/                   # foundation、modern、login 样式
-│       └── js/
-│           ├── modern/            # 页面脚本；accounts.js 后加载 account-tasks.js、account-email-change.js、account-inspection.js
-│           ├── proxy_traffic.js
-│           └── login.js
-├── tests/                          # pytest 统一收集，包含 unittest、存储隔离和契约测试
-├── tools/                          # 迁移、诊断和单独补跑工具
-├── docs/                           # 架构、流程、规范和路线图
-└── sentinel/                       # Sentinel Node.js 子进程
+│   ├── app.py / blueprint.py       # Flask 装配与原 endpoint 兼容注册
+│   ├── route_helpers.py / runtime.py / auth.py / config_editor.py
+│   ├── routes/                     # 按业务分组的 Flask Blueprint
+│   ├── templates/                  # 主页面 index.html、登录页 login.html
+│   └── static/
+│       ├── css/shell.css / css/shared/ / css/pages/
+│       └── js/bootstrap.js / js/shared/ / js/pages/ # 按页面归组，保留 script 顺序
+├── tests/                          # 按被保护业务分组，公共隔离与读取帮助文件留根部
+├── tools/
+│   ├── test_isolated.py / test_profiles.py / release.py / check_*.py
+│   └── diagnostics/ / benchmarks/ / maintenance/ / migrations/
+├── docs/                           # 架构、流程、规范和历史记录
+└── sentinel/                       # Sentinel Node.js 子进程与依赖
 ```
 
 历史 `accounts/`、`codex_accounts/`、`logs/`、`.env` 和 `.venv/` 等是本地运行时数据或凭证目录，故意不列入代码结构，也不得提交。
+
+公共逻辑放在所属业务目录根部，具体驱动、邮箱来源和提链平台放入各自子目录；跨业务认证和浏览器能力分别放在 `core/auth/`、`core/browser/`。此次采用整文件归位，尚未从混合模块中抽取独立实现的接码和代理提供方仍保留在 `sms/provider.py`、`proxy/provider.py`、`proxy/sources.py` 中。
+
+工具的真实实现按用途放入子目录，已有 `python tools/<原脚本>.py` 命令保留为薄兼容入口；新代码和文档优先使用真实实现路径。五个 core 兼容入口绑定同一模块对象，不复制全局状态。
 
 功能入口、实现和定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)。
 
@@ -1636,17 +1638,17 @@ ENABLE_CODEX_AUTO = False
 
 ```bash
 # 定向验证：包含指定文件中的普通与扩展测试，不扫描其他测试文件
-python tools/test_isolated.py --profile all -- tests/test_config_defaults.py -q
+python tools/test_isolated.py --profile all -- tests/config/test_config_defaults.py -q
 
 # 定向测试通过后，按影响范围补充相邻回归
-python tools/test_isolated.py --profile all -- tests/test_config_ui.py tests/test_dashboard_api.py -q
+python tools/test_isolated.py --profile all -- tests/config/test_config_ui.py tests/webui/test_dashboard_api.py -q
 
 # 静态检查
 ruff check .
 ruff check --select E4,E7,E9,F --exit-zero .
 ```
 
-`--profile default` 只选未标记 `extended` 的测试；`--profile extended` 只选扩展测试，不包含 default；`--profile all` 不加 marker 筛选，但仍受后面指定的文件、目录或用例节点限制。因此 `all -- tests/test_config_ui.py` 只是该文件的全部用例；不指定路径时，pytest 才按 `tests/` 收集整个测试目录。不要将 profile 与 pytest 的 `-m`/`--markexpr` 同时使用。完整的范围选择与交付规则见[发布与验证](docs/development/release-verification.md)。
+`--profile default` 只选未标记 `extended` 的测试；`--profile extended` 只选扩展测试，不包含 default；`--profile all` 不加 marker 筛选，但仍受后面指定的文件、目录或用例节点限制。因此 `all -- tests/config/test_config_ui.py` 只是该文件的全部用例；不指定路径时，pytest 才按 `tests/` 收集整个测试目录。不要将 profile 与 pytest 的 `-m`/`--markexpr` 同时使用。完整的范围选择与交付规则见[发布与验证](docs/development/release-verification.md)。
 
 存储测试继承 `tests.support_pg.PostgresTestCase`；该基类创建临时 schema、重定向兼容导出并在用例间清理数据，与统一隔离入口配合使用。详细存储约束见[存储架构](docs/architecture/storage-architecture.md)。
 

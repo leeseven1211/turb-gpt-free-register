@@ -17,22 +17,18 @@ from urllib.parse import urlparse
 import pyotp
 from flask import Flask
 
-from core import (
-    admin_repository,
-    account_task_store,
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-    sms_provider,
-)
-from core import registration_service as svc
-from core.task_errors import classify_task_error
+from core.storage import admin_repository
+from core import account_task_store
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.sms import provider as sms_provider
+from core.registration import service as svc
+from core.operations.errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
 from webui.auth import init_auth, register_auth_routes

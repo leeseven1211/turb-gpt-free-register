@@ -7,16 +7,16 @@
 
 ```text
 WebUI 单个/批量补跑、注册后置步骤或任务中心重跑
-  -> core.codex_operation_service
+  -> core.codex.operation_service
   -> create_runtime_task / create_runtime_batch / retry_runtime_task
   -> operation_tasks + operation_runs + events + resources
-  -> core.codex_oauth.run_codex_oauth
+  -> core.codex.oauth.run_codex_oauth
   -> codex_credentials 与执行状态收口
 ```
 
-`core.codex_operation_service` 是新原生 operation 的提交与执行协调层。它会校验账号、功能
+`core.codex.operation_service` 是新原生 operation 的提交与执行协调层。它会校验账号、功能
 可用性和并发资源族，再创建持久化 task/run；相同逻辑任务的重跑增加 `run_no`，不覆盖旧
-执行。`core.codex_retry_service` 仍是兼容入口/历史调用链的一部分，不能据此假设其已被
+执行。`core.codex.retry_service` 仍是兼容入口/历史调用链的一部分，不能据此假设其已被
 物理删除，也不能再把它描述为唯一业务入口。
 
 ## 2. 成功与待确认

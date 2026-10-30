@@ -1,7 +1,8 @@
 # 当前项目架构
 
-> 核对基线：2026-09-21。本文只描述当前代码的稳定边界；代码规模、测试耗时和历史改造
-> 记录不作为架构事实。发生冲突时以代码、配置 schema、数据库表定义和测试契约为准。
+> 业务边界核对基线：2026-09-21；目录引用于 2026-10-30 按业务归位。
+> 本文只描述当前代码的稳定边界；代码规模、测试耗时和历史改造记录不作为架构事实。
+> 发生冲突时以代码、配置 schema、数据库表定义和测试契约为准。
 
 ## 1. 运行形态与入口
 
@@ -25,7 +26,7 @@ WebUI web.py
 初始化。`/healthz` 提供 liveness，`/readyz` 同时检查数据库与 runtime 就绪。
 
 当前路由数量和 URL/方法/endpoint 摘要由
-[`tests/test_route_contract.py`](../../tests/test_route_contract.py) 固定为 **121** 条；不要把
+[`tests/webui/test_route_contract.py`](../../tests/webui/test_route_contract.py) 固定为 **121** 条；不要把
 历史路由数量或 `len(app.url_map)` 当作发布契约。
 
 ## 2. 分层边界
@@ -45,8 +46,14 @@ main.py / web.py
 `config/schema.py` 为准，页面编辑器和所有入口必须共用相同的配置语义。
 
 WebUI 只维护现代界面：主模板为 `webui/templates/index.html`，业务脚本和样式位于
-`webui/static/js/modern/` 与 `webui/static/css/`。旧 `?ui=legacy` 链接和
+`webui/static/js/pages/`、`webui/static/js/shared/` 与 `webui/static/css/`。旧 `?ui=legacy` 链接和
 `ui_mode=legacy` Cookie 均返回现代页面；相关路由兼容检查属于现代界面的入口验收。
+
+`core/` 内按业务查找：`registration/`、`accounts/`、`codex/`、`email/`、`extract_link/`、`proxy/` 和 `sms/`；域内共用逻辑在各自根部，具体驱动或提供方在子目录。跨业务认证、浏览器、网络、任务和调度分别在 `auth/`、`browser/`、`network/`、`operations/`、`runtime/`，仓储集中于 `storage/<业务>/`。`integrations/` 放外部流程及 sub2api 客户端。
+
+五种注册方式分别拥有 `registration/{roxy,roxy_oss,protocol,protocol_oss,protocol_oss_2}/` 目录。本地 Roxy 和 Protocol 当前保留完整 `__init__.py`，其他驱动仍保留现有复用关系。`core/` 根部只有包入口和五个模块兼容别名；新调用应使用真实实现路径。具体文件索引见 [README 项目结构](../../README.md#项目结构) 和[功能地图](functional-map.md)。
+
+配置的模块结构与热加载名称保持不变。工具真实实现归入 `tools/{diagnostics,benchmarks,maintenance,migrations}/`，原命令保留薄入口；测试按业务归组，公共隔离与源码读取帮助文件继续位于 `tests/` 根部。
 
 ## 3. 主要业务流
 
@@ -54,12 +61,12 @@ WebUI 只维护现代界面：主模板为 `webui/templates/index.html`，业务
 
 ```text
 POST /api/jobs
-  -> core.registration_service.submit_registration
+  -> core.registration.service.submit_registration
   -> registration_jobs（pending）+ ThreadPoolExecutor
   -> _run_one_job 的数据库条件抢占
   -> 网络租约、邮箱来源/邮箱领取或恢复
   -> core.registration.dispatcher.run_registration
-  -> Roxy 或 Protocol 驱动
+  -> 按配置选择五种注册驱动之一
   -> 账号、资源与可选后置步骤收口
 ```
 
@@ -79,8 +86,8 @@ POST /api/jobs
 
 ### Codex OAuth
 
-Codex 补跑由 `core.codex_operation_service` 创建或重跑原生 operation，再调用
-`core.codex_oauth.run_codex_oauth`。实际凭证保存、callback 确认、资源台账和失败后的
+Codex 补跑由 `core.codex.operation_service` 创建或重跑原生 operation，再调用
+`core.codex.oauth.run_codex_oauth`。实际凭证保存、callback 确认、资源台账和失败后的
 可重跑边界见[Codex OAuth 操作](../workflows/codex-oauth-operation.md)。
 
 ## 4. 数据与恢复边界

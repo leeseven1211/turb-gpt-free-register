@@ -10,7 +10,7 @@ PostgreSQL 仍是任务、执行与事件的唯一事实来源。JSONL 是带关
 
 ## 统一模型
 
-`core/task_stages.py` 维护阶段目录、任务模板和原始阶段到业务步骤的映射；`core/task_progress.py` 只从完整 Run 的事件与持久化阶段证据构建快照。`flow_for()`、注册页和任务中心复用同一模板，前端不通过日志文本推断成功。
+`core/operations/stages.py` 维护阶段目录、任务模板和原始阶段到业务步骤的映射；`core/operations/progress.py` 只从完整 Run 的事件与持久化阶段证据构建快照。`flow_for()`、注册页和任务中心复用同一模板，前端不通过日志文本推断成功。
 
 存在线路记录的注册进度快照使用 `flow_version=3`，其他任务继续使用版本 2，包含 `main_steps`、`current`、`outcome`、`failure`、`source` 和内容修订号。每个步骤包含稳定 ID、中文名称、原始阶段集合、状态、展示状态、原因、时间、事件关联、子步骤和尝试记录。事件历史保留重复执行及协议回退；新增阶段不会被静默丢弃。
 

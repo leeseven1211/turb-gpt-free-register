@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from core.http_response_diagnostics import auth_error_from_body
+from core.network.response_diagnostics import auth_error_from_body
 
 
 _EXCEPTION_TYPES = frozenset({

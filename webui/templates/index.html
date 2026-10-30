@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg', v='20261030-layout-v2') }}" type="image/svg+xml">
   <title>GPT 注册控制台</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}?v=20261027-mail-boundary-v1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261030-layout-v2') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/ui-foundation.css', v='20261022-compact-v2') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/config-workspace.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/extract-workbench.css', v='20261029-cancel-batch-v1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261030-layout-v2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261030-layout-v2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
     #butlerImportModal { padding: 0; margin: auto; width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); color: var(--ui-color-text); }
     #butlerImportModal:not([open]) { display: none; }
@@ -1128,17 +1128,17 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/modern/common.js') }}?v=20261027-butler-child-history-v2"></script>
-<script src="{{ url_for('static', filename='js/modern/dashboard.js') }}?v=20261027-mail-boundary-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/jobs.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/accounts.js', v='20261030-readability-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/account-tasks.js', v='20261030-readability-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/account-email-change.js', v='20261030-readability-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/account-inspection.js', v='20261030-readability-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-mail-boundary-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/butler-import.js', v='20261028-import-progress-v3') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/codex.js') }}?v=20261030-codex-db-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/config.js') }}?v=20261030-config-db-v1"></script>
-<script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261029-promotion-none-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/bootstrap.js') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

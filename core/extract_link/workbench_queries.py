@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import re
 
-from core import db, task_run_log
+from core import db
+from core.operations import run_log as task_run_log
 
 HUANGUANG_QUOTA_STAGES = {
     "quota_extraction_exhausted": "提链 CDK 次数已用完，等待补充额度",
@@ -95,7 +96,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     preflight = str(state.get("preflight_status") or run_summary.get("preflight_status") or "pending").lower()
     plus = str(state.get("plus_status") or run_summary.get("plus_status") or "unknown").lower()
     if mode in {"auto_payment", "manual_payment"} and extraction == "success":
-        from core.storage.extract_link_jobs import independent_plus_is_confirmed
+        from core.storage.extract_link.jobs import independent_plus_is_confirmed
         if independent_plus_is_confirmed(account, task_created_at=row.get("task_created_at")):
             plus = "confirmed"
     progress = {
@@ -110,7 +111,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         and str(account.get("extract_link_job_id") or "") == str(run_summary.get("remote_job_id") or "")
     )
     legacy_has_link = bool(legacy_projection_matches and account.get("extract_link_long_url"))
-    from core.extract_link_providers.contracts import safe_payment_artifact
+    from core.extract_link.contracts import safe_payment_artifact
     artifact = safe_payment_artifact(state.get("payment_artifact"))
     has_payment_entry = bool(
         state.get("payment_links") or state.get("links") or legacy_has_link
@@ -205,7 +206,7 @@ def list_workbench_tasks(
     batch_id: int | None = None,
 ) -> dict:
     """按现有筛选和分页规则读取工作台任务并投影当前页。"""
-    from core.storage import extract_link_jobs
+    from core.storage.extract_link import jobs as extract_link_jobs
 
     result = extract_link_jobs.list_workbench_page(
         provider_id=provider_id, mode=mode, query=query, status=status,
@@ -244,7 +245,7 @@ def workbench_counts(items: list[dict]) -> dict:
 
 def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 100) -> dict:
     """读取批次候选预览及选中数量。"""
-    from core.storage import extract_link_batches
+    from core.storage.extract_link import batches as extract_link_batches
 
     result = extract_link_batches.candidate_accounts(filters=filters, limit=limit)
     items = result.get("items") or []
@@ -290,7 +291,7 @@ def workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
 
 def list_workbench_batches(*, page: int = 1, page_size: int = 20) -> dict:
     """读取批次分页与存储层汇总统计。"""
-    from core.storage import extract_link_batches
+    from core.storage.extract_link import batches as extract_link_batches
 
     result = extract_link_batches.batch_rows(page=page, page_size=page_size)
     batches = result.get("items") or []
@@ -300,7 +301,7 @@ def list_workbench_batches(*, page: int = 1, page_size: int = 20) -> dict:
 
 def workbench_batch_detail(batch_id: int) -> dict | None:
     """读取单个批次及对应汇总。"""
-    from core.storage import extract_link_batches
+    from core.storage.extract_link import batches as extract_link_batches
 
     batches = extract_link_batches.batch_rows(batch_id=int(batch_id)).get("items") or []
     if not batches:
@@ -311,7 +312,7 @@ def workbench_batch_detail(batch_id: int) -> dict | None:
 
 def extract_workbench_task_detail(task_id: int) -> dict | None:
     """读取任务详情、执行历史与事件展示字段。"""
-    from core.storage import extract_link_jobs
+    from core.storage.extract_link import jobs as extract_link_jobs
 
     detail = extract_link_jobs.get_workbench_detail_rows(int(task_id))
     if detail is None:

@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+from core.storage import records as record_store
+from tests.support_pg import PostgresTestCase
+from webui.app import create_app
+
+
+class LiveCheckStatusUiTests(PostgresTestCase):
+    def setUp(self):
+        self.app = create_app(auth_code="test-auth")
+        self.client = self.app.test_client()
+        self.headers = {"X-Auth-Code": "test-auth"}
+
+    def test_accounts_api_exposes_failed_probe_http_status(self):
+        self.seed(record_store.ACCOUNTS, [{
+            "email": "rejected@example.com",
+            "access_token": "still-present",
+            "token_expires_at": "2099-01-01T00:00:00Z",
+            "token_expired": False,
+            "live_check_status": "failed",
+            "live_check_http_status": 401,
+            "live_check_error": "现有 accessToken 已过期或失效，请点击“刷新AT”",
+        }])
+
+        response = self.client.get(
+            "/api/accounts?paged=1&page=1&page_size=20&q=rejected@example.com",
+            headers=self.headers,
+        )
+
+        self.assertEqual(200, response.status_code)
+        account = response.get_json()["items"][0]
+        self.assertFalse(account["token_expired"])
+        self.assertEqual("failed", account["live_check_status"])
+        self.assertEqual(401, account["live_check_http_status"])
+
+    def test_account_ui_renders_clickable_token_states(self):
+        modern = self.client.get("/static/js/pages/accounts/page.js")
+        foundation = self.client.get("/static/css/shared/ui-foundation.css")
+        try:
+            modern_source = modern.get_data(as_text=True)
+            foundation_source = foundation.get_data(as_text=True)
+            self.assertIn("live_check_http_status", modern_source)
+            self.assertIn("data-account-copy-secret=\"access_token\"", modern_source)
+            self.assertIn("失效 ·", modern_source)
+            self.assertIn("Token 到期：", modern_source)
+            self.assertIn("acc-v2-token-state", modern_source)
+            self.assertNotIn("acc-v2-token-alert", modern_source)
+            self.assertIn(".accounts-table-v2 .acc-v2-token-state.is-normal", foundation_source)
+            self.assertIn(".accounts-table-v2 .acc-v2-token-state.is-expired", foundation_source)
+            self.assertIn(".accounts-table-v2 .acc-v2-token-state.is-invalid", foundation_source)
+            for token_filter in ("'has'", "'expired'", "'invalid_401'", "'invalid_403'", "'invalid_other'", "'none'"):
+                self.assertIn(token_filter, modern_source)
+        finally:
+            modern.close()
+            foundation.close()
+
+    def test_account_ui_renders_account_status_as_a_separate_column(self):
+        modern = self.client.get("/", headers=self.headers).get_data(as_text=True)
+        self.assertIn('data-column-filter="accountStatusFilterV2"', modern)
+        self.assertIn(">账号状态</th>", modern)
+
+        response = self.client.get("/static/js/pages/accounts/page.js")
+        try:
+            source = response.get_data(as_text=True)
+            self.assertIn("accountStatus", source)
+            self.assertIn("已废号", source)
+            self.assertIn("Token 异常", source)
+            self.assertIn("查活失败", source)
+            self.assertIn("待查活", source)
+        finally:
+            response.close()

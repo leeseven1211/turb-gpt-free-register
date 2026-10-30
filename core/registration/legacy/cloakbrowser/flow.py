@@ -1,0 +1,374 @@
+# -*- coding: utf-8 -*-
+"""通过 CloakBrowser + Playwright 适配层执行 ChatGPT 注册。"""
+from __future__ import annotations
+
+import logging
+import time
+
+from config import cloakbrowser as _cfg
+from config import twofa as _twofa_cfg
+from core.accounts.export import save_account_data, setup_2fa_protocol
+from core.browser.legacy.cloakbrowser.driver import build_cloak_driver
+from core.email.provider import wait_for_otp, resolve_email_source, validate_email_source
+from core.auth.humanize import delay as human_delay
+from core.auth.protocol.openai_auth import AccountUnusableError
+from core.auth.protocol.session import BrowserSession
+from core.auth.browser.selenium_auth import check_manual_stop as _check_manual_stop, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, complete_profile_page as _complete_profile_page, fetch_chatgpt_session as _fetch_chatgpt_session, fill_password_page_if_present as _fill_password_page_if_present, maybe_accept as _maybe_accept, submit_email_and_wait_next as _submit_email_and_wait_next, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit
+from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.auth.browser.email_otp import _email_otp_page_state
+from core.auth.state_machine import StageBudget
+
+logger = logging.getLogger('core.cloakbrowser_registration')
+
+
+def run_cloak_registration(
+    email: str,
+    name: str,
+    birthday: str,
+    proxy: str = None,
+    otp_code: str = None,
+    existing_password: str | None = None,
+    existing_totp_secret: str | None = None,
+    registration_options: dict | None = None,
+    email_source: str | None = None,
+) -> dict:
+    """CloakBrowser 自动化注册入口。"""
+    from core.registration.service import report_job_progress
+
+    selected_email_source = validate_email_source(email_source) if email_source else None
+    options = dict(registration_options or {})
+    driver = None
+    opened = None
+    create_acknowledged = False
+    openai_password: str | None = None
+    plan_check_session = None
+    account_id: int | None = None
+    try:
+        report_job_progress("browser", "running", "正在启动 CloakBrowser")
+        driver, opened = build_cloak_driver(proxy=proxy)
+        # CloakBrowser 与 Roxy 共用认证能力；在 driver 上安装同一 Attempt/Run
+        # 上下文，确保邮箱、密码、OTP 和重发事实写入同一提交围栏。
+        try:
+            from core.registration.service import registration_fact_context
+
+            driver._registration_fact_context = dict(registration_fact_context())
+        except Exception:
+            driver._registration_fact_context = None
+        resume_scope = False
+        context = driver._registration_fact_context or {}
+        if existing_password and context.get("run_id") is not None:
+            try:
+                from core.storage import registration
+
+                run = registration.get_run(int(context["run_id"])) or {}
+                resume_scope = (
+                    str(run.get("action_type") or "") == "registration_resume"
+                    and str(run.get("status") or "") in {"queued", "running"}
+                )
+            except Exception:
+                logger.exception("[Cloak注册] 校验 registration_resume Run 失败，关闭恢复提交范围")
+        driver._registration_resume_login = resume_scope
+        from core.registration import plan_capture as registration_plan_capture
+        registration_plan_capture.install_selenium(driver)
+        report_job_progress("browser", "success", "CloakBrowser 已启动")
+        logger.info("[Cloak注册] 开始：%s，profile=%s", email, opened.profile_id)
+
+        otp_after_ts = time.time()
+        report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
+        logger.info("[Cloak注册] 打开登录页：https://chatgpt.com/auth/login")
+        driver.get("https://chatgpt.com/auth/login")
+        report_job_progress("page", "success", "登录页已打开，待确认邮箱入口")
+        human_delay("navigate")
+        _maybe_accept(driver)
+        _check_manual_stop()
+
+        report_job_progress("submit_email", "running", "正在等待可见的邮箱输入框")
+
+        def _report_email_progress(phase: str, detail: str) -> None:
+            report_job_progress("submit_email", "skipped" if phase == "skipped" else "running", detail)
+            if phase in {"pending", "fallback"}:
+                report_job_progress("auth_redirect", "running", "正在确认密码页、邮箱验证码页或登录态")
+
+        def _mark_email_submitted() -> None:
+            report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
+
+        next_state = _submit_email_and_wait_next(
+            driver,
+            email,
+            attempts=3,
+            on_submitted=_mark_email_submitted,
+            allow_login_password=resume_scope,
+            on_progress=_report_email_progress,
+        )
+        report_job_progress("auth_redirect", "success", f"已进入认证下一步：{next_state}")
+        _check_manual_stop()
+
+        def _checkpoint_prepared_password(password: str) -> None:
+            """异步密码点击前保存原密码；无法关联 Attempt 时拒绝继续。"""
+            from core.registration.checkpoints import save_protocol_password_checkpoint
+
+            save_protocol_password_checkpoint(
+                email=email,
+                password=password,
+                state="prepared",
+                proxy=proxy,
+                email_source=selected_email_source,
+            )
+
+        def _checkpoint_submitted_password(password: str) -> None:
+            from core.registration.checkpoints import save_protocol_password_checkpoint
+
+            save_protocol_password_checkpoint(
+                email=email,
+                password=password,
+                state="started",
+                proxy=proxy,
+                email_source=selected_email_source,
+            )
+
+        openai_password = _fill_password_page_if_present(
+            driver,
+            email,
+            timeout=60,
+            existing_password=existing_password,
+            on_password_prepared=_checkpoint_prepared_password,
+            on_password_submitted=_checkpoint_submitted_password,
+        )
+        _check_manual_stop()
+
+        report_job_progress("email_otp", "running", "正在等待并验证邮箱验证码")
+        try:
+            from config import email as _email_cfg
+
+            otp_total_timeout = int(getattr(_email_cfg, "OTP_MAX_WAIT", 240) or 240)
+        except Exception:
+            otp_total_timeout = 240
+        # 所有取码、提交确认、重发和重发后的取码共用这一份总预算；不得
+        # 每轮重新获得 OTP_MAX_WAIT。
+        otp_budget = StageBudget.start(max(0, otp_total_timeout))
+        driver._registration_stage_budget = otp_budget
+        current_otp = otp_code
+        max_otp_attempts = 3
+        for otp_attempt in range(1, max_otp_attempts + 1):
+            otp_budget.require("CloakBrowser 邮箱验证码")
+            if current_otp is None:
+                logger.info("[Cloak注册][OTP] 等待验证码：%s（第 %s/%s 次）", email, otp_attempt, max_otp_attempts)
+                try:
+                    otp_kwargs = {"after_ts": otp_after_ts}
+                    otp_kwargs["budget"] = otp_budget
+                    if selected_email_source is not None:
+                        otp_kwargs["email_source"] = selected_email_source
+                    current_otp = wait_for_otp(email, **otp_kwargs)
+                except Exception as exc:
+                    if otp_attempt >= max_otp_attempts:
+                        raise
+                    logger.warning(
+                        "[Cloak注册][OTP] 一直未收到验证码，点击“重新发送电子邮件”后继续等待（下一轮 %s/%s）：%s: %s",
+                        otp_attempt + 1,
+                        max_otp_attempts,
+                        type(exc).__name__,
+                        str(exc)[:180],
+                    )
+                    otp_after_ts = time.time()
+                    _click_resend_email_otp(driver, timeout=25, budget=otp_budget)
+                    human_delay("api", budget=otp_budget)
+                    current_otp = None
+                    continue
+            logger.info("[Cloak注册][OTP] 收到验证码：%s", current_otp)
+            # 输入最后一位可能触发页面自动提交；围栏和旧页面基线必须在
+            # 任何填写动作前建立，避免自动提交无回执或误读旧错误。
+            otp_submission = BrowserSubmissionReceipt(
+                kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "otp",
+                stage="email_otp",
+                endpoint_kind="otp_submit",
+                http_method="POST",
+            )
+            driver._browser_submission_receipt = otp_submission
+            record_browser_submission_fact(driver, "prepared", receipt=otp_submission)
+            record_browser_submission_fact(driver, "dispatch_intent", receipt=otp_submission)
+            try:
+                otp_submit_baseline = _email_otp_page_state(driver)
+            except Exception:
+                otp_submit_baseline = {}
+            _clear_otp_inputs(driver)
+            _type_otp(driver, current_otp)
+            human_delay("otp_input", budget=otp_budget)
+            try:
+                _click_continue(driver)
+                record_browser_submission_fact(driver, "ui_dispatched", receipt=otp_submission)
+            except Exception as exc:
+                record_browser_submission_fact(
+                    driver,
+                    "unknown",
+                    receipt=otp_submission,
+                    result="unknown",
+                    error_type=type(exc).__name__,
+                )
+                logger.info("[Cloak注册][OTP] 未找到显式提交按钮，继续等待页面状态：%s", str(exc)[:120])
+
+            outcome = _wait_after_email_otp_submit(
+                driver,
+                timeout=60,
+                budget=otp_budget,
+                baseline_state=otp_submit_baseline,
+                expected_email=email,
+            )
+            if outcome in ("accepted", "email_verified", "totp_required"):
+                record_browser_submission_fact(driver, "confirmed", receipt=otp_submission, result="success")
+                break
+            if outcome == "stuck":
+                record_browser_submission_fact(driver, "unknown", receipt=otp_submission, result="timeout")
+                raise RuntimeError("验证码提交可能已派发，但确认预算内未收口；保留原 Attempt，未自动重发")
+            if outcome == "invalid":
+                record_browser_submission_fact(driver, "rejected", receipt=otp_submission, result="failure")
+            if otp_attempt >= max_otp_attempts:
+                raise RuntimeError("邮箱验证码连续错误/过期，已达到最大重试次数")
+            otp_after_ts = time.time()
+            _click_resend_email_otp(driver, timeout=25, budget=otp_budget)
+            human_delay("api", budget=otp_budget)
+            current_otp = None
+
+        report_job_progress("email_otp", "success", "邮箱验证码已通过")
+        report_job_progress("profile", "running", "正在填写账号资料")
+        profile_submitted = _complete_profile_page(driver, name, birthday, timeout=60, expected_email=email)
+        if profile_submitted:
+            create_acknowledged = True
+            human_delay("post_auth")
+            report_job_progress("profile", "success", "账号资料已提交")
+        else:
+            report_job_progress("profile", "skipped", "已有登录态，无需填写资料")
+
+        report_job_progress("token", "running", "正在等待登录态并获取 Token")
+        session_info = _fetch_chatgpt_session(driver, timeout=120)
+        access_token = session_info["accessToken"]
+        captured_plan_result = registration_plan_capture.read_selenium(driver, access_token)
+        report_job_progress("token", "success", "已获取 accessToken")
+        logger.info("[Cloak注册] 已拿到 accessToken：%s", email)
+
+        totp_secret = None
+        if _twofa_cfg.ENABLE_2FA:
+            try:
+                twofa_driver = _twofa_cfg.get_twofa_driver_for_options(options)
+                if twofa_driver == "protocol":
+                    protocol_session = BrowserSession(proxy=proxy or "")
+                    plan_check_session = protocol_session
+                    totp_secret = setup_2fa_protocol(protocol_session, access_token)
+                    report_job_progress("twofa", "success", "协议 2FA 已启用")
+                else:
+                    logger.warning("[Cloak注册] browser 2FA 目前仅支持 RoxyBrowser 页面流程，已跳过")
+                    report_job_progress("twofa", "skipped", "CloakBrowser 暂不支持 browser 2FA")
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {str(exc)[:180]}"
+                logger.error("[Cloak注册][2FA] 设置失败：%s", message)
+                report_job_progress("twofa", "failed", f"2FA 设置失败: {message}")
+        else:
+            report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
+
+        codex_result = {
+            "status": "skipped",
+            "ok": True,
+            "message": "ENABLE_CODEX_AUTO=False，跳过 Codex",
+        }
+        try:
+            from config import codex as _codex_cfg
+            if bool(getattr(_codex_cfg, "ENABLE_CODEX_AUTO", False)):
+                report_job_progress("codex", "running", "正在执行 Codex OAuth")
+                from core.codex.roxy.oauth import run_roxy_codex_oauth
+                logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=True，复用当前 CloakBrowser 窗口执行 Codex 授权")
+                _check_manual_stop()
+                codex_kwargs = {}
+                if selected_email_source is not None:
+                    codex_kwargs["otp_provider"] = lambda address, **kwargs: wait_for_otp(
+                        address,
+                        email_source=selected_email_source,
+                        **kwargs,
+                    )
+                codex_result = run_roxy_codex_oauth(
+                    email,
+                    proxy=proxy,
+                    reuse_existing_profile=True,
+                    existing_driver=driver,
+                    existing_opened=opened,
+                    force=True,
+                    # 当前 Cloak 环境刚完成这个账号的注册，直接复用登录态。
+                    # 若服务端仍要求登录，OAuth 页面会自行回落到邮箱 OTP 流程。
+                    clear_existing_state=False,
+                    **codex_kwargs,
+                )
+                report_job_progress("codex", "success" if codex_result.get("ok") else "failed", str(codex_result.get("message") or "Codex OAuth 已完成")[:300])
+            else:
+                logger.info("[Cloak注册][Codex] ENABLE_CODEX_AUTO=False，注册后跳过 Codex OAuth")
+                report_job_progress("codex", "skipped", "未启用 Codex 自动授权")
+        except AccountUnusableError:
+            raise
+        except Exception as exc:
+            codex_result = {"status": "failed", "ok": False, "message": f"{type(exc).__name__}: {str(exc)[:180]}"}
+            report_job_progress("codex", "failed", codex_result["message"])
+
+        account_id = save_account_data(
+            email=email,
+            access_token=access_token,
+            totp_secret=totp_secret,
+            chatgpt_session=session_info,
+            email_source=selected_email_source or resolve_email_source(email),
+            proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
+            plan_check_proxy=proxy or None,
+            captured_plan_result=captured_plan_result,
+            plan_check_session=plan_check_session,
+            extra={
+                "user": session_info.get("user"),
+                "account": session_info.get("account"),
+                "expires": session_info.get("expires"),
+                "cloakbrowser": {"profile_id": opened.profile_id, "open_result": opened.raw},
+                "account_password": openai_password,
+                "codex": codex_result,
+            },
+        )
+        codex_ok = codex_result.get("ok") or codex_result.get("status") == "skipped"
+        return {"success": bool(codex_ok), "email": email, "account_id": account_id, "access_token": access_token, "totp_secret": totp_secret, "codex": codex_result, "error": None if codex_ok else f"Codex 未完成: {codex_result.get('message')}"}
+    except Exception as exc:
+        logger.error("[Cloak注册] 失败：%s: %s", type(exc).__name__, exc)
+        logger.debug("[Cloak注册] 失败详情", exc_info=True)
+        account_unusable = isinstance(exc, AccountUnusableError)
+        try:
+            if account_unusable:
+                from core.email.provider import mark_email_permanently_unusable
+
+                mark_email_permanently_unusable(
+                    email,
+                    source=selected_email_source,
+                    note=f"上游明确确认账号永久失效: {str(exc)[:180]}",
+                )
+            else:
+                from core.email.provider import retain_email
+
+                retain_email(
+                    email,
+                    source=selected_email_source,
+                    note=f"Cloak注册中途失败，保留给原任务链: {str(exc)[:180]}",
+                )
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "email": email,
+            "account_id": account_id,
+            "email_permanently_unusable": account_unusable,
+            "account_unusable_error_code": (
+                exc.error_code or "account_deactivated"
+                if account_unusable
+                else None
+            ),
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        }
+    finally:
+        if driver and not bool(_cfg.CLOAK_KEEP_BROWSER_OPEN):
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        if plan_check_session is not None:
+            try:
+                plan_check_session.session.close()
+            except Exception:
+                pass

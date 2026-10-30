@@ -17,7 +17,7 @@ from typing import Any
 
 from flask import jsonify
 
-from core import postgres_store
+from core.storage import postgres as postgres_store
 from webui import runtime
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext

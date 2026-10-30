@@ -29,6 +29,14 @@ Attempt/Run、原窗口恢复、密码准备与提交检查点、邮箱 OTP 收�
 保存、后处理和失败清理均不接入本地运行。账号 `extra.registration_driver`、认证结果的
 `auth_method`、独立入口的驱动身份都记录为 `roxy_oss`。
 
+## 2026-10-30 本地目录迁移
+
+已启用的 `browser_helpers.py` 仅随共享认证能力归位调整三个 import 目标：
+`core.registration.auth_context` → `core.auth.browser.auth_context`、
+`core.registration.selenium_dom` → `core.auth.browser.selenium_dom`、
+`core.registration.selenium_resource` → `core.auth.browser.selenium_resource`。
+导入符号、别名、位置、顺序及函数体保持原样。来源对照 `roxy_registration.py` 继续逐字保留，禁止导入或执行；不为它修复旧依赖，许可证和其他来源文件不变。
+
 ## 更新步骤
 
 1. 在临时 checkout 核对目标 commit 和许可证，更新基线与本文件固定提交；只清除尾随空白。

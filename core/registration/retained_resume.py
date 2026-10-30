@@ -10,13 +10,10 @@ from urllib.parse import urlsplit
 
 from core.storage import registration
 
-from .browser_submission import (
-    BrowserSubmissionReceipt, SUBMISSION_PHASES,
-    record_browser_submission_fact, unresolved_submission_ids,
-)
-from .email_otp import _email_otp_page_state
-from .selenium_dom import _check_manual_stop
-from .state_machine import PageState, classify_page
+from core.auth.browser.browser_submission import BrowserSubmissionReceipt, SUBMISSION_PHASES, record_browser_submission_fact, unresolved_submission_ids
+from core.auth.browser.email_otp import _email_otp_page_state
+from core.auth.browser.selenium_dom import _check_manual_stop
+from core.auth.state_machine import PageState, classify_page
 
 
 @dataclass(frozen=True)

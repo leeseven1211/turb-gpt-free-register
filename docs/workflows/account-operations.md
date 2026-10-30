@@ -37,7 +37,7 @@ WebUI accounts / operations / codex 路由
 ## 3. 兼容投影仍在运行
 
 `account_action_batches`、`account_action_tasks` 和 `account_action_events` 仍保留为兼容来源。
-`core.storage.operation` 通过 `source_system/source_id` 将这类历史/兼容行幂等投影到
+`core.storage.operations.store` 通过 `source_system/source_id` 将这类历史/兼容行幂等投影到
 `operation_*` 表；注册 `registration_jobs` 也拥有对应投影。因而：
 
 - operation 列表是统一读模型，不代表所有写入都已经原生化；

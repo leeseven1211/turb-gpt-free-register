@@ -1,0 +1,267 @@
+# -*- coding: utf-8 -*-
+import unittest
+import threading
+import time
+from unittest.mock import MagicMock, call, patch
+
+
+class AccountOperationExecutorTests(unittest.TestCase):
+    def test_account_operation_services_share_the_common_executor(self):
+        from core.operations import executor as account_operation_executor
+        from core.codex import operation_service as codex_operation_service, token_refresh_service as codex_token_refresh_service
+        from core.accounts.deactivation import mail_scan as deactivation_mail_service
+        from core.extract_link import service as extract_link_service
+        from core.accounts.liveness import service as live_check_service
+        from core.accounts.plans import service as plan_check_service
+        from webui import runtime
+
+        common = account_operation_executor.executor
+        self.assertIs(live_check_service._EXECUTOR, common)
+        self.assertIs(plan_check_service._ACCOUNT_EXECUTOR, common)
+        self.assertIs(codex_operation_service._EXECUTOR, common)
+        self.assertFalse(
+            hasattr(codex_token_refresh_service, "_EXECUTOR"),
+            "Codex token refresh must dispatch through the durable gateway, not a local executor",
+        )
+        self.assertIs(runtime._ACCOUNT_EXECUTOR, common)
+        self.assertIsNot(plan_check_service._EXECUTOR, common)
+        self.assertTrue(callable(plan_check_service._EXECUTOR.submit))
+        self.assertFalse(hasattr(deactivation_mail_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(extract_link_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(deactivation_mail_service, "_EXECUTOR"))
+        self.assertFalse(hasattr(extract_link_service, "_EXECUTOR"))
+
+    def test_common_executor_reads_account_batch_workers(self):
+        from core.operations import executor as account_operation_executor
+
+        with patch("config.codex.ACCOUNT_BATCH_WORKERS", 7):
+            self.assertEqual(7, account_operation_executor.configured_workers())
+
+    def test_common_executor_preserves_configured_budget_above_fifty(self):
+        from core.operations.executor import AccountOperationExecutor, configured_workers
+
+        operation_executor = AccountOperationExecutor()
+        for configured, expected in ((50, 50), (51, 51), (100, 100), (1000, 1000)):
+            with self.subTest(configured=configured), patch("config.codex.ACCOUNT_BATCH_WORKERS", configured):
+                self.assertEqual(expected, configured_workers())
+                self.assertEqual(expected, operation_executor.available_slots())
+                self.assertEqual(expected, operation_executor.status()["budget"])
+
+    def test_one_submission_uses_hundred_worker_budget_without_starting_extra_workers(self):
+        from core.operations.executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            entered.set()
+            release.wait(5)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 100):
+                future = operation_executor.try_submit(work)
+                self.assertIsNotNone(future)
+                self.assertTrue(entered.wait(1))
+                status = operation_executor.status()
+                self.assertEqual(100, status["current_pool_workers"])
+                self.assertEqual(100, status["budget"])
+                self.assertEqual(1, status["active"])
+                self.assertEqual(99, operation_executor.available_slots())
+                release.set()
+                future.result(timeout=3)
+                self.assertEqual(100, operation_executor.available_slots())
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
+    def test_fifty_workers_run_together_and_the_next_submission_waits_for_budget(self):
+        from core.operations.executor import AccountOperationExecutor
+
+        started = threading.Condition()
+        release = threading.Event()
+        entered = 0
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            nonlocal entered
+            with started:
+                entered += 1
+                started.notify_all()
+            release.wait(5)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 50):
+                futures = [operation_executor.try_submit(work) for _ in range(50)]
+                self.assertTrue(all(future is not None for future in futures))
+                with started:
+                    self.assertTrue(started.wait_for(lambda: entered == 50, timeout=3))
+                self.assertEqual(50, operation_executor.status()["active"])
+                self.assertEqual(0, operation_executor.available_slots())
+                self.assertIsNone(operation_executor.try_submit(work))
+                release.set()
+                for future in futures:
+                    future.result(timeout=3)
+                self.assertEqual(50, operation_executor.available_slots())
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
+    def test_common_executor_rebuilds_for_a_new_configured_worker_count(self):
+        from core.operations.executor import AccountOperationExecutor
+
+        first_pool = MagicMock()
+        second_pool = MagicMock()
+        with (
+            patch("core.operations.executor.ThreadPoolExecutor", side_effect=[first_pool, second_pool]) as pool,
+            patch("config.codex.ACCOUNT_BATCH_WORKERS", 2),
+        ):
+            operation_executor = AccountOperationExecutor()
+            operation_executor.submit(lambda: None)
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 5):
+                operation_executor.submit(lambda: None)
+            operation_executor.shutdown()
+
+        self.assertEqual([2, 5], [call.kwargs["max_workers"] for call in pool.call_args_list])
+        self.assertEqual(
+            [
+                call(wait=False, cancel_futures=False),
+                call(wait=True, cancel_futures=False),
+            ],
+            first_pool.shutdown.call_args_list,
+        )
+        second_pool.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+    def test_two_pool_generations_share_one_concurrency_budget(self):
+        from core.operations.executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+
+        def work():
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active >= 2:
+                    entered.set()
+            release.wait(2)
+            with lock:
+                active -= 1
+
+        operation_executor = AccountOperationExecutor()
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 2):
+                first = [operation_executor.submit(work) for _ in range(2)]
+                self.assertTrue(entered.wait(1))
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 4):
+                second = [operation_executor.submit(work) for _ in range(4)]
+                time.sleep(0.1)
+                self.assertLessEqual(operation_executor.status()["active"], 4)
+            release.set()
+            for future in first + second:
+                future.result(timeout=3)
+            self.assertLessEqual(maximum, 4)
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
+    def test_try_submit_is_non_blocking_when_global_budget_is_full(self):
+        from core.operations.executor import AccountOperationExecutor
+
+        entered = threading.Event()
+        release = threading.Event()
+        operation_executor = AccountOperationExecutor()
+
+        def work():
+            entered.set()
+            release.wait(2)
+
+        try:
+            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 1):
+                first = operation_executor.try_submit(work)
+                self.assertIsNotNone(first)
+                self.assertTrue(entered.wait(1))
+                self.assertIsNone(operation_executor.try_submit(work))
+            release.set()
+            first.result(timeout=3)
+        finally:
+            release.set()
+            operation_executor.shutdown()
+
+    def test_codex_bulk_dispatch_submits_each_run_to_common_pool(self):
+        from core.codex import operation_service as codex_operation_service
+
+        with patch.object(codex_operation_service._EXECUTOR, "submit") as submit:
+            codex_operation_service._dispatch_bulk([11, 12, 13], workers=99)
+
+        self.assertEqual(3, submit.call_count)
+        self.assertEqual([11, 12, 13], [call.args[1] for call in submit.call_args_list])
+
+    def test_plan_check_keeps_registration_trigger_on_the_registration_pool(self):
+        from core.accounts.plans import service as plan_check_service
+
+        with (
+            patch.object(
+                plan_check_service.db,
+                "get_account",
+                side_effect=[{"id": 1}, {"id": 2}],
+            ),
+            patch.object(plan_check_service.db, "claim_account_plan_check", return_value=True),
+            patch.object(
+                plan_check_service.account_task_store,
+                "create_task",
+                side_effect=AssertionError("legacy task"),
+            ),
+            patch.object(
+                plan_check_service.account_task_store,
+                "submit_durable_operation",
+                side_effect=[
+                    {
+                        "accepted": True,
+                        "busy": False,
+                        "reused": False,
+                        "task_id": 901,
+                        "run_id": 1901,
+                        "status": "queued",
+                    },
+                    {
+                        "accepted": True,
+                        "busy": False,
+                        "reused": False,
+                        "task_id": 902,
+                        "run_id": 1902,
+                        "status": "queued",
+                    },
+                ],
+            ) as durable_submit,
+            patch.object(plan_check_service._EXECUTOR, "submit") as registration_submit,
+            patch.object(plan_check_service._ACCOUNT_EXECUTOR, "submit") as account_submit,
+        ):
+            plan_check_service.enqueue_account_plan_check(
+                account_id=1,
+                email="account@example.com",
+                access_token="access-token",
+                trigger="registration_auto",
+            )
+            plan_check_service.enqueue_account_plan_check(
+                account_id=2,
+                email="account-2@example.com",
+                access_token="access-token",
+                trigger="manual_bulk",
+            )
+
+        self.assertEqual(2, durable_submit.call_count)
+        self.assertEqual(
+            ["registration_auto", "manual_bulk"],
+            [call.kwargs["trigger"] for call in durable_submit.call_args_list],
+        )
+        registration_submit.assert_not_called()
+        account_submit.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -23,19 +23,19 @@ dotenv、清除业务环境配置并探测测试库。`TURB_DB_SCHEMA` 必须以
 | `all` | 不添加 marker 筛选 | 对指定路径同时运行普通与扩展测试 |
 
 三个 profile 都保留调用者指定的文件、目录、用例节点以及 `-k` 等 pytest 筛选条件。
-例如 `all -- tests/test_config_ui.py` 只验证该文件；不指定路径时，pytest 按项目配置从
+例如 `all -- tests/config/test_config_ui.py` 只验证该文件；不指定路径时，pytest 按项目配置从
 `tests/` 收集，只有此时 `all` 才覆盖整个测试目录。profile 不与 pytest `-m`/`--markexpr`
 混用。
 
 ```bash
 # 功能定向及相邻回归；文件应按本次影响范围选择
-python tools/test_isolated.py --profile all -- tests/test_config_ui.py tests/test_dashboard_api.py -q
+python tools/test_isolated.py --profile all -- tests/config/test_config_ui.py tests/webui/test_dashboard_api.py -q
 
 # 需要更广基础回归时
 python tools/test_isolated.py --profile default -- -q
 
 # 路由契约变更时补充对应扩展测试
-python tools/test_isolated.py --profile extended -- tests/test_route_contract.py -q
+python tools/test_isolated.py --profile extended -- tests/webui/test_route_contract.py -q
 
 # 已说明需要完整发布验收时，才运行整个测试目录
 python tools/test_isolated.py --profile all -- -q

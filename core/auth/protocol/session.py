@@ -1,0 +1,809 @@
+# -*- coding: utf-8 -*-
+"""
+curl_cffi Session 封装
+统一管理 Cookie、请求头和 TLS 指纹
+"""
+import logging
+import random
+import re
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from urllib.parse import urlparse
+from curl_cffi.requests import Session
+
+from config import (
+    USER_AGENT, SEC_CH_UA, SEC_CH_UA_PLATFORM, SEC_CH_UA_MOBILE,
+    SEND_HIGH_ENTROPY_CLIENT_HINTS,
+    ACCEPT_LANGUAGE, IMPERSONATE, OAI_CLIENT_BUILD_NUMBER, OAI_CLIENT_VERSION,
+    REQUEST_TIMEOUT, pick_browser_profile, build_browser_environment,
+    validate_browser_profile,
+)
+from config.browser import resolve_chrome_identity
+
+
+logger = logging.getLogger('core.session')
+_GEO_CACHE: dict[str, dict] = {}
+_GEO_CACHE_LOCK = threading.Lock()
+_CF_COOKIE_NAMES = ("cf_clearance", "__cf_bm", "__cfseq", "cf_chl_rc_i", "cf_chl_rc_ni", "cf_chl_rc_m")
+_REQUEST_BUDGETS = ContextVar("browser_session_request_budgets", default=())
+
+
+def _normalize_geo_payload(data: dict) -> dict:
+    """Normalize common GeoIP response shapes before caching or using them."""
+    if not isinstance(data, dict):
+        return {}
+    timezone = data.get("timezone")
+    if isinstance(timezone, dict):
+        timezone = timezone.get("id") or timezone.get("name")
+    connection = data.get("connection")
+    connection_org = connection.get("org") if isinstance(connection, dict) else None
+    return {
+        "ip": data.get("ip") or data.get("query"),
+        "country": (data.get("country") or data.get("country_code") or data.get("countryCode") or "").upper(),
+        "region": data.get("region") or data.get("regionName"),
+        "city": data.get("city"),
+        "timezone": timezone or "",
+        "org": data.get("org") or data.get("isp") or connection_org,
+    }
+
+
+def seed_exit_geo(proxy_url: str | None, data: dict | None) -> None:
+    """Seed the GeoIP cache with a result already verified through a proxy."""
+    key = str(proxy_url or "").strip()
+    if not key:
+        return
+    geo = _normalize_geo_payload(data or {})
+    if not any(geo.get(field) for field in ("ip", "country", "timezone")):
+        return
+    with _GEO_CACHE_LOCK:
+        _GEO_CACHE[key] = geo
+
+
+class BrowserSession:
+    """
+    模拟 Chrome 浏览器的 HTTP 会话管理器。
+    使用 curl_cffi 的 impersonate 功能绕过 Cloudflare TLS 指纹检测。
+    """
+
+    def __init__(self, proxy: str = None, *, detect_exit_geo: bool = True, identity=None):
+        """
+        初始化会话。
+
+        Args:
+            proxy: 代理地址，如 "socks5h://user:pass@host:port"。
+                   不传则从 config.PROXY_POOL 随机抽一个。
+                   显式传 "" 表示禁用代理。
+            detect_exit_geo: 是否探测出口 IP 并自动选择语言/时区画像。
+                             套餐查询等短请求可关闭，避免额外网络等待。
+            identity: 可选的账号级稳定 Protocol identity。未传时完全保持
+                      现有每会话随机 device_id / 设备画像行为。
+        """
+        # proxy=None  → 仅静态池模式允许从池里随机抽；代理平台模式必须由
+        #                registration/account_proxy 先领取租约并显式传入。
+        # proxy=""    → 禁用代理（直连）
+        # proxy="..." → 使用指定代理
+        if proxy is None:
+            # 统一代理池必须先交付租约；这里不能按旧静态池随机抽取，
+            # 否则会绕过国家、寿命、独占和实际供应商追踪。
+            raise RuntimeError(
+                "统一代理池禁止在未领取线路时回退 PROXY_POOL；"
+                "请先通过注册或账号功能代理服务领取租约"
+            )
+        else:
+            self.proxy = proxy
+
+        # 生成设备ID（oai-did），整个注册流程复用。稳定 identity 只由显式
+        # 的 Protocol v2 刷新路径传入；注册、普通查活和旧刷新不传 identity。
+        identity_device_id = (
+            identity.get("device_id") if isinstance(identity, dict)
+            else getattr(identity, "device_id", None)
+        )
+        self.device_id = str(identity_device_id or uuid.uuid4())
+        self.protocol_identity_id = (
+            identity.get("identity_id") if isinstance(identity, dict)
+            else getattr(identity, "identity_id", None)
+        )
+        self.protocol_profile_ref = (
+            identity.get("profile_ref") if isinstance(identity, dict)
+            else getattr(identity, "profile_ref", None)
+        )
+        self.protocol_profile_version = (
+            identity.get("profile_version") if isinstance(identity, dict)
+            else getattr(identity, "profile_version", None)
+        )
+
+        # 生成 auth_session_logging_id
+        self.auth_session_logging_id = str(uuid.uuid4())
+
+        # Auth Web 在同一份 document 内复用该 ID；真正发生页面导航时再轮换。
+        self.document_navigation_id = str(uuid.uuid4())
+
+        # ChatGPT 前端会话 ID：CES / Statsig / API 链路内保持稳定。
+        self.oai_session_id = str(uuid.uuid4())
+
+        # Datadog/RUM 关联 ID：每个 BrowserSession 独立生成，禁止跨账号复用。
+        # 只作为前端同形态诊断头，贯穿本会话内所有 auth/chatgpt/sentinel API 调用。
+        self.datadog_trace_id = str(random.getrandbits(63))
+        self.datadog_parent_id = str(random.getrandbits(63))
+        self.datadog_origin = "rum"
+        # 先使用配置默认值，加载真实 ChatGPT 登录页后从 data-build/data-seq
+        # 动态同步，避免滚动发布期间继续发送过期的前端版本头。
+        self.client_build_number = str(OAI_CLIENT_BUILD_NUMBER)
+        self.client_version = str(OAI_CLIENT_VERSION)
+
+        # Sentinel SDK 内部 sid：真实 SDK 会单独生成一个 UUID，和 oai-did 不是同一个值。
+        # Python 初始 p 与 Node Runner 最终 token 都复用这个 sid，保持同一 SDK 实例语义。
+        self.sentinel_sid = str(uuid.uuid4())
+        # 密码注册 iframe 与顶层 Auth 页是两个独立 Sentinel SDK 实例。
+        self.sentinel_iframe_sid = str(uuid.uuid4())
+        self.react_listening_key = "_reactListening" + uuid.uuid4().hex[:12]
+        self.react_container_key = "__reactContainer$" + uuid.uuid4().hex[:11]
+        self.react_resources_key = "__reactResources$" + self.react_container_key.split("$", 1)[1]
+
+        # TLS、HTTP 头与 Sentinel 环境必须共用一次解析出的 Chrome 版本。
+        self.chrome_identity = resolve_chrome_identity(IMPERSONATE)
+        self.session = Session(impersonate=self.chrome_identity["impersonate"])
+
+        # 设置代理
+        if self.proxy:
+            self.session.proxies = {
+                "http": self.proxy,
+                "https": self.proxy,
+            }
+
+        # 设置超时
+        self.session.timeout = REQUEST_TIMEOUT
+
+        # 会话级熔断：收到 403/429 后停止继续打后续接口，避免异常状态下扩大误伤。
+        self.blocked_until = 0.0
+        self.blocked_reason = ""
+
+        # 先用当前代理检测出口 IP 地理信息，再为本会话挑一份稳定浏览器画像。
+        # 这样 Accept-Language / navigator.language / timezone 可自动跟随出口地区。
+        self.exit_geo = self._detect_exit_geo() if detect_exit_geo else {}
+        self._enforce_proxy_quality()
+        identity_profile = (
+            identity.get("browser_profile") if isinstance(identity, dict)
+            else getattr(identity, "browser_profile", None)
+        )
+        if identity is not None:
+            if not identity_device_id or not isinstance(identity_profile, dict):
+                raise ValueError("Protocol identity 缺少稳定 device_id/browser_profile")
+            required_profile_fields = {
+                "screen_width", "screen_height", "device_pixel_ratio",
+                "hardware_concurrency", "device_memory", "js_heap_size_limit",
+            }
+            if not required_profile_fields.issubset(identity_profile):
+                raise ValueError("Protocol identity 的设备画像不完整")
+        if identity_profile:
+            # build_browser_environment overlays the current route's geo/locale
+            # on top of the immutable device layer.  Session/trace keys remain
+            # newly generated below, so fallback sessions get fresh cookies and
+            # request identifiers while keeping the same account identity.
+            self.browser_profile = build_browser_environment(
+                self.exit_geo,
+                base_profile=dict(identity_profile),
+                chrome_identity=self.chrome_identity,
+            )
+        else:
+            self.browser_profile = pick_browser_profile(
+                self.exit_geo,
+                chrome_identity=self.chrome_identity,
+            )
+        self.browser_profile["react_listening_key"] = self.react_listening_key
+        self.browser_profile["react_container_key"] = self.react_container_key
+        self.browser_profile["react_resources_key"] = self.react_resources_key
+        issues = validate_browser_profile(self.browser_profile)
+        if issues:
+            logger.warning("[指纹] 浏览器画像存在不一致: %s", "; ".join(issues))
+
+        # 让 HTTP Cookie、OAuth 参数 ext-oai-did、Sentinel 里的 id 三者一致。
+        # 浏览器里 oai-did 通常会作为一方 Cookie 存在；协议层主动补齐可减少同一会话内
+        # “头部/参数/JS 指纹有设备 ID，但 Cookie Jar 为空”的不一致。
+        for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+            self.session.cookies.set("oai-did", self.device_id, domain=domain, path="/")
+
+        # Cloudflare 状态只能来自真实响应 Set-Cookie；这里仅记录变化，不主动伪造/覆盖。
+        self._cf_cookie_seen = self.cf_cookie_snapshot()
+        # 裸会话不触碰统计数据库；只有业务 Task/Run 或显式关联作用域才采集。
+        self.protocol_traffic = None
+        try:
+            from core.network.protocol_traffic import ProtocolTrafficCapture
+            self.protocol_traffic = ProtocolTrafficCapture.for_current_context()
+        except Exception:
+            logger.debug("[流量] 初始化协议计量失败；业务继续")
+
+    def cf_cookie_snapshot(self) -> dict:
+        """返回当前 CookieJar 中的 Cloudflare 关键 Cookie 摘要，便于确认同 IP/同会话连续性。"""
+        out = {}
+        try:
+            for cookie in self.session.cookies.jar:
+                name = getattr(cookie, "name", "")
+                if name in _CF_COOKIE_NAMES:
+                    out[f"{getattr(cookie, 'domain', '')}:{name}"] = len(str(getattr(cookie, "value", "") or ""))
+        except Exception:
+            pass
+        return out
+
+    def _observe_cf_cookie_changes(self, url: str) -> None:
+        current = self.cf_cookie_snapshot()
+        if current != getattr(self, "_cf_cookie_seen", {}):
+            logger.info("[CF] Cookie 状态更新 url=%s keys=%s", url, sorted(current.keys()))
+            self._cf_cookie_seen = current
+
+    def _enforce_proxy_quality(self) -> None:
+        """根据 GeoIP org/ASN 粗判代理质量，默认拒绝云厂商/DC 出口。"""
+        try:
+            from config import browser as _browser_cfg
+            reject = bool(getattr(_browser_cfg, "REJECT_CLOUD_PROXY", True))
+            keywords = list(getattr(_browser_cfg, "CLOUD_PROXY_ORG_KEYWORDS", []) or [])
+        except Exception:
+            return
+        if not reject or not self.exit_geo:
+            return
+        org = str(self.exit_geo.get("org") or "").lower()
+        if not org:
+            return
+        hit = next((kw for kw in keywords if kw and str(kw).lower() in org), "")
+        if hit:
+            raise RuntimeError(
+                f"代理出口疑似云厂商/DC，已拒绝继续注册："
+                f"ip={self.exit_geo.get('ip') or '?'} country={self.exit_geo.get('country') or '?'} "
+                f"org={self.exit_geo.get('org') or '?'} hit={hit}. "
+                f"如确认是住宅代理，可设置 REJECT_CLOUD_PROXY=False。"
+            )
+
+    def _cookie_header_for_domain(self, domain: str) -> str:
+        """导出当前会话给指定域名可见的 Cookie，供 Node VM document.cookie 使用。"""
+        pairs = []
+        wanted = domain.lower().lstrip(".")
+        try:
+            for cookie in self.session.cookies.jar:
+                name = getattr(cookie, "name", "")
+                value = getattr(cookie, "value", "")
+                cdom = str(getattr(cookie, "domain", "") or "").lower().lstrip(".")
+                if not name:
+                    continue
+                if cdom and not (wanted == cdom or wanted.endswith("." + cdom) or cdom.endswith("." + wanted)):
+                    continue
+                pairs.append(f"{name}={value}")
+        except Exception:
+            pass
+        return "; ".join(pairs)
+
+    def auth_cookie_header(self) -> str:
+        return self._cookie_header_for_domain("auth.openai.com") or f"oai-did={self.device_id}"
+
+    def chatgpt_cookie_header(self) -> str:
+        return self._cookie_header_for_domain("chatgpt.com") or f"oai-did={self.device_id}"
+
+    def _detect_exit_geo(self) -> dict:
+        """通过当前代理检测出口 IP 地理信息；失败返回空 dict 并回退到默认地区画像。"""
+        try:
+            from config import browser as _browser_cfg
+            if not getattr(_browser_cfg, "AUTO_BROWSER_LOCALE_FROM_IP", True):
+                return {}
+            endpoints = list(getattr(_browser_cfg, "IP_GEO_ENDPOINTS", []) or [])
+            timeout = float(getattr(_browser_cfg, "IP_GEO_TIMEOUT", 6) or 6)
+        except Exception:
+            return {}
+
+        cache_key = self.proxy or "__direct__"
+        with _GEO_CACHE_LOCK:
+            cached = _GEO_CACHE.get(cache_key)
+            if cached is not None:
+                return dict(cached)
+
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        for url in endpoints:
+            try:
+                resp = self.session.get(url, headers=headers, timeout=timeout)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                geo = self._normalize_geo_response(data)
+                if geo.get("country") or geo.get("timezone"):
+                    with _GEO_CACHE_LOCK:
+                        _GEO_CACHE[cache_key] = dict(geo)
+                    logger.info(
+                        "[指纹] 出口IP地理信息: ip=%s country=%s city=%s timezone=%s",
+                        geo.get("ip") or "?", geo.get("country") or "?",
+                        geo.get("city") or "?", geo.get("timezone") or "?",
+                    )
+                    return geo
+            except Exception as exc:
+                logger.debug(f"[指纹] 出口 IP 地理检测失败 endpoint={url}: {type(exc).__name__}: {exc}")
+                continue
+        with _GEO_CACHE_LOCK:
+            _GEO_CACHE[cache_key] = {}
+        return {}
+
+    @staticmethod
+    def _normalize_geo_response(data: dict) -> dict:
+        """兼容 ipinfo / ipapi / ipwho.is 等常见 JSON 字段。"""
+        return _normalize_geo_payload(data)
+
+    def _get_common_headers(self) -> dict:
+        """获取通用请求头，优先使用本 BrowserSession 的稳定画像。"""
+        profile = getattr(self, "browser_profile", {}) or {}
+        headers = {
+            "User-Agent": str(profile.get("user_agent") or USER_AGENT),
+            "accept-language": str(profile.get("accept_language") or ACCEPT_LANGUAGE),
+        }
+
+        # Safari 不发送 Chromium Client Hints；Chrome/Chromium 画像才补 sec-ch-*。
+        send_client_hints = bool(profile.get("send_client_hints", bool(SEC_CH_UA)))
+        if send_client_hints:
+            if profile.get("sec_ch_ua") or SEC_CH_UA:
+                headers["sec-ch-ua"] = str(profile.get("sec_ch_ua") or SEC_CH_UA)
+            if profile.get("sec_ch_ua_mobile") or SEC_CH_UA_MOBILE:
+                headers["sec-ch-ua-mobile"] = str(profile.get("sec_ch_ua_mobile") or SEC_CH_UA_MOBILE)
+            if profile.get("sec_ch_ua_platform") or SEC_CH_UA_PLATFORM:
+                headers["sec-ch-ua-platform"] = str(profile.get("sec_ch_ua_platform") or SEC_CH_UA_PLATFORM)
+            if SEND_HIGH_ENTROPY_CLIENT_HINTS:
+                for header, field in (
+                    ("sec-ch-ua-full-version-list", "sec_ch_ua_full_version_list"),
+                    ("sec-ch-ua-platform-version", "sec_ch_ua_platform_version"),
+                    ("sec-ch-ua-arch", "sec_ch_ua_arch"),
+                    ("sec-ch-ua-bitness", "sec_ch_ua_bitness"),
+                    ("sec-ch-ua-model", "sec_ch_ua_model"),
+                ):
+                    if field in profile:
+                        headers[header] = str(profile[field])
+        return headers
+
+    def navigator_language(self) -> str:
+        """当前会话画像里的 navigator.language。"""
+        return str((getattr(self, "browser_profile", {}) or {}).get("navigator_language") or "zh-CN")
+
+    @staticmethod
+    def _sec_fetch_site_for(target_origin: str, referer: str) -> str:
+        """按 Referer 粗略模拟浏览器的 Sec-Fetch-Site。"""
+        ref = (referer or "").lower()
+        target = target_origin.lower().rstrip("/")
+        if ref.startswith(target):
+            return "same-origin"
+        if ref.startswith("https://chatgpt.com") or ref.startswith("https://auth.openai.com") or ref.startswith("https://sentinel.openai.com"):
+            return "cross-site"
+        return "none"
+
+    def get_datadog_headers(self) -> dict:
+        """获取当前会话稳定的 Datadog/RUM 关联头。"""
+        return {
+            "x-datadog-origin": self.datadog_origin,
+            "x-datadog-sampling-priority": "1",
+            "x-datadog-trace-id": self.datadog_trace_id,
+            "x-datadog-parent-id": self.datadog_parent_id,
+        }
+
+    def get_trace_context_headers(self) -> dict:
+        """补齐 Auth Web 抓包里的 W3C traceparent / Datadog tracestate。"""
+        trace_hex = format(int(self.datadog_trace_id), "032x")[-32:]
+        parent_hex = format(int(self.datadog_parent_id), "016x")[-16:]
+        return {
+            "traceparent": f"00-{trace_hex}-{parent_hex}-01",
+            "tracestate": f"dd=s:1;o:{self.datadog_origin}",
+        }
+
+    def _attach_auth_rum_headers(self, headers: dict) -> dict:
+        """Auth Web JSON 接口头：HAR 中只出现 RUM/trace/access-flow，不带 oai-client-*。"""
+        # 浏览器每个 fetch 都创建新的 span，而不是整个登录链复用同一 trace。
+        self.datadog_trace_id = str(random.getrandbits(64) or 1)
+        self.datadog_parent_id = str(random.getrandbits(64) or 1)
+        headers.update(self.get_trace_context_headers())
+        headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
+        headers["x-openai-document-navigation-id"] = self.document_navigation_id
+        headers.update(self.get_datadog_headers())
+        return headers
+
+    def rotate_document_navigation_id(self) -> str:
+        self.document_navigation_id = str(uuid.uuid4())
+        return self.document_navigation_id
+
+    def js_timezone_offset_min(self) -> int:
+        """返回 JS Date.getTimezoneOffset() 语义：UTC-local，东八区为 -480。"""
+        profile = getattr(self, "browser_profile", {}) or {}
+        return -int(profile.get("timezone_offset_minutes", 0) or 0)
+
+    def _attach_datadog_headers(self, headers: dict) -> dict:
+        """为前端 API 请求补齐 Datadog 头，降低无诊断头 silent-drop 概率。"""
+        headers.update(self.get_datadog_headers())
+        return headers
+
+    def _attach_oai_context_headers(self, headers: dict) -> dict:
+        """补齐同一设备上下文头，和 oai-did Cookie / OAuth ext-oai-did 保持一致。"""
+        headers["oai-client-build-number"] = str(getattr(self, "client_build_number", OAI_CLIENT_BUILD_NUMBER))
+        headers["oai-client-version"] = str(getattr(self, "client_version", OAI_CLIENT_VERSION))
+        headers["oai-device-id"] = self.device_id
+        headers["oai-language"] = self.navigator_language()
+        headers["oai-session-id"] = self.oai_session_id
+        return headers
+
+    def observe_chatgpt_document(self, response) -> None:
+        """从本次真实登录页 HTML 同步 ChatGPT 前端 build 元数据。"""
+        try:
+            final_url = str(getattr(response, "url", "") or "")
+            if urlparse(final_url).hostname != "chatgpt.com":
+                return
+            html = str(getattr(response, "text", "") or "")
+            build = re.search(r'\bdata-build=["\']([^"\']+)', html[:200000])
+            seq = re.search(r'\bdata-seq=["\']([^"\']+)', html[:200000])
+            if build:
+                self.client_version = build.group(1)
+                self.browser_profile["build_id"] = self.client_version
+            if seq:
+                self.client_build_number = seq.group(1)
+            if build or seq:
+                logger.info(
+                    "[指纹] 已从 ChatGPT 登录页同步前端版本：build=%s seq=%s",
+                    self.client_version, self.client_build_number,
+                )
+        except Exception as exc:
+            logger.debug("[指纹] 解析 ChatGPT 登录页 build 失败：%s", exc)
+
+    def _attach_frontend_api_headers(self, headers: dict) -> dict:
+        """前端 API 统一头：BrowserProfile + oai 上下文 + Datadog。"""
+        self._attach_oai_context_headers(headers)
+        self._attach_datadog_headers(headers)
+        return headers
+
+    def get_nextauth_headers(self, referer: str = "https://chatgpt.com/") -> dict:
+        """NextAuth `/api/auth/*` 头；HAR 中不携带 oai-client-*。"""
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "*/*",
+            "content-type": "application/json",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            "referer": referer,
+            "priority": "u=1, i",
+        })
+        return headers
+
+    def get_chatgpt_headers(self, referer: str = "https://chatgpt.com/login") -> dict:
+        """
+        获取 chatgpt.com 域名的请求头。
+        用于步骤1-3。
+        """
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "*/*",
+            "content-type": "application/json",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            "referer": referer,
+            "priority": "u=1, i",
+        })
+        return self._attach_frontend_api_headers(headers)
+
+    def get_auth_headers(self, referer: str = "https://auth.openai.com/create-account/password") -> dict:
+        """
+        获取 auth.openai.com 域名的请求头。
+        用于步骤7、10、12。
+        """
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "application/json",
+            "content-type": "application/json",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            "referer": referer,
+            "priority": "u=1, i",
+            "origin": "https://auth.openai.com",
+        })
+        return self._attach_auth_rum_headers(headers)
+
+    def get_auth_navigate_headers(self, referer: str = "https://chatgpt.com/", user_initiated: bool = True, target_origin: str = "https://auth.openai.com") -> dict:
+        """
+        获取 auth.openai.com 导航请求头（用于GET页面请求）。
+        用于步骤4、5、8。
+        """
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "sec-fetch-site": self._sec_fetch_site_for(target_origin, referer),
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-dest": "document",
+            "referer": referer,
+            "priority": "u=0, i",
+            "upgrade-insecure-requests": "1",
+        })
+        if user_initiated:
+            headers["sec-fetch-user"] = "?1"
+        return self._attach_datadog_headers(headers)
+
+    def get_chatgpt_navigate_headers(self, referer: str = "https://chatgpt.com/", user_initiated: bool = True) -> dict:
+        """获取 chatgpt.com 页面导航请求头，用于预热登录页 / 回到应用页。"""
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "sec-fetch-site": self._sec_fetch_site_for("https://chatgpt.com", referer),
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-dest": "document",
+            "referer": referer,
+            "priority": "u=0, i",
+            "upgrade-insecure-requests": "1",
+        })
+        if user_initiated:
+            headers["sec-fetch-user"] = "?1"
+        return self._attach_datadog_headers(headers)
+
+    def get_sentinel_headers(self) -> dict:
+        """
+        获取 sentinel.openai.com 的请求头。
+        用于步骤6、9、11。
+        """
+        from config import SENTINEL_SV
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "*/*",
+            "content-type": "text/plain;charset=UTF-8",
+            "origin": "https://sentinel.openai.com",
+            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_SV}",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            "priority": "u=1, i",
+        })
+        # 成功浏览器样本的 Sentinel iframe fetch 不带 oai-client-* 或
+        # x-datadog-*，只保留标准 CORS 请求头。
+        return headers
+
+    def get_sentinel_frame_headers(self, user_initiated: bool = False) -> dict:
+        """Sentinel SDK iframe 的同站文档导航头。"""
+        headers = self._get_common_headers()
+        headers.update({
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "referer": "https://auth.openai.com/",
+            "sec-fetch-site": "same-site",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-dest": "iframe",
+            "priority": "u=0, i",
+            "upgrade-insecure-requests": "1",
+        })
+        if user_initiated:
+            headers["sec-fetch-user"] = "?1"
+        return headers
+
+
+    @staticmethod
+    def _chatgpt_target_route(path: str) -> str:
+        """把真实 URL path 归一成 HAR 里的 x-openai-target-route 形态。"""
+        if path.startswith("/backend-api/accounts/check/"):
+            return "/backend-api/accounts/check/{version}"
+        if path.startswith("/backend-anon/accounts/check/"):
+            return "/backend-anon/accounts/check/{version}"
+        if path.startswith("/backend-api/conversation/") and path != "/backend-api/conversation/init":
+            return "/backend-api/conversation/{conversation_id}"
+        if path.startswith("/backend-anon/conversation/") and path != "/backend-anon/conversation/init":
+            return "/backend-anon/conversation/{conversation_id}"
+        return path
+
+    def _attach_openai_target_headers_for_url(self, url: str, headers: dict | None) -> dict | None:
+        """
+        自动补齐 HAR 中 chatgpt.com 前端 API 的 target 诊断头。
+
+        NextAuth `/api/auth/*` 和 auth.openai.com JSON 接口在抓包中不带这些头，
+        这里仅对 chatgpt.com 的 backend/ces 前端接口补齐，避免各调用点手动维护。
+        """
+        if headers is None:
+            return headers
+        try:
+            parsed = urlparse(str(url))
+        except Exception:
+            return headers
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or "/"
+        if host != "chatgpt.com":
+            return headers
+        if not (path.startswith("/backend-api/") or path.startswith("/backend-anon/") or path.startswith("/ces/")):
+            return headers
+        # 不覆盖调用方显式指定的值，便于后续特殊接口单独调整。
+        headers.setdefault("x-openai-target-path", path)
+        headers.setdefault("x-openai-target-route", self._chatgpt_target_route(path))
+        return headers
+
+    def _raise_if_circuit_open(self) -> None:
+        if self.blocked_until and time.time() < self.blocked_until:
+            remain = max(0, int(self.blocked_until - time.time()))
+            raise RuntimeError(f"当前 BrowserSession 已熔断冷却（剩余 {remain}s）：{self.blocked_reason}")
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> int:
+        if not value:
+            return 0
+        text = str(value).strip()
+        if text.isdigit():
+            return max(0, int(text))
+        return 0
+
+    def _observe_response_for_circuit_breaker(self, resp, url: str):
+        status = int(getattr(resp, "status_code", 0) or 0)
+        self._observe_cf_cookie_changes(url)
+        if status not in (403, 429):
+            return resp
+        retry_after = self._parse_retry_after(getattr(resp, "headers", {}).get("retry-after") if getattr(resp, "headers", None) else None)
+        cool_down = retry_after if retry_after > 0 else (300 if status == 429 else 900)
+        self.blocked_until = max(self.blocked_until, time.time() + min(cool_down, 3600))
+        self.blocked_reason = f"HTTP {status} from {url}"
+        logger.warning("[熔断] 当前会话收到 HTTP %s，进入冷却 %ss，停止后续请求：%s", status, min(cool_down, 3600), url)
+        return resp
+
+    def reset_transport(self) -> None:
+        """Replace the curl transport after a bounded transient TLS failure.
+
+        Keep the BrowserSession identity, proxy, cookies and device headers,
+        but discard a possibly poisoned connection pool.  This is deliberately
+        narrower than creating a new account session: callers use it only for
+        a retry after a classified transport error.
+        """
+        old_session = self.session
+        new_session = Session(impersonate=self.chrome_identity["impersonate"])
+        if self.proxy:
+            new_session.proxies = {
+                "http": self.proxy,
+                "https": self.proxy,
+            }
+        new_session.timeout = getattr(old_session, "timeout", None) or REQUEST_TIMEOUT
+        try:
+            new_session.cookies = old_session.cookies.copy()
+        except Exception:
+            # The bearer token is supplied by the caller; preserving the
+            # device cookie is still useful when a lightweight test/dummy
+            # cookie jar cannot be copied as a whole.
+            for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+                new_session.cookies.set("oai-did", self.device_id, domain=domain, path="/")
+        self.session = new_session
+        for domain in ("chatgpt.com", "auth.openai.com", "sentinel.openai.com"):
+            self.session.cookies.set("oai-did", self.device_id, domain=domain, path="/")
+        self.blocked_until = 0.0
+        self.blocked_reason = ""
+        self._cf_cookie_seen = self.cf_cookie_snapshot()
+        try:
+            old_session.close()
+        except Exception:
+            logger.debug("[Session] 清理旧 HTTP transport 失败", exc_info=True)
+
+    @contextmanager
+    def request_budget(self, budget):
+        """把同一阶段截止时间传给每次真实 I/O，嵌套作用域取最小剩余额度。"""
+        token = _REQUEST_BUDGETS.set((*_REQUEST_BUDGETS.get(), (self, budget)))
+        try:
+            yield self
+        finally:
+            _REQUEST_BUDGETS.reset(token)
+
+    def _bounded_request_kwargs(self, kwargs: dict) -> dict:
+        budgets = [budget for owner, budget in _REQUEST_BUDGETS.get() if owner is self]
+        if not budgets:
+            return kwargs
+        remaining = min(budget.require("协议 HTTP 请求") for budget in budgets)
+        if remaining < 0.001:
+            # libcurl 按毫秒向下取整；小于 1ms 会变成 0（关闭总超时）。
+            from core.auth.state_machine import StageTimeout
+            raise StageTimeout("协议 HTTP 请求剩余预算不足 1 毫秒")
+        requested = kwargs.get("timeout", getattr(self.session, "timeout", None))
+        if isinstance(requested, (tuple, list)):
+            connect, read = (max(0.0, float(value)) for value in requested)
+            # curl 用两段之和作为总超时；保留连接上限并裁剪总和，不能各占满预算。
+            total = min(remaining, connect + read) if connect + read > 0 else remaining
+            bounded_connect = min(connect, total)
+            return {**kwargs, "timeout": (bounded_connect, total - bounded_connect)}
+        # curl 的 timeout=0 表示关闭超时；阶段预算存在时仍必须使用剩余上限。
+        if requested is not None and float(requested) > 0:
+            remaining = min(remaining, float(requested))
+        return {**kwargs, "timeout": remaining}
+
+    def bind_protocol_traffic(self, **correlation) -> None:
+        """仅从调用方持有的任务/租约事实补充关联，不接受请求私有内容。"""
+        from core.network.protocol_traffic import ProtocolTrafficCapture
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is None:
+            capture = ProtocolTrafficCapture(correlation)
+            self.protocol_traffic = capture
+        else:
+            capture.bind(**correlation)
+
+    def _record_traffic(self, started_at: float, response=None, error=None) -> None:
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is not None:
+            try:
+                capture.record(started_at=started_at, response=response, error=error)
+            except Exception:
+                logger.debug("[流量] 协议请求计量失败；业务继续")
+
+    def close(self) -> None:
+        """任务收口时落库尚未写入的聚合统计，并关闭底层连接。"""
+        capture = getattr(self, "protocol_traffic", None)
+        if capture is not None:
+            try:
+                capture.flush()
+            except Exception:
+                logger.debug("[流量] 协议计量收口失败；业务继续")
+        try:
+            self.session.close()
+        except Exception:
+            logger.debug("[Session] 关闭 HTTP transport 失败")
+
+    def get(self, url: str, headers: dict = None, **kwargs):
+        """发送 GET 请求"""
+        self._raise_if_circuit_open()
+        kwargs = self._bounded_request_kwargs(kwargs)
+        headers = self._attach_openai_target_headers_for_url(url, headers)
+        debug_started = time.perf_counter()
+        try:
+            resp = self.session.get(url, headers=headers, **kwargs)
+        except BaseException as exc:
+            self._record_traffic(debug_started, error=exc)
+            try:
+                from core.registration.debug import record_protocol_exchange
+                record_protocol_exchange(
+                    method="GET",
+                    url=url,
+                    started_at=debug_started,
+                    request_headers=headers,
+                    response=None,
+                    error=exc,
+                )
+            except Exception:
+                logger.debug("[Debug] 记录协议 GET 失败", exc_info=True)
+            raise
+        self._record_traffic(debug_started, response=resp)
+        try:
+            from core.registration.debug import record_protocol_exchange
+            record_protocol_exchange(
+                method="GET",
+                url=url,
+                started_at=debug_started,
+                request_headers=headers,
+                response=resp,
+            )
+        except Exception:
+            logger.debug("[Debug] 记录协议 GET 响应失败", exc_info=True)
+        return self._observe_response_for_circuit_breaker(resp, url)
+
+    def post(self, url: str, headers: dict = None, **kwargs):
+        """发送 POST 请求"""
+        self._raise_if_circuit_open()
+        kwargs = self._bounded_request_kwargs(kwargs)
+        headers = self._attach_openai_target_headers_for_url(url, headers)
+        debug_started = time.perf_counter()
+        request_body = kwargs.get("json") if "json" in kwargs else kwargs.get("data")
+        try:
+            resp = self.session.post(url, headers=headers, **kwargs)
+        except BaseException as exc:
+            self._record_traffic(debug_started, error=exc)
+            try:
+                from core.registration.debug import record_protocol_exchange
+                record_protocol_exchange(
+                    method="POST",
+                    url=url,
+                    started_at=debug_started,
+                    request_headers=headers,
+                    request_body=request_body,
+                    response=None,
+                    error=exc,
+                )
+            except Exception:
+                logger.debug("[Debug] 记录协议 POST 失败", exc_info=True)
+            raise
+        self._record_traffic(debug_started, response=resp)
+        try:
+            from core.registration.debug import record_protocol_exchange
+            record_protocol_exchange(
+                method="POST",
+                url=url,
+                started_at=debug_started,
+                request_headers=headers,
+                request_body=request_body,
+                response=resp,
+            )
+        except Exception:
+            logger.debug("[Debug] 记录协议 POST 响应失败", exc_info=True)
+        return self._observe_response_for_circuit_breaker(resp, url)

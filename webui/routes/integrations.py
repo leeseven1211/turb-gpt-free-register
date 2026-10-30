@@ -15,22 +15,18 @@ from urllib.parse import urlparse
 import pyotp
 from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
 
-from core import (
-    account_task_store,
-    admin_repository,
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-)
-from core import registration_service as svc
-from core.extract_link_providers.huanguang import HuanguangQuotaError
-from core.task_errors import classify_task_error
+from core import account_task_store
+from core.storage import admin_repository
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.registration import service as svc
+from core.extract_link.huanguang.client import HuanguangQuotaError
+from core.operations.errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -46,7 +42,7 @@ def create_integrations_blueprint(context: WebUIContext):
     @bp.get("/api/roxy/workspaces")
     def api_roxy_workspaces():
         try:
-            from core.roxybrowser_client import RoxyBrowserClient
+            from core.browser.roxy.client import RoxyBrowserClient
             result = RoxyBrowserClient().list_workspaces()
             return jsonify(result)
         except Exception as exc:
@@ -143,9 +139,9 @@ def create_integrations_blueprint(context: WebUIContext):
         lease = None
         try:
             from contextlib import closing
-            from core.proxy_provider import release_proxy
-            from core.proxy_sources import get_source
-            from core.proxy_supply import fetch_candidates
+            from core.proxy.provider import release_proxy
+            from core.proxy.sources import get_source
+            from core.proxy.supply import fetch_candidates
 
             source = get_source(str(data.get("provider") or "1024proxy"))
             options = source.options(
@@ -174,7 +170,7 @@ def create_integrations_blueprint(context: WebUIContext):
         finally:
             if lease is not None:
                 try:
-                    from core.proxy_provider import release_proxy
+                    from core.proxy.provider import release_proxy
                     release_proxy(lease, reason="webui_test_failed")
                 except Exception:
                     pass
@@ -189,7 +185,7 @@ def create_integrations_blueprint(context: WebUIContext):
         """验证 Email Butler URL、Key、策略与必要能力，不回显 Key。"""
         data = request.get_json(silent=True) or {}
         try:
-            from core.email_butler_client import test_connection
+            from core.email.email_butler.client import test_connection
 
             result = test_connection(
                 api_base=str(data.get("api_base") or "").strip() or None,
@@ -202,7 +198,7 @@ def create_integrations_blueprint(context: WebUIContext):
     @bp.get("/api/email-butler/leases")
     def api_email_butler_leases():
         """列出当前 WebUI 进程持有的 Email Butler 租约。"""
-        from core.email_butler_client import active_mailbox_leases
+        from core.email.email_butler.client import active_mailbox_leases
         return jsonify({"ok": True, "items": active_mailbox_leases()})
 
     @bp.post("/api/email-butler/leases")
@@ -218,7 +214,7 @@ def create_integrations_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "code": "invalid_request_id", "request_unknown": False,
                             "error": "request_id 必须是浏览器保存的有效 UUID"}), 400
         try:
-            from core.email_butler_client import active_mailbox_leases, pick_local_account
+            from core.email.email_butler.client import active_mailbox_leases, pick_local_account
             account = pick_local_account(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
             item = next(
                 (row for row in active_mailbox_leases() if row.get("email") == account.email),
@@ -239,7 +235,7 @@ def create_integrations_blueprint(context: WebUIContext):
         if not email or "@" not in email:
             return jsonify({"ok": False, "error": "email 参数无效"}), 400
         try:
-            from core.email_butler_client import get_account_context, release_account
+            from core.email.email_butler.client import get_account_context, release_account
             if get_account_context(email) is None:
                 return jsonify({"ok": False, "error": "当前进程未持有该邮箱租约"}), 404
             release_account(email, status=str(data.get("status") or "available"), note="WebUI 手动释放")

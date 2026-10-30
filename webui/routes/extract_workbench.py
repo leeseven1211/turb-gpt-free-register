@@ -11,8 +11,8 @@ from uuid import UUID
 
 from flask import jsonify, request
 
-from core import extract_link_service
-from core.extract_link_providers.contracts import safe_payment_artifact
+from core.extract_link import service as extract_link_service
+from core.extract_link.contracts import safe_payment_artifact
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 

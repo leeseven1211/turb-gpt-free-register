@@ -13,29 +13,18 @@ from urllib.parse import urlparse
 import pyotp
 from flask import Response, jsonify, make_response, redirect, render_template, request, send_file, url_for
 
-from core import (
-    account_task_store,
-    admin_repository,
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-)
-from core import registration_service as svc
-from core.task_errors import classify_task_error
-from core.task_stages import (
-    DIAGNOSTIC_CONTEXT_FIELDS,
-    ERROR_FIELDS,
-    EVENT_BASE_FIELDS,
-    EVENT_TYPES,
-    STAGE_EVENT_FIELDS,
-    WAIT_REASONS,
-)
+from core import account_task_store
+from core.storage import admin_repository
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.registration import service as svc
+from core.operations.errors import classify_task_error
+from core.operations.stages import DIAGNOSTIC_CONTEXT_FIELDS, ERROR_FIELDS, EVENT_BASE_FIELDS, EVENT_TYPES, STAGE_EVENT_FIELDS, WAIT_REASONS
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -95,7 +84,7 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.get("/api/remail/orders/reconciliation")
     def api_remail_order_reconciliation():
         """返回待核验的原 Remail 订单摘要；不返回邮箱凭据或 API Key。"""
-        from core.storage import remail_orders
+        from core.storage.email import remail_orders
         try:
             return jsonify({"ok": True, "items": remail_orders.list_reconciliation(limit=request.args.get("limit", 100, type=int))})
         except Exception as exc:
@@ -105,8 +94,8 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/remail/orders/<acquisition_id>/verify")
     def api_remail_order_verify(acquisition_id: str):
         """核验原订单；该动作只 GET 原订单，绝不创建新邮箱。"""
-        from core.remail_order_coordinator import RemailOrderCoordinator
-        from core.storage import remail_orders
+        from core.email.remail.order_coordinator import RemailOrderCoordinator
+        from core.storage.email import remail_orders
         try:
             account = RemailOrderCoordinator().verify_original_order(acquisition_id)
             intent = remail_orders.get_intent(acquisition_id, private=True)
@@ -191,11 +180,11 @@ def create_jobs_blueprint(context: WebUIContext):
     def api_email_sources():
         """返回注册页可选择的邮箱来源、注册驱动和各自默认值。"""
         from config import email as _email_cfg
-        from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
-        from core.feature_availability import email_source_availability
+        from core.email.provider import EMAIL_SOURCE_LABELS, parse_email_sources
+        from core.runtime.capabilities import email_source_availability
 
         use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
-        from core.local_email_inventory import TABLES
+        from core.email.inventory import TABLES
         sources = list(TABLES) if use_service else []
         availability = email_source_availability() if use_service else {}
         return jsonify({
@@ -251,7 +240,7 @@ def create_jobs_blueprint(context: WebUIContext):
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg
         from config import register as _register_cfg
-        from core.email_provider import parse_email_sources, validate_email_source
+        from core.email.provider import parse_email_sources, validate_email_source
         if not bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True)):
             reg_email = str(getattr(_register_cfg, "REGISTER_EMAIL", "") or "").strip()
             if not reg_email:
@@ -283,7 +272,7 @@ def create_jobs_blueprint(context: WebUIContext):
             selected_source = validate_email_source(data.get("email_source"))
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        from core import local_email_inventory
+        from core.email import inventory as local_email_inventory
         if selected_source not in local_email_inventory.TABLES:
             return jsonify({'ok': False, 'error': '新注册只使用本地邮箱列表，请先导入邮箱后选择本地来源'}), 400
         pool = local_email_inventory.summary(selected_source)
@@ -311,13 +300,13 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
         """列出当前正在等待手动验证码的邮箱。"""
-        from core.manual_otp import list_waiting
+        from core.email.manual_otp import list_waiting
         return jsonify({"ok": True, "waiting": list_waiting()})
 
     @bp.post("/api/manual-otp")
     def api_manual_otp_submit():
         """提交手动邮箱验证码。Body: {email, code} 或 {job_id, code}。"""
-        from core.manual_otp import submit_manual_otp
+        from core.email.manual_otp import submit_manual_otp
         data = request.get_json(silent=True) or {}
         code = (data.get("code") or data.get("otp") or "").strip()
         email = (data.get("email") or "").strip()
@@ -465,7 +454,7 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": reason}), status_code
         if debug_job:
             try:
-                from core.registration_debug import delete_job_artifacts
+                from core.registration.debug import delete_job_artifacts
                 delete_job_artifacts(debug_job)
             except Exception:
                 logger.exception("删除任务 #%s 的调试产物失败", job_id)
@@ -500,7 +489,7 @@ def create_jobs_blueprint(context: WebUIContext):
         skipped = invalid + skipped
         deleted = [int(row["id"]) for row in deleted_rows]
         try:
-            from core.registration_debug import delete_job_artifacts
+            from core.registration.debug import delete_job_artifacts
             for deleted_id in deleted:
                 debug_job = debug_jobs.get(deleted_id)
                 if debug_job:
@@ -516,7 +505,7 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "任务不存在"}), 404
         if not bool(job.get("debug_enabled", False)):
             return jsonify({"ok": True, "enabled": False, "job_id": job_id, "events": []})
-        from core.registration_debug import active_summary, read_events
+        from core.registration.debug import active_summary, read_events
         errors_only = str(request.args.get("errors_only", "") or "").lower() in {"1", "true", "yes"}
         try:
             limit = max(1, min(1000, int(request.args.get("limit", 300) or 300)))
@@ -556,7 +545,7 @@ def create_jobs_blueprint(context: WebUIContext):
                 "job_id": job_id,
                 "event_contract": _diagnostic_event_contract(),
             })
-        from core.registration_debug import read_events, read_page_state, read_timeline, screenshot_path
+        from core.registration.debug import read_events, read_page_state, read_timeline, screenshot_path
         try:
             limit = max(1, min(300, int(request.args.get("limit", 100) or 100)))
         except (TypeError, ValueError):
@@ -612,7 +601,7 @@ def create_jobs_blueprint(context: WebUIContext):
         job = db.get_job(job_id)
         if not job:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
-        from core.registration_debug import screenshot_path
+        from core.registration.debug import screenshot_path
         try:
             path = screenshot_path(job)
         except ValueError as exc:
@@ -626,7 +615,7 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/<int:job_id>/debug/release")
     def api_job_debug_release(job_id: int):
         data = request.get_json(silent=True) or {}
-        from core.registration_debug import release_job
+        from core.registration.debug import release_job
         result = release_job(job_id, action=str(data.get("action") or "finish"))
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 409)
@@ -639,7 +628,7 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "任务不存在"}), 404
         if not bool(job.get("debug_enabled", False)):
             return jsonify({"ok": False, "error": "该任务未开启调试抓包"}), 409
-        from core.registration_debug import build_har
+        from core.registration.debug import build_har
         try:
             har = build_har(job)
         except ValueError as exc:
@@ -676,7 +665,7 @@ def create_jobs_blueprint(context: WebUIContext):
             baseline = same_batch[0] if same_batch else None
         if baseline is None:
             return jsonify({"ok": False, "error": "同批次没有可用于对比的成功调试任务"}), 409
-        from core.registration_debug import compare_jobs
+        from core.registration.debug import compare_jobs
         return jsonify({"ok": True, **compare_jobs(job, baseline)})
 
     @bp.get("/api/jobs/<int:job_id>/log")

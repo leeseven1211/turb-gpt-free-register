@@ -15,21 +15,17 @@ from typing import Any
 
 from flask import Flask
 
-from core import (
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-    sms_provider,
-)
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.sms import provider as sms_provider
 from core.operations import task_gateway
 from core.operations import task_gateway as account_task_store
-from core.account_operation_executor import executor as _ACCOUNT_EXECUTOR
+from core.operations.executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
 
@@ -431,7 +427,7 @@ def _run_account_completion_worker(
     reservation_held: bool | None = None,
 ) -> task_gateway.OperationResult | None:
     """Execute a config-driven completion plan and record one coordinator task."""
-    from core.account_completion_service import STEP_LABELS, completion_plan
+    from core.accounts.completion import STEP_LABELS, completion_plan
 
     started = False
     result_summary: dict[str, Any] = dict(initial_result_summary or {})
@@ -949,7 +945,7 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     request_id = f"account-setup:{context.run_id}"
     with context.lease(resource_family="openai_interactive"):
         if data.get("completion_auth"):
-            from core.account_completion_service import active_registration_job
+            from core.accounts.completion import active_registration_job
 
             if active_registration_job(int(context.account_id or 0), context.email):
                 raise task_gateway.OperationLeaseUnavailable(
@@ -1035,7 +1031,7 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
 
 
 def _handle_native_account_completion(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
-    from core.account_completion_service import active_registration_job
+    from core.accounts.completion import active_registration_job
 
     if active_registration_job(int(context.account_id or 0), context.email):
         raise task_gateway.OperationLeaseUnavailable(
@@ -1062,7 +1058,7 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
     # 空剩余计划表示子任务已全部消费，只有缺失计划字段的历史任务才重算。
     if not has_saved_plan:
         account = db.get_account(int(context.account_id or 0)) or {}
-        from core.account_completion_service import completion_plan
+        from core.accounts.completion import completion_plan
 
         planned_steps = list(completion_plan(account, settings).get("missing_steps") or [])
     initial_summary = continuation.get("result_summary")
@@ -1106,7 +1102,7 @@ def _handle_native_registration_resume(context: task_gateway.OperationHandlerCon
         detail={"source_job_id": source_job_id},
     )
     try:
-        from core import registration_service
+        from core.registration import service as registration_service
 
         resumed = registration_service.retry_job(source_job_id)
     except Exception as exc:
@@ -1223,7 +1219,7 @@ def _cancel_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
 
 def _register_runtime_handlers() -> None:
     global _RUNTIME_HANDLERS_REGISTERED
-    from core import email_change_service
+    from core.accounts.email_change import service as email_change_service
 
     email_change_service.register_operation_handlers()
     with _RUNTIME_HANDLER_LOCK:
@@ -1602,7 +1598,7 @@ class WebUIContext:
         if not requested_steps:
             return {"accepted": False, "error": "没有可执行的账号配置步骤"}
         if requested_steps == {"password"} and str(operation or "").strip().lower() != "password_change":
-            from core.account_completion_service import completion_plan
+            from core.accounts.completion import completion_plan
 
             from config.account import completion_settings
 
@@ -1671,7 +1667,7 @@ class WebUIContext:
         trigger: str = "manual_account_completion",
     ) -> dict:
         """Generate and queue the configured missing-account completion plan."""
-        from core.account_completion_service import active_registration_job, completion_plan
+        from core.accounts.completion import active_registration_job, completion_plan
         from config.account import completion_settings
 
         try:
@@ -1856,7 +1852,7 @@ def runtime_status() -> dict[str, Any]:
     except Exception as exc:
         projection_status = {"error": type(exc).__name__}
     try:
-        from core import email_usage_reports
+        from core.email.email_butler import usage_reports as email_usage_reports
         usage_reports_status = email_usage_reports.worker_status()
     except Exception as exc:
         usage_reports_status = {"error": type(exc).__name__}
@@ -1882,12 +1878,12 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             return False
 
         operation_task_store.init()
-        from core import butler_manual_import
+        from core.email.email_butler import manual_import as butler_manual_import
         recovered_imports = butler_manual_import.reconcile_interrupted()
         if recovered_imports:
             active_logger.warning("已恢复 %s 个因服务重启中断的 Butler 导入批次，可继续原批次", recovered_imports)
         try:
-            from core import proxy_pool
+            from core.proxy import pool as proxy_pool
 
             # 代理池独立维护库存；任务线程只负责有界领取租约。
             proxy_pool.start(prewarm=True)
@@ -1971,7 +1967,7 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             # queryable and will be retried on the next startup/reconcile.
             active_logger.exception("恢复账号补全父子依赖失败；不影响 WebUI 启动")
         try:
-            from core.roxybrowser_client import cleanup_orphaned_profiles
+            from core.browser.roxy.client import cleanup_orphaned_profiles
 
             orphan_result = cleanup_orphaned_profiles()
             if orphan_result.get("found"):
@@ -1985,7 +1981,7 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             active_logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
 
         try:
-            from core.registration_debug import cleanup_expired_artifacts
+            from core.registration.debug import cleanup_expired_artifacts
 
             debug_cleanup = cleanup_expired_artifacts()
             if debug_cleanup.get("removed_files") or debug_cleanup.get("removed_dirs"):
@@ -2016,22 +2012,20 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         resumed_codex_runs = codex_operation_service.resume_queued()
         if resumed_codex_runs:
             active_logger.info("已恢复调度 %s 个数据库队列中的 Codex attempt", resumed_codex_runs)
-        from core.deactivation_mail_service import start_periodic_scanner
-        from core.token_refresh_service import start_periodic_refresher
-        from core.codex_token_refresh_service import start_periodic_refresher as start_codex_token_refresher
+        from core.accounts.deactivation.mail_scan import start_periodic_scanner
+        from core.accounts.token_refresh import start_periodic_refresher
+        from core.codex.token_refresh_service import start_periodic_refresher as start_codex_token_refresher
 
         start_periodic_scanner()
         start_periodic_refresher()
         start_codex_token_refresher()
-        from core.account_auth_context_service import start_periodic_cleanup
-        from core.task_center_retention import (
-            start_periodic_cleanup as start_task_center_retention,
-        )
+        from core.accounts.auth_context_cleanup import start_periodic_cleanup
+        from core.operations.retention import start_periodic_cleanup as start_task_center_retention
 
         start_periodic_cleanup()
         start_task_center_retention()
         try:
-            from core import email_usage_reports
+            from core.email.email_butler import usage_reports as email_usage_reports
             email_usage_reports.start_worker()
         except Exception as exc:
             active_logger.warning("HME 结果后台队列暂不可用 (%s)", type(exc).__name__)

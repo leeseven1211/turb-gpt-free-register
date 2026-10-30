@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import logging
 
-from core.registration.auth_context import time_proxy as time
-from core.registration.selenium_dom import _find_any, _human_click, _human_type_text
-from core.registration.selenium_resource import _log_prefix
+from core.auth.browser.auth_context import time_proxy as time
+from core.auth.browser.selenium_dom import _find_any, _human_click, _human_type_text
+from core.auth.browser.selenium_resource import _log_prefix
 
 logger = logging.getLogger(__name__)
 

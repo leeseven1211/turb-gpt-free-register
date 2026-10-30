@@ -18,7 +18,7 @@
 
 1. 凭据与恢复：协议密码阶段、注册主函数、检查点与必要的存储/投影，覆盖 P1-1 至 P1-4。
 2. 预算与取消：协议 OTP 等待和 callback/session helper、实际网络超时及邮箱等待，覆盖 P2-1、P2-4；与第一组按函数边界协作。
-3. 会话与统计：`core/session.py`、协议流量采集/归集与对应测试，覆盖 P2-2、P2-3。
+3. 会话与统计：`core/auth/protocol/session.py`、协议流量采集/归集与对应测试，覆盖 P2-2、P2-3。
 4. 集成：主 agent 负责跨组接口、wreq 本地契约评估、文档、隔离测试、审查与提交。
 
 所有 agent 使用 GPT-6.1-sol。存储修改在独立 worktree 中完成，测试使用非生产数据库和 `test_` schema。子 agent 不提交，主 agent 审查后按工作包提交。
@@ -51,7 +51,7 @@ P1、P2 实现及 P3 本地后端兼容性评估已完成。本轮相关回归�
 
 ## wreq 本地评估
 
-独立临时 Python 环境使用 `curl_cffi==0.16.0` 与 `wreq==0.13.0`，分别通过 13 项 loopback HTTP 合成检查，主 agent 又独立复跑一次，结果均通过。工具和固定依赖位于 [`tools/evaluate_http_backends.py`](../../tools/evaluate_http_backends.py)、[`tools/http_backend_eval_requirements.txt`](../../tools/http_backend_eval_requirements.txt)，机器可读结果见[评估 JSON](../reference/2026-10-12-http-backend-contract-result.json)。
+独立临时 Python 环境使用 `curl_cffi==0.16.0` 与 `wreq==0.13.0`，分别通过 13 项 loopback HTTP 合成检查，主 agent 又独立复跑一次，结果均通过。工具和固定依赖位于 [`tools/benchmarks/evaluate_http_backends.py`](../../tools/benchmarks/evaluate_http_backends.py)、[`tools/benchmarks/http_backend_eval_requirements.txt`](../../tools/benchmarks/http_backend_eval_requirements.txt)，机器可读结果见[评估 JSON](../reference/2026-10-12-http-backend-contract-result.json)。
 
 覆盖 Cookie 合并、重定向开关、表单/JSON/原始正文、压缩与字符集、HTTP 错误、连接断开、请求超时、显式 HTTP 代理和关闭后拒绝新请求。代理检查确认请求命中合成代理，未访问合成源站。两个库的参数与异常类型不同，需要适配，不能直接替换导入。
 

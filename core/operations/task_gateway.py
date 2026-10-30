@@ -16,12 +16,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
-from core.operation_runtime import (
-    CancellationToken,
-    OperationAccountDeactivated,
-    OperationCancelled,
-    operation_context,
-)
+from core.operations.runtime import CancellationToken, OperationAccountDeactivated, OperationCancelled, operation_context
 
 
 logger = logging.getLogger(__name__)
@@ -308,7 +303,7 @@ class OperationTaskReporter:
         self.run_id = int(run_id)
 
     def report(self, **event: Any) -> dict:
-        from core import task_run_log
+        from core.operations import run_log as task_run_log
 
         task_run_log.set_current_stage(str(event.get("stage") or "event"), run_id=self.run_id, identifier_namespace="operation")
         persisted = _operation().append_runtime_event(self.run_id, **event)
@@ -628,25 +623,25 @@ def _coerce_operation_result(
 
 
 def _legacy():
-    from core.operations import legacy_task_store
+    from core.storage.operations import legacy_task_store
 
     return legacy_task_store
 
 
 def _operation():
-    from core.storage import operation
+    from core.storage.operations import store as operation
 
     return operation
 
 
 def _executor():
-    from core.account_operation_executor import executor
+    from core.operations.executor import executor
 
     return executor
 
 
 def _extract_executor():
-    from core.account_operation_executor import extract_executor
+    from core.operations.executor import extract_executor
 
     return extract_executor
 
@@ -1138,12 +1133,12 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
     if not claimed:
         return {"status": "not_claimed", "run_id": int(run_id)}
     context = OperationHandlerContext(claimed, execution_id=execution_id)
-    from core.account_operation_executor import operation_log_context
-    from core.storage.email_address_allocations import OtpLeaseBusy
+    from core.operations.executor import operation_log_context
+    from core.storage.email.address_allocations import OtpLeaseBusy
 
     with operation_log_context(context):
         try:
-            from core.email_auth_guard import email_auth_session
+            from core.auth.email_guard import email_auth_session
 
             auth_scope = email_auth_session(context.email) if context.resource_family == "openai_interactive" and context.email else nullcontext(None)
             with operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
@@ -1710,7 +1705,7 @@ def notify_dispatch() -> None:
 def _reconcile_recovered_projections() -> int:
     """让维护服务收口通用恢复无法直接理解的业务状态投影。"""
     try:
-        from core import deactivation_mail_service
+        from core.accounts.deactivation import mail_scan as deactivation_mail_service
 
         return int(deactivation_mail_service.reconcile_interrupted_scans() or 0)
     except Exception:
@@ -1733,7 +1728,7 @@ def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
         return 0
     _reconcile_recovered_projections()
     try:
-        from core import extract_link_service
+        from core.extract_link import service as extract_link_service
 
         extract_link_service.resume_known_remote_jobs(continuous_only=True)
     except Exception:

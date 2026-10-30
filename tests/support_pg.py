@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """PostgreSQL 测试支撑：每个测试类一个临时 schema，结束即销毁。
 
-为什么需要这个：`core.postgres_store` 不再有"纯文件模式"回退，测试进程一旦碰
+为什么需要这个：`core.storage.postgres` 不再有"纯文件模式"回退，测试进程一旦碰
 数据库就是真库。`_guard_production_schema()` 会拦住 public schema，所以任何用到
 存储层的测试都必须先把 `TURB_DB_SCHEMA` 指到一次性 schema。
 
@@ -25,7 +25,7 @@ import uuid
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from core import postgres_store
+from core.storage import postgres as postgres_store
 
 
 def database_available() -> bool:
@@ -103,7 +103,7 @@ class PostgresTestCase(unittest.TestCase):
         cls._previous_schema = os.environ.get("TURB_DB_SCHEMA")
         os.environ["TURB_DB_SCHEMA"] = cls.schema
         # 兼容导出在测试里同步执行：后台去抖会让"写完立刻断言文件"变成竞态。
-        # 去抖本身由 tests/test_compat_export.py 专门覆盖。
+        # 去抖本身由 tests/storage/test_compat_export.py 专门覆盖。
         cls._previous_export_mode = os.environ.get("COMPAT_EXPORT_MODE")
         os.environ["COMPAT_EXPORT_MODE"] = "sync"
         postgres_store.reset_cache()
@@ -115,7 +115,7 @@ class PostgresTestCase(unittest.TestCase):
         取代改造前"往临时 JSON 文件里塞一段 payload"的做法——那时 db 从文件读，
         现在 db 从表读。
         """
-        from core import record_store
+        from core.storage import records as record_store
         record_store.reset_ready()
         record_store.init()
         return [record_store.insert_row(spec, dict(r)) for r in records]
@@ -144,7 +144,8 @@ class PostgresTestCase(unittest.TestCase):
             truncate_schema(self.schema)
         postgres_store.reset_cache()
 
-        from core import db, record_store
+        from core import db
+        from core.storage import records as record_store
         record_store.reset_ready()
         with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
             root = pathlib.Path(td)

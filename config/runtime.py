@@ -30,7 +30,7 @@ def is_bootstrap_key(key: str) -> bool:
 
 def _repository():
     # dotenv 的 bootstrap 已加载后才导入，避免 config/core 相互初始化。
-    from core import runtime_config_store
+    from core.storage import runtime_config as runtime_config_store
     return runtime_config_store
 
 

@@ -1,6 +1,6 @@
 """只在隔离测试库构造迁移前子地址事实，不调用已退役的服务生成入口。"""
-from core import record_store
-from core.storage import email_address_allocations as store
+from core.storage import records as record_store
+from core.storage.email import address_allocations as store
 
 
 def seed_legacy_inventory(source, count, request_id, *, parent_id=None, **allocation_options):

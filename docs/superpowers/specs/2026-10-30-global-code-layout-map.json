@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "设计提案，未执行代码迁移",
+  "status": "已实施并完成代码、测试对照和隔离浏览器验证",
   "baseline_commit": "7f55e6c02dc5f644a4817d812ccee6fffa6b8d8c",
   "scope": "已跟踪的 core/config/webui/tests/tools/sentinel 全部文件及三个启动入口；其他根配置、CI、文档保持原位置。",
   "summary": {

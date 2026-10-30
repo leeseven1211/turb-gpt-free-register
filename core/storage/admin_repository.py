@@ -1,0 +1,1218 @@
+# -*- coding: utf-8 -*-
+"""管理后台只读仓储。
+
+这里是 WebUI 列表、facets、revision 和总览聚合的唯一入口。业务写入仍由 db.py 和
+各领域 service 负责；读仓储绝不扫描兼容文件，也不在 GET 请求中同步数据。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from psycopg.rows import dict_row
+
+from core.storage import postgres as postgres_store, records as record_store
+from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search
+
+
+@dataclass(frozen=True)
+class PageRequest:
+    page: int = 1
+    page_size: int = 20
+    filters: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def limit(self) -> int:
+        return max(1, min(500, int(self.page_size or 20)))
+
+    @property
+    def offset(self) -> int:
+        return (max(1, int(self.page or 1)) - 1) * self.limit
+
+
+def _connect():
+    record_store.init()
+    return postgres_store.connect(row_factory=dict_row)
+
+
+def _q(spec: record_store.TableSpec) -> str:
+    return postgres_store.qualified(spec.name)
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+_SUB2API_ID_SQL = """
+CASE
+    WHEN jsonb_typeof(a.data->'extra_json') = 'object'
+        THEN (a.data->'extra_json')->>'sub2api_account_id'
+    WHEN jsonb_typeof(a.data->'extra_json') = 'string'
+         AND LEFT(BTRIM(a.data->>'extra_json'), 1) = '{'
+        THEN ((a.data->>'extra_json')::jsonb)->>'sub2api_account_id'
+    ELSE NULL
+END
+"""
+
+_CODEX_EXPORTED_SQL = f"""
+(
+    c.exported_count > 0
+    OR NULLIF(BTRIM({_SUB2API_ID_SQL}), '') IS NOT NULL
+)
+"""
+
+
+def _facet_dict(rows: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        facet = str(row.get("facet") or "")
+        value = str(row.get("value") or "").strip().lower()
+        if not facet or not value:
+            continue
+        grouped.setdefault(facet, []).append({"value": value, "count": int(row.get("count") or 0)})
+    for items in grouped.values():
+        items.sort(key=lambda item: (-int(item["count"]), str(item["value"])))
+    return grouped
+
+
+def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
+    """生成不会漏掉同一秒内连续更新的列表版本号。
+
+    业务表里的 ``updated_at`` 仍有一部分历史写法只有秒级精度。只使用
+    ``COUNT + MAX(updated_at)`` 时，queued -> running -> success 如果发生在同一秒，
+    前端会误判为没有变化。当前页本来就已经读进内存，顺手对可见状态做短签名，
+    不增加 SQL，也不随全表规模增长。
+    """
+    base = f"{int(total)}:{str(latest or '')}"
+    if visible_state is None:
+        return base
+    payload = json.dumps(
+        visible_state,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"{base}:{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:12]}"
+
+
+_ACCOUNT_ACCESS_TOKEN_PRESENT = "COALESCE(a.account_has_access_token, FALSE)"
+_ACCOUNT_STATUS = "COALESCE(a.account_status_text, 'active')"
+_ACCOUNT_EMAIL_STATUS = "CASE WHEN COALESCE(a.email_invalid, FALSE) THEN 'invalid' ELSE 'unmarked' END"
+_ACCOUNT_TOKEN_EXPIRED = f"""(
+    {_ACCOUNT_ACCESS_TOKEN_PRESENT}
+    AND (
+        COALESCE(a.account_token_expired, FALSE)
+        OR CASE
+            WHEN COALESCE(a.token_expires_at, '') ~
+                 '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}'
+              THEN a.token_expires_at::TIMESTAMPTZ <= CURRENT_TIMESTAMP
+            ELSE FALSE
+        END
+    )
+)"""
+_ACCOUNT_TOKEN_LIVE_FAILED = f"""(
+    {_ACCOUNT_ACCESS_TOKEN_PRESENT}
+    AND LOWER(COALESCE(a.live_check_status, '')) = 'failed'
+)"""
+_ACCOUNT_TOKEN_STATE = f"""CASE
+    WHEN NOT ({_ACCOUNT_ACCESS_TOKEN_PRESENT}) THEN 'none'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
+         AND COALESCE(a.account_live_check_http_status, '') = '401'
+      THEN 'invalid_401'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED}
+         AND COALESCE(a.account_live_check_http_status, '') = '403'
+      THEN 'invalid_403'
+    WHEN {_ACCOUNT_TOKEN_LIVE_FAILED} THEN 'invalid_other'
+    WHEN {_ACCOUNT_TOKEN_EXPIRED} THEN 'expired'
+    ELSE 'has'
+END"""
+_ACCOUNT_PASSWORD_PRESENT = "COALESCE(a.account_has_password, FALSE)"
+_ACCOUNT_TOTP_PRESENT = "COALESCE(a.account_totp_enabled, FALSE)"
+_ACCOUNT_PLAN_VALUE = """LOWER(COALESCE(
+    NULLIF(BTRIM(a.current_plan_type), ''),
+    NULLIF(BTRIM(a.plan_type), ''), 'unqueried'
+))"""
+
+
+def _filter_values(value: str) -> list[str]:
+    """同列多选使用逗号分隔，保留旧单值查询并去除重复项。"""
+    return list(dict.fromkeys(part.strip().lower() for part in _text(value).split(",") if part.strip()))
+
+_ACCOUNT_PROMO_KIND = """CASE
+    WHEN LOWER(COALESCE(a.plus_promo_kind, '')) IN
+         ('free_trial', 'discount', 'other_promo', 'none', 'unknown')
+      THEN LOWER(a.plus_promo_kind)
+    WHEN a.plus_discount_eligible IS TRUE THEN 'discount'
+    WHEN a.plus_promo_eligible IS TRUE OR a.plus_trial_eligible IS TRUE
+      THEN 'unknown'
+    ELSE 'none'
+END"""
+
+_ACCOUNT_PROMOTION_VALUE = "a.account_promotion_value"
+_ACCOUNT_PROMOTION_FACET_VALUE = f"""CASE
+    WHEN LOWER(COALESCE(a.plan_check_status, '')) IN ('queued', 'running')
+      THEN 'pending'
+    ELSE {_ACCOUNT_PROMOTION_VALUE}
+END"""
+
+_ACCOUNT_RISK_VALUE = """CASE
+    WHEN COALESCE(a.account_deactivation_detected, FALSE) THEN 'detected'
+    WHEN COALESCE(a.deactivation_mail_scan_status, '') = 'success' THEN 'clear'
+    ELSE 'pending'
+END"""
+
+
+def _registration_driver_exists(drivers: frozenset[str]) -> tuple[str, list[Any]]:
+    """按账号最新注册任务的配置快照匹配注册驱动，不扫描整段任务 JSON。"""
+    jobs = _q(record_store.JOBS)
+    return (
+        f"EXISTS (SELECT 1 FROM {jobs} j "
+        "WHERE j.account_id = a.id "
+        "AND j.id = (SELECT latest.id FROM "
+        f"{jobs} latest WHERE latest.account_id = a.id "
+        "AND LOWER(COALESCE(latest.job_type, 'registration')) "
+        "IN ('registration', 'registration_resume') "
+        "ORDER BY latest.id DESC LIMIT 1) "
+        "AND LOWER(COALESCE(j.data #>> '{config_snapshot,registration_driver}', '')) = ANY(%s))",
+        [sorted(drivers)],
+    )
+
+
+def _account_registration_driver_sql() -> str:
+    """只投影注册驱动，兼容账号元数据和历史注册任务快照。"""
+    jobs = _q(record_store.JOBS)
+    return f"""LOWER(BTRIM(COALESCE(
+        NULLIF(BTRIM(a.account_registration_driver), ''),
+        (SELECT j.data #>> '{{config_snapshot,registration_driver}}'
+         FROM {jobs} j WHERE j.account_id = a.id
+           AND LOWER(COALESCE(j.job_type, 'registration'))
+               IN ('registration', 'registration_resume')
+         ORDER BY j.id DESC LIMIT 1)
+    )))"""
+
+
+def _account_registration_driver_filter_sql() -> str:
+    """筛选选项与列表当前及历史驱动的显示一致，其余记录合并为未记录。"""
+    return f"""CASE {_account_registration_driver_sql()}
+        WHEN 'roxy' THEN 'roxy'
+        WHEN 'roxy_oss' THEN 'roxy_oss'
+        WHEN 'protocol' THEN 'protocol'
+        WHEN 'protocol_oss' THEN 'protocol_oss'
+        WHEN 'protocol_oss_2' THEN 'protocol_oss_2'
+        WHEN 'cloakbrowser' THEN 'cloakbrowser'
+        ELSE 'unknown'
+    END"""
+
+
+def _account_where(
+    archived: str,
+    plan: str,
+    q: str,
+    date_from: str,
+    date_to: str,
+    filters: dict[str, str],
+) -> tuple[list[str], list[Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    archived = _text(archived).lower()
+    if archived in {"1", "true", "yes", "only"}:
+        where.append("a.archived IS TRUE")
+    elif archived not in {"all", "include"}:
+        where.append("a.archived IS FALSE")
+    plans = _filter_values(plan)
+    if plans:
+        predicate = f"({_ACCOUNT_PLAN_VALUE}) = ANY(%s)"
+        params.append(plans)
+        if "plus" in plans:
+            # 保留旧版 Plus 入口对 Plus 套餐变体的匹配。
+            predicate = f"({predicate} OR (({_ACCOUNT_PLAN_VALUE}) LIKE %s AND ({_ACCOUNT_PLAN_VALUE}) NOT LIKE %s))"
+            params.extend(("%plus%", "%free%"))
+        where.append(predicate)
+    for term in parse_account_search(q):
+        if term.field == "method":
+            predicate, predicate_params = _registration_driver_exists(REGISTRATION_DRIVERS[term.value])
+            where.append(predicate)
+            params.extend(predicate_params)
+        elif term.field == "region":
+            where.append("UPPER(BTRIM(COALESCE(a.data->>'registration_proxy_region', ''))) = %s")
+            params.append(term.value)
+        elif term.field == "id":
+            where.append("CAST(a.id AS TEXT) = %s")
+            params.append(term.value)
+        else:
+            # 只搜索列表可安全展示的固定字段；不要把整段 JSONB 或凭证纳入 ILIKE。
+            columns = {
+                "email": "a.email", "name": "COALESCE(a.data->>'user_name', '')",
+                "source": "COALESCE(a.email_source, '')", "note": "COALESCE(a.data->>'note', '')",
+            }
+            expression = columns.get(term.field) or (
+                "concat_ws(' ', "
+                "CAST(a.id AS TEXT), a.email, COALESCE(a.data->>'user_name', ''), "
+                "COALESCE(a.email_source, ''), COALESCE(a.data->>'note', '')"
+                ")"
+            )
+            where.append(f"{expression} ILIKE %s")
+            literal = term.value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{literal}%")
+    if date_from:
+        where.append("LEFT(a.created_at, 10) >= %s")
+        params.append(date_from[:10])
+    if date_to:
+        where.append("LEFT(a.created_at, 10) <= %s")
+        params.append(date_to[:10])
+
+    value = _text(filters.get("id"))
+    if value:
+        where.append("CAST(a.id AS TEXT) ILIKE %s")
+        params.append(f"%{value.lstrip('#')}%")
+    value = _text(filters.get("email"))
+    if value:
+        where.append("(a.email ILIKE %s OR COALESCE(a.data->>'user_name', '') ILIKE %s)")
+        params.extend((f"%{value}%", f"%{value}%"))
+    enum_filters = {
+        "source": "LOWER(COALESCE(a.email_source, ''))",
+        "registration_driver": _account_registration_driver_filter_sql(),
+        "token": _ACCOUNT_TOKEN_STATE,
+        "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
+        "totp": f"CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END",
+        "risk": _ACCOUNT_RISK_VALUE,
+        "codex": "LOWER(COALESCE(a.codex_status, ''))",
+        "account_status": _ACCOUNT_STATUS,
+        "email_status": _ACCOUNT_EMAIL_STATUS,
+    }
+    for key, expression in enum_filters.items():
+        values = _filter_values(filters.get(key))
+        if values:
+            where.append(f"({expression}) = ANY(%s)")
+            params.append(values)
+    promotions = _filter_values(filters.get("promotion") or filters.get("trial"))
+    if promotions:
+        aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
+        values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
+        where.append(f"({_ACCOUNT_PROMOTION_FACET_VALUE}) = ANY(%s)")
+        params.append(values)
+    return where, params
+
+
+def list_accounts(
+    request: PageRequest,
+    *,
+    archived: str = "0",
+    plan: str = "",
+    q: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> dict:
+    from core import db
+
+    accounts = _q(record_store.ACCOUNTS)
+    where, params = _account_where(archived, plan, q, date_from, date_to, request.filters)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    base_where, base_params = _account_where(archived, "", "", "", "", {})
+    base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
+    # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
+    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
+    # 复杂 JSON/正则表达式只计算一遍。
+    facet_sql = f"""
+        WITH base AS MATERIALIZED (
+            SELECT
+                LOWER(COALESCE(a.email_source, '')) AS source,
+                {_account_registration_driver_filter_sql()} AS registration_driver,
+                {_ACCOUNT_TOKEN_STATE} AS token,
+                CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END AS password,
+                {_ACCOUNT_PLAN_VALUE} AS plan,
+                {_ACCOUNT_PROMOTION_FACET_VALUE} AS promotion,
+                CASE WHEN {_ACCOUNT_TOTP_PRESENT} THEN 'enabled' ELSE 'disabled' END AS totp,
+                {_ACCOUNT_RISK_VALUE} AS risk,
+                LOWER(COALESCE(a.codex_status, '')) AS codex,
+                {_ACCOUNT_STATUS} AS account_status
+              FROM {accounts} a{base_clause}
+        )
+        SELECT f.facet, f.value, COUNT(*) AS count
+          FROM base b
+          CROSS JOIN LATERAL (VALUES
+              ('source', b.source),
+              ('registration_driver', b.registration_driver),
+              ('token', b.token),
+              ('password', b.password),
+              ('plan', b.plan),
+              ('promotion', b.promotion),
+              ('totp', b.totp),
+              ('risk', b.risk),
+              ('codex', b.codex),
+              ('account_status', b.account_status)
+          ) AS f(facet, value)
+         WHERE NULLIF(f.value, '') IS NOT NULL
+         GROUP BY f.facet, f.value
+    """
+    # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
+    promoted = [
+        "id",
+        *(column for column in record_store.ACCOUNTS.promoted if column != "chatgpt_session"),
+    ]
+    selected = ", ".join(f"a.{postgres_store.quote_identifier(column)}" for column in promoted)
+    safe_data = (
+        "a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
+        "'registration_password','totp_secret','extra_json','copy_line','original_email_line']::text[] "
+        f"|| jsonb_build_object('has_access_token', {_ACCOUNT_ACCESS_TOKEN_PRESENT}, "
+        f"'has_account_password', {_ACCOUNT_PASSWORD_PRESENT}, 'totp_enabled', {_ACCOUNT_TOTP_PRESENT}, "
+        f"'registration_driver', {_account_registration_driver_sql()})"
+    )
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
+        aggregate = cur.fetchone()
+        cur.execute(
+            f"SELECT {selected}, ({safe_data}) AS data FROM {accounts} a{clause} ORDER BY a.id DESC LIMIT %s OFFSET %s",
+            (*params, request.limit, request.offset),
+        )
+        rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
+        cur.execute(facet_sql, base_params)
+        facets = _facet_dict(cur.fetchall())
+    total = int(aggregate["total"] or 0)
+    return {
+        "ok": True,
+        "items": rows,
+        "total": total,
+        "page": max(1, int(request.page or 1)),
+        "page_size": request.limit,
+        "offset": request.offset,
+        "limit": request.limit,
+        "revision": _revision(total, aggregate["latest"], rows),
+        "facets": facets,
+    }
+
+
+def list_account_statuses(
+    request: PageRequest,
+    *,
+    compact: bool = False,
+    archived: str = "0",
+    plan: str = "",
+    q: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> dict:
+    from core import db
+    accounts = _q(record_store.ACCOUNTS)
+    where, params = _account_where(
+        archived,
+        plan,
+        q,
+        date_from,
+        date_to,
+        request.filters,
+    )
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    fields = (
+        "id", "email", "archived", "email_invalid", "plan_type", "current_plan_type", "plus_trial_eligible",
+        "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
+        "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
+        "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
+        "plus_promo_duration_period", "plus_promo_promotion_type",
+        "plus_promo_promotion_type_label", "plan_check_ok", "plan_last_success_at",
+        "codex_status", "codex_credential_state", "codex_execution_status",
+        "codex_last_run_status", "codex_active_run_id",
+        "plan_check_status", "extract_link_status", "updated_at",
+    )
+    selected = ", ".join(f"a.{postgres_store.quote_identifier(name)}" for name in fields)
+    selected += (
+        ", (a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
+        "'registration_password','totp_secret','extra_json']::text[] "
+        "|| jsonb_build_object('has_access_token', "
+        f"{_ACCOUNT_ACCESS_TOKEN_PRESENT})) AS data"
+    )
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
+        aggregate = cur.fetchone()
+        cur.execute(
+            f"SELECT {selected} FROM {accounts} a{clause} ORDER BY a.id DESC LIMIT %s OFFSET %s",
+            (*params, request.limit, request.offset),
+        )
+        raw_rows = cur.fetchall()
+    wanted = {
+        "plan_check_status", "plan_check_ok", "plan_check_error", "plan_check_trigger",
+        "plan_check_queued_at", "plan_check_started_at", "plan_check_completed_at", "plan_checked_at",
+        "plan_last_success_at", "plan_check_network_route", "plan_check_proxy_used",
+        "plan_check_proxy_fallback_reason", "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
+        "quota_status", "quota_checked_at", "quota_http_status", "quota_error",
+        "quota_type", "quota_windows", "quota_last_success_at",
+        "billing_period", "billing_currency", "discount_amount", "discount_type", "discount_expires_at",
+        "discount_promo_campaign_id", "extract_link_status", "extract_link_ok", "extract_link_type",
+        "plus_promo_eligible", "plus_promo_kind", "plus_discount_eligible",
+        "plus_promo_campaign_id", "plus_promo_title", "plus_promo_summary",
+        "plus_promo_discount_percentage", "plus_promo_duration_num_periods",
+        "plus_promo_duration_period", "plus_promo_promotion_type",
+        "plus_promo_promotion_type_label", "plus_trial_campaign_id", "plus_trial_title",
+        "plus_trial_discount_percentage", "plus_trial_duration_num_periods",
+        "plus_trial_duration_period", "plus_trial_promotion_type_label",
+        "account_promotions", "promotion_query_snapshot", "plan_check_countries", "plan_check_country_results", "plan_check_partial",
+        "extract_link_message", "extract_link_error", "extract_link_long_url", "extract_link_copy_paste",
+        "extract_link_failed_types", "extract_link_last_failed_type", "extract_link_last_failed_at",
+        "extract_link_image_url_png", "extract_link_image_url_svg", "extract_link_expires_at", "codex_status",
+        "codex_credential_state", "codex_execution_status", "codex_last_run_status", "codex_active_run_id",
+        "codex_error", "access_token", "account_status", "account_status_reason", "account_status_at",
+        "updated_at",
+    }
+    items = []
+    for raw in raw_rows:
+        row = db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, raw))
+        item = {key: value for key, value in row.items() if key in wanted | {"id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible"} and value not in (None, "")}
+        item["has_access_token"] = bool(_text(row.get("has_access_token")))
+        item["email_invalid"] = row.get("email_invalid") is True
+        # 显式清除值，确保轮询合并不会残留旧邮箱失效原因和时间。
+        for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):
+            item[key] = row.get(key) if item["email_invalid"] else None
+        if "plan_check_country_results" in item:
+            from core.accounts.plans.countries import public_country_results
+            item["plan_check_country_results"] = public_country_results(item["plan_check_country_results"])
+        from core.accounts.plans.countries import promotion_country_from_row
+        promotion_country = promotion_country_from_row(row)
+        # 轮询结果必须显式返回 null，前端 Object.assign 才能清除旧单国投影。
+        item["plan_promotion_country"] = promotion_country
+        if compact:
+            details = {key: item.pop(key, None) for key in (
+                "account_promotions", "promotion_query_snapshot", "plan_check_country_results",
+            )}
+            item["plan_details_revision"] = hashlib.sha256(
+                json.dumps(details, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            # 账号列表仅显示 Plus，Go 与结账信息在按需详情中保留。
+            def promotions(rows):
+                fields = {"kind", "country", "stale", "discount_percentage", "duration_num_periods", "duration_period"}
+                return [{key: value for key, value in row.items() if key in fields}
+                        for row in rows if isinstance(row, dict) and row.get("plan") == "plus"] if isinstance(rows, list) else None
+            countries = []
+            for country in details["plan_check_country_results"] or []:
+                summary = {key: value for key, value in country.items() if key in {
+                    "country", "status", "checked_at", "last_success_at", "http_status", "error"}}
+                result = country.get("result")
+                if isinstance(result, dict):
+                    summary["promotions"] = promotions(result.get("account_promotions"))
+                    if summary["promotions"] is None:
+                        # 历史快照可能仅有 plus_* 投影，不能将其误显示为未知优惠。
+                        summary["result"] = {key: value for key, value in result.items()
+                            if key.startswith("plus_") or key in {"plan_type", "current_plan_type"}}
+                countries.append(summary)
+            item["plan_summary"] = {"promotions": promotions(details["account_promotions"]), "countries": countries}
+            # 可清空字段必须显式返回，不能让上一轮错误/状态留在页面。
+            for key in ("plan_check_error", "extract_link_error", "extract_link_message", "codex_error"):
+                item[key] = row.get(key)
+        items.append(item)
+    total = int(aggregate["total"] or 0)
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "page": max(1, int(request.page or 1)),
+        "page_size": request.limit,
+        "revision": _revision(total, aggregate["latest"], items),
+        **({"status_fields": sorted((wanted | {"plan_type", "current_plan_type", "plus_trial_eligible"}) - {"account_promotions", "promotion_query_snapshot", "plan_check_country_results"})} if compact else {}),
+    }
+
+
+_JOB_PASSWORD_PRESENT = _ACCOUNT_PASSWORD_PRESENT
+_JOB_TOTP_PRESENT = _ACCOUNT_TOTP_PRESENT
+_JOB_PASSWORD_REQUIRED = "COALESCE(j.job_config_password_enabled, TRUE)"
+_JOB_PLAN_CHECK_REQUIRED = "COALESCE(j.job_config_plan_check_enabled, TRUE)"
+_JOB_TWOFA_REQUIRED = "COALESCE(j.job_config_twofa_enabled, TRUE)"
+_JOB_CODEX_REQUIRED = "COALESCE(j.job_config_codex_enabled, TRUE)"
+_JOB_SETUP_COMPLETE = f"""(
+    (NOT {_JOB_PASSWORD_REQUIRED} OR {_JOB_PASSWORD_PRESENT})
+    AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
+    AND (NOT {_JOB_TWOFA_REQUIRED} OR (
+        {_JOB_TOTP_PRESENT}
+        AND COALESCE(j.job_twofa_state, '') <> 'failed'
+        AND NOT COALESCE(a.account_twofa_failed, FALSE)
+    ))
+)"""
+_JOB_DISPLAY_STATUS = f"""CASE
+    WHEN a.id IS NOT NULL AND j.account_id IS NOT NULL THEN
+      CASE WHEN (NOT {_JOB_CODEX_REQUIRED} OR COALESCE(a.codex_status, '') = 'success') AND {_JOB_SETUP_COMPLETE}
+           THEN 'success' ELSE 'partial_success' END
+    ELSE COALESCE(j.status, '')
+END"""
+
+# 批次进度行只需要表格/按钮用到的字段。progress_steps 单条可达 1 MB，
+# 不能把整段 data 原样搬进 Python 再丢掉。
+_PROGRESS_JOB_COLUMNS = ", ".join(
+    f"j.{postgres_store.quote_identifier(column)}"
+    for column in ("id", *record_store.JOBS.promoted)
+)
+_PROGRESS_BIG_DATA_KEYS = (
+    "ARRAY['plan_check_result_json','plan_last_success_result_json',"
+    "'plan_check_country_results']::text[]"
+)
+
+
+def _progress_data_sql(has_operation_runs: bool) -> str:
+    """返回批次进度行的窄 data 投影；映射到 Run 时保留 codex/twofa 事实。"""
+    if not has_operation_runs:
+        return f"(j.data - {_PROGRESS_BIG_DATA_KEYS})"
+    return f"""CASE WHEN EXISTS (
+        SELECT 1 FROM {postgres_store.qualified('operation_runs')} run
+         WHERE run.source_system = 'registration_jobs'
+           AND run.source_id = j.id::text
+    ) THEN
+        (j.data - {_PROGRESS_BIG_DATA_KEYS} - ARRAY['progress_steps']::text[])
+        || jsonb_build_object('progress_steps', jsonb_build_object(
+            'codex', j.data->'progress_steps'->'codex',
+            'twofa', j.data->'progress_steps'->'twofa'
+        ))
+    ELSE
+        (j.data - {_PROGRESS_BIG_DATA_KEYS})
+    END"""
+
+
+def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    value = _text(filters.get("q"))
+    if value:
+        where.append("(CAST(j.id AS TEXT) ILIKE %s OR COALESCE(j.email, '') ILIKE %s OR j.data::text ILIKE %s)")
+        params.extend((f"%{value}%", f"%{value}%", f"%{value}%"))
+    value = _text(filters.get("id")).lstrip("#")
+    if value:
+        where.append("CAST(j.id AS TEXT) ILIKE %s")
+        params.append(f"%{value}%")
+    value = _text(filters.get("email"))
+    if value:
+        where.append("COALESCE(j.email, '') ILIKE %s")
+        params.append(f"%{value}%")
+    value = _text(filters.get("email_source")).lower()
+    if value:
+        where.append("LOWER(COALESCE(j.job_email_source, '')) = %s")
+        params.append(value)
+    value = _text(filters.get("proxy"))
+    if value:
+        where.append("CONCAT_WS(' ', j.data->>'proxy_provider', j.data->>'proxy_endpoint', j.data->>'proxy_region', j.data->>'proxy_status') ILIKE %s")
+        params.append(f"%{value}%")
+    value = _text(filters.get("error"))
+    if value:
+        where.append("COALESCE(j.data->>'error_message', '') ILIKE %s")
+        params.append(f"%{value}%")
+    value = _text(filters.get("date_from"))
+    if value:
+        where.append("LEFT(COALESCE(j.data->>'started_at', j.created_at), 10) >= %s")
+        params.append(value[:10])
+    value = _text(filters.get("date_to"))
+    if value:
+        where.append("LEFT(COALESCE(j.data->>'completed_at', j.created_at), 10) <= %s")
+        params.append(value[:10])
+    value = _text(filters.get("status")).lower()
+    if value:
+        where.append(f"({_JOB_DISPLAY_STATUS}) = %s")
+        params.append(value)
+    return where, params
+
+
+def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "", include_facets: bool = True) -> dict:
+    from core.registration import service as service
+
+    jobs = _q(record_store.JOBS)
+    accounts = _q(record_store.ACCOUNTS)
+    where, params = _job_where(request.filters)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    from_sql = f" FROM {jobs} j LEFT JOIN {accounts} a ON a.id = j.account_id"
+    raw_page = []
+    facets = {}
+    progress_rows = []
+    progress_batches = []
+    operation_runs_relation = f"{postgres_store.schema_name()}.operation_runs"
+    with _connect() as conn, conn.cursor() as cur:
+        if view == "batch":
+            # 新建批次确认使用全局未完成数，不受表格筛选或所选批次影响。
+            cur.execute(
+                f"SELECT COUNT(*) AS total, MAX(updated_at) AS latest, "
+                f"COUNT(*) FILTER (WHERE status IN ('pending','running','stopping')) AS active, "
+                f"(SELECT to_regclass(%s)) AS operation_runs_relation FROM {jobs}",
+                (operation_runs_relation,),
+            )
+            aggregate = cur.fetchone()
+        else:
+            cur.execute(
+                f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest, "
+                f"(SELECT to_regclass(%s)) AS operation_runs_relation{from_sql}{clause}",
+                (*params, operation_runs_relation),
+            )
+            aggregate = cur.fetchone()
+            cur.execute(
+                f"SELECT j.*, ({_JOB_DISPLAY_STATUS}) AS projected_display_status{from_sql}{clause} "
+                "ORDER BY j.id DESC LIMIT %s OFFSET %s",
+                (*params, request.limit, request.offset),
+            )
+            raw_page = cur.fetchall()
+            if include_facets:
+                facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
+                facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
+                cur.execute(
+                    f"""
+                    SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
+                      {from_sql}{facet_clause} GROUP BY 2
+                    UNION ALL
+                    SELECT 'email_source', LOWER(COALESCE(j.job_email_source, '')), COUNT(*)
+                      {from_sql}{facet_clause} GROUP BY 2
+                    """,
+                    facet_params * 2,
+                )
+                facets = _facet_dict(cur.fetchall())
+        if view != "table":
+            has_operation_runs = bool(aggregate.get("operation_runs_relation"))
+            progress_data = _progress_data_sql(has_operation_runs)
+            selected_batch_id = _text(progress_batch_id)
+            if selected_batch_id:
+                cur.execute(
+                    f"""
+                    SELECT {_PROGRESS_JOB_COLUMNS},
+                           ({progress_data}) AS data,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                     WHERE COALESCE(root.batch_id, j.batch_id) = %s
+                     ORDER BY COALESCE(j.job_batch_index, 0), j.id
+                    """,
+                    (selected_batch_id,),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT {_PROGRESS_JOB_COLUMNS},
+                           ({progress_data}) AS data,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                     WHERE COALESCE(root.batch_id, j.batch_id) = (
+                        SELECT COALESCE(latest_root.batch_id, latest.batch_id)
+                          FROM {jobs} latest
+                          LEFT JOIN {jobs} latest_root ON latest_root.id = COALESCE(latest.root_job_id, latest.id)
+                         WHERE NULLIF(COALESCE(latest_root.batch_id, latest.batch_id), '') IS NOT NULL
+                         ORDER BY latest.id DESC LIMIT 1
+                     )
+                     ORDER BY COALESCE(j.job_batch_index, 0), j.id
+                    """
+                )
+            progress_rows = []
+            for raw_progress in cur.fetchall():
+                merged_progress = record_store.merge_row(record_store.JOBS, raw_progress)
+                if raw_progress.get("effective_batch_id"):
+                    merged_progress["effective_batch_id"] = str(raw_progress.get("effective_batch_id"))
+                progress_rows.append(merged_progress)
+            cur.execute(
+                f"""
+                WITH mapped AS (
+                    SELECT j.id, j.status,
+                           COALESCE(j.job_retry_attempt, 0) AS retry_attempt,
+                           COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
+                           MAX(j.id) OVER (PARTITION BY COALESCE(root.batch_id, j.batch_id)) AS batch_latest_job_id,
+                           BOOL_OR(j.parent_job_id IS NOT NULL) OVER (
+                               PARTITION BY COALESCE(root.batch_id, j.batch_id)
+                           ) AS batch_has_retries,
+                           COALESCE(j.root_job_id, j.id) AS slot_root_id,
+                           COALESCE(root.created_at, j.created_at) AS slot_created_at
+                      FROM {jobs} j
+                      LEFT JOIN {jobs} root ON root.id = COALESCE(j.root_job_id, j.id)
+                ), current_slot AS (
+                    SELECT DISTINCT ON (effective_batch_id, slot_root_id) *
+                      FROM mapped
+                     WHERE NULLIF(effective_batch_id, '') IS NOT NULL
+                     ORDER BY effective_batch_id, slot_root_id,
+                              CASE WHEN status IN ('pending','running','stopping') THEN 0 ELSE 1 END,
+                              retry_attempt DESC, id DESC
+                )
+                SELECT effective_batch_id AS batch_id,
+                       MAX(batch_latest_job_id) AS latest_job_id,
+                       MIN(slot_created_at) AS created_at,
+                       COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE status = 'success') AS success,
+                       COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                       COUNT(*) FILTER (WHERE status = 'partial_success') AS partial_success,
+                       COUNT(*) FILTER (WHERE status = 'request_unknown') AS request_unknown,
+                       COUNT(*) FILTER (WHERE status = 'manual_reconcile') AS manual_reconcile,
+                       COUNT(*) FILTER (WHERE status = 'stopped') AS stopped,
+                       COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                       COUNT(*) FILTER (WHERE status = 'running') AS running,
+                       COUNT(*) FILTER (WHERE status = 'stopping') AS stopping,
+                       COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                       BOOL_OR(batch_has_retries) AS is_retry
+                  FROM current_slot
+                 GROUP BY effective_batch_id
+                 ORDER BY MAX(batch_latest_job_id) DESC
+                 LIMIT 30
+                """
+            )
+            progress_batches = []
+            for batch in cur.fetchall():
+                counts = {
+                    key: int(batch.get(key) or 0)
+                    for key in ("success", "failed", "partial_success", "request_unknown", "manual_reconcile", "stopped", "cancelled", "running", "stopping", "pending")
+                }
+                counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
+                progress_batches.append({
+                    "batch_id": str(batch.get("batch_id") or ""),
+                    "latest_job_id": int(batch.get("latest_job_id") or 0),
+                    "created_at": str(batch.get("created_at") or ""),
+                    "total": int(batch.get("total") or 0),
+                    "kind": "registration",
+                    "has_retries": bool(batch.get("is_retry")),
+                    "status_counts": counts,
+                })
+    page_rows = [record_store.merge_row(record_store.JOBS, row) for row in raw_page]
+    projected = {int(raw["id"]): str(raw.get("projected_display_status") or "") for raw in raw_page}
+    # 批次里同一个 root 可能有多次重试；重试按钮只属于当前 slot。历史
+    # attempt 只需要紧凑元数据，不能为 400+ 行全部读取账号和 Attempt。
+    slot_rows: dict[int, list[dict]] = {}
+    for row in progress_rows:
+        root_id = int(row.get("root_job_id") or row.get("id") or 0)
+        slot_rows.setdefault(root_id, []).append(row)
+    current_progress_rows: list[dict] = []
+    for attempts in slot_rows.values():
+        attempts.sort(key=lambda row: (int(row.get("retry_attempt") or 0), int(row.get("id") or 0)))
+        active = [
+            row for row in attempts
+            if str(row.get("status") or "") in {"pending", "running", "stopping"}
+        ]
+        current_progress_rows.append(active[-1] if active else attempts[-1])
+    retry_rows = {
+        int(row.get("id") or 0): row
+        for row in [*page_rows, *current_progress_rows]
+    }
+    retry = service.get_retry_info_bulk(list(retry_rows.values()))
+    # 列表和批次可能各有同一任务的独立字典；统一计算后更新两处展示对象。
+    for row in [*page_rows, *progress_rows]:
+        info = retry.get(int(row.get("id") or 0), {})
+        row.update(info)
+        if not info.get("display_status"):
+            row["display_status"] = projected.get(int(row.get("id") or 0), row.get("status"))
+    total = int(aggregate["total"] or 0)
+    status_counts = {item["value"]: int(item["count"]) for item in facets.get("status", [])}
+    status_counts["active"] = (
+        int(aggregate["active"] or 0) if view == "batch"
+        else sum(status_counts.get(key, 0) for key in ("pending", "running", "stopping"))
+    )
+    if view == "table":
+        bindings = registration_log_bindings([row["id"] for row in page_rows])
+        for row in page_rows:
+            row.update(bindings.get(int(row["id"]), {}))
+    return {
+        "ok": True,
+        "items": page_rows,
+        "total": total,
+        "page": max(1, int(request.page or 1)),
+        "page_size": request.limit,
+        "offset": request.offset,
+        "limit": request.limit,
+        "revision": _revision(total, aggregate["latest"], [*page_rows, *progress_rows]),
+        **({"facets": facets, "status_counts": status_counts} if include_facets or view == "batch" else {}),
+        "progress_rows": progress_rows,
+        "progress_batches": progress_batches,
+    }
+
+
+def registration_log_bindings(job_ids: list[int]) -> dict[int, dict]:
+    """只读分页任务的日志入口绑定；不初始化投影，也不读取事件或 Run 数据。"""
+    from core import operation_task_store
+
+    ids = sorted({str(int(job_id)) for job_id in job_ids if int(job_id) > 0})
+    if not ids:
+        return {}
+    runs = operation_task_store._table("operation_runs")
+    tasks = operation_task_store._table("operation_tasks")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) AS relation", (runs,))
+        if not cur.fetchone()["relation"]:
+            return {}
+        cur.execute(
+            f"SELECT DISTINCT ON (r.source_id) r.source_id, r.task_id, r.id FROM {runs} r "
+            f"JOIN {tasks} t ON t.id = r.task_id "
+            "WHERE r.source_system = 'registration_jobs' AND r.source_id = ANY(%s) "
+            "AND COALESCE(t.data->>'deleted_by_user', 'false') <> 'true' "
+            "ORDER BY r.source_id, r.id DESC",
+            (ids,),
+        )
+        return {
+            int(row["source_id"]): {"operation_task_id": int(row["task_id"]), "operation_run_id": int(row["id"])}
+            for row in cur.fetchall()
+        }
+
+
+_POOL_SPECS = {
+    "outlook": record_store.OUTLOOK_POOL,
+    "generic_api": record_store.GENERIC_API_POOL,
+    "cloudflare_domain": record_store.DOMAIN_POOL,
+    "icloud_hide": record_store.ICLOUD_HIDE_POOL,
+    "email_butler": record_store.EMAIL_BUTLER_POOL,
+}
+
+
+def _pool_union() -> str:
+    parts = []
+    for source, spec in _POOL_SPECS.items():
+        parts.append(
+            f"SELECT '{source}'::text AS source, id, email, created_at, updated_at, status, used_at, "
+            f"registered_account_id, data FROM {_q(spec)}"
+        )
+    return " UNION ALL ".join(parts)
+
+
+def email_pool_existing_emails(source: str, emails: list[str] | set[str]) -> set[str]:
+    """Preview the same cross-source and historical conflicts as explicit import."""
+    source_key = _text(source).lower()
+    spec = _POOL_SPECS.get(source_key)
+    if spec is None:
+        raise ValueError("邮箱来源非法")
+    normalized = sorted({str(email or "").strip().lower() for email in emails if str(email or "").strip()})
+    if not normalized:
+        return set()
+    parts = [f"SELECT lower(email) AS email FROM {_q(table)}" for table in _POOL_SPECS.values()]
+    parts += [f"SELECT lower(email) AS email FROM {_q(record_store.ACCOUNTS)}",
+              f"SELECT address_norm AS email FROM {_q(record_store.EMAIL_ADDRESS_ALLOCATIONS)}",
+              f"SELECT address_norm AS email FROM {_q(record_store.LOCAL_EMAIL_CLAIMS)}",
+              f"SELECT lower(COALESCE(address_norm, data->'mailbox'->>'email', '')) AS email "
+              f"FROM {_q(record_store.EMAIL_BUTLER_CLAIM_INTENTS)} WHERE status NOT IN ('prepared','rejected')"]
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT email FROM ({' UNION ALL '.join(parts)}) known WHERE email = ANY(%s)",
+            (normalized,),
+        )
+        return {str(row["email"]).lower() for row in cur.fetchall()}
+
+
+def list_email_pool(request: PageRequest) -> dict:
+    pool = _pool_union()
+    accounts = _q(record_store.ACCOUNTS)
+    filters = request.filters
+    where: list[str] = []
+    params: list[Any] = []
+    source = _text(filters.get("source")).lower()
+    if source and source != "all":
+        where.append("p.source = %s")
+        params.append(source)
+    status = _text(filters.get("status")).lower()
+    if status:
+        where.append("LOWER(COALESCE(p.status, '')) = %s")
+        params.append(status)
+    q = _text(filters.get("q"))
+    if q:
+        where.append("(p.email ILIKE %s OR p.data::text ILIKE %s)")
+        params.extend((f"%{q}%", f"%{q}%"))
+    imported = _text(filters.get("imported_date"))
+    if imported:
+        where.append("LEFT(COALESCE(p.data->>'imported_at', p.created_at), 10) = %s")
+        params.append(imported[:10])
+    used = _text(filters.get("used_date"))
+    if used:
+        where.append("LEFT(COALESCE(p.used_at, ''), 10) = %s")
+        params.append(used[:10])
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    from_sql = f" FROM ({pool}) p LEFT JOIN {accounts} a ON LOWER(a.email) = LOWER(p.email)"
+    safe_pool_data = (
+        "p.data - ARRAY['password','client_id','refresh_token','access_token','totp_secret',"
+        "'code_url','copy_line','account_copy_line','original_line','api_key','api_base',"
+        "'credential_ref','inbox_profile_id','inbox_locator','mailbox','mailbox_id','lease_id',"
+        "'local_inbox_profile_id','local_acquisition_id','local_owner_kind','local_owner_id','butler_handoff']::text[] "
+        "|| jsonb_build_object("
+        "'has_password', NULLIF(BTRIM(COALESCE(p.data->>'password', '')), '') IS NOT NULL, "
+        "'has_client_id', NULLIF(BTRIM(COALESCE(p.data->>'client_id', '')), '') IS NOT NULL, "
+        "'has_refresh_token', NULLIF(BTRIM(COALESCE(p.data->>'refresh_token', '')), '') IS NOT NULL, "
+        "'has_code_url', NULLIF(BTRIM(COALESCE(p.data->>'code_url', '')), '') IS NOT NULL)"
+    )
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS total, MAX(p.updated_at) AS latest{from_sql}{clause}", params)
+        aggregate = cur.fetchone()
+        cur.execute(
+            f"SELECT p.source, p.id, p.email, p.created_at, p.updated_at, p.status, p.used_at, "
+            f"p.registered_account_id, ({safe_pool_data}) AS data, "
+            f"a.id AS joined_account_id, COALESCE(a.account_status_text, 'active') AS joined_account_status{from_sql}{clause} "
+            "ORDER BY COALESCE(p.data->>'imported_at', p.created_at, p.used_at, '') DESC, p.id DESC LIMIT %s OFFSET %s",
+            (*params, request.limit, request.offset),
+        )
+        raw_rows = cur.fetchall()
+        cur.execute(
+            f"""
+            SELECT 'source' AS facet, p.source AS value, COUNT(*) AS count {from_sql} GROUP BY p.source
+            UNION ALL
+            SELECT 'status', LOWER(COALESCE(p.status, '')), COUNT(*) {from_sql} GROUP BY 2
+            """
+        )
+        facets = _facet_dict(cur.fetchall())
+    sensitive = {
+        "password", "client_id", "refresh_token", "access_token", "totp_secret",
+        "code_url", "copy_line", "account_copy_line", "original_line",
+        "api_key", "api_base", "credential_ref", "inbox_profile_id", "inbox_locator", "mailbox", "mailbox_id", "lease_id",
+        "local_inbox_profile_id", "local_acquisition_id", "local_owner_kind", "local_owner_id", "butler_handoff",
+    }
+    items = []
+    for raw in raw_rows:
+        source = str(raw["source"])
+        spec = _POOL_SPECS[source]
+        joined_id = raw.get("joined_account_id")
+        joined_status = str(raw.get("joined_account_status") or "").strip().lower()
+        payload = dict(raw)
+        for key in ("source", "joined_account_id", "joined_account_status"):
+            payload.pop(key, None)
+        item = record_store.merge_row(spec, payload)
+        item["source"] = source
+        linked_id = item.get("registered_account_id") or joined_id
+        item["registered_account_id"] = linked_id
+        item["linked_account_status"] = joined_status or None
+        status_value = str(item.get("status") or "available").strip().lower()
+        if status_value == "used":
+            item["usage_state"] = "bound" if linked_id else "used_unbound"
+        else:
+            item["usage_state"] = status_value
+        item["resource_meta"] = {
+            "password": bool(item.get("has_password")),
+            "client_id": bool(item.get("has_client_id")),
+            "refresh_token": bool(item.get("has_refresh_token")),
+            "code_url": bool(item.get("has_code_url")),
+        }
+        item["last_activity_at"] = item.get("used_at") or item.get("updated_at") or item.get("created_at")
+        if source == "icloud_hide":
+            remote_active = item.get("remote_active")
+            item["remote_active"] = None if remote_active is None else str(remote_active).lower() not in {"false", "0", "no"}
+            item["remote_label"] = item.get("label") or None
+            item["synced_at"] = item.get("synced_at") or None
+        for key in sensitive:
+            item.pop(key, None)
+        items.append(item)
+    total = int(aggregate["total"] or 0)
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "page": max(1, int(request.page or 1)),
+        "page_size": request.limit,
+        "offset": request.offset,
+        "limit": request.limit,
+        "revision": _revision(total, aggregate["latest"], items),
+        "facets": facets,
+        "compact": True,
+    }
+
+
+def _codex_item(row: dict) -> dict:
+    from core.codex.token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
+
+    merged = record_store.merge_row(record_store.CODEX_CREDENTIALS, row)
+    # 列表查询刻意不取 content（里面含完整 token）。用写入时保存的生命周期元数据
+    # 重新计算时间状态，过期倒计时仍准确，又不会让秘密进入普通 GET 的内存/日志。
+    synthetic = {
+        "expired": merged.get("expired") or merged.get("oauth_expires_at") or "",
+        "access_token": "present" if merged.get("access_token_preview") else "",
+        "refresh_token": "present" if merged.get("oauth_refreshable") else "",
+    }
+    oauth = oauth_metadata(synthetic)
+    oauth["oauth_reauth_required"] = (
+        refresh_error_requires_reauth(merged.get("oauth_refresh_error"))
+        or sub2api_status_requires_reauth(merged.get("sub2api_http_status"))
+    )
+    if str(merged.get("oauth_account_status") or "").strip().lower() == "deactivated":
+        oauth["oauth_status"] = "deactivated"
+        oauth["oauth_reauth_required"] = True
+    sub2api_account_id = row.get("sub2api_account_id")
+    if sub2api_account_id not in (None, "") and str(sub2api_account_id).strip():
+        try:
+            sub2api_account_id = int(sub2api_account_id)
+        except (TypeError, ValueError):
+            sub2api_account_id = str(sub2api_account_id)
+    else:
+        sub2api_account_id = None
+    exported_count = int(merged.get("exported_count") or 0)
+    return {
+        "filename": merged.get("filename"),
+        "email": merged.get("email") or "",
+        "plan": merged.get("plan") or "",
+        "account_id": merged.get("account_id") or "",
+        "sub2api_account_id": sub2api_account_id,
+        "type": merged.get("type") or "codex",
+        "last_refresh": merged.get("last_refresh") or "",
+        "expired": merged.get("expired") or "",
+        # 普通列表只表达“已保存”，不返回 token 前缀；短 token 的所谓 preview
+        # 很可能就是完整秘密。
+        "access_token_preview": "已保存" if merged.get("access_token_preview") else "",
+        "size": int(merged.get("size") or 0),
+        "mtime": merged.get("mtime") or merged.get("updated_at"),
+        "exported_at": merged.get("exported_at"),
+        "exported_count": exported_count,
+        "exported": exported_count > 0 or sub2api_account_id is not None,
+        "sub2_uploaded_at": merged.get("sub2_uploaded_at"),
+        "sub2_uploaded_count": int(merged.get("sub2_uploaded_count") or 0),
+        "sub2_sync_error": merged.get("sub2_sync_error"),
+        "sub2api_status": merged.get("sub2api_status"),
+        "sub2api_http_status": merged.get("sub2api_http_status"),
+        "oauth_refresh_attempted_at": merged.get("oauth_refresh_attempted_at"),
+        "oauth_refresh_error": merged.get("oauth_refresh_error"),
+        "oauth_account_status": merged.get("oauth_account_status"),
+        "oauth_account_status_reason": merged.get("oauth_account_status_reason"),
+        "oauth_account_status_at": merged.get("oauth_account_status_at"),
+        "archived": bool(merged.get("archived")),
+        "archived_at": merged.get("archived_at"),
+        **oauth,
+    }
+
+
+def list_codex(request: PageRequest) -> dict:
+    table = _q(record_store.CODEX_CREDENTIALS)
+    accounts_table = _q(record_store.ACCOUNTS)
+    from_clause = (
+        f"{table} c LEFT JOIN {accounts_table} a "
+        "ON LOWER(BTRIM(COALESCE(c.email, ''))) = LOWER(BTRIM(COALESCE(a.email, '')))"
+    )
+    filters = request.filters
+    where: list[str] = []
+    params: list[Any] = []
+    archived = _text(filters.get("archived")).lower()
+    if archived in {"1", "true", "yes", "only"}:
+        where.append("c.archived IS TRUE")
+    elif archived not in {"all", "include"}:
+        where.append("c.archived IS FALSE")
+    q = _text(filters.get("q"))
+    if q:
+        where.append(
+            "(c.filename ILIKE %s OR COALESCE(c.email, '') ILIKE %s "
+            f"OR COALESCE(c.account_id, '') ILIKE %s OR COALESCE({_SUB2API_ID_SQL}, '') ILIKE %s)"
+        )
+        params.extend((f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
+    for key, column in (("plan", "plan"), ("oauth_status", "oauth_status")):
+        value = _text(filters.get(key)).lower()
+        if value:
+            where.append(f"LOWER(COALESCE(c.{column}, '')) = %s")
+            params.append(value)
+    status = _text(filters.get("status")).lower()
+    if status == "exported":
+        where.append(_CODEX_EXPORTED_SQL)
+    elif status == "unexported":
+        where.append(f"NOT {_CODEX_EXPORTED_SQL}")
+    account_id = _text(filters.get("account_id"))
+    if account_id:
+        where.append("COALESCE(c.account_id, '') ILIKE %s")
+        params.append(f"%{account_id}%")
+    sub2api_id = _text(filters.get("sub2api_id"))
+    if sub2api_id:
+        where.append(f"COALESCE({_SUB2API_ID_SQL}, '') = %s")
+        params.append(sub2api_id)
+    expired = _text(filters.get("expired_date"))
+    if expired:
+        where.append("LEFT(COALESCE(c.oauth_expires_at, c.data->>'expired', ''), 10) = %s")
+        params.append(expired[:10])
+    date_from = _text(filters.get("date_from"))
+    if date_from:
+        where.append("LEFT(COALESCE(c.mtime, c.updated_at), 10) >= %s")
+        params.append(date_from[:10])
+    date_to = _text(filters.get("date_to"))
+    if date_to:
+        where.append("LEFT(COALESCE(c.mtime, c.updated_at), 10) <= %s")
+        params.append(date_to[:10])
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    promoted = ["id", *record_store.CODEX_CREDENTIALS.promoted]
+    selected = ", ".join(f"c.{postgres_store.quote_identifier(column)}" for column in promoted)
+    selected += f", c.data - 'content' AS data, {_SUB2API_ID_SQL} AS sub2api_account_id"
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS total, MAX(c.updated_at) AS latest FROM {from_clause}{clause}", params)
+        aggregate = cur.fetchone()
+        cur.execute(f"SELECT {selected} FROM {from_clause}{clause} ORDER BY COALESCE(c.mtime, c.updated_at) DESC, c.id DESC LIMIT %s OFFSET %s", (*params, request.limit, request.offset))
+        rows = [_codex_item(row) for row in cur.fetchall()]
+        cur.execute(
+            f"""
+            SELECT 'plan' AS facet, LOWER(COALESCE(c.plan, '')) AS value, COUNT(*) AS count FROM {from_clause} GROUP BY 2
+            UNION ALL
+            SELECT 'status', CASE WHEN c.archived THEN 'archived' WHEN {_CODEX_EXPORTED_SQL} THEN 'exported' ELSE 'unexported' END, COUNT(*) FROM {from_clause} GROUP BY 2
+            UNION ALL
+            SELECT 'oauth_status', LOWER(COALESCE(c.oauth_status, 'unknown')), COUNT(*) FROM {from_clause} GROUP BY 2
+            """
+        )
+        facets = _facet_dict(cur.fetchall())
+        cur.execute(
+            f"SELECT COUNT(*) FILTER (WHERE c.archived IS FALSE) AS total, "
+            f"COUNT(*) FILTER (WHERE c.archived IS FALSE AND {_CODEX_EXPORTED_SQL}) AS exported "
+            f"FROM {from_clause}"
+        )
+        summary_row = cur.fetchone()
+    total = int(aggregate["total"] or 0)
+    summary_total = int(summary_row["total"] or 0)
+    summary_exported = int(summary_row["exported"] or 0)
+    return {
+        "ok": True,
+        "accounts": rows,
+        "total": total,
+        "page": max(1, int(request.page or 1)),
+        "page_size": request.limit,
+        "offset": request.offset,
+        "limit": request.limit,
+        "revision": _revision(total, aggregate["latest"], rows),
+        "facets": facets,
+        "summary": {"total": summary_total, "exported": summary_exported, "pending": summary_total - summary_exported},
+    }
+
+
+def dashboard_aggregates() -> dict:
+    accounts = _q(record_store.ACCOUNTS)
+    jobs = _q(record_store.JOBS)
+    codex = _q(record_store.CODEX_CREDENTIALS)
+    codex_from_clause = (
+        f"{codex} c LEFT JOIN {accounts} a "
+        "ON LOWER(BTRIM(COALESCE(c.email, ''))) = LOWER(BTRIM(COALESCE(a.email, '')))"
+    )
+    pool = _pool_union()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE archived IS FALSE) AS active,
+                   COUNT(*) FILTER (WHERE archived IS TRUE) AS archived,
+                   COUNT(*) FILTER (WHERE archived IS FALSE AND codex_status = 'success') AS codex_ready
+              FROM {accounts}
+            """
+        )
+        account_counts = dict(cur.fetchone())
+        cur.execute(
+            f"""
+            SELECT CASE
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'free_trial' THEN 'free_trial_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'discount'
+                          AND a.plus_promo_discount_percentage = 50 THEN 'free_half_price_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) = 'discount' THEN 'free_discount_eligible'
+                     WHEN LOWER(COALESCE(a.current_plan_type, a.plan_type, '')) = 'free'
+                          AND ({_ACCOUNT_PROMO_KIND}) IN ('other_promo', 'unknown') THEN 'free_promo_unknown'
+                     ELSE COALESCE(NULLIF(LOWER(COALESCE(a.current_plan_type, a.plan_type, '')), ''), 'unknown')
+                   END AS plan,
+                   COUNT(*) AS count
+              FROM {accounts} a
+             WHERE a.archived IS FALSE
+             GROUP BY 1
+            """
+        )
+        plans = {str(row["plan"]): int(row["count"]) for row in cur.fetchall()}
+        projected_jobs = (
+            f"SELECT {_JOB_DISPLAY_STATUS} AS status, j.created_at FROM {jobs} j "
+            f"LEFT JOIN {accounts} a ON a.id = j.account_id"
+        )
+        cur.execute(f"SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM ({projected_jobs}) p GROUP BY 1")
+        job_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        cur.execute(
+            f"SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM ({projected_jobs}) p "
+            "WHERE LEFT(created_at, 10) = TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') GROUP BY 1"
+        )
+        today_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        cur.execute(f"SELECT source, COALESCE(status, 'available') AS status, COUNT(*) AS count FROM ({pool}) p GROUP BY source, status")
+        pool_rows = [dict(row) for row in cur.fetchall()]
+        cur.execute(
+            f"SELECT COUNT(*) FILTER (WHERE c.archived IS FALSE) AS total, "
+            f"COUNT(*) FILTER (WHERE c.archived IS FALSE AND {_CODEX_EXPORTED_SQL}) AS exported FROM {codex_from_clause}"
+        )
+        codex_row = dict(cur.fetchone())
+    return {
+        "accounts": {key: int(value or 0) for key, value in account_counts.items()} | {"plans": plans},
+        "jobs": {"total": sum(job_counts.values()), "counts": job_counts, "today_counts": today_counts},
+        "email_status_rows": pool_rows,
+        "codex": {
+            "total": int(codex_row.get("total") or 0),
+            "exported": int(codex_row.get("exported") or 0),
+            "pending": int(codex_row.get("total") or 0) - int(codex_row.get("exported") or 0),
+        },
+    }

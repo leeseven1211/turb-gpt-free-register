@@ -6,8 +6,8 @@ import time
 from contextvars import ContextVar
 from urllib.parse import urlsplit
 
-from core.auth_challenge import AuthCancelledError
-from core.http_response_diagnostics import auth_error_from_body, auth_submission_endpoint
+from core.auth.challenge import AuthCancelledError
+from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint
 from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
 from core.registration.protocol_oss import ProtocolOssRequestUnknown
 
@@ -27,7 +27,7 @@ class _VendorCancelled(BaseException):
 
 
 def _check_stop_requested():
-    from core.registration_service import StopRequested, check_stop_requested
+    from core.registration.service import StopRequested, check_stop_requested
 
     try:
         check_stop_requested()
@@ -115,7 +115,7 @@ class _ObservedSession:
                     observed = _HeaderOnlyResponse(response) if response is not None and kwargs.get("stream") else response
                     if capture is not None:
                         capture.record(started_at=started, response=observed, error=error)
-                    from core.registration_debug import record_protocol_exchange
+                    from core.registration.debug import record_protocol_exchange
 
                     record_protocol_exchange(
                         method=method, url=url, started_at=started,
@@ -156,15 +156,13 @@ def run_upstream_protocol(
     existing_password, existing_totp_secret, options,
 ):
     """执行固定上游 AuthFlow，邮箱和凭据始终属于本地原任务。"""
-    from core.email_provider import wait_for_otp
+    from core.email.provider import wait_for_otp
     from config import email as email_cfg
     from core.registration.checkpoints import save_protocol_password_checkpoint
     from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
-    from core.registration_service import (
-        StopRequested, check_stop_requested, registration_fact_context, report_job_progress,
-    )
+    from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
 
     password_confirmed = False
     if existing_password:

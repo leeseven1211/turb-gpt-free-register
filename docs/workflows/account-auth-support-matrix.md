@@ -182,15 +182,15 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 ## 6. 已完成的代码与测试审计项
 
-- `core/auth_challenge.py`：统一结果、错误策略、远端身份判定和安全序列化。
-- `core/registration/state_machine.py`：增加 TOTP 状态及邮箱 OTP 后的 TOTP 优先级。
-- `core/registration/roxy.py`：已有账号/未知页面保护、邮箱 OTP 后 TOTP、注册结果投影。
-- `core/registration/protocol.py`：Protocol continuation 分类，未知页面禁止继续创建资料。
-- `core/protocol_v2_liveness.py`：密码、邮箱 OTP、TOTP、密码错误和结果未知投影。
-- `core/live_check_service.py`：普通查活与刷新 AT 的边界及统一结果投影。
-- `core/roxy_liveness.py`：Roxy 刷新 AT 的邮箱 OTP 后 TOTP 收口。
-- `core/codex_retry_service.py`：补密码/补 2FA 的 checkpoint 与统一结果投影。
-- `core/account_completion_service.py`：四种密码/2FA 缺失组合的规划结果。
+- `core/auth/challenge.py`：统一结果、错误策略、远端身份判定和安全序列化。
+- `core/auth/state_machine.py`：增加 TOTP 状态及邮箱 OTP 后的 TOTP 优先级。
+- `core/registration/roxy/__init__.py`：已有账号/未知页面保护、邮箱 OTP 后 TOTP、注册结果投影。
+- `core/registration/protocol/__init__.py`：Protocol continuation 分类，未知页面禁止继续创建资料。
+- `core/accounts/liveness/protocol/v2.py`：密码、邮箱 OTP、TOTP、密码错误和结果未知投影。
+- `core/accounts/liveness/service.py`：普通查活与刷新 AT 的边界及统一结果投影。
+- `core/accounts/liveness/roxy/flow.py`：Roxy 刷新 AT 的邮箱 OTP 后 TOTP 收口。
+- `core/codex/retry_service.py`：补密码/补 2FA 的 checkpoint 与统一结果投影。
+- `core/accounts/completion.py`：四种密码/2FA 缺失组合的规划结果。
 
 自动化测试覆盖：
 

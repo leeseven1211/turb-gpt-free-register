@@ -6,14 +6,14 @@ import re
 import time
 from typing import Any
 
-from core.auth_challenge import AuthCancelledError, auth_result_for_registration
+from core.auth.challenge import AuthCancelledError, auth_result_for_registration
 from core.registration.protocol_oss.upstream.config import openai_protocol as _upstream_config
 from core.registration.protocol_oss.upstream.core import (
     chatgpt_auth as _chatgpt_auth,
     openai_auth as _openai_auth,
 )
-from core.profile_utils import generate_random_birthday
-from core.session import BrowserSession
+from core.registration.profile_utils import generate_random_birthday
+from core.auth.protocol.session import BrowserSession
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +24,14 @@ class ProtocolOssRequestUnknown(RuntimeError):
     def __init__(self, message: str, *, register_response_confirmed: bool = False,
                  cause_diagnostics: dict | None = None, registration_diagnostics: dict | None = None):
         super().__init__(message)
-        from core.task_errors import registration_diagnostic_cause_code, safe_registration_diagnostics
+        from core.operations.errors import registration_diagnostic_cause_code, safe_registration_diagnostics
 
         self.register_response_confirmed = register_response_confirmed is True
         self.registration_diagnostics = safe_registration_diagnostics(registration_diagnostics)
         self.cause_diagnostics = {}
         self.cause_code = registration_diagnostic_cause_code(self.registration_diagnostics)
         if isinstance(cause_diagnostics, dict) and cause_diagnostics.get("operation") == "profile_submit":
-            from core.http_response_diagnostics import safe_auth_error
+            from core.network.response_diagnostics import safe_auth_error
 
             status = cause_diagnostics.get("http_status")
             if type(status) is int and 400 <= status <= 599:
@@ -91,9 +91,9 @@ def _classify_upstream_continuation(page_type: str, continue_url: str | None) ->
 
 
 def _finalize_session(session, continue_url: str, *, email: str, referer: str) -> tuple[dict, str]:
-    from core.account_export import fetch_session, follow_oauth_callback
-    from core.humanize import delay as human_delay
-    from core.registration_service import check_stop_requested, report_job_progress
+    from core.accounts.export import fetch_session, follow_oauth_callback
+    from core.auth.humanize import delay as human_delay
+    from core.registration.service import check_stop_requested, report_job_progress
 
     last_error: Exception | None = None
     for attempt in range(1, 6):
@@ -131,15 +131,11 @@ def _run_upstream_protocol(
     options: dict[str, Any],
 ) -> dict[str, Any]:
     """执行上游认证/注册序列，只返回会话事实，不做上游存储或后处理。"""
-    from core.email_provider import wait_for_otp
-    from core.humanize import delay as human_delay
+    from core.email.provider import wait_for_otp
+    from core.auth.humanize import delay as human_delay
     from core.registration.checkpoints import save_protocol_password_checkpoint
-    from core.protocol_v2_liveness import _is_mfa
-    from core.registration_service import (
-        StopRequested,
-        check_stop_requested,
-        report_job_progress,
-    )
+    from core.accounts.liveness.protocol.v2 import _is_mfa
+    from core.registration.service import StopRequested, check_stop_requested, report_job_progress
 
     password_request_started = False
     password_register_accepted = bool(existing_password)
@@ -163,7 +159,7 @@ def _run_upstream_protocol(
         _openai_auth.network_preflight(session)
         human_delay("navigate")
         if bool(getattr(_upstream_config, "CHATGPT_ANON_BOOTSTRAP_ENABLED", True)):
-            from core.chatgpt_bootstrap import anonymous_bootstrap
+            from core.auth.protocol.chatgpt_bootstrap import anonymous_bootstrap
 
             anonymous_bootstrap(
                 session,
@@ -416,7 +412,7 @@ def _run_upstream_protocol(
 
 def _safe_twofa_failure_detail(exc: BaseException) -> str:
     """后置失败只保留操作、异常类型和 HTTP 状态，不复制远端正文。"""
-    from core.account_export import TwofaProtocolHTTPError, TwofaProtocolTransportError
+    from core.accounts.export import TwofaProtocolHTTPError, TwofaProtocolTransportError
 
     type_name = type(exc).__name__
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", type_name):
@@ -448,22 +444,22 @@ def _run_local_postprocessing(
     from config import codex as codex_cfg
     from config import twofa as twofa_cfg
     from core import db
-    from core.email_provider import wait_for_otp
+    from core.email.provider import wait_for_otp
     from core.registration.checkpoints import save_protocol_totp_checkpoint
-    from core.registration_service import StopRequested, report_job_progress
-    from core.registration_postprocess import summarize_postprocess
+    from core.registration.service import StopRequested, report_job_progress
+    from core.registration.postprocess import summarize_postprocess
 
     password_required = bool(options.get("password_enabled", False))
     twofa_enabled = bool(options.get("twofa_enabled", twofa_cfg.ENABLE_2FA))
     codex_enabled = bool(options.get("codex_enabled", codex_cfg.ENABLE_CODEX_AUTO))
     plan_check_enabled = bool(options.get("plan_check_enabled", True))
-    from core.registration_service import codex_driver_for_registration
+    from core.registration.service import codex_driver_for_registration
 
     codex_driver = codex_driver_for_registration(options)
     bootstrap_error = None
 
     if bool(getattr(_upstream_config, "CHATGPT_AUTH_BOOTSTRAP_ENABLED", True)):
-        from core.chatgpt_bootstrap import authenticated_bootstrap
+        from core.auth.protocol.chatgpt_bootstrap import authenticated_bootstrap
 
         try:
             authenticated_bootstrap(
@@ -481,7 +477,7 @@ def _run_local_postprocessing(
     plan_result = {"status": "skipped", "ok": True, "message": "未启用注册后自动查套餐"}
     if plan_check_enabled:
         try:
-            from core.plan_check_service import check_registration_account_plan
+            from core.accounts.plans.service import check_registration_account_plan
 
             report_job_progress("plan_check", "running", "正在复用注册会话与代理查询套餐")
             plan_result = dict(check_registration_account_plan(
@@ -514,7 +510,7 @@ def _run_local_postprocessing(
         try:
             if twofa_cfg.get_twofa_driver_for_options(options) != "protocol":
                 raise RuntimeError("开源协议注册只支持 protocol 2FA；browser 模式请切换到 RoxyBrowser")
-            from core.account_export import setup_2fa_protocol
+            from core.accounts.export import setup_2fa_protocol
 
             candidate_secret = setup_2fa_protocol(
                 session,
@@ -540,7 +536,7 @@ def _run_local_postprocessing(
     codex_result = {"status": "skipped", "ok": True, "message": "ENABLE_CODEX_AUTO=False，跳过 Codex"}
     if codex_enabled:
         try:
-            from core.codex_oauth import run_codex_oauth
+            from core.codex.oauth import run_codex_oauth
 
             report_job_progress("codex", "running", "正在执行 Codex OAuth")
             codex_kwargs = {"proxy": session.proxy, "driver_override": codex_driver}
@@ -577,7 +573,7 @@ def _run_local_postprocessing(
 
     flow_result = {"status": "skipped", "ok": False, "message": "未触发"}
     try:
-        from core.flow_trigger import trigger_flow
+        from core.integrations.flow_trigger import trigger_flow
 
         flow_result = trigger_flow(access_token)
     except Exception as exc:
@@ -643,17 +639,8 @@ def run_protocol_oss_registration(
     if not str(proxy or "").strip():
         raise RuntimeError("Protocol OSS 注册必须使用统一代理池已领取线路，禁止无代理或直连")
 
-    from core.email_provider import (
-        mark_email_permanently_unusable,
-        resolve_email_source,
-        retain_email,
-        validate_email_source,
-    )
-    from core.registration_service import (
-        StopRequested,
-        persist_registration_core,
-        report_job_progress,
-    )
+    from core.email.provider import mark_email_permanently_unusable, resolve_email_source, retain_email, validate_email_source
+    from core.registration.service import StopRequested, persist_registration_core, report_job_progress
 
     options = dict(registration_options or {})
     selected_source = validate_email_source(email_source) if email_source else resolve_email_source(email)
@@ -745,7 +732,7 @@ def run_protocol_oss_registration(
             _protocol_registration_cause_code,
             _safe_protocol_registration_error,
         )
-        from core.task_errors import registration_diagnostic_cause_code, safe_registration_diagnostics
+        from core.operations.errors import registration_diagnostic_cause_code, safe_registration_diagnostics
 
         registration_diagnostics = safe_registration_diagnostics(getattr(exc, "registration_diagnostics", None))
         diagnostic_cause = registration_diagnostic_cause_code(registration_diagnostics)

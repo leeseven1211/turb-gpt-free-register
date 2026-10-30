@@ -11,12 +11,12 @@ import secrets
 import time
 
 from core.registration.protocol_oss.upstream.config import openai_protocol as _protocol_cfg
-from core.session import BrowserSession
-from core.sentinel import (
+from core.auth.protocol.session import BrowserSession
+from core.auth.protocol.sentinel import (
     generate_requirements_token,
     build_sentinel_request_body,
 )
-from core.sentinel_runner import generate_sentinel_token
+from core.auth.protocol.sentinel_runner import generate_sentinel_token
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ def _reset_retryable_circuit(session: BrowserSession) -> None:
 
 def _check_stop_requested() -> None:
     """懒加载任务服务，避免模块导入阶段形成 main/registration_service 循环依赖。"""
-    from core.registration_service import check_stop_requested
+    from core.registration.service import check_stop_requested
     check_stop_requested()
 
 

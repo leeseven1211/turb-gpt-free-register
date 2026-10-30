@@ -16,27 +16,23 @@ from urllib.parse import urlparse
 import pyotp
 from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
 
-from core import (
-    account_inspection_service,
-    account_task_store,
-    admin_repository,
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    email_change_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-    record_store,
-)
-from core import registration_service as svc
-from core.account_search import AccountSearchError, account_search_filters, parse_account_search
-from core.live_check_router import LiveCheckDriverError
-from core.plus_promotion import is_free_trial_record
-from core.task_errors import classify_task_error
+from core.accounts.inspection import service as account_inspection_service
+from core import account_task_store
+from core.storage import admin_repository
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.accounts.email_change import service as email_change_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.storage import records as record_store
+from core.registration import service as svc
+from core.accounts.search import AccountSearchError, account_search_filters, parse_account_search
+from core.accounts.liveness.router import LiveCheckDriverError
+from core.accounts.plans.promotion import is_free_trial_record
+from core.operations.errors import classify_task_error
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -62,7 +58,7 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.get("/api/accounts/inspections")
     def api_account_inspections():
-        from core.storage import account_inspections
+        from core.storage.accounts import inspections as account_inspections
         try:
             page = _inspection_page()
         except ValueError as exc:
@@ -89,7 +85,7 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.get("/api/accounts/inspections/<int:inspection_id>/failures")
     def api_account_inspection_failures(inspection_id):
-        from core.storage import account_inspections
+        from core.storage.accounts import inspections as account_inspections
         try:
             page = _inspection_page()
         except ValueError as exc:
@@ -101,14 +97,14 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.post("/api/accounts/inspections/<int:inspection_id>/cancel")
     def api_cancel_account_inspection(inspection_id):
-        from core.storage import account_inspections
+        from core.storage.accounts import inspections as account_inspections
         if account_inspections.failures(inspection_id, limit=0) is None:
             return jsonify({"ok": False, "error": "巡检任务不存在"}), 404
         return jsonify(account_inspection_service.cancel_inspection(inspection_id))
 
     @bp.post("/api/accounts/delete-deactivated")
     def api_accounts_delete_deactivated():
-        from core.storage import account_inspections
+        from core.storage.accounts import inspections as account_inspections
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or "archived" not in data:
             return jsonify({"ok": False, "error": "必须明确指定归档范围"}), 400
@@ -162,7 +158,7 @@ def create_accounts_blueprint(context: WebUIContext):
             linked_account = db.get_account_by_email(email)
             if db.account_is_deactivated(linked_account):
                 raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
-        from core.sub2api_client import upload_configured_codex_oauth_credential
+        from core.integrations.sub2api.client import upload_configured_codex_oauth_credential
 
         result = upload_configured_codex_oauth_credential(auth_json)
         result["filename"] = filename
@@ -253,17 +249,17 @@ def create_accounts_blueprint(context: WebUIContext):
         account = db.get_account(acc_id)
         if not account:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
-        from core.roxy_profile_binding import last_account_profile
+        from core.browser.roxy.profile_binding import last_account_profile
 
         profile = last_account_profile(account)
         profile_id = profile["profile_id"]
         if not profile_id:
-            from core.storage.account_auth import latest_roxy_profile_id
+            from core.storage.accounts.auth import latest_roxy_profile_id
 
             profile_id = latest_roxy_profile_id(acc_id)
         if profile_id:
             try:
-                from core.roxybrowser_client import RoxyBrowserClient
+                from core.browser.roxy.client import RoxyBrowserClient
 
                 active_name = RoxyBrowserClient().get_active_profile_name(profile_id)
                 if active_name:
@@ -279,7 +275,7 @@ def create_accounts_blueprint(context: WebUIContext):
     @bp.post("/api/accounts/roxy-profile/backfill-history")
     def api_accounts_roxy_profile_backfill_history():
         """把本地历史记录中的 Profile ID 和窗口名称补入账号元数据。"""
-        from core.roxy_profile_binding import backfill_account_profile_ids, load_historical_profile_bindings
+        from core.browser.roxy.profile_binding import backfill_account_profile_ids, load_historical_profile_bindings
 
         profile_bindings = load_historical_profile_bindings()
         result = backfill_account_profile_ids(profile_bindings)
@@ -291,7 +287,7 @@ def create_accounts_blueprint(context: WebUIContext):
         account = db.get_account(acc_id)
         if not account:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
-        from core.plan_check_countries import public_country_results
+        from core.accounts.plans.countries import public_country_results
         return jsonify({"ok": True, "item": {
             "account_promotions": account.get("account_promotions"),
             "promotion_query_snapshot": account.get("promotion_query_snapshot"),
@@ -1555,7 +1551,7 @@ def create_accounts_blueprint(context: WebUIContext):
         import json as _json
         import zipfile
         from datetime import datetime as _dt
-        from core.codex_oauth import download_cpa_codex_auth_text, list_cpa_codex_auth_files
+        from core.codex.oauth import download_cpa_codex_auth_text, list_cpa_codex_auth_files
 
         data = request.get_json(silent=True) or {}
         if not data and request.form:
@@ -1711,7 +1707,7 @@ def create_accounts_blueprint(context: WebUIContext):
     @bp.get("/api/accounts/live-check-log")
     def api_account_live_check_log():
         """读取某邮箱最近一次查活日志。?email=xxx"""
-        from core import account_liveness
+        from core.accounts.liveness.protocol import legacy as account_liveness
         email = (request.args.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400

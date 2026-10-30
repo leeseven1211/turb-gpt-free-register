@@ -48,10 +48,14 @@ CLI / Web routes
 | `errors.py` | 稳定领域异常和错误分类 |
 | `runtime.py` | 线程、取消、心跳、恢复和生命周期 |
 | `compat.py` | 有明确删除条件的兼容入口 |
-| `core/registration/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力 |
-| `core/registration/browser_use_auth.py` | 已停用的 Browser Use/Skyvern 历史兼容模块，不得作为新流程依赖 |
+| `core/auth/browser/selenium_auth.py` | Selenium 登录挑战、OTP、资料和 ChatGPT session 公共能力 |
+| `core/auth/browser/legacy/browser_use.py` | 已停用的 Browser Use/Skyvern 历史兼容模块，不得作为新流程依赖 |
 | `core/storage/` | PostgreSQL 领域仓储、统一 operation schema/projection/runtime 入口 |
 | `core/operations/task_gateway.py` | 账号任务兼容写入、事件和终态收口；统一投影由存储层负责 |
+
+代码首先按业务归入 `core/registration/`、`core/accounts/`、`core/email/`、`core/codex/`、`core/extract_link/` 等目录，再按具体驱动或提供方建立子目录。域内公共编排、状态和契约放在该业务根部，跨业务认证、浏览器、网络和任务能力分别归入 `auth/`、`browser/`、`network/`、`operations/`；不新增无职责边界的 `common/`、`utils/` 或 `misc/`。
+
+`registration/roxy/` 和 `registration/protocol/` 当前以完整 `__init__.py` 保留原模块身份，不能在目录整理时顺带拆分全局绑定。接码及代理混合模块也暂时保持整块实现，后续抽取需独立验证。`tools/` 按 `diagnostics/`、`benchmarks/`、`maintenance/`、`migrations/` 归类，旧工具脚本只保留原命令兼容入口；测试按被保护业务归组，共用隔离与读取帮助文件留在 `tests/` 根部。
 
 浏览器能力模块是注册、Codex 和查活之间的调用边界；新增调用方不得直接导入驱动私有函数。
 存储和任务服务只依赖领域入口，旧 façade 仅用于兼容期。
@@ -67,7 +71,7 @@ CLI / Web routes
 5. `.env.example`；
 6. README；
 7. CLI、WebUI、批量任务和后台任务读取路径；
-8. `tests/test_config_defaults.py`。
+8. `tests/config/test_config_defaults.py`。
 
 密钥只允许保存在 `.env` 或进程环境中。运行时需要热更新的配置必须通过子模块属性读取，
 不能长期持有 `from config import VALUE` 的旧绑定。
@@ -128,17 +132,26 @@ CLI / Web routes
 
 ```text
 webui/static/
-├── css/modern.css  login.css  ui-foundation.css
+├── css/
+│   ├── shell.css
+│   ├── shared/ui-foundation.css
+│   └── pages/{config,extract_link,login}.css
 └── js/
-    ├── modern/{common,dashboard,jobs,accounts,account-tasks,account-email-change,account-inspection,email,butler-import,codex,config,extract-workbench,bootstrap}.js
-    ├── proxy_traffic.js
-    └── login.js
+    ├── shared/common.js
+    ├── pages/
+    │   ├── accounts/{page,email-change,inspection}.js
+    │   ├── email/{page,butler-import}.js
+    │   ├── dashboard/page.js  registration/page.js  operations/page.js
+    │   ├── codex/page.js  config/page.js  extract_link/page.js
+    │   ├── proxy/traffic.js
+    │   └── login/page.js
+    └── bootstrap.js
 ```
 
-WebUI 只维护现代页面，使用普通 `<script>` 按
-`common -> dashboard -> jobs -> accounts -> account-tasks -> account-email-change -> account-inspection -> email -> butler-import -> codex -> config -> extract-workbench -> proxy_traffic -> bootstrap`
-顺序加载。账号功能块脚本依赖 `accounts.js` 的共享状态和页面工具，并在 `bootstrap.js` 初始化前声明全局处理函数；具体加载位置以 `webui/templates/index.html` 为准。保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，
-也不得把业务代码重新塞回模板。后续迁移事件委托或 ES module 时，必须先增加浏览器验收并评估全局 API 兼容范围。
+主页面保留普通 `<script>` 的加载顺序：
+`shared/common -> pages/dashboard/page -> pages/registration/page -> pages/accounts/page -> pages/operations/page -> pages/accounts/email-change -> pages/accounts/inspection -> pages/email/page -> pages/email/butler-import -> pages/codex/page -> pages/config/page -> pages/extract_link/page -> pages/proxy/traffic -> bootstrap`。
+以上路径均相对于 `webui/static/js/`，扩展名为 `.js`；登录页单独加载 `pages/login/page.js`。
+账号功能块依赖 `pages/accounts/page.js` 的共享状态和页面工具，并在 `bootstrap.js` 初始化前声明全局处理函数；具体加载位置以 `webui/templates/index.html` 为准。保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，也不得把业务代码重新塞回模板。后续迁移事件委托或 ES module 时，必须先增加浏览器验收并评估全局 API 兼容范围。
 
 ## 10. 测试规范
 
@@ -148,7 +161,7 @@ WebUI 只维护现代页面，使用普通 `<script>` 按
 - PostgreSQL 行为使用临时 schema 集成测试。
 - 受影响的注册/Codex driver 通过统一调用契约测试；公共契约变化时覆盖所有受影响驱动。
 - API 变更必须覆盖鉴权、参数、状态码和响应字段。
-- Flask 路由契约由 `tests/test_route_contract.py` 固化；有意变更必须单独评审。
+- Flask 路由契约由 `tests/webui/test_route_contract.py` 固化；有意变更必须单独评审。
 - 缺陷修复应有能复现问题的行为验证，优先复用或补强已有用例，避免重复断言实现细节。
 - 不按测试数量删减用例；根据保护的业务行为、重复覆盖和实际耗时调整测试结构。
 - 测试不得写入仓库根目录真实账号、日志、邮箱池或兼容导出。

@@ -15,21 +15,17 @@ from urllib.parse import urlparse
 import pyotp
 from flask import Response, jsonify, redirect, render_template, request, url_for
 
-from core import (
-    account_task_store,
-    admin_repository,
-    codex_operation_service,
-    codex_retry_service,
-    codex_token_refresh_service,
-    db,
-    deactivation_mail_service,
-    extract_link_service,
-    live_check_service,
-    operation_task_store,
-    plan_check_service,
-)
-from core import registration_service as svc
-from core.task_errors import classify_task_error
+from core import account_task_store
+from core.storage import admin_repository
+from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
+from core import db
+from core.accounts.deactivation import mail_scan as deactivation_mail_service
+from core.extract_link import service as extract_link_service
+from core.accounts.liveness import service as live_check_service
+from core import operation_task_store
+from core.accounts.plans import service as plan_check_service
+from core.registration import service as svc
+from core.operations.errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -45,7 +41,7 @@ def create_dashboard_blueprint(context: WebUIContext):
     statistics = DisplayStatisticsCache(ttl=15)
 
     def display_supply():
-        from core.email_supply import email_supply_summary
+        from core.email.supply import email_supply_summary
         return statistics.get("email_supply", lambda: email_supply_summary(include_next_expiry=True))
 
     @bp.after_app_request
@@ -105,9 +101,9 @@ def create_dashboard_blueprint(context: WebUIContext):
     def api_dashboard():
         """平台总览：仅返回聚合、配置状态与脱敏的运行中租约。"""
         from config import email as email_cfg
-        from core.email_provider import EMAIL_SOURCE_LABELS, parse_email_sources
-        from core.proxy_pool import pool_source
-        from core.proxy_provider import active_proxy_leases
+        from core.email.provider import EMAIL_SOURCE_LABELS, parse_email_sources
+        from core.proxy.pool import pool_source
+        from core.proxy.provider import active_proxy_leases
         aggregates = admin_repository.dashboard_aggregates()
         account_counts = aggregates["accounts"]
         job_counts = dict(aggregates["jobs"]["counts"])
@@ -152,7 +148,7 @@ def create_dashboard_blueprint(context: WebUIContext):
     @bp.get("/api/capabilities")
     def api_capabilities():
         """返回不含密钥的功能可用性及缺失配置原因。"""
-        from core.feature_availability import feature_availability
+        from core.runtime.capabilities import feature_availability
         return jsonify(feature_availability())
 
     return bp

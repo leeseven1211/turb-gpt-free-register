@@ -96,7 +96,7 @@ def main() -> None:
         raise SystemExit(2) from exc
 
     # PostgreSQL 是唯一主存储；连不上就在这里终止，不要带着"会静默丢数据"的状态启动。
-    from core import postgres_store
+    from core.storage import postgres as postgres_store
     postgres_store.require_ready()
 
     app = create_app(auth_code=args.auth_code)
@@ -128,7 +128,7 @@ def main() -> None:
         pass
     finally:
         # 把去抖窗口里还没落盘的兼容导出补上，避免文件停留在旧内容
-        from core import compat_export
+        from core.storage import compat_export
         flushed = compat_export.flush()
         if flushed:
             logger.info("退出前已补写兼容导出：%s", "、".join(flushed))

@@ -1,0 +1,1141 @@
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from core.codex.retry_service import CodexRetryStopped
+from core.codex.roxy import oauth as roxy_codex_oauth
+from core.codex.roxy.oauth import _account_login_credentials, _body_indicates_whatsapp_only, _classify_phone_page_failure, _codex_open_headless, _complete_login_challenge_after_email, complete_openai_login_challenge, _do_phone_verification_if_present, _finish_consent_workspace, _is_codex_retry_stopped_exception, _is_totp_login_page, _phone_error_allows_number_rotation, _phone_error_counts_country_failure, _phone_channel_selection, _prepare_phone_form_for_submit, _run_roxy_codex_oauth_once, _select_phone_country_by_calling_code, _submit_saved_login_password, _verify_sms_channel_selected, _wait_after_phone_send, _wait_for_fresh_email_otp
+from core.sms import provider as sms_provider
+
+
+class _Element:
+    def __init__(self, driver, kind):
+        self.driver = driver
+        self.kind = kind
+
+    def click(self):
+        self.driver.clicked.append(self.kind)
+
+    def send_keys(self, *keys):
+        self.driver.keys.append((self.kind, keys))
+
+
+class _SwitchTo:
+    def __init__(self, driver):
+        self.active_element = _Element(driver, "active")
+
+
+class _CountryDriver:
+    def __init__(self, *, current_code="1"):
+        self.current_code = current_code
+        self.clicked = []
+        self.keys = []
+        self.scan_count = 0
+        self.reset_count = 0
+        self.switch_to = _SwitchTo(self)
+        self.button = _Element(self, "button")
+        self.option = _Element(self, "option-cl")
+
+    def execute_script(self, script, *args):
+        if "return {hasButton:" in script:
+            text = "Chile (+56)" if self.current_code == "56" else "United States (+1)"
+            return {"hasButton": True, "text": text, "dialCode": self.current_code, "expanded": "false"}
+        if "return form?.querySelector('button[aria-haspopup=" in script:
+            return self.button
+        if "phoneCountryListReset" in script:
+            self.reset_count += 1
+            return {"ready": True, "before": 8811, "after": 0, "max": 8811}
+        if "const candidates =" in script:
+            self.scan_count += 1
+            if self.scan_count == 1:
+                return {"ready": True, "found": False, "before": 0, "after": 240, "max": 9000}
+            return {
+                "ready": True,
+                "found": True,
+                "option": self.option,
+                "text": "Chile (+56)",
+                "code": "56",
+                "key": "CL",
+            }
+        if "const hiddenSelect" in script:
+            return {"text": "Chile (+56)", "dialCode": "56", "countryKey": "CL", "expanded": "false"}
+        return None
+
+
+class RoxyPhoneCountryTests(unittest.TestCase):
+    def test_codex_oauth_has_independent_visible_window_setting(self):
+        with (
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_OPEN_HEADLESS", True),
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_CODEX_OPEN_HEADLESS", False, create=True),
+        ):
+            self.assertFalse(_codex_open_headless())
+
+    def test_public_login_challenge_reuses_shared_state_machine(self):
+        driver = object()
+        with patch(
+            "core.codex.roxy.oauth._complete_login_challenge_after_email",
+            return_value="advanced",
+        ) as shared:
+            result = complete_openai_login_challenge(
+                driver,
+                "a@example.com",
+                "Password!123",
+                "TOTPSECRET",
+                timeout=17,
+            )
+
+        self.assertEqual(result, "advanced")
+        shared.assert_called_once_with(
+            driver,
+            "a@example.com",
+            "Password!123",
+            "TOTPSECRET",
+            timeout=17,
+        )
+
+    def test_saved_login_credentials_are_loaded_without_changing_values(self):
+        account = {
+            "extra_json": '{"registration_password":"StoredPassword!123"}',
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        }
+        with patch("core.db.get_account_by_email", return_value=account):
+            password, secret = _account_login_credentials("a@example.com")
+
+        self.assertEqual(password, "StoredPassword!123")
+        self.assertEqual(secret, "JBSWY3DPEHPK3PXP")
+
+    def test_new_login_password_takes_precedence_over_registration_password(self):
+        account = {
+            "extra_json": (
+                '{"registration_password":"SignupPassword!123",'
+                '"login_password":"PostRegistrationPassword!456"}'
+            ),
+            "totp_secret": "",
+        }
+        with patch("core.db.get_account_by_email", return_value=account):
+            password, secret = _account_login_credentials("a@example.com")
+
+        self.assertEqual(password, "PostRegistrationPassword!456")
+        self.assertEqual(secret, "")
+
+    def test_login_challenge_uses_saved_password_then_totp_without_email_otp(self):
+        driver = MagicMock()
+        driver.step = "password"
+        order = []
+
+        def state(_driver):
+            return {"url": f"https://auth.openai.com/{driver.step}", "inputs": [], "errors": []}
+
+        def submit_password(_driver, _email, _password):
+            order.append("password")
+            driver.step = "totp"
+
+        def submit_totp(_driver, _email, _secret):
+            order.append("totp")
+            driver.step = "advanced"
+
+        with (
+            patch("core.codex.roxy.oauth._login_challenge_state", side_effect=state),
+            patch("core.codex.roxy.oauth._is_login_password_page", side_effect=lambda _driver: driver.step == "password"),
+            patch("core.codex.roxy.oauth._is_totp_login_page", side_effect=lambda _driver, _state=None: driver.step == "totp"),
+            patch("core.codex.roxy.oauth._is_email_verification_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_login_advanced", side_effect=lambda _driver, _state=None: driver.step == "advanced"),
+            patch("core.codex.roxy.oauth._submit_saved_login_password", side_effect=submit_password),
+            patch("core.codex.roxy.oauth._submit_saved_login_totp", side_effect=submit_totp),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver,
+                "a@example.com",
+                "StoredPassword!123",
+                "JBSWY3DPEHPK3PXP",
+                timeout=2,
+            )
+
+        self.assertEqual(result, "advanced")
+        self.assertEqual(order, ["password", "totp"])
+
+    def test_totp_form_wins_over_stale_password_url(self):
+        state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [{"type": "text", "name": "totp", "autocomplete": "one-time-code"}],
+            "text": "Enter the code from your authenticator app",
+        }
+
+        self.assertTrue(_is_totp_login_page(MagicMock(), state))
+
+    def test_saved_password_reuses_shared_hydration_and_submission_flow(self):
+        driver = MagicMock()
+        with (
+            patch.object(roxy_codex_oauth, "_fill_password_page_if_present", return_value="StoredPassword!123") as shared,
+            patch.object(roxy_codex_oauth, "_human_type_text") as type_text,
+            patch.object(roxy_codex_oauth, "_human_click") as click,
+        ):
+            _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
+
+        shared.assert_called_once_with(
+            driver, "a@example.com", timeout=60, existing_password="StoredPassword!123",
+            login_rejection_detector=roxy_codex_oauth._is_explicit_password_rejection_state,
+        )
+        type_text.assert_not_called()
+        click.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_saved_password_shared_submission_failure_is_not_replayed(self):
+        driver = MagicMock()
+        error = RuntimeError("request_unknown: 密码提交后仍未确认后续页面")
+        with patch.object(roxy_codex_oauth, "_fill_password_page_if_present", side_effect=error) as shared:
+            with self.assertRaises(RuntimeError) as caught:
+                _submit_saved_login_password(driver, "a@example.com", "StoredPassword!123")
+
+        self.assertIs(caught.exception, error)
+        shared.assert_called_once()
+        driver.refresh.assert_not_called()
+        driver.execute_script.assert_not_called()
+
+    def test_login_password_page_without_saved_password_fails_before_phone(self):
+        driver = MagicMock()
+        clock = [100.0]
+
+        def advance(seconds):
+            clock[0] += float(seconds)
+
+        with (
+            patch(
+                "core.codex.roxy.oauth._login_challenge_state",
+                return_value={"url": "https://auth.openai.com/log-in/password", "inputs": [], "errors": []},
+            ),
+            patch("core.codex.roxy.oauth._is_login_password_page", return_value=True),
+            patch("core.codex.roxy.oauth._click_passwordless_signup_if_present", return_value={"ok": False}),
+            patch("core.codex.roxy.oauth._safe_get"),
+            patch("core.codex.roxy.oauth._submit_email_via_browser_nextauth", return_value={"ok": False}),
+            patch("core.codex.roxy.oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.monotonic", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.sleep", side_effect=advance),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "本地无注册密码"):
+                _complete_login_challenge_after_email(driver, "a@example.com", "", "", timeout=1)
+
+    def test_nextauth_fallback_state_is_consumed_without_waiting_for_stale_shell(self):
+        driver = MagicMock()
+        clock = [100.0]
+        shell_state = {
+            "url": "https://chatgpt.com/auth/login?email=a%40example.com",
+            "inputs": [{"type": "email", "name": "email", "value": ""}],
+            "errors": [],
+        }
+        with (
+            patch("core.codex.roxy.oauth._login_challenge_state", return_value=shell_state),
+            patch("core.codex.roxy.oauth._is_login_password_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_totp_login_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_email_verification_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_login_advanced", return_value=False),
+            patch(
+                "core.codex.roxy.oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ),
+            patch("core.codex.roxy.oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 3.0)),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=5
+            )
+
+        self.assertEqual(result, "email_otp")
+
+    def test_nextauth_fallback_recovers_login_shell_without_email_query(self):
+        driver = MagicMock()
+        clock = [100.0]
+        shell_state = {
+            "url": "https://chatgpt.com/auth/login",
+            "inputs": [{"type": "email", "name": "email", "value": ""}],
+            "errors": [],
+        }
+        with (
+            patch("core.codex.roxy.oauth._login_challenge_state", return_value=shell_state),
+            patch("core.codex.roxy.oauth._is_login_password_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_totp_login_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_email_verification_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_login_advanced", return_value=False),
+            patch(
+                "core.codex.roxy.oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ) as nextauth,
+            patch("core.codex.roxy.oauth.time.time", side_effect=lambda: clock[0]),
+            patch(
+                "core.codex.roxy.oauth.time.sleep",
+                side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 3.0),
+            ),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=5
+            )
+
+        self.assertEqual(result, "email_otp")
+        nextauth.assert_called_once_with(driver, "a@example.com")
+
+    def test_nextauth_fallback_recovers_login_shell_without_mounted_inputs(self):
+        driver = MagicMock()
+        clock = [100.0]
+        shell_state = {
+            "url": "https://chatgpt.com/auth/login?email=a%40example.com",
+            "inputs": [],
+            "errors": [],
+        }
+        with (
+            patch("core.codex.roxy.oauth._login_challenge_state", return_value=shell_state),
+            patch("core.codex.roxy.oauth._is_login_password_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_totp_login_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_email_verification_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_login_advanced", return_value=False),
+            patch(
+                "core.codex.roxy.oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ) as nextauth,
+            patch("core.codex.roxy.oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 1.0)),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=5
+            )
+
+        self.assertEqual(result, "email_otp")
+        nextauth.assert_called_once_with(driver, "a@example.com")
+
+    def test_password_page_reopens_chatgpt_for_nextauth_fallback(self):
+        driver = MagicMock()
+        clock = [100.0]
+        password_state = {
+            "url": "https://auth.openai.com/log-in/password",
+            "inputs": [],
+            "errors": [],
+        }
+        with (
+            patch("core.codex.roxy.oauth._login_challenge_state", return_value=password_state),
+            patch("core.codex.roxy.oauth._is_login_password_page", return_value=True),
+            patch("core.codex.roxy.oauth._is_totp_login_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_email_verification_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_login_advanced", return_value=False),
+            patch("core.codex.roxy.oauth._click_passwordless_signup_if_present", return_value={"ok": False}),
+            patch("core.codex.roxy.oauth._safe_get") as safe_get,
+            patch(
+                "core.codex.roxy.oauth._submit_email_via_browser_nextauth",
+                return_value={"ok": True, "stage": "landed", "state": "otp"},
+            ) as nextauth,
+            patch("core.codex.roxy.oauth.time.time", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.monotonic", side_effect=lambda: clock[0]),
+            patch("core.codex.roxy.oauth.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 1.0)),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _complete_login_challenge_after_email(
+                driver, "a@example.com", "", "", timeout=30
+            )
+
+        self.assertEqual(result, "email_otp")
+        safe_get.assert_called_once()
+        nextauth.assert_called_once_with(driver, "a@example.com")
+
+    def test_email_otp_provider_receives_codex_wait_budget(self):
+        calls = []
+
+        def provider(email, *, after_ts, max_wait=None):
+            calls.append((email, after_ts, max_wait))
+            return "123456"
+
+        result = _wait_for_fresh_email_otp(
+            provider,
+            "a@example.com",
+            after_ts=100.0,
+            timeout=90,
+        )
+
+        self.assertEqual(result, "123456")
+        self.assertEqual(calls[0][:2], ("a@example.com", 100.0))
+        self.assertGreaterEqual(calls[0][2], 89)
+        self.assertLessEqual(calls[0][2], 90)
+
+    def test_codex_email_otp_uses_configured_budget_across_attempts(self):
+        wait_calls = []
+        resolver = MagicMock(return_value="email_otp")
+
+        def wait_for_code(*_args, **kwargs):
+            wait_calls.append(kwargs.get("timeout"))
+            return "123456"
+
+        with (
+            patch("config.email.OTP_MAX_WAIT", 240),
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "report_stage"),
+            patch.object(roxy_codex_oauth, "human_delay"),
+            patch.object(roxy_codex_oauth, "_maybe_accept"),
+            patch.object(roxy_codex_oauth, "_select_existing_account_if_present", return_value=False),
+            patch.object(roxy_codex_oauth, "_account_login_credentials", return_value=("", "")),
+            patch.object(roxy_codex_oauth, "_type_email_address"),
+            patch.object(roxy_codex_oauth, "_submit_email_step"),
+            patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver),
+            patch.object(roxy_codex_oauth, "_wait_for_fresh_email_otp", side_effect=wait_for_code),
+            patch.object(roxy_codex_oauth, "_wait_for_otp_input"),
+            patch.object(roxy_codex_oauth, "_clear_otp_inputs"),
+            patch.object(roxy_codex_oauth, "_type_otp"),
+            patch.object(roxy_codex_oauth, "_install_email_otp_validate_hook"),
+            patch.object(roxy_codex_oauth, "_click_if_present", return_value=True),
+            patch.object(roxy_codex_oauth, "_wait_after_email_otp_submit", return_value="accepted"),
+        ):
+            roxy_codex_oauth._fill_email_and_otp(
+                MagicMock(),
+                "account@example.com",
+                MagicMock(),
+                "https://auth.openai.com/oauth/authorize",
+            )
+
+        self.assertEqual([80], wait_calls)
+
+    def test_codex_account_login_reports_substages_to_task_progress(self):
+        events = []
+        resolver = MagicMock(side_effect=["email_otp", "advanced"])
+
+        with (
+            patch.object(roxy_codex_oauth, "check_cancelled"),
+            patch.object(roxy_codex_oauth, "report_stage"),
+            patch.object(roxy_codex_oauth, "human_delay"),
+            patch.object(roxy_codex_oauth, "_maybe_accept"),
+            patch.object(roxy_codex_oauth, "_select_existing_account_if_present", return_value=False),
+            patch.object(roxy_codex_oauth, "_account_login_credentials", return_value=("", "")),
+            patch.object(roxy_codex_oauth, "_type_email_address"),
+            patch.object(roxy_codex_oauth, "_submit_email_step"),
+            patch("core.auth.browser.email_otp._submit_email_and_wait_next", return_value="otp"),
+            patch.object(roxy_codex_oauth, "complete_openai_login_challenge", resolver),
+            patch.object(roxy_codex_oauth, "_wait_for_fresh_email_otp", return_value="123456"),
+            patch.object(roxy_codex_oauth, "_wait_for_otp_input"),
+            patch.object(roxy_codex_oauth, "_clear_otp_inputs"),
+            patch.object(roxy_codex_oauth, "_type_otp"),
+            patch.object(roxy_codex_oauth, "_install_email_otp_validate_hook"),
+            patch.object(roxy_codex_oauth, "_click_if_present", return_value=True),
+            patch.object(roxy_codex_oauth, "_wait_after_email_otp_submit", return_value="totp_required"),
+        ):
+            roxy_codex_oauth._fill_email_and_otp(
+                MagicMock(),
+                "account@example.com",
+                MagicMock(),
+                "https://chatgpt.com/auth/login",
+                stage_reporter=lambda **event: events.append(event),
+            )
+
+        self.assertIn("login", [event["stage"] for event in events])
+        self.assertIn("email_otp", [event["stage"] for event in events])
+
+    def test_missing_twofa_establishes_chatgpt_session_before_oauth(self):
+        order = []
+        driver = MagicMock()
+        opened = SimpleNamespace(profile_id="profile-1", raw={})
+        data_saver = MagicMock()
+
+        def fill(_driver, _email, _otp_provider, url):
+            order.append("chatgpt_login" if url == "https://chatgpt.com/auth/login" else "oauth_login")
+
+        def setup(_driver):
+            order.append("twofa")
+            return True
+
+        with (
+            patch("core.codex.oauth._codex_auth_url_source", return_value="cpa"),
+            patch("core.codex.oauth._capture_cpa_credential_baseline", return_value={"captured": False}),
+            patch(
+                "core.codex.oauth._request_cpa_authorize_url",
+                return_value={"state": "state-1", "auth_url": "https://auth.openai.com/oauth/authorize?state=state-1"},
+            ),
+            patch("core.codex.oauth._extract_code", return_value="code-1"),
+            patch("core.codex.oauth._submit_cpa_callback", return_value={"message": "ok"}),
+            patch("core.codex.oauth._save_cpa_local_record", return_value=None),
+            patch("core.codex.roxy.oauth._detect_browser_kind", return_value="roxy"),
+            patch("core.browser.flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
+            patch("core.codex.roxy.oauth._fill_email_and_otp", side_effect=fill),
+            patch(
+                "core.auth.browser.selenium_auth.fetch_chatgpt_session",
+                side_effect=lambda *_args, **_kwargs: order.append("chatgpt_session") or {"accessToken": "token"},
+            ),
+            patch(
+                "core.codex.roxy.oauth._do_phone_verification_if_present",
+                side_effect=lambda _driver: order.append("phone"),
+            ),
+            patch(
+                "core.codex.roxy.oauth._finish_consent_workspace",
+                side_effect=lambda _driver, email="": order.append("callback") or "http://localhost/callback?code=code-1&state=state-1",
+            ),
+            patch("core.codex.roxy.oauth.human_delay"),
+        ):
+            result = _run_roxy_codex_oauth_once(
+                "a@example.com",
+                otp_provider=object(),
+                force=True,
+                existing_driver=driver,
+                existing_opened=opened,
+                reuse_existing_profile=True,
+                clear_existing_state=False,
+                before_oauth_setup=setup,
+            )
+
+        # CPA 只确认 callback、未返回 auth JSON 时是待确认，不再伪装为凭证成功。
+        self.assertFalse(result["ok"])
+        self.assertEqual("attention_required", result["status"])
+        self.assertTrue(result["callback_submitted"])
+        self.assertEqual(
+            order,
+            ["chatgpt_login", "chatgpt_session", "twofa", "oauth_login", "phone", "callback"],
+        )
+        install_for_flow.assert_called_once_with(
+            "codex_oauth", opened, driver, label="Codex OAuth"
+        )
+        data_saver.stop.assert_called_once_with()
+
+    def test_independent_oauth_opens_and_binds_codex_flow_before_navigation(self):
+        opened = SimpleNamespace(profile_id="profile-1", raw={})
+        driver = MagicMock()
+        client = MagicMock()
+        client.open_profile_for_account.return_value = opened
+        data_saver = MagicMock()
+
+        with (
+            patch("core.codex.roxy.oauth.RoxyBrowserClient", return_value=client),
+            patch("core.browser.roxy.profile_binding.account_profile_id_by_email", return_value="profile-1"),
+            patch("core.codex.oauth._codex_auth_url_source", return_value="local"),
+            patch("core.codex.oauth._generate_pkce", return_value=("verifier", "challenge")),
+            patch("core.codex.oauth._generate_state", return_value="state-1"),
+            patch("core.codex.oauth._build_authorize_url", return_value="https://auth.openai.com/authorize"),
+            patch.object(roxy_codex_oauth, "_build_driver", return_value=driver),
+            patch.object(roxy_codex_oauth, "_detect_browser_kind", return_value="roxy"),
+            patch.object(roxy_codex_oauth, "_fill_email_and_otp", side_effect=RuntimeError("stop navigation")),
+            patch("core.browser.flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
+            patch("core.browser.traffic.bind_roxy_capture") as bind_capture,
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
+        ):
+            result = _run_roxy_codex_oauth_once(
+                "a@example.com",
+                otp_provider=object(),
+                proxy="http://proxy.example:8080",
+                force=True,
+            )
+
+        self.assertFalse(result["ok"])
+        client.open_profile_for_account.assert_called_once_with(
+            profile_id="profile-1",
+            proxy_url="http://proxy.example:8080",
+            headless=roxy_codex_oauth._codex_open_headless(),
+            data_saver_flow="codex_oauth",
+        )
+        bind_capture.assert_called_once_with(opened, purpose="codex_oauth")
+        install_for_flow.assert_called_once_with(
+            "codex_oauth", opened, driver, label="Codex OAuth"
+        )
+        data_saver.stop.assert_called_once_with()
+        driver.quit.assert_called_once_with()
+        client.cleanup_profile.assert_called_once_with(opened)
+
+    def test_selects_virtualized_react_aria_country_with_enter(self):
+        driver = _CountryDriver(current_code="1")
+
+        result = _select_phone_country_by_calling_code(driver, "+56977760779", timeout=2)
+
+        self.assertTrue(result["selected"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["dialCode"], "56")
+        self.assertEqual(result["countryKey"], "CL")
+        self.assertEqual(driver.clicked, ["button"])
+        self.assertIn(("option-cl", ("\ue007",)), driver.keys)
+        self.assertEqual(driver.reset_count, 1)
+
+    def test_keeps_country_when_calling_code_already_matches(self):
+        driver = _CountryDriver(current_code="56")
+
+        result = _select_phone_country_by_calling_code(driver, "+56977760779", timeout=2)
+
+        self.assertTrue(result["selected"])
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["dialCode"], "56")
+        self.assertEqual(driver.clicked, [])
+
+    def test_unselected_whatsapp_text_does_not_fail_sms_submission(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [
+                {"value": "sms", "checked": True},
+                {"value": "whatsapp", "checked": False},
+            ],
+            "bodyText": "SMS\nWhatsApp",
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "")
+
+    def test_checked_whatsapp_radio_is_rejected(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "whatsapp", "checked": True}],
+            "bodyText": "WhatsApp",
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "whatsapp_channel")
+
+    def test_checked_whatsapp_with_sms_available_is_a_same_number_reset(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [
+                {"value": "sms", "checked": False},
+                {"value": "whatsapp", "checked": True},
+            ],
+            "controls": [],
+            "bodyText": "SMS WhatsApp",
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "sms_channel_reset")
+
+    def test_explicit_japanese_sms_delivery_failure_overrides_whatsapp_reset(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [
+                {"value": "sms", "checked": False},
+                {"value": "whatsapp", "checked": True},
+            ],
+            "controls": [],
+            "bodyText": (
+                "この電話番号にはテキストメッセージを送信できなかったため、"
+                "WhatsApp に切り替えました。続行すると、WhatsApp で認証コードを送信します。"
+            ),
+        }
+
+        reason = _classify_phone_page_failure(state)
+
+        self.assertEqual(reason, "delivery_refused")
+        self.assertTrue(_phone_error_allows_number_rotation(RuntimeError(f"{reason}: rejected")))
+        self.assertTrue(_phone_error_counts_country_failure(RuntimeError(f"{reason}: rejected")))
+
+    def test_phone_error_at_end_of_long_country_list_is_not_truncated(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "bodyText": "国家列表 " * 500,
+            "bodyTextTail": "この電話番号にはテキストメッセージを送信できません",
+            "errors": [],
+            "submitProbe": {},
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "delivery_refused")
+
+    def test_phone_submit_http_response_is_reported(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "bodyText": "Phone number required",
+            "errors": [],
+            "submitProbe": {
+                "responses": [
+                    {"status": 403, "url": "/api/accounts/phone", "body": '{"error":"request rejected"}'}
+                ]
+            },
+        }
+
+        self.assertEqual(_classify_phone_page_failure(state), "phone_submit_http_403")
+
+    def test_whatsapp_only_body_without_radio_is_rejected(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [],
+            "controls": [],
+            "bodyText": "確認のため、WhatsApp を通じてワンタイムコードを送ります。",
+        }
+
+        self.assertTrue(_body_indicates_whatsapp_only(state))
+        self.assertEqual(_classify_phone_page_failure(state), "whatsapp_channel")
+
+    def test_body_with_both_sms_and_whatsapp_is_not_whatsapp_only(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [],
+            "controls": [],
+            "bodyText": "Choose SMS or WhatsApp",
+        }
+
+        self.assertFalse(_body_indicates_whatsapp_only(state))
+        self.assertEqual(_classify_phone_page_failure(state), "")
+
+    def test_codex_retry_stop_exception_is_not_a_regular_phone_error(self):
+        self.assertTrue(_is_codex_retry_stopped_exception(CodexRetryStopped("stop")))
+        self.assertFalse(_is_codex_retry_stopped_exception(RuntimeError("phone failed")))
+
+    def test_channel_selection_reads_hidden_native_radio(self):
+        state = {
+            "radios": [
+                {"value": "sms", "checked": True, "visible": False},
+                {"value": "whatsapp", "checked": False, "visible": False},
+            ],
+            "controls": [],
+        }
+
+        selected = _phone_channel_selection(state)
+
+        self.assertTrue(selected["has_sms"])
+        self.assertTrue(selected["selected_sms"])
+        self.assertFalse(selected["selected_whatsapp"])
+
+    def test_verify_sms_rejects_react_state_that_remains_whatsapp(self):
+        class Driver:
+            current_url = "https://auth.openai.com/add-phone"
+
+            def execute_script(self, _script):
+                return {
+                    "url": self.current_url,
+                    "radios": [
+                        {"value": "sms", "checked": False},
+                        {"value": "whatsapp", "checked": True},
+                    ],
+                    "controls": [],
+                    "inputs": [],
+                    "forms": [{"action": "/add-phone"}],
+                    "bodyText": "SMS WhatsApp",
+                }
+
+        with self.assertRaisesRegex(RuntimeError, "whatsapp_channel"):
+            _verify_sms_channel_selected(Driver(), timeout=0.2)
+
+    def test_sms_channel_rerender_refills_the_same_number_before_submit(self):
+        phone_fill = {
+            "e164": "+542325597108",
+            "actualVisible": "2325597108",
+            "hiddenValue": "+542325597108",
+            "dialCode": "54",
+            "selectedText": "Argentina (+54)",
+        }
+        verified = {"visibleValue": "2325597108", "hiddenValue": "+542325597108"}
+        with (
+            patch("core.codex.roxy.oauth._ensure_add_phone_input"),
+            patch("core.codex.roxy.oauth._set_phone_value", return_value=phone_fill) as fill,
+            patch("core.codex.roxy.oauth._blur_active_input_and_wait"),
+            patch(
+                "core.codex.roxy.oauth._verify_add_phone_value_before_submit",
+                side_effect=[verified, RuntimeError("phone cleared"), verified, verified],
+            ),
+            patch("core.codex.roxy.oauth._select_sms_channel_or_raise"),
+            patch("core.codex.roxy.oauth._verify_sms_channel_selected", return_value={"selected_sms": True}),
+        ):
+            result = _prepare_phone_form_for_submit(object(), "+542325597108", attempts=2)
+
+        self.assertEqual(fill.call_count, 2)
+        self.assertTrue(all(call.args[1] == "+542325597108" for call in fill.call_args_list))
+        self.assertEqual(result["phone_verify"], verified)
+
+    def test_required_field_transient_does_not_rotate_number(self):
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "inputs": [{"ariaInvalid": "true", "value": ""}],
+            "forms": [{"action": "/add-phone"}],
+            "radios": [],
+            "controls": [],
+            "bodyText": "電話番号が必要です",
+        }
+        clock = {"value": 0.0}
+
+        def now():
+            clock["value"] += 0.4
+            return clock["value"]
+
+        with (
+            patch("core.codex.roxy.oauth.time.time", side_effect=now),
+            patch("core.codex.roxy.oauth.time.sleep"),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch("core.codex.roxy.oauth._is_add_phone_page", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+        ):
+            outcome = _wait_after_phone_send(object(), timeout=1)
+
+        self.assertEqual(outcome, "submission_uncertain")
+        self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("phone_form_unstable")))
+
+    def test_navigation_pending_waits_instead_of_rotating(self):
+        state = {
+            "url": "https://auth.openai.com/oauth/authorize/loading",
+            "inputs": [],
+            "forms": [],
+            "radios": [],
+            "controls": [],
+            "bodyText": "",
+        }
+        clock = {"value": 0.0}
+
+        def now():
+            clock["value"] += 0.4
+            return clock["value"]
+
+        with (
+            patch("core.codex.roxy.oauth.time.time", side_effect=now),
+            patch("core.codex.roxy.oauth.time.sleep"),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch("core.codex.roxy.oauth._is_add_phone_page", return_value=False),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+        ):
+            outcome = _wait_after_phone_send(object(), timeout=1)
+
+        self.assertEqual(outcome, "navigation_pending")
+        self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("phone_navigation_pending")))
+
+    def test_explicit_number_failure_still_allows_immediate_rotation(self):
+        error = RuntimeError("invalid_phone: phone number is not valid")
+
+        self.assertTrue(_phone_error_allows_number_rotation(error))
+        self.assertTrue(_phone_error_counts_country_failure(error))
+        self.assertTrue(_phone_error_allows_number_rotation(sms_provider.SmsCodeTimeout("timeout")))
+        self.assertFalse(_phone_error_allows_number_rotation(RuntimeError("send_not_accepted: retry exhausted")))
+        self.assertFalse(_phone_error_counts_country_failure(RuntimeError("send_not_accepted: retry exhausted")))
+        self.assertFalse(_phone_error_counts_country_failure(RuntimeError("send_limited: rate limit")))
+
+    def test_whatsapp_channel_never_rotates_or_penalizes_country(self):
+        error = RuntimeError("whatsapp_channel: page only supports WhatsApp")
+
+        self.assertFalse(_phone_error_allows_number_rotation(error))
+        self.assertFalse(_phone_error_counts_country_failure(error))
+
+    def test_whatsapp_only_page_stops_before_acquiring_number(self):
+        http = MagicMock()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [],
+            "controls": [],
+            "bodyText": "確認のため、WhatsApp を通じてワンタイムコードを送ります。",
+        }
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number") as acquire,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "取号前停止"):
+                _do_phone_verification_if_present(object())
+
+        acquire.assert_not_called()
+        http.close.assert_called_once()
+
+    def test_whatsapp_error_after_purchase_stops_after_one_number(self):
+        http = MagicMock()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": False}, {"value": "whatsapp", "checked": False}],
+            "controls": [],
+            "bodyText": "SMS WhatsApp",
+        }
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch(
+                "core.codex.roxy.oauth._prepare_phone_form_for_submit",
+                side_effect=RuntimeError("whatsapp_channel: page rejected SMS"),
+            ),
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "不接受 SMS"):
+                _do_phone_verification_if_present(object())
+
+        acquire.assert_called_once()
+        cancel.assert_called_once_with("a1", http, background=True)
+        report_failure.assert_not_called()
+
+    def test_sms_channel_reset_reuses_same_number_once(self):
+        http = MagicMock()
+        driver = object()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": False}, {"value": "whatsapp", "checked": False}],
+            "controls": [],
+            "bodyText": "SMS WhatsApp",
+        }
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch("core.codex.roxy.oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch(
+                "core.codex.roxy.oauth._wait_after_phone_send",
+                side_effect=[RuntimeError("sms_channel_reset: React reset"), "code_page"],
+            ),
+            patch.object(sms_provider, "set_status"),
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.codex.roxy.oauth._ensure_phone_code_page_after_sms"),
+            patch("core.codex.roxy.oauth._type_otp"),
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=True),
+            patch("core.codex.roxy.oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+        ):
+            _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        self.assertEqual(prepare.call_count, 2)
+        self.assertTrue(all(call.args[1] == "+56954364095" for call in prepare.call_args_list))
+        self.assertEqual(click_submit.call_count, 2)
+        complete.assert_called_once_with("a1", http)
+        cancel.assert_not_called()
+
+    def test_navigation_pending_polls_current_number_without_resubmit_or_rotation(self):
+        http = MagicMock()
+        driver = object()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": True}],
+            "controls": [],
+            "bodyText": "SMS",
+        }
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch("core.codex.roxy.oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch("core.codex.roxy.oauth._wait_after_phone_send", return_value="navigation_pending"),
+            patch("core.codex.roxy.oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "set_status") as set_status,
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.codex.roxy.oauth._ensure_phone_code_page_after_sms"),
+            patch("core.codex.roxy.oauth._type_otp"),
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=True),
+            patch("core.codex.roxy.oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+        ):
+            _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        prepare.assert_called_once()
+        click_submit.assert_called_once()
+        rebuild.assert_not_called()
+        set_status.assert_called_once_with("a1", 1, http=http)
+        complete.assert_called_once_with("a1", http)
+        cancel.assert_not_called()
+
+    def test_sms_received_but_otp_page_still_pending_never_buys_second_number(self):
+        http = MagicMock()
+        driver = object()
+        state = {
+            "url": "https://auth.openai.com/add-phone",
+            "radios": [{"value": "sms", "checked": True}],
+            "controls": [],
+            "bodyText": "SMS",
+        }
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._phone_page_state", return_value=state),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "56954364095")) as acquire,
+            patch("core.codex.roxy.oauth._prepare_phone_form_for_submit", return_value={}),
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}),
+            patch("core.codex.roxy.oauth._wait_after_phone_send", return_value="code_page"),
+            patch.object(sms_provider, "set_status"),
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.codex.roxy.oauth._ensure_phone_code_page_after_sms"),
+            patch("core.codex.roxy.oauth._type_otp"),
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=True),
+            patch("core.codex.roxy.oauth._wait_after_phone_otp_submit", return_value="still_code_page"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
+                _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        complete.assert_called_once_with("a1", http)
+        cancel.assert_not_called()
+
+    def test_callback_loop_handles_late_add_phone_page(self):
+        driver = type("Driver", (), {"current_url": "https://auth.openai.com/add-phone"})()
+        callback = "http://localhost:1455/auth/callback?code=test&state=test"
+        with (
+            patch(
+                "core.codex.roxy.oauth._extract_callback_url_from_any_window",
+                side_effect=["", callback],
+            ),
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._do_phone_verification_if_present") as phone_flow,
+        ):
+            result = _finish_consent_workspace(driver, email="test@example.com")
+
+        self.assertEqual(result, callback)
+        phone_flow.assert_called_once_with(driver)
+
+    def test_consent_retry_helper_recognizes_try_again_button(self):
+        with patch.object(roxy_codex_oauth, "_click_if_present", return_value=True) as click:
+            result = roxy_codex_oauth._click_consent_retry_button(object())
+
+        self.assertTrue(result)
+        selectors = click.call_args.args[1]
+        self.assertTrue(any("Try again" in selector for selector in selectors))
+        self.assertTrue(any("Retry" in selector for selector in selectors))
+        self.assertTrue(any("重试" in selector for selector in selectors))
+
+    def test_callback_loop_limits_consent_fetch_retries(self):
+        driver = type("Driver", (), {"current_url": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"})()
+        callback = "http://localhost:1455/auth/callback?code=test&state=test"
+        with (
+            patch(
+                "core.codex.roxy.oauth._extract_callback_url_from_any_window",
+                side_effect=["", "", "", callback],
+            ),
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=False),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch("core.codex.roxy.oauth._select_existing_account_if_present", return_value=False),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=False),
+            patch("core.codex.roxy.oauth._click_consent_retry_button", side_effect=[True, True, True]) as retry,
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_CODEX_CALLBACK_TIMEOUT", 5),
+        ):
+            result = _finish_consent_workspace(driver, email="test@example.com")
+
+        self.assertEqual(result, callback)
+        self.assertEqual(retry.call_count, 3)
+
+    def test_local_phone_form_error_stops_without_buying_second_number(self):
+        http = MagicMock()
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "542325597108")) as acquire,
+            patch(
+                "core.codex.roxy.oauth._prepare_phone_form_for_submit",
+                side_effect=RuntimeError("phone_form_unstable: react state lost"),
+            ),
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
+                _do_phone_verification_if_present(object())
+
+        acquire.assert_called_once()
+        cancel.assert_called_once_with("a1", http, background=True)
+        report_failure.assert_not_called()
+
+    def test_submission_uncertain_rebuilds_page_and_reuses_same_number(self):
+        http = MagicMock()
+        driver = object()
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "542325597108")) as acquire,
+            patch("core.codex.roxy.oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch(
+                "core.codex.roxy.oauth._wait_after_phone_send",
+                side_effect=["submission_uncertain", "submission_uncertain", "code_page"],
+            ),
+            patch("core.codex.roxy.oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "set_status") as set_status,
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.codex.roxy.oauth._ensure_phone_code_page_after_sms"),
+            patch("core.codex.roxy.oauth._type_otp"),
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=True),
+            patch("core.codex.roxy.oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        self.assertEqual(
+            [call.args[1] for call in prepare.call_args_list],
+            ["+542325597108", "+542325597108", "+542325597108"],
+        )
+        self.assertEqual(click_submit.call_count, 3)
+        rebuild.assert_called_once()
+        cancel.assert_not_called()
+        set_status.assert_called_once_with("a1", 1, http=http)
+        complete.assert_called_once_with("a1", http)
+        report_failure.assert_not_called()
+
+    def test_persistent_sms_reset_after_page_rebuild_stops_without_second_number(self):
+        http = MagicMock()
+        driver = object()
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(sms_provider, "acquire_number", return_value=("a1", "542325597108")) as acquire,
+            patch("core.codex.roxy.oauth._prepare_phone_form_for_submit", return_value={}) as prepare,
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}) as click_submit,
+            patch(
+                "core.codex.roxy.oauth._wait_after_phone_send",
+                side_effect=[
+                    RuntimeError("sms_channel_reset: first reset"),
+                    RuntimeError("sms_channel_reset: second reset"),
+                    RuntimeError("sms_channel_reset: rebuilt reset"),
+                ],
+            ),
+            patch("core.codex.roxy.oauth._rebuild_add_phone_page") as rebuild,
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "已停止继续买号"):
+                _do_phone_verification_if_present(driver)
+
+        acquire.assert_called_once()
+        self.assertEqual(prepare.call_count, 3)
+        self.assertEqual(click_submit.call_count, 3)
+        rebuild.assert_called_once()
+        cancel.assert_called_once_with("a1", http, background=True)
+        report_failure.assert_not_called()
+
+    def test_explicit_invalid_phone_rotates_and_second_number_can_succeed(self):
+        http = MagicMock()
+        driver = object()
+        with (
+            patch("core.codex.roxy.oauth._has_strict_add_phone_form", return_value=True),
+            patch("core.codex.roxy.oauth._is_phone_code_page", return_value=False),
+            patch.object(sms_provider, "_http", return_value=http),
+            patch.object(
+                sms_provider,
+                "acquire_number",
+                side_effect=[("a1", "542325597108"), ("a2", "27644073175")],
+            ) as acquire,
+            patch(
+                "core.codex.roxy.oauth._prepare_phone_form_for_submit",
+                side_effect=[RuntimeError("invalid_phone: phone number is not valid"), {}],
+            ),
+            patch("core.codex.roxy.oauth._find_any", return_value=object()),
+            patch("core.codex.roxy.oauth._refresh_add_phone_for_retry"),
+            patch("core.codex.roxy.oauth._sleep_before_phone_retry"),
+            patch("core.codex.roxy.oauth._click_add_phone_continue_button", return_value={"ok": True}),
+            patch("core.codex.roxy.oauth._wait_after_phone_send", return_value="code_page"),
+            patch.object(sms_provider, "set_status"),
+            patch.object(sms_provider, "wait_for_sms_code", return_value="123456"),
+            patch("core.codex.roxy.oauth._ensure_phone_code_page_after_sms"),
+            patch("core.codex.roxy.oauth._type_otp"),
+            patch("core.codex.roxy.oauth.human_delay"),
+            patch("core.codex.roxy.oauth._click_if_present", return_value=True),
+            patch("core.codex.roxy.oauth._wait_after_phone_otp_submit", return_value="left_phone_flow"),
+            patch.object(sms_provider, "complete") as complete,
+            patch.object(sms_provider, "cancel") as cancel,
+            patch.object(sms_provider, "report_activation_failure") as report_failure,
+        ):
+            _do_phone_verification_if_present(driver)
+
+        self.assertEqual(acquire.call_count, 2)
+        cancel.assert_called_once_with("a1", http, background=True)
+        report_failure.assert_called_once_with("a1", "invalid_phone: phone number is not valid")
+        complete.assert_called_once_with("a2", http)
+
+
+if __name__ == "__main__":
+    unittest.main()

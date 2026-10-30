@@ -3,6 +3,6 @@ from __future__ import annotations
 
 import sys
 
-from core.operations import legacy_task_store as _implementation
+from core.storage.operations import legacy_task_store as _implementation
 
 sys.modules[__name__] = _implementation

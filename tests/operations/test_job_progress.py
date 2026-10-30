@@ -1,0 +1,1269 @@
+# -*- coding: utf-8 -*-
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import ANY, patch
+
+from core.storage import admin_repository
+from core import db
+from core.registration import service as registration_service
+from core.storage import registration
+from webui.app import _compact_job_for_list, _latest_progress_batch, create_app
+from tests.support_pg import PostgresTestCase
+
+
+class JobProgressTests(PostgresTestCase):
+    def _project_job_progress(self, job_id):
+        from core import account_task_store
+        from core.storage.operations import store as operation
+
+        with patch.object(account_task_store, "_SCHEMA", self.schema), patch.object(account_task_store, "_READY_KEY", ""):
+            operation.sync_registration_job(job_id)
+            return operation.get_registration_progress([job_id])[job_id]["progress"]
+
+    def test_closeout_events_have_own_time_and_preserve_running_history(self):
+        from core.storage.operations import store as operation
+
+        start, update, end = (f"2026-10-13T09:24:{second}+00:00" for second in ("23", "28", "53"))
+        for success, failure_state in ((True, "failed"), (False, "failed"), (False, "stopped")):
+            with self.subTest(success=success, failure_state=failure_state):
+                job = db.create_job("icloud_hide")
+                with patch.object(db, "_registration_now", return_value=start):
+                    db.update_job_progress(job["id"], "profile", "pending")
+                    db.update_job_progress(job["id"], "complete", "running")
+                    db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+                with patch.object(db, "_registration_now", return_value=update):
+                    db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+                with patch.object(db, "_registration_now", return_value=end):
+                    db.finish_job_progress(job["id"], success=success, failure_state=failure_state)
+                steps = db.get_job(job["id"])["progress_steps"]
+                self.assertEqual(end, steps["email_otp"]["occurred_at"])
+                self.assertEqual(start, steps["email_otp"]["started_at"])
+                self.assertEqual([start, update], [item["occurred_at"] for item in steps["email_otp"]["transitions"]])
+                self.assertEqual("pending" if success else failure_state, steps["email_otp"]["state"])
+                self.assertEqual(None if success else end, steps["email_otp"].get("completed_at"))
+                for stage in ("profile", "complete"):
+                    self.assertEqual(end, steps[stage]["occurred_at"])
+                self.assertNotIn("started_at", steps["profile"])
+                self.assertNotIn("completed_at", steps["profile"])
+                progress = self._project_job_progress(job["id"])
+                events = operation.list_task_events(progress["task_id"], run_id=progress["run_id"])["items"]
+                self.assertEqual([start, update, end], [item["created_at"] for item in events if item["raw_stage"] == "email_otp"])
+
+    def test_closeout_preserves_explicit_terminal_time_and_refreshes_complete_time(self):
+        start, terminal, end, repeat = (f"2026-10-13T09:24:{second}+00:00" for second in ("20", "23", "28", "53"))
+        for terminal_state in ("success", "failed", "stopped", "skipped"):
+            with self.subTest(terminal_state=terminal_state):
+                job = db.create_job("icloud_hide")
+                with patch.object(db, "_registration_now", return_value=start):
+                    db.update_job_progress(job["id"], "email_otp", "running")
+                with patch.object(db, "_registration_now", return_value=terminal):
+                    db.update_job_progress(job["id"], "email_otp", terminal_state)
+                before = db.get_job(job["id"])["progress_steps"]["email_otp"]
+                with patch.object(db, "_registration_now", return_value=end):
+                    db.finish_job_progress(job["id"], success=False)
+                after = db.get_job(job["id"])["progress_steps"]["email_otp"]
+                self.assertEqual(before, after)
+                self.assertEqual(end, db.get_job(job["id"])["progress_steps"]["complete"]["occurred_at"])
+                with patch.object(db, "_registration_now", return_value=repeat):
+                    db.finish_job_progress(job["id"], success=False)
+                self.assertEqual(repeat, db.get_job(job["id"])["progress_steps"]["complete"]["occurred_at"])
+
+    def test_recovery_event_uses_recovery_time_without_changing_running_history(self):
+        start, end = "2026-10-13T09:24:23+00:00", "2026-10-13T09:25:03+00:00"
+        job = db.create_job("icloud_hide")
+        db.update_job(job["id"], status="running")
+        with patch.object(db, "_registration_now", return_value=start):
+            db.update_job_progress(job["id"], "email_otp", "running", step_instance_id="otp-a")
+        with patch.object(db, "_registration_now", return_value=end):
+            self.assertEqual(1, db.recover_interrupted_registration_jobs())
+        step = db.get_job(job["id"])["progress_steps"]["email_otp"]
+        self.assertEqual(start, step["started_at"])
+        self.assertEqual(start, step["transitions"][0]["occurred_at"])
+        self.assertEqual(end, step["completed_at"])
+        self.assertEqual(end, step["occurred_at"])
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertEqual([start, end], [item["created_at"] for item in auth["attempts"]])
+
+    def test_legacy_sync_keeps_independent_row_time_and_marks_synthetic_time_unknown(self):
+        from core.storage.operations import store as operation
+
+        start, actual = "2026-10-13T09:24:23+00:00", "2026-10-13T09:24:53+00:00"
+        job = db.create_job("icloud_hide")
+        db._patch_job(job["id"], {"progress_steps": {"submit_email": {
+            "state": "running", "started_at": start, "transition_id": "legacy-event",
+            "route_attempt_no": 1,
+        }}})
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertIsNone(auth["attempts"][0]["created_at"])
+        self.assertFalse(auth["attempts"][0]["event_time_known"])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_events')} SET created_at=%s WHERE event_uuid=%s", (actual, "legacy-event"))
+        progress = self._project_job_progress(job["id"])
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        self.assertEqual(actual, auth["attempts"][0]["created_at"])
+        self.assertTrue(auth["attempts"][0]["event_time_known"])
+
+    def test_repeated_running_events_keep_own_time_and_original_stage_start(self):
+        from core import account_task_store
+        from core.storage.operations import store as operation
+
+        with patch.object(account_task_store, "_SCHEMA", self.schema), patch.object(account_task_store, "_READY_KEY", ""):
+            account_task_store.init()
+        job = db.create_job("icloud_hide", batch_id="stage-event-time")
+        stamps = ["2026-10-13T09:24:23+00:00", "2026-10-13T09:24:28+00:00", "2026-10-13T09:24:53+00:00"]
+        for stamp, message in zip(stamps, ["等待输入框", "邮箱已填写", "等待认证跳转"]):
+            with patch.object(db, "_registration_now", return_value=stamp):
+                db.update_job_progress(job["id"], "submit_email", "running", message, step_instance_id="email-instance")
+        step = db.get_job(job["id"])["progress_steps"]["submit_email"]
+        self.assertEqual(stamps[0], step["started_at"])
+        self.assertEqual(stamps, [item["occurred_at"] for item in step["transitions"]])
+        operation.sync_registration_job(job["id"])
+        progress = operation.get_registration_progress([job["id"]])[job["id"]]["progress"]
+        auth = next(item for item in progress["main_steps"] if item["id"] == "authenticate")
+        attempts = [item for item in auth["attempts"] if item["raw_stage"] == "submit_email"]
+        self.assertEqual(stamps, [item["created_at"] for item in attempts])
+        self.assertEqual(stamps[0], auth["started_at"])
+        self.assertEqual("running", auth["state"])
+
+    def _storage_patches(self, root: Path):
+        return (
+            patch.object(db, "_DATA_DIR", root),
+            patch.object(db, "_LOG_DIR", root / "logs"),
+        )
+
+    def test_progress_tracks_stages_and_keeps_explicit_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                job = db.create_job(
+                    "icloud_hide",
+                    batch_id="batch-demo",
+                    batch_index=2,
+                    batch_size=4,
+                    batch_workers=3,
+                )
+                db.update_job_progress(job["id"], "email", "running", "领取邮箱")
+                db.update_job_progress(job["id"], "browser", "running", "启动浏览器")
+
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["email"]["state"], "running")
+                self.assertEqual(row["progress_steps"]["browser"]["state"], "running")
+                self.assertEqual(row["batch_index"], 2)
+                self.assertEqual(row["batch_size"], 4)
+                self.assertEqual(row["batch_workers"], 3)
+
+                db.update_job_progress(job["id"], "codex", "failed", "OAuth 超时")
+                db.finish_job_progress(job["id"], success=True)
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["codex"]["state"], "failed")
+                self.assertEqual(row["progress_steps"]["codex"]["detail"], "OAuth 超时")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["complete"]["started_at"], row["created_at"])
+                self.assertEqual(row["progress_stage"], "complete")
+
+    def test_automatic_route_retry_resets_stage_timestamps_and_keeps_history(self):
+        job = db.create_job("icloud_hide", batch_id="route-batch")
+        with patch.object(db, "_registration_now", side_effect=[
+            "2026-08-28T11:11:40", "2026-08-28T11:12:17", "2026-08-28T11:12:40",
+            "2026-08-28T11:16:18", "2026-08-28T11:16:19", "2026-08-28T11:16:27",
+            "2026-08-28T11:16:38", "2026-08-28T11:16:48",
+        ]):
+            db.update_job_progress(job["id"], "email", "running")
+            db.update_job_progress(job["id"], "browser", "running")
+            db.update_job_progress(job["id"], "browser", "success")
+            db.begin_job_route_attempt(
+                job["id"], retry_kind="proxy_rotation", retry_reason="login shell",
+            )
+            db.update_job_progress(job["id"], "email", "running")
+            db.update_job_progress(job["id"], "email", "success")
+            db.update_job_progress(job["id"], "browser", "running")
+            db.update_job_progress(job["id"], "browser", "success")
+
+        row = db.get_job(job["id"])
+        self.assertEqual(row["internal_retry_count"], 1)
+        self.assertEqual(row["route_attempt_no"], 2)
+        self.assertEqual(row["progress_steps"]["browser"]["started_at"], "2026-08-28T11:16:38")
+        self.assertEqual(row["progress_steps"]["browser"]["completed_at"], "2026-08-28T11:16:48")
+        self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["started_at"], "2026-08-28T11:12:17")
+        self.assertEqual(row["route_attempts"][0]["progress_steps"]["browser"]["completed_at"], "2026-08-28T11:12:40")
+
+    def test_late_callback_with_old_route_context_does_not_mutate_current_steps(self):
+        job = db.create_job("icloud_hide", batch_id="late-route")
+        db.update_job_progress(job["id"], "email", "running")
+        db.begin_job_route_attempt(job["id"], retry_kind="proxy_rotation")
+        db.update_job_progress(
+            job["id"], "browser", "failed", "旧线路回调",
+            route_attempt_no=1, step_instance_id="old-instance", operation_run_id=11,
+        )
+        row = db.get_job(job["id"])
+        self.assertEqual(2, row["route_attempt_no"])
+        self.assertEqual({}, row["progress_steps"])
+
+    def test_late_running_same_step_instance_only_appends_audit_transition(self):
+        job = db.create_job("icloud_hide", batch_id="late-instance")
+        db.update_job_progress(
+            job["id"], "network", "running", "申请线路",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        db.update_job_progress(
+            job["id"], "network", "success", "线路已就绪",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        before = db.get_job(job["id"])["progress_steps"]["network"]
+        db.update_job_progress(
+            job["id"], "network", "running", "迟到线路回调",
+            route_attempt_no=1, step_instance_id="network-instance", operation_run_id=7,
+        )
+        after = db.get_job(job["id"])["progress_steps"]["network"]
+        self.assertEqual("success", after["state"])
+        self.assertEqual(before["started_at"], after["started_at"])
+        self.assertEqual(before["completed_at"], after["completed_at"])
+        self.assertEqual(3, len(after["transitions"]))
+        self.assertEqual(3, len({item["transition_id"] for item in after["transitions"]}))
+        self.assertTrue(all(item["step_instance_id"] == "network-instance" for item in after["transitions"]))
+
+    def test_service_progress_callback_reuses_stage_instance_and_rotates_with_route(self):
+        from core.registration import service as registration_service
+
+        job = db.create_job("icloud_hide", batch_id="service-route-context")
+        registration_service._THREAD_CTX.job_id = int(job["id"])
+        registration_service._THREAD_CTX.run_id = 77
+        registration_service._THREAD_CTX.operation_run_id = 88
+        registration_service._THREAD_CTX.execution_id = "service-test"
+        try:
+            registration_service._bind_progress_route_context(1)
+            registration_service._persist_job_progress(job["id"], "network", "running", "申请线路")
+            registration_service._persist_job_progress(job["id"], "network", "success", "线路已就绪")
+            first = db.get_job(job["id"])["progress_steps"]["network"]
+            first_instance = first["step_instance_id"]
+            self.assertEqual(first_instance, first["transitions"][0]["step_instance_id"])
+            self.assertEqual(first_instance, first["transitions"][1]["step_instance_id"])
+
+            db.begin_job_route_attempt(job["id"], retry_kind="service_test_route")
+            registration_service._bind_progress_route_context(2)
+            registration_service._persist_job_progress(job["id"], "network", "running", "换线申请")
+            second = db.get_job(job["id"])["progress_steps"]["network"]
+            self.assertNotEqual(first_instance, second["step_instance_id"])
+            self.assertEqual(2, second["route_attempt_no"])
+        finally:
+            for attr in ("job_id", "run_id", "operation_run_id", "execution_id", "route_attempt_no", "step_instances", "progress_context"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
+    def test_service_callback_snapshot_survives_worker_thread_handoff(self):
+        import threading
+        from core.registration import service as registration_service
+
+        job = db.create_job("icloud_hide", batch_id="async-route-context")
+        registration_service._THREAD_CTX.job_id = int(job["id"])
+        registration_service._THREAD_CTX.operation_run_id = 88
+        try:
+            registration_service._bind_progress_route_context(1)
+            registration_service._persist_job_progress(job["id"], "network", "running", "申请线路")
+            instance_id = db.get_job(job["id"])["progress_steps"]["network"]["step_instance_id"]
+
+            callback = lambda: registration_service._persist_job_progress(
+                job["id"], "network", "running", "异步回调",
+                route_attempt_no=1, operation_run_id=88, step_instance_id=instance_id,
+            )
+            worker = threading.Thread(target=callback)
+            worker.start()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            transitions = db.get_job(job["id"])["progress_steps"]["network"]["transitions"]
+            self.assertEqual(2, len(transitions))
+            self.assertEqual(instance_id, transitions[-1]["step_instance_id"])
+        finally:
+            for attr in ("job_id", "operation_run_id", "route_attempt_no", "step_instances", "progress_context"):
+                try:
+                    delattr(registration_service._THREAD_CTX, attr)
+                except AttributeError:
+                    pass
+
+    def test_otp_evidence_is_redacted_and_classified(self):
+        job = db.create_job("icloud_hide")
+        db.record_job_otp_evidence(
+            job["id"], request_kind="initial", ui_ack="confirmed", detail="验证码页已打开",
+        )
+        db.record_job_otp_evidence(
+            job["id"], request_kind="resend", ui_ack="unconfirmed", detail="点击重发",
+        )
+        db.record_job_otp_evidence(
+            job["id"], detail="验证码邮件未到达", failure_code="otp_delivery_missing",
+        )
+
+        row = db.get_job(job["id"])
+        self.assertEqual(row["otp_request_count"], 2)
+        self.assertEqual(row["otp_failure_code"], "otp_delivery_missing")
+        self.assertEqual(len(row["otp_evidence"]), 3)
+
+    def test_successful_closeout_marks_never_started_stages_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                job = db.create_job("icloud_hide")
+                db.update_job_progress(job["id"], "email_otp", "success", "邮箱验证码已通过")
+                db.update_job_progress(job["id"], "profile", "pending", "尚未开始")
+
+                db.finish_job_progress(job["id"], success=True)
+
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["email_otp"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["profile"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["token"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "success")
+
+    def test_failed_job_lands_on_current_stage(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                job = db.create_job("icloud_hide")
+                db.update_job_progress(job["id"], "email_otp", "running")
+                db.finish_job_progress(job["id"], success=False, detail="验证码超时")
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
+                self.assertEqual(row["progress_steps"]["email_otp"]["detail"], "验证码超时")
+                self.assertEqual(row["progress_steps"]["profile"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "skipped")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
+
+    def test_failed_codex_is_not_moved_to_successful_plan_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                job = db.create_job("icloud_hide")
+                db.update_job_progress(job["id"], "codex", "failed", "OAuth 失败")
+                db.update_job_progress(job["id"], "plan_check", "running", "正在查套餐")
+                db.update_job_progress(job["id"], "plan_check", "success", "free")
+
+                db.finish_job_progress(job["id"], success=False, detail="Codex 未完成")
+
+                row = db.get_job(job["id"])
+                self.assertEqual(row["progress_steps"]["codex"]["state"], "failed")
+                self.assertEqual(row["progress_steps"]["codex"]["detail"], "OAuth 失败")
+                self.assertEqual(row["progress_steps"]["plan_check"]["state"], "success")
+                self.assertEqual(row["progress_steps"]["complete"]["state"], "failed")
+
+    def test_partial_success_can_create_codex_retry_job(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                source = db.create_job("icloud_hide")
+                db.update_job(
+                    source["id"],
+                    status="partial_success",
+                    email="demo@example.com",
+                    account_id=42,
+                )
+
+                retry, created = db.create_retry_job(
+                    source["id"],
+                    job_type="codex_retry",
+                    email_source="icloud_hide",
+                    email="demo@example.com",
+                    account_id=42,
+                    batch_id="retry-batch-demo",
+                    batch_index=2,
+                    batch_size=3,
+                    batch_workers=4,
+                )
+
+                self.assertTrue(created)
+                self.assertEqual(retry["retry_action"], "codex")
+                self.assertEqual(retry["parent_job_id"], source["id"])
+                self.assertEqual(retry["batch_id"], "retry-batch-demo")
+                self.assertEqual(retry["batch_index"], 2)
+                self.assertEqual(retry["batch_size"], 3)
+                self.assertEqual(retry["batch_workers"], 4)
+
+    def test_request_unknown_can_create_registration_retry_job_without_email(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                source = db.create_job("icloud_hide")
+                db.update_job(source["id"], status="request_unknown")
+
+                retry, created = db.create_retry_job(
+                    source["id"],
+                    job_type="registration",
+                    email_source="icloud_hide",
+                    email=None,
+                )
+
+                self.assertTrue(created)
+                self.assertEqual("registration", retry["retry_action"])
+                self.assertIsNone(retry["email"])
+
+    def test_service_retry_inherits_original_batch_slot(self):
+        source = {
+            "id": 21, "status": "partial_success", "job_type": "registration",
+            "attempt_id": 70, "account_id": 44,
+            "batch_id": "original-batch", "batch_index": 7, "batch_size": 10,
+            "batch_workers": 5, "email_source": "icloud_hide", "email": "pending@example.com",
+        }
+        account = {
+            "id": 44, "email": "pending@example.com", "access_token": "",
+            "extra_json": '{"registration_checkpoint":"email_verification_pending","registration_password":"Password!123"}',
+        }
+        retry_row = {
+            "id": 22, "status": "pending", "job_type": "registration_resume",
+            "batch_id": "original-batch", "batch_index": 7, "batch_size": 10,
+            "batch_workers": 5, "log_file": "/tmp/retry.log",
+        }
+        executor = unittest.mock.Mock()
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "registration_resume",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=account),
+            patch.object(registration_service, "_read_linked_attempt_for_job", return_value=({
+                "id": 70, "source_root_job_id": 21, "account_id": 44,
+                "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+                "target_status": "email_verification_pending",
+            }, False)),
+            patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
+            patch.object(registration_service, "get_executor", return_value=executor),
+        ):
+            result = registration_service.retry_job(21)
+
+        self.assertTrue(result["ok"])
+        kwargs = create_retry.call_args.kwargs
+        self.assertEqual(kwargs["batch_id"], "original-batch")
+        self.assertEqual(kwargs["batch_index"], 7)
+        self.assertEqual(kwargs["batch_size"], 10)
+        self.assertEqual(kwargs["batch_workers"], 5)
+        executor.submit.assert_called_once()
+
+    def test_service_retry_registration_preserves_source_email(self):
+        source = {
+            "id": 31, "status": "failed", "job_type": "registration",
+            "batch_id": "original-batch", "batch_index": 3, "batch_size": 10,
+            "batch_workers": 4, "email_source": "icloud_hide", "email": "held@example.com",
+        }
+        retry_row = {
+            "id": 32, "status": "pending", "job_type": "registration",
+            "batch_id": "original-batch", "batch_index": 3, "batch_size": 10,
+            "batch_workers": 4, "log_file": "/tmp/retry.log",
+        }
+        executor = unittest.mock.Mock()
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "registration",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=None),
+            patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
+            patch.object(registration_service, "get_executor", return_value=executor),
+        ):
+            result = registration_service.retry_job(31)
+
+        self.assertTrue(result["ok"])
+        kwargs = create_retry.call_args.kwargs
+        self.assertEqual(kwargs["job_type"], "registration")
+        self.assertEqual(kwargs["email"], "held@example.com")
+        self.assertIsNone(kwargs["account_id"])
+        executor.submit.assert_called_once()
+
+    def test_new_domain_email_is_reserved_for_original_retry_chain(self):
+        email = "retry-domain@example.test"
+
+        row = db.claim_next_domain_email(email)
+
+        self.assertEqual(row["email"], email)
+        self.assertEqual(row["status"], "used")
+        self.assertEqual(db.get_domain_email_by_email(email)["status"], "used")
+
+    def test_repository_projects_legacy_retry_batch_back_to_root_batch(self):
+        root = db.create_job(
+            "icloud_hide", batch_id="root-batch", batch_index=1, batch_size=1, batch_workers=2,
+        )
+        db.update_job(root["id"], status="partial_success", completed_at="2026-08-28T11:00:00")
+        retry, _created = db.create_retry_job(
+            root["id"], job_type="registration_resume", email_source="icloud_hide",
+            email="pending@example.com", batch_id="legacy-child-batch", batch_index=1,
+            batch_size=1, batch_workers=2,
+        )
+        db.update_job(retry["id"], status="success", completed_at="2026-08-28T11:02:00")
+
+        payload = admin_repository.list_jobs(
+            admin_repository.PageRequest(page=1, page_size=20), progress_batch_id="root-batch",
+        )
+        batch = _latest_progress_batch(payload["progress_rows"])
+
+        self.assertEqual(batch["batch_id"], "root-batch")
+        self.assertEqual(batch["total"], 1)
+        self.assertEqual(batch["status_counts"]["success"], 1)
+        self.assertEqual([item["id"] for item in batch["items"][0]["attempts"]], [root["id"], retry["id"]])
+        summaries = {item["batch_id"]: item for item in payload["progress_batches"]}
+        self.assertEqual(summaries["root-batch"]["total"], 1)
+        self.assertNotIn("legacy-child-batch", summaries)
+
+    def test_registration_batch_email_claim_is_unique_but_cross_batch_reusable(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                self.assertTrue(
+                    db.claim_registration_batch_email(
+                        "batch-a", "Same@Example.com", job_id=1, email_source="icloud_hide"
+                    )
+                )
+                self.assertFalse(
+                    db.claim_registration_batch_email(
+                        "batch-a", "same@example.com", job_id=2, email_source="icloud_hide"
+                    )
+                )
+                self.assertTrue(
+                    db.claim_registration_batch_email(
+                        "batch-b", "same@example.com", job_id=3, email_source="icloud_hide"
+                    )
+                )
+
+    def test_registration_batch_email_claim_blocks_existing_job_email(self):
+        with tempfile.TemporaryDirectory() as td:
+            patches = self._storage_patches(Path(td))
+            with patches[0], patches[1]:
+                job = db.create_job("icloud_hide", batch_id="batch-existing")
+                db.update_job(job["id"], email="already@example.com")
+                self.assertFalse(
+                    db.claim_registration_batch_email(
+                        "batch-existing", "already@example.com", job_id=job["id"] + 1
+                    )
+                )
+
+    def test_prepare_registration_args_releases_duplicate_candidate_after_new_claim(self):
+        from config import email as email_config, register as register_config
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.registration.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email.provider.acquire_email", side_effect=["same@example.com", "new@example.com"]),
+            patch.object(db, "claim_registration_batch_email", side_effect=[False, True]),
+            patch("core.email.provider.release_email") as release_email,
+        ):
+            result = registration_service._prepare_registration_args(
+                "icloud_hide", batch_id="batch-a", job_id=2
+            )
+
+        self.assertEqual(result, ("new@example.com", "Test User", "1990-01-01"))
+        release_email.assert_called_once_with(
+            "same@example.com", status="available", note=ANY
+        )
+
+    def test_prepare_registration_args_passes_batch_to_email_provider(self):
+        from config import email as email_config, register as register_config
+
+        acquired = []
+
+        def acquire_email(source, *, batch_id=None, job_id=None):
+            acquired.append((source, batch_id, job_id))
+            return "fresh@example.com"
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.registration.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email.provider.acquire_email", side_effect=acquire_email),
+            patch.object(db, "claim_registration_batch_email", return_value=True),
+        ):
+            result = registration_service._prepare_registration_args(
+                "icloud_hide", batch_id="batch-a", job_id=2
+            )
+
+        self.assertEqual(result, ("fresh@example.com", "Test User", "1990-01-01"))
+        self.assertEqual(acquired, [("icloud_hide", "batch-a", 2)])
+
+    def test_prepare_registration_args_stops_if_provider_repeats_rejected_email(self):
+        from config import email as email_config, register as register_config
+
+        with (
+            patch.object(register_config, "REGISTER_EMAIL", ""),
+            patch.object(email_config, "USE_EMAIL_SERVICE", True),
+            patch.object(registration_service, "_random_display_name", return_value="Test User"),
+            patch("core.registration.profile_utils.generate_random_birthday", return_value="1990-01-01"),
+            patch("core.email.provider.acquire_email", side_effect=["same@example.com", "SAME@example.com"]),
+            patch.object(db, "claim_registration_batch_email", return_value=False),
+            patch("core.email.provider.release_email") as release_email,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "重复返回同一候选"):
+                registration_service._prepare_registration_args(
+                    "icloud_hide", batch_id="batch-a", job_id=2
+                )
+
+        release_email.assert_called_once_with(
+            "same@example.com", status="available", note=ANY
+        )
+
+    def test_account_lookup_does_not_cross_match_duplicate_batch_email(self):
+        job = {
+            "id": 10,
+            "batch_id": "batch-a",
+            "email": "same@example.com",
+            "account_id": None,
+        }
+        with (
+            patch.object(db, "count_registration_jobs_by_batch_email", return_value=2),
+            patch.object(db, "get_account_by_email") as lookup,
+        ):
+            account = registration_service._account_for_job(job)
+
+        self.assertIsNone(account)
+        lookup.assert_not_called()
+
+    def test_skipped_codex_is_not_offered_as_codex_retry(self):
+        job = {
+            "id": 11,
+            "status": "success",
+            "account_id": 42,
+            "progress_steps": {
+                "codex": {"state": "skipped"},
+                "twofa": {"state": "success"},
+            },
+        }
+        account = {
+            "id": 42,
+            "email": "skipped@example.com",
+            "access_token": "saved-token",
+            # 兼容历史上误写成 failed 的账号字段：任务进度明确 skipped 时，
+            # UI 仍不能把它展示成 Codex 失败。
+            "codex_status": "failed",
+            "plan_check_status": "success",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "extra_json": '{"account_password":"AccountPassword!123"}',
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertFalse(info["retryable"])
+        self.assertEqual(info["retry_action"], None)
+        self.assertIn("跳过", info["retry_reason"])
+
+    def test_registration_codex_retry_delegates_to_native_operation_without_legacy_job(self):
+        source = {"id": 17, "status": "partial_success", "email": "native@example.com", "account_id": 42}
+        account = {"id": 42, "email": "native@example.com", "codex_status": "failed"}
+        with (
+            patch.object(db, "get_job", return_value=source),
+            patch.object(registration_service, "get_retry_info", return_value={
+                "retryable": True, "retry_action": "codex",
+            }),
+            patch.object(registration_service, "_account_for_job", return_value=account),
+            patch("core.operation_task_store.find_task_by_source", return_value={"id": 700}),
+            patch("core.codex.operation_service.submit", return_value={
+                "accepted": True, "task_id": 701, "run_id": 702,
+            }) as submit,
+            patch.object(db, "create_retry_job") as legacy_create,
+        ):
+            result = registration_service.retry_job(17)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(701, result["operation_task_id"])
+        self.assertEqual(702, result["run_id"])
+        submit.assert_called_once_with(
+            "native@example.com", trigger="registration_job_retry", parent_task_id=700,
+        )
+        legacy_create.assert_not_called()
+
+    def test_partial_success_with_codex_failure_is_retryable(self):
+        job = {
+            "id": 9,
+            "status": "partial_success",
+            "account_id": 42,
+            "progress_steps": {
+                "codex": {"state": "failed"},
+                "twofa": {"state": "success"},
+            },
+        }
+        account = {"id": 42, "email": "demo@example.com", "codex_status": "failed"}
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "codex")
+
+    def test_twofa_only_failure_offers_dedicated_twofa_retry(self):
+        job = {
+            "id": 10,
+            "status": "partial_success",
+            "account_id": 43,
+            "progress_steps": {
+                "codex": {"state": "success"},
+                "twofa": {"state": "failed"},
+            },
+        }
+        account = {"id": 43, "email": "twofa@example.com", "codex_status": "success"}
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "twofa")
+        self.assertEqual(info["retry_label"], "重试 2FA")
+
+    def test_successful_codex_account_with_missing_setup_offers_account_setup_retry(self):
+        job = {
+            "id": 12,
+            "status": "success",
+            "account_id": 45,
+            "progress_steps": {"codex": {"state": "success"}},
+        }
+        account = {
+            "id": 45,
+            "email": "setup@example.com",
+            "access_token": "saved-token",
+            "codex_status": "success",
+            "plan_check_status": "failed",
+            "totp_secret": "",
+            "extra_json": "{}",
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertEqual(info["display_status"], "partial_success")
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "twofa")
+        self.assertEqual(info["retry_label"], "补齐账号配置")
+
+    def test_account_password_counts_as_current_password(self):
+        job = {
+            "id": 13,
+            "status": "partial_success",
+            "account_id": 46,
+            "progress_steps": {"codex": {"state": "success"}, "twofa": {"state": "success"}},
+        }
+        account = {
+            "id": 46,
+            "email": "new-password@example.com",
+            "access_token": "saved-token",
+            "codex_status": "success",
+            "plan_check_status": "success",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "extra_json": '{"account_password":"AccountPassword!123"}',
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertFalse(info["retryable"])
+        self.assertEqual(info["retry_reason"], "账号和 Codex 授权均已完成")
+
+    def test_pending_email_verification_account_resumes_saved_login(self):
+        job = {
+            "id": 11,
+            "attempt_id": 70, "email": "pending@example.com",
+            "status": "partial_success",
+            "account_id": 44,
+            "progress_steps": {"email_otp": {"state": "failed"}},
+        }
+        account = {
+            "id": 44,
+            "email": "pending@example.com",
+            "access_token": "",
+            "extra_json": (
+                '{"registration_checkpoint":"email_verification_pending",'
+                '"registration_password":"StoredPassword!123"}'
+            ),
+        }
+        with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
+            registration_service, "_account_for_job", return_value=account
+        ), patch.object(
+            registration_service, "_read_linked_attempt_for_job", return_value=({
+                "id": 70, "source_root_job_id": 11, "account_id": 44,
+                "email_snapshot": "pending@example.com", "checkpoint": "otp_started",
+                "target_status": "email_verification_pending",
+            }, False)
+        ):
+            info = registration_service.get_retry_info(job)
+
+        self.assertTrue(info["retryable"])
+        self.assertEqual(info["retry_action"], "registration_resume")
+        self.assertEqual(info["retry_label"], "继续邮箱验证")
+
+    def test_historical_job_marks_new_auth_redirect_stage_skipped(self):
+        row = {
+            "id": 1,
+            "status": "success",
+            "progress_steps": {
+                "submit_email": {
+                    "state": "success",
+                    "started_at": "2026-08-13T12:00:00",
+                    "completed_at": "2026-08-13T12:00:20",
+                },
+                "email_otp": {"state": "success"},
+            },
+        }
+
+        compact = _compact_job_for_list(row)
+
+        self.assertNotIn("auth_redirect", compact["progress_steps"])
+        self.assertEqual(2, compact["progress"]["flow_version"])
+        self.assertNotIn("auth_redirect", row["progress_steps"])
+
+    def test_historical_terminal_job_gets_plan_and_total_duration_stages(self):
+        row = {
+            "id": 2,
+            "status": "success",
+            "created_at": "2026-08-13T12:00:00",
+            "started_at": "2026-08-13T12:00:02",
+            "completed_at": "2026-08-13T12:01:30",
+            "progress_steps": {
+                "codex": {
+                    "state": "success",
+                    "started_at": "2026-08-13T12:01:00",
+                    "completed_at": "2026-08-13T12:01:20",
+                },
+            },
+        }
+
+        compact = _compact_job_for_list(row)
+
+        self.assertNotIn("plan_check", compact["progress_steps"])
+        self.assertEqual("success", compact["progress"]["outcome"]["status"])
+        self.assertNotIn("plan_check", row["progress_steps"])
+
+    def test_progress_batch_groups_retry_job_into_original_slot(self):
+        rows = [
+            {
+                "id": 751, "status": "partial_success", "batch_id": "original-batch",
+                "batch_index": 7, "batch_size": 10, "retry_attempt": 0,
+                "created_at": "2026-08-28T11:11:36", "completed_at": "2026-08-28T11:20:45",
+                "progress_steps": {"email_otp": {"state": "failed"}},
+            },
+            {
+                "id": 755, "root_job_id": 751, "parent_job_id": 751,
+                "status": "success", "batch_id": "legacy-retry-batch", "batch_index": 1,
+                "retry_attempt": 1, "created_at": "2026-08-28T11:22:12",
+                "completed_at": "2026-08-28T11:24:19", "progress_steps": {"complete": {"state": "success"}},
+            },
+            {
+                "id": 752, "status": "success", "batch_id": "original-batch",
+                "batch_index": 8, "batch_size": 10, "retry_attempt": 0,
+                "created_at": "2026-08-28T11:11:36", "completed_at": "2026-08-28T11:19:00",
+                "progress_steps": {"complete": {"state": "success"}},
+            },
+        ]
+
+        batch = _latest_progress_batch(rows)
+
+        self.assertEqual(batch["batch_id"], "original-batch")
+        self.assertEqual(batch["total"], 2)
+        self.assertEqual(batch["status_counts"]["success"], 2)
+        slot = next(item for item in batch["items"] if item["batch_index"] == 7)
+        self.assertEqual(slot["id"], 755)
+        self.assertEqual(slot["retry_count"], 1)
+        self.assertEqual([item["id"] for item in slot["attempts"]], [751, 755])
+
+    def test_historical_successful_route_retry_hides_unreliable_stage_timing(self):
+        compact = _compact_job_for_list({
+            "id": 749,
+            "status": "success",
+            "error_message": "代理线路瞬时失败，准备换线重试: browser shell failed",
+            "progress_steps": {
+                "browser": {
+                    "state": "success",
+                    "started_at": "2026-08-28T11:12:17",
+                    "completed_at": "2026-08-28T11:16:38",
+                },
+            },
+        })
+
+        self.assertEqual(compact["internal_retry_count"], 1)
+        self.assertTrue(compact["legacy_retry_timing"])
+        self.assertNotIn("error_message", compact)
+        self.assertIn("换线重试", compact["warning_summary"])
+        self.assertNotIn("network", compact["progress_steps"])
+        network = next(step for step in compact["progress"]["main_steps"] if step["id"] == "network")
+        self.assertNotEqual("success", network["state"])
+
+    def test_compact_job_exposes_only_the_registration_driver_from_its_snapshot(self):
+        compact = _compact_job_for_list({
+            "id": 912,
+            "status": "pending",
+            "data": {
+                "config_snapshot": {"registration_driver": "protocol_oss"},
+                "private_config": {"token": "must-not-be-exposed"},
+            },
+        })
+
+        self.assertEqual(compact["registration_driver"], "protocol_oss")
+        self.assertNotIn("data", compact)
+        self.assertNotIn("private_config", compact)
+
+    def test_startup_recovers_interrupted_jobs_and_codex_account(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            patches = self._storage_patches(root)
+            with patches[0], patches[1]:
+                job = db.create_job("icloud_hide")
+                db.update_job(job["id"], status="running", proxy_status="leased")
+                db.update_job_progress(job["id"], "email_otp", "running", "等待验证码")
+
+                recovered = db.recover_interrupted_registration_jobs()
+
+                self.assertEqual(recovered, 1)
+                row = db.get_job(job["id"])
+                self.assertEqual(row["status"], "interrupted")
+                self.assertEqual(row["proxy_status"], "interrupted")
+                self.assertEqual(row["progress_steps"]["email_otp"]["state"], "failed")
+                self.assertIn("WebUI 进程重启", row["error_message"])
+
+    def test_jobs_api_returns_latest_batch_progress(self):
+        rows = [
+            {
+                "id": 2,
+                "status": "running",
+                "batch_id": "new-batch",
+                "batch_index": 2,
+                "batch_size": 2,
+                "batch_workers": 2,
+                "email": "second@example.com",
+                "progress_stage": "browser",
+                "progress_steps": {"browser": {"state": "running"}},
+                "created_at": "2026-08-10T12:00:00",
+                "started_at": "2026-08-10T12:00:01",
+            },
+            {
+                "id": 1,
+                "status": "success",
+                "batch_id": "new-batch",
+                "batch_index": 1,
+                "batch_size": 2,
+                "batch_workers": 2,
+                "email": "first@example.com",
+                "progress_stage": "codex",
+                "progress_steps": {"codex": {"state": "success"}},
+                "created_at": "2026-08-10T12:00:00",
+                "started_at": "2026-08-10T12:00:01",
+                "completed_at": "2026-08-10T12:01:00",
+            },
+        ]
+        batch = _latest_progress_batch(rows)
+        self.assertEqual([item["id"] for item in batch["items"]], [1, 2])
+        self.assertEqual(batch["status_counts"]["success"], 1)
+        self.assertEqual(batch["status_counts"]["running"], 1)
+        self.assertEqual([stage["key"] for stage in batch["stages"]], [key for key, _ in db.JOB_PROGRESS_STAGES])
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        repository_payload = {
+            "ok": True,
+            "items": rows,
+            "total": len(rows),
+            "page": 1,
+            "page_size": 20,
+            "revision": "2:test",
+            "facets": {},
+            "status_counts": {"success": 1, "running": 1, "active": 1},
+            "progress_rows": rows,
+        }
+        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload), patch(
+            "webui.routes.jobs.operation_task_store.list_batches",
+            return_value=[{
+                "source_system": "registration_batches",
+                "source_id": "new-batch",
+                "projection_status": "queued",
+                "projection_delayed": True,
+                "projection_lag_ms": 1200,
+                "projection_queue_error": None,
+                "projection_queue_next_retry_at": None,
+            }],
+        ):
+            response = client.get(
+                "/api/jobs?paged=1&page=1&page_size=20",
+                headers={"X-Auth-Code": "test-auth"},
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["progress_batch"]["batch_id"], "new-batch")
+        self.assertEqual(len(payload["progress_batch"]["items"]), 2)
+        self.assertTrue(payload["progress_batch"]["projection_delayed"])
+        self.assertEqual(1200, payload["progress_batch"]["projection_lag_ms"])
+
+    def test_jobs_api_passes_selected_progress_batch_to_repository(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        repository_payload = {
+            "ok": True,
+            "items": [],
+            "total": 0,
+            "page": 1,
+            "page_size": 20,
+            "revision": "0:test",
+            "facets": {},
+            "status_counts": {"active": 0},
+            "progress_rows": [],
+            "progress_batches": [],
+        }
+        with patch("webui.app.admin_repository.list_jobs", return_value=repository_payload) as list_jobs:
+            response = client.get(
+                "/api/jobs?paged=1&page=1&page_size=20&progress_batch_id=older-batch",
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list_jobs.call_args.kwargs["progress_batch_id"], "older-batch")
+
+    def test_jobs_batch_view_loads_only_current_active_slot_steps(self):
+        app = create_app(auth_code="test-auth")
+        rows = [
+            {"id": 11, "status": "failed", "batch_id": "chosen", "batch_index": 1},
+            {"id": 12, "root_job_id": 11, "retry_attempt": 1, "status": "running", "batch_id": "chosen",
+             "progress_steps": {"email_otp": {"state": "running", "transitions": [{"state": "running"}]}}},
+            {"id": 13, "root_job_id": 11, "retry_attempt": 2, "status": "failed", "batch_id": "chosen"},
+            {"id": 14, "status": "success", "batch_id": "chosen", "batch_index": 2},
+        ]
+        loaded = []
+
+        def load_progress(job_ids):
+            loaded.extend(job_ids)
+            return {
+                job_id: {"operation_task_id": 100 + job_id, "operation_run_id": 200 + job_id, "progress": {
+                    "main_steps": [{"id": "register", "children": [{"id": "email_otp", "duration_ms": 1700}]}],
+                    "failure": {"step_id": "email_otp", "label": "邮箱验证"},
+                    "routes": [{"route_attempt_no": 1, "steps": [{"id": "register"}], "status": "failed"}],
+                }} for job_id in loaded
+            }
+
+        payload = {"items": [], "progress_rows": rows, "progress_batches": [], "status_counts": {"active": 7}}
+        with patch("webui.routes.jobs.admin_repository.list_jobs", return_value=payload), patch(
+            "webui.routes.jobs.operation_task_store.get_registration_progress", side_effect=load_progress,
+        ), patch("webui.routes.jobs.operation_task_store.list_batches", return_value=[]):
+            response = app.test_client().get("/api/jobs?view=batch", headers={"X-Auth-Code": "test-auth"})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([12, 14], loaded)
+        result = response.get_json()
+        self.assertEqual([], result["items"])
+        slot = result["progress_batch"]["items"][0]
+        self.assertEqual(12, slot["id"])
+        self.assertEqual([11, 12, 13], [attempt["id"] for attempt in slot["attempts"]])
+        self.assertEqual(1700, slot["progress"]["main_steps"][0]["children"][0]["duration_ms"])
+        self.assertEqual("email_otp", slot["progress"]["failure"]["step_id"])
+        self.assertEqual("failed", slot["progress"]["routes"][0]["status"])
+        self.assertNotIn("steps", slot["progress"]["routes"][0])
+        self.assertNotIn("progress_steps", slot)
+        self.assertEqual(7, result["status_counts"]["active"])
+
+    def test_jobs_batch_fallback_keeps_legacy_steps_and_complete_main_children(self):
+        batch = _latest_progress_batch([{
+            "id": 11, "status": "failed", "batch_id": "legacy",
+            "progress_steps": {"email_otp": {"state": "failed", "detail": "邮箱验证码超时"}},
+        }], summarize_routes=True)
+
+        slot = batch["items"][0]
+        self.assertEqual("邮箱验证码超时", slot["progress_steps"]["email_otp"]["detail"])
+        auth = next(step for step in slot["progress"]["main_steps"] if step["id"] == "authenticate")
+        otp = next(step for step in auth["children"] if step["id"] == "email_otp")
+        self.assertEqual("failed", otp["state"])
+        compatible = _compact_job_for_list({
+            "id": 12, "status": "failed", "progress": {"main_steps": [{"id": "authenticate"}]},
+            "progress_steps": {"email_otp": {"state": "failed"}},
+        })
+        self.assertEqual("failed", compatible["progress_steps"]["email_otp"]["state"])
+
+    def test_jobs_table_view_has_log_binding_without_building_progress(self):
+        app = create_app(auth_code="test-auth")
+        job = db.create_job("icloud_hide")
+        from core.storage.operations import store as operation
+        from tests.storage.test_admin_repository import _QueryCounter
+
+        operation.sync_registration_job(job["id"])
+        with _QueryCounter() as counter, patch(
+            "core.operations.progress.build_progress_snapshot", side_effect=AssertionError("不应构建步骤"),
+        ):
+            response = app.test_client().get("/api/jobs?view=table", headers={"X-Auth-Code": "test-auth"})
+
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        item = result["items"][0]
+        self.assertEqual(job["id"], item["id"])
+        self.assertGreater(item["operation_task_id"], 0)
+        self.assertGreater(item["operation_run_id"], 0)
+        self.assertNotIn("progress", item)
+        self.assertNotIn("progress_steps", item)
+        self.assertNotIn("progress_batch", result)
+        self.assertNotIn("progress_batches", result)
+        self.assertFalse(any("operation_events" in query or "operation_batches" in query for query in counter.queries))
+
+    def test_jobs_batch_view_preserves_real_stage_evidence_and_duration(self):
+        app = create_app(auth_code="test-auth")
+        job = db.create_job("icloud_hide", batch_id="chosen")
+        db.update_job(job["id"], status="running")
+        with patch.object(db, "_registration_now", return_value="2026-10-19T08:00:01"):
+            db.update_job_progress(job["id"], "email_otp", "running", "等待邮箱验证码")
+        with patch.object(db, "_registration_now", return_value="2026-10-19T08:00:04"):
+            db.update_job_progress(job["id"], "email_otp", "failed", "邮箱验证码超时")
+        db.update_job(job["id"], status="failed", error="邮箱验证码超时")
+        self._project_job_progress(job["id"])
+        db.create_job("icloud_hide", batch_id="other")
+
+        response = app.test_client().get(
+            "/api/jobs?view=batch&progress_batch_id=chosen", headers={"X-Auth-Code": "test-auth"},
+        )
+
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        self.assertEqual("chosen", result["progress_batch"]["batch_id"])
+        self.assertEqual([job["id"]], [item["id"] for item in result["progress_batch"]["items"]])
+        progress = result["progress_batch"]["items"][0]["progress"]
+        auth = next(step for step in progress["main_steps"] if step["id"] == "authenticate")
+        otp = next(step for step in auth["children"] if step["id"] == "email_otp")
+        self.assertEqual("failed", otp["state"])
+        self.assertEqual(3000, otp["duration_ms"])
+        self.assertEqual("2026-10-19T08:00:01", otp["started_at"])
+        self.assertTrue(otp["attempts"])
+        self.assertEqual("authenticate", progress["failure"]["step_id"])
+
+    def test_jobs_api_passes_per_batch_debug_flag_to_service(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        fake_jobs = [{"id": 88, "batch_id": "debug-batch", "debug_enabled": True}]
+        with patch("config.email.USE_EMAIL_SERVICE", False), patch(
+            "config.register.REGISTER_EMAIL", "manual@example.com"
+        ), patch(
+            "config.roxybrowser.REGISTRATION_DRIVER", "roxy"
+        ), patch(
+            "webui.routes.jobs.svc.submit_registration", return_value=fake_jobs
+        ) as submit:
+            response = client.post(
+                "/api/jobs",
+                json={"count": 1, "workers": 4, "debug_enabled": True},
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["debug_enabled"])
+        submit.assert_called_once_with(count=1, workers=4, debug_enabled=True)
+
+    def test_bulk_retry_keeps_each_task_in_its_source_batch(self):
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+
+        def fake_retry(job_id, workers=None, **kwargs):
+            return {
+                "ok": True,
+                "created": True,
+                "job": {"id": job_id + 100, "batch_id": f"source-batch-{job_id}"},
+            }
+
+        with patch("webui.app.svc.retry_job", side_effect=fake_retry) as retry_job:
+            response = client.post(
+                "/api/jobs/retry-bulk",
+                json={"job_ids": [11, 12], "workers": 3},
+                headers={"X-Auth-Code": "test-auth"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["started_count"], 2)
+        self.assertEqual(payload["batch_id"], "")
+        self.assertEqual(payload["affected_batch_ids"], ["source-batch-11", "source-batch-12"])
+        calls = retry_job.call_args_list
+        self.assertTrue(all("batch_id" not in call.kwargs for call in calls))
+
+    def test_job_stop_state_survives_unrelated_worker_update(self):
+        job = db.create_job(
+            "icloud_hide",
+            batch_id="stop-race",
+            batch_index=1,
+            batch_size=1,
+        )
+        self.assertTrue(db.claim_job_for_execution(job["id"]))
+        self.assertTrue(
+            db.transition_job_status(
+                job["id"],
+                ("running",),
+                "stopping",
+                error_message="用户手动停止中",
+            )
+        )
+
+        # 线程停止前仍可能写入代理/邮箱字段，不能把 stopping 覆盖回 running。
+        db.update_job(job["id"], proxy_status="leased", email="race@example.com")
+        db.finish_job_progress(job["id"], success=False, detail="用户手动停止", failure_state="stopped")
+        row = db.get_job(job["id"])
+        self.assertEqual(row["status"], "stopping")
+        self.assertEqual(row["proxy_status"], "leased")
+        self.assertEqual(row["email"], "race@example.com")
+        self.assertFalse(db.claim_job_for_execution(job["id"]))
+
+    def test_batch_control_only_changes_target_batch(self):
+        first = db.create_job("icloud_hide", batch_id="batch-a", batch_index=1, batch_size=2)
+        second = db.create_job("icloud_hide", batch_id="batch-a", batch_index=2, batch_size=2)
+        other = db.create_job("icloud_hide", batch_id="batch-b", batch_index=1, batch_size=1)
+        self.assertTrue(db.claim_job_for_execution(first["id"]))
+        self.assertTrue(db.claim_job_for_execution(other["id"]))
+
+        stopped = registration_service.request_stop_batch("batch-a")
+        self.assertTrue(stopped["ok"])
+        self.assertEqual(stopped["stopped"], 1)
+        self.assertEqual(db.get_job(first["id"])["status"], "stopped")
+        self.assertEqual(db.get_job(second["id"])["status"], "pending")
+        self.assertEqual(db.get_job(other["id"])["status"], "running")
+
+        cancelled = registration_service.cancel_pending_jobs(batch_id="batch-a")
+        self.assertEqual(cancelled, 1)
+        self.assertEqual(db.get_job(second["id"])["status"], "cancelled")
+        self.assertEqual(db.get_job(other["id"])["status"], "running")
+
+    def test_batch_cancel_closes_only_cancelled_jobs_queued_runs(self):
+        first = db.create_job("icloud_hide", batch_id="cancel-a")
+        second = db.create_job("icloud_hide", batch_id="cancel-a")
+        other = db.create_job("icloud_hide", batch_id="cancel-b")
+
+        self.assertEqual(registration_service.cancel_pending_jobs(batch_id="cancel-a"), 2)
+
+        for job in (first, second):
+            run = registration.list_runs(int(job["attempt_id"]))[0]
+            self.assertEqual(db.get_job(int(job["id"]))["status"], "cancelled")
+            self.assertEqual(run["status"], "cancelled")
+            self.assertIsNotNone(run["completed_at"])
+        self.assertEqual(registration.list_runs(int(other["attempt_id"]))[0]["status"], "queued")
+        self.assertEqual(registration.verify()["checks"]["terminal_jobs_with_active_run"], 0)
+
+    def test_single_pending_cancel_closes_queued_run(self):
+        job = db.create_job("icloud_hide", batch_id="cancel-single")
+
+        result = registration_service.request_stop_job(int(job["id"]))
+
+        self.assertEqual(result["state"], "cancelled")
+        run = registration.list_runs(int(job["attempt_id"]))[0]
+        self.assertEqual(run["status"], "cancelled")
+        self.assertIsNotNone(run["completed_at"])
+
+    def test_retry_after_pending_cancel_gets_its_own_run(self):
+        root = db.create_job("icloud_hide", batch_id="cancel-retry")
+        self.assertEqual(registration_service.cancel_pending_jobs(batch_id="cancel-retry"), 1)
+
+        child, created = db.create_retry_job(
+            int(root["id"]), job_type="registration", email_source="icloud_hide",
+        )
+
+        self.assertTrue(created)
+        runs = registration.list_runs(int(root["attempt_id"]))
+        run_by_job = {int(run["job_id"]): run for run in runs}
+        self.assertEqual(set(run_by_job), {int(root["id"]), int(child["id"])})
+        self.assertEqual(run_by_job[int(root["id"])]["status"], "cancelled")
+        self.assertEqual(run_by_job[int(child["id"])]["status"], "queued")
+
+
+if __name__ == "__main__":
+    unittest.main()

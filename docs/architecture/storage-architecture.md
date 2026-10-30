@@ -23,18 +23,20 @@ WebUI 是两个进程，都通过 `db.insert_account` 写同一份数据，读�
 ## 现在的结构
 
 ```
-core/postgres_store.py   连接、schema、app_collections（调度状态、兼容集合和
+core/storage/postgres.py   连接、schema、app_collections（调度状态、兼容集合和
                          迁移期旧数据）
-core/record_store.py     全部正常业务行级表：可行级 UPDATE、可跨进程原子抢占、可跨表事务
-core/compat_export.py    兼容文件的去抖导出器（后台，不在写入主路径上）
+core/storage/records.py     全部正常业务行级表：可行级 UPDATE、可跨进程原子抢占、可跨表事务
+core/storage/compat_export.py    兼容文件的去抖导出器（后台，不在写入主路径上）
 core/storage/db_legacy.py  账号、注册任务和邮箱等业务存储实现，建在上面三者之上
 core/db.py               指向 storage.db_legacy 的旧模块兼容别名
-core/operations/legacy_task_store.py  历史账号操作任务的三张关系表
-core/account_task_store.py  指向 operations.legacy_task_store 的旧模块兼容别名
-core/proxy_pool_store.py  代理库存与独占/共享子租约的 PostgreSQL 协调
-core/proxy_supply.py      代理供应商后台补货、出口检测和固定供给参数适配
-core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付收口
+core/storage/operations/legacy_task_store.py  历史账号操作任务的三张关系表
+core/account_task_store.py  指向 storage.operations.legacy_task_store 的旧模块兼容别名
+core/storage/proxy/pool.py  代理库存与独占/共享子租约的 PostgreSQL 协调
+core/proxy/supply.py      代理供应商后台补货、出口检测和固定供给参数适配
+core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和交付收口
 ```
+
+其余领域仓储按 `core/storage/{accounts,registration,email,codex,operations,extract_link,proxy}/` 归组；根部保留连接、记录、兼容导出和运行配置等跨业务基础设施。原 `core.storage.accounts`、`core.storage.registration`、`core.storage.codex` 全模块名以同名包保留，现有门面和委托行为没有随目录变化拆开。统一任务存储入口是 `core.storage.operations.store`，`core.operation_task_store` 是它的模块级兼容别名。运行配置仓库位于 `core/storage/runtime_config.py`，由 `config/runtime.py` 继续延迟调用。
 
 ### 表
 
@@ -133,7 +135,7 @@ Plus 优惠属于高频筛选字段，因此 `plus_promo_kind`、折扣比例、
 均不返回该敏感字段。
 
 独立多国家套餐查询在账号 `data` 中保存 `plan_check_countries`、`plan_check_country_results` 和
-`plan_check_partial`，不新增全表迁移。`core/storage/plan_countries.py` 在同一短事务内先锁定并
+`plan_check_partial`，不新增全表迁移。`core/storage/accounts/plan_countries.py` 在同一短事务内先锁定并
 校验当前 Run、执行实例和账号租约，再以账号行锁逐国合并检查点，阻止失去租约的旧执行
 覆盖新结果；成功写入该国白名单结果及成功时间，失败保留该国上次成功结果。执行 Run 的
 `data.plan_country_progress` 按国家保存 `wait_used`、等待切片开始/截止时间、`http_attempts`、
@@ -194,7 +196,7 @@ RETURNING id
 
 ### 兼容导出
 
-通用 API、域名邮箱的兼容产物由 `core/compat_export.py` 在后台去抖生成。
+通用 API、域名邮箱的兼容产物由 `core/storage/compat_export.py` 在后台去抖生成。
 账号、注册任务、Outlook、iCloud 邮箱池和 Codex 不生成自动快照，WebUI/API 直接查询 PostgreSQL：
 
 - 导出器只接收"种类"名，到点自己从库里重读当前状态。合并因此天然正确——最后
@@ -228,8 +230,8 @@ Codex 的正常业务读写不依赖文件，也不把状态重复写入 `app_co
 历史文件通过独立迁移命令显式对账，不能在启动时扫描导入：
 
 ```bash
-python tools/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --dry-run
-python tools/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --apply
+python tools/migrations/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --dry-run
+python tools/migrations/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-register --apply
 ```
 
 工具分别读取仓库根目录与 `core/` 下的历史凭证及对应状态文件。`--dry-run` 不创建表或写库，只报告数量及错误分类；`--apply` 仅补齐缺失记录，现存行的 Token、导出次数、归档状态和错误信息全部保留，重复执行新增为零。除文件名外，还按 `account_id`、无 ID 时按邮箱及套餐核对身份；更名前的旧副本计入 `existing_identity_credentials`，不会导入成第二条凭证。写入前取得与授权保存相同的身份锁并重新核对，避免并发授权造成重复。回执单独导入回执表；孤立状态只报告数量，不生成虚假凭证。同名缺失记录内容冲突、新记录身份重复或输入损坏时停止导入，防止部分迁移。文件不会被自动删除或移动，历史文件不替代 PostgreSQL 备份。
@@ -253,9 +255,9 @@ python tools/migrate_codex_files.py --source-root /绝对路径/turb-gpt-free-re
 ## 迁移与回滚
 
 ```bash
-python tools/migrate_collections_to_tables.py --dry-run   # 只报告
-python tools/migrate_collections_to_tables.py --apply     # 导入（幂等）
-python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
+python tools/migrations/migrate_collections_to_tables.py --dry-run   # 只报告
+python tools/migrations/migrate_collections_to_tables.py --apply     # 导入（幂等）
+python tools/migrations/migrate_collections_to_tables.py --verify    # 逐字段对账
 ```
 
 - 这是历史/一次性迁移工具：只从 `app_collections` 读取迁移期集合并写入行级表。
@@ -280,7 +282,7 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 4. **测试用一次性 schema**：继承 `tests.support_pg.PostgresTestCase`，每类一个
    `test_xxx_<uuid>` schema，每用例清空，结束即销毁。用 public schema 会被
    `_guard_production_schema()` 响亮拦下。
-5. **启动恢复只允许改状态，绝不允许改变行数**——`tests/test_db_storage_backend.py`
+5. **启动恢复只允许改状态，绝不允许改变行数**——`tests/storage/test_db_storage_backend.py`
    的 `StartupRecoveryTests` 锁死了这条。
 
 判断"哪些行被物理写入"用 `xmin`（PostgreSQL 记录最后写入该行的事务号），
@@ -313,8 +315,8 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 ### 显式迁移
 
 ```bash
-python tools/migrate_runtime_config.py --source-root . --dry-run
-python tools/migrate_runtime_config.py --source-root . --apply
+python tools/migrations/migrate_runtime_config.py --source-root . --dry-run
+python tools/migrations/migrate_runtime_config.py --source-root . --apply
 ```
 
 升级前停止服务并备份 PostgreSQL。进程由 launchd、systemd 等托管时，先暂停自动拉起并确认监听关闭，迁移完成后恢复原托管，避免备份和对账期间后台 worker 继续写入。dry-run 只读统计，不建表、不生成主密钥、不改源文件。apply 持有文件锁及数据库事务锁，先以0600备份原文件并持久化主密钥，再将全部非启动字段原值加密写入，核对读回一致后启用数据库配置，提交成功才原子精简 `.env`。未知字段不静默丢弃，已有不同数据库值不被旧文件覆盖；冲突或失败保留原始资料，重复执行可完成中断后的精简。空值、列表和历史别名沿用原解析语义。

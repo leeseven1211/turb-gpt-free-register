@@ -5,13 +5,13 @@ from __future__ import annotations
 from flask import jsonify, request
 
 from core import db
-from core.auth_fingerprint import clean_safe_fingerprint_summary
-from core.plus_promotion import promotion_kind_from_record
-from core.task_errors import classify_task_error
+from core.auth.fingerprint import clean_safe_fingerprint_summary
+from core.accounts.plans.promotion import promotion_kind_from_record
+from core.operations.errors import classify_task_error
 
 def _feature_unavailable(name: str):
     """配置不完整时返回统一 503；页面禁用之外再做后端兜底。"""
-    from core.feature_availability import require_feature
+    from core.runtime.capabilities import require_feature
     enabled, reason = require_feature(name)
     if enabled:
         return None
@@ -275,9 +275,9 @@ def _compact_account_for_list(row: dict) -> dict:
         if value is not None and value != "":
             out[key] = value
     if "plan_check_country_results" in row:
-        from core.plan_check_countries import public_country_results
+        from core.accounts.plans.countries import public_country_results
         out["plan_check_country_results"] = public_country_results(row["plan_check_country_results"])
-    from core.plan_check_countries import promotion_country_from_row
+    from core.accounts.plans.countries import promotion_country_from_row
     promotion_country = promotion_country_from_row(row)
     if promotion_country:
         out["plan_promotion_country"] = promotion_country
@@ -290,7 +290,7 @@ def _compact_account_for_list(row: dict) -> dict:
     out["plus_trial_eligible"] = promo_kind == "free_trial"
     out["plus_discount_eligible"] = promo_kind == "discount"
     if out["has_access_token"] and not out.get("token_expires_at"):
-        from core.chatgpt_plan import token_claims
+        from core.accounts.plans.client import token_claims
         claims = token_claims(str(row.get("access_token") or ""))
         if claims.get("token_expires_at"):
             out["token_expires_at"] = claims.get("token_expires_at")
@@ -448,7 +448,7 @@ def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize
         out.pop("error_info", None)
     # 旧来源尚未映射到 operation Run 时，也使用同一个证据投影器。
     if include_progress and not out.get("progress"):
-        from core.task_progress import build_progress_snapshot
+        from core.operations.progress import build_progress_snapshot
 
         out["progress"] = build_progress_snapshot(
             0, int(row.get("id") or 0), str(row.get("job_type") or "registration"),

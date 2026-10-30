@@ -17,8 +17,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from core import compat_export, postgres_store, record_store, task_run_log
-from core.plus_promotion import DISCOUNT, ELIGIBLE_PROMO_KINDS, FREE_TRIAL, promotion_kind_from_record
+from core.storage import compat_export, postgres as postgres_store, records as record_store
+from core.operations import run_log as task_run_log
+from core.accounts.plans.promotion import DISCOUNT, ELIGIBLE_PROMO_KINDS, FREE_TRIAL, promotion_kind_from_record
 
 logger = logging.getLogger(__name__)
 
@@ -532,7 +533,7 @@ def set_accounts_email_invalid(
     icloud_account_id: str | None = None, source: str = "manual",
 ) -> dict:
     """统一邮箱失效命令，不改变 OpenAI、Codex 或 Token 状态。"""
-    from core.storage.email_validity import set_accounts_email_invalid as update
+    from core.storage.email.validity import set_accounts_email_invalid as update
 
     return update(account_ids, invalid=invalid, reason=reason, expected_emails=expected_emails,
                   icloud_account_id=icloud_account_id, source=source)
@@ -566,7 +567,7 @@ def insert_account(
     account_changed = False
     outlook_changed = False
     with record_store.transaction() as conn:
-        from core.storage.email_validity import facts_for_address, lock_email_validity
+        from core.storage.email.validity import facts_for_address, lock_email_validity
 
         lock_email_validity(conn, shared=True)
         record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email.lower()}")
@@ -618,7 +619,7 @@ def insert_account(
         if access_token:
             # expires_at 是 ChatGPT Session 到期时间；AT 自身到期时间来自 JWT exp，
             # 两者分开保存，避免页面和刷新调度误判。
-            from core.chatgpt_plan import token_claims
+            from core.accounts.plans.client import token_claims
 
             claims = token_claims(access_token)
             changes["token_expires_at"] = claims.get("token_expires_at")
@@ -645,7 +646,7 @@ def insert_account(
                 record_store.ACCOUNTS, row_id, changes, conn=conn,
             )
 
-        from core.email_derivation import mark_registered
+        from core.email.derivation import mark_registered
 
         address_id = mark_registered(normalized_email, row_id, conn=conn)
         if address_id is not None:
@@ -1035,7 +1036,7 @@ def update_account_twofa_status(email: str, status: str, message: str) -> bool:
 
 def update_account_token_metadata(acc_id: int, access_token: str) -> bool:
     """只同步当前 AT 的 JWT 到期信息，不改动账号状态或 Token 内容。"""
-    from core.chatgpt_plan import token_claims
+    from core.accounts.plans.client import token_claims
     claims = token_claims(access_token)
     row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
     if row is None or str(row.get("access_token") or "").strip() != str(access_token or "").strip():
@@ -1070,7 +1071,7 @@ def update_account_session(
     normalized_token = str(access_token or "").strip()
     if not normalized_email or not normalized_token:
         return False
-    from core.chatgpt_plan import token_claims
+    from core.accounts.plans.client import token_claims
 
     claims = token_claims(normalized_token)
     account_id = None
@@ -1107,7 +1108,7 @@ def update_account_session(
 
 def sync_account_token_metadata(items: list[tuple[int, str]]) -> int:
     """批量回填 AT 到期信息，只 patch 仍持有该 Token 的目标账号。"""
-    from core.chatgpt_plan import token_claims
+    from core.accounts.plans.client import token_claims
 
     tokens = {int(acc_id): str(token or "").strip() for acc_id, token in items if str(token or "").strip()}
     if not tokens:
@@ -1266,7 +1267,7 @@ def recover_interrupted_plan_checks(
             params=params,
             conn=conn,
         )
-        from core.storage.plan_countries import finish_unfinished_countries
+        from core.storage.accounts.plan_countries import finish_unfinished_countries
         for account in recovered_rows:
             if account.get("plan_check_country_results"):
                 finish_unfinished_countries(int(account["id"]), status="failed", error="WebUI 重启导致国家查询中断，请重新查询", conn=conn)
@@ -1297,7 +1298,7 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         "plan_check_deadline_at": None,
     }
     if "plan_check_country_results" in result:
-        from core.plan_check_countries import public_country_results
+        from core.accounts.plans.countries import public_country_results
         changes["plan_check_country_results"] = public_country_results(result["plan_check_country_results"])
     if "plan_check_countries" in result:
         changes["plan_check_countries"] = list(result.get("plan_check_countries") or [])
@@ -1877,7 +1878,7 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
     elif result.get("ok") and result.get("auth_method"):
         changes["last_auth_error_code"] = None
     if result.get("fingerprint"):
-        from core.auth_fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
+        from core.auth.fingerprint import clean_safe_fingerprint_summary, safe_fingerprint_summary_text
 
         fingerprint = clean_safe_fingerprint_summary(result.get("fingerprint"))
         if fingerprint:
@@ -1901,7 +1902,7 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         token = str(result.get("access_token") or "").strip()
         if token:
             changes["access_token"] = token
-            from core.chatgpt_plan import token_claims
+            from core.accounts.plans.client import token_claims
 
             claims = token_claims(token)
             changes["token_expires_at"] = claims.get("token_expires_at")
@@ -1989,7 +1990,7 @@ def account_is_deactivated(account: dict | None) -> bool:
 
 def restore_account_after_deactivation(acc_id: int, *, reason: str) -> bool:
     """人工确认访问恢复后解除当前停用，保留历史并要求 Codex 重新授权。"""
-    from core.storage import operation
+    from core.storage.operations import store as operation
 
     normalized_reason = str(reason or "").strip()[:500]
     if not normalized_reason:
@@ -2167,7 +2168,7 @@ def finish_account_email_change(
     now = _now()
     table = postgres_store.qualified(record_store.ACCOUNTS.name)
     with record_store.transaction() as conn:
-        from core.storage.email_validity import facts_for_address, lock_email_validity
+        from core.storage.email.validity import facts_for_address, lock_email_validity
 
         lock_email_validity(conn, shared=True)
         row = _locked_account_by_id(conn, int(acc_id))
@@ -2213,7 +2214,7 @@ def finish_account_email_change(
             "live_checked_at": None,
         })
         if normalized_token:
-            from core.chatgpt_plan import token_claims
+            from core.accounts.plans.client import token_claims
 
             claims = token_claims(normalized_token)
             changes.update({
@@ -2231,8 +2232,8 @@ def finish_account_email_change(
             })
         if material_line is not None:
             changes["email_change_material_line"] = str(material_line or "")
-        from core.email_derivation import mark_registered
-        from core.storage import email_address_allocations
+        from core.email.derivation import mark_registered
+        from core.storage.email import address_allocations as email_address_allocations
 
         target_binding_id = mark_registered(target, int(acc_id), conn=conn)
         changes["email_address_id"] = target_binding_id
@@ -2468,7 +2469,7 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
 
 def _delete_pool_email(spec, email: str) -> bool:
     source = next((name for name, candidate in _POOL_SOURCE_SPECS.items() if candidate.name == spec.name), None)
-    from core.email_derivation import parent_has_allocations
+    from core.email.derivation import parent_has_allocations
 
     # 与派生领取争用同一母记录行锁；检查与删除不能跨事务，否则会删除刚被子地址引用的母资源。
     # 历史大小写重复行仍按完整邮箱一起处理，逐行保留被子地址引用的恢复资料。
@@ -2548,7 +2549,7 @@ def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
     records 元素：{email, password, client_id, refresh_token}
     返回 (新增数, 跳过数)。
     """
-    from core.storage.local_email_imports import import_resources
+    from core.storage.email.local_imports import import_resources
 
     return import_resources(records, source="outlook")
 
@@ -2572,7 +2573,7 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
     accounts_changed = outlook_changed = generic_changed = False
     import_note = "导入为已注册账号，用于 Codex 授权"
     with record_store.transaction() as conn:
-        from core.storage.email_validity import facts_for_address, lock_email_validity
+        from core.storage.email.validity import facts_for_address, lock_email_validity
 
         lock_email_validity(conn, shared=True)
         for raw in records:
@@ -2584,7 +2585,7 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
             # 账号唯一性与对应邮箱池的状态变更必须一起判定；事务级业务键锁住
             # 跨进程的“检查后插入”窗口，数据库 identity 负责生成新 ID。
             record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
-            from core.storage import email_address_allocations
+            from core.storage.email import address_allocations as email_address_allocations
 
             if email_address_allocations.find_allocation(address=email, conn=conn) is not None:
                 skipped += 1
@@ -2771,7 +2772,7 @@ def import_generic_api_emails(records: list[dict]) -> tuple[int, int]:
     records 元素：{email, code_url}
     返回 (新增数, 跳过数)。
     """
-    from core.storage.local_email_imports import import_resources
+    from core.storage.email.local_imports import import_resources
 
     inserted, skipped = import_resources(records, source="generic_api")
     if inserted:
@@ -2879,7 +2880,7 @@ def _codex_identity(filename: str, content: dict) -> tuple[str, str]:
 
 
 def _codex_payload(filename: str, content: dict) -> dict:
-    from core.codex_token_refresh_service import oauth_metadata
+    from core.codex.token_refresh_service import oauth_metadata
 
     rendered = json.dumps(content, ensure_ascii=False, indent=2) + "\n"
     email, plan = _codex_identity(filename, content)
@@ -2994,7 +2995,7 @@ def _upsert_codex_credential_record(filename: str, content: dict) -> int:
 
 
 def _codex_public_row(row: dict) -> dict:
-    from core.codex_token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
+    from core.codex.token_refresh_service import oauth_metadata, refresh_error_requires_reauth, sub2api_status_requires_reauth
 
     content = row.get("content") if isinstance(row.get("content"), dict) else {}
     oauth = oauth_metadata(content)
@@ -4382,7 +4383,7 @@ def claim_next_domain_email(email: str) -> dict:
     """记录一个新生成的域名邮箱地址，并立即标记为当前任务已领取。"""
     target = str(email or "").strip()
     with record_store.transaction() as conn:
-        from core.storage.email_validity import lock_email_validity
+        from core.storage.email.validity import lock_email_validity
 
         lock_email_validity(conn, shared=True)
         existing = _locked_row_by_email(conn, record_store.DOMAIN_POOL, target)
@@ -4478,7 +4479,7 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
     inserted = updated = disabled = 0
     remote_emails: set[str] = set()
     with record_store.transaction() as conn:
-        from core.storage.email_validity import lock_email_validity
+        from core.storage.email.validity import lock_email_validity
 
         lock_email_validity(conn, shared=True)
         group_scope_key = f"icloud_account:{account_key}"

@@ -1,6 +1,6 @@
 # 兼容入口与孤儿代码清单
 
-> 更新时间：2026-08-26
+> 更新时间：2026-10-30（目录引用与工具兼容入口）
 >
 > 本清单只记录已经完成调用审计的对象。兼容入口在观察期内继续保留，删除前需要再次
 > 执行全仓库调用搜索和完整测试。
@@ -13,11 +13,26 @@ PostgreSQL 行级表；外部文件若需导入，只作为一次性输入解析
 | 入口 | 真实实现 | 保留原因 | 删除条件 |
 | --- | --- | --- | --- |
 | `core.roxy_registration` | `core.registration.roxy` | 外部脚本、历史测试和旧日志工具可能导入旧路径 | 连续一个稳定版本无源码/工具/部署脚本调用，并完成导入兼容检查 |
-| `core.browser_use_registration` | `core.registration.browser_use` | Browser Use/Skyvern 历史调用路径；当前入口已禁用，仅保留兼容导入观察 | 稳定版本确认无外部调用后，单文件删除 |
-| `core.db` | `core.storage.db_legacy` 及领域仓储 | 业务模块、工具和测试仍使用统一旧 façade | 账号/任务/邮箱/Codex 调用全部迁移到领域仓储，完成字段对账 |
-| `core.operation_task_store` | `core.storage.operation` | 统一任务中心旧导入和测试 patch 点 | 所有运行时调用改用 storage operation 子模块，并完成观察期对账 |
-| `core.account_task_store` | `core.operations.legacy_task_store` | 旧 `account_action_*` 任务在兼容观察期内继续写入 | 统一 operation 原生 run 覆盖全部任务类型至少一个稳定版本 |
+| `core.browser_use_registration` | `core.registration.legacy.browser_use.flow` | Browser Use/Skyvern 历史调用路径；当前入口已禁用，仅保留兼容导入观察 | 稳定版本确认无外部调用后，单文件删除 |
+| `core.db` | `core.storage.db_legacy` | 业务模块、工具和测试仍使用统一旧 façade | 账号/任务/邮箱/Codex 调用全部迁移到领域仓储，完成字段对账 |
+| `core.operation_task_store` | `core.storage.operations.store` | 统一任务中心旧导入和测试 patch 点 | 所有运行时调用改用 storage operation 子模块，并完成观察期对账 |
+| `core.account_task_store` | `core.storage.operations.legacy_task_store` | 旧 `account_action_*` 任务在兼容观察期内继续写入 | 统一 operation 原生 run 覆盖全部任务类型至少一个稳定版本 |
 | `main.run_registration` | `core.registration.dispatcher.run_registration` | CLI/外部调用兼容 | CLI 和外部工具全部切换 dispatcher 后再删除 |
+
+上述五个 `core` 旧模块入口通过 `sys.modules` 绑定真实实现模块，保留 patch 点和全局锁、缓存等对象的唯一性；不得改为复制实现或通配符再导出。
+
+### 原工具命令
+
+已公开的 `python tools/<脚本>.py` 路径保留薄入口，执行时转入下列真实实现目录；作为模块导入时绑定真实实现模块对象。保留参数、当前工作目录、退出码与单次执行语义，不在包装层增加业务处理。
+
+| 原入口（均位于 `tools/`） | 真实实现目录 |
+| --- | --- |
+| `analyze_har_protocol.py`、`diagnose_protocol_password_interface.py`、`diagnose_roxy_auth_interface.py` | `tools/diagnostics/` |
+| `evaluate_http_backends.py`、`test_chatgpt_curl_cffi.py`、`test_performance.py` | `tools/benchmarks/` |
+| `import_outlook_pool.py`、`prepare_mail_pipeline_otp_patch.py`、`test_codex_oauth.py` | `tools/maintenance/` |
+| `migrate_codex_files.py`、`migrate_collections_to_tables.py`、`migrate_hme_inbox_to_butler.py`、`migrate_registration_attempts.py`、`migrate_runtime_config.py`、`migrate_unified_task_center.py` | `tools/migrations/` |
+
+新代码优先导入真实实现。原工具路径在部署脚本、外部命令和维护手册完成调用审计、确认至少一个稳定版本无依赖后，才可逐个删除。
 
 ## 已清理对象
 
@@ -32,7 +47,7 @@ PostgreSQL 行级表；外部文件若需导入，只作为一次性输入解析
 
 - Codex OAuth 已使用原生 `operation_tasks/operation_runs`；
 - 查活、套餐、AT 刷新、封号扫描、账号配置和注册后置步骤经 `task_gateway` 写入旧任务
-  兼容模型，再由 `operation_projection` 幂等映射到统一模型；
-- `operation.verify()` 必须保持注册任务、账号任务、事件映射数量一致，且不得出现孤儿
+  兼容模型，再由 `core.storage.operations.projection` 幂等映射到统一模型；
+- `core.storage.operations.store.verify()` 必须保持注册任务、账号任务、事件映射数量一致，且不得出现孤儿
   run/event、重复活跃账号资源族、终态租约或终态 acquired resource；
 - 观察期内不删除 `account_action_*` 表，不重排任务 ID，不覆盖历史 run/event。

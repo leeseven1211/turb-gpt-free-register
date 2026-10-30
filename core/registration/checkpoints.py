@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from core import db
-from core.email_provider import resolve_email_source
+from core.email.provider import resolve_email_source
 
 
 class RegistrationCheckpointConflict(RuntimeError):
@@ -12,7 +12,7 @@ class RegistrationCheckpointConflict(RuntimeError):
 def save_protocol_password_checkpoint(*, email: str, password: str, state: str,
                                       proxy: str | None = None, email_source: str | None = None) -> dict:
     """保存原 Attempt 的私有密码；缺少持久化任务上下文时拒绝发送新密码。"""
-    from core.registration_service import registration_fact_context
+    from core.registration.service import registration_fact_context
     from core.storage import registration
 
     context = registration_fact_context()
@@ -75,7 +75,7 @@ def save_email_verification_checkpoint(
 
 def save_protocol_totp_checkpoint(*, email: str, secret: str, confirmed: bool) -> None:
     """将注册 2FA 的待确认和已启用状态分别持久化。"""
-    from core.registration_service import registration_fact_context
+    from core.registration.service import registration_fact_context
     from core.storage import registration
 
     context = registration_fact_context()

@@ -15,7 +15,7 @@ TWOFA_DRIVER:
 """
 from config.env_loader import apply_env_overrides
 from config.schema import schema_default
-from core.twofa_flow import canonical_twofa_executor, normalize_twofa_mode
+from core.auth.twofa import canonical_twofa_executor, normalize_twofa_mode
 
 ENABLE_2FA = schema_default("ENABLE_2FA")
 TWOFA_DRIVER = schema_default("TWOFA_DRIVER")

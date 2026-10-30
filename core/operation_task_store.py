@@ -3,6 +3,6 @@ from __future__ import annotations
 
 import sys
 
-from core.storage import operation as _implementation
+from core.storage.operations import store as _implementation
 
 sys.modules[__name__] = _implementation
