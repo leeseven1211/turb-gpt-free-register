@@ -64,17 +64,37 @@ CLI / Web routes
 
 新增或修改 WebUI 可编辑配置时必须同步检查：
 
-1. `config/<domain>.py` 中的默认值和类型；
-2. `config.env_loader.apply_env_overrides` 映射；
+1. `config/schema.py` 中的键、默认值、类型和校验，以及 `config/<domain>.py` 的读取；
+2. `config/runtime.py` 的启动字段边界与 `config.env_loader.apply_env_overrides` 映射；
 3. `config/__init__.py` 历史兼容导出；
 4. `webui/config_editor.py` 白名单；
 5. `.env.example`；
 6. README；
 7. CLI、WebUI、批量任务和后台任务读取路径；
-8. `tests/config/test_config_defaults.py`。
+8. 配置 schema、默认值、运行时保存与热加载测试。
 
-密钥只允许保存在 `.env` 或进程环境中。运行时需要热更新的配置必须通过子模块属性读取，
-不能长期持有 `from config import VALUE` 的旧绑定。
+数据库连接、生产保护、WebUI 登录与 Session 密钥、稳定消费者身份和配置加密主密钥等
+启动字段由 `.env` 或服务进程环境提供，边界以 `config/runtime.py` 的 `BOOTSTRAP_KEYS`
+为准。数据库运行配置启用后，显式运行值（包括供应商密钥）由配置门面写入 PostgreSQL
+密文表，主密钥不入库；不得绕过门面直接写 `.env`、明文表或历史凭据引用。保存、热加载
+与失败回滚共用配置事务。迁移及成套备份要求见[运行配置存储](storage-architecture.md#运行配置与启动配置)。
+
+运行时需要热更新的配置必须通过子模块属性读取，不能长期持有 `from config import VALUE`
+的旧绑定。已有任务使用提交时的配置快照，保存新配置不修改已入队任务的快照。
+
+### 兼容配置
+
+删除旧配置前必须核对实际读取路径，不能只按名称或是否在配置页展示判断：
+
+- `PLAN_CHECK_PROXY_MODE` / `PLAN_CHECK_PROXY` 仍供直接套餐查询使用；
+  `ACCOUNT_ACTION_PROXY_MODE` / `ACCOUNT_ACTION_PROXY` 仍参与历史回退和静态线路选择。
+- `PLAN_CHECK_WORKERS` / `PLAN_CHECK_QUEUE_LIMIT` 保留历史读取兼容；持久账号任务使用
+  `ACCOUNT_BATCH_WORKERS`。`PLAN_CHECK_MIN_INTERVAL` / `PLAN_CHECK_JITTER` 仍控制套餐查询节奏。
+- `PROXY_1024_ROTATE_SESSION_TIME` / `PROXY_1024_MAX_ATTEMPTS` 等保留给供应商诊断兼容；
+  正常库存补货使用独立策略，这些字段不保证每次更换出口 IP。
+- `ACCOUNT_TOKEN_REFRESH_DRIVER`、`ACCOUNT_AUTH_V2_ENABLED` 和旧 sub2api 别名继续在兼容
+  边界读取，不重新作为独立配置页选项。旧键与类型以 `config/schema.py` 的
+  `LEGACY_ENV_OVERRIDE_TYPES` 和实际调用为准。
 
 ## 5. 存储规范
 

@@ -1,7 +1,6 @@
 # 发布与验证
 
-> 本文是当前可复用的验证规则，不记录某次优化的性能数字或历史验收结论。相关历史证据
-> 保存在[2026-09 优化记录](../history/2026-09-optimization/)。
+> 本文维护现行验证规则；单次测试结果、性能数字和部署回执通过 Git 历史追溯。
 
 ## 1. 验证范围
 
@@ -84,5 +83,4 @@ python tools/test_isolated.py --profile all -- -q
 完整代理、邮箱池、`logs/`、`accounts/` 或 `codex_accounts/` 内容。兼容文件的
 存在或生成成功不能替代 PostgreSQL 行级数据的正确性。
 
-历史性能门禁、依赖锁验证和迁移演练记录见
-[历史发布验证证据](../history/2026-09-optimization/release-verification-evidence.md)。
+可重复的服务切换、配置迁移及回滚步骤见[部署与维护](../deployment/operations.md)。

@@ -1,24 +1,6 @@
 # 存储架构
 
-## 为什么改
-
-项目源自上游 `xiaoguzuiniu/gpt-free-register`，最初是纯文件存储——`core/db.py` 在
-`d40fbb3 Initial open source release` 就存在。PostgreSQL 是 `480461a`（2026-08-13）
-才接进来的，接法是把**整个集合存成一行 JSONB blob**（`app_collections` 表，
-按旧文件名做键）。
-
-这个接法留下三个问题：
-
-**写放大。** 改一个字段要 `_load_accounts()` 读全量 → 改 → `_save_accounts()` 写全量。
-而 `_save_accounts` 连锁做四件事：写 2.1 MB JSON、PG 整块覆盖、重建
-兼容快照和静态查看页。刷新一个账号的 AT
-过期时间，实际写入 7 MB。
-
-**丢更新。** `db._LOCK` 是 `threading.RLock`，只在进程内有效。CLI（`main.py`）和
-WebUI 是两个进程，都通过 `db.insert_account` 写同一份数据，读改写会互相覆盖。
-
-**抢占失效。** 三个 `claim_*` 函数号称"原子占用"，实现是"读出来判断状态再写回"，
-跨进程根本不互斥——两边都会读到 idle，然后都以为抢到了。
+PostgreSQL 是账号、任务、邮箱、代理、凭据和运行配置的事实来源。正常业务使用行级表及数据库事务；文件仅承载明确的导入、导出或恢复辅助职责。
 
 ## 现在的结构
 
@@ -50,6 +32,8 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `email_pool_generic_api` | 通用 API 邮箱池 |
 | `email_pool_domain` | 域名邮箱池 |
 | `email_pool_icloud_hide` | iCloud Hide My Email 别名池 |
+| `email_pool_butler` | Butler 手动导入的固定身份库存 |
+| `local_email_claims` | 本地完整邮箱的稳定领取和永久去重记录 |
 | `email_address_allocations` | 完整业务地址、母资源、固定收件版本、稳定领取归属和生命周期 |
 | `email_inbox_profiles` | 实际收件箱的配置版本和凭据引用，不保存密钥副本 |
 | `email_otp_requests` | 完整派生地址的认证租约、执行 fence、challenge 和候选消息事实，不保存验证码 |
@@ -59,14 +43,16 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
 | `mail_provider_orders` | MailCode/Xigua 的稳定领取身份、幂等购买键、供应商订单、已购邮箱和私有取码游标 |
-| `account_action_batches` / `_tasks` / `_events` | 账号操作任务（早于本次改造） |
+| `account_action_batches` / `_tasks` / `_events` | 账号操作任务（兼容模型） |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
 ### 通用邮箱子地址
 
-母邮箱继续保存在原邮箱池中，`email_address_allocations` 单独保存完整子地址，不把子地址写回 Apple 别名库存。当前接入 HME `forward_imap`、严格契约的 `forward_butler` 和 Outlook 精确收件路径。在管理页人工预生成 `+` 后接六位小写字母数字，每母资源默认累计最多 3 个；提高额度只增加可生成数量。`used/replaced` 母资源仍可生成，明确停用、归档或远端失效的资源不参与新生成或领取。
+新库存采用手动导入；以下表结构同时保护历史母子身份、固定取码和恢复链路，不代表开启自动生成。当前操作规则见[邮箱资源与取码](../workflows/email-resources.md)。
 
-预生成库存使用 `available/disabled`，未领取时 `acquisition_id/owner_kind/owner_id` 为 NULL；`generation_key` 唯一记录生成请求内的序号，领取后仍保留。初始化对旧表幂等解除这三列的 NOT NULL 约束，历史行及身份保持不变。`email_address_generation_requests` 保存稳定请求身份、来源、数量、母资源范围及结果，包括零结果和部分生成；重复请求恢复原结果，参数冲突明确拒绝。生成通过母记录行锁、完整地址锁和历史累计检查防止重复与超额，请求结果与库存同事务提交。
+母邮箱继续保存在原邮箱池中，`email_address_allocations` 保存完整子地址及其归属。历史 HME `forward_imap`、严格 `forward_butler` 和 Outlook 精确收件链路仍用于既有身份读取；Turb 的生成管理入口已经退出，子邮箱由 Butler 手动生成，不在这里维护默认每母额度或后缀策略。
+
+历史预生成记录保留 `available/disabled`、稳定领取身份和 `generation_key`。`email_address_generation_requests` 保存原请求参数及零结果、部分结果，供历史身份核对与恢复，不代表当前开放生成入口。已有完整地址、累计生成历史与 owner 不能因为配置变更、删除展示记录或文档清理而丢失。
 
 领取使用稳定 `acquisition_id`，通过事务级业务锁与行锁原子将合格库存从 `available` 改为 `reserved`，不在领取时同步上游、创建 profile 或生成后缀。地址与原 job、Attempt、批次领取记录使用同一个 PostgreSQL 连接提交；成功账号的 `email_address_id`、地址状态和账号引用也在账号写回事务内更新。失败、重启中断和结果不明保留原 root/Attempt 与地址，沿原身份重跑；全部状态均占用历史生成额度，已领取地址不回收给其他意图。注册容量统计仅计入母资源健康且固定 profile 有效的可领取库存。删除有子地址引用的母资源改为归档停用，检查与删除共用母记录锁。
 
@@ -242,16 +228,6 @@ python tools/migrations/migrate_codex_files.py --source-root /绝对路径/turb-
 进程（`web.py` / `main.py` 各调一次）。**不再有"PG 读失败就回退兼容文件"的降级**——
 静默降级会让两份副本悄悄分叉：读到旧文件、写回 PG，中间的变更就没了。
 
-## 效果
-
-| 指标 | 改造前 | 改造后 |
-|---|---|---|
-| 一次账号备注更新 | 631 ms / 写 7 MB | 19 ms / 写几百字节 |
-| API 端到端 | — | 27 ms |
-| 连续 20 次写入 | 渲染 20 次 | 合并成 1 次 |
-| 并发改不同字段 | 互相覆盖 | JSONB `\|\|` 服务端合并，都保留 |
-| 跨进程抢占 | 失效 | 由数据库保证 |
-
 ## 迁移与回滚
 
 ```bash
@@ -270,10 +246,6 @@ python tools/migrations/migrate_collections_to_tables.py --verify    # 逐字段
 
 ## 开发约定
 
-**这些约定的由来是一次真实事故**：未完成的存储层代码留在了线上服务的工作目录里，
-服务重启后加载了它，启动恢复读到一张空表，又把空快照当成全量写了回去，361 条
-注册任务只剩 5 条。
-
 1. **存储层改造在 worktree 里做**，线上目录常驻 `main`，重启不会加载改造中的代码。
 2. **开发连独立数据库** `turb_dev`（生产数据的拷贝），不碰 `turb_console`。
 3. **硬护栏**：`postgres_store.connect()` 拒绝连接 `turb_console`，挂在唯一的连接
@@ -288,7 +260,7 @@ python tools/migrations/migrate_collections_to_tables.py --verify    # 逐字段
 判断"哪些行被物理写入"用 `xmin`（PostgreSQL 记录最后写入该行的事务号），
 不要用 `updated_at`：后者是秒级精度，同一秒内的写入看不出差别。
 
-## 后续
+## 文件产物边界
 
 仍保留文件形态、但不作为 Codex 凭证事实来源的兼容产物：
 

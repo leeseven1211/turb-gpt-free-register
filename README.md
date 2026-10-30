@@ -115,7 +115,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 根据当前邮箱、代理、浏览器、Codex、提链和 sub2api 配置动态判断功能是否可用；缺少必要配置时，前端按钮会禁用，后端接口也会拒绝执行并返回具体原因。
 - 批次进度按邮箱逐行展示，包含准备邮箱、打开浏览器、打开注册页、提交邮箱、认证跳转、邮箱验证码、填写资料、获取 Token、Codex 等阶段；顶部显示成功/失败/运行/等待和总耗时。
 - 发起注册页只读取当前选择批次的完整步骤，其他批次仅在切换后加载；下拉框只读取批次摘要。分页任务查询不附带批次步骤。当前批次结束后停止自动轮询，切换批次、手动刷新或提交新任务时重新读取；旧请求返回不会覆盖新选择的批次。
-- 账号状态自动轮询仅传列表摘要，优惠和逐国结账详情在悬浮或打开账号详情时读取。任务筛选统计与提链批次导航每 30 秒自动更新，主动刷新或切换筛选立即更新；当前页任务及当前批次进度沿用正常轮询。总览与导航共享最多 15 秒的本地邮箱展示统计，页面标明更新时间，领取邮箱仍实时检查资格。性能实现和验证范围见 [P0/P1 优化记录](docs/analysis/2026-10-29-performance-p0-p1-results.md)。
+- 账号状态自动轮询仅传列表摘要，优惠和逐国结账详情在悬浮或打开账号详情时读取。任务筛选统计与提链批次导航每 30 秒自动更新，主动刷新或切换筛选立即更新；当前页任务及当前批次进度沿用正常轮询。总览与导航共享最多 15 秒的本地邮箱展示统计，页面标明更新时间，领取邮箱仍实时检查资格。定向验证范围见[功能地图](docs/architecture/functional-map.md)和[发布与验证](docs/development/release-verification.md)。
 - 任务中心的单条和批量取消在状态校验时不读取历史事件，避免日志积累拖慢停止操作。批量取消结果区分“已取消”和“取消中”；跳过时显示任务 ID 和具体原因，并保留未成功任务的选择，便于重试。
 
 ### 2026-08-13 更新记录
@@ -332,7 +332,7 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 #### 子邮箱统一由 Email Butler 管理
 
 子邮箱的生成、累计额度、后缀策略和库存状态统一在 **Email Butler** 管理。
-生产入口：[Email Butler → 子邮箱](https://codex-auth.leeseven.com/email-butler/derived.html)；[当前规则与验收](docs/deployment/2026-10-27-butler-manual-source-policy.md)。
+生产入口：[Email Butler → 子邮箱](https://codex-auth.leeseven.com/email-butler/derived.html)；[库存与交接规则](docs/workflows/email-resources.md)。
 Turb 仅负责导入、领取和使用邮箱；新任务通过 `email_butler` 来源领取完整地址。
 HME 当前每个母地址累计上限为 1 个、后缀 6 位；Hotmail、Outlook 和其他
 微软邮箱分别保存上限与后缀策略。所有子邮箱仅在 Butler 手动点击生成，
@@ -363,7 +363,7 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 的母资源删除会停止新分配并保留恢复资料。实际转发目标迁移需要明确验证并切换
 绑定的收件配置，不应仅覆盖全局邮箱字段。
 
-统一管理边界见[Butler 子邮箱设计](docs/superpowers/specs/2026-10-27-butler-derived-inventory.md)；历史完整地址及收件证据约束见[通用子地址设计](docs/superpowers/specs/2026-10-20-email-address-derivation-design.md)。
+统一管理、完整地址和收件证据约束见[邮箱资源与取码](docs/workflows/email-resources.md)。
 
 #### iCloud Hide My Email（`icloud_hide`）
 
@@ -373,7 +373,7 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 
 导入时显示实际批次数量、进度条及已导入／待处理／交接中／已跳过／待确认／失败统计。点击 **关闭，后台继续** 后无需等待，页面右下角和原导入入口都可查看进度；刷新页面自动读取原批次，不重复发起导入。成功完成后右下角提示自动收起，刷新后也不再弹出；邮箱页原导入入口仍可查看完成结果。库存展示首次更新后最多每 15 秒刷新一次，批次结束时补刷；页面刷新不阻塞进度查询。服务重启后，中断批次明确显示可继续；点击 **继续原批次** 恢复原地址及归属，成功项保留，不换邮箱补足。**粘贴导入** 继续支持手工地址、Outlook 四段和通用 API 资源。其他 Butler provider 需要各自完整的长期收件合同后才可使用按钮导入。
 
-Butler 手动导入会先解析已有完整身份，再登记永久交接归属，避免同一地址分配给其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱职责审查](docs/deployment/2026-10-27-mail-service-boundary.md)。
+Butler 手动导入会先解析已有完整身份，再登记永久交接归属，避免同一地址分配给其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱资源与取码](docs/workflows/email-resources.md)。
 
 本地领取在同一 PostgreSQL 事务中锁定库存、保存稳定 acquisition/owner，并绑定任务完整地址；并发和重跑保持原邮箱。重复导入不会重置已有使用、保留或未知状态。Butler 收码继续使用完整目标地址、最终邮箱、时间窗口和原始收件证据；Key 只保存版本化引用。历史远端领取意图保留恢复路径，结果未知时禁止换号。
 
@@ -397,13 +397,13 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
 
 ```bash
 python tools/migrations/migrate_hme_inbox_to_butler.py
-python tools/migrations/migrate_hme_inbox_to_butler.py --apply --receipt logs/run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --receipt logs/logs/run/hme-butler-cutover.json
 # 只读预览回滚；加 --apply 才恢复回执中的原路由
-python tools/migrations/migrate_hme_inbox_to_butler.py --rollback logs/run/hme-butler-cutover.json
-python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback logs/run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --rollback logs/logs/run/hme-butler-cutover.json
+python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback logs/logs/run/hme-butler-cutover.json
 ```
 
-尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。真实母子收码、隔离和性能结果见[生产收件验收](docs/deployment/2026-10-27-hme-receipt-validation.md)。
+尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。母子地址隔离和固定收件契约见[邮箱资源与取码](docs/workflows/email-resources.md#固定收件连接与严格-otp)。
 
 迁移需按项目数据库保护规则在短暂停任务后执行，不能借测试放行生产库。预览后路由发生变化会明确报 `email_cutover_route_changed`，重新预览即可重跑。回滚时恢复原路由回执、关闭桥接开关并恢复原收件服务；仅关闭桥接不会撤销数据库中的 profile 迁移。固定 Butler profile 保存 API 地址、最终收件箱和版本化 Key 引用，后续全局配置变化不会改变历史取码目标。
 
@@ -435,7 +435,7 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
 ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
-- `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [Oracle 邮箱准备说明](docs/deployment/oracle-mail-preparation.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
+- `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [部署与维护](docs/deployment/operations.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
 - `forward_imap` 的 Gmail 应用专用密码加密保存在运行配置数据库中，不会写入仓库或日志。
 - 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - 真实 IMAP 连接使用 UID 搜索和读取，避免邮件删除引起序号漂移；批量封号邮件扫描每次最多读取 20 封并按响应 UID 归属，收码仍逐封读取并在取得有效码后立即结束。日期月份固定为英文，不受本机语言影响。
@@ -579,7 +579,7 @@ REGISTRATION_DRIVER = "protocol"
 
 协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。开源protocol-2 的资料提交明确返回 HTTP 409 `invalid_state` 时，任务会显示“资料提交时认证会话已失效”（`account_create_invalid_state`），保留原身份供续跑，不将此前账号创建结果改为未创建。明确返回 HTTP 400 `user_already_exists` 时，任务显示“远端提示账号已存在，完整登录态尚未确认”（`account_create_user_already_exists`），继续保留待确认状态、原邮箱和重跑资格。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
 
-OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。实现与验证边界见[协议注册可靠性实施记录](docs/development/2026-10-12-protocol-reliability-plan.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
+OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。执行和恢复边界见[注册流程](docs/workflows/registration.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
 
 #### 使用开源protocol-2 注册
 
@@ -871,7 +871,7 @@ Roxy 新建或安全重开绑定 Profile 时，已领取的代理线路可经过
 
 - `/api/capabilities` 是前端功能开关的依据，但后端接口仍必须调用同一套可用性检查，不能只靠隐藏/禁用按钮保证安全。
 - 配置保存并热加载后，要同时刷新功能可用性和注册邮箱来源。后台任务启动前读取最新配置，已经运行的任务保持其提交时的邮箱来源和已领取资源，不在途中静默换源。
-- 新增、删除或重命名配置时，必须同步检查 `config/schema.py`、`config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。字段的领域分组由 schema 维护，配置菜单由前端按用途映射；每个字段只保留一个编辑入口。本轮清理范围与保留依据见[配置核查记录](docs/development/configuration-audit.md)。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
+- 新增、删除或重命名配置时，必须同步检查 `config/schema.py`、`config/*.py`、`config/__init__.py`、`webui/config_editor.py`、`.env.example`、README、CLI/WebUI/自动任务/批量任务入口及测试。字段的领域分组由 schema 维护，配置菜单由前端按用途映射；每个字段只保留一个编辑入口。配置持久化和兼容读取规则见[代码规范](docs/architecture/code-conventions.md#4-配置规范)。涉及代理、邮箱、Codex 或数据结构的改动，还要检查账号页、任务恢复、导入导出和部署配置。
 - 注册、续跑、查活、AT/Codex 刷新、封号扫描、邮箱来源、提链工作台、账号页及账号任务中心的入口、实现、存储、配置键与定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)；修改公共组件时先按地图反查受影响链路。
 - 提交前完成受影响功能的定向测试和相邻回归，再按风险决定是否扩大范围；涉及真实浏览器链路时，按“单任务 → 小并发”顺序验收。`.env`、`logs/run/`、`logs/`、账号、邮箱池、Codex 凭证和生产数据库内容永远不得提交。
 
@@ -1088,7 +1088,7 @@ WebUI「账号 → 任务实例」统一保存以下账号操作：
 
 任务中心、注册页和批次卡片共用统一步骤模板，按实际执行顺序展示阶段、子步骤与阶段事件。点击步骤可同时筛选事件和运行日志；任务详情的步骤区固定高度，按宽度和步骤数量紧凑排列，能在一行放下时全部展示，超出容量时再翻页；步骤用箭头连接并直接显示耗时，悬停或键盘聚焦查看阶段时间、阶段事件和子步骤；悬浮信息较长时可滚动，键盘向下键可进入浮层，Esc 关闭。点击步骤仍筛选对应日志，日志上方同时展示所选步骤的起止时间。已跳过的主步骤与流程卡片中的子步骤不显示，详情保留已记录的跳过原因；注册任务保存的配置明确关闭的可选分支从排队时就隐藏；实际执行证据优先保留。结果节点在收到收尾事件或任务结束前保持“未开始”，整体任务状态单独展示。原始阶段事件、重试实例和日志保留。失败摘要展示原始阶段、错误分类及关联事件。任务结束时，漏收口的历史阶段显示中性的“记录不完整”，明确失败后未进入的步骤显示“未执行”；没有足够证据的执行结果仍保留“未确认”，不会自动变绿。新增任务与驱动的报告契约见[统一任务步骤与日志](docs/architecture/task-observation.md)。
 
-注册的“登录与身份验证”保留页面、邮箱提交、认证跳转、密码与验证码子阶段；页面加载完成不代表身份验证完成。各子阶段独立记录耗时，事件时间使用实际发生时刻；详情中的“阶段事件”条数不表示重试次数。本次核对范围与验收进展见[2026-10-13 注册主流程核对](docs/development/2026-10-13-registration-flow-audit.md)。
+注册的“登录与身份验证”保留页面、邮箱提交、认证跳转、密码与验证码子阶段；页面加载完成不代表身份验证完成。各子阶段独立记录耗时，事件时间使用实际发生时刻；详情中的“阶段事件”条数不表示重试次数。阶段和日志的扩展规则见[任务观测契约](docs/architecture/task-observation.md)。
 
 普通查活驱动在第一阶段通过 `ACCOUNT_LIVE_CHECK_DRIVER` 独立配置，缺失时保持当前协议型旧 AT 探测：
 
@@ -1618,7 +1618,7 @@ ENABLE_CODEX_AUTO = False
 ├── tools/
 │   ├── test_isolated.py / test_profiles.py / release.py / check_*.py
 │   └── diagnostics/ / benchmarks/ / maintenance/ / migrations/
-├── docs/                           # 架构、流程、规范和历史记录
+├── docs/                           # 现行架构、关键流程与开发维护说明
 └── sentinel/                       # Sentinel Node.js 子进程与依赖
 ```
 
@@ -1628,7 +1628,7 @@ ENABLE_CODEX_AUTO = False
 
 工具的真实实现按用途放入子目录，已有 `python tools/<原脚本>.py` 命令保留为薄兼容入口；新代码和文档优先使用真实实现路径。五个 core 兼容入口绑定同一模块对象，不复制全局状态。
 
-功能入口、实现和定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)。
+完整文档入口见[文档导航](docs/README.md)；功能入口、实现和定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)。
 
 ---
 

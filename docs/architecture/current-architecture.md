@@ -1,6 +1,5 @@
 # 当前项目架构
 
-> 业务边界核对基线：2026-09-21；目录引用于 2026-10-30 按业务归位。
 > 本文只描述当前代码的稳定边界；代码规模、测试耗时和历史改造记录不作为架构事实。
 > 发生冲突时以代码、配置 schema、数据库表定义和测试契约为准。
 
@@ -25,9 +24,9 @@ WebUI web.py
 长任务 dispatcher 与周期 worker 只能由 `webui.runtime.start_runtime()` 在进程生命周期中
 初始化。`/healthz` 提供 liveness，`/readyz` 同时检查数据库与 runtime 就绪。
 
-当前路由数量和 URL/方法/endpoint 摘要由
-[`tests/webui/test_route_contract.py`](../../tests/webui/test_route_contract.py) 固定为 **121** 条；不要把
-历史路由数量或 `len(app.url_map)` 当作发布契约。
+路由 URL、HTTP 方法和 endpoint 的契约检查位于
+[`tests/webui/test_route_contract.py`](../../tests/webui/test_route_contract.py)。调整路由时应同时
+核对现行实现与契约，不在架构文档中重复维护路由数量。
 
 ## 2. 分层边界
 
@@ -105,13 +104,42 @@ PostgreSQL 是账号、注册任务、邮箱池、代理租约、Codex 凭证和
 投影与 dispatcher；注册和兼容账号任务恢复会避开已能确认继续语义的账号/来源。恢复只能
 收口运行状态或重新派发安全的 queued 工作，不得删除账号、邮箱或历史证据。
 
-存储 schema、隔离测试和兼容导出规则见[存储架构](storage-architecture.md)；兼容门面及
-删除前提见[兼容入口清单](compatibility-inventory.md)。
+存储 schema、隔离测试和兼容导出规则见[存储架构](storage-architecture.md)。
 
-## 5. 维护规则
+## 5. 兼容入口
+
+新代码使用真实实现路径；下列旧入口仍为外部脚本、历史调用和测试保留。
+
+| 入口 | 真实实现 | 保留原因与删除条件 |
+| --- | --- | --- |
+| `core.roxy_registration` | `core.registration.roxy` | 旧导入路径；确认至少一个稳定版本无源码、工具或部署脚本依赖，并完成导入兼容检查后删除 |
+| `core.browser_use_registration` | `core.registration.legacy.browser_use.flow` | 已禁用入口的历史导入；稳定版本确认无外部调用后逐文件删除 |
+| `core.db` | `core.storage.db_legacy` | 业务、工具和测试仍使用的存储门面；全部切换领域仓储并完成字段对账后删除 |
+| `core.operation_task_store` | `core.storage.operations.store` | 任务中心旧导入与测试 patch 点；调用全部切换并完成观察期对账后删除 |
+| `core.account_task_store` | `core.storage.operations.legacy_task_store` | 仍在写入的旧账号任务模型；原生 operation 覆盖全部任务类型至少一个稳定版本后评估删除 |
+| `main.run_registration` | `core.registration.dispatcher.run_registration` | CLI 与外部调用门面；调用全部切换 dispatcher 后删除 |
+
+五个 `core` 旧入口通过 `sys.modules` 绑定真实实现模块，保持锁、缓存和 patch 点的对象唯一性，
+不得复制实现或改成通配符再导出。观察期内保留 `account_action_*` 表及其投影关系，不重排
+任务 ID、不覆盖历史 run/event；`core.storage.operations.store.verify()` 用于检查映射、
+孤儿记录、活跃资源族和终态资源的一致性。
+
+公开的 `python tools/<脚本>.py` 命令同样保留薄入口，保持参数、当前工作目录、退出码和
+单次执行语义；模块导入时绑定真实实现模块。
+
+| 原入口（均位于 `tools/`） | 真实实现目录 |
+| --- | --- |
+| `analyze_har_protocol.py`、`diagnose_protocol_password_interface.py`、`diagnose_roxy_auth_interface.py` | `tools/diagnostics/` |
+| `evaluate_http_backends.py`、`test_chatgpt_curl_cffi.py`、`test_performance.py` | `tools/benchmarks/` |
+| `import_outlook_pool.py`、`prepare_mail_pipeline_otp_patch.py`、`test_codex_oauth.py` | `tools/maintenance/` |
+| `migrate_codex_files.py`、`migrate_collections_to_tables.py`、`migrate_hme_inbox_to_butler.py`、`migrate_registration_attempts.py`、`migrate_runtime_config.py`、`migrate_unified_task_center.py` | `tools/migrations/` |
+
+删除兼容入口前重新搜索仓库、部署脚本及外部命令引用，确认至少一个稳定版本无依赖，
+完成相应契约和回归验证后逐文件删除。
+
+## 6. 维护规则
 
 - 代码改动先用最小相关测试验证，再按存储、运行时和发布风险扩大范围。
 - 数据库测试必须使用独立测试库或 schema，不能连接生产库或使用 `public` schema。
 - 账号、密码、Token、Cookie、OTP 和含凭据代理不得进入普通日志、任务事件、文档或提交。
-- 当前资料只说明已核验的现行行为；方案、迁移记录和一次性性能结果移入
-  [`docs/history/`](../history/)。
+- 当前文档维护现行使用、架构与开发规则；过期方案、迁移记录和一次性验收结果通过 Git 历史追溯。

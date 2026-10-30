@@ -1,6 +1,5 @@
 # 注册与账号认证支持矩阵
 
-**当前核对日期：** 2026-09-21
 **范围：** Roxy/Protocol 注册驱动、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
 **结论：** Roxy 是推荐的浏览器注册驱动；Protocol 也是可直接选择的协议注册驱动。
 两者共享认证结果、挑战链和恢复边界，但 `REGISTRATION_DRIVER` 不会因为某一步失败而
@@ -179,37 +178,3 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 | `remote_existing` | 否 | 否 | 走账号补全/人工协调，不走新注册 |
 | `request_unknown` | 否 | 否 | 保留现场、邮箱和 checkpoint |
 | `account_deactivated` | 否 | 否 | 停止账号操作 |
-
-## 6. 已完成的代码与测试审计项
-
-- `core/auth/challenge.py`：统一结果、错误策略、远端身份判定和安全序列化。
-- `core/auth/state_machine.py`：增加 TOTP 状态及邮箱 OTP 后的 TOTP 优先级。
-- `core/registration/roxy/__init__.py`：已有账号/未知页面保护、邮箱 OTP 后 TOTP、注册结果投影。
-- `core/registration/protocol/__init__.py`：Protocol continuation 分类，未知页面禁止继续创建资料。
-- `core/accounts/liveness/protocol/v2.py`：密码、邮箱 OTP、TOTP、密码错误和结果未知投影。
-- `core/accounts/liveness/service.py`：普通查活与刷新 AT 的边界及统一结果投影。
-- `core/accounts/liveness/roxy/flow.py`：Roxy 刷新 AT 的邮箱 OTP 后 TOTP 收口。
-- `core/codex/retry_service.py`：补密码/补 2FA 的 checkpoint 与统一结果投影。
-- `core/accounts/completion.py`：四种密码/2FA 缺失组合的规划结果。
-
-自动化测试覆盖：
-
-1. Roxy/Protocol 的密码、邮箱 OTP、TOTP 页面识别；
-2. 邮箱 OTP → TOTP 不重复发邮箱验证码；
-3. 本地无记录但远端已有账号、未知页面禁止新注册；
-4. 有密码/无密码 × 有 2FA/无 2FA 的账号补全规划；
-5. v2 协议的直接 callback、邮箱 OTP、邮箱 OTP → TOTP、密码错误、结果未知、缺 TOTP；
-6. 密码 checkpoint、2FA Secret checkpoint、串行补全和后置失败不回滚。
-
-## 7. 当前边界与后续优化方向
-
-本次自动选择改造的单元测试使用脱敏 fake session/driver，不会访问真实账号、邮箱池或生产 PostgreSQL；尚未宣称真实外部 E2E 全部通过，原因是 OpenAI 页面、风控、邮箱延迟和 Protocol 响应会变化。当前代码级支持边界已经明确：Roxy 是浏览器注册驱动和账号动作的浏览器兜底，Protocol 既可作为直接注册驱动，也承载协议 2FA/刷新 AT 等能力；`protocol_reauth`/`browser_session` 只是认证上下文来源；刷新 AT 统一由 `OPENAI_PROTOCOL_VERSION` 选择 v1/v2，其他单版本步骤不受它影响。
-
-后续优化按优先级：
-
-1. 用专用测试账号分别验证四种凭证组合，并分别覆盖 `existing_at`、`protocol_reauth`、`browser_session` 三类上下文；每种至少跑注册续跑、刷新 AT、补密码、补 2FA 一次，并保留只含状态码的审计结果；
-2. 为每个页面分类保存脱敏 DOM fixture，Provider 变化时先更新适配器和契约测试；
-3. 把 `remote_identity`、`challenge_chain`、`next_action` 在任务详情页做成结构化展示，减少只看自然语言错误；
-4. 为密码错误、TOTP 错误、结果未知分别增加人工恢复入口，避免所有失败都依赖重新点击；
-5. v2 协议稳定后再扩大灰度，不改变 Roxy 主流程和可回退开关；
-6. 完成一次真实小样本验收后，再决定是否允许批量启用新的 Protocol 阶段。

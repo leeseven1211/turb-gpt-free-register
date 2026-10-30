@@ -1,49 +1,35 @@
 # 文档导航
 
-本目录只承载项目的设计、流程、开发约束和历史决策。日常操作先读根目录
-[`README.md`](../README.md)。代理执行约束由工作区提供的 `AGENTS.md` 说明维护，不属于本目录的项目文档索引。
+日常安装、配置和功能操作先读[项目 README](../README.md)。本目录只保留现行架构、关键业务流程、开发规则和维护步骤；同一主题尽量只有一个维护入口。
 
-## 文档状态与权威顺序
+## 阅读入口
 
-- **当前资料**：说明已运行的代码、公开配置和开发/发布规则；修改前仍应核对代码与测试。
-- **技术参考**：保存协议分析等可复用背景材料，不单独定义运行行为。
-- **历史记录**：保存当时的方案、实施计划、验收和界面快照，不作为当前规则。
+| 需要了解 | 文档 |
+| --- | --- |
+| 入口、业务目录、依赖方向和兼容模块 | [当前架构](architecture/current-architecture.md) |
+| 数据表、事务、租约、运行配置与恢复 | [存储架构](architecture/storage-architecture.md) |
+| 功能入口、公共组件和测试选择 | [功能地图](architecture/functional-map.md)及其[结构化数据](architecture/functional-map.json) |
+| 代码、配置、API 和前端约定 | [代码规范](architecture/code-conventions.md) |
+| Run、线路、阶段、错误和日志关联 | [任务观测契约](architecture/task-observation.md) |
+| 五种注册驱动、核心账号、后处理与续跑 | [注册流程](workflows/registration.md) |
+| 查活、刷新 AT、密码和 2FA 的驱动支持 | [认证支持矩阵](workflows/account-auth-support-matrix.md) |
+| 账号任务、取消、恢复及账号解封 | [账号操作](workflows/account-operations.md) |
+| Codex OAuth 补跑、凭据和待确认结果 | [Codex OAuth](workflows/codex-oauth-operation.md) |
+| 本地邮箱库存、Butler 交接与严格取码 | [邮箱资源](workflows/email-resources.md) |
+| 隔离测试、验证范围和交付检查 | [发布与验证](development/release-verification.md) |
+| 托管服务、备份、配置和收件迁移 | [部署与维护](deployment/operations.md) |
+| 协议会话一致性及离线 HAR 排查 | [协议参考](reference/protocol-fingerprint-har-analysis.md) |
 
-同一主题出现冲突时，按以下顺序判断：已运行代码、配置 schema、数据库表定义和测试契约；
-根目录 README 的操作说明；本目录的当前资料；技术参考；历史记录和 `superpowers/` 的
-规格/计划。历史文件的结论不能覆盖当前代码事实。
+## 维护规则
 
-## 当前资料
+当前代码、配置 schema、数据库定义和测试契约是核对文档的依据。行为变化更新对应现行文档，不以设计稿或单次验收结果替代运行事实；凭据、业务数据和诊断产物不入文档。
 
-### 架构与存储
+旧设计、已完成计划、历史性能测量、部署回执和页面快照已从当前目录移除，历史版本仍可通过 Git 查询：
 
-- [当前项目架构](architecture/current-architecture.md)：应用入口、分层边界、运行时恢复和兼容层。
-- [存储架构](architecture/storage-architecture.md)：PostgreSQL 事实来源、隔离测试和兼容导出边界。
-- [功能链路与测试影响地图](architecture/functional-map.md)：从路由/页面入口追到真实实现、存储和定向测试。
-- [代码与目录规范](architecture/code-conventions.md)：依赖方向、私有数据保护和开发约定。
-- [兼容入口清单](architecture/compatibility-inventory.md)：兼容门面、观察期和逐文件删除条件。
+```bash
+git log --all -- docs/
+git log --all -- docs/原路径.md
+git show <历史提交>:docs/原路径.md
+```
 
-### 业务流程
-
-- [注册流程](workflows/registration.md)：注册提交、资源领取、Roxy/Protocol 驱动、续跑与后置步骤。
-- [账号操作](workflows/account-operations.md)：账号操作任务、运行实例、事件、资源、取消和恢复。
-- [账号认证支持矩阵](workflows/account-auth-support-matrix.md)：注册、查活、刷新 AT、补密码和 2FA 的公开配置边界。
-- [Codex OAuth 操作](workflows/codex-oauth-operation.md)：Codex 补跑、凭证确认和原生 operation 模型。
-
-### 开发与参考
-
-- [发布与验证](development/release-verification.md)：隔离测试、发布检查和运行时验收方法。
-- [协议指纹 HAR 参考](reference/protocol-fingerprint-har-analysis.md)：纯协议链路和指纹分析背景。
-- [协议注册主流程对比](reference/2026-10-12-protocol-registration-comparison.md)：2026-10-12 固定版本审查，核对公开项目差异、截图结论与本地优化优先级。
-- [协议注册可靠性实施记录](development/2026-10-12-protocol-reliability-plan.md)：凭据早存、原意图恢复、阶段预算、请求统计及本地后端评估的实现与验证边界。
-
-## 历史记录
-
-[`history/`](history/) 按改造主题归档旧设计、迁移计划、验收记录和视觉快照。它们保留
-决策上下文与审计证据，但不应被当作本次运行或当前流程的说明。
-
-## Agent 工作规格与计划
-
-[`superpowers/specs/`](superpowers/specs/) 和 [`superpowers/plans/`](superpowers/plans/)
-保留其原始路径。它们分别是历史设计输入和实施输入，便于回溯决策，不与当前操作指南
-混合。
+新任务的临时计划和验收材料放在忽略的 `.superpowers/` 工作目录；完成后把仍有效的知识合入上述文档，避免继续堆积按日期命名的记录。代理执行约束由工作区的 `AGENTS.md` 维护。

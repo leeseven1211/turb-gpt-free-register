@@ -13,6 +13,8 @@ __pycache__/
 .playwright-mcp/
 .playwright-cli/
 output/playwright/
+# HAR 工具的兼容默认输出属于本地诊断产物
+/docs/reference/protocol-har-summary.json
 .mypy_cache/
 .ruff_cache/
 .superpowers
