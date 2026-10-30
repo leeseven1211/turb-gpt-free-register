@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from webui.app import create_app
+from tests.frontend_script_sources import read_account_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -143,7 +144,7 @@ const path = require('path');
 
 const projectRoot = process.argv[1];
 const source = fs.readFileSync(
-  path.join(projectRoot, 'webui/static/js/modern/accounts.js'),
+  path.join(projectRoot, 'webui/static/js/modern/account-tasks.js'),
   'utf8',
 );
 const start = source.indexOf('function accountTaskCanRetry(');
@@ -185,7 +186,7 @@ if (accountTaskCanRetry({
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_task_center_uses_cancel_for_queued_and_terminate_for_running_tasks(self):
-        source = (PROJECT_ROOT / 'webui/static/js/modern/accounts.js').read_text(encoding='utf-8')
+        source = read_account_script('account-tasks.js')
         self.assertIn("data-account-task-terminate", source)
         self.assertIn("/terminate", source)
         self.assertIn("status === 'queued' ? '取消' : '终止'", source)
@@ -193,7 +194,7 @@ if (accountTaskCanRetry({
 
     def test_task_center_exposes_single_and_bulk_delete(self):
         template = (PROJECT_ROOT / 'webui/templates/index.html').read_text(encoding='utf-8')
-        source = (PROJECT_ROOT / 'webui/static/js/modern/accounts.js').read_text(encoding='utf-8')
+        source = read_account_script('account-tasks.js')
         self.assertIn('id="btnDeleteSelectedAccountTasksV2"', template)
         self.assertIn('data-account-task-delete', source)
         self.assertIn('/api/operations/bulk', source)

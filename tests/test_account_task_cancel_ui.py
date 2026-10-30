@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.frontend_script_sources import read_account_script
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.skipif(not shutil.which("node"), reason="需要 Node 验证任务中心交互")
 def test_bulk_cancel_reports_actual_states_and_keeps_skipped_selected():
-    source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+    source = read_account_script("account-tasks.js")
     start = source.index("async function bulkAccountTasks(")
     end = source.index("function updateAccountTaskFilters(", start)
     function_source = source[start:end]

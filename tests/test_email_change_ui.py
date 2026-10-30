@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from tests.support_pg import PostgresTestCase
+from tests.frontend_script_sources import read_account_script
 from webui.app import create_app
 
 
@@ -55,10 +56,9 @@ class EmailChangeUiTests(PostgresTestCase):
         self.assertIn("不会启动浏览器", source)
 
     def test_modern_submit_posts_only_source_and_opens_email_change_tasks(self):
-        source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+        source = read_account_script("account-email-change.js")
         start = source.index("async function submitEmailChange")
-        end = source.index("function closeAccountsV2MoreMenus", start)
-        function_source = source[start:end]
+        function_source = source[start:source.index("$('#btnCloseEmailChange')", start)]
         harness = f"""
 const calls = [];
 const nodes = {{
@@ -103,10 +103,9 @@ function activateTab(tab) {{ calls.push({{tab}}); }}
         self.assertEqual("ok", result.stdout.strip())
 
     def test_modern_submit_bulk_email_change_posts_selected_accounts(self):
-        source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+        source = read_account_script("account-email-change.js")
         start = source.index("async function submitEmailChange")
-        end = source.index("function closeAccountsV2MoreMenus", start)
-        function_source = source[start:end]
+        function_source = source[start:source.index("$('#btnCloseEmailChange')", start)]
         harness = f"""
 const calls = [];
 const nodes = {{
@@ -165,7 +164,7 @@ function activateTab(tab) {{ calls.push({{tab}}); }}
         self.assertIn("批量换绑邮箱", source)
 
     def test_ui_loads_email_change_sources_and_disables_unavailable_choices(self):
-        source = (ROOT / "webui/static/js/modern/accounts.js").read_text(encoding="utf-8")
+        source = read_account_script("account-email-change.js")
         self.assertIn("/api/email-sources", source)
         self.assertIn("option.disabled = !item.enabled", source)
         self.assertIn("item.reason", source)

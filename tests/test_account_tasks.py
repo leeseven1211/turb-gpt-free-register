@@ -994,7 +994,11 @@ class AccountTaskApiTests(PostgresTestCase):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         html = client.get("/", headers={"X-Auth-Code": "test-auth"}).get_data(as_text=True)
-        for asset in ("css/modern.css", "js/modern/common.js", "js/modern/accounts.js"):
+        for asset in (
+            "css/modern.css", "js/modern/common.js", "js/modern/accounts.js",
+            "js/modern/account-tasks.js", "js/modern/account-email-change.js",
+            "js/modern/account-inspection.js",
+        ):
             response = client.get(f"/static/{asset}")
             try:
                 self.assertEqual(response.status_code, 200, asset)

@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const source = require('./frontend_script_sources.cjs').readAccountScripts();
 
 function setup({selected = [7, 8], request} = {}) {
   const calls = {requests: [], toasts: [], downloads: []};

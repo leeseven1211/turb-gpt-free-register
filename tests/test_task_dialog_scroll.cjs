@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const source = require('./frontend_script_sources.cjs').readAccountScripts();
 const start = source.indexOf('function scrollAccountTaskDialogFromWheel(');
 assert.ok(start >= 0, '任务详情应提供标题和步骤卡片的滚轮路由');
 const nextFunction = source.indexOf('\nfunction ', start + 1);

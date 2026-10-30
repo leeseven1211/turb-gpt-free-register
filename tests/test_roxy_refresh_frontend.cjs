@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const accounts = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const accounts = require('./frontend_script_sources.cjs').readAccountScripts();
 const configSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/config.js'), 'utf8');
 function load(source, names, dependencies = {}) {
   const context = vm.createContext({...dependencies});

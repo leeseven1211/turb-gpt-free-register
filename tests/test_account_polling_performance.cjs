@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const source = require('./frontend_script_sources.cjs').readAccountScripts();
 function helpers(api) {
   const context = {api};
   vm.createContext(context);

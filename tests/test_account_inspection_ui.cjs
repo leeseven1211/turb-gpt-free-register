@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync('webui/static/js/modern/accounts.js', 'utf8');
+const source = require('./frontend_script_sources.cjs').readAccountScripts();
 process.env.TZ = 'Asia/Shanghai';
 const nodes = new Map();
 let focused;

@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const root = path.join(__dirname, '..');
 const commonSource = fs.readFileSync(path.join(root, 'webui/static/js/modern/common.js'), 'utf8');
 const jobsSource = fs.readFileSync(path.join(root, 'webui/static/js/modern/jobs.js'), 'utf8');
-const accountsSource = fs.readFileSync(path.join(root, 'webui/static/js/modern/accounts.js'), 'utf8');
+const accountsSource = require('./frontend_script_sources.cjs').readAccountScripts();
 const dashboardSource = fs.readFileSync(path.join(root, 'webui/static/js/modern/dashboard.js'), 'utf8');
 
 function extractFunction(source, name, nextMarker) {

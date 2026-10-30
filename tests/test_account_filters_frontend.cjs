@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const common = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
-const accounts = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const accounts = require('./frontend_script_sources.cjs').readAccountScripts();
 function functionSource(source, name) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `应提供 ${name}`);

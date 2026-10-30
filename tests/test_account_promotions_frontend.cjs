@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/accounts.js'), 'utf8');
+const source = require('./frontend_script_sources.cjs').readAccountScripts();
 const accountStyles = fs.readFileSync(path.join(__dirname, '../webui/static/css/ui-foundation.css'), 'utf8');
 const modernStyles = fs.readFileSync(path.join(__dirname, '../webui/static/css/modern.css'), 'utf8');
 const commonSource = fs.readFileSync(path.join(__dirname, '../webui/static/js/modern/common.js'), 'utf8');
@@ -40,6 +40,8 @@ vm.runInContext([
   functionSource('_accountDetailAuthMethod'),
   functionSource('_accountDetailMarkup'),
   functionSource('accountTaskResultText'),
+  functionSource('accountTaskResultTooltipText'),
+  functionSource('accountTaskPlanResultMarkup'),
 ].join('\n'), view);
 
 const goTrial = {plan: 'go', kind: 'free_trial', eligible: true, duration_num_periods: 1, duration_period: 'month', campaign_id: 'go-free-one'};
@@ -70,7 +72,7 @@ function assertSinglePromotion(html, expected, visibleExpected = expected.replac
   if (expected.startsWith('Plus: ')) {
     assert.deepEqual(visiblePromotionLabels(html), [visibleExpected]);
     assert.ok(promotionTooltip(html).startsWith(`国家未记录 ${expected}`), '浮窗首项保留所选 Plus 优惠，列表使用统一国家格式');
-    assert.match(html, /class="account-promotion-country" aria-label="国家未记录">—：/);
+    assert.match(html, /class="account-promotion-country" aria-label="国家未记录">—(?:<span class="account-promotion-stale">历史<\/span>)?：/);
   } else {
     assert.deepEqual(visiblePromotionLabels(html), [expected], '列表只显示 Plus 最高优惠或一个状态');
   }
@@ -97,9 +99,9 @@ function tooltipAfterTableScroll({focused = true, left = 40} = {}) {
     _hideAccountsTooltip: () => { tip.hidden = true; },
     _showAccountsTooltip: element => { tip.hidden = false; tip.left = element.getBoundingClientRect().left; },
   };
-  const start = source.indexOf('(function bindAccountsHoverTooltips()');
-  const end = source.indexOf('})();', start) + '})();'.length;
-  vm.runInNewContext(source.slice(start, end), context);
+  const start = source.indexOf('function bindAccountsHoverTooltips()');
+  const end = source.indexOf('\nfunction _planCell(', start);
+  vm.runInNewContext(`${source.slice(start, end)}\nbindAccountsHoverTooltips();`, context);
   listeners.get('scroll')({target: {className: 'accounts-table-v2-wrap'}});
   return tip;
 }
@@ -213,6 +215,7 @@ test('当前 Go 套餐不代表获得 Go 免费资格，未知活动不猜优惠
 test('失败保留上次 Plus 优惠与错误，提示省略成功快照时间，没有快照仅显示失败', () => {
   const html = view._promotionCell({...checked, plan_check_status: 'failed', plan_last_success_at: '2026-10-12 12:00:00', plan_check_error: 'HTTP 401'});
   assertSinglePromotion(html, 'Plus: 五折 2个月');
+  assert.match(html, /class="account-promotion-stale">历史<\/span>/);
   const tooltip = promotionTooltip(html);
   assert.doesNotMatch(tooltip, /Go:/);
   assert.match(tooltip, /Plus: 五折 2个月/);
