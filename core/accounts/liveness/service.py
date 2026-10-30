@@ -174,6 +174,8 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
     "roxy_authenticated_callback_failed", "email_submit_unconfirmed", "email_otp_no_mail",
     "roxy_proxy_tunnel_failed",
+    "roxy_login_page_not_ready", "roxy_login_page_timeout",
+    "roxy_login_preflight_timeout", "roxy_login_preflight_failed",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
@@ -1496,13 +1498,18 @@ def _run_live_check(
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
             if selected_refresh_driver == "browser_roxy":
+                from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
+
                 error_message = str(result.get("error") or "")
                 page_error = result.get("error_code") in {"password_change_required", "password_page_error"}
+                login_cause = ROXY_LOGIN_CAUSES.get(result.get("error_code") or roxy_login_failure_code(error_message))
+                failure_message = error_message if page_error else login_cause[1] if login_cause else "Roxy 浏览器登录未完成"
                 reporter.stage(
                     "authenticate", "success" if result.get("ok") else "failed",
-                    "Roxy 浏览器登录已完成" if result.get("ok") else error_message if page_error else "Roxy 浏览器登录未完成",
+                    "Roxy 浏览器登录已完成" if result.get("ok") else failure_message,
                     level="INFO" if result.get("ok") else "ERROR",
-                    detail={"auth_method": result.get("auth_method"), "error": result.get("error")},
+                    detail={"auth_method": result.get("auth_method"), "error": result.get("error"),
+                            "error_code": _safe_refresh_cause_code(result)},
                 )
                 if result.get("ok"):
                     reporter.stage("token", "success", "最新 AT 已获取并保存")

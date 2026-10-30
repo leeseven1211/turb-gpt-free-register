@@ -248,6 +248,20 @@ test('详情失败位置优先采用有具体证据纠正的阶段', () => {
   assert.match(sandbox.result.uncorrected, /校验 Token · access_token/);
 });
 
+test('Roxy 登录失败红条显示具体分类并保留原始事件文案', () => {
+  const failure = {
+    label: '登录与身份验证', stage: 'authenticate', evidence: 'explicit',
+    message: 'Roxy 浏览器登录未完成',
+    error_info: {code: 'roxy_login_page_timeout', summary: 'Roxy 登录页未就绪，登录预检请求超时'},
+  };
+  const sandbox = runVm(`${progressFunctions}\nresult = accountTaskProgressBrief({failure});`, {
+    failure, esc: htmlEscape, attrEsc: htmlEscape,
+  });
+  assert.match(sandbox.result, /Roxy 登录页未就绪，登录预检请求超时/);
+  assert.doesNotMatch(sandbox.result, /Roxy 浏览器登录未完成/);
+  assert.equal(failure.message, 'Roxy 浏览器登录未完成');
+});
+
 test('套餐查询失败在详情展示每个国家的具体原因并转义文本', () => {
   const progress = {failure:{label:'查询套餐', stage:'plan_request', message:'JP：本地 AT 已过期；VN：服务端返回 HTTP 401',
     country_failures:[

@@ -65,6 +65,53 @@ test('多选值采用稳定顺序，计数变化和重排不会改变请求条�
   assert.equal(view.columnFilterValue(control), 'free,unqueried');
 });
 
+test('账号联动统计保留零匹配的已选项，恢复匹配后更新数量', () => {
+  const {view, controls} = harness();
+  const control = select();
+  controls.set('accountPlanFilterV2', control);
+  view.syncFacetSelect('accountPlanFilterV2', [{value: 'free', count: 2}, {value: 'plus', count: 1}], {group: 'plan'});
+  view.setColumnFilterValue(control, 'free,plus');
+  view.syncFacetSelect('accountPlanFilterV2', [{value: 'plus', count: 1}, {value: 'pro', count: 0}], {group: 'plan', preserveSelected: true});
+  assert.equal(view.columnFilterValue(control), 'free,plus');
+  assert.deepEqual(control.options.map(option => option.textContent), ['全部', 'Plus · 1', 'Free · 0']);
+  view.syncFacetSelect('accountPlanFilterV2', [], {group: 'plan', preserveSelected: true});
+  assert.equal(view.columnFilterValue(control), 'free,plus');
+  assert.deepEqual(control.options.map(option => option.textContent), ['全部', 'Free · 0', 'Plus · 0']);
+  view.syncFacetSelect('accountPlanFilterV2', [{value: 'free', count: 3}, {value: 'plus', count: 2}], {group: 'plan', preserveSelected: true});
+  assert.equal(view.columnFilterValue(control), 'free,plus');
+  assert.deepEqual(control.options.map(option => option.textContent), ['全部', 'Free · 3', 'Plus · 2']);
+});
+
+test('账号组合筛选零结果时保留条件，不因同步选项重新加载', async () => {
+  const {view, controls} = harness();
+  for (const [id, value] of [['accountSourceFilterV2', 'outlook'], ['accountPlanFilterV2', 'plus']]) {
+    const control = select();
+    controls.set(id, control);
+    view.syncFacetSelect(id, [{value, count: 1}]);
+    view.setColumnFilterValue(control, value);
+  }
+  const body = {innerHTML: ''};
+  let requests = 0;
+  let renders = 0;
+  Object.assign(view, {
+    $: () => body, accountsLoading: false, accountsReloadQueued: false, accountsRenderedQuery: '',
+    PAGERS: {accounts: {page: 1, size: 20}},
+    api: async () => { requests += 1; return {items: [], total: 0, facets: {source: [], plan: []}}; },
+    setListBusy() {}, showAccountSearchError() {}, renderAccountSearchTerms() {},
+    renderAccounts() { renders += 1; }, markViewReady() {},
+    showToast(message) { throw Error(message); }, renderTableStateRow: () => '',
+  });
+  vm.runInContext(functionSource(accounts, 'showAccountsLoadingState'), view);
+  vm.runInContext(`async ${functionSource(accounts, 'loadAccounts')}`, view);
+  const query = view.accountListQueryParams().toString();
+  await view.loadAccounts();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.accountListQueryParams().toString(), query);
+  assert.equal(view.ACCOUNTS_TOTAL, 0);
+  assert.equal(requests, 1);
+  assert.equal(renders, 1);
+});
+
 test('全部清除所有选项，条件标签回显全部所选值', () => {
   const {view, controls} = harness();
   const control = select();

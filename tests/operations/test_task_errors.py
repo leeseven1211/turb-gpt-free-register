@@ -496,6 +496,138 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(message, info["summary"])
                 self.assertEqual("manual_reconcile", info["next_action"])
 
+    def test_roxy_login_failure_causes_have_specific_display_codes(self):
+        cases = (
+            ("roxy_login_page_not_ready", "ROXY-REFRESH-007", "Roxy 登录页未就绪，邮箱入口未出现"),
+            ("roxy_login_page_timeout", "ROXY-REFRESH-008", "Roxy 登录页未就绪，登录预检请求超时"),
+            ("roxy_login_preflight_timeout", "ROXY-REFRESH-009", "Roxy 登录预检请求超时"),
+            ("roxy_login_preflight_failed", "ROXY-REFRESH-010", "Roxy 登录预检请求失败"),
+        )
+        for code, display_code, message in cases:
+            with self.subTest(code=code):
+                info = classify_task_error(
+                    "Roxy 浏览器登录未完成", task_type="token_refresh", stage="authenticate",
+                    error_code=code, result_summary={"cause_code": code},
+                )
+                self.assertEqual(code, info["code"])
+                self.assertEqual(display_code, info["display_code"])
+                self.assertEqual(message, info["summary"])
+
+    def test_historical_roxy_login_page_timeout_keeps_existing_receipt_state(self):
+        for fallback in (
+            "{'ok': False, 'reason': 'nextauth_budget_exhausted', 'stage': 'timeout', 'not_dispatched': True}",
+            '{"ok": false, "reason": "nextauth_budget_exhausted", "stage": "timeout", "not_dispatched": true}',
+        ):
+            with self.subTest(fallback=fallback):
+                summary = {"cause_code": "roxy_login_failed", "outcome": "request_unknown"}
+                info = classify_task_error(
+                    f"Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败：{fallback}",
+                    task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+                    task_status="attention_required", result_summary=summary,
+                )
+                self.assertEqual("roxy_login_page_timeout", info["code"])
+                self.assertEqual("ROXY-REFRESH-008", info["display_code"])
+                self.assertEqual("Roxy 登录页未就绪，登录预检请求超时", info["summary"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("manual_only", info["retryability"])
+                self.assertEqual("manual_reconcile", info["next_action"])
+                self.assertEqual({"cause_code": "roxy_login_failed", "outcome": "request_unknown"}, summary)
+
+    def test_historical_roxy_login_preflight_failure_requires_recorded_evidence(self):
+        cases = (
+            ("找不到邮箱输入框/邮箱入口（未使用文字识别），state={}", "roxy_login_page_not_ready"),
+            (
+                "浏览器 NextAuth 登录导航失败: {'ok': False, 'stage': 'timeout', "
+                "'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}",
+                "roxy_login_preflight_timeout",
+            ),
+            (
+                "邮箱入口未挂载且 NextAuth 兜底失败：{'ok': False, 'stage': 'csrf', "
+                "'status': 503, 'error_type': 'csrf_http', 'not_dispatched': True}",
+                "roxy_login_preflight_failed",
+            ),
+        )
+        for message, code in cases:
+            with self.subTest(code=code):
+                info = classify_task_error(
+                    f"Roxy RuntimeError: {message}", task_type="token_refresh", stage="authenticate",
+                    error_code="roxy_login_failed", result_summary={"cause_code": "roxy_login_failed"},
+                )
+                self.assertEqual(code, info["code"])
+                self.assertNotIn("登录挑战", info["summary"])
+
+    def test_roxy_login_failure_without_challenge_evidence_uses_neutral_title(self):
+        info = classify_task_error(
+            "Roxy RuntimeError: 已有账号登录挑战未完成：state=unknown",
+            task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+            result_summary={"cause_code": "roxy_login_failed"},
+        )
+        self.assertEqual("roxy_login_failed", info["code"])
+        self.assertEqual("ROXY-REFRESH-004", info["display_code"])
+        self.assertEqual("Roxy 登录未完成", info["summary"])
+
+    def test_roxy_nextauth_timeout_after_possible_submission_is_not_preflight_timeout(self):
+        for dispatch_fact in ("", ", 'not_dispatched': False"):
+            with self.subTest(dispatch_fact=dispatch_fact):
+                info = classify_task_error(
+                    "Roxy RuntimeError: 浏览器 NextAuth 登录导航失败: "
+                    "{'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted'"
+                    f"{dispatch_fact}}}",
+                    task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+                    result_summary={"cause_code": "roxy_login_failed"},
+                )
+                self.assertEqual("roxy_login_failed", info["code"])
+                self.assertEqual("Roxy 登录未完成", info["summary"])
+
+    def test_roxy_login_page_text_does_not_override_explicit_proxy_tunnel_cause(self):
+        info = classify_task_error(
+            "Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+            "{'ok': False, 'reason': 'nextauth_budget_exhausted', "
+            "'stage': 'timeout', 'not_dispatched': True}",
+            task_type="token_refresh", stage="authenticate", error_code="roxy_proxy_tunnel_failed",
+            result_summary={},
+        )
+        self.assertEqual("roxy_proxy_tunnel_failed", info["code"])
+        self.assertEqual("NET-ROXY-001", info["display_code"])
+        self.assertEqual("Roxy 代理隧道连接失败", info["summary"])
+
+    def test_roxy_login_page_text_does_not_override_structured_password_http_cause(self):
+        info = classify_task_error(
+            "Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+            "{'ok': False, 'reason': 'nextauth_budget_exhausted', "
+            "'stage': 'timeout', 'not_dispatched': True}",
+            task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+            result_summary={
+                "cause_code": "roxy_login_failed",
+                "auth_diagnostics": {"operation": "password_verify", "failure_kind": "http_error", "http_status": 401},
+            },
+        )
+        self.assertEqual("password_verify_http_error", info["code"])
+        self.assertEqual("OA-PWD-401", info["display_code"])
+        self.assertEqual("密码验证请求返回 HTTP 401", info["summary"])
+
+    def test_roxy_nextauth_origin_mismatch_is_not_preflight_failure(self):
+        info = classify_task_error(
+            "Roxy RuntimeError: 浏览器 NextAuth 登录导航失败: "
+            "{'ok': False, 'reason': 'not_on_chatgpt', 'not_dispatched': True}",
+            task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+            result_summary={"cause_code": "roxy_login_failed"},
+        )
+        self.assertEqual("roxy_login_failed", info["code"])
+        self.assertEqual("ROXY-REFRESH-004", info["display_code"])
+        self.assertEqual("Roxy 登录未完成", info["summary"])
+
+    def test_roxy_nextauth_signin_budget_exhausted_after_csrf_is_not_preflight_timeout(self):
+        info = classify_task_error(
+            "Roxy RuntimeError: 浏览器 NextAuth 登录导航失败: "
+            "{'ok': False, 'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}",
+            task_type="token_refresh", stage="authenticate", error_code="roxy_login_failed",
+            result_summary={"cause_code": "roxy_login_failed"},
+        )
+        self.assertEqual("roxy_login_failed", info["code"])
+        self.assertEqual("ROXY-REFRESH-004", info["display_code"])
+        self.assertEqual("Roxy 登录未完成", info["summary"])
+
     def test_password_page_failure_displays_change_required_and_other_error(self):
         info = classify_task_error(
             "Roxy PasswordPageError: OpenAI 要求修改密码后重新登录",

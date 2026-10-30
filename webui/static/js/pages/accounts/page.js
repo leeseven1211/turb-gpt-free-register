@@ -115,21 +115,22 @@ async function loadAccounts() {
     showAccountSearchError();
     renderAccountSearchTerms(res.search_terms || []);
     const facets = res.facets || {};
-    syncFacetSelect('accountSourceFilterV2', facets.source, {group:'source'});
-    syncFacetSelect('accountRegistrationDriverFilterV2', facets.registration_driver, {
+    const syncAccountFacet = (id, items, options = {}) => syncFacetSelect(id, items, {...options, preserveSelected: true});
+    syncAccountFacet('accountSourceFilterV2', facets.source, {group:'source'});
+    syncAccountFacet('accountRegistrationDriverFilterV2', facets.registration_driver, {
       group:'registration_driver', values:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','cloakbrowser','unknown'],
     });
-    syncFacetSelect('accountTokenFilterV2', facets.token, {
+    syncAccountFacet('accountTokenFilterV2', facets.token, {
       group:'account_token',
       values:['has','expired','invalid_401','invalid_403','invalid_other','none'],
     });
-    syncFacetSelect('accountPasswordFilterV2', facets.password, {group:'password'});
-    syncFacetSelect('accountPlanFilterV2', facets.plan, {group:'plan'});
-    syncFacetSelect('accountTrialFilterV2', facets.promotion, {group:'promotion'});
-    syncFacetSelect('accountTotpFilterV2', facets.totp, {group:'totp'});
-    syncFacetSelect('accountRiskFilterV2', facets.risk, {group:'risk'});
-    syncFacetSelect('accountCodexFilterV2', facets.codex, {group:'codex'});
-    syncFacetSelect('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
+    syncAccountFacet('accountPasswordFilterV2', facets.password, {group:'password'});
+    syncAccountFacet('accountPlanFilterV2', facets.plan, {group:'plan'});
+    syncAccountFacet('accountTrialFilterV2', facets.promotion, {group:'promotion'});
+    syncAccountFacet('accountTotpFilterV2', facets.totp, {group:'totp'});
+    syncAccountFacet('accountRiskFilterV2', facets.risk, {group:'risk'});
+    syncAccountFacet('accountCodexFilterV2', facets.codex, {group:'codex'});
+    syncAccountFacet('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
     if (params.toString() !== accountListQueryParams().toString()) {
       accountsReloadQueued = true;
       return;

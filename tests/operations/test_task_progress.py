@@ -33,6 +33,95 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_historical_roxy_login_failure_classifies_saved_error_without_changing_stage_facts():
+    import copy
+
+    raw = ("Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+           "{'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}")
+    message = "Roxy 浏览器登录未完成"
+    for task_type in ("token_refresh", "live_check"):
+        for source in ("run", "detail", "fields", "detail_fields"):
+            event = {**_event(7, "authenticate", "failed", message=message), "run_id": 2}
+            run = _run("attention_required", error_code="roxy_login_failed", result_summary={
+                "cause_code": "roxy_login_failed", "reconcile_required": True,
+            })
+            if source == "run":
+                run["error_message"] = raw
+            elif source == "detail":
+                event["detail"]["error"] = raw
+            elif source == "fields":
+                event["fields"] = {"error": raw}
+            else:
+                event["detail"]["fields"] = {"error": raw}
+            original = copy.deepcopy((run, event))
+
+            snapshot = build_progress_snapshot(1, 2, task_type, run, [event])
+            failure = snapshot["failure"]
+
+            assert failure["error_info"]["code"] == "roxy_login_page_timeout", (task_type, source)
+            assert failure["error_info"]["display_code"] == "ROXY-REFRESH-008"
+            assert failure["message"] == message
+            assert failure["stage"] == "authenticate"
+            assert failure["event_id"] == "7"
+            assert failure["evidence"] == "explicit"
+            assert failure["reconcile_required"] is True
+            assert snapshot["outcome"]["status"] == "attention_required"
+            assert (run, event) == original
+
+
+def test_historical_roxy_login_failure_uses_only_matching_failure_event():
+    raw = ("Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+           "{'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}")
+    run = _run("failed", error_code="roxy_login_failed", result_summary={"cause_code": "roxy_login_failed"})
+    current = {**_event(7, "authenticate", "failed", message="Roxy 浏览器登录未完成"), "run_id": 2}
+    unrelated = [
+        {**_event(7, "authenticate", "failed", detail={"error": raw}), "run_id": 99},
+        {**_event(8, "authenticate", "running", detail={"error": raw}), "run_id": 2},
+        {**_event(9, "refresh_token", "success", detail={"error": raw}), "run_id": 2},
+    ]
+
+    failure = build_progress_snapshot(1, 2, "token_refresh", run, [*unrelated, current])["failure"]
+
+    assert failure["error_info"]["code"] == "roxy_login_failed"
+    assert failure["stage"] == "authenticate"
+    assert failure["event_id"] == "7"
+
+
+def test_historical_roxy_login_error_does_not_override_other_stage_or_child_failure():
+    raw = ("Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+           "{'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}")
+    run = _run("failed", error_message=raw, error_code="roxy_login_failed",
+               result_summary={"cause_code": "roxy_login_failed"})
+    for stage, detail in (("email_otp", {}), ("refresh_token", {}), ("authenticate", {
+        "child_task_id": 10, "child_run_id": 20, "child_task_type": "token_refresh",
+    })):
+        event = _event(7, stage, "failed", message="Roxy 浏览器登录未完成", detail=detail)
+
+        failure = build_progress_snapshot(1, 2, "token_refresh", run, [event])["failure"]
+
+        assert failure["error_info"]["code"] == "roxy_login_failed", (stage, detail)
+        assert failure["stage"] == stage
+        assert failure["event_id"] == "7"
+        assert failure["child_task_id"] == detail.get("child_task_id")
+
+
+def test_historical_roxy_login_error_rejects_run_error_from_explicit_other_failure_stage():
+    raw = ("Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+           "{'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted', 'not_dispatched': True}")
+    for source in ("run", "data", "result_summary"):
+        run = _run("failed", error_message=raw, error_code="roxy_login_failed",
+                   result_summary={"cause_code": "roxy_login_failed"})
+        owner = run if source == "run" else run.setdefault(source, {})
+        owner["failure_stage"] = "refresh_token"
+        event = _event(7, "authenticate", "failed", message="Roxy 浏览器登录未完成")
+
+        failure = build_progress_snapshot(1, 2, "token_refresh", run, [event])["failure"]
+
+        assert failure["error_info"]["code"] == "roxy_login_failed", source
+        assert failure["stage"] == "authenticate"
+        assert failure["event_id"] == "7"
+
+
 def test_plan_country_failure_uses_latest_evidence_from_current_run():
     def record(event_id, country, ok, error=None, http_status=None, run_id=2):
         event = _event(event_id, "plan_check", detail={

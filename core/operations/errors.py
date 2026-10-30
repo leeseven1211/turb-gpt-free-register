@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any
 
 from core.operations.stages import STAGES, normalize_stage
+from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
 
 
 class TaskErrorCode(str, Enum):
@@ -1053,7 +1054,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "roxy_profile_open_failed": ("ROXY-REFRESH-001", "Roxy 环境创建或启动失败"),
     "roxy_driver_attach_failed": ("ROXY-REFRESH-002", "连接 Roxy 浏览器调试端口失败"),
     "roxy_navigation_failed": ("ROXY-REFRESH-003", "Roxy 登录页面加载失败"),
-    "roxy_login_failed": ("ROXY-REFRESH-004", "Roxy 登录挑战未完成"),
+    "roxy_login_failed": ("ROXY-REFRESH-004", "Roxy 登录未完成"),
+    **{code: detail[:2] for code, detail in ROXY_LOGIN_CAUSES.items()},
     "roxy_session_fetch_failed": ("ROXY-REFRESH-005", "Roxy 登录后读取会话失败"),
     "roxy_authenticated_callback_failed": ("ROXY-REFRESH-006", "Roxy 登录成功后的账号处理失败"),
     "roxy_proxy_tunnel_failed": ("NET-ROXY-001", "Roxy 代理隧道连接失败"),
@@ -1674,6 +1676,22 @@ def classify_task_error(
             if re.search(rf"(?<![\w]){re.escape(candidate)}(?![\w])", raw):
                 cause = _specific_error_cause({"cause_code": candidate})
                 break
+    if (
+        str(task_type or "").strip().lower() in {"token_refresh", "live_check"}
+        and (cause is None or cause["cause_code"] == "roxy_login_failed")
+        and ((cause or {}).get("cause_code") == "roxy_login_failed" or raw.startswith("Roxy "))
+    ):
+        # 只细化通用 Roxy 登录失败，明确原因码、HTTP 诊断和代理错误仍优先。
+        explicit_cause = _specific_error_cause({"cause_code": error_code})
+        if explicit_cause and explicit_cause["cause_code"] != "roxy_login_failed":
+            cause = explicit_cause
+        elif str(error_code or "").strip() in {"", "roxy_login_failed", "request_unknown", "unknown.unclassified"}:
+            if any(marker in raw for marker in ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")):
+                cause = _specific_error_cause({"cause_code": "roxy_proxy_tunnel_failed"})
+            else:
+                login_cause = roxy_login_failure_code(raw)
+                if login_cause:
+                    cause = _specific_error_cause({"cause_code": login_cause})
     if cause is None:
         cause = _registration_browser_error_cause(raw, task_type=task_type)
     raw_projection = None

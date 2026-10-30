@@ -23,6 +23,7 @@ from core.operations.runtime import OperationCancelled, check_cancelled, current
 from core.operations.task_gateway import OperationLeaseLost
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, fetch_chatgpt_session as _fetch_chatgpt_session, find_any as _find_any, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, maybe_accept as _maybe_accept, page_warmup as _page_warmup, quit_driver as _quit_driver, safe_get as _safe_get, submit_email_step as _submit_email_step, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, type_email_address as _type_email_address, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit, wait_email_submit_next_state as _wait_email_submit_next_state
 from core.browser.roxy.client import RoxyBrowserClient
+from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
 
 logger = logging.getLogger('core.roxy_liveness')
 
@@ -70,6 +71,10 @@ def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") 
         return "mfa_rejected", "auth"
     if "totp" in text and any(marker in text for marker in ("缺少", "没有", "missing")):
         return "mfa_secret_missing", "configuration"
+    if stage == "login":
+        login_cause = roxy_login_failure_code(exc)
+        if login_cause:
+            return login_cause, ROXY_LOGIN_CAUSES[login_cause][2]
     return _ROXY_STAGE_CAUSES[stage]
 
 

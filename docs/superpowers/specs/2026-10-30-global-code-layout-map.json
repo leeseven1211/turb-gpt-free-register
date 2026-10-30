@@ -4760,5 +4760,15 @@
       "action": "保留",
       "phase": "保留"
     }
-  ]
+  ],
+  "integration_records": [
+    {
+      "source": "core/roxy_refresh_errors.py",
+      "target": "core/accounts/liveness/roxy/refresh_errors.py",
+      "action": "整文件移动",
+      "introduced_on_main": "54fc46e",
+      "constraint": "保留等待期间 main 新增模块全部逻辑，仅校准导入路径。"
+    }
+  ],
+  "integrated_main_commit": "cb17d76"
 }

@@ -44,3 +44,11 @@ Python通过统一`tools/test_isolated.py --profile all`入口运行，使用非
 ## 浏览器验收
 
 使用独立测试schema、3个合成账号和1个合成已完成提链记录启动临时WebUI，不启动后台worker，非查询请求仅允许测试登录。真实浏览器验收登录、总览、注册、账号、Codex、任务中心、提链、邮箱、代理及配置页面；合成记录和状态正常显示，14份脚本与4份样式均引用`20261030-layout-v2`，未观察到控制台warning/error。未发起真实注册、邮箱采购、提链或支付。临时浏览器与服务已关闭。
+
+## 空闲交付前 main 同步
+
+等待业务队列期间，main 新增 `54fc46e`、`e2f8d01`、`cb17d76` 三项修复，涉及 Roxy 失败分类、任务红条说明和账号筛选统计。同步保留这些已提交业务行为；新增 `core/roxy_refresh_errors.py` 整文件归位到 `core/accounts/liveness/roxy/refresh_errors.py`，作为原708项以外的增量映射登记。
+
+对最新 main 的18份变更独立核对：6份生产Python和5份Python测试在精确路径/导入变换后AST一致，3份JS字节一致，2份CJS仅有目录深度和共享读取器路径调整，模板仅资源路径/缓存版本变化，README保留两处新增业务说明。没有改动最新main的分支、请求、错误优先级和过滤条件。
+
+增量与相邻回归使用独立`turb_test/test_` schema：7份Python文件247 passed、316 subtests passed；5份前端CJS文件63 passed；`ruff check .`及差异检查通过。原固定基线和完整测试失败分类仍按上文记录，不将定向通过描述为完整测试全绿。

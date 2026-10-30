@@ -318,7 +318,8 @@ function accountTaskProgressBrief(progress) {
   const failure = progress?.failure;
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
   const location = failure ? accountTaskFailureLocation(failure) : '';
-  const message = failure?.message || '';
+  const roxyLoginSummary = String(failure?.error_info?.code || '').startsWith('roxy_login_') ? failure.error_info.summary : '';
+  const message = roxyLoginSummary || failure?.message || '';
   const inferred = failure?.inferred === true || failure?.evidence?.inferred === true || ['inferred', 'legacy', 'unobserved'].includes(failure?.evidence) || ['inferred'].includes(failure?.evidence?.source || failure?.evidence?.kind);
   return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '待确认位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
 }

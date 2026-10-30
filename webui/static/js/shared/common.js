@@ -194,7 +194,7 @@ function facetLabel(group, value) {
   if (group === 'plan') return key === 'unqueried' ? '未查询' : key ? key.charAt(0).toUpperCase() + key.slice(1) : '-';
   return LIST_FACET_LABELS[group]?.[key] || key || '-';
 }
-function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', values=[]} = {}) {
+function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', values=[], preserveSelected=false} = {}) {
   const select = document.getElementById(id);
   if (!select) return;
   if (select.dataset) select.dataset.facetGroup = group;
@@ -204,6 +204,12 @@ function syncFacetSelect(id, items, {group='', allValue='', allLabel='全部', v
     const value = String(item?.value || '').trim();
     return value && Number(item?.count || 0) > 0;
   });
+  // 账号联动筛选允许组合暂时无匹配，保留已选条件供用户继续调整。
+  if (preserveSelected) {
+    current.split(',').filter(value => value && value !== allValue).forEach(value => {
+      if (!dataRows.some(item => String(item.value) === value)) dataRows.push({value, count: 0});
+    });
+  }
   const counts = new Map(dataRows.map(item => [String(item.value), Number(item.count || 0)]));
   const labels = new Map(dataRows.map(item => [String(item.value), item.label]));
   const orderedValues = Array.isArray(values)
