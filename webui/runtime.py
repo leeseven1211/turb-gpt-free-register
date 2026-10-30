@@ -459,7 +459,7 @@ def _run_account_completion_worker(
         if not child_source_id:
             return
         try:
-            operation_task_store.register_task_dependency(
+            dependency = operation_task_store.register_task_dependency(
                 parent_source_system=(
                     getattr(context, "source_system", _RUNTIME_SOURCE_SYSTEM)
                     if context is not None else "account_action_tasks"
@@ -470,6 +470,23 @@ def _run_account_completion_worker(
                 dependency_type="account_completion",
                 payload=payload,
             )
+            if dependency.get("status") == "ready":
+                task_gateway.notify_dependency_ready(dependency)
+            elif (
+                dependency.get("status") == "waiting"
+                and child_source_system in {"native_operations", _RUNTIME_SOURCE_SYSTEM}
+                and str(child_source_id).isdigit()
+            ):
+                # 完成通知使用逻辑任务 ID；补读已结束的快速子任务，覆盖登记前完成的竞态。
+                child = operation_task_store.get_task(int(child_source_id), include_events=False) or {}
+                ready = operation_task_store.mark_task_dependency_ready(
+                    child_source_system=child_source_system,
+                    child_source_id=str(child_source_id),
+                    child_status=str(child.get("status") or ""),
+                    child_result=child.get("result_summary") or {},
+                )
+                for item in ready:
+                    task_gateway.notify_dependency_ready(item)
         except Exception:
             # The child remains independently durable.  Keep the parent
             # partial result visible and let the next reconciliation pass
@@ -574,7 +591,7 @@ def _run_account_completion_worker(
                 child_source_system=str(
                     queued.get("source_system") or "account_action_tasks"
                 ),
-                child_source_id=queued.get("source_id") or queued.get("task_id"),
+                child_source_id=queued.get("task_id") or queued.get("source_id"),
                 payload=dependency_payload,
             )
             return context.last_result if context is not None else None
@@ -647,7 +664,7 @@ def _run_account_completion_worker(
                     child_source_system=str(
                         queued_setup.get("source_system") or _RUNTIME_SOURCE_SYSTEM
                     ),
-                    child_source_id=child_source_id or queued_setup.get("task_id"),
+                    child_source_id=queued_setup.get("task_id") or child_source_id,
                     payload=dependency_payload,
                 )
                 return context.last_result
@@ -853,7 +870,7 @@ def _run_account_completion_worker(
             # a terminal child can wake and execute the continuation.
             register_child_dependency(
                 child_source_system=str(queued.get("source_system") or "native_operations"),
-                child_source_id=queued.get("source_id") or queued.get("task_id") or codex_child_task_id,
+                child_source_id=queued.get("task_id") or codex_child_task_id or queued.get("source_id"),
                 payload=codex_dependency_payload,
             )
         return context.last_result if context is not None else None
@@ -1027,26 +1044,33 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
     data = _native_task_data(context)
     continuation = data.get("continuation_payload")
     continuation = dict(continuation) if isinstance(continuation, Mapping) else {}
+    has_saved_plan = "remaining_steps" in continuation or "planned_steps" in data
+    saved_steps = (
+        continuation.get("remaining_steps")
+        if "remaining_steps" in continuation
+        else data.get("planned_steps")
+    )
     planned_steps = [
         str(step or "").strip().lower()
-        for step in (
-            continuation.get("remaining_steps")
-            or data.get("planned_steps")
-            or []
-        )
+        for step in saved_steps or []
         if str(step or "").strip()
     ]
     settings = _completion_settings_from_snapshot(
         context.config_snapshot,
         fallback=continuation.get("settings") if isinstance(continuation.get("settings"), Mapping) else None,
     )
-    if not planned_steps:
+    # 空剩余计划表示子任务已全部消费，只有缺失计划字段的历史任务才重算。
+    if not has_saved_plan:
         account = db.get_account(int(context.account_id or 0)) or {}
         from core.account_completion_service import completion_plan
 
         planned_steps = list(completion_plan(account, settings).get("missing_steps") or [])
     initial_summary = continuation.get("result_summary")
     initial_summary = dict(initial_summary) if isinstance(initial_summary, Mapping) else None
+    if initial_summary is not None:
+        # 已成功完成依赖的等待状态不应带入下一轮，保留各子任务的执行证据。
+        for key in ("awaiting_steps", "deferred_steps", "continuation_steps"):
+            initial_summary.pop(key, None)
     worker_kwargs = {
         "email": context.email,
         "account_id": int(context.account_id or 0),

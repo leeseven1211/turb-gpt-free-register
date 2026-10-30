@@ -539,7 +539,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         register.assert_called_once()
         self.assertEqual("webui_runtime", register.call_args.kwargs["child_source_system"])
         self.assertEqual(
-            "account-completion-setup:712:711",
+            "714",
             register.call_args.kwargs["child_source_id"],
         )
         self.assertEqual(["codex"], register.call_args.kwargs["payload"]["remaining_steps"])

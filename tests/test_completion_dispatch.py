@@ -93,7 +93,6 @@ class CompletionDispatchTests(PostgresTestCase):
         self.assertEqual("browser", child_run["data"]["config_snapshot"]["twofa_driver"])
         self.assertEqual("browser", child_run["data"]["config_snapshot"]["codex_driver"])
         self.setup_worker.assert_not_called()
-
         with postgres_store.connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT child_source_system, child_source_id, status, payload "
@@ -111,7 +110,7 @@ class CompletionDispatchTests(PostgresTestCase):
         self.assertEqual(1, len(dependencies))
         child_system, child_source, status, payload = dependencies[0]
         self.assertEqual("webui_runtime", child_system)
-        self.assertEqual(child["source_id"], child_source)
+        self.assertEqual(str(child_id), child_source)
         self.assertEqual("waiting", status)
         self.assertEqual(["codex"], payload["remaining_steps"])
 
@@ -129,6 +128,14 @@ class CompletionDispatchTests(PostgresTestCase):
         self.assertEqual("deferred", blocked["status"])
         self.assertEqual("queued", operation.get_run(int(child["last_run_id"]))["status"])
         self.setup_worker.assert_not_called()
+        operation.finish_run(int(child["last_run_id"]), status="success", result_summary={"ok": True})
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM {postgres_store.qualified('operation_task_dependencies')} "
+                "WHERE parent_source_system=%s AND parent_source_id=%s",
+                ("webui_runtime", str(queued["task_id"])),
+            )
+            self.assertEqual("ready", cur.fetchone()[0])
 
     def test_registration_starting_during_refresh_handoff_requeues_parent(self):
         email = "completion-race@example.test"
@@ -154,6 +161,33 @@ class CompletionDispatchTests(PostgresTestCase):
                 ("webui_runtime", str(queued["task_id"])),
             )
             self.assertEqual(0, cur.fetchone()[0])
+
+    def test_setup_child_finishing_before_handoff_still_wakes_parent(self):
+        email = "completion-fast@example.test"
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {"email": email, "access_token": "synthetic-at"})
+        parent = task_gateway.submit_durable_operation(
+            task_type="account_completion", account_id=account_id, email=email,
+            source_system="webui_runtime", source_id="completion-fast-parent",
+            resource_family="completion_coordinator", data={"planned_steps": ["twofa"]},
+            config_snapshot={}, config_allowlist=tuple(runtime._RUNTIME_CONFIG_ALLOWLIST), dispatch=False,
+        )
+        original_submit = runtime.account_task_store.submit_durable_operation
+
+        def fast_setup(**kwargs):
+            child = original_submit(**kwargs)
+            operation.finish_run(int(child["run_id"]), status="success", result_summary={"ok": True})
+            return child
+
+        with patch.object(runtime.account_task_store, "submit_durable_operation", side_effect=fast_setup):
+            result = task_gateway._execute_operation_handler("account_completion", int(parent["run_id"]))
+        self.assertEqual("partial_success", result["status"])
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM {postgres_store.qualified('operation_task_dependencies')} "
+                "WHERE parent_source_system=%s AND parent_source_id=%s",
+                ("webui_runtime", str(parent["task_id"])),
+            )
+            self.assertEqual("ready", cur.fetchone()[0])
 
     def test_historical_incomplete_account_dispatches_refresh_child_with_real_storage(self):
         email = "completion-refresh@example.test"
@@ -229,6 +263,34 @@ class CompletionDispatchTests(PostgresTestCase):
         self.assertEqual(1, len(dependencies))
         child_system, child_source, status, payload = dependencies[0]
         self.assertEqual("native_operations", child_system)
-        self.assertEqual(child["source_id"], child_source)
+        self.assertEqual(str(child_id), child_source)
         self.assertEqual("waiting", status)
         self.assertEqual(["plan_check"], payload["remaining_steps"])
+        operation.finish_run(int(child["last_run_id"]), status="success", result_summary={"ok": True})
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM {postgres_store.qualified('operation_task_dependencies')} "
+                "WHERE parent_source_system=%s AND parent_source_id=%s",
+                ("webui_runtime", str(queued["task_id"])),
+            )
+            self.assertEqual("ready", cur.fetchone()[0])
+
+        # 逐次消费真实依赖，刷新、配置、空计划收口形成完整的持久续接链。
+        refresh_dependency = operation.list_ready_task_dependencies()[0]
+        runtime._handle_ready_completion_dependency(operation.claim_task_dependency(refresh_dependency["id"]))
+        resumed = operation.get_task(int(queued["task_id"]), include_events=False)
+        setup_result = task_gateway._execute_operation_handler("account_completion", int(resumed["last_run_id"]))
+        self.assertEqual("partial_success", setup_result["status"])
+        setup_id = int(operation.get_run(int(resumed["last_run_id"]))["result_summary"]["account_setup"]["task_id"])
+        setup = operation.get_task(setup_id, include_events=False)
+        self.assertEqual(["plan_check"], operation.get_run(int(setup["last_run_id"]))["data"]["steps"])
+        operation.finish_run(int(setup["last_run_id"]), status="success", result_summary={"ok": True})
+        setup_dependency = operation.list_ready_task_dependencies()[0]
+        runtime._handle_ready_completion_dependency(operation.claim_task_dependency(setup_dependency["id"]))
+        closing = operation.get_task(int(queued["task_id"]), include_events=False)
+        finished = task_gateway._execute_operation_handler("account_completion", int(closing["last_run_id"]))
+        self.assertEqual("success", finished["status"])
+        final_parent = operation.get_task(int(queued["task_id"]), include_events=False)
+        self.assertEqual("success", final_parent["status"])
+        self.assertFalse(final_parent["result_summary"].get("awaiting_steps"))
+        self.assertEqual([], operation.list_ready_task_dependencies())
