@@ -45,6 +45,7 @@ from core.registration.selenium_auth import (
     wait_email_submit_next_state as _wait_email_submit_next_state,
 )
 from core.roxybrowser_client import RoxyBrowserClient
+from core.roxy_refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,10 @@ def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") 
         return "mfa_rejected", "auth"
     if "totp" in text and any(marker in text for marker in ("缺少", "没有", "missing")):
         return "mfa_secret_missing", "configuration"
+    if stage == "login":
+        login_cause = roxy_login_failure_code(exc)
+        if login_cause:
+            return login_cause, ROXY_LOGIN_CAUSES[login_cause][2]
     return _ROXY_STAGE_CAUSES[stage]
 
 

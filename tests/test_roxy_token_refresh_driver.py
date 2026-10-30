@@ -13,6 +13,59 @@ EMAIL = "fixture@example.test"
 
 
 class RoxyRefreshDriverTests(unittest.TestCase):
+    def test_login_page_timeout_reports_specific_cause_without_changing_unknown_receipt(self):
+        reporter = MagicMock()
+        context = MagicMock(task_id=2, run_id=3)
+        route = MagicMock(proxy_url="http://proxy.example:8080")
+        route.public_dict.return_value = {"network_route": "proxy"}
+        browser_result = {
+            "ok": False,
+            "status": "failed",
+            "error_code": "roxy_login_page_timeout",
+            "error": "Roxy RuntimeError: 邮箱入口未挂载且 NextAuth 兜底失败："
+                     "{'ok': False, 'reason': 'nextauth_budget_exhausted', "
+                     "'stage': 'timeout', 'not_dispatched': True}",
+            "remote_request_started": True,
+        }
+
+        def browser(_email, **kwargs):
+            kwargs["on_remote_request_started"]()
+            return browser_result
+
+        with ExitStack() as stack:
+            for item in (
+                patch.object(service.db, "mark_account_live_check_running", return_value=True),
+                patch.object(service.db, "get_account", return_value={"email_invalid": True, "access_token": "fixture-at"}),
+                patch.object(service.db, "update_account_liveness", return_value=True),
+                patch.object(service, "_reporter", return_value=reporter),
+                patch.object(service, "_append_log"),
+                patch.object(service, "_checkpoint"),
+                patch.object(service, "token_claims", return_value={}),
+                patch("core.account_proxy.acquire_account_proxy", return_value=route),
+            ):
+                stack.enter_context(item)
+            refresh = stack.enter_context(patch.object(roxy_liveness, "refresh_access_token", side_effect=browser))
+            result = service._run_live_check(
+                account_id=1, email=EMAIL, trigger="fixture", proxy=None,
+                force_refresh=True, refresh_driver="browser_roxy",
+                config_snapshot={"auth_raw_context_enabled": False}, operation_context=context,
+            )
+
+        refresh.assert_called_once()
+        authenticate = [call for call in reporter.stage.call_args_list
+                        if call.args[:2] == ("authenticate", "failed")]
+        self.assertEqual(1, len(authenticate))
+        self.assertEqual("Roxy 登录页未就绪，登录预检请求超时", authenticate[0].args[2])
+        reporter.finish.assert_called_once()
+        summary = reporter.finish.call_args.kwargs["result_summary"]
+        self.assertEqual("roxy_login_page_timeout", summary["cause_code"])
+        self.assertTrue(summary["reconcile_required"])
+        self.assertTrue(result["remote_request_started"])
+        outcomes = [call.kwargs["outcome"] for call in context.remote_request_receipt.call_args_list]
+        self.assertIn("unknown", outcomes)
+        self.assertNotIn("not_submitted", outcomes)
+        self.assertNotIn("rejected", outcomes)
+
     def test_password_page_error_unknown_receipt_does_not_invent_http_response(self):
         for reconcile in (False, True):
             for response_observed in (None, False, True):

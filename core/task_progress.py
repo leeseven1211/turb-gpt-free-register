@@ -417,7 +417,33 @@ def _unrecovered_failures(attempts: list[dict[str, Any]]) -> list[dict[str, Any]
     return candidates
 
 
-def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]], activity: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _roxy_login_failure_error(run: dict[str, Any], chosen: dict[str, Any], events: Iterable[dict[str, Any]]) -> str | None:
+    """只读取当前登录失败事件或同一 Run 的错误，不改变阶段事实。"""
+    login_stages = {"authenticate", "login", "login_password"}
+    chosen_stage = normalize_stage(chosen.get("raw_stage"))
+    if chosen_stage not in login_stages or any(chosen.get(key) for key in ("child_task_id", "child_run_id", "child_task_type")):
+        return None
+    event_id = chosen.get("event_id")
+    if event_id is not None:
+        for event in reversed(list(events)):
+            if (_event_id(event) != str(event_id) or _raw_stage(event) != chosen_stage
+                    or _event_state(event) != "failed"):
+                continue
+            detail = _event_detail(event)
+            if any(detail.get(key) for key in ("child_task_id", "child_run_id", "child_task_type")):
+                continue
+            for fields in (detail, detail.get("fields"), event.get("fields")):
+                if isinstance(fields, dict) and fields.get("error"):
+                    return _safe_message(fields["error"])
+    summary = run.get("result_summary") or {}
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    saved_stage = run.get("failure_stage") or data.get("failure_stage") or summary.get("failure_stage")
+    if saved_stage and normalize_stage(saved_stage) not in login_stages | {"complete"}:
+        return None
+    return _safe_message(run.get("error_message"))
+
+
+def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]], activity: list[dict[str, Any]], events: Iterable[dict[str, Any]] = ()) -> dict[str, Any] | None:
     candidates = _unrecovered_failures(attempts)
     explicit_failure = bool(candidates)
     chosen = candidates[-1] if candidates else None
@@ -488,6 +514,10 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
         from core.task_errors import classify_task_error
         error_code = chosen.get("error_code") or summary.get("error_code") or data.get("error_code") or run.get("error_code") or ""
         error_info = classify_task_error(message or str(error_code), stage=chosen.get("raw_stage"), task_type=chosen.get("child_task_type") or task_type, error_code=error_code, result_summary=summary, task_status=status)
+        if task_type in {"token_refresh", "live_check"} and (error_info or {}).get("code") == "roxy_login_failed":
+            classification_error = _roxy_login_failure_error(run, chosen, events)
+            if classification_error:
+                error_info = classify_task_error(classification_error, stage=chosen.get("raw_stage"), task_type=task_type, error_code=error_code, result_summary=summary, task_status=status)
     except (ImportError, TypeError):
         error_info = None
     stable_step = chosen.get("main_step_id") if chosen.get("child_task_type") else resolve_step(task_type, chosen.get("raw_stage"), run=run) or chosen.get("main_step_id") or "result"
@@ -1198,7 +1228,7 @@ def build_progress_snapshot(
     )
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
     source = "explicit" if explicit else "legacy_derived" if activity or task_lifecycle else "insufficient_evidence"
-    failure = _failure(task_key, run_value, current_attempts, current_activity)
+    failure = _failure(task_key, run_value, current_attempts, current_activity, source_events)
     if task_key == "plan_check" and str(run_value.get("status") or "").lower() in {"failed", "partial_success"}:
         country_failures = _plan_country_failures(source_events)
         if country_failures:

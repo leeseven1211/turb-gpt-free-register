@@ -7,6 +7,48 @@ from core import browser_flow_policy, roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_login_page_and_preflight_failures_keep_execution_receipts(self):
+        from core import live_check_service
+
+        cases = (
+            ("找不到邮箱输入框/邮箱入口（未使用文字识别），state={}", "roxy_login_page_not_ready", "browser"),
+            ("邮箱入口未挂载且 NextAuth 兜底失败：{'ok': False, 'reason': 'nextauth_budget_exhausted', 'stage': 'timeout', 'not_dispatched': True}",
+             "roxy_login_page_timeout", "network"),
+            ("浏览器 NextAuth 登录导航失败: {'ok': False, 'reason': 'nextauth_budget_exhausted', 'stage': 'timeout', 'not_dispatched': True}",
+             "roxy_login_preflight_timeout", "network"),
+            ("邮箱入口未挂载且 NextAuth 兜底失败：{'ok': False, 'stage': 'csrf', 'status': 503, 'error_type': 'csrf_http', 'not_dispatched': True}",
+             "roxy_login_preflight_failed", "response"),
+        )
+        for message, code, category in cases:
+            with self.subTest(code=code):
+                opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+                driver, client = MagicMock(), MagicMock()
+                client.open_profile_for_account.return_value = opened
+                with ExitStack() as stack:
+                    for dependency in self._patch_refresh_dependencies(client=client, opened=opened, driver=driver, install=MagicMock()):
+                        stack.enter_context(dependency)
+                    login = stack.enter_context(patch.object(roxy_liveness, "_enter_existing_account_otp", side_effect=RuntimeError(message)))
+                    session = stack.enter_context(patch.object(roxy_liveness, "_fetch_chatgpt_session"))
+                    result = roxy_liveness.refresh_access_token("account@example.test")
+                self.assertEqual(code, result["error_code"])
+                self.assertEqual(category, result["error_category"])
+                self.assertIn(message, result["error"])
+                self.assertEqual("failed", result["status"])
+                self.assertTrue(result["remote_request_started"])
+                self.assertNotIn("action_dispatched", result)
+                self.assertFalse(live_check_service._refresh_result_not_submitted(result))
+                self.assertFalse(live_check_service._refresh_result_is_rejected(result))
+                self.assertFalse(live_check_service._is_proxy_transport_failure(result))
+                self.assertEqual(code, live_check_service._safe_refresh_cause_code(result))
+                login.assert_called_once()
+                session.assert_not_called()
+
+    def test_signin_timeout_does_not_claim_preflight_or_missing_email_entry(self):
+        error = RuntimeError("浏览器 NextAuth 登录导航失败: {'ok': False, 'stage': 'timeout', 'reason': 'nextauth_budget_exhausted'}")
+        self.assertEqual(("roxy_login_failed", "auth"), roxy_liveness._refresh_failure_cause(error, "login"))
+        error = RuntimeError("已有账号登录挑战未完成：state=unknown")
+        self.assertEqual(("roxy_login_failed", "auth"), roxy_liveness._refresh_failure_cause(error, "login"))
+
     def test_preexisting_password_notice_does_not_claim_entire_auth_was_not_dispatched(self):
         from core import live_check_service
         from core.registration.password_auth import PasswordPageError
