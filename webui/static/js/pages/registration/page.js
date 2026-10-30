@@ -237,7 +237,7 @@ function bindJobsBodyEvents(bodyEl) {
     const el = document.getElementById(inputId);
     if (!el) return;
     const min = Number(el.min || 1);
-    const max = Number(el.max || 9999);
+    const max = Number(el.max || Infinity);
     const next = Math.min(max, Math.max(min, (parseInt(el.value, 10) || min) + delta));
     el.value = String(next);
     el.dispatchEvent(new Event('input', { bubbles: true }));

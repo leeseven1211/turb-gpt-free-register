@@ -221,8 +221,8 @@ def create_jobs_blueprint(context: WebUIContext):
             count = int(data.get("count", 1))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "count 非法"}), 400
-        if count < 1 or count > 200:
-            return jsonify({"ok": False, "error": "count 需在 1~200 之间"}), 400
+        if count < 1:
+            return jsonify({"ok": False, "error": "count 需至少为 1"}), 400
 
         # workers 控制本次新提交任务使用的线程池；若和上次不同，服务层会为新任务切换到新池。
         try:
