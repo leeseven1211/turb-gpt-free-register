@@ -185,7 +185,7 @@ python tools/migrate_runtime_config.py --source-root . --dry-run
 python tools/migrate_runtime_config.py --source-root . --apply
 ```
 
-升级前先停止服务并备份数据库；迁移工具会以受限权限备份原 `.env`，生成或保留 `TURB_CONFIG_ENCRYPTION_KEY`，加密导入并核对全部显式值，成功后才精简文件。重复执行不会用旧值覆盖现有数据库配置。保留原 `TURB_MAIL_CONSUMER_ID`，以继续识别 Butler 邮箱的远端归属。
+升级前先停止服务并备份数据库；使用 launchd、systemd 等托管时，还需暂停自动拉起并确认监听已关闭，迁移验收后恢复原托管。迁移工具会以受限权限备份原 `.env`，生成或保留 `TURB_CONFIG_ENCRYPTION_KEY`，加密导入并核对全部显式值，成功后才精简文件。重复执行不会用旧值覆盖现有数据库配置。保留原 `TURB_MAIL_CONSUMER_ID`，以继续识别 Butler 邮箱的远端归属。
 
 `.env` 中长期保留的主要字段：
 
