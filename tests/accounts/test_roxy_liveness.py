@@ -8,6 +8,16 @@ from core.accounts.liveness.roxy import flow as roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_browser_proxy_error_cannot_imply_an_auth_http_response(self):
+        from core.accounts.liveness import service as live_check_service
+
+        for evidence, expected in ((None, False), (False, False), (True, True)):
+            with self.subTest(response_observed=evidence):
+                result = {"error_code": "roxy_proxy_tunnel_failed"}
+                if evidence is not None:
+                    result["response_observed"] = evidence
+                self.assertEqual(live_check_service._unknown_refresh_response_observed(result), expected)
+
     def test_explicit_auth_page_error_keeps_concrete_failure_and_unknown_receipt(self):
         from core.accounts.liveness import service as live_check_service
 

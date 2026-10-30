@@ -14,6 +14,61 @@ EMAIL = "fixture@example.test"
 
 
 class RoxyRefreshDriverTests(unittest.TestCase):
+    def test_proxy_error_snapshot_overrides_webdriver_attempted_https_url_without_extra_read(self):
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        snapshot = {"url": "chrome-error://chromewebdata/", "text": "ERR_TUNNEL_CONNECTION_FAILED"}
+        self.assertEqual(roxy_liveness._browser_proxy_error(driver, snapshot=snapshot), "ERR_TUNNEL_CONNECTION_FAILED")
+        driver.execute_script.assert_not_called()
+
+    def test_proxy_error_reads_document_location_when_webdriver_keeps_attempted_url(self):
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        driver.execute_script.return_value = {"url": "chrome-error://chromewebdata/", "text": "ERR_PROXY_CONNECTION_FAILED"}
+        self.assertEqual(roxy_liveness._browser_proxy_error(driver), "ERR_PROXY_CONNECTION_FAILED")
+        driver.execute_script.assert_called_once()
+
+    def test_proxy_error_code_in_regular_auth_page_is_not_browser_network_error(self):
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        driver.execute_script.return_value = {"url": driver.current_url, "text": "ERR_TUNNEL_CONNECTION_FAILED"}
+        self.assertEqual(roxy_liveness._browser_proxy_error(driver), "")
+        driver.execute_script.reset_mock()
+        self.assertEqual(roxy_liveness._browser_proxy_error(driver, snapshot={
+            "url": driver.current_url, "text": "ERR_TUNNEL_CONNECTION_FAILED",
+        }), "")
+        driver.execute_script.assert_not_called()
+
+    def test_email_wait_browser_proxy_page_stops_immediately_and_keeps_submission_unknown(self):
+        from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+
+        driver = MagicMock(current_url="https://auth.openai.com/log-in/password")
+        receipt = BrowserSubmissionReceipt(kind="email", stage="submit_email", phase="ui_dispatched")
+        driver._browser_submission_receipt = receipt
+        driver._email_submission_receipt = {"id": "original"}
+        snapshot = {"url": "chrome-error://chromewebdata/", "text": "ERR_TUNNEL_CONNECTION_FAILED"}
+
+        def wait(_driver, _email, **kwargs):
+            kwargs["on_page_observed"](snapshot)
+            self.fail("明确浏览器代理错误页不应继续等待")
+
+        with (
+            patch.object(roxy_liveness, "_page_account_unusable_code", return_value=""),
+            patch.object(roxy_liveness, "_type_email_address"),
+            patch.object(roxy_liveness, "_submit_email_step"),
+            patch.object(roxy_liveness, "_wait_email_submit_next_state", side_effect=wait) as waiting,
+            patch.object(roxy_liveness, "_submit_email_via_browser_nextauth") as fallback,
+            patch.object(roxy_liveness, "_has_access_token") as session,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ERR_TUNNEL_CONNECTION_FAILED") as caught:
+                roxy_liveness._enter_existing_account_otp(driver, EMAIL)
+        self.assertEqual(roxy_liveness._refresh_failure_cause(caught.exception, "login"),
+                         ("roxy_proxy_tunnel_failed", "network"))
+        waiting.assert_called_once()
+        fallback.assert_not_called()
+        session.assert_not_called()
+        self.assertIs(driver._browser_submission_receipt, receipt)
+        self.assertEqual(receipt.phase, "ui_dispatched")
+        self.assertIsNone(receipt.http_status)
+        self.assertEqual(driver._email_submission_receipt, {"id": "original"})
+
     def test_login_page_timeout_reports_specific_cause_without_changing_unknown_receipt(self):
         reporter = MagicMock()
         context = MagicMock(task_id=2, run_id=3)
@@ -67,42 +122,50 @@ class RoxyRefreshDriverTests(unittest.TestCase):
         self.assertNotIn("not_submitted", outcomes)
         self.assertNotIn("rejected", outcomes)
 
-    def test_password_page_error_unknown_receipt_does_not_invent_http_response(self):
-        for reconcile in (False, True):
-            for response_observed in (None, False, True):
-                with self.subTest(reconcile=reconcile, response_observed=response_observed), ExitStack() as stack:
-                    reporter = MagicMock()
-                    context = MagicMock(task_id=2, run_id=3)
-                    route = MagicMock(proxy_url="http://proxy.example:8080")
-                    route.public_dict.return_value = {"network_route": "proxy"}
-                    result = {"ok": False, "status": "failed", "error_code": "password_change_required",
-                              "error": "OpenAI 要求修改密码后重新登录", "reconcile_required": reconcile}
-                    if response_observed is not None:
-                        result["response_observed"] = response_observed
+    def test_page_error_unknown_receipt_does_not_invent_http_response(self):
+        for code, message in (
+            ("password_change_required", "OpenAI 要求修改密码后重新登录"),
+            ("auth_operation_timeout", "认证页面操作超时"),
+            ("auth_context_missing", "登录上下文缺失，需要重新发起登录"),
+            ("roxy_proxy_tunnel_failed", "浏览器代理连接失败：ERR_TUNNEL_CONNECTION_FAILED"),
+        ):
+            for reconcile in (False, True):
+                for response_observed in (None, False, True):
+                    with self.subTest(code=code, reconcile=reconcile, response_observed=response_observed), ExitStack() as stack:
+                        reporter = MagicMock()
+                        context = MagicMock(task_id=2, run_id=3)
+                        route = MagicMock(proxy_url="http://proxy.example:8080")
+                        route.public_dict.return_value = {"network_route": "proxy"}
+                        result = {"ok": False, "status": "failed", "error_code": code,
+                                  "error": message, "reconcile_required": reconcile}
+                        if response_observed is not None:
+                            result["response_observed"] = response_observed
 
-                    def browser(_email, **kwargs):
-                        kwargs["on_remote_request_started"]()
-                        return result
+                        def browser(_email, **kwargs):
+                            kwargs["on_remote_request_started"]()
+                            return result
 
-                    for item in (
-                        patch.object(service.db, "mark_account_live_check_running", return_value=True),
-                        patch.object(service.db, "get_account", return_value={"email_invalid": True, "access_token": "fixture-at"}),
-                        patch.object(service.db, "update_account_liveness", return_value=True),
-                        patch.object(service, "_reporter", return_value=reporter),
-                        patch.object(service, "_append_log"),
-                        patch.object(service, "_checkpoint"),
-                        patch.object(service, "token_claims", return_value={}),
-                        patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
-                        patch.object(roxy_liveness, "refresh_access_token", side_effect=browser),
-                    ):
-                        stack.enter_context(item)
-                    service._run_live_check(account_id=1, email=EMAIL, trigger="fixture", proxy=None,
-                                            force_refresh=True, refresh_driver="browser_roxy",
-                                            config_snapshot={"auth_raw_context_enabled": False}, operation_context=context)
-                    unknown = [call for call in context.remote_request_receipt.call_args_list
-                               if call.kwargs.get("outcome") == "unknown"]
-                    self.assertTrue(unknown)
-                    self.assertIs(unknown[0].kwargs["detail"]["response_observed"], response_observed is True)
+                        for item in (
+                            patch.object(service.db, "mark_account_live_check_running", return_value=True),
+                            patch.object(service.db, "get_account", return_value={"email_invalid": True, "access_token": "fixture-at"}),
+                            patch.object(service.db, "update_account_liveness", return_value=True),
+                            patch.object(service, "_reporter", return_value=reporter),
+                            patch.object(service, "_append_log"),
+                            patch.object(service, "_checkpoint"),
+                            patch.object(service, "token_claims", return_value={}),
+                            patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
+                            patch.object(roxy_liveness, "refresh_access_token", side_effect=browser),
+                        ):
+                            stack.enter_context(item)
+                        service._run_live_check(account_id=1, email=EMAIL, trigger="fixture", proxy=None,
+                                                force_refresh=True, refresh_driver="browser_roxy",
+                                                config_snapshot={"auth_raw_context_enabled": False}, operation_context=context)
+                        unknown = [call for call in context.remote_request_receipt.call_args_list
+                                   if call.kwargs.get("outcome") == "unknown"]
+                        self.assertTrue(unknown)
+                        self.assertIs(unknown[0].kwargs["detail"]["response_observed"], response_observed is True)
+                        failure = [call for call in reporter.stage.call_args_list if call.args[:2] == ("authenticate", "failed")]
+                        self.assertEqual(failure[0].args[2], message)
 
     def test_driver_selection_and_frozen_snapshot_keep_browser_independent_of_protocol_version(self):
         from config import account

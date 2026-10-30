@@ -41,15 +41,29 @@ _ROXY_STAGE_CAUSES = {
 _PROXY_BROWSER_ERRORS = ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")
 
 
-def _browser_proxy_error(driver) -> str:
-    """只读取浏览器自身错误页上的固定网络码，不回传页面正文。"""
+def _browser_proxy_error(driver, *, snapshot: dict | None = None) -> str:
+    """以实际文档确认浏览器错误页，只返回固定网络码。"""
+    def error_code(page) -> str:
+        if not isinstance(page, dict) or not str(page.get("url") or "").startswith("chrome-error://"):
+            return ""
+        text = str(page.get("text") or "")
+        return next((code for code in _PROXY_BROWSER_ERRORS if code in text), "")
+
+    if snapshot is not None:
+        return error_code(snapshot)
     if driver is None:
         return ""
     try:
-        if not str(driver.current_url or "").startswith("chrome-error://"):
-            return ""
-        text = str(driver.execute_script("return document.body ? document.body.innerText : '';"))
-        return next((code for code in _PROXY_BROWSER_ERRORS if code in text), "")
+        if str(driver.current_url or "").startswith("chrome-error://"):
+            return error_code({"url": driver.current_url, "text": driver.execute_script(
+                "return document.body ? document.body.innerText : '';",
+            )})
+        # ChromeDriver 可能继续返回导航前尝试的 HTTPS 地址；文档地址才说明
+        # 当前是否是浏览器错误页，普通认证页正文出现 ERR_* 不能据此分类。
+        page = driver.execute_script(
+            "return {url: location.href, text: document.body ? document.body.innerText : ''};",
+        )
+        return error_code(page)
     except Exception:
         return ""
 
@@ -163,6 +177,10 @@ def _enter_existing_account_otp(
     from core.auth.page_errors import auth_page_error
 
     def observe_page(snapshot):
+        browser_error = _browser_proxy_error(driver, snapshot=snapshot)
+        if browser_error:
+            logger.warning("[查活][Roxy] 邮箱提交后页面识别：浏览器代理连接失败，错误码=%s；停止等待下一步", browser_error)
+            raise RuntimeError(f"浏览器代理连接失败：{browser_error}")
         error = auth_page_error(snapshot)
         if error is not None:
             logger.warning("[查活][Roxy] 邮箱提交后页面识别：%s；立即交给登录恢复", error)

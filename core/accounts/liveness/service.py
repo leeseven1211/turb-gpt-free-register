@@ -272,6 +272,7 @@ def _unknown_refresh_response_observed(result: dict) -> bool:
     """页面错误不能冒充已经观测到认证 HTTP 响应。"""
     if result.get("error_code") in {
         "password_change_required", "password_page_error", "auth_operation_timeout", "auth_context_missing",
+        "roxy_proxy_tunnel_failed",
     }:
         return result.get("response_observed") is True
     return True
@@ -1506,6 +1507,7 @@ def _run_live_check(
                 error_message = str(result.get("error") or "")
                 page_error = result.get("error_code") in {
                     "password_change_required", "password_page_error", "auth_operation_timeout", "auth_context_missing",
+                    "roxy_proxy_tunnel_failed",
                 }
                 login_cause = ROXY_LOGIN_CAUSES.get(result.get("error_code") or roxy_login_failure_code(error_message))
                 failure_message = error_message if page_error else login_cause[1] if login_cause else "Roxy 浏览器登录未完成"
