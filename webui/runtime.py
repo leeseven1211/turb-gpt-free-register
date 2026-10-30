@@ -1043,11 +1043,8 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
         "context": context,
         "reservation_held": False,
     }
-    if set(planned_steps) & {"password", "plan_check", "twofa"}:
-        with context.lease(resource_family="openai_interactive"):
-            _run_account_completion_worker(**worker_kwargs)
-    else:
-        _run_account_completion_worker(**worker_kwargs)
+    # 父任务只编排补全计划，账号交互租约由执行远端操作的独立子任务持有。
+    _run_account_completion_worker(**worker_kwargs)
     if context.last_result is not None:
         return context.last_result
     return _finish_native_context(

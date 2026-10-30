@@ -461,17 +461,19 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
         complete.assert_called_once_with(303, success=True)
 
-    def test_completion_setup_is_a_durable_child_before_parent_partial(self):
+    def test_completion_handler_dispatches_setup_child_without_interactive_parent_lease(self):
         class FakeContext:
             run = {
-                "data": {},
+                "data": {"planned_steps": ["password", "codex"]},
                 "trigger": "manual_account_completion",
                 "log_file": "",
+                "resource_family": "completion_coordinator",
             }
             run_id = 711
             task_id = 712
             account_id = 713
             email = "completion@example.test"
+            resource_family = "completion_coordinator"
             config_snapshot = {
                 "password_driver": "roxy",
                 "twofa_driver": "protocol",
@@ -485,6 +487,12 @@ class WebUIRuntimeTests(unittest.TestCase):
 
             def report(self, **_kwargs):
                 return {}
+
+            def lease(self, *, resource_family):
+                # 存储层会拒绝协调父任务申请不同资源类型的交互租约。
+                raise runtime.task_gateway.OperationLeaseUnavailable(
+                    f"账号 lease 不可用：account_id={self.account_id} resource_family={resource_family}"
+                )
 
             def release_lease(self):
                 self.released += 1
@@ -512,23 +520,16 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.operation_task_store, "register_task_dependency") as register,
             patch.object(runtime.codex_retry_service, "run_twofa_worker") as setup_worker,
         ):
-            result = runtime._run_account_completion_worker(
-                context.email,
-                account_id=context.account_id,
-                task_id=context.task_id,
-                task_trigger="manual_account_completion",
-                planned_steps=["password", "codex"],
-                settings={"password_driver": "roxy"},
-                context=context,
-                reservation_held=False,
-            )
+            result = runtime._handle_native_account_completion(context)
 
         self.assertTrue(context.finished)
         self.assertEqual("partial_success", result.status)
         setup_worker.assert_not_called()
         submit.assert_called_once()
         self.assertEqual("account_setup_retry", submit.call_args.kwargs["task_type"])
+        self.assertEqual("openai_interactive", submit.call_args.kwargs["resource_family"])
         self.assertEqual(["password"], submit.call_args.kwargs["data"]["steps"])
+        self.assertEqual(context.config_snapshot, submit.call_args.kwargs["config_snapshot"])
         register.assert_called_once()
         self.assertEqual("webui_runtime", register.call_args.kwargs["child_source_system"])
         self.assertEqual(
