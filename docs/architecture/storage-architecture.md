@@ -27,8 +27,10 @@ core/postgres_store.py   连接、schema、app_collections（调度状态、兼�
                          迁移期旧数据）
 core/record_store.py     全部正常业务行级表：可行级 UPDATE、可跨进程原子抢占、可跨表事务
 core/compat_export.py    兼容文件的去抖导出器（后台，不在写入主路径上）
-core/db.py               业务数据层，建在上面三者之上
-core/account_task_store.py  账号操作任务的三张关系表（更早就已拆表）
+core/storage/db_legacy.py  账号、注册任务和邮箱等业务存储实现，建在上面三者之上
+core/db.py               指向 storage.db_legacy 的旧模块兼容别名
+core/operations/legacy_task_store.py  历史账号操作任务的三张关系表
+core/account_task_store.py  指向 operations.legacy_task_store 的旧模块兼容别名
 core/proxy_pool_store.py  代理库存与独占/共享子租约的 PostgreSQL 协调
 core/proxy_supply.py      代理供应商后台补货、出口检测和固定供给参数适配
 core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付收口
