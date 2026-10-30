@@ -1333,6 +1333,10 @@ def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, 
     for marker, code in markers:
         if marker in raw:
             return _specific_error_cause({"cause_code": code})
+    if re.fullmatch(
+        r"(?:registration_failed:\s*)?RuntimeError:\s*邮箱提交后未进入密码页/验证码页，最后状态=\{[\s\S]*\}", raw,
+    ):
+        return _specific_error_cause({"cause_code": "email_submit_unconfirmed"})
     if re.search(r"(?<![\w])StageTimeout(?=[:：\s]|$)", raw):
         return _specific_error_cause({"cause_code": "browser_stage_timeout"})
     return None
@@ -1349,6 +1353,12 @@ def _classify_raw_task_error(
     raw = str(message or "").strip()
     if not raw:
         return None
+    if raw in {"net::ERR_HTTP2_PING_FAILED", "ERR_HTTP2_PING_FAILED"}:
+        return _error_projection(
+            "browser_http2_ping_failed", "external", "网络传输", "HTTP/2连接保活失败",
+            stage=stage, error_code=error_code, raw=raw,
+            summary="HTTP/2连接保活失败", display_code="NET-HTTP2-001",
+        )
     if str(task_type or "").strip().lower() == "plan_check" and raw.upper() == "HTTP 403":
         return _error_projection(
             TaskErrorCode.EXTERNAL_OPENAI_PLAN_FORBIDDEN.value,

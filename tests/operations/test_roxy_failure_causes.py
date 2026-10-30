@@ -15,6 +15,31 @@ _CONFLICT = "ValueError: 当前 Run 仍有未决浏览器提交，拒绝重复�
 
 
 class RoxyFailureCauseTests(unittest.TestCase):
+    def test_generated_email_wait_failure_is_a_fixed_symptom(self):
+        message = (
+            "RuntimeError: 邮箱提交后未进入密码页/验证码页，最后状态="
+            "{'actions': [], 'inputs': [], 'title': 'ChatGPT', 'url': 'https://chatgpt.com/auth/login'}"
+        )
+        for task_type in ("registration", "registration_resume"):
+            for prefix in ("", "registration_failed: "):
+                with self.subTest(task_type=task_type, prefix=prefix):
+                    info = classify_task_error(prefix + message, task_type=task_type, stage="submit_email")
+                    self.assertEqual("email_submit_unconfirmed", info["code"])
+                    self.assertEqual("FLOW-EMAIL-001", info["display_code"])
+                    self.assertEqual("submit_email", info["stage"])
+
+    def test_email_wait_symptom_requires_generated_exception_shape(self):
+        for raw in (
+            "邮箱提交后未进入密码页/验证码页",
+            "邮箱提交后未进入密码页/验证码页，最后状态={}",
+            "RuntimeError: 其他失败，邮箱提交后未进入密码页/验证码页，最后状态={}",
+            "RuntimeError: 邮箱提交后未进入密码页/验证码页",
+            "TimeoutError: 邮箱提交后未进入密码页/验证码页，最后状态={}",
+        ):
+            with self.subTest(raw=raw):
+                info = classify_task_error(raw, task_type="registration", stage="submit_email")
+                self.assertNotEqual("email_submit_unconfirmed", info["code"])
+
     def test_local_submission_conflict_is_specific_and_retains_unknown_impact(self):
         for task_type, stage, raw in (
             ("registration", "email_otp", _CONFLICT),
