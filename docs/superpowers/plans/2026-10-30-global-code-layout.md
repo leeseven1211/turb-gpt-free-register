@@ -59,7 +59,7 @@
 - [x] 运行 `ruff check .`、Node 全量和隔离 Python 全量，对照基线分类新增失败。
 - [x] 真实浏览器验收页面只读交互、加载与控制台；不创建真实批次。
 - [x] 独立审查模块身份、路径、动态导入与行为等价；修复发现的问题。
-- [ ] 分批 Conventional Commits，合回 main 并保留用户改动，托管重启、核对 PID/cwd/端口/日志及 healthz/readyz。
-- [ ] 最终分别报告文件、测试、提交、推送、重启和真实业务验收状态。
+- [x] 分批 Conventional Commits，合回 main 并保留用户改动，托管重启、核对 PID/cwd/端口/日志及 healthz/readyz。
+- [x] 最终分别报告文件、测试、提交、推送、重启和真实业务验收状态。
 
 代码验证及基线差异见[验证记录](../../development/2026-10-30-global-code-layout-verification.md)。核心和跨域导入耦合，代码迁移保持一个可运行的原子提交；设计和最终运行验收文档独立提交。

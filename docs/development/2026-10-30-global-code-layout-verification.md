@@ -52,3 +52,15 @@ Python通过统一`tools/test_isolated.py --profile all`入口运行，使用非
 对最新 main 的18份变更独立核对：6份生产Python和5份Python测试在精确路径/导入变换后AST一致，3份JS字节一致，2份CJS仅有目录深度和共享读取器路径调整，模板仅资源路径/缓存版本变化，README保留两处新增业务说明。没有改动最新main的分支、请求、错误优先级和过滤条件。
 
 增量与相邻回归使用独立`turb_test/test_` schema：7份Python文件247 passed、316 subtests passed；5份前端CJS文件63 passed；`ruff check .`及差异检查通过。原固定基线和完整测试失败分类仍按上文记录，不将定向通过描述为完整测试全绿。
+
+## 本地 main 与托管服务验收
+
+已按用户选择等待业务队列空闲，切换前再次两次只读确认三类任务均无排队/运行；停机后第三次核对仍空闲。原未知结果记录为注册103条、operation90条，切换前、停机后、启动后及最终复核的身份哈希和整行记录摘要全部一致。未取消、清理或重跑这些任务。
+
+实现提交`e64e430`与等待期间最新main的`cb17d76`已在`4ab5809`合并，随后本地主目录main安全快进。原两份未提交用户编辑保留为`core/network/response_diagnostics.py`与`tests/accounts/test_protocol_v2_liveness.py`，逐文件按迁移后快照SHA-256核验，并另保留原路径stash备份；没有纳入迁移提交。含用户新增两项测试的完整liveness文件在主目录经独立测试库验证：40 passed、18 subtests passed。
+
+按原`com.leeseven.turb-console-webui` launchd配置重启，LaunchAgent字节哈希不变；PID从26244变为28587，实际cwd为主目录，端口8000及readyz报告PID一致。`/healthz`、`/readyz`、登录页与授权登录正常；主页面/登录页23项静态资源引用均HTTP 200，版本`20261030-layout-v2`，响应与本地新路径文件哈希一致。按切换前日志偏移检查新增日志，无导入、语法、ERROR或HTTP 5xx标记。
+
+真实浏览器以新会话验收总览、注册、账号、Codex、任务中心、提链、邮箱、代理与配置9页，14份脚本与4份样式版本正确；验收记录84次查询GET均200，无console warning/error。除授权登录外没有发起业务写请求，未进行真实注册、邮件采购、提链、支付或业务结果验收。浏览器验收会话已关闭。核验时间：`2026-10-30T15:32:34+08:00`。
+
+代码及交付记录仅合入本地main，未推送远端。工作树保留用于追溯；交付后暂停本聊天空闲监测心跳，避免重复重启。后续仅文档提交的main快进不再次重启服务。
