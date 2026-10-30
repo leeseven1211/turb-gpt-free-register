@@ -26,6 +26,16 @@ class AuthErrorSanitizerTests(unittest.TestCase):
         self.assertEqual(safe_auth_error(None), {})
         self.assertEqual(safe_auth_error({"message": "private-password"}), {})
 
+    def test_wrong_email_otp_code_preserves_exact_safe_rejection(self):
+        raw = {"error": {"code": "wrong_email_otp_code", "type": "invalid_request_error",
+                         "message": "private@example.test 123456", "category": "private-token"}}
+        self.assertEqual(auth_error_from_body(json.dumps(raw)), {
+            "code": "wrong_email_otp_code", "type": "invalid_request_error", "category": "otp_rejected",
+        })
+        for code in ("wrong_email_otp_code_extra", "WRONG_EMAIL_OTP_CODE"):
+            with self.subTest(code=code):
+                self.assertEqual(safe_auth_error({"code": code})["code"], "unknown")
+
     def test_bad_or_excessive_bodies_are_ignored(self):
         for body in ("<html>private</html>", "[1,2]", '{"error": {"code": "email_taken"}, "error": {}}',
                      '{"error":{"code":"email_taken"},"padding":"' + '中' * 25000 + '"}',
@@ -51,8 +61,10 @@ class AuthErrorSanitizerTests(unittest.TestCase):
 
 class AuthErrorCollectorTests(unittest.TestCase):
     def worker(self, *, status=400, url='https://auth.openai.com/api/accounts/create_account',
-               method='POST', mime='application/json', length=256):
-        session = _SummaryOnlyCDPSession('test-profile')
+               method='POST', mime='application/json', length=256, full=False):
+        session = (SimpleNamespace(job_id=991, current_stage='email_otp', body_capture_enabled=True,
+                                   record_network=Mock())
+                   if full else _SummaryOnlyCDPSession('test-profile'))
         diagnostics = SubmissionDiagnostics()
         session.auth_diagnostic_observer = diagnostics.observe_network
         session.submission_observer = Mock()
@@ -71,6 +83,57 @@ class AuthErrorCollectorTests(unittest.TestCase):
             'requestId': 'r1', 'timestamp': 1.2, 'encodedDataLength': length,
         }})
         return session, diagnostics, worker
+
+    def test_full_capture_retains_safe_auth_error_without_changing_raw_body(self):
+        for options, code in (
+            ({'status': 401, 'url': 'https://auth.openai.com/api/accounts/email-otp/validate'}, 'invalid_otp'),
+            ({'status': 404, 'method': 'GET',
+              'url': 'https://auth.openai.com/api/accounts/client_auth_session_dump'}, 'missing_session'),
+        ):
+            with self.subTest(code=code):
+                session, _diagnostics, worker = self.worker(full=True, **options)
+                commands = [json.loads(x.args[0]) for x in worker._ws.send.call_args_list]
+                self.assertEqual([x['method'] for x in commands], ['Network.getResponseBody'])
+                payload = json.dumps({'error': {'code': code, 'type': 'invalid_request_error',
+                                                'message': 'private@example.test 123456'}})
+                worker._handle({'id': commands[0]['id'], 'result': {'body': payload}})
+                record = session.record_network.call_args.args[0]
+                self.assertEqual(record['auth_error'], {
+                    'code': code, 'type': 'invalid_request_error',
+                    'category': 'otp_rejected' if code == 'invalid_otp' else 'auth_state',
+                })
+                self.assertEqual(record['response_body'], payload)
+                self.assertEqual(record['status'], options['status'])
+                self.assertEqual(worker._ws.send.call_count, 1)
+                session.submission_observer.assert_not_called()
+
+    def test_full_capture_does_not_derive_auth_error_from_other_responses(self):
+        for options in ({'status': 200}, {'method': 'GET'}, {'length': 70000}, {'mime': 'text/html'},
+                        {'url': 'https://auth.openai.com.evil.test/api/accounts/create_account'}):
+            with self.subTest(options=options):
+                session, _diagnostics, worker = self.worker(full=True, **options)
+                command = json.loads(worker._ws.send.call_args.args[0])
+                payload = '{"error":{"code":"invalid_otp"}}'
+                worker._handle({'id': command['id'], 'result': {'body': payload}})
+                record = session.record_network.call_args.args[0]
+                self.assertNotIn('auth_error', record)
+                self.assertEqual(record['response_body'], payload)
+
+    def test_full_capture_late_body_cannot_label_redirected_request(self):
+        session, _diagnostics, worker = self.worker(full=True, status=401)
+        command = json.loads(worker._ws.send.call_args.args[0])
+        worker._handle({'method': 'Network.requestWillBeSent', 'params': {
+            'requestId': 'r1', 'timestamp': 2, 'type': 'Fetch',
+            'redirectResponse': {'status': 302},
+            'request': {'url': 'https://auth.openai.com/api/accounts/email-otp/validate', 'method': 'POST'},
+        }})
+        worker._handle({'method': 'Network.responseReceived', 'params': {
+            'requestId': 'r1', 'response': {'status': 401, 'mimeType': 'application/json',
+                                         'headers': {'content-type': 'application/json'}},
+        }})
+        worker._requests['r1']['encoded_data_length'] = 256
+        worker._handle({'id': command['id'], 'result': {'body': '{"error":{"code":"invalid_otp"}}'}})
+        self.assertNotIn('auth_error', session.record_network.call_args.args[0])
 
     def test_summary_reads_only_auth_error_then_discards_body(self):
         session, diagnostics, worker = self.worker()

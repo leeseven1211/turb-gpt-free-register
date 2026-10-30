@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from enum import Enum
 from typing import Any
@@ -1540,6 +1541,46 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
     code = ""
+    if task_key in {"registration", "registration_resume"}:
+        if re.search(
+            r"(?:^|\n)\s*(?:registration_failed: )?"
+            r"ValueError: 当前 Run 仍有未决浏览器提交，拒绝重复派发请求(?:$|\n)", raw,
+        ):
+            return {
+                "cause_code": "local_browser_submission_conflict",
+                "cause_display_code": "SYS-SUBMISSION-001",
+                "cause_summary": "本地未决提交回执阻止了新动作派发",
+            }
+        diagnostics = safe_registration_diagnostics(summary.get("registration_diagnostics"))
+        profile_disallowed = (
+            diagnostics.get("operation") == "profile_submit"
+            and diagnostics.get("failure_kind") == "http_error"
+            and diagnostics.get("http_status") == 400
+            and diagnostics.get("auth_error", {}).get("code") == "registration_disallowed"
+        )
+        if not profile_disallowed:
+            # 兼容旧 Roxy 固定异常，只解析本动作生成的有限枚举对象。
+            match = re.search(
+                r"(?:^|\n)(?:RuntimeError: )?request_unknown: account_create_http_400: "
+                r"资料创建接口明确返回 HTTP 400；上游错误枚举=(\{[^{}\n]{1,512}\})；"
+                r"已保留原身份与密码，需沿原任务链恢复(?:$|\n)", raw,
+            )
+            if match:
+                from core.network.response_diagnostics import auth_error_from_body
+
+                body = match.group(1)
+                auth_error = auth_error_from_body('{"error":' + body + '}')
+                payload = json.loads(body) if auth_error else {}
+                profile_disallowed = (
+                    set(payload) <= {"code", "type", "category"}
+                    and auth_error.get("code") == "registration_disallowed"
+                )
+        if profile_disallowed:
+            return {
+                "cause_code": "account_create_registration_disallowed",
+                "cause_display_code": "OA-REG-DISALLOWED-001",
+                "cause_summary": "上游拒绝本次注册（registration_disallowed）",
+            }
     if "AuthPageError:" in raw:
         for page_code, page_message in (
             ("auth_operation_timeout", "认证页面操作超时"),

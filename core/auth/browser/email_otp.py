@@ -680,7 +680,7 @@ def _wait_email_frontend_ready(driver, timeout: float | None = None) -> None:
         now = time.monotonic()
         if now >= next_progress:
             elapsed = now - started
-            message = f"邮箱已填写，页面功能仍在加载（已等待 {elapsed:.0f} 秒），就绪后自动点击继续"
+            message = f"正在等待登录表单就绪（已等待 {elapsed:.0f} 秒），就绪后继续认证"
             logger.info("%s %s", _log_prefix(driver), message)
             report("waiting_frontend", message)
             next_progress = now + 10.0

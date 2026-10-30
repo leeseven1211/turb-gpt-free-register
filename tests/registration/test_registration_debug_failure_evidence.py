@@ -35,6 +35,33 @@ def category(session, reason):
     }, list(session._failure_network_seen))
 
 
+def test_failure_network_evidence_retains_only_fixed_auth_error_metadata():
+    evidence = debug._failure_network_evidence({
+        "method": "POST", "url": "https://auth.openai.com/api/accounts/email-otp/validate?secret=private-token",
+        "stage": "email_otp", "status": 401,
+        "auth_error": {"code": "invalid_otp", "type": "invalid_request_error",
+                       "message": "private@example.test 123456", "category": "private-token"},
+        "request_body": "private-password", "response_body": "private-token",
+    })
+    assert evidence == {
+        "status": 401, "failure": False, "auth_endpoint": "otp_submit", "stage": "email_otp",
+        "auth_challenge": False,
+        "auth_error": {"code": "invalid_otp", "type": "invalid_request_error", "category": "otp_rejected"},
+    }
+
+
+@pytest.mark.parametrize("changes", [
+    {"url": "https://auth.openai.com.evil.test/api/accounts/email-otp/validate"},
+    {"method": "GET"}, {"status": 200},
+])
+def test_failure_network_evidence_ignores_unbound_or_success_auth_error(changes):
+    evidence = debug._failure_network_evidence({
+        "method": "POST", "url": "https://auth.openai.com/api/accounts/email-otp/validate",
+        "stage": "email_otp", "status": 401, "auth_error": {"code": "invalid_otp"}, **changes,
+    })
+    assert "auth_error" not in evidence
+
+
 def test_unresolved_auth_challenge_explains_entry_timeout_without_debug_disk_reads(session):
     session.record_network(challenge_record())
     reason = "StageTimeout: 找不到邮箱输入框"

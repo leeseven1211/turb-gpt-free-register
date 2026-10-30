@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from config import registration_debug as _cfg
-from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, safe_response_headers
+from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, safe_auth_error, safe_response_headers
 from core.operations.stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger('core.registration_debug')
@@ -126,6 +126,9 @@ def _failure_network_evidence(item: dict, stage: str = "") -> dict:
                 safe_response_headers(item.get("response_headers")).get("cf-mitigated") == "challenge"
             ),
         })
+        auth_error = safe_auth_error(item.get("auth_error")) if 400 <= status < 600 else {}
+        if auth_error:
+            evidence["auth_error"] = auth_error
         failure = item.get("failure")
         if isinstance(failure, str) and failure in {"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"}:
             evidence["transport_cause"] = "roxy_proxy_tunnel_failed"
@@ -1480,6 +1483,21 @@ class _RoxyTargetCollector:
                     body = b""
             record = self._requests.get(request_id)
             if record is not None:
+                # 复用已取得的正文补齐安全诊断；不新增读取或业务回执回调。
+                session_diagnostic = is_auth_session_diagnostic(record.get("url"))
+                status = record.get("status")
+                eligible_status = (type(status) is int and 400 <= status < 600
+                                   and (not session_diagnostic or status == 404))
+                mime = safe_response_headers({"content-type": record.get("mime_type")}).get("content-type")
+                length = record.get("encoded_data_length")
+                if (pending.get("capture_request_id") == record.get("capture_request_id")
+                        and eligible_status and record.get("method") == ("GET" if session_diagnostic else "POST")
+                        and (session_diagnostic or auth_submission_endpoint(record.get("url")))
+                        and mime in {"application/json", "application/problem+json"}
+                        and isinstance(length, (int, float)) and 0 <= length <= 65536):
+                    auth_error = auth_error_from_body(body)
+                    if auth_error:
+                        record["auth_error"] = auth_error
                 safe_body, truncated = _raw_body(body, str(record.get("mime_type") or ""))
                 record["response_body"] = safe_body
                 if truncated:
@@ -1642,7 +1660,9 @@ class _RoxyTargetCollector:
                     "redirect_index": record.get("redirect_index", 0), "deadline": time.monotonic() + 2.0,
                 })
             elif capture_body and self.session.body_capture_enabled:
-                self._send("Network.getResponseBody", {"requestId": request_id}, {"request_id": request_id})
+                self._send("Network.getResponseBody", {"requestId": request_id}, {
+                    "request_id": request_id, "capture_request_id": record.get("capture_request_id"),
+                })
             else:
                 self._finish_request(request_id, body_unavailable="binary_or_disabled")
         elif method == "Network.loadingFailed":

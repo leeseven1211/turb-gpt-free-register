@@ -30,6 +30,7 @@ _AUTH_ERROR_CODES = {
     "invalid_request": "request_invalid", "validation_error": "request_invalid",
     "invalid_request_error": "request_invalid", "invalid_password": "credentials_rejected",
     "incorrect_password": "credentials_rejected", "invalid_otp": "otp_rejected",
+    "wrong_email_otp_code": "otp_rejected",
     "otp_expired": "otp_rejected", "invalid_grant": "credentials_rejected",
     "rate_limit_exceeded": "rate_limited", "too_many_requests": "rate_limited",
     "account_deactivated": "account_unusable", "account_suspended": "account_unusable",
