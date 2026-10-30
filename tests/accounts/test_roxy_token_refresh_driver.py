@@ -128,6 +128,7 @@ class RoxyRefreshDriverTests(unittest.TestCase):
             ("auth_operation_timeout", "认证页面操作超时"),
             ("auth_context_missing", "登录上下文缺失，需要重新发起登录"),
             ("roxy_proxy_tunnel_failed", "浏览器代理连接失败：ERR_TUNNEL_CONNECTION_FAILED"),
+            ("roxy_password_prepare_timeout", "密码表单准备超时，最后等待原因=password_value_changed"),
         ):
             for reconcile in (False, True):
                 for response_observed in (None, False, True):
@@ -257,6 +258,22 @@ class RoxyRefreshDriverTests(unittest.TestCase):
 
 
 class RoxyRefreshHookTests(unittest.TestCase):
+    def test_password_prepare_deadline_keeps_specific_reason_and_unsubmitted_receipt(self):
+        from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+        from core.auth.state_machine import StageTimeout
+
+        driver, _, _, _, _, _ = self._context()
+        receipt = BrowserSubmissionReceipt(kind="password", stage="login_password", phase="prepared")
+        driver._browser_submission_receipt = receipt
+        driver._password_prepare_reason = "password_value_changed"
+        with patch.object(roxy_liveness, "_enter_existing_account_otp", side_effect=StageTimeout("stage exceeded shared stage timeout")):
+            result = roxy_liveness.refresh_access_token(EMAIL)
+        self.assertEqual(result["error_code"], "roxy_password_prepare_timeout")
+        self.assertIn("password_value_changed", result["error"])
+        self.assertEqual(receipt.phase, "prepared")
+        self.assertNotIn("mutation_submitted", result)
+        self.assertNotIn("response_observed", result)
+
     def _context(self, *, mode=None, failure=None):
         stack = ExitStack()
         self.addCleanup(stack.close)

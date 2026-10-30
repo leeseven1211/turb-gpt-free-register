@@ -29,7 +29,7 @@ from core.auth.browser.email_otp import _clear_confirmed_email_submission, _emai
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.auth.state_machine import PageState, StageBudget, StageTimeout, classify_page
 from core.auth.page_errors import AuthPageError, auth_page_error
-from core.auth.browser.password_auth import _PasswordTransitionTimeout
+from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS, _PasswordTransitionTimeout
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, click_any as _click_any, click_continue as _click_continue, find_any as _find_any, maybe_accept as _maybe_accept, quit_driver as _quit_driver, type_any as _type_any, type_email_address as _type_email_address, submit_email_step as _submit_email_step, recover_email_submit_if_stuck as _recover_email_submit_if_stuck, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, click_email_entry_option as _click_email_entry_option, type_otp as _type_otp, clear_otp_inputs as _clear_otp_inputs, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, fill_password_page_if_present as _fill_password_page_if_present, click_passwordless_signup_if_present as _click_passwordless_signup_if_present, safe_get as _safe_get, human_click as _human_click, human_type_text as _human_type_text
 from core.auth.challenge import MfaSecretMissingError, PasswordRejectedError
 
@@ -546,6 +546,14 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
         ):
             raise
 
+        prepare_reason = getattr(driver, "_password_prepare_reason", "")
+        prepare_reason = prepare_reason if isinstance(prepare_reason, str) and prepare_reason in PASSWORD_PREPARE_REASONS else "unexpected_result"
+        prepare_stage = getattr(driver, "_password_prepare_stage", "")
+        prepare_stage = prepare_stage if isinstance(prepare_stage, str) and prepare_stage in {"input", "typing", "queue"} else "input"
+        logger.warning(
+            "[Codex][Browser] 密码准备预算耗尽且确认未派发：阶段=%s，原因=%s；沿用原恢复条件检查同页刷新",
+            prepare_stage, prepare_reason,
+        )
         _raise_auth_page_error(driver, _login_challenge_state(driver), remaining=deadline - time.monotonic())
         _auth_checkpoint()
         remaining = deadline - time.monotonic()
@@ -571,7 +579,7 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise
-        logger.warning("[Codex][Browser] 密码表单未挂载且确认未派发，已刷新同一登录页并继续剩余预算")
+        logger.warning("[Codex][Browser] 密码准备未完成且确认未派发，已刷新同一登录页并继续剩余预算：阶段=%s，原因=%s", prepare_stage, prepare_reason)
         _fill_password_page_if_present(
             driver, email, timeout=max(1, int(remaining)), **fill_kwargs,
         )

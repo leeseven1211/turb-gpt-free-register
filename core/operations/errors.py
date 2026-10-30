@@ -1035,6 +1035,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_page_error": ("AUTH-PWD-PAGE", "密码登录页返回明确错误"),
     "auth_operation_timeout": ("AUTH-PAGE-TIMEOUT", "认证页面操作超时"),
     "auth_context_missing": ("AUTH-PAGE-CONTEXT", "登录上下文缺失，需要重新发起登录"),
+    "roxy_password_prepare_timeout": ("AUTH-PWD-PREPARE", "密码表单准备超时"),
     "password_rejected_email_fallback_failed": ("AUTH-PWD-003", "密码被拒且邮箱兜底未完成"),
     "password_result_unknown": ("AUTH-PWD-004", "密码提交结果未确认"),
     "password_sentinel_failed": ("AUTH-PWD-005", "密码认证前置检查失败"),

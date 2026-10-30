@@ -9,6 +9,7 @@ import random
 import re
 import string
 import time
+from time import monotonic as _diagnostic_monotonic
 from urllib.parse import urlsplit
 from selenium.common.exceptions import TimeoutException
 
@@ -30,6 +31,14 @@ SAVED_PASSWORD_RESUME_TIMEOUT_SECONDS = 120
 RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS = 60
 MAX_EXPIRED_RESUME_AUTH_RESTARTS = 2
 MAX_SAVED_PASSWORD_FORM_RECOVERIES = 1
+PASSWORD_PREPARE_REASONS = frozenset({
+    "missing_password_input", "missing_password_form", "password_frontend_not_ready",
+    "password_input_ready", "password_input_replaced", "password_value_changed",
+    "password_form_invalid", "missing_password_submit", "login_identity_unconfirmed",
+    "password_submit_obscured", "password_recovery_route_unconfirmed", "password_submit_queued",
+    "password_typing_started", "password_typing_completed", "password_typing_interrupted",
+    "empty_result", "unexpected_result",
+})
 
 human_delay = _human_delay
 _CHATGPT_PASSWORD_SETTINGS_URL = "https://chatgpt.com/#settings/Security"
@@ -1404,6 +1413,32 @@ def _fill_password_page_if_present(
         not_ready_since = None
         not_ready_reason = None
         last_prepare_log_at = None
+        prepare_failure_logged = None
+        next_prepare_failure_log_at = 0.0
+        driver._password_prepare_reason = ""
+        driver._password_prepare_stage = "input"
+
+        def observe_prepare(stage, observation):
+            nonlocal prepare_failure_logged, next_prepare_failure_log_at
+            raw_reason = observation.get("reason") if isinstance(observation, dict) else None
+            reason = raw_reason if isinstance(raw_reason, str) and raw_reason in PASSWORD_PREPARE_REASONS else (
+                "password_input_ready" if stage == "input" and isinstance(observation, dict) and observation.get("ok")
+                else "empty_result" if not observation else "unexpected_result"
+            )
+            driver._password_prepare_reason = reason
+            driver._password_prepare_stage = stage
+            if isinstance(observation, dict) and observation.get("ok"):
+                return
+            now = _diagnostic_monotonic()
+            marker = (stage, reason)
+            if marker != prepare_failure_logged or now >= next_prepare_failure_log_at:
+                logger.info(
+                    "%s 密码准备未就绪：阶段=%s，原因=%s，提交阶段=%s；沿用原准备预算观察",
+                    _log_prefix(driver), stage, reason, submission_receipt.phase,
+                )
+                prepare_failure_logged = marker
+                next_prepare_failure_log_at = now + 15.0
+
         submission_receipt = BrowserSubmissionReceipt(
             kind="resume_login" if getattr(driver, "_registration_resume_login", False) else "password",
             stage="login_password" if is_login_password else "password_create",
@@ -1471,15 +1506,32 @@ def _fill_password_page_if_present(
                     if saved_form_recoveries or pre_submit_recovery_used or password_session_recovery_started
                     else driver.execute_script(target_script, "input", password, None)
                 ) or {}
+                observe_prepare("input", result)
                 if result.get("ok"):
                     filled_input = result.get("input")
+                    typing_started = _diagnostic_monotonic()
+                    typing_completed = False
+                    observe_prepare("typing", {"ok": True, "reason": "password_typing_started"})
+                    logger.info("%s 密码输入阶段=开始；仅输入原保存或本次生成的密码", _log_prefix(driver))
                     try:
                         _human_type_text(driver, filled_input, password, clear=True)
+                        typing_completed = True
                     except Exception as exc:
                         if not _is_stale_element_error(exc):
                             raise
                         filled_input = None
                         result = {"ok": False, "reason": "password_input_replaced"}
+                    finally:
+                        observe_prepare("typing", {"ok": True, "reason": (
+                            "password_typing_completed" if typing_completed else "password_typing_interrupted"
+                        )})
+                        logger.info(
+                            "%s 密码输入阶段=%s，耗时=%.3f 秒；密码内容不写入诊断",
+                            _log_prefix(driver), "完成" if typing_completed else "中断",
+                            max(0.0, _diagnostic_monotonic() - typing_started),
+                        )
+                    if not typing_completed:
+                        observe_prepare("input", result)
                     else:
                         human_delay("form", minimum=0.4, maximum=1.4)
                         if not prepared_reported:
@@ -1521,6 +1573,7 @@ def _fill_password_page_if_present(
                         callable(getattr(driver, "execute_cdp_cmd", None)),
                         urlsplit(password_form_url).path if pre_submit_recovery_used or password_session_recovery_started else "",
                     )
+                    observe_prepare("queue", result)
                     if isinstance(result, dict) and result.get("trusted_click"):
                         _dispatch_trusted_click(driver, result["trusted_click"])
                 except Exception as exc:

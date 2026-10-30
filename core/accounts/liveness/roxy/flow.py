@@ -19,6 +19,7 @@ from core.email.forward_imap import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.accounts.credentials import account_email_is_invalid
 from core.auth.protocol.openai_auth import AccountUnusableError, detect_account_unusable_text
 from core.auth.challenge import AuthCancelledError
+from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS
 from core.operations.runtime import OperationCancelled, check_cancelled, current_token, report_stage
 from core.operations.task_gateway import OperationLeaseLost
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, fetch_chatgpt_session as _fetch_chatgpt_session, find_any as _find_any, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, maybe_accept as _maybe_accept, page_warmup as _page_warmup, quit_driver as _quit_driver, safe_get as _safe_get, submit_email_step as _submit_email_step, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, type_email_address as _type_email_address, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit, wait_email_submit_next_state as _wait_email_submit_next_state
@@ -705,9 +706,22 @@ def refresh_access_token(
         if code:
             refresh_result = {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code, "validation_method": "roxy_email_otp"}
             return refresh_result
-        logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, str(exc)[:260])
+        from core.auth.state_machine import StageTimeout
+
         browser_error = _browser_proxy_error(driver)
         cause_code, category = _refresh_failure_cause(exc, failure_stage, browser_error)
+        prepare_reason = getattr(driver, "_password_prepare_reason", "")
+        receipt = getattr(driver, "_browser_submission_receipt", None)
+        if (not browser_error and failure_stage == "login"
+                and isinstance(prepare_reason, str) and prepare_reason in PASSWORD_PREPARE_REASONS
+                and getattr(receipt, "stage", "") == "login_password"
+                and getattr(receipt, "phase", "") in {"prepared", "not_dispatched"}
+                and (isinstance(exc, StageTimeout) or "password_form_not_ready:" in str(exc))):
+            cause_code, category = "roxy_password_prepare_timeout", "browser"
+            error_detail = f"密码表单准备超时，最后等待原因={prepare_reason}"
+        else:
+            error_detail = str(exc)[:500]
+        logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, error_detail[:260])
         failure_kind = ("no_mail" if isinstance(exc, ForwardIMAPNoMailTimeout)
                         else "imap_error" if isinstance(exc, ForwardIMAPError)
                         else "runtime_exception")
@@ -715,7 +729,7 @@ def refresh_access_token(
             "ok": False,
             "status": "failed",
             "checked_at": checked_at,
-            "error": f"Roxy {type(exc).__name__}: {str(exc)[:500]}" + (f"；浏览器错误：{browser_error}" if browser_error else ""),
+            "error": f"Roxy {type(exc).__name__}: {error_detail}" + (f"；浏览器错误：{browser_error}" if browser_error else ""),
             "error_code": cause_code,
             "error_category": category,
             "failure_stage": failure_stage,

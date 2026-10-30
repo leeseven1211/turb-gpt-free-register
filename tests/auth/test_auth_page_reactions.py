@@ -21,6 +21,90 @@ def _error():
 
 
 class AuthPageReactionTests(unittest.TestCase):
+    def test_all_safe_password_prepare_failures_keep_fixed_reason_and_bounded_logs(self):
+        reasons = (
+            "missing_password_input", "missing_password_form", "password_frontend_not_ready",
+            "password_input_replaced", "password_value_changed", "password_form_invalid",
+            "missing_password_submit", "login_identity_unconfirmed", "password_submit_obscured",
+        )
+        for reason in reasons:
+            clock = _Clock()
+            driver = _Driver(clock)
+            driver.current_url = PASSWORD_URL
+            driver.ready = True
+            original = driver.execute_script
+
+            def execute(script, *args):
+                if args and args[0] == "queue":
+                    return {"ok": False, "reason": reason}
+                return original(script, *args)
+
+            driver.execute_script = execute
+            with (self.subTest(reason=reason), _flow(driver, clock),
+                  self.assertLogs(password_auth.logger, level="INFO") as captured):
+                with self.assertRaisesRegex(RuntimeError, "password_form_not_ready"):
+                    password_auth._fill_password_page_if_present(driver, EMAIL, timeout=2, existing_password=PASSWORD)
+            self.assertEqual(getattr(driver, "_password_prepare_reason", None), reason)
+            self.assertEqual(getattr(driver, "_password_prepare_stage", None), "queue")
+            reason_logs = [line for line in captured.output if "密码准备未就绪" in line]
+            self.assertEqual(len(reason_logs), 1)
+            self.assertIn(reason, reason_logs[0])
+            self.assertNotIn(PASSWORD, " ".join(captured.output))
+            self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
+
+    def test_password_typing_records_fixed_start_and_completion_without_value(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        driver.ready = True
+        with (_flow(driver, clock), self.assertLogs(password_auth.logger, level="INFO") as captured):
+            password_auth._fill_password_page_if_present(driver, EMAIL, timeout=2, existing_password=PASSWORD)
+        logs = " ".join(captured.output)
+        self.assertIn("密码输入阶段=开始", logs)
+        self.assertIn("密码输入阶段=完成", logs)
+        self.assertIn("耗时=", logs)
+        self.assertNotIn(PASSWORD, logs)
+
+    def test_password_typing_interruption_preserves_original_error_and_stage(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+        driver.ready = True
+        error = password_auth.StageTimeout("认证预算耗尽")
+        with (_flow(driver, clock),
+              patch.object(password_auth, "_human_type_text", side_effect=error),
+              self.assertLogs(password_auth.logger, level="INFO") as captured):
+            with self.assertRaises(password_auth.StageTimeout) as caught:
+                password_auth._fill_password_page_if_present(driver, EMAIL, timeout=2, existing_password=PASSWORD)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(driver._password_prepare_reason, "password_typing_interrupted")
+        self.assertEqual(driver._password_prepare_stage, "typing")
+        self.assertEqual(driver.queues, [])
+        self.assertIn("密码输入阶段=中断", " ".join(captured.output))
+
+    def test_untrusted_input_reason_cannot_enter_fixed_diagnostic(self):
+        clock = _Clock()
+        driver = _Driver(clock, reason="private-untrusted-result")
+        with (_flow(driver, clock), self.assertLogs(password_auth.logger, level="INFO") as captured):
+            with self.assertRaisesRegex(RuntimeError, "password_form_not_ready"):
+                password_auth._fill_password_page_if_present(driver, EMAIL, timeout=2, existing_password=PASSWORD)
+        self.assertEqual(driver._password_prepare_reason, "unexpected_result")
+        self.assertNotIn("private-untrusted-result", " ".join(captured.output))
+
+    def test_oauth_refresh_diagnostic_keeps_fixed_prepare_reason(self):
+        driver = MagicMock(current_url=PASSWORD_URL)
+        driver._browser_submission_receipt = SimpleNamespace(phase="not_dispatched")
+        driver._password_prepare_reason = "password_value_changed"
+        driver._password_prepare_stage = "queue"
+        with (patch.object(oauth, "_is_saved_login_password_route", return_value=True),
+              patch.object(oauth, "_auth_checkpoint"),
+              patch.object(oauth, "_login_challenge_state", return_value={"url": PASSWORD_URL}),
+              patch.object(oauth, "_fill_password_page_if_present", side_effect=[RuntimeError("password_form_not_ready: private-value"), None]),
+              self.assertLogs(oauth._base_logger, level="WARNING") as captured):
+            oauth._submit_saved_login_password(driver, EMAIL, PASSWORD)
+        logs = " ".join(captured.output)
+        self.assertIn("password_value_changed", logs)
+        self.assertIn("queue", logs)
+        self.assertNotIn("private-value", logs)
+
     def test_password_wait_checks_error_even_when_password_route_detector_is_false(self):
         clock = _Clock()
         driver = _Driver(clock)

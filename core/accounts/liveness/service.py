@@ -166,6 +166,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "password_rejected", "password_rejected_email_fallback_failed",
     "password_result_unknown", "password_sentinel_failed", "password_change_required", "password_page_error",
     "auth_operation_timeout", "auth_context_missing",
+    "roxy_password_prepare_timeout",
     "password_verify_failed", "password_verify_invalid_response",
     "password_login_unavailable", "email_verification_required",
     "passwordless_fallback_unavailable", "protocol_network_error",
@@ -273,6 +274,7 @@ def _unknown_refresh_response_observed(result: dict) -> bool:
     if result.get("error_code") in {
         "password_change_required", "password_page_error", "auth_operation_timeout", "auth_context_missing",
         "roxy_proxy_tunnel_failed",
+        "roxy_password_prepare_timeout",
     }:
         return result.get("response_observed") is True
     return True
@@ -1508,6 +1510,7 @@ def _run_live_check(
                 page_error = result.get("error_code") in {
                     "password_change_required", "password_page_error", "auth_operation_timeout", "auth_context_missing",
                     "roxy_proxy_tunnel_failed",
+                    "roxy_password_prepare_timeout",
                 }
                 login_cause = ROXY_LOGIN_CAUSES.get(result.get("error_code") or roxy_login_failure_code(error_message))
                 failure_message = error_message if page_error else login_cause[1] if login_cause else "Roxy 浏览器登录未完成"
