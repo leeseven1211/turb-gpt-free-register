@@ -26,6 +26,7 @@ from core.browser.roxy.client import RoxyBrowserClient, RoxyOpenResult, RoxyProf
 from core.auth.protocol.session import BrowserSession
 from core.auth.state_machine import PageState, StageBudget, StageTimeout, can_resend_otp, classify_page
 from core.auth.browser.auth_context import AuthExecutionContext
+from core.auth.page_errors import AuthPageError, auth_page_error
 from core.auth.browser.email_otp import _EmailSubmissionUnknown
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
 from core.auth.browser.submission_recovery import diagnostics_for, log_submission_diagnostics
@@ -639,10 +640,47 @@ def _is_registration_request_unknown(error_text: object) -> bool:
         return True
     if isinstance(error_text, PasswordPageError):
         return not bool(getattr(error_text, "not_submitted", False))
+    if isinstance(error_text, AuthPageError):
+        return bool(getattr(error_text, "submission_unknown", not getattr(error_text, "not_submitted", False)))
     text = str(error_text or "")
     if text.startswith("request_unknown:"):
         return True
     return any(marker in text for marker in _REGISTRATION_REQUEST_UNKNOWN_MARKERS)
+
+
+def _observe_registration_email_page(driver, snapshot) -> None:
+    """现成页面错误优先交回调度；未决提交仍沿原身份保持未知。"""
+    error = auth_page_error(snapshot)
+    if error is None:
+        return
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    phase = getattr(receipt, "phase", "")
+    unresolved = {"dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "unknown"}
+    history = getattr(driver, "_browser_submission_receipts", ())
+    previous_unknown = isinstance(history, (list, tuple)) and any(
+        getattr(item, "phase", "") in unresolved for item in history
+    )
+    ui_pending = phase in {"", "prepared"} and isinstance(getattr(driver, "_email_submission_receipt", None), dict)
+    context = getattr(driver, "_registration_fact_context", None)
+    if not (phase in unresolved or previous_unknown or ui_pending) and isinstance(context, dict) and context.get("attempt_id") is not None:
+        try:
+            from core.storage import registration
+
+            # 新 driver 不一定加载过原 Attempt 的回执；仅明确错误收口时核验一次。
+            previous_unknown = registration.has_unresolved_submission_facts(int(context["attempt_id"]))
+        except Exception:
+            previous_unknown = True
+            logger.warning("[Roxy注册] 原 Attempt 的未决提交事实暂不可核验，保留页面原因及未知状态")
+    error.submission_unknown = bool(phase in unresolved or previous_unknown or ui_pending)
+    error.not_submitted = bool(phase in {"", "prepared", "not_dispatched"} and not error.submission_unknown)
+    if phase == "prepared" and error.not_submitted:
+        record_browser_submission_fact(driver, "not_dispatched", receipt=receipt,
+                                       result="cancelled", error_type=error.code)
+    elif phase in unresolved:
+        record_browser_submission_fact(driver, "unknown", receipt=receipt,
+                                       result="unknown", error_type=error.code)
+    logger.warning("[Roxy注册] 邮箱等待发现明确页面错误：%s；保留原身份及提交事实，交回注册调度", error.code)
+    raise error
 
 
 def _is_disposable_pre_account_failure(
@@ -1646,6 +1684,7 @@ def run_roxy_registration(
                 on_submitted=_mark_email_submitted,
                 allow_login_password=resume_scope,
                 on_progress=_report_email_progress,
+                on_page_observed=lambda snapshot: _observe_registration_email_page(driver, snapshot),
                 **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
                 **({'on_before_recovery': _handoff_current_cf_challenge}
                    if cf_rotation_context and current_lease_route_verified and retained is None
@@ -2570,7 +2609,10 @@ def run_roxy_registration(
         # 该地址可能已经在 OpenAI 侧进入已有账号/半成品账号状态。继续放回池里只会
         # 让后续任务反复命中登录 OTP 页，永远无法完成“账号+密码”注册。
         password_result_unknown = isinstance(exc, _PasswordTransitionTimeout)
-        email_result_unknown = isinstance(exc, _EmailSubmissionUnknown)
+        email_result_unknown = isinstance(exc, _EmailSubmissionUnknown) or (
+            isinstance(exc, AuthPageError) and email_entry_waiting
+            and bool(getattr(exc, "submission_unknown", False))
+        )
         error_text = str(exc)
         account_unusable = isinstance(exc, AccountUnusableError)
         pre_account_transport_failure = _is_disposable_pre_account_failure(
@@ -2641,7 +2683,7 @@ def run_roxy_registration(
             if existing_profile_reconciliation
             else
             exc.code
-            if isinstance(exc, PasswordPageError)
+            if isinstance(exc, (PasswordPageError, AuthPageError))
             else
             "password_rejected"
             if password_rejected
@@ -2666,6 +2708,7 @@ def run_roxy_registration(
         return {
             "success": False,
             **native_failure_diagnostic,
+            **({"cause_code": exc.code} if isinstance(exc, AuthPageError) else {}),
             'cf_proxy_rotation_ready': cf_proxy_rotation_ready,
             'cf_proxy_rotation_profile_id': cf_proxy_rotation_profile_id if cf_proxy_rotation_ready else '',
             **({'cf_proxy_rotation_context': {key: facts[key] for key in (
@@ -2700,7 +2743,8 @@ def run_roxy_registration(
                 else None
             ),
             "auth": auth_result_for_registration(
-                {"success": False, "error_code": auth_error_code},
+                {"success": False, "error_code": auth_error_code,
+                 **({"request_unknown": request_unknown} if isinstance(exc, AuthPageError) else {})},
                 auth_method=registration_driver,
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,

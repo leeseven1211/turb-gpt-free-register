@@ -1532,6 +1532,7 @@ def _submit_email_and_wait_next(
     on_progress=None,
     recover_late_email_entry: bool = False,
     on_before_recovery=None,
+    on_page_observed=None,
 ) -> str:
     """一次流程独占提交凭据，结束后不把状态带入下一账号或独立调用。
 
@@ -1557,6 +1558,7 @@ def _submit_email_and_wait_next(
             driver, email, attempts, on_submitted, total_timeout, allow_login_password, on_progress,
             **({"recover_late_email_entry": True} if recover_late_email_entry else {}),
             **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
+            **({"on_page_observed": on_page_observed} if on_page_observed is not None else {}),
         )
     except StageTimeout as exc:
         if isinstance(getattr(driver, "_email_submission_receipt", None), dict):
@@ -1585,6 +1587,7 @@ def _submit_email_and_wait_next_impl(
     on_progress=None,
     recover_late_email_entry: bool = False,
     on_before_recovery=None,
+    on_page_observed=None,
 ) -> str:
     """填写并提交邮箱：准备、单次提交和整个阶段各自受有界预算约束。"""
     last_state = None
@@ -1836,6 +1839,7 @@ def _submit_email_and_wait_next_impl(
                     timeout=_remaining(20),
                     blank_shell_grace=3,
                     **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
+                    **({"on_page_observed": on_page_observed} if on_page_observed is not None else {}),
                 )
             except _EmailSubmissionUnknown:
                 if (not allow_login_password or saved_login_restarted
@@ -1916,6 +1920,7 @@ def _submit_email_and_wait_next_impl(
                     timeout=_remaining(35),
                     wait_through_transient=True,
                     **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
+                    **({"on_page_observed": on_page_observed} if on_page_observed is not None else {}),
                 )
                 retry_state_name = fallback_state or retry_state_name
                 accepted = _accept_advanced_state(fallback_state, "NextAuth 兜底后")
@@ -1948,6 +1953,7 @@ def _submit_email_and_wait_next_impl(
                         fallback_state = _wait_email_submit_next_state(
                             driver, email, timeout=_remaining(35), wait_through_transient=True,
                             **({"on_before_recovery": on_before_recovery} if on_before_recovery is not None else {}),
+                            **({"on_page_observed": on_page_observed} if on_page_observed is not None else {}),
                         )
                         accepted = _accept_advanced_state(fallback_state, "页面加载完成后邮箱提交")
                         if accepted:
