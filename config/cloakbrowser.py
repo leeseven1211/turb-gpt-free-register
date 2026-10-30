@@ -40,5 +40,5 @@ CLOAK_SELENIUM_TIMEOUT: int = 90
 # 调试时保留浏览器不自动关闭。
 CLOAK_KEEP_BROWSER_OPEN: bool = False
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

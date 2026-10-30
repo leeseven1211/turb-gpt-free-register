@@ -208,5 +208,5 @@ L_ADMIN_AUTH_CODE: str = schema_default("L_ADMIN_AUTH_CODE")
 # 留空则直接使用 L 返回的 item.phone。
 L_PHONE_PREFIX: str = schema_default("L_PHONE_PREFIX")
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

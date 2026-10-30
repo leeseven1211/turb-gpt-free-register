@@ -22,7 +22,7 @@ class CloudMailConfigTests(unittest.TestCase):
 
     def test_webui_exposes_only_cloudmail_receive_settings(self):
         keys = {item["key"]: item for item in EDITABLE_FIELDS}
-        self.assertEqual(keys["CLOUDMAIL_AUTH_TOKEN"]["storage"], "env")
+        self.assertEqual(keys["CLOUDMAIL_AUTH_TOKEN"]["storage"], "database")
         self.assertTrue(keys["CLOUDMAIL_AUTH_TOKEN"]["secret"])
         for key in ("CLOUDMAIL_ADMIN_EMAIL", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_DOMAINS", "CLOUDMAIL_AUTO_ADD_USER", "CLOUDMAIL_RANDOM_LOCAL_LENGTH", "CLOUDMAIL_TOKEN_PATH"):
             self.assertNotIn(key, keys)

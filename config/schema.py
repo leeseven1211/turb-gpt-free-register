@@ -52,7 +52,7 @@ class ConfigField:
     group: str
     label: str
     help: str
-    storage: str = "env"
+    storage: str = "database"
     options: tuple[ConfigOption, ...] = ()
     min_value: int | float | None = None
     max_value: int | float | None = None
@@ -2105,6 +2105,7 @@ _LOCAL_EMAIL_SOURCE_VALUES = frozenset({"outlook", "generic_api", "cloudflare_do
 
 
 def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigField, ...]:
+    from config.runtime import is_bootstrap_key
     fields: list[ConfigField] = []
     seen: set[str] = set()
     for legacy in legacy_fields:
@@ -2125,8 +2126,9 @@ def _build_fields(legacy_fields: Iterable[Mapping[str, Any]]) -> tuple[ConfigFie
             default=copy.deepcopy(_DEFAULTS[key]),
             group=str(legacy.get("group") or "其他"),
             label=str(legacy.get("label") or key),
-            help=str(legacy.get("help") or ""),
-            storage=str(legacy.get("storage") or "env"),
+            help=(str(legacy.get("help") or "") if is_bootstrap_key(key) else
+                  str(legacy.get("help") or "").replace(".env", "数据库")),
+            storage="env" if is_bootstrap_key(key) else "database",
             editable=bool(legacy.get("editable", True)),
             options=options,
             min_value=min_value,
@@ -2510,9 +2512,14 @@ def validate_config_updates(updates: Mapping[str, Any]) -> dict[str, Any]:
 
 def _environment_values() -> dict[str, str]:
     from config.env_loader import dotenv_loading_disabled, read_env_file
+    from config import runtime
 
     values = {str(key): str(value) for key, value in os.environ.items()}
-    # 项目 .env 是 WebUI 的持久化来源，与 load_env(override=True) 保持一致。
+    database = runtime.load_values()
+    if database is not None:
+        # load_values 已清理旧运行环境，重新取值，不能把清理前的副本合回去。
+        return {str(key): str(value) for key, value in os.environ.items()}
+    # 尚未迁移的只读兼容；正式写入必须先显式迁移。
     if not dotenv_loading_disabled():
         values.update({str(key): str(value) for key, value in read_env_file().items()})
     return values
@@ -2578,9 +2585,18 @@ def resolve_config(
 ) -> dict[str, ConfigResolution]:
     """解析运行字段（含只读历史策略）；``strict`` 用于 reload 前的离线候选校验。"""
     values = dict(env_values) if env_values is not None else _environment_values()
+    from config import runtime
+    database = env_values is None and runtime.database_enabled()
+
+    def resolve(field, *, strict=False):
+        resolution = resolve_field(field, values, strict=strict)
+        if database and resolution.source == "env" and not runtime.is_bootstrap_key(field.key):
+            return ConfigResolution(resolution.value, "database", resolution.source_key,
+                                    resolution.configured, resolution.invalid)
+        return resolution
     if not strict:
         return {
-            field.key: resolve_field(field, values)
+            field.key: resolve(field)
             for field in CONFIG_SCHEMA.fields
         }
 
@@ -2588,7 +2604,7 @@ def resolve_config(
     errors: dict[str, str] = {}
     for field in CONFIG_SCHEMA.fields:
         try:
-            resolutions[field.key] = resolve_field(field, values, strict=True)
+            resolutions[field.key] = resolve(field, strict=True)
         except (TypeError, ValueError) as exc:
             errors[field.key] = str(exc)
     if not errors:
@@ -2628,7 +2644,7 @@ def effective_config_metadata() -> list[dict[str, Any]]:
             field.public_value(field.clone_default()),
         )
         published_source = published.sources.get(field.key, "default")
-        published_source_key = field.key if published_source == "env" else None
+        published_source_key = field.key if published_source in {"env", "database"} else None
         pending_reload = (
             resolution.invalid
             or resolution.source != published_source
@@ -2782,13 +2798,15 @@ get_config_snapshot = non_sensitive_snapshot
 
 
 def render_env_example_section() -> str:
-    """从 schema 生成 WebUI editable 配置段，供 .env.example/工具复用。"""
+    """仅生成可编辑启动配置，运行配置由数据库拥有。"""
     lines = [
         "# ---- WebUI editable config (generated from config.schema) ----",
-        "# 修改配置请使用 WebUI 或复制到 .env；secret 字段保持为空。",
+        "# 仅保留启动配置；运行配置请在 WebUI 中保存到 PostgreSQL。",
     ]
     current_group = None
     for field in CONFIG_SCHEMA.editable_fields:
+        if field.storage != "env":
+            continue
         if field.group != current_group:
             current_group = field.group
             lines.extend(["", f"# [{current_group}]"])

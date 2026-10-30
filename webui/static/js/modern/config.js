@@ -259,7 +259,7 @@ function configFieldStatusV2(f) {
   if (f.secret) return f.configured
     ? {label: f.restart ? '密钥已配置 · 需重启' : '密钥已配置', cls: f.restart ? 'is-restart' : 'is-effective'}
     : {label: '未配置', cls: 'is-muted'};
-  if (f.restart) return {label: f.configured_source === 'env' ? '已配置 · 需重启' : '默认值 · 重启后生效', cls: 'is-restart'};
+  if (f.restart) return {label: ['env', 'database'].includes(f.configured_source) ? '已配置 · 需重启' : '默认值 · 重启后生效', cls: 'is-restart'};
   // 常规状态不占用显眼位置；只突出待保存、无效、密钥未配置和需重启状态。
   return {label: '', cls: ''};
 }
@@ -1262,7 +1262,7 @@ function renderConfigControlMarkupV2(f) {
   } else {
     const shown = isPlaceholderEmpty(fv) ? '' : fv;
     const inputType = f.secret ? 'password' : 'text';
-    const ph = f.secret ? '保存在 .env，可留空' : '可留空';
+    const ph = f.secret ? '留空保留已有值' : '可留空';
     const input = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false" aria-label="${attrEsc(f.label)}"${f.secret ? ' data-secret-input="true"' : ''}>`;
     control = f.secret
       ? `<div class="config-secret-control-v2">${input}<button type="button" class="config-secret-clear-v2" data-clear-secret="${attrEsc(f.key)}" aria-label="明确清除${attrEsc(f.label)}">清除</button></div>`

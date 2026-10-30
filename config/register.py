@@ -30,5 +30,5 @@ REGISTRATION_PLAN_CHECK_ENABLED = schema_default("REGISTRATION_PLAN_CHECK_ENABLE
 # OpenAI 限制：name_invalid_chars —— 只允许字母和空格
 REGISTER_NAME = schema_default("REGISTER_NAME")
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

@@ -2,7 +2,7 @@
 """Skyvern 云端浏览器配置。"""
 from config.env_loader import env_str, apply_env_overrides
 
-# Skyvern API Key（Skyvern Cloud Dashboard 创建；优先读 .env / 环境变量）
+# Skyvern API Key（Skyvern Cloud Dashboard 创建；由统一运行配置加载）
 SKYVERN_API_KEY: str = env_str("SKYVERN_API_KEY", "")
 
 # Skyvern API 根地址。Cloud 默认：https://api.skyvern.com
@@ -22,5 +22,5 @@ SKYVERN_KEEP_BROWSER_OPEN: bool = False
 # 打开的起始注册页
 SKYVERN_START_URL: str = "https://chatgpt.com/auth/login"
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

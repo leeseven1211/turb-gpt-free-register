@@ -10,7 +10,7 @@ from config import schema
 
 
 class Proxy711ConfigTests(unittest.TestCase):
-    def test_provider_settings_have_runtime_defaults_and_template_entries(self):
+    def test_provider_settings_have_database_defaults_without_bootstrap_template_entries(self):
         expected = {
             "PROXY_711_API_URL": "", "PROXY_711_PROTOCOL": "http",
             "PROXY_711_SESSION_MINUTES": 30, "PROXY_711_API_TIMEOUT": 12.0,
@@ -24,7 +24,8 @@ class Proxy711ConfigTests(unittest.TestCase):
                 self.assertEqual(default, field.default)
                 self.assertEqual(default, getattr(proxy, key))
                 self.assertEqual("代理与网络", field.group)
-                self.assertIn(f"{key}=", template)
+                self.assertNotIn(f"{key}=", template)
+                self.assertEqual("database", field.storage)
         options = {item.value: item.label for item in schema.CONFIG_SCHEMA["PROXY_POOL_SOURCE"].options}
         self.assertEqual("711Proxy", options["711proxy"])
 
@@ -64,11 +65,11 @@ class Proxy711ConfigTests(unittest.TestCase):
                 "PROXY_711_SESSION_MINUTES": 1, "PROXY_POOL_MIN_TTL": 300,
             })
 
-    def test_api_key_is_env_only_and_excluded_from_metadata_and_snapshot(self):
+    def test_api_key_is_database_secret_and_excluded_from_metadata_and_snapshot(self):
         secret = "https://proxy.example.test/api?key=private-example"
         field = schema.CONFIG_SCHEMA["PROXY_711_API_URL"]
         self.assertTrue(field.secret)
-        self.assertEqual("env", field.storage)
+        self.assertEqual("database", field.storage)
         with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1", "PROXY_711_API_URL": secret}, clear=True), patch.object(schema, "_PUBLISHED_SNAPSHOT", None):
             metadata = {item["key"]: item for item in schema.effective_config_metadata()}
             self.assertTrue(metadata[field.key]["configured"])

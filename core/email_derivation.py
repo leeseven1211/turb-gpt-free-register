@@ -56,13 +56,14 @@ def find_binding(address: str) -> dict | None:
 
 
 def _save_profile_secret(reference: str, password: str) -> None:
-    """收件账号变化后仍保留旧版本密钥，密钥只进入 .env。"""
-    from config.env_loader import env_file_lock, read_env_file, write_env_values
+    """收件账号变化后仍在数据库保留原引用和旧版本密钥。"""
+    from config.env_loader import env_file_lock
+    from config.runtime import read_persisted_values, write_persisted_values
 
     with _PROFILE_LOCK, env_file_lock():
-        persisted = read_env_file()
+        persisted = read_persisted_values()
         if persisted.get(reference) != password:
-            write_env_values({reference: password})
+            write_persisted_values({reference: password})
         os.environ[reference] = password
 
 
@@ -236,10 +237,10 @@ def release_address(address: str, *, status: str, note: str | None = None, perma
 
 
 def _profile_credentials(profile: dict) -> dict:
-    from config.env_loader import read_env_file
+    from config.runtime import read_persisted_values
 
     reference = str(profile.get("credential_ref") or "")
-    password = str(os.environ.get(reference) or read_env_file().get(reference) or "").strip()
+    password = str(read_persisted_values().get(reference) or os.environ.get(reference) or "").strip()
     if not password:
         raise EmailDerivationError("email_derivation_profile_unavailable", "原收件配置的凭据引用缺失，不能切换当前全局收件账号")
     secret_field = "api_key" if profile["connector"] == "forward_butler" else "password"
@@ -288,14 +289,12 @@ def _inventory_profile_usable(profile: dict, source: str, *, secret_cache: dict 
                 return False
         except (TypeError, ValueError):
             return False
-    if str(os.environ.get(reference) or "").strip():
-        return True
-    from config.env_loader import read_env_file
+    from config.runtime import read_persisted_values
     if secret_cache is None:
         secret_cache = {}
     if "persisted" not in secret_cache:
-        secret_cache["persisted"] = read_env_file()
-    return bool(str(secret_cache["persisted"].get(reference) or "").strip())
+        secret_cache["persisted"] = read_persisted_values()
+    return bool(str(secret_cache["persisted"].get(reference) or os.environ.get(reference) or "").strip())
 
 
 def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:

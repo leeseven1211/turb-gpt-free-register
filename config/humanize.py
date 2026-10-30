@@ -46,5 +46,5 @@ HUMANIZE_DELAYS = {
     "page_warmup": (0.7, 2.2),
 }
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

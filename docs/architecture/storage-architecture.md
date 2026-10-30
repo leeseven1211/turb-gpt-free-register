@@ -68,7 +68,7 @@ core/remail_order_coordinator.py  Remail 意图 CAS、原订单恢复和交付�
 
 领取使用稳定 `acquisition_id`，通过事务级业务锁与行锁原子将合格库存从 `available` 改为 `reserved`，不在领取时同步上游、创建 profile 或生成后缀。地址与原 job、Attempt、批次领取记录使用同一个 PostgreSQL 连接提交；成功账号的 `email_address_id`、地址状态和账号引用也在账号写回事务内更新。失败、重启中断和结果不明保留原 root/Attempt 与地址，沿原身份重跑；全部状态均占用历史生成额度，已领取地址不回收给其他意图。注册容量统计仅计入母资源健康且固定 profile 有效的可领取库存。删除有子地址引用的母资源改为归档停用，检查与删除共用母记录锁。
 
-`email_inbox_profiles` 固定实际收件身份、连接器、版本和 `credential_ref`。母资源首次成功派生后固定该版本，后续全局 Gmail 配置变化不会隐式切换同母子地址和母账号的恢复链路。Butler profile 固定 API 根地址和最终收件邮箱，API Key 使用版本化 `EMAIL_DERIVATION_BUTLER_SECRET_*` 引用留在 `.env`；Gmail 应用密码同样使用版本化引用；Outlook 凭据沿用原母资源受保护字段。历史绑定和其凭据不能因关闭派生或保存新配置而删除。WebUI 配置回滚与 profile 密钥写入共享可重入的文件锁，避免跨线程、跨进程覆盖。现有 IMAP profile 不会因全局模式改为 Butler 而改写；库存资格、恢复与取码均以固定 profile 为准。
+`email_inbox_profiles` 固定实际收件身份、连接器、版本和 `credential_ref`。母资源首次成功派生后固定该版本，后续全局 Gmail 配置变化不会隐式切换同母子地址和母账号的恢复链路。Butler profile 固定 API 根地址和最终收件邮箱，API Key 使用版本化 `EMAIL_DERIVATION_BUTLER_SECRET_*` 引用保存在运行配置密文表；Gmail 应用密码同样使用版本化引用；Outlook 凭据沿用原母资源受保护字段。历史绑定和其凭据不能因关闭派生或保存新配置而删除。WebUI 配置回滚与 profile 密钥写入共享配置事务锁，数据库 advisory lock 防止跨进程覆盖。现有 IMAP profile 不会因全局模式改为 Butler 而改写；库存资格、恢复与取码均以固定 profile 为准。
 
 `email_otp_requests` 对已入账的完整派生地址协调认证执行；不同子地址可并发，同地址的活跃执行受租约与递增 fence 保护。请求分别保留 challenge、发码代次、候选消息 ID、收件证据、cursor 和提交状态；取到候选仅记为 `offered`，不等于远端确认。超时可重新取得执行资格，旧 fence 不能覆盖新事实，未知提交保留原记录。邮件原文和裸验证码不进入子地址事实表；普通历史原地址仍沿原收件入口读取。
 
@@ -298,3 +298,25 @@ python tools/migrate_collections_to_tables.py --verify    # 逐字段对账
 
 **应当继续留在文件系统**的：`logs/`（WebUI、任务日志和运行时恢复状态，追加写 + 尾读）、sentinel 的子进程传参
 临时文件、`.env`（装着 `DATABASE_URL` 本身，先有鸡先有蛋）、`logs/run/webui.pid`。
+
+
+## 运行配置与启动配置
+
+运行配置使用独立的 `runtime_config_values`、`runtime_config_meta`、`runtime_config_history` 表。values 保存原始字符串的 Fernet 密文，meta 保存启用标志及递增版本，history 保存变更前后密文与操作来源。所有显式值都加密，包括代理地址、普通字段和不在可编辑 schema 中的历史密钥；数据库中不保存主密钥。默认值仍由 `config/schema.py` 定义，不复制一套数据库默认值。
+
+`.env` 保留数据库连接与生产保护、WebUI 登录和 Session 密钥、`TURB_MAIL_CONSUMER_ID` 稳定身份，以及 `TURB_CONFIG_ENCRYPTION_KEY`。schema、连接池大小、本机 Node 路径和已存在的特殊隔离配置按需保留。启动脚本的 HOST/PORT 等从进程环境或 CLI 读取，不能仅写 `.env`。TASK_RUN_LOG_ROOT 必须在模块导入前由服务环境指定。
+
+启动先加载外部配置，再解密数据库配置并缓存到内存，同时投影到进程环境以保持旧 getenv 读取契约。启用后数据库为运行配置的唯一持久化来源，旧文件中的运行字段不会覆盖数据库；主密钥丢失、解密失败或数据库不可用会明确失败。普通配置修改先校验整套候选，在同一数据库事务中写入及热加载；失败回滚数据库、环境、模块常量及已发布快照。只有成功保存才发布新快照，已入队任务仍使用原不可变快照。
+
+历史邮箱 `credential_ref` 原样保留，`EMAIL_DERIVATION_IMAP_SECRET_*`、`EMAIL_DERIVATION_BUTLER_SECRET_*` 引用对应的密钥迁到同一密文配置表。读取与回执使用原引用，不能在迁移中换成当前全局 Key。配置页仅返回敏感项是否已配置，历史记录也不存明文。
+
+### 显式迁移
+
+```bash
+python tools/migrate_runtime_config.py --source-root . --dry-run
+python tools/migrate_runtime_config.py --source-root . --apply
+```
+
+升级前停止服务并备份 PostgreSQL。dry-run 只读统计，不建表、不生成主密钥、不改源文件。apply 持有文件锁及数据库事务锁，先以0600备份原文件并持久化主密钥，再将全部非启动字段原值加密写入，核对读回一致后启用数据库配置，提交成功才原子精简 `.env`。未知字段不静默丢弃，已有不同数据库值不被旧文件覆盖；冲突或失败保留原始资料，重复执行可完成中断后的精简。空值、列表和历史别名沿用原解析语义。
+
+回滚必须成套保存并恢复数据库、精简后的 `.env`（含原主密钥和消费者身份）及原 `.env` 备份。数据库备份包含密文，主密钥不匹配时无法恢复配置。回退旧版代码前需停止服务并恢复旧 `.env`，不能仅回退代码后让旧配置无声生效。不要重新生成 `TURB_MAIL_CONSUMER_ID` 或更换主密钥。

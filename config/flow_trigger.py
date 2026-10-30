@@ -24,5 +24,5 @@ FLOW_TRIGGER_PAYLOAD: dict = {}
 # 请求超时（秒）
 FLOW_TRIGGER_TIMEOUT: int = 15
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

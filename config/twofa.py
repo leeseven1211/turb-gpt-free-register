@@ -45,5 +45,5 @@ def get_twofa_mode(value=None) -> str:
     """Return the public normalized mode, including legacy alias migration."""
     return normalize_twofa_mode(TWOFA_DRIVER if value is None else value)
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

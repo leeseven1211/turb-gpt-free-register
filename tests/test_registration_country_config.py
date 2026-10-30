@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
-from config import env_loader, register, schema
+from config import env_loader, register, runtime, schema
 from webui import config_editor
 
 
@@ -27,7 +27,8 @@ class RegistrationCountryConfigTests(unittest.TestCase):
             field.metadata()["country_codes"],
         )
         template = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
-        self.assertIn("REGISTRATION_COUNTRY=JP", template)
+        self.assertNotIn("REGISTRATION_COUNTRY=", template)
+        self.assertEqual("database", field.storage)
 
     def test_registration_country_accepts_iso_codes_including_namibia(self):
         for value, expected in (("jp", "JP"), (" US ", "US"), ("na", "NA")):
@@ -105,24 +106,31 @@ class RegistrationCountryConfigTests(unittest.TestCase):
 class RegistrationCountrySaveMigrationTests(unittest.TestCase):
     @contextmanager
     def temporary_editor_environment(self, text):
+        from tests.test_runtime_config_loading import _Repository
         fd, raw_path = tempfile.mkstemp(prefix="turb-registration-country-")
         os.close(fd)
         path = Path(raw_path)
         path.write_text(text, encoding="utf-8")
+        with patch.object(env_loader, "_ENV_PATH", path):
+            repository = _Repository(env_loader.read_env_file())
         try:
             with patch.object(env_loader, "_ENV_PATH", path), patch.object(
                 schema, "_PUBLISHED_SNAPSHOT", None
             ), patch.object(config, "reload_all", return_value=[]) as reload_all, patch.dict(
                 os.environ, {"PYTHON_DOTENV_DISABLED": "0", "UNRELATED_THREAD_ENV": "keep"}, clear=True
+            ), patch.object(runtime, "_repository", return_value=repository), patch.object(
+                runtime, "_automatic_database_allowed", return_value=True
             ):
+                runtime.reset_cache()
                 yield path, reload_all
         finally:
+            runtime.reset_cache()
             path.unlink(missing_ok=True)
 
     def test_first_pool_country_change_freezes_previous_registration_country_in_same_save(self):
         with self.temporary_editor_environment("PROXY_POOL_DEFAULT_COUNTRY=US\n"):
             result = config_editor.update_config({"PROXY_POOL_DEFAULT_COUNTRY": "GB"})
-            saved = env_loader.read_env_file()
+            saved = runtime.read_persisted_values()
             self.assertEqual({"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}, set(result["updated"]))
             self.assertEqual("GB", saved["PROXY_POOL_DEFAULT_COUNTRY"])
             self.assertEqual("US", saved["REGISTRATION_COUNTRY"])
@@ -132,14 +140,14 @@ class RegistrationCountrySaveMigrationTests(unittest.TestCase):
     def test_explicit_registration_country_is_never_overwritten_by_pool_change(self):
         with self.temporary_editor_environment("REGISTRATION_COUNTRY=NA\nPROXY_POOL_DEFAULT_COUNTRY=US\n"):
             result = config_editor.update_config({"PROXY_POOL_DEFAULT_COUNTRY": "GB"})
-            saved = env_loader.read_env_file()
+            saved = runtime.read_persisted_values()
             self.assertEqual(["PROXY_POOL_DEFAULT_COUNTRY"], result["updated"])
             self.assertEqual("NA", saved["REGISTRATION_COUNTRY"])
 
     def test_explicit_registration_update_in_same_request_wins_over_migration(self):
         with self.temporary_editor_environment("PROXY_POOL_DEFAULT_COUNTRY=US\n"):
             config_editor.update_config({"PROXY_POOL_DEFAULT_COUNTRY": "GB", "REGISTRATION_COUNTRY": "na"})
-            saved = env_loader.read_env_file()
+            saved = runtime.read_persisted_values()
             self.assertEqual("GB", saved["PROXY_POOL_DEFAULT_COUNTRY"])
             self.assertEqual("NA", saved["REGISTRATION_COUNTRY"])
 
@@ -160,7 +168,7 @@ class RegistrationCountrySaveMigrationTests(unittest.TestCase):
         with self.temporary_editor_environment("PROXY_POOL_DEFAULT_COUNTRY=US\n"):
             result = config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 4})
             self.assertEqual(["ACCOUNT_BATCH_WORKERS"], result["updated"])
-            self.assertNotIn("REGISTRATION_COUNTRY", env_loader.read_env_file())
+            self.assertNotIn("REGISTRATION_COUNTRY", runtime.read_persisted_values())
 
     def test_old_supplier_country_fields_also_freeze_the_previous_country(self):
         cases = (
@@ -170,4 +178,4 @@ class RegistrationCountrySaveMigrationTests(unittest.TestCase):
         for original, updates in cases:
             with self.subTest(updates=updates), self.temporary_editor_environment(original):
                 config_editor.update_config(updates)
-                self.assertEqual("US", env_loader.read_env_file()["REGISTRATION_COUNTRY"])
+                self.assertEqual("US", runtime.read_persisted_values()["REGISTRATION_COUNTRY"])

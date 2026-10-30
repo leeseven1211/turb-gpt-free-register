@@ -5,8 +5,8 @@
 设计原则：
     1. 白名单：只暴露"运行时安全"的开关/数值/默认值，协议级常量
        （client_id / scope / sentinel 版本等）一律不开放，避免一改就废号。
-    2. 所有 WebUI 可编辑项统一写入项目根 `.env`，不再修改 `config/*.py`。
-    3. `config/*.py` 只保留默认值；运行时通过 config.env_loader 用 `.env` 覆盖。
+    2. 运行配置保存到 PostgreSQL；仅启动配置写入项目根 `.env`。
+    3. `config/*.py` 只保留默认值；运行时通过 config.runtime 加载持久值。
     4. 读取时统一走 ``config.schema``，不在请求路径解析 `config/*.py` 源码。
 
 ``_parse_value_from_source`` 等 AST helper 仍保留给旧的直接调用方；它们不是
@@ -207,7 +207,7 @@ def get_config_snapshot():
 
 
 # ============================================================
-# 写：统一写 .env，不修改 config/*.py
+# 写：启动配置与数据库运行配置分流，不修改 config/*.py
 # ============================================================
 
 
@@ -343,28 +343,30 @@ _REGISTRATION_COUNTRY_MIGRATION_KEYS = frozenset({
 def update_config(updates: dict) -> dict:
     """严格校验并原子保存一批 WebUI 配置。
 
-    候选值全部通过 schema 后才会写 `.env`。写盘或热加载任一步失败时恢复
-    原文件和进程环境；``config.reload_all`` 自身也提供模块级回滚。
+    候选值通过 schema 后才保存；写库、热加载或事务提交失败均恢复原状态。
     """
     if not updates:
         return {
             "updated": [],
             "ignored": [],
             "env_updated": [],
+            "database_updated": [],
             "reloaded": False,
             "reload_modules": [],
             "restart_required": [],
             "config_revision": config_revision(),
         }
 
-    from config.env_loader import env_file_lock, env_path, load_env, restore_environment, write_env_values
+    from config.env_loader import env_file_lock, env_path, load_env, restore_environment
+    from config import runtime
     import config as config_package
 
     path = env_path()
-    with _CONFIG_WRITE_LOCK, env_file_lock():
+    with _CONFIG_WRITE_LOCK, env_file_lock(), config_package._RELOAD_LOCK:
         # 保存前固定已发布的旧版本；reload 成功前不会替换它，失败时任务
         # 读者仍能继续使用同一个 snapshot 对象。
         non_sensitive_snapshot()
+        old_configuration = config_package.capture_reload_state()
         old_exists = path.exists()
         old_bytes = path.read_bytes() if old_exists else None
         old_environment = dict(os.environ)
@@ -374,29 +376,37 @@ def update_config(updates: dict) -> dict:
             # load_env 遵守 PYTHON_DOTENV_DISABLED，隔离测试不会被工作区 dotenv 污染。
             load_env(override=True)
             environment_expected = dict(os.environ)
-            normalized = validate_config_updates(updates)
-            if "REGISTRATION_COUNTRY" not in normalized and _REGISTRATION_COUNTRY_MIGRATION_KEYS.intersection(normalized):
-                current_country = resolve_field(CONFIG_SCHEMA["REGISTRATION_COUNTRY"], os.environ)
-                if current_country.source_key != "REGISTRATION_COUNTRY":
-                    # 首次修改旧国家来源时固化更新前的注册国家，避免升级后联动改国。
-                    normalized["REGISTRATION_COUNTRY"] = current_country.value
-            env_updates = {
-                key: _format_env_value(value, _FIELD_BY_KEY[key]["type"])
-                for key, value in normalized.items()
-            }
-            candidate_environment = dict(os.environ)
-            candidate_environment.update(env_updates)
-            build_non_sensitive_snapshot(candidate_environment, strict=True)
-            env_updated = write_env_values(env_updates)
-            environment_expected = dict(os.environ)
-            reload_modules = config_package.reload_all()
-        except Exception:
+            with config_package.deferred_publication(), runtime.persistence_transaction():
+                # 等待跨进程配置锁期间可能有其他进程提交，校验必须使用锁内最新值。
+                load_env(override=True)
+                environment_expected = dict(os.environ)
+                normalized = validate_config_updates(updates)
+                if "REGISTRATION_COUNTRY" not in normalized and _REGISTRATION_COUNTRY_MIGRATION_KEYS.intersection(normalized):
+                    current_country = resolve_field(CONFIG_SCHEMA["REGISTRATION_COUNTRY"], os.environ)
+                    if current_country.source_key != "REGISTRATION_COUNTRY":
+                        normalized["REGISTRATION_COUNTRY"] = current_country.value
+                persisted_updates = {
+                    key: _format_env_value(value, _FIELD_BY_KEY[key]["type"])
+                    for key, value in normalized.items()
+                }
+                candidate_environment = dict(os.environ)
+                candidate_environment.update(persisted_updates)
+                build_non_sensitive_snapshot(candidate_environment, strict=True)
+                database_active = runtime.database_enabled()
+                written = runtime.write_persisted_values(persisted_updates)
+                env_updated = [key for key in written if runtime.is_bootstrap_key(key) or not database_active]
+                database_updated = [key for key in written if not runtime.is_bootstrap_key(key) and database_active]
+                environment_expected = dict(os.environ)
+                reload_modules = config_package.reload_all()
+                environment_expected = dict(os.environ)
+        except BaseException:
             # 恢复精确的单个 .env 文件；不会触碰其他目录或运行时数据。
             if old_exists:
                 path.write_bytes(old_bytes or b"")
             elif path.exists():
                 path.unlink()
             restore_environment(old_environment, environment_expected)
+            config_package.restore_reload_state(old_configuration)
             raise
 
     updated = list(normalized)
@@ -404,6 +414,7 @@ def update_config(updates: dict) -> dict:
         "updated": updated,
         "ignored": [],
         "env_updated": env_updated,
+        "database_updated": database_updated,
         "reloaded": True,
         "reload_modules": reload_modules,
         "restart_required": [key for key in updated if key in RESTART_REQUIRED_KEYS],

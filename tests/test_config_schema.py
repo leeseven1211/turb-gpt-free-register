@@ -756,11 +756,17 @@ class ConfigSchemaTests(unittest.TestCase):
         finally:
             env_loader._LOADED = old_loaded
 
-    def test_env_example_covers_every_editable_schema_field(self):
+    def test_env_example_only_contains_bootstrap_editable_fields(self):
         example = Path(".env.example").read_text(encoding="utf-8")
+        generated = config_schema.render_env_example_section()
         for field in CONFIG_SCHEMA.editable_fields:
             with self.subTest(key=field.key):
-                self.assertRegex(example, rf"(?m)^{field.key}=")
+                if field.storage == "env":
+                    self.assertRegex(example, rf"(?m)^{field.key}=")
+                    self.assertRegex(generated, rf"(?m)^{field.key}=")
+                else:
+                    self.assertNotRegex(example, rf"(?m)^{field.key}=")
+                    self.assertNotRegex(generated, rf"(?m)^{field.key}=")
 
 
 if __name__ == "__main__":

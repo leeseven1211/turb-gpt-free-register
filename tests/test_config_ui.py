@@ -31,7 +31,8 @@ function extractFunction(source, name) {
   return source.slice(start, end + 2);
 }
 const context = vm.createContext({
-  assert, CONFIG: [], CONFIG_PENDING_UPDATES: {}, esc: String, attrEsc: String,
+  assert, CONFIG: [], CONFIG_PENDING_UPDATES: {}, CONFIG_HUANGUANG_CDK_QUOTAS_V2: {},
+  esc: String, attrEsc: String,
 });
 vm.runInContext(common.slice(common.indexOf('function fmt('), common.indexOf('function isPlaceholderEmpty(')), context);
 vm.runInContext(extractFunction(common, 'isPlaceholderEmpty'), context);

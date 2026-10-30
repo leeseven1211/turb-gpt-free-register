@@ -71,7 +71,7 @@ class RemailConfigTests(unittest.TestCase):
         key = "REMAIL_API_KEY"
         field = CONFIG_SCHEMA[key]
         self.assertTrue(field.secret)
-        self.assertEqual(field.storage, "env")
+        self.assertEqual(field.storage, "database")
         self.assertEqual(SECRET_ENV_KEYS[key], "Remail API Key")
         bait = "rk-remail-test-bait"
         snapshot = build_non_sensitive_snapshot({key: bait})

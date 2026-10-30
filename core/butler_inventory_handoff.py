@@ -66,15 +66,16 @@ def handoff_selected(candidate: dict, profile: dict, *, ownership: dict, client_
 
 
 def _consumer_instance() -> str:
-    from config.env_loader import env_file_lock, read_env_file, write_env_values
+    from config.env_loader import env_file_lock
+    from config.runtime import read_persisted_values, write_persisted_values
 
     name = 'TURB_MAIL_CONSUMER_ID'
     with env_file_lock():
-        existing = str(os.environ.get(name) or read_env_file().get(name) or '').strip()
+        existing = str(os.environ.get(name) or read_persisted_values().get(name) or '').strip()
         if existing:
             return existing
         value = 'turb-' + uuid.uuid4().hex
-        write_env_values({name: value})
+        write_persisted_values({name: value})
         os.environ[name] = value
         return value
 

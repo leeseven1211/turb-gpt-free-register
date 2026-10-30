@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""从项目根目录 .env 加载密钥/敏感配置。
+"""加载启动配置与数据库运行配置，并提供物理 .env 文件操作。
 
 设计目标：
   - 重要 API Key 不进 git 跟踪的 config/*.py 默认值
-  - config 模块启动 / reload 时读取环境变量
-  - WebUI 可读写 .env 中的密钥字段
+  - config 模块启动 / reload 时投影数据库运行配置
+  - WebUI 仅将启动字段写入 .env，运行字段由配置门面分流
 """
 from __future__ import annotations
 
@@ -68,16 +68,27 @@ def dotenv_loading_disabled() -> bool:
 
 
 def load_env(*, override: bool = False) -> Path:
-    """加载项目根 .env 到进程环境。可重复调用（reload 时用 override=True）。
-
-    优先使用 python-dotenv；未安装时使用本文件内置的轻量 parser，避免配置读取强依赖。
-    """
+    """先加载 bootstrap，再延迟读取数据库；激活后不加载文件运行值。"""
     global _LOADED
+    from config import runtime
     # 测试 launcher 会显式设置此标志，必须在 python-dotenv 导入和内置
     # parser 分支之前短路，确保任何依赖版本下都不会读入工作区 .env。
     if dotenv_loading_disabled():
         _LOADED = True
+        runtime.load_values(force=override)
         return _ENV_PATH
+
+    # 连接数据库前仅准备启动身份，防止旧运行文件进入激活后的进程环境。
+    for key, value in read_env_file(override=override).items():
+        if runtime.is_bootstrap_key(key) and (override or key not in os.environ):
+            os.environ[key] = value
+    _LOADED = True  # 仓库连接会调用 ensure_loaded，避免递归初始化。
+    try:
+        if runtime.load_values(force=override) is not None:
+            return _ENV_PATH
+    except BaseException:
+        _LOADED = False
+        raise
 
     try:
         from dotenv import load_dotenv
@@ -118,15 +129,23 @@ def _escape_env_value(value: str) -> str:
         .replace("\\", "\\\\")
         .replace('"', '\\"')
         .replace("\n", "\\n")
-        .replace("\r", "")
+        .replace("\r", "\\r")
     )
     return f'"{escaped}"'
 
 
-def read_env_file() -> dict[str, str]:
-    """解析 .env 文件为 dict（不依赖 os.environ）。"""
+def read_env_file(*, override: bool = False) -> dict[str, str]:
+    """使用与 load_dotenv 相同的引号、插值和注释规则解析物理文件。"""
     if not _ENV_PATH.exists():
         return {}
+    try:
+        from dotenv.main import DotEnv
+    except ImportError:  # pragma: no cover - 正式依赖包含 python-dotenv
+        pass
+    else:
+        return {key: value for key, value in DotEnv(
+            dotenv_path=_ENV_PATH, encoding="utf-8", interpolate=True, override=override,
+        ).dict().items() if value is not None}
     out: dict[str, str] = {}
     for raw in _ENV_PATH.read_text(encoding="utf-8").splitlines():
         line = raw.strip()

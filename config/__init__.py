@@ -273,6 +273,8 @@ import importlib as _importlib
 import os as _os
 import sys as _sys
 import threading as _threading
+from contextlib import contextmanager as _contextmanager
+from contextvars import ContextVar as _ContextVar
 
 _RELOADABLE_SUBMODULES = (
     "config.browser",
@@ -293,6 +295,55 @@ _RELOADABLE_SUBMODULES = (
 )
 
 _RELOAD_LOCK = _threading.RLock()
+_DEFERRED_PUBLICATION = _ContextVar("runtime_config_deferred_publication", default=None)
+
+
+@_contextmanager
+def deferred_publication():
+    """数据库事务提交前不向任务读者发布候选快照。"""
+    existing = _DEFERRED_PUBLICATION.get()
+    if existing is not None:
+        yield existing
+        return
+    holder = {}
+    token = _DEFERRED_PUBLICATION.set(holder)
+    try:
+        yield holder
+        if "candidate" in holder:
+            from config.schema import publish_config_snapshot
+            publish_config_snapshot(holder["candidate"])
+    finally:
+        _DEFERRED_PUBLICATION.reset(token)
+
+
+def capture_reload_state():
+    """保存配置兼容层和已发布快照，供数据库提交失败时恢复。"""
+    from config import schema, runtime
+    snapshot = schema.non_sensitive_snapshot()
+    modules = {name: _sys.modules.get(name) for name in _RELOADABLE_SUBMODULES}
+    return {
+        "package": dict(globals()), "modules": modules,
+        "namespaces": {name: dict(module.__dict__) for name, module in modules.items() if module is not None},
+        "snapshot": snapshot, "runtime": runtime.capture_state(),
+    }
+
+
+def restore_reload_state(state) -> None:
+    """恢复精确对象，不重新读取已回滚的候选配置。"""
+    from config import schema, runtime
+    for name, module in state["modules"].items():
+        if module is None:
+            _sys.modules.pop(name, None)
+        else:
+            _sys.modules[name] = module
+            module.__dict__.clear()
+            module.__dict__.update(state["namespaces"][name])
+    with schema._SNAPSHOT_LOCK:
+        schema._PUBLISHED_SNAPSHOT = state["snapshot"]
+    runtime.restore_state(state["runtime"])
+    for key in set(globals()) - state["package"].keys():
+        globals().pop(key, None)
+    globals().update(state["package"])
 
 
 def reload_all() -> list[str]:
@@ -330,10 +381,7 @@ def reload_all() -> list[str]:
             environment_expected = dict(_os.environ)
             # 先离线解析/严格校验整套候选配置并构建稳定快照；模块 reload
             # 失败时这个候选尚未发布。
-            candidate_snapshot = build_non_sensitive_snapshot(
-                environment_expected,
-                strict=True,
-            )
+            candidate_snapshot = build_non_sensitive_snapshot(strict=True)
             for name in _RELOADABLE_SUBMODULES:
                 mod = _sys.modules.get(name)
                 if mod is None:
@@ -344,7 +392,11 @@ def reload_all() -> list[str]:
             # 同步刷新 config 包顶层的"被绑死"常量。
             _refresh_top_level_constants()
             # 仅在所有兼容模块成功后做一次 snapshot reference swap。
-            publish_config_snapshot(candidate_snapshot)
+            deferred = _DEFERRED_PUBLICATION.get()
+            if deferred is None:
+                publish_config_snapshot(candidate_snapshot)
+            else:
+                deferred["candidate"] = candidate_snapshot
             return reloaded
         except Exception:
             # 恢复模块字典和 sys.modules 中的精确对象。仅处理本次 reload

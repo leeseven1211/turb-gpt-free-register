@@ -126,5 +126,5 @@ ROXY_PROFILE_CREATE_PAYLOAD: dict = {
 # Roxy Codex 授权等待 callback 的最长秒数
 ROXY_CODEX_CALLBACK_TIMEOUT: int = schema_default("ROXY_CODEX_CALLBACK_TIMEOUT")
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

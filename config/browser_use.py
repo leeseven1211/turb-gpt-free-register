@@ -8,12 +8,12 @@ Browser Use Cloud 配置。
 
 用法：
   1. 在 config/roxybrowser.py 设置 REGISTRATION_DRIVER = "browser_use"
-  2. 在 .env 填入 BROWSER_USE_API_KEY（也可用 WebUI 密钥字段写入 .env）
+  2. 在 WebUI 配置页填写 BROWSER_USE_API_KEY，密钥加密保存到数据库
   3. 推荐先关 Codex：ENABLE_CODEX_AUTO = False
 """
 from config.env_loader import env_str, apply_env_overrides
 
-# Browser Use API Key（Cloud Dashboard 创建；优先读 .env / 环境变量）
+# Browser Use API Key（Cloud Dashboard 创建；由统一运行配置加载）
 BROWSER_USE_API_KEY: str = env_str("BROWSER_USE_API_KEY", "")
 
 # 连接方式：
@@ -62,5 +62,5 @@ BROWSER_USE_EXTRA_QUERY: dict = {}
 # 打开的起始注册页
 BROWSER_USE_START_URL: str = "https://chatgpt.com/auth/login"
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

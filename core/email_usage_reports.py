@@ -219,14 +219,14 @@ def dispatch_once():
     if not event:
         return False
     try:
-        from config.env_loader import read_env_file
+        from config.runtime import read_persisted_values
         from core import email_butler_client as butler
         parsed = urlsplit(event["api_base"])
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             _finish(event, blocked=True, error="fixed_route_unavailable")
             return True
         reference = event["credential_ref"]
-        key = str(os.environ.get(reference) or read_env_file().get(reference) or "").strip()
+        key = str(read_persisted_values().get(reference) or os.environ.get(reference) or "").strip()
         if not key:
             _finish(event, blocked=True, error="original_credential_missing")
             return True

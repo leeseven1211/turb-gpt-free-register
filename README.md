@@ -174,32 +174,32 @@ macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryp
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-### 密钥配置（.env）
+### 启动配置与运行配置
 
-重要 API Key 请放在项目根目录 `.env`，不要写进 `config/*.py`。
+项目根目录 `.env` 只保留数据库连接、WebUI 授权、稳定部署身份和配置加密主密钥。并发、超时、功能开关、服务地址、API Key、CDK 以及历史收码凭据统一保存在 PostgreSQL 的运行配置表中，由 WebUI「配置」管理。数据库启用后，修改旧 `.env` 中的运行参数不会覆盖数据库。
 
 ```bash
 cp .env.example .env
-# 编辑 .env，例如：
-# ROXY_API_TOKEN=...
+# 填写 DATABASE_URL、生产库放行项和 WebUI 授权；已有部署保留原值。
+python tools/migrate_runtime_config.py --source-root . --dry-run
+python tools/migrate_runtime_config.py --source-root . --apply
 ```
 
-当前支持从 `.env` 读取的密钥：
+升级前先停止服务并备份数据库；迁移工具会以受限权限备份原 `.env`，生成或保留 `TURB_CONFIG_ENCRYPTION_KEY`，加密导入并核对全部显式值，成功后才精简文件。重复执行不会用旧值覆盖现有数据库配置。保留原 `TURB_MAIL_CONSUMER_ID`，以继续识别 Butler 邮箱的远端归属。
 
-- `WEBUI_AUTH_CODE`（WebUI 登录授权码）
-- `WEBUI_SESSION_SECRET`（可选，Session Cookie 签名密钥）
-- `ROXY_API_TOKEN`
-- `QQ_IMAP_PASSWORD`
-- `ICLOUD_HME_API_TOKEN`（sidecar 如启用接口鉴权）
-- `ICLOUD_HME_FORWARD_IMAP_PASSWORD`（仅旧版直接 IMAP/历史封号扫描使用）
-- `PROXY_1024_API_URL`
-- `CLOUDFLARE_API_KEY` / `CLOUDFLARE_CUSTOM_AUTH`（`EMAIL_SOURCE=cloudflare` 时）
-- `CPA_MANAGEMENT_KEY`
-- `SMS_API_KEY`
-- `L_ADMIN_AUTH_CODE`
-- `H_ADMIN_AUTH_CODE`
+`.env` 中长期保留的主要字段：
 
-WebUI 配置页保存这些字段时会写入 `.env`（不是 config 源码）。
+- `DATABASE_URL`、`TURB_ALLOW_PRODUCTION_DB`：连接与生产库保护。
+- `WEBUI_AUTH_CODE`、`WEBUI_SESSION_SECRET`：登录和会话签名。
+- `TURB_MAIL_CONSUMER_ID`：稳定部署身份。
+- `TURB_CONFIG_ENCRYPTION_KEY`：解密运行配置所需的 Fernet 主密钥，必须与数据库备份配套保管，不能放在数据库里。
+- 按需保留 `TURB_DB_SCHEMA`、`TURB_DB_POOL_MAX`、Node 可执行路径等本机部署覆盖。
+
+配置值及其历史版本均加密保存。主密钥缺失、错误或数据库不可用时直接报错，不回退到旧文件或默认配置。修改配置时先校验整套候选，再在事务内保存并热加载；需要重启的项仍明确提示重启。任务继续使用创建时冻结的配置快照。
+
+`HOST`、`PORT` 等启动参数由 `webui.sh` 的进程环境或 `web.py` 命令行指定，脚本不加载 `.env`；`TASK_RUN_LOG_ROOT` 也需在启动前通过服务环境给定。下文的业务配置示例用于说明字段名和值，请在 WebUI 中填写，不再添加到 `.env`。
+
+迁移、备份与回滚详见[运行配置存储](docs/architecture/storage-architecture.md#运行配置与启动配置)。
 
 ### PostgreSQL 主存储
 
@@ -303,7 +303,7 @@ EMAIL_SOURCE = "outlook,generic_api,mailnest"
 EMAIL_SOURCE = "gptmail"
 ```
 
-也可以在项目根目录 `.env` 中填写：
+在配置页填写以下字段：
 
 ```dotenv
 GPTMAIL_API_KEY=你的_GPTMail_API_Key
@@ -326,7 +326,7 @@ CLOUDFLARE_AUTH_MODE=x-admin-auth
 CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 ```
 
-匿名模式可将 `CLOUDFLARE_AUTH_MODE=none` 且 Key 留空，创建路径默认 `/api/new_address`；若被 Turnstile 拦截请改用 admin 模式。更多字段见 WebUI「配置 → 邮箱 / OTP」或 `.env.example`。
+匿名模式可将 `CLOUDFLARE_AUTH_MODE=none` 且 Key 留空，创建路径默认 `/api/new_address`；若被 Turnstile 拦截请改用 admin 模式。更多字段见 WebUI「配置 → 邮箱 / OTP」。
 
 #### 子邮箱统一由 Email Butler 管理
 
@@ -358,7 +358,7 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 认证在发码前取得独占租约，不同子地址可以并发。
 
 收件配置有持久版本引用。更换最终 Gmail 不会让历史绑定静默改读新邮箱；应用
-密码的版本化引用保留在 `.env`，普通 API 不返回凭据或原始邮件。关联已有子地址
+密码的版本化引用保留在数据库密文配置中，普通 API 不返回凭据或原始邮件。关联已有子地址
 的母资源删除会停止新分配并保留恢复资料。实际转发目标迁移需要明确验证并切换
 绑定的收件配置，不应仅覆盖全局邮箱字段。
 
@@ -435,7 +435,7 @@ ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
 - `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [Oracle 邮箱准备说明](docs/deployment/oracle-mail-preparation.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
-- `forward_imap` 的 Gmail 应用专用密码只保存在本机 `.env`，不会写入仓库或日志。
+- `forward_imap` 的 Gmail 应用专用密码加密保存在运行配置数据库中，不会写入仓库或日志。
 - 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - 真实 IMAP 连接使用 UID 搜索和读取，避免邮件删除引起序号漂移；批量封号邮件扫描每次最多读取 20 封并按响应 UID 归属，收码仍逐封读取并在取得有效码后立即结束。日期月份固定为英文，不受本机语言影响。
 - Apple 账号页面“隐藏邮件地址 → 转发到”的已选地址和 sidecar 返回的 `forwardToEmail` 才是转发目标的依据，不要根据当前浏览器登录的是哪个 Gmail 账号推断。
@@ -491,11 +491,11 @@ XIGUA_POLL_ATTEMPTS=10
 XIGUA_POLL_INTERVAL=5
 ```
 
-两种供应商的订单身份、原请求及已购邮箱保存在 PostgreSQL `mail_provider_orders`，密钥只保存在 `.env`。同一个注册或换绑任务重跑时继续原订单和原邮箱；请求异常后保留原幂等键，不另建随机购买意图。MailCode 已购但通道尚未就绪时，下次继续准备原通道；验证码按每个邮箱持久化服务端游标，支持分页和重启恢复，保留前导零，不按验证码数字去重。西瓜按精确订单关联恢复，并要求连续两次确认相同验证码。普通释放不取消已购邮箱或退款。CLI 可用 `--mail-acquisition-id` 继续同一领取意图；历史 `--remail-acquisition-id` 参数继续兼容。
+两种供应商的订单身份、原请求及已购邮箱保存在 PostgreSQL `mail_provider_orders`，密钥加密保存在运行配置数据库中。同一个注册或换绑任务重跑时继续原订单和原邮箱；请求异常后保留原幂等键，不另建随机购买意图。MailCode 已购但通道尚未就绪时，下次继续准备原通道；验证码按每个邮箱持久化服务端游标，支持分页和重启恢复，保留前导零，不按验证码数字去重。西瓜按精确订单关联恢复，并要求连续两次确认相同验证码。普通释放不取消已购邮箱或退款。CLI 可用 `--mail-acquisition-id` 继续同一领取意图；历史 `--remail-acquisition-id` 参数继续兼容。
 
 #### Remail 开放 API（`remail`）
 
-在 WebUI「配置 → 邮箱 / OTP → Remail」填写 API Key，并在通用邮箱设置的「邮箱来源」中启用 Remail。发起注册或换绑邮箱时，再选择本次使用 Remail。也可以在 `.env` 中配置；默认值由 `config/schema.py` 统一维护：
+在 WebUI「配置 → 邮箱 / OTP → Remail」填写 API Key，并在通用邮箱设置的「邮箱来源」中启用 Remail。发起注册或换绑邮箱时，再选择本次使用 Remail。字段默认值由 `config/schema.py` 统一维护，以下为配置页字段示例：
 
 ```dotenv
 EMAIL_SOURCE=remail
@@ -521,7 +521,7 @@ python main.py --count 1 --email-source remail --remail-acquisition-id cli:recov
 
 该参数是稳定标识前缀，不是供应商订单号；批量任务会在末尾追加 `:1`、`:2` 等序号。WebUI/任务恢复使用原注册 root 的 acquisition ID，续跑子任务不会另起一份领取意图。核验接口只返回脱敏订单摘要，不返回邮箱、取件凭证或供应商私有字段。
 
-Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池。API Key 只保存在 `.env`。订单关联、状态和恢复所需私有取件凭据写入 PostgreSQL 的 `remail_order_intents`；注册成功后账号私有上下文也可引用该恢复事实。进程重启后优先恢复原意图和原订单号。缺少原领取意图或订单号时保持待核验，不按完整邮箱搜索最新订单，也不会改领其他邮箱。普通列表和日志不展示取件凭据。
+Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池。API Key 加密保存在运行配置数据库中。订单关联、状态和恢复所需私有取件凭据写入 PostgreSQL 的 `remail_order_intents`；注册成功后账号私有上下文也可引用该恢复事实。进程重启后优先恢复原意图和原订单号。缺少原领取意图或订单号时保持待核验，不按完整邮箱搜索最新订单，也不会改领其他邮箱。普通列表和日志不展示取件凭据。
 
 下单网络超时、服务端结果不明或订单交付凭据等待超时时，注册和换绑任务进入 `request_unknown`，禁止直接重试下单；需先在 Remail 控制台核对原订单，避免重复扣费。短效订单失效后不会自动购买新邮箱代替原地址。
 
@@ -529,7 +529,7 @@ Remail 属于运行时按需领取来源，无需导入本地 Outlook 邮箱池�
 
 ### 2. 配置注册驱动
 
-WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 调用也使用该默认值。全局默认可在 WebUI「配置 → 注册与账号 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器 → RoxyBrowser」调整；`.env` 中也可设置 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
+WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 调用也使用该默认值。全局默认可在 WebUI「配置 → 注册与账号 → 注册主链路」设置，Roxy API 和环境参数在「配置 → 浏览器 → RoxyBrowser」调整，对应字段为 `REGISTRATION_DRIVER`。配置默认值和可选项由 `config/schema.py` 统一维护。
 
 #### 使用 RoxyBrowser 注册
 
@@ -619,7 +619,7 @@ OSS 版本的 Codex OAuth 仍调用本项目的 Codex 实现；`CODEX_OAUTH_DRIV
 
 新注册的国家在「配置 → 注册与账号 → 注册主链路 → 注册国家」设置，对应 `REGISTRATION_COUNTRY`（默认 `JP`）。WebUI/API 批量注册在提交入队时将它冻结为任务的 `config_snapshot.proxy_country`，运行和重跑沿用原快照；CLI 未提供任务国家时也读取注册国家。业务只向代理池申请对应国家，不读取池默认国家或供应商国家字段。缺少国家库存时由池按需求补货，不回退其他国家。新字段尚未配置时兼容读取原有效池默认国家、旧 1024Proxy 国家或 API 的 `region`；保存注册国家后与这些旧字段独立。已有任务优先保留原快照或实际出口国家，均缺失时才使用当前注册国家。
 
-手动地址示例（只写入 `.env`，不要把真实凭据写入源码）：
+手动地址字段示例（在配置页填写，不要把真实凭据写入源码）：
 
 ```dotenv
 PROXY_POOL_SOURCE=manual
@@ -645,7 +645,7 @@ PROXY_POOL="socks5h://user:password@proxy.example.test:1080"
 
 单条候选的出口检测发生 HTTP、连接或超时错误时，清理该候选并在共同预算内继续检测后面的候选；供应商提取失败、整轮预算耗尽或取消仍终止本轮。候选故障日志只记录检测阶段、异常类型、HTTP 状态码和脱敏端点。
 
-WebUI「代理与流量」中的“代理池库存”只显示脱敏库存快照、状态和统计，不提供领取或释放操作。当前配置页的代理池字段只保存策略；完整供应商 URL、账号和密码仍只允许保存在 `.env`。
+WebUI「代理与流量」中的“代理池库存”只显示脱敏库存快照、状态和统计，不提供领取或释放操作。当前配置页的代理池字段只保存策略；完整供应商 URL、账号和密码加密保存在运行配置数据库中。
 
 1024Proxy 推荐基线：
 
@@ -684,7 +684,7 @@ ACCOUNT_ACTION_PROXY_RETRY_DELAY=1
 - 领取与释放通过 PostgreSQL 原子租约完成，多个 WebUI/CLI 进程共享同一库存；供应商白名单 API 没有单独的远程释放调用。
 - 默认国家必须选择明确的 ISO 两位代码；池不使用随机国家替代业务目标国家。
 - 粘性时间延长本身不产生流量，只有浏览器实际发出请求才消耗代理流量。30 分钟是注册 + 邮件等待的最低建议值，必要时可设更长。
-- 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，只放 `.env`。
+- 日志和 UI 只应显示脱敏后的代理端点/出口 IP；完整 API URL 属于私密配置，加密保存在运行配置数据库中。
 
 账号动作参数在「配置 → 注册与账号」按功能集中：查询套餐、查活与刷新 AT、补密码、补 2FA、邮箱换绑及 Codex OAuth。这里只维护动作开关、预算和重试等行为；代理来源统一由池管理。查套餐、查活使用已有 Token，但也领取池租约。独立查套餐仅在开启“查询支付方式”后为有效 Plus 优惠创建一次结账预检会话。邮箱、短信、CPA/Sub2、提链服务和 Roxy 控制 API 仍使用各自连接配置。
 
@@ -742,7 +742,7 @@ H_ADMIN_AUTH_CODE = "你的H后台授权码"
 
 `SMS_PROVIDER="l"` 时，本项目把 L 服务作为内部接码客户端依赖。这里仅记录客户端必须遵守的接口约定；L 服务自身的后台管理、完整错误码和调试示例不属于本仓库文档范围。
 
-配置统一放在 `.env` 或 WebUI「配置 → 接码平台」，不要把授权码写入源码：
+配置统一通过 WebUI「配置 → 接码平台」保存到数据库，不要把授权码写入源码：
 
 ```dotenv
 SMS_PROVIDER=l
@@ -790,7 +790,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex_oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
 - `webui/app.py` 只负责组装应用；领域路由位于 `webui/routes/`，`webui/runtime.py` 负责启动恢复和后台 worker。新增长期任务时必须补充启动恢复，避免重启后记录永久停在 `running`。
 - WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/modern/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。涉及页面结构、脚本或接口契约的改动，应检查现代界面、相关回归测试及真实浏览器行为。
-- 配置页保存到 `.env` 并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
+- 配置页保存到运行配置数据库并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
 
 #### 邮件验证码
 
@@ -805,13 +805,13 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 每个注册任务领取独立租约，实际出口国家写入任务和账号。注册结束后的账号动作仍从统一代理池领取，优先沿用账号注册国家。
 - 注册完成后立即查套餐时，优先复用仍有效的注册代理并在释放前同步落库，从而保证套餐/Plus 资格查询与注册出口一致；历史账号或手动操作再按账号已保存地区领取线路。
 - 住宅代理只用于访问 OpenAI/ChatGPT 的账号功能。邮箱、短信、CPA、sub2api、提链服务、Roxy 控制 API 和其他本地接口保持直连，不得套用住宅代理，也不得把系统 `HTTP_PROXY/HTTPS_PROXY` 意外注入这些客户端。
-- UI 中选择的地区、供应商 API URL 的 `region` 参数、Roxy Profile 的代理字段、任务日志与账号记录必须保持一致。完整代理 URL、用户名和密码只允许保存在 `.env`，日志和 UI 只能显示脱敏信息。
+- UI 中选择的地区、供应商 API URL 的 `region` 参数、Roxy Profile 的代理字段、任务日志与账号记录必须保持一致。完整代理 URL、用户名和密码加密保存在运行配置数据库中，日志和 UI 只能显示脱敏信息。
 
 #### 711Proxy 与统一代理供给
 
 「配置 → 代理与网络 → 代理来源」支持 `1024proxy`、`711proxy` 和 `manual`。供应商的 URL 参数、数量上限和会话寿命由 `core/proxy_sources.py` 管理；`core/proxy_supply.py` 共用提取、候选去重、出口检测和失败回收，业务任务仍只从统一库存领取。切换来源只影响后续领取；旧来源停止补货，已发放租约保持到释放。
 
-711 当前接入[动态住宅代理 GB 的白名单 API](https://docs.711proxy.com/proxies/residential-proxies-gb/markdown)：先在 711 面板将调用 API 的公网 IPv4 加入白名单，选择对应套餐、代理主机并生成完整 URL，然后填入 `.env` 或配置页。API 提取绕过系统代理，请核对白名单对应的是服务进程直连出口。
+711 当前接入[动态住宅代理 GB 的白名单 API](https://docs.711proxy.com/proxies/residential-proxies-gb/markdown)：先在 711 面板将调用 API 的公网 IPv4 加入白名单，选择对应套餐、代理主机并生成完整 URL，然后填入配置页。API 提取绕过系统代理，请核对白名单对应的是服务进程直连出口。
 
 ```dotenv
 PROXY_POOL_SOURCE=711proxy
@@ -864,7 +864,7 @@ Roxy 新建或安全重开绑定 Profile 时，已领取的代理线路可经过
 - Codex 的事实记录在 PostgreSQL 的 `codex_credentials`，导出次数、sub2 同步记录和 OAuth 状态保存在同一凭证行；CPA/sub2 callback 回执单独存入 `codex_callback_receipts`，不作为可用凭证。运行时不再自动生成 `codex_accounts/` 或 `codex_导出状态.json`，下载和上传 sub2api 直接从数据库生成 OAuth JSON，并支持按账号更新已有凭证。
 - 注册成功不因 Codex 失败而回滚；账号正常保存，Codex 标记失败并允许单独补跑。补跑停止信号必须贯穿邮箱 OTP、取号、短信等待和浏览器流程，不能被普通换号异常吞掉。
 - GrizzlySMS 支持在 `SMS_COUNTRY` 中配置备用国家，并透传 `SMS_MAX_PRICE`（它只是购买上限，不是固定成交价）。开启 `SMS_AUTO_SELECT_COUNTRY` 后，每个批次首次接码会结合正式价格/库存接口与价格页短信成功率统计，在价格上限内选出统计量足够且成功率最高的国家；同一国家连续失败两次会自动切到排名中的下一候选。统计接口异常时自动回退 `SMS_COUNTRY`。实际成交价、国家和价格上限会写入本地运行日志与取消队列，便于复盘。
-- sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段必须放在 `.env`，不得写入源码、README、日志或数据库导出。
+- sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段加密保存在运行配置数据库，不得写入源码、README、日志或明文导出。
 
 #### WebUI 与配置变更
 
@@ -951,7 +951,7 @@ WebUI 页面说明：
 
 ### 本地验证基线：Roxy + 1024Proxy + iCloud HME
 
-下面是一套适合先在 macOS 本地单账号验证的组合配置。所有密钥和真实接口都写入 `.env`，不要改进源码或提交 Git：
+下面是一套适合先在 macOS 本地单账号验证的组合配置。所有运行密钥和真实接口均通过配置页加密保存到数据库，不要改进源码或提交 Git：
 
 WebUI 中代理相关配置统一位于「配置 → 代理与网络」，集中设置来源、默认国家、库存和补货策略。任务列表的“代理”列会显示实际 provider、脱敏端点和出口地区，可据此确认任务是否真的使用了 1024Proxy。
 
@@ -1028,7 +1028,7 @@ curl -sS http://127.0.0.1:8081/api/accounts
 
 WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进度完整走过“拉邮箱 → 打开浏览器 → 打开注册页 → 提交邮箱 → 邮箱验证码 → 填资料 → 获取 Token”后，再考虑连续任务。Codex OAuth 会额外需要 CPA 和短信接码，主注册验收期间建议保持 `ENABLE_CODEX_AUTO=False`。
 
-`.env.example` 是 WebUI 可编辑字段的完整模板；新增配置时必须同步更新 `config/schema.py`、`config/*.py`、`webui/config_editor.py`、`.env.example` 和本 README。配置页的密钥字段只写 `.env`，页面会按密码框处理。
+`.env.example` 仅提供启动配置模板；可编辑运行字段由 `config/schema.py` 和配置页统一维护。新增配置时同步检查 `config/*.py`、`webui/config_editor.py` 和本 README；只有启动字段需要进入 `.env.example`。配置页的运行密钥加密写库，页面按密码框处理。
 
 ### 当前部署边界
 
@@ -1129,7 +1129,7 @@ Roxy 刷新 AT 进入邮箱验证码页后，如果本地保存了密码，会�
 补密码的首次邮箱登录和重置后重新登录分别使用有界的邮箱确认流程，调用结束后恢复临时预算与提交回调；同一次邮箱阶段内仍共享截止时间。已保存密码登录复用共享密码表单的就绪检查、一次提交回执和密码跳转确认预算；明确拒绝时按账号补全配置决定是否重置，结果未确认时保留密码与回执。任务进度按实际边界记录分配网络、启动浏览器、登录验证和设置密码；外层“执行账号配置”保留在执行记录中，缺少历史记录的步骤按计划位置展示“记录不完整”。
 `ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个会话随机设备画像；只有实际使用 v2 协议刷新且明确改为 `account_stable` 时，才按账号懒创建私有稳定 Protocol identity。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
 `ACCOUNT_AUTH_RAW_CONTEXT_ENABLED` 默认关闭；开启后才会为 v2 协议的实际认证 session 按白名单保存受限 run context，包含原始 device/session 标识和当次代理上下文，不会作为后续任务的代理或会话来源。默认保留 30 天，`ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS=0` 关闭自动清理；这些原始值不进入普通账号 API、任务事件和导出。
-`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 控制协议刷新 AT 失败后的 Roxy 登录兜底，不影响普通查活。v2 密码认证的 Sentinel 前置步骤失败且已确认密码请求未提交时，可以切换浏览器；密码或验证码已经提交但没有完整回执时，保留具体失败原因和核验记录，不自动重新提交。普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。历史 `.env` 中的 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
+`LIVE_CHECK_ROXY_FALLBACK_ENABLED` 控制协议刷新 AT 失败后的 Roxy 登录兜底，不影响普通查活。v2 密码认证的 Sentinel 前置步骤失败且已确认密码请求未提交时，可以切换浏览器；密码或验证码已经提交但没有完整回执时，保留具体失败原因和核验记录，不自动重新提交。普通查活是否使用浏览器由 `ACCOUNT_LIVE_CHECK_BROWSER_ENABLED` 与 `ACCOUNT_LIVE_CHECK_DRIVER` 独立控制。迁移保留的历史配置 `ACCOUNT_TOKEN_REFRESH_DRIVER` 和 `ACCOUNT_AUTH_V2_ENABLED` 仍可被兼容读取，但不再是新配置项，也不在 WebUI 展示。
 
 已有账号单独执行“补 2FA”时，`ACCOUNT_2FA_DRIVER` 独立于注册 `TWOFA_DRIVER`：
 
@@ -1448,9 +1448,9 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 提链前行为可在“配置 → 提链 → 通用配置”调整：`EXTRACT_LINK_PREFLIGHT_ENABLED` 控制“提链前预检”，`EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED` 控制“预检失败时刷新 AT”，两项默认开启，保持原有流程。保存后热加载，对下一次执行或重跑生效；已开始的执行沿用本次设置。只有启用预检并确认 AT 失效时才会按刷新开关尝试刷新；关闭刷新后，预检确认 AT 失效会结束本次提链。关闭预检后直接使用库中保存的 AT，不执行提链前检查或刷新；账号是否归档、停用、缺少 AT 等基础资格仍会校验。
 
-虾扯蛋链（`legacy`）的连接参数继续使用既有环境变量 `EXTRACT_LINK_API_BASE`、`EXTRACT_LINK_CDK`、`EXTRACT_LINK_TYPE`、`EXTRACT_LINK_REQUEST_TIMEOUT` 和 `EXTRACT_LINK_EVENT_TIMEOUT`，不另建重复配置键。配置页和提链工作台统一显示平台名“虾扯蛋链”，已有任务、配置键及 API 中的 `legacy` 标识继续兼容。新平台各自配置 API 地址、CDK、默认提链类型、请求超时、轮询间隔和事件超时。全局 CDK 配置保存在 `.env`；虾扯蛋链提交前另将本单使用的提链及支付查询凭据保存在私有恢复记录中，配置 API、公开任务和配置快照不返回密钥内容。
+虾扯蛋链（`legacy`）的连接参数继续使用既有环境变量 `EXTRACT_LINK_API_BASE`、`EXTRACT_LINK_CDK`、`EXTRACT_LINK_TYPE`、`EXTRACT_LINK_REQUEST_TIMEOUT` 和 `EXTRACT_LINK_EVENT_TIMEOUT`，不另建重复配置键。配置页和提链工作台统一显示平台名“虾扯蛋链”，已有任务、配置键及 API 中的 `legacy` 标识继续兼容。新平台各自配置 API 地址、CDK、默认提链类型、请求超时、轮询间隔和事件超时。全局 CDK 配置加密保存在运行配置数据库中；虾扯蛋链提交前另将本单使用的提链及支付查询凭据保存在私有恢复记录中，配置 API、公开任务和配置快照不返回密钥内容。
 
-「配置 → 提链 → 虾扯蛋链」中的“提链 CDK”（`EXTRACT_LINK_CDK`）用于创建提链任务，“虾扯蛋链支付扫码 CDK”（`EXTRACT_LINK_LEGACY_PAYMENT_CDK`）用于 UPI 自动支付扫码，两者分开保存。只有显式选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED`，并配置支付扫码 CDK 时才使用扫码凭据；仅提链和手动支付不使用该凭据。平台自动支付开关默认关闭，支付扫码 CDK 默认空字符串，仅保存在 `.env`。支付平台返回 `submitted` 仅表示已建单，继续查询原单直到确认支付成功或明确失败；不能据此认定已经支付成功。
+「配置 → 提链 → 虾扯蛋链」中的“提链 CDK”（`EXTRACT_LINK_CDK`）用于创建提链任务，“虾扯蛋链支付扫码 CDK”（`EXTRACT_LINK_LEGACY_PAYMENT_CDK`）用于 UPI 自动支付扫码，两者分开保存。只有显式选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED`，并配置支付扫码 CDK 时才使用扫码凭据；仅提链和手动支付不使用该凭据。平台自动支付开关默认关闭，支付扫码 CDK 默认空字符串，加密保存在运行配置数据库中。支付平台返回 `submitted` 仅表示已建单，继续查询原单直到确认支付成功或明确失败；不能据此认定已经支付成功。
 
 虾扯蛋链的首轮监控预算到期后，已创建的原单会进入同一次执行的定时续查；等待期间释放线程和账号租约，并与新任务交替调度。提链仍在执行或自动支付尚未返回明确终态时持续查询；暂时的网络、超时和证书错误保留最后有效结果并退避重试，最长查询间隔为 300 秒。总计 3600 秒、连续 900 秒没有业务进展、连续 12 次查询失败或连续 3 次 HTTP 404 后，结束本地自动续查并显示待核验，保留已支付等已知事实；重启或重复旧状态不重置预算，手动同步仍可只读查询一次。续查只读取原提链及支付订单，不重新提链或付款；服务中断后只自动恢复已保存续查标记的虾扯蛋链原单；旧的待确认任务需主动同步，已取消的续查不自动恢复。
 
@@ -1466,13 +1466,13 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 幻光创建任务或批次时可在 `options.retry_count` 指定单个远端任务内部的提链尝试次数，接受 1 至 10 的整数。例如 `{"retry_count":3}` 表示每个账号在该远端任务中最多尝试 3 次；省略时沿用平台默认值。该参数随任务保存，重新创建提链时继续使用，不影响扫码订单提交次数或仅查询原任务的行为。
 
-「配置 → 提链 → 幻光」中的“幻光提链 CDK”（`EXTRACT_LINK_HUANGUANG_CDK`）用于创建提链任务，“幻光支付扫码 CDK”（`EXTRACT_LINK_HUANGUANG_PAYMENT_CDK`）用于自动支付扫码，两者分开保存。只有明确选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED`，并已配置支付扫码 CDK 时，请求才携带 `chongyun_auto_submit: true` 和 `chongyun_cdk`。仅提链与手动支付均不携带这两个扫码参数，也不使用支付扫码 CDK。自动支付开关默认关闭，支付扫码 CDK 默认空字符串；密钥仅保存在 `.env`，配置 API 和非敏感快照不返回内容。
+「配置 → 提链 → 幻光」中的“幻光提链 CDK”（`EXTRACT_LINK_HUANGUANG_CDK`）用于创建提链任务，“幻光支付扫码 CDK”（`EXTRACT_LINK_HUANGUANG_PAYMENT_CDK`）用于自动支付扫码，两者分开保存。只有明确选择 `auto_payment` 模式、开启全局 `EXTRACT_LINK_AUTO_PAYMENT_ENABLED` 与平台 `EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED`，并已配置支付扫码 CDK 时，请求才携带 `chongyun_auto_submit: true` 和 `chongyun_cdk`。仅提链与手动支付均不携带这两个扫码参数，也不使用支付扫码 CDK。自动支付开关默认关闭，支付扫码 CDK 默认空字符串；密钥加密保存在运行配置数据库中，配置 API 和非敏感快照不返回内容。
 
 同页可配置“XXSYUN API Key”（`EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY`）和“幻光超时后转 XXSYUN”（`EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED`，默认关闭）。幻光平台本身已实现后台逻辑：先走幻光扫码，90 秒未接单后取消并确认退次，才转 XXSYUN。本客户端仅在新建自动支付任务时透传 `scan_fallback_enabled` 和 `fallback_xxsyun_api_key`，由平台执行后台转单；缺少 Key 时不启用转单，仍先走幻光扫码。
 
-XXSYUN Key 下方的“查询剩余次数”单独查询备用扫码额度，不与两种幻光 CDK 额度混用；可读取已保存 Key 的次数，也可用尚未保存的非空输入查询；明确清空后查询会提示未配置，不会默用旧 Key。查询不会保存、清除或覆盖配置。剩余次数为零时显示 0，总次数和占用次数未返回时显示未知；剩余次数直接使用接口值，不再扣减占用次数。Key 属于密钥，仅保存在 `.env`，不会进入非敏感快照或任务数据，查询接口不回显 Key；Key 无效或已失效、网络异常、平台限流和响应格式错误分别使用固定中文提示说明原因。
+XXSYUN Key 下方的“查询剩余次数”单独查询备用扫码额度，不与两种幻光 CDK 额度混用；可读取已保存 Key 的次数，也可用尚未保存的非空输入查询；明确清空后查询会提示未配置，不会默用旧 Key。查询不会保存、清除或覆盖配置。剩余次数为零时显示 0，总次数和占用次数未返回时显示未知；剩余次数直接使用接口值，不再扣减占用次数。Key 属于密钥，加密保存在运行配置数据库中，不会进入非敏感快照或任务数据，查询接口不回显 Key；Key 无效或已失效、网络异常、平台限流和响应格式错误分别使用固定中文提示说明原因。
 
-幻光入口和出口代理池可在「配置 → 提链 → 幻光」分别填写，对应 `EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES`、`EXTRACT_LINK_HUANGUANG_EXIT_PROXIES`。每行一条完整代理 URL，支持 `http`、`https`、`socks5`、`socks5h` 和认证信息，每侧去重后最多 500 条。填写某侧后，提链请求向平台发送该侧完整候选列表；某侧留空时，才为该侧从统一代理池领取 IN 线路。请提供适用于 UPI 的 IN 代理。两项默认空列表，保存后热加载，对下一次执行或重跑生效；代理地址只保存在 `.env`，配置 API 和非敏感快照不返回内容。已配置时输入框留空不会覆盖旧值，使用“清除”可恢复该侧的统一代理池来源。
+幻光入口和出口代理池可在「配置 → 提链 → 幻光」分别填写，对应 `EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES`、`EXTRACT_LINK_HUANGUANG_EXIT_PROXIES`。每行一条完整代理 URL，支持 `http`、`https`、`socks5`、`socks5h` 和认证信息，每侧去重后最多 500 条。填写某侧后，提链请求向平台发送该侧完整候选列表；某侧留空时，才为该侧从统一代理池领取 IN 线路。请提供适用于 UPI 的 IN 代理。两项默认空列表，保存后热加载，对下一次执行或重跑生效；代理地址加密保存在运行配置数据库中，配置 API 和非敏感快照不返回内容。已配置时输入框留空不会覆盖旧值，使用“清除”可恢复该侧的统一代理池来源。
 
 新平台的 `EVENT_TIMEOUT` 表示本次持续监控的等待预算，不包含前置查活和远端创建，也不是平台任务的最长执行时间。轮询间隔和单次请求均受剩余预算限制；状态/步骤变化会写入任务事件，无变化时每 30 秒记录等待摘要，查询失败按 10/20/30 秒退避。预算到期保留远端任务，可继续同步状态或重跑；同步读取不会重新创建远端任务。幻光轮询默认 10 秒，流光默认 3 秒，均可单独配置。
 
@@ -1516,13 +1516,13 @@ WebUI 配置页保存后会热加载。Codex 补跑线程启动前也会重新�
 
 密钥只显示是否配置，留空未修改不会覆盖旧值，明确清除后才删除配置值。`EMAIL_SOURCE` 控制新任务可领取的邮箱来源：自动模式至少启用一个来源，手动模式可为空。邮箱资源页默认只显示已启用来源和收码依赖；iCloud 使用 `forward_butler` 时保留 Email Butler 入口，历史桥接开启时保留 iCloud 配置。停用服务的配置、库存和历史不删除，可通过“显示未启用”查看；已注册账号的取码仍按账号保存的来源恢复。
 
-AT 刷新窗口、单轮上限、封号扫描首次延迟/回看天数、Outlook 远端地址和提链超时现在都由 schema、`.env.example` 和配置页统一维护。标记“需重启”的字段会写入 `.env`，但当前进程中的既有 worker 不会伪装成已切换，重启后才开始使用新值。
+AT 刷新窗口、单轮上限、封号扫描首次延迟/回看天数、Outlook 远端地址和提链超时现在都由 schema 和配置页统一维护。标记“需重启”的运行字段会写入数据库，但当前进程中的既有 worker 不会伪装成已切换，重启后才开始使用新值。
 
 自动刷新 AT、刷新 Codex 凭证、封号邮件扫描和原始认证上下文清理在启动时关闭，也可以保存配置后启用；调度线程最长约 60 秒识别开关变化，实际执行仍遵循首次延迟、已保存的下次执行时间和扫描间隔。关闭开关会阻止下一轮执行，已经开始的任务继续完成。
 
-配置页按实际执行范围校验重试次数、等待时间和每轮处理量。若历史 `.env` 超出范围，保存会指出具体键及允许范围，需要一起修正。`PLAN_CHECK_WORKERS`、`PLAN_CHECK_QUEUE_LIMIT` 仅保留历史环境变量兼容，已退出配置页；当前套餐查询等持久账号任务的并发由 `ACCOUNT_BATCH_WORKERS` 控制。
+配置页按实际执行范围校验重试次数、等待时间和每轮处理量。若历史配置超出范围，保存会指出具体键及允许范围，需要一起修正。`PLAN_CHECK_WORKERS`、`PLAN_CHECK_QUEUE_LIMIT` 仅保留历史环境变量兼容，已退出配置页；当前套餐查询等持久账号任务的并发由 `ACCOUNT_BATCH_WORKERS` 控制。
 
-`config/schema.py` 统一维护可编辑配置默认值，`config/*.py` 导出对应模块常量。运行时配置通过 WebUI 配置页或 `.env` 覆盖；修改默认值源码后，已有 CLI 进程需要重启。
+`config/schema.py` 统一维护可编辑配置默认值，`config/*.py` 导出对应模块常量。运行时配置通过 WebUI 配置页写入数据库并覆盖默认值；修改默认值源码后，已有 CLI 进程需要重启。
 
 ### Roxy 无头保存后仍弹窗口？
 
@@ -1606,7 +1606,7 @@ ENABLE_CODEX_AUTO = False
 │   │   ├── accounts.py / jobs.py / extract_workbench.py / operations.py
 │   │   └── codex.py / integrations.py / health.py
 │   ├── auth.py                     # 登录鉴权
-│   ├── config_editor.py            # 配置白名单、.env 写入与热加载
+│   ├── config_editor.py            # 配置白名单、数据库写入与热加载
 │   ├── templates/                  # 现代界面 index.html / 登录页 login.html
 │   └── static/                     # CSS、按页面/领域拆分的普通 JavaScript、favicon
 │       ├── css/                   # foundation、modern、login 样式

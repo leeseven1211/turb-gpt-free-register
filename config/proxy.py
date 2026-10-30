@@ -36,7 +36,7 @@ PROXY_POOL_WORKERS = schema_default("PROXY_POOL_WORKERS")
 # 旧字段只用于迁移；新业务统一使用 PROXY_POOL_SOURCE，不再允许直连。
 REGISTRATION_PROXY_MODE = schema_default("REGISTRATION_PROXY_MODE")
 
-# 1024Proxy 白名单 API。完整 URL 仅保存到 .env，源码默认留空。
+# 1024Proxy 白名单 API。完整 URL 加密保存在运行配置数据库，源码默认留空。
 # 代理池预热/补货使用 URL 与下方固定的 region、time、num 参数；任务只领取库存，不在业务线程内提取。
 # time 是供应商的粘性窗口参数，不承诺每次领取都是新会话或新 IP。
 PROXY_1024_API_URL = schema_default("PROXY_1024_API_URL")
@@ -59,7 +59,7 @@ PROXY_1024_ACQUIRE_INTERVAL = schema_default("PROXY_1024_ACQUIRE_INTERVAL")
 # 旧提取器兼容项；独立代理池始终通过 PostgreSQL 协调库存和租约。
 PROXY_1024_PERSIST_LEASES = True
 
-# 711Proxy 动态住宅按流量提取 API。完整 URL 含密钥，只保存在 .env。
+# 711Proxy 动态住宅按流量提取 API。完整 URL 含密钥，加密保存在运行配置数据库。
 # 代理池按目标国家使用粘性会话，并关闭供应商提前换 IP。
 PROXY_711_API_URL = schema_default("PROXY_711_API_URL")
 PROXY_711_PROTOCOL = schema_default("PROXY_711_PROTOCOL")
@@ -82,7 +82,7 @@ ACCOUNT_ACTION_PROXY_RETRY_DELAY = schema_default("ACCOUNT_ACTION_PROXY_RETRY_DE
 PLAN_CHECK_PROXY_MODE = schema_default("PLAN_CHECK_PROXY_MODE")
 
 # 旧版套餐查询专用代理仅保留历史值；新手动地址统一写入 PROXY_POOL。
-# 代理可能包含账号密码，因此 WebUI 会把它保存到 .env。
+# 代理可能包含账号密码，因此 WebUI 会把它加密保存到运行配置数据库。
 PLAN_CHECK_PROXY = schema_default("PLAN_CHECK_PROXY")
 
 # 代理池来源的查套餐允许共享已检测库存；注册与认证任务保持独占租约。
@@ -129,6 +129,6 @@ def pick_proxy() -> str:
 # 兼容入口：默认每次进程启动随机选一个，作为本次注册全程的固定代理
 PROXY = pick_proxy()
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())
 PROXY = pick_proxy()

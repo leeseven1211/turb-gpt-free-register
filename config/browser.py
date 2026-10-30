@@ -410,5 +410,5 @@ def validate_browser_profile(profile: dict) -> list[str]:
     # requestIdleCallback 是否暴露由画像决定。
     return issues
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())

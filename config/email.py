@@ -159,7 +159,7 @@ MAIL_NEST_PROJECT_CODE = schema_default("MAIL_NEST_PROJECT_CODE")
 # ============================================================
 
 REMAIL_API_BASE = schema_default("REMAIL_API_BASE")
-# API Key 只保存在 .env；可在 WebUI「配置 → 邮箱 / OTP → Remail」填写。
+# API Key 加密保存在运行配置数据库；可在 WebUI「配置 → 邮箱 / OTP → Remail」填写。
 REMAIL_API_KEY = schema_default("REMAIL_API_KEY")
 REMAIL_PROJECT_ID = schema_default("REMAIL_PROJECT_ID")
 REMAIL_EMAIL_SUFFIX = schema_default("REMAIL_EMAIL_SUFFIX")
@@ -245,5 +245,5 @@ XIGUA_REQUEST_TIMEOUT = schema_default("XIGUA_REQUEST_TIMEOUT")
 XIGUA_POLL_ATTEMPTS = schema_default("XIGUA_POLL_ATTEMPTS")
 XIGUA_POLL_INTERVAL = schema_default("XIGUA_POLL_INTERVAL")
 
-# ---- .env overrides for WebUI editable fields ----
+# ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())
