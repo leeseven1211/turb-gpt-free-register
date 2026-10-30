@@ -36,9 +36,10 @@ async function loadRegistrationEmailSources() {
       return;
     }
     select.disabled = false;
-    select.innerHTML = '<option value="">请选择本次邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES.map(item =>
-      `<option value="${esc(item.value)}" ${item.enabled === false ? 'disabled' : ''} title="${esc(item.reason || '')}">${esc(item.label)}${item.enabled === false ? '（未配置）' : ''}</option>`
-    ).join('');
+    select.innerHTML = '<option value="">请选择本次邮箱来源</option>' + REGISTRATION_EMAIL_SOURCES
+      .filter(item => item.enabled === true)
+      .map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`)
+      .join('');
   } catch (error) {
     if (select) {
       select.innerHTML = '<option value="">邮箱来源加载失败</option>';
