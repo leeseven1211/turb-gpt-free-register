@@ -4,7 +4,7 @@ Codex OAuth 单独验证脚本（2026-06-15 重写：全新 session + 接码方�
 
 用途：
     不重新注册，直接拿一个**已注册成功的邮箱**单独补跑 Codex 授权，
-    走"全新干净 session → 邮箱 OTP → 手机短信验证(接码) → 选 workspace → 拿 code → 换 token → 落盘"。
+    走"全新干净 session → 邮箱 OTP → 手机短信验证(接码) → 选 workspace → 拿 code → 换 token → 入库"。
     首跑用于校准各 /api/accounts/* 接口的响应处理。
 
 用法：
@@ -17,7 +17,7 @@ Codex OAuth 单独验证脚本（2026-06-15 重写：全新 session + 接码方�
 
 输出：
     - 全程 [Codex] / [SMS] 日志
-    - 成功则落盘 codex_accounts/codex-邮箱.json，并打印 PASS
+    - 成功则保存到 PostgreSQL codex_credentials，并打印 PASS
     - 失败打印 FAIL + 完整堆栈，便于定位卡在哪一步
 """
 import argparse

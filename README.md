@@ -79,7 +79,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
   - GrizzlySMS
   - 本地 L 取号服务，见「本地 L 接码服务」
 - 手机验证支持自动取号、填号、收码、提交、失败换号重试。
-- Codex 凭证保存到 PostgreSQL，并同步生成 `codex_accounts/` CPA 兼容文件。
+- Codex 凭证、导出状态和 CPA/sub2 callback 回执仅保存到 PostgreSQL；下载时按需生成 CPA 兼容 JSON。
 - 账号页与 Codex 管理页都可把已经完成的 Codex OAuth 凭证单个或批量上传到 sub2api；旧的 Codex Agent Token 生成链路已经移除，OAuth 凭证是唯一的 Codex 授权产物。
 
 ### WebUI
@@ -861,7 +861,7 @@ Roxy 新建或安全重开绑定 Profile 时，已领取的代理线路可经过
 
 #### Codex、接码与 sub2api
 
-- Codex 的事实记录在 PostgreSQL 的 `codex_credentials`，`codex_accounts/` 下的 OAuth JSON 是为 CPA/sub2api 保留的兼容产物。旧 Codex Agent Token 生成、下载和上传接口已经移除；sub2api 导入直接上传 OAuth JSON，并支持按账号更新已有凭证。
+- Codex 的事实记录在 PostgreSQL 的 `codex_credentials`，导出次数、sub2 同步记录和 OAuth 状态保存在同一凭证行；CPA/sub2 callback 回执单独存入 `codex_callback_receipts`，不作为可用凭证。运行时不再自动生成 `codex_accounts/` 或 `codex_导出状态.json`，下载和上传 sub2api 直接从数据库生成 OAuth JSON，并支持按账号更新已有凭证。
 - 注册成功不因 Codex 失败而回滚；账号正常保存，Codex 标记失败并允许单独补跑。补跑停止信号必须贯穿邮箱 OTP、取号、短信等待和浏览器流程，不能被普通换号异常吞掉。
 - GrizzlySMS 支持在 `SMS_COUNTRY` 中配置备用国家，并透传 `SMS_MAX_PRICE`（它只是购买上限，不是固定成交价）。开启 `SMS_AUTO_SELECT_COUNTRY` 后，每个批次首次接码会结合正式价格/库存接口与价格页短信成功率统计，在价格上限内选出统计量足够且成功率最高的国家；同一国家连续失败两次会自动切到排名中的下一候选。统计接口异常时自动回退 `SMS_COUNTRY`。实际成交价、国家和价格上限会写入本地运行日志与取消队列，便于复盘。
 - sub2api、CPA 和短信平台是第三方控制面请求，默认直连；它们的鉴权字段必须放在 `.env`，不得写入源码、README、日志或数据库导出。
@@ -1358,18 +1358,20 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 
 ## 数据与产物
 
-核心业务数据以 PostgreSQL 为主存储；下表文件均为兼容导出或运行产物。
+核心业务数据以 PostgreSQL 为唯一事实来源；下表列出数据库记录和仍需保留的运行产物。
 
 | 路径 | 内容 |
 |---|---|
 | PostgreSQL `email_pool_outlook` | Outlook 邮箱池及状态；通过 WebUI/API 或显式文件导入写入 |
 | `用于注册的API邮箱.txt/json` | 通用 API 邮箱池及状态 |
 | PostgreSQL `registered_accounts` | 注册成功账号、access token，以及单独保存的完整 `chatgpt_session`（恢复用，不进入普通列表/导出） |
-| `codex_accounts/` | Codex OAuth 凭证 JSON |
+| PostgreSQL `codex_credentials` / `codex_callback_receipts` | Codex OAuth 凭证、导出/同步状态，以及单独保存的 CPA/sub2 callback 回执 |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
 | `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |
 
 旧版本生成的 `accounts/` 批次目录仅是历史归档，当前注册流程不会继续创建或读取它；是否清理历史目录应在核对 PostgreSQL 数据后单独执行。
+
+历史 `codex_accounts/`、`core/codex_accounts/` 和对应的 `codex_导出状态.json` 不再自动更新，也不参与运行时读取。需要补齐历史文件时，使用 [Codex 文件迁移工具](tools/migrate_codex_files.py) 显式对账和补缺；现存数据库行不会被历史状态覆盖，启动时不自动导入。迁移步骤与表设计见[存储架构](docs/architecture/storage-architecture.md#codex-凭证与回执)。
 
 ---
 
@@ -1433,7 +1435,7 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
   ↓
 提交 callback 给 CPA 或本地换 token
   ↓
-保存 PostgreSQL `codex_credentials`，并生成 `codex_accounts/codex-邮箱*.json` CPA 兼容文件
+保存 PostgreSQL `codex_credentials`；仅在主动下载时生成 CPA 兼容 JSON
 ```
 
 ---

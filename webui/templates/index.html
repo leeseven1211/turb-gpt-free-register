@@ -683,11 +683,11 @@
         <span class="list-selection-hint" id="codexSelectedHintV2">选择凭证后批量操作</span>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexRefreshTokenBulkV2" disabled title="使用 refresh_token 刷新选中凭证，不需要邮箱验证码或短信">刷新 OAuth Token</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--retry selection-only" id="btnCodexReauthorizeBulkV2" disabled title="为选中的账号重新执行 Codex OAuth 授权；每个账号会消耗邮箱 OTP 和接码短信">重跑 Codex 授权</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexDownloadBulkV2" disabled title="把选中的多个本地凭证打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载本地</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary selection-only" id="btnCodexDownloadBulkV2" disabled title="从数据库读取选中凭证，打包成一个 JSON 文件下载（备份/迁移用，CPA 不能直接读，需先解包）">下载凭证</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexDownloadBulkCpaV2" disabled title="从 CPA auth-files 下载选中账号的真实 Codex JSON，并打包成 ZIP（可直接解压放入 CPA auth-dir）">从 CPA 下载</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--good selection-only" id="btnCodexUploadSub2V2" disabled title="把选中的本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>
         <button type="button" class="jobs-tb-btn selection-only" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnCodexDeleteBulkV2" disabled title="删除选中的本地 Codex JSON 凭证文件">删除选中</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnCodexDeleteBulkV2" disabled title="删除数据库中选中的 Codex 凭证及导出状态">删除选中</button>
         <div class="list-toolbar-utilities">
           <button type="button" class="jobs-tb-btn" id="btnResetCodexColumnsV2" title="恢复 Codex 列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshCodexV2" title="重新加载 Codex 凭证列表">刷新</button>
@@ -1134,7 +1134,7 @@
 <script src="{{ url_for('static', filename='js/modern/accounts.js', v='20261030-task-cancel-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/modern/email.js') }}?v=20261027-mail-boundary-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/butler-import.js', v='20261028-import-progress-v3') }}"></script>
-<script src="{{ url_for('static', filename='js/modern/codex.js') }}"></script>
+<script src="{{ url_for('static', filename='js/modern/codex.js') }}?v=20261030-codex-db-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/config.js') }}?v=20261027-mail-boundary-v1"></script>
 <script src="{{ url_for('static', filename='js/modern/extract-workbench.js', v='20261029-promotion-none-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/proxy_traffic.js') }}"></script>

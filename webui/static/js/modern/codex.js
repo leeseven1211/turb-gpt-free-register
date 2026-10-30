@@ -173,8 +173,8 @@ function renderCodex() {
       <td class="col-actions">
         <div class="acc-v2-actions">
           <button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>
-          <button type="button" class="primary" data-codex-download="${esc(r.filename)}" title="下载本地 codex_accounts/ 中的 JSON/回执">本地下载</button>
-          <button type="button" class="danger" data-codex-delete="${esc(r.filename)}" title="删除本地 Codex JSON 凭证文件">删除</button>
+          <button type="button" class="primary" data-codex-download="${esc(r.filename)}" title="从数据库生成 Codex OAuth JSON 并下载">下载凭证</button>
+          <button type="button" class="danger" data-codex-delete="${esc(r.filename)}" title="删除数据库中的 Codex 凭证及导出状态">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-codex-more-toggle aria-haspopup="true">更多</button>
             <div class="acc-v2-more-menu" role="menu">${moreItems}</div>
@@ -275,7 +275,7 @@ async function onCodexBodyClick(e) {
   const del = e.target.closest('[data-codex-delete]');
   if (del) {
     const fname = del.dataset.codexDelete;
-    if (!confirm(`确定删除 Codex 凭证？\n\n${fname}\n\n会删除本地 JSON 文件，并清理导出标记。此操作不可撤销。`)) return;
+    if (!confirm(`确定删除 Codex 凭证？\n\n${fname}\n\n会删除数据库中的凭证及导出状态。此操作不可撤销。`)) return;
     del.disabled = true;
     try {
       await api('/api/codex/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename: fname}) });
@@ -507,7 +507,7 @@ async function codexUploadSub2(filenames = null) {
 async function codexDeleteBulk() {
   if (CODEX_SELECTED.size === 0) return;
   const filenames = Array.from(CODEX_SELECTED);
-  if (!confirm(`确定删除选中的 ${filenames.length} 个 Codex 凭证吗？\n\n会删除本地 codex_accounts/ 下的 JSON 文件，并清理导出标记。此操作不可撤销。`)) return;
+  if (!confirm(`确定删除选中的 ${filenames.length} 个 Codex 凭证吗？\n\n会删除数据库中的凭证及导出状态。此操作不可撤销。`)) return;
   const btn = $('#btnCodexDeleteBulkV2');
   if (btn) btn.disabled = true;
   try {
