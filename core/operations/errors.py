@@ -19,6 +19,7 @@ class TaskErrorCode(str, Enum):
     """任务层共享的稳定错误码，不携带远端原文或敏感上下文。"""
 
     CONFIGURATION = "configuration.missing"
+    BROWSER_UNAVAILABLE = "browser_unavailable_on_deployment"
     USER_INTERRUPTED = "user.interrupted"
     SERVICE_INTERRUPTED = "service.interrupted"
     EXTERNAL_PROXY = "external.proxy"
@@ -99,6 +100,13 @@ def is_request_unknown(value: Any) -> bool:
 
 
 _RULES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    (
+        "browser_unavailable_on_deployment",
+        "configuration",
+        "部署能力",
+        "当前部署未提供浏览器",
+        ("browser_unavailable_on_deployment", "当前部署未提供浏览器"),
+    ),
     (
         "account.deactivated",
         "account",
@@ -473,6 +481,11 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
         "remote_state_impact": "not_started",
         "next_action": "fix_configuration",
     },
+    "browser_unavailable_on_deployment": {
+        "retryability": "manual_only",
+        "remote_state_impact": "not_started",
+        "next_action": "fix_configuration",
+    },
     "user.interrupted": {
         "retryability": "manual_only",
         "remote_state_impact": "unknown",
@@ -661,6 +674,7 @@ _ERROR_METADATA: dict[str, dict[str, str]] = {
 }
 
 _DISPLAY_CODES = {
+    "browser_unavailable_on_deployment": "DEPLOY-BROWSER-001",
     "configuration.missing": "CFG-001",
     "user.interrupted": "USR-001",
     "service.interrupted": "SYS-002",
@@ -710,6 +724,7 @@ _DISPLAY_CODES = {
 }
 
 _DISPLAY_SUMMARIES = {
+    "browser_unavailable_on_deployment": "当前部署未提供浏览器",
     "configuration.missing": "配置缺失",
     "user.interrupted": "任务已取消",
     "service.interrupted": "服务重启导致任务中断",

@@ -41,6 +41,11 @@ def create_integrations_blueprint(context: WebUIContext):
 
     @bp.get("/api/roxy/workspaces")
     def api_roxy_workspaces():
+        from core.runtime.capabilities import browser_operation_unavailable
+
+        unavailable = browser_operation_unavailable("roxy")
+        if unavailable:
+            return jsonify({"ok": False, **unavailable}), 503
         try:
             from core.browser.roxy.client import RoxyBrowserClient
             result = RoxyBrowserClient().list_workspaces()

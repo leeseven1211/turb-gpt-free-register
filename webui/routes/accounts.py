@@ -990,9 +990,6 @@ def create_accounts_blueprint(context: WebUIContext):
     @bp.post("/api/accounts/check-live-bulk")
     def api_accounts_check_live_bulk():
         """批量查活：只在线验证现有 AT，不发送邮箱 OTP、不刷新 AT。"""
-        unavailable = _feature_unavailable("live_check")
-        if unavailable:
-            return unavailable
         data = request.get_json(silent=True) or {}
         requested_driver = data.get("driver")
         if requested_driver is not None and not isinstance(requested_driver, str):
@@ -1002,6 +999,9 @@ def create_accounts_blueprint(context: WebUIContext):
             effective_driver = live_check_service.resolve_driver(requested_driver)
         except LiveCheckDriverError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+        unavailable = _feature_unavailable("live_check", driver=effective_driver)
+        if unavailable:
+            return unavailable
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
@@ -1084,7 +1084,7 @@ def create_accounts_blueprint(context: WebUIContext):
     @bp.post("/api/accounts/refresh-token-bulk")
     def api_accounts_refresh_token_bulk():
         """批量刷新 AT：明确通过邮箱登录重新获取并保存最新 accessToken。"""
-        unavailable = _feature_unavailable("live_check")
+        unavailable = _feature_unavailable("token_refresh")
         if unavailable:
             return unavailable
         data = request.get_json(silent=True) or {}

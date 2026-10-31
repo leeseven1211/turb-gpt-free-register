@@ -196,6 +196,7 @@ python tools/migrations/migrate_runtime_config.py --source-root . --apply
 - `WEBUI_AUTH_CODE`、`WEBUI_SESSION_SECRET`：登录和会话签名。
 - `TURB_MAIL_CONSUMER_ID`：稳定部署身份。
 - `TURB_CONFIG_ENCRYPTION_KEY`：解密运行配置所需的 Fernet 主密钥，必须与数据库备份配套保管，不能放在数据库里。
+- `TURB_BROWSER_ENABLED`：本部署是否提供浏览器能力，缺省 `true`；纯协议服务器设置 `false`，界面禁用浏览器功能并在任务开始前校验，不修改协议驱动内部流程。此启动项不能在配置页修改。
 - 按需保留 `TURB_DB_SCHEMA`、`TURB_DB_POOL_MAX`、Node 可执行路径等本机部署覆盖。
 
 配置值及其历史版本均加密保存。主密钥缺失、错误或数据库不可用时直接报错，不回退到旧文件或默认配置。修改配置时先校验整套候选，再在事务内保存并热加载；需要重启的项仍明确提示重启。任务继续使用创建时冻结的配置快照。
@@ -1035,14 +1036,15 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 
 ### 当前部署边界
 
-- 当前默认运行和部署目标是本机工作区 `/Users/lihongwei/code/personal/gpt/turb-gpt-free-register`，本机 WebUI 优先使用 `PORT=8000`。
-- Oracle 主机上旧的项目 WebUI、systemd 服务和 Nginx 站点已经停用，不再把 `ssh oracle` 作为本项目默认部署方式。
-- Oracle 上可能仍运行 Email Butler；它只是本项目可选的外部收信依赖，不是 WebUI 的部署目标。
+- 本机工作区 `/Users/lihongwei/code/personal/gpt/turb-gpt-free-register` 与 Oracle 使用同一 Git 仓库和 `main`，各自保存独立 PostgreSQL 数据和配置，不同步账号、任务、邮箱库存或凭证。本机 WebUI 优先使用 `PORT=8000`，继续提供 Roxy 与协议能力。
+- Oracle 工作目录为 `/srv/apps/turb-gpt-free-register`，由 systemd 托管协议实例，监听 `127.0.0.1:8000`，通过 `https://turb.leeseven.com` 访问；以实际健康检查和提交核验确认当前服务状态。
+- 两边可以共用 Email Butler 服务，但各自使用不同的 `TURB_MAIL_CONSUMER_ID`，单独导入邮箱。新建 Oracle 空库使用独立主密钥；已有实例迁移或恢复时必须保留其原主密钥和消费者身份。
+- 部署步骤、浏览器能力限制和验收范围见[Oracle 独立实例](docs/deployment/oracle-independent.md)。服务器服务与反代模板位于 `deploy/`。
 - 更新或重启前必须保留 `.env`、PostgreSQL 数据、`accounts/`、`codex_accounts/`、日志、`logs/run/` 和 `.venv/`。提交代码、推送仓库、重启服务和验证实际运行版本是四个独立步骤，不能相互代替。
 
 ### 后续投产清单
 
-- 使用 systemd、launchd 或其他进程管理器托管 WebUI 和 iCloud sidecar；反向代理只暴露 WebUI，不要把 sidecar 的 `8081` 直接暴露公网。
+- 使用 systemd、launchd 或其他进程管理器托管 WebUI；iCloud sidecar 属于独立邮箱服务，按其部署方式维护。反向代理只暴露 WebUI，不要把 sidecar 的 `8081` 直接暴露公网。
 - WebUI 绑定 `127.0.0.1`，由 Nginx/Caddy 提供 HTTPS；设置固定 `WEBUI_AUTH_CODE` 和 `WEBUI_SESSION_SECRET`。
 - 部署新代码前备份 `.env`、PostgreSQL 数据库、`accounts/`、`codex_accounts/` 和日志；账号、任务与邮箱池以 PostgreSQL 备份为准，不能用根目录快照替代。
 - 代理和邮箱都必须按任务生命周期领取：任务开始领取，成功永久占用邮箱并释放本地代理租约；确认账号未创建的失败任务才退回邮箱，避免同一邮箱注册两次。

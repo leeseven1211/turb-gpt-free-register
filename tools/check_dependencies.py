@@ -14,15 +14,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from packaging.requirements import InvalidRequirement, Requirement
+except ImportError:
+    # 仅安装运行依赖时，复用 pip 自带的标准解析器，避免新增业务依赖。
+    from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
 
-_PACKAGE_LINE = re.compile(
-    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)\s*==\s*(?P<version>[A-Za-z0-9][A-Za-z0-9_.!+~-]*)"
-    r"(?:\s+.*)?$"
-)
-_DIRECT_PIN = re.compile(
-    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^]]+\])?\s*==\s*"
-    r"(?P<version>[A-Za-z0-9][A-Za-z0-9.!+~-]*)\s*$"
-)
 _INCLUDE_PREFIXES = ("-r ", "--requirement ")
 
 
@@ -52,6 +49,28 @@ def _included_path(line: str, source: Path) -> Path | None:
                 raise LockValidationError(f"{source}: 空的 requirements include")
             return (source.parent / value).resolve()
     return None
+
+
+def _parse_exact_pin(line: str, source: Path, line_number: int) -> tuple[str, str]:
+    """校验完整 PEP 508 条目，只接受精确版本，不按当前环境筛掉 marker。"""
+    requirement_text = re.split(r"\s+#", line, maxsplit=1)[0].strip()
+    try:
+        requirement = Requirement(requirement_text)
+    except InvalidRequirement as exc:
+        raise LockValidationError(
+            f"{source}:{line_number}: 依赖或环境 marker 语法无效: {line}"
+        ) from exc
+    specifiers = list(requirement.specifier)
+    if (
+        requirement.url is not None
+        or len(specifiers) != 1
+        or specifiers[0].operator != "=="
+        or "*" in specifiers[0].version
+    ):
+        raise LockValidationError(
+            f"{source}:{line_number}: 依赖必须固定为 name==version: {line}"
+        )
+    return requirement.name, specifiers[0].version
 
 
 def _parse_lock_file(path: Path, *, seen: set[Path] | None = None) -> list[LockEntry]:
@@ -87,15 +106,11 @@ def _parse_lock_file(path: Path, *, seen: set[Path] | None = None) -> list[LockE
             )
         if line.startswith("-"):
             raise LockValidationError(f"{current}:{line_number}: 不允许的 requirements 选项: {line}")
-        match = _PACKAGE_LINE.fullmatch(line)
-        if not match:
-            raise LockValidationError(
-                f"{current}:{line_number}: 依赖必须固定为 name==version: {line}"
-            )
+        name, version = _parse_exact_pin(line, current, line_number)
         entries.append(
             LockEntry(
-                name=match.group("name"),
-                version=match.group("version"),
+                name=name,
+                version=version,
                 source=current,
                 line_number=line_number,
             )
@@ -114,10 +129,8 @@ def _parse_input_pins(path: Path) -> dict[str, str]:
             continue
         if line.startswith(("git+", "file:", "/", "./", "../")):
             raise LockValidationError(f"{path}:{line_number}: direct input 不得使用本地/VCS依赖")
-        match = _DIRECT_PIN.fullmatch(line)
-        if match is None:
-            raise LockValidationError(f"{path}:{line_number}: direct input 必须固定为 name==version: {line}")
-        pins[_normalized_name(match.group("name"))] = match.group("version")
+        name, version = _parse_exact_pin(line, path, line_number)
+        pins[_normalized_name(name)] = version
     return pins
 
 

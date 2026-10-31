@@ -80,6 +80,11 @@ def _attach_projection_status(result: dict) -> dict:
 def create_jobs_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("jobs", __name__)
     logger = context.logger
+    from core.runtime.capabilities import BrowserUnavailableError
+
+    @bp.errorhandler(BrowserUnavailableError)
+    def browser_unavailable_error(error):
+        return jsonify({"ok": False, "error_code": error.error_code, "error": error.reason}), 503
 
     @bp.get("/api/remail/orders/reconciliation")
     def api_remail_order_reconciliation():
@@ -217,6 +222,11 @@ def create_jobs_blueprint(context: WebUIContext):
             )
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+        snapshot = svc.registration_config_snapshot()
+        svc._apply_registration_driver_snapshot(snapshot, selected_driver)
+        unavailable = svc.registration_deployment_unavailable(snapshot)
+        if unavailable:
+            return jsonify({"ok": False, **unavailable}), 503
         try:
             count = int(data.get("count", 1))
         except (TypeError, ValueError):

@@ -111,6 +111,9 @@ def run_registration(
     email_source: str | None = None,
 ):
     """兼容入口：转发到 core.registration.dispatcher。"""
+    from core.registration.service import require_registration_deployment
+
+    require_registration_deployment()
     kwargs = dict(
         email=email,
         name=name,
@@ -141,6 +144,9 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="显示详细步骤日志和错误堆栈")
     args = parser.parse_args()
     configure_logging(args.verbose)
+
+    from core.registration.service import require_registration_deployment
+    require_registration_deployment()
 
     # CLI 与 WebUI 写同一份数据；PostgreSQL 连不上就直接退出，避免半路写丢。
     from core.storage import postgres as postgres_store
@@ -237,6 +243,8 @@ def run_one_batch_item(
     if batch_id:
         sms_provider.set_sms_batch_context(batch_id)
     try:
+        from core.registration.service import require_registration_deployment
+        require_registration_deployment()
         from core.proxy.provider import acquire_registration_proxy
 
         proxy_lease = acquire_registration_proxy(
@@ -264,6 +272,7 @@ def run_one_batch_item(
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
         logger.debug("准备阶段错误详情:", exc_info=True)
         return {"success": False, "error": str(exc),
+                **({"error_code": exc.error_code} if getattr(exc, "error_code", None) else {}),
                 **({"request_unknown": True, "status": "request_unknown"} if getattr(exc, "request_unknown", False) else {})}
     finally:
         if proxy_lease is not None:

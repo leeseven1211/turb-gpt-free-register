@@ -937,6 +937,11 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     task_trigger = str(data.get("task_trigger") or context.run.get("trigger") or "manual_account_setup")
     force_password_reset = bool(data.get("force_password_reset"))
     force_twofa_change = bool(data.get("force_twofa_change"))
+    from core.runtime.capabilities import account_setup_unavailable
+
+    unavailable = account_setup_unavailable(steps, settings, force_twofa_change=force_twofa_change)
+    if unavailable:
+        return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
     context.report(
         stage="account_setup", state="running",
         message=f"开始执行账号配置步骤：{ '、'.join(sorted(steps)) }",
@@ -1061,6 +1066,9 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
         from core.accounts.completion import completion_plan
 
         planned_steps = list(completion_plan(account, settings).get("missing_steps") or [])
+    unavailable = _completion_deployment_unavailable(set(planned_steps), settings)
+    if unavailable:
+        return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
     initial_summary = continuation.get("result_summary")
     initial_summary = dict(initial_summary) if isinstance(initial_summary, Mapping) else None
     if initial_summary is not None:
@@ -1143,6 +1151,23 @@ def _handle_native_registration_resume(context: task_gateway.OperationHandlerCon
     return _finish_native_context(context, result)
 
 
+def _completion_deployment_unavailable(steps: set[str], settings: dict) -> dict | None:
+    """补全只检查实际缺项，套餐与账号配置由协调器分别执行。"""
+    from core.runtime.capabilities import account_setup_unavailable, browser_operation_unavailable
+
+    unavailable = account_setup_unavailable(steps & {"password", "twofa"}, settings)
+    if unavailable:
+        return unavailable
+    if "codex" in steps:
+        snapshot = codex_operation_service._config_snapshot(driver_override=str(settings.get("codex_driver") or "same_as_registration"))
+        unavailable = browser_operation_unavailable(snapshot.get("oauth_driver"))
+        if unavailable:
+            return unavailable
+    if "refresh_at" in steps:
+        return live_check_service.deployment_unavailable(force_refresh=True)
+    return None
+
+
 def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
     if str(task.get("source_system") or "") != _RUNTIME_SOURCE_SYSTEM:
         return {"accepted": False, "busy": False, "error": "任务来源不属于 WebUI runtime"}
@@ -1165,6 +1190,27 @@ def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
         "queued", "running", "cancelling", "settling", "stopping", "waiting",
     }:
         return {"accepted": False, "busy": True, "error": "任务仍在执行"}
+    from core.accounts.completion import completion_plan
+
+    data = task.get("data") if isinstance(task.get("data"), Mapping) else {}
+    settings = _completion_settings_from_snapshot(data.get("config_snapshot"))
+    if task.get("task_type") == "account_completion":
+        steps = set(completion_plan(db.get_account(account_id), settings)["missing_steps"])
+        unavailable = _completion_deployment_unavailable(steps, settings)
+    elif task.get("task_type") != "registration_resume":
+        from core.runtime.capabilities import account_setup_unavailable
+
+        steps = set(data.get("steps") or {"password", "plan_check", "twofa"})
+        unavailable = account_setup_unavailable(steps, settings, force_twofa_change=bool(data.get("force_twofa_change")))
+    else:
+        from core.registration import service as registration_service
+
+        source_job = db.get_job(int(data.get("source_job_id") or 0))
+        unavailable = registration_service.registration_deployment_unavailable(
+            registration_service.registration_options_for_job(source_job),
+        )
+    if unavailable:
+        return unavailable
     try:
         run = operation_task_store.retry_runtime_task(
             int(task["id"]),
@@ -1629,6 +1675,13 @@ class WebUIContext:
 
         base_settings = completion_settings()
         snapshot, allowlist, settings = _runtime_execution_settings(base_settings)
+        from core.runtime.capabilities import account_setup_unavailable
+
+        unavailable = account_setup_unavailable(
+            requested_steps, settings, force_twofa_change=str(operation or "").strip().lower() == "twofa_change",
+        )
+        if unavailable:
+            return unavailable
         _register_runtime_handlers()
         try:
             queued = account_task_store.submit_durable_operation(
@@ -1689,6 +1742,9 @@ class WebUIContext:
         base_settings = completion_settings()
         snapshot, allowlist, settings = _runtime_execution_settings(base_settings)
         plan = completion_plan(account, settings)
+        unavailable = _completion_deployment_unavailable(set(plan["missing_steps"]), settings)
+        if unavailable:
+            return {**unavailable, "plan": plan}
         # 一个步骤被账号能力明确阻塞时，仍允许执行其它未完成步骤。
         # 例如密码资格为 false，但 Authenticator 2FA 仍然可以补齐。
         if plan["blocked"] and not plan["missing_steps"]:
@@ -1966,19 +2022,20 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             # Dependency recovery is additive.  The durable ready rows remain
             # queryable and will be retried on the next startup/reconcile.
             active_logger.exception("恢复账号补全父子依赖失败；不影响 WebUI 启动")
-        try:
-            from core.browser.roxy.client import cleanup_orphaned_profiles
+        from config.deployment import browser_enabled
 
-            orphan_result = cleanup_orphaned_profiles()
-            if orphan_result.get("found"):
-                active_logger.warning(
-                    "Roxy 孤儿环境恢复完成：found=%s cleaned=%s failed=%s",
-                    orphan_result.get("found"),
-                    orphan_result.get("cleaned"),
-                    orphan_result.get("failed"),
-                )
-        except Exception:
-            active_logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
+        if browser_enabled():
+            try:
+                from core.browser.roxy.client import cleanup_orphaned_profiles
+
+                orphan_result = cleanup_orphaned_profiles()
+                if orphan_result.get("found"):
+                    active_logger.warning(
+                        "Roxy 孤儿环境恢复完成：found=%s cleaned=%s failed=%s",
+                        orphan_result.get("found"), orphan_result.get("cleaned"), orphan_result.get("failed"),
+                    )
+            except Exception:
+                active_logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
 
         try:
             from core.registration.debug import cleanup_expired_artifacts

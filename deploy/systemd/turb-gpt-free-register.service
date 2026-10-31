@@ -1,0 +1,22 @@
+[Unit]
+Description=Turb 独立协议实例
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/apps/turb-gpt-free-register
+EnvironmentFile=/srv/apps/turb-gpt-free-register/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=TASK_RUN_LOG_ROOT=/srv/apps/turb-gpt-free-register/logs/tasks
+ExecStart=/srv/apps/turb-gpt-free-register/.venv/bin/python web.py --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

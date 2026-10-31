@@ -9,13 +9,17 @@ from core.auth.fingerprint import clean_safe_fingerprint_summary
 from core.accounts.plans.promotion import promotion_kind_from_record
 from core.operations.errors import classify_task_error
 
-def _feature_unavailable(name: str):
+def _feature_unavailable(name: str, *, driver: str | None = None):
     """配置不完整时返回统一 503；页面禁用之外再做后端兜底。"""
     from core.runtime.capabilities import require_feature
-    enabled, reason = require_feature(name)
+    enabled, reason = require_feature(name, driver=driver) if driver is not None else require_feature(name)
     if enabled:
         return None
-    return jsonify({"ok": False, "feature": name, "error": reason}), 503
+    from config.deployment import BROWSER_UNAVAILABLE_CODE, browser_unavailable_reason
+
+    deployment_reason = browser_unavailable_reason()
+    code = {"error_code": BROWSER_UNAVAILABLE_CODE} if deployment_reason and reason.startswith(deployment_reason) else {}
+    return jsonify({"ok": False, "feature": name, "error": reason, **code}), 503
 
 def _pool_source_arg(default: str = "outlook") -> str:
     src = (request.args.get("source") or "").strip()

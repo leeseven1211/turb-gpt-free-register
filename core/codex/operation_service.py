@@ -138,10 +138,16 @@ def _executor():
     return _EXECUTOR
 
 
-def _feature_ready() -> tuple[bool, str]:
+def _feature_ready(snapshot: Mapping[str, Any] | None = None) -> tuple[bool, str]:
     from core.runtime.capabilities import require_feature
 
-    return require_feature("codex_retry")
+    return require_feature("codex_retry", driver=str(snapshot.get("oauth_driver") or "protocol") if snapshot else None)
+
+
+def _deployment_unavailable(snapshot: Mapping[str, Any]) -> dict | None:
+    from core.runtime.capabilities import browser_operation_unavailable
+
+    return browser_operation_unavailable(str(snapshot.get("oauth_driver") or "protocol"))
 
 
 def set_config_snapshot_provider(provider: Callable[..., Any] | None) -> None:
@@ -496,7 +502,11 @@ def submit(
     account_id = int(account.get("id") or 0)
     if db.account_is_deactivated(account):
         return {"accepted": False, "error": "账号已废号，不能补跑 Codex"}
-    enabled, reason = _feature_ready()
+    snapshot = _config_snapshot(driver_override=driver)
+    unavailable = _deployment_unavailable(snapshot)
+    if unavailable:
+        return unavailable
+    enabled, reason = _feature_ready(snapshot)
     if not enabled:
         return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
     try:
@@ -509,7 +519,7 @@ def submit(
             batch_id=batch_id,
             batch_ordinal=batch_ordinal,
             data={
-                "config_snapshot": _config_snapshot(driver_override=driver),
+                "config_snapshot": snapshot,
                 **({"completion_auth": True} if completion_auth else {}),
             },
             idempotency_key=idempotency_key,
@@ -577,7 +587,11 @@ def submit_bulk(
             ids.append(value)
     if not ids:
         return {"accepted": False, "error": "没有可补跑的账号"}
-    enabled, reason = _feature_ready()
+    snapshot = _config_snapshot()
+    unavailable = _deployment_unavailable(snapshot)
+    if unavailable:
+        return unavailable
+    enabled, reason = _feature_ready(snapshot)
     if not enabled:
         return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
     batch = operation_task_store.create_runtime_batch(
@@ -642,14 +656,18 @@ def retry_task(
         return {"accepted": False, "deactivated": True, "error": "账号已废号，不能重跑 Codex"}
     if operation_task_store.active_run_for_account(account_id):
         return _duplicate_result(account_id)
-    enabled, reason = _feature_ready()
+    snapshot = _config_snapshot(driver_override=driver)
+    unavailable = _deployment_unavailable(snapshot)
+    if unavailable:
+        return unavailable
+    enabled, reason = _feature_ready(snapshot)
     if not enabled:
         return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
     try:
         run = operation_task_store.retry_runtime_task(
             int(task_id),
             trigger=trigger,
-            data={"config_snapshot": _config_snapshot(driver_override=driver)},
+            data={"config_snapshot": snapshot},
         )
     except (LookupError, ValueError) as exc:
         return {"accepted": False, "error": str(exc)}
@@ -889,12 +907,15 @@ def _execute_run(run_id: int) -> dict:
         db.update_account_codex_operation_state(email, execution_status="running", active_run_id=run_id)
         with operation_context(token, reporter=report):
             report(stage="preflight", message="开始执行统一配置预检", state="running")
-            enabled, reason = _feature_ready()
+            snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
+            unavailable = _deployment_unavailable(snapshot)
+            if unavailable:
+                raise RuntimeError(f"{unavailable['error_code']}：{unavailable['error']}")
+            enabled, reason = _feature_ready(snapshot)
             if not enabled:
                 report(stage="preflight", message=f"配置预检失败：{reason}", state="failed", level="ERROR")
                 preflight_open = False
                 raise RuntimeError(f"配置预检失败：{reason}")
-            snapshot = dict(raw_data.get("config_snapshot") or {}) if isinstance(raw_data.get("config_snapshot"), dict) else _config_snapshot()
             if not isinstance(raw_data.get("config_snapshot"), dict):
                 # 存量任务没有冻结此开关，不能因升级后的全局设置新增远端写入。
                 snapshot["auto_upload_sub2api"] = False

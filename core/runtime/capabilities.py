@@ -4,8 +4,62 @@ from __future__ import annotations
 
 from typing import Any
 
-from core import db
+from config.deployment import BROWSER_UNAVAILABLE_CODE, browser_enabled, browser_unavailable_reason
 from core.proxy.account_routes import proxy_configuration_status
+
+
+class BrowserUnavailableError(ValueError):
+    """部署缺少浏览器能力，操作尚未开始。"""
+
+    error_code = BROWSER_UNAVAILABLE_CODE
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"{self.error_code}：{reason}")
+
+
+def browser_operation_unavailable(
+    driver: str = "", *, browser_fallback_enabled: bool = False, fallback_setting: str = "",
+) -> dict[str, Any] | None:
+    """在业务开始前校验实际驱动与兜底，禁止在执行中改变路由。"""
+    if browser_enabled():
+        return None
+    browser_driver = str(driver or "").strip().lower() in {
+        "roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser", "browser_roxy",
+        "browser_use", "selenium",
+    }
+    if not browser_driver and not browser_fallback_enabled:
+        return None
+    reason = browser_unavailable_reason()
+    if browser_fallback_enabled and fallback_setting:
+        reason += f"；请先关闭 {fallback_setting} 浏览器兜底后再执行协议任务"
+    return {
+        "accepted": False, "unavailable": True, "error_code": BROWSER_UNAVAILABLE_CODE,
+        "error": reason,
+    }
+
+
+def account_setup_unavailable(
+    steps: set[str], settings: dict[str, Any], *, force_twofa_change: bool = False,
+) -> dict[str, Any] | None:
+    """按现有账号配置执行器的实际浏览器需求检查所选步骤。"""
+    if browser_enabled():
+        return None
+    from config import account
+    from core.auth.twofa import canonical_twofa_executor
+
+    if "password" in steps or ("twofa" in steps and force_twofa_change):
+        return browser_operation_unavailable("browser")
+    if "twofa" not in steps:
+        return None
+    # 组合配置执行器只有单独 twofa 才直接运行协议；补全协调器会单独处理套餐。
+    driver = "browser" if len(steps) > 1 else canonical_twofa_executor(settings.get("twofa_driver"))
+    return browser_operation_unavailable(
+        driver,
+        # 账号配置执行器目前从运行配置读取兜底，历史 snapshot 不覆盖此值。
+        browser_fallback_enabled=bool(getattr(account, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)),
+        fallback_setting="ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
+    )
 
 
 def _feature(ok: bool, reason: str = "") -> dict[str, Any]:
@@ -79,6 +133,9 @@ def _registration_driver_status() -> dict[str, Any]:
     if driver in {"protocol", "protocol_oss", "protocol_oss_2", "api", "http"}:
         return _feature(True) | {"driver": driver}
     if driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}:
+        unavailable = browser_operation_unavailable(driver)
+        if unavailable:
+            return _feature(False, unavailable["error"]) | {"driver": driver}
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
             ("ROXY_API_TOKEN", getattr(roxy, "ROXY_API_TOKEN", "")),
@@ -98,13 +155,16 @@ def _registration_proxy_status() -> dict[str, Any]:
     }
 
 
-def _codex_retry_status() -> dict[str, Any]:
+def _codex_retry_status(driver_override: str | None = None) -> dict[str, Any]:
     from config import codex as codex
     from config import roxybrowser as roxy
-    driver = str(getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
+    driver = str(driver_override if driver_override is not None else getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
         driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
+    unavailable = browser_operation_unavailable(driver)
+    if unavailable:
+        return _feature(False, unavailable["error"])
     if driver in {"roxy", "roxybrowser", "fingerprint", "browser"}:
         ok, reason = _all_present([
             ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
@@ -159,11 +219,29 @@ def _codex_retry_status() -> dict[str, Any]:
 
 def feature_availability() -> dict[str, Any]:
     from config import codex, email, extract_link, sub2api, roxybrowser
+    from core.accounts.liveness import service as live_service
+    from core.accounts.liveness.router import resolve_driver, LiveCheckDriverError
 
     plan_proxy = proxy_configuration_status("plan-check")
     live_proxy = proxy_configuration_status("live-check")
     account_proxy_feature = _feature(bool(plan_proxy.get("ok")), str(plan_proxy.get("reason") or ""))
     live_proxy_feature = _feature(bool(live_proxy.get("ok")), str(live_proxy.get("reason") or ""))
+    try:
+        live_unavailable = browser_operation_unavailable(resolve_driver())
+    except LiveCheckDriverError as exc:
+        live_unavailable = {"error": str(exc)}
+    if live_unavailable:
+        live_proxy_feature = _feature(False, live_unavailable["error"])
+    refresh_unavailable = browser_operation_unavailable(
+        live_service._resolve_refresh_driver(),
+        browser_fallback_enabled=live_service._roxy_fallback_enabled(),
+        fallback_setting="LIVE_CHECK_ROXY_FALLBACK_ENABLED",
+    )
+    refresh_proxy = proxy_configuration_status("token-refresh")
+    refresh_feature = _feature(
+        not refresh_unavailable and bool(refresh_proxy.get("ok")),
+        refresh_unavailable["error"] if refresh_unavailable else str(refresh_proxy.get("reason") or ""),
+    )
     email_sources = _email_source_features()
     driver = _registration_driver_status()
     registration_proxy = _registration_proxy_status()
@@ -201,6 +279,8 @@ def feature_availability() -> dict[str, Any]:
         ("ROXY_API_BASE", getattr(roxybrowser, "ROXY_API_BASE", "")),
         ("ROXY_API_TOKEN", getattr(roxybrowser, "ROXY_API_TOKEN", "")),
     ])
+    if not browser_enabled():
+        roxy_ok, roxy_reason = False, browser_unavailable_reason()
     butler_ok, butler_reason = _all_present([
         ("EMAIL_BUTLER_API_BASE", getattr(email, "EMAIL_BUTLER_API_BASE", "")),
         ("EMAIL_BUTLER_API_KEY", getattr(email, "EMAIL_BUTLER_API_KEY", "")),
@@ -214,6 +294,10 @@ def feature_availability() -> dict[str, Any]:
         "register": _feature(register_ok, register_reason),
         "plan_check": dict(account_proxy_feature),
         "live_check": dict(live_proxy_feature),
+        "token_refresh": refresh_feature,
+        "password_setup": _feature(browser_enabled(), browser_unavailable_reason()),
+        "twofa_change": _feature(browser_enabled(), browser_unavailable_reason()),
+        "account_setup": _feature(browser_enabled(), browser_unavailable_reason()),
         "codex_retry": _codex_retry_status(),
         "extract_link": _feature(extract_ok, extract_reason),
         "sub2_upload": _feature(sub2_ok, sub2_reason),
@@ -229,6 +313,7 @@ def feature_availability() -> dict[str, Any]:
     return {
         "ok": True,
         "features": features,
+        "deployment": {"browser": _feature(browser_enabled(), browser_unavailable_reason())},
         "email_sources": email_sources,
         "proxy": {
             "account_actions": {
@@ -240,6 +325,12 @@ def feature_availability() -> dict[str, Any]:
     }
 
 
-def require_feature(name: str) -> tuple[bool, str]:
-    item = feature_availability().get("features", {}).get(str(name), {})
+def require_feature(name: str, *, driver: str | None = None) -> tuple[bool, str]:
+    if name == "live_check" and driver is not None:
+        unavailable = browser_operation_unavailable(driver)
+        if unavailable:
+            return False, unavailable["error"]
+        proxy = proxy_configuration_status("live-check")
+        return bool(proxy.get("ok")), str(proxy.get("reason") or "")
+    item = _codex_retry_status(driver) if name == "codex_retry" and driver is not None else feature_availability().get("features", {}).get(str(name), {})
     return bool(item.get("enabled")), str(item.get("reason") or "功能未配置")

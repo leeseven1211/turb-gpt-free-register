@@ -85,6 +85,10 @@ def main() -> None:
 
     _setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
+    from config.deployment import browser_enabled
+
+    # 启动项拼写错误须在连接数据库和启动后台任务之前明确失败。
+    browser_enabled()
 
     if args.auth_code:
         os.environ["WEBUI_AUTH_CODE"] = args.auth_code

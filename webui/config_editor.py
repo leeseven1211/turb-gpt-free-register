@@ -37,6 +37,7 @@ EXPLICIT_EMPTY_LIST_KEYS = {"PROXY_POOL"}
 # 本模块只投影 WebUI metadata 接口；展示、解析、校验和快照均按唯一 key 工作。
 from config.schema import (
     CONFIG_SCHEMA,
+    ConfigValidationError,
     build_non_sensitive_snapshot,
     config_revision,
     effective_config_metadata,
@@ -198,7 +199,40 @@ def get_config() -> list[dict]:
     from config.env_loader import load_env
 
     load_env(override=True)
-    return effective_config_metadata()
+    return _deployment_metadata(effective_config_metadata())
+
+
+def _deployment_metadata(fields: list[dict]) -> list[dict]:
+    """保留所有字段与选项，用不可用原因解释部署能力差异。"""
+    from config.deployment import (
+        BROWSER_DRIVER_KEYS,
+        browser_config_update_errors, browser_unavailable_reason,
+    )
+
+    reason = browser_unavailable_reason()
+    if not reason:
+        return fields
+    current = {field["key"]: field.get("value") for field in fields}
+    browser_only_prefixes = (
+        "ROXY_", "BROWSER_DATA_SAVER_", "BROWSER_PUBLIC_ASSET_CACHE_",
+        "BROWSER_TRAFFIC_DETAIL_", "BROWSER_JS_COVERAGE_",
+    )
+    for field in fields:
+        key = field["key"]
+        if key in BROWSER_DRIVER_KEYS:
+            for option in field.get("options", []):
+                if browser_config_update_errors({key: option["value"]}, current):
+                    option.update(disabled=True, reason=reason)
+            if field.get("options") and all(option.get("disabled") for option in field["options"]):
+                field.update(readonly=True, reason=reason)
+        elif field.get("type") == "bool" and browser_config_update_errors({key: True}, current):
+            # 历史 true 值仍允许关闭，关闭后不能重新启用。
+            field.update(disable_enable=True, reason=reason)
+        elif key.startswith(browser_only_prefixes) or key in {
+            "ENABLE_HUMANIZE_BROWSER_ACTIONS", "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
+        }:
+            field.update(readonly=True, reason=reason)
+    return fields
 
 
 def get_config_snapshot():
@@ -391,7 +425,11 @@ def update_config(updates: dict) -> dict:
                 }
                 candidate_environment = dict(os.environ)
                 candidate_environment.update(persisted_updates)
-                build_non_sensitive_snapshot(candidate_environment, strict=True)
+                candidate = build_non_sensitive_snapshot(candidate_environment, strict=True)
+                from config.deployment import browser_config_update_errors
+                deployment_errors = browser_config_update_errors(normalized, candidate.values)
+                if deployment_errors:
+                    raise ConfigValidationError(deployment_errors)
                 database_active = runtime.database_enabled()
                 written = runtime.write_persisted_values(persisted_updates)
                 env_updated = [key for key in written if runtime.is_bootstrap_key(key) or not database_active]

@@ -618,6 +618,23 @@ def _refresh_driver_request(refresh_driver: str | None) -> str | None:
     return "browser_roxy" if refresh_driver == "browser_roxy" else _refresh_protocol_version(refresh_driver)
 
 
+def deployment_unavailable(
+    *, force_refresh: bool, driver: str | None = None, config_snapshot: dict | None = None,
+) -> dict | None:
+    """按已经解析的查活/刷新驱动在业务开始前检查部署能力。"""
+    from core.runtime.capabilities import browser_operation_unavailable
+
+    selected = (
+        _resolve_refresh_driver(driver, config_snapshot=config_snapshot)
+        if force_refresh else driver or _snapshot_value(config_snapshot, "live_check_driver")
+    )
+    return browser_operation_unavailable(
+        selected or "protocol_current",
+        browser_fallback_enabled=force_refresh and _roxy_fallback_enabled(config_snapshot),
+        fallback_setting="LIVE_CHECK_ROXY_FALLBACK_ENABLED",
+    )
+
+
 def _resolve_protocol_identity(
     account_id: int,
     refresh_driver: str | None,
@@ -1789,6 +1806,13 @@ def _handle_live_operation(context):
         context.finish(status="failed", message="查活缺少账号", error="查活缺少账号")
         return None
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
+    unavailable = deployment_unavailable(
+        force_refresh=bool(data.get("force_refresh")),
+        driver=data.get("refresh_driver") if data.get("force_refresh") else data.get("driver"),
+        config_snapshot=context.config_snapshot,
+    )
+    if unavailable:
+        return account_task_store.OperationResult.failed(unavailable["error"], unavailable)
     account = db.get_account(int(context.account_id))
     email = str((account or {}).get("email") or context.email or "").strip()
     # Email-change post-checks use a distinct durable resource family so the
@@ -1847,6 +1871,9 @@ def _retry_token_refresh_operation(task: dict) -> dict:
         get_config_snapshot(), allowlist=LIVE_CONFIG_ALLOWLIST,
     )
     refresh_driver = _resolve_refresh_driver(config_snapshot=snapshot)
+    unavailable = deployment_unavailable(force_refresh=True, driver=refresh_driver, config_snapshot=snapshot)
+    if unavailable:
+        return unavailable
     try:
         run = operation.retry_runtime_task(
             task_id, trigger="manual_retry",
@@ -1872,6 +1899,20 @@ def _retry_token_refresh_operation(task: dict) -> dict:
     }
 
 
+def _retry_live_check_operation(task: dict) -> dict:
+    """原生查活重试沿用历史快照，入队前验证其浏览器需求。"""
+    data = task.get("data") if isinstance(task.get("data"), dict) else {}
+    snapshot = data.get("config_snapshot") if isinstance(data.get("config_snapshot"), dict) else None
+    unavailable = deployment_unavailable(
+        force_refresh=False,
+        driver=data.get("driver") or _snapshot_value(snapshot, "live_check_driver"),
+        config_snapshot=snapshot,
+    )
+    if unavailable:
+        return unavailable
+    return account_task_store.default_operation_retry(task)
+
+
 def register_operation_handlers() -> bool:
     """Register maintenance handlers; runtime owns starting the one dispatcher."""
     register = getattr(account_task_store, "register_operation_handler", None)
@@ -1882,6 +1923,7 @@ def register_operation_handlers() -> bool:
         _handle_live_operation,
         source_systems=("native_operations",),
         config_allowlist=LIVE_CONFIG_ALLOWLIST,
+        retry_handler=_retry_live_check_operation,
     )
     register(
         "token_refresh",
@@ -1938,6 +1980,7 @@ def _submit_native_live(
     explicit_proxy_requested: bool, batch_id: str | None, idempotency_key: str | None,
     resource_family: str = "openai_interactive",
     allow_missing_token: bool = False,
+    config_snapshot: dict | None = None,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -1967,8 +2010,10 @@ def _submit_native_live(
             # Explicit proxy credentials must not be persisted in operation data.
             "explicit_proxy_requested": bool(explicit_proxy_requested),
         },
-        config_snapshot_provider=get_config_snapshot,
-        config_allowlist=LIVE_CONFIG_ALLOWLIST,
+        **({"config_snapshot": config_snapshot, "config_allowlist": (*LIVE_CONFIG_ALLOWLIST, "config_snapshot_revision")}
+           if config_snapshot is not None else {
+               "config_snapshot_provider": get_config_snapshot, "config_allowlist": LIVE_CONFIG_ALLOWLIST,
+           }),
         dispatch=True,
     )
 
@@ -2008,6 +2053,13 @@ def run_account_live_check_inline(
             return {"accepted": False, "busy": False, "error": str(exc)}
     else:
         effective_refresh_driver = _resolve_refresh_driver(driver, config_snapshot=config_snapshot)
+
+    unavailable = deployment_unavailable(
+        force_refresh=force_refresh, driver=effective_refresh_driver if force_refresh else effective_live_check_driver,
+        config_snapshot=config_snapshot,
+    )
+    if unavailable:
+        return unavailable
 
     account = db.get_account(account_id)
     if not account:
@@ -2109,6 +2161,7 @@ def enqueue_account_live_check(
     trigger = str(trigger or "manual")
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
+    snapshot = account_task_store.normalize_config_snapshot(get_config_snapshot(), allowlist=LIVE_CONFIG_ALLOWLIST)
     effective_live_check_driver = None
     effective_refresh_driver = None
     if not force_refresh:
@@ -2118,6 +2171,12 @@ def enqueue_account_live_check(
             return {"accepted": False, "busy": False, "error": str(exc)}
     else:
         effective_refresh_driver = _resolve_refresh_driver(driver)
+    unavailable = deployment_unavailable(
+        force_refresh=force_refresh, driver=effective_refresh_driver if force_refresh else effective_live_check_driver,
+        config_snapshot=snapshot,
+    )
+    if unavailable:
+        return unavailable
     account = db.get_account(account_id)
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
@@ -2158,6 +2217,7 @@ def enqueue_account_live_check(
             explicit_proxy_requested=proxy is not None,
             batch_id=batch_id, idempotency_key=key,
             resource_family=resource_family,
+            config_snapshot=snapshot,
             **({"allow_missing_token": True} if force_refresh and allow_missing_token else {}),
         )
     except Exception as exc:

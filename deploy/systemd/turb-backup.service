@@ -1,0 +1,10 @@
+[Unit]
+Description=Turb 数据库与启动配置配套备份
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/bin/bash /srv/apps/turb-gpt-free-register/tools/maintenance/backup_oracle.sh

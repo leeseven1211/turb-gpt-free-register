@@ -1,0 +1,10 @@
+[Unit]
+Description=每日备份 Turb 独立实例
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+Unit=turb-backup.service
+
+[Install]
+WantedBy=timers.target

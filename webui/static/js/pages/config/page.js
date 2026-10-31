@@ -233,7 +233,7 @@ function configSchemaOptions(f) {
     if (typeof item === 'string') return { value: item, label: item };
     if (!item || typeof item !== 'object' || item.value === null || item.value === undefined) return null;
     const value = String(item.value).trim();
-    return { value, label: String(item.label ?? value) };
+    return { value, label: String(item.label ?? value), disabled: item.disabled === true, reason: String(item.reason || '') };
   }).filter(Boolean);
 }
 function configSchemaField(key) {
@@ -698,9 +698,7 @@ function renderConfigOverviewCards() {
   if (codexHint) codexHint.textContent = `自动授权: ${codexAuto ? '已开启' : '已关闭'}`;
 }
 function renderFeatureSwitchField(f, opts = {}) {
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  const on = !!fv;
-  const control = `<input class="config-switch-v2-toggle config-setting-toggle-v2" type="checkbox" role="switch" data-key="${attrEsc(f.key)}"${on ? ' checked' : ''} aria-label="${attrEsc(f.label)}">`;
+  const control = renderConfigControlMarkupV2(f);
   const compactHelp = {
     ROXY_ONE_PROFILE_PER_ACCOUNT: '每个账号最多绑定一个 Roxy 环境。',
     ROXY_RANDOM_PROFILE_NAME_ON_CREATE: '每次创建环境时自动生成不同名称。',
@@ -886,7 +884,7 @@ function liveCheckDriverChoices() {
   const choices = configSchemaOptions(configSchemaField('ACCOUNT_LIVE_CHECK_DRIVER'));
   const rawEnabled = configFieldValueV2('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', false);
   const enabled = rawEnabled === true || ['1', 'true', 'yes', 'on'].includes(String(rawEnabled).trim().toLowerCase());
-  return enabled ? choices : choices.filter(item => item.value !== 'browser_roxy');
+  return enabled ? choices : choices.filter(item => item.value !== 'browser_roxy' || item.disabled);
 }
 function protocolVersionChoices() {
   return configSchemaOptions(configSchemaField('OPENAI_PROTOCOL_VERSION'));
@@ -1243,10 +1241,10 @@ function renderConfigControlMarkupV2(f) {
     if (current && !options.some(item => item.value === current)) {
       options.unshift({ value: current, label: `当前配置（${current}）` });
     }
-    const disabled = options.length === 1 ? ' disabled' : '';
+    const disabled = options.length === 1 || options.every(item => item.disabled) ? ' disabled' : '';
     const syncKeys = f.key === 'CODEX_OAUTH_DRIVER' ? ['ACCOUNT_CODEX_DRIVER'] : [];
     const syncAttr = syncKeys.length ? ` data-sync-keys="${attrEsc(syncKeys.join(','))}"` : '';
-    control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
+    control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}"${syncAttr}${disabled}>${options.map(item => `<option value="${attrEsc(item.value)}"${current === item.value ? ' selected' : ''}${item.disabled ? ` disabled title="${attrEsc(item.reason)}"` : ''}>${esc(item.label)}${item.disabled && item.reason ? `（${esc(item.reason)}）` : ''}</option>`).join('')}</select>`;
   } else if (f.type === 'int') {
     control = `<input type="number" data-key="${attrEsc(f.key)}"${configRangeAttrs(f, '1')} value="${attrEsc(fv == null ? '' : fv)}" aria-label="${attrEsc(f.label)}">`;
   } else if (f.type === 'float') {
@@ -1283,6 +1281,11 @@ function renderConfigControlMarkupV2(f) {
       <p class="config-setting-short-help-v2" data-huanguang-cdk-quota-status="${cdkKind}" role="status" aria-live="polite">${esc(quota.text)}</p>
     </div>`;
   }
+  const unavailableReason = f.reason || driverChoices?.find(item => item.disabled && item.reason)?.reason || '';
+  if (f.readonly || (f.disable_enable && !fv)) {
+    control = `<fieldset disabled aria-label="${attrEsc(f.label)}" style="border:0;padding:0;margin:0;min-width:0;opacity:.6">${control}</fieldset>`;
+  }
+  if (unavailableReason) control += `<p class="config-setting-short-help-v2" role="status">${esc(unavailableReason)}</p>`;
   return control;
 }
 

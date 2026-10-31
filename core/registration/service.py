@@ -175,6 +175,39 @@ def registration_config_snapshot() -> dict[str, object]:
     return _apply_registration_driver_snapshot(snapshot, registration_driver)
 
 
+def registration_deployment_unavailable(options: dict | None = None) -> dict | None:
+    """在创建任务或领取资源前检查本次注册及启用的后处理能力。"""
+    from config.deployment import browser_enabled
+    from core.runtime.capabilities import browser_operation_unavailable
+
+    if browser_enabled():
+        return None
+    from config import codex as codex_cfg, twofa as twofa_cfg
+
+    snapshot = options if isinstance(options, dict) else registration_config_snapshot()
+    unavailable = browser_operation_unavailable(
+        str(snapshot.get("registration_driver") or configured_registration_driver()),
+    )
+    if unavailable:
+        return unavailable
+    if bool(snapshot.get("twofa_enabled", twofa_cfg.ENABLE_2FA)):
+        unavailable = browser_operation_unavailable(twofa_cfg.get_twofa_driver_for_options(snapshot))
+        if unavailable:
+            return unavailable
+    if bool(snapshot.get("codex_enabled", codex_cfg.ENABLE_CODEX_AUTO)):
+        return browser_operation_unavailable(codex_driver_for_registration(snapshot))
+    return None
+
+
+def require_registration_deployment(options: dict | None = None) -> None:
+    """共用 Web/CLI 准入错误，拒绝时尚未创建任务或占用邮箱。"""
+    unavailable = registration_deployment_unavailable(options)
+    if unavailable:
+        from core.runtime.capabilities import BrowserUnavailableError
+
+        raise BrowserUnavailableError(unavailable["error"])
+
+
 def _normalize_registration_country(value: object) -> str:
     """归一化一个历史任务中可能保存的出口国家。"""
     country = str(value or "").strip().upper()
@@ -2794,14 +2827,15 @@ def submit_registration(
     # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
     # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
     with _executor_lock:
-        executor = get_executor(max_workers=workers)
-        effective_workers = get_executor_workers()
-        batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         # 同一批任务共享入队瞬间的国家快照；即使配置在提交循环期间热加载，
         # 也不能让同一批排队任务分裂到不同的默认国家。
         registration_snapshot = registration_config_snapshot()
         if selected_driver is not None:
             _apply_registration_driver_snapshot(registration_snapshot, selected_driver)
+        require_registration_deployment(registration_snapshot)
+        executor = get_executor(max_workers=workers)
+        effective_workers = get_executor_workers()
+        batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         jobs = []
         for index in range(count):
             job = db.create_job(
@@ -3873,6 +3907,21 @@ def retry_job(
             "job": source,
             **debug_notice,
         }
+    retry_snapshot = registration_options_for_job(source)
+    if registration_driver == "roxy":
+        retry_snapshot["registration_driver"] = "roxy"
+        if action == "twofa":
+            retry_snapshot["twofa_driver"] = "browser"
+    if action == "twofa":
+        # 此旧入口固定补密码、套餐和 2FA，执行器必需浏览器会话。
+        from core.runtime.capabilities import browser_operation_unavailable
+
+        unavailable = browser_operation_unavailable("browser")
+    else:
+        unavailable = registration_deployment_unavailable(retry_snapshot)
+    if unavailable:
+        return {"ok": False, "status": 503, **unavailable}
+
     reserved_account_action = False
     if action == "twofa":
         if not email or account_id is None:
@@ -3881,11 +3930,6 @@ def retry_job(
             return {"ok": False, "error": "该账号正在执行 Codex/2FA 补跑，请稍候", "status": 409}
         reserved_account_action = True
 
-    retry_snapshot = registration_options_for_job(source)
-    if registration_driver == "roxy":
-        retry_snapshot["registration_driver"] = "roxy"
-        if action == "twofa":
-            retry_snapshot["twofa_driver"] = "browser"
     try:
         job_type = {
             "codex": "codex_retry",

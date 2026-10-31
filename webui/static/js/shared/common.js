@@ -1118,7 +1118,11 @@ function ensureViewLoaded(key, loader, maxAge = VIEW_REFRESH_MAX_AGE_MS) {
 let CAPABILITIES = {features:{}, email_sources:{}};
 const FEATURE_SELECTORS = {
   register: '#btnStartV2,#btnStart',
-  live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnRefreshSelectedTokenV2,#btnRefreshSelectedTokenTopV2,#btnCheckSelectedLiveTop,#btnRefreshSelectedTokenTop,#btnCheckSelectedLive,#btnRefreshSelectedToken,[data-account-live-check],[data-account-token-refresh]',
+  live_check: '#btnCheckSelectedLiveTopV2,#btnCheckSelectedLiveV2,#btnCheckSelectedLiveTop,#btnCheckSelectedLive,[data-account-live-check]',
+  token_refresh: '#btnRefreshSelectedTokenV2,#btnRefreshSelectedTokenTopV2,#btnRefreshSelectedTokenTop,#btnRefreshSelectedToken,[data-account-token-refresh]',
+  password_setup: '#btnAddPasswordSelectedAccountsV2,#btnChangePasswordSelectedAccountsV2,[data-account-action="password"],[data-account-action="password_change"]',
+  twofa_change: '#btnChangeTwofaSelectedAccountsV2,[data-account-action="twofa_change"]',
+  account_setup: '#btnSetupSelectedAccountsV2,[data-account-setup]',
   plan_check: '#btnCheckSelectedPlansV2,#btnCheckSelectedPlans,[data-plan-check]',
   extract_link: '#btnExtractSelectedLinksV2,#btnExtractSelectedLinks,[data-extract-link]',
   sub2_upload: '#btnUploadSelectedCodexSub2V2,#btnUploadSelectedCodexSub2,#btnCodexUploadSub2V2,[data-codex-upload-sub2]',
