@@ -29,6 +29,7 @@ _AUTH_ERROR_CODES = {
     "invalid_age": "profile_invalid", "invalid_name": "profile_invalid",
     "invalid_request": "request_invalid", "validation_error": "request_invalid",
     "invalid_request_error": "request_invalid", "invalid_password": "credentials_rejected",
+    "password_reset_required": "password_reset_required",
     "incorrect_password": "credentials_rejected", "invalid_otp": "otp_rejected",
     "wrong_email_otp_code": "otp_rejected",
     "otp_expired": "otp_rejected", "invalid_grant": "credentials_rejected",

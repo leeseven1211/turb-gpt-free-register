@@ -385,6 +385,38 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         )
         self.assertNotIn("private-secret", json.dumps(safe))
 
+    def test_password_verify_retains_known_password_reset_code(self):
+        from core.accounts.liveness import service as live_check_service
+        from core.accounts.liveness.protocol import v2 as v2
+
+        response = _Response(401, text=json.dumps({"error": {
+            "code": "password_reset_required", "type": "invalid_request_error",
+            "message": "To better protect your account, please change your password and log in again.",
+        }}))
+        exc = RuntimeError("private-secret")
+        exc.response = response
+        safe = live_check_service._safe_refresh_auth_diagnostics(
+            v2._request_diagnostics(exc, operation="password_verify", response_observed=True)
+        )
+        self.assertEqual("password_reset_required", safe["auth_error"]["code"])
+        self.assertEqual("password_reset_required", safe["auth_error"]["category"])
+        self.assertNotIn("message", json.dumps(safe))
+
+    def test_password_verify_never_persists_untrusted_error_values(self):
+        from core.accounts.liveness import service as live_check_service
+        from core.accounts.liveness.protocol import v2 as v2
+
+        for secret in ("private-secret", "abc_1234567890123456", "my_password_private_token", "foo@example.com"):
+            with self.subTest(secret=secret):
+                response = _Response(401, text=json.dumps({"error": {"code": secret, "message": secret}}))
+                exc = RuntimeError("test")
+                exc.response = response
+                safe = live_check_service._safe_refresh_auth_diagnostics(
+                    v2._request_diagnostics(exc, operation="password_verify", response_observed=True)
+                )
+                self.assertNotIn(secret, json.dumps(safe))
+                self.assertEqual("unknown", safe["auth_error"]["code"])
+
     def test_credentials_reader_never_uses_email_provider_password(self):
         from core.accounts import credentials as account_credentials
 
