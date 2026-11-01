@@ -2475,6 +2475,21 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     return changed
 
 
+def _return_butler_identity(email: str) -> None:
+    """本地池删除后同步退号：释放 butler 租约并删除 openai 标签；失败只记日志。"""
+    address = str(email or "").strip()
+    if "@" not in address:
+        return
+    try:
+        from core.email.email_butler.client import return_account as _butler_return
+
+        result = _butler_return(address)
+        if not result.get("ok"):
+            logger.info("[EmailButler] 退号未生效，本地删除已完成: %s %s", address, result.get("reason") or "")
+    except Exception as exc:  # noqa: BLE001 - 退号失败不能回滚本地删除
+        logger.warning("[EmailButler] 退号异常，本地删除已完成: %s %s", address, str(exc)[:160])
+
+
 def _delete_pool_email(spec, email: str) -> bool:
     source = next((name for name, candidate in _POOL_SOURCE_SPECS.items() if candidate.name == spec.name), None)
     from core.email.derivation import parent_has_allocations
@@ -2502,6 +2517,8 @@ def _delete_pool_email(spec, email: str) -> bool:
     kind = _POOL_EXPORT_KINDS.get(spec.name)
     if changed and kind:
         compat_export.schedule(kind)
+    if changed:
+        _return_butler_identity(str(email or "").strip())
     return bool(changed)
 
 

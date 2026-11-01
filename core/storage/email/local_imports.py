@@ -4,10 +4,13 @@ from __future__ import annotations
 from datetime import datetime
 from contextlib import nullcontext
 import hashlib
+import logging
 import re
 from urllib.parse import urlsplit
 
 from core.storage import records as record_store
+
+logger = logging.getLogger(__name__)
 
 _ADDRESS = re.compile(r'[^\s<>@,;]+@[^\s<>@,;]+\Z')
 
@@ -184,7 +187,15 @@ def delete_butler_email(email: str) -> bool:
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
         if not row or pool_mutation_protected(row, conn=conn):
             return False
-        return record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {'status': 'tombstone'}, conn=conn)
+        changed = record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {'status': 'tombstone'}, conn=conn)
+    if changed:
+        try:
+            from core.email.email_butler.client import return_account as _butler_return
+
+            _butler_return(address)
+        except Exception as exc:  # noqa: BLE001 - 退号失败不能回滚本地删除
+            logger.warning("[EmailButler] 退号异常，本地删除已完成: %s %s", address, str(exc)[:160])
+    return changed
 
 
 def butler_email_secret(email: str, field: str) -> str:
