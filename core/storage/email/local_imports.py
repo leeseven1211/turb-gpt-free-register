@@ -87,7 +87,13 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
             if reserved:
                 skipped += 1
                 continue
+            # 导入本地池即登记归属服务：这些号是给 OpenAI 注册用的，带上 openai 标签，
+            # 后续按服务退号时只删标签、不删邮箱素材。
+            service_tags = raw.get('service_tags')
+            if not isinstance(service_tags, list) or not service_tags:
+                service_tags = ['openai']
             payload = {'email': email, 'status': 'available', 'used_at': None, 'note': None,
+                       'service_tags': [str(tag).strip() for tag in service_tags if str(tag).strip()],
                        'imported_at': datetime.now().isoformat(timespec='seconds'), **lifetime}
             if source == 'email_butler':
                 if profile is None:
