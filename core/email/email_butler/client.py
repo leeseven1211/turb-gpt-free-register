@@ -540,44 +540,30 @@ def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str |
     email_usage_reports.enqueue(account.email, status=state, source="email_butler")
 
 
-def _root_api_base(api_base: str | None = None) -> str:
-    """管理端接口只在本机回环暴露；公网域名会被 nginx 301 到 HTML 页。"""
-    override = str(getattr(_email_cfg, "EMAIL_BUTLER_ADMIN_BASE", "") or "").strip()
-    if override:
-        return override.rstrip("/")
-    if api_base:
-        base = _api_base(api_base)
-        return base[:-3] if base.endswith("/v1") else base
-    return "http://127.0.0.1:8788"
-
-
 def return_account(email: str, service: str = "openai", *, api_base: str | None = None,
                    api_key: str | None = None) -> dict:
-    """本地删除邮箱时同步退号：释放租约并删除服务标签；失败不阻塞本地删除。"""
+    """Return an unused leased identity through the authenticated public v1 API."""
     address = str(email or "").strip()
     if "@" not in address:
         return {"ok": False, "reason": "invalid_email"}
     try:
         payload = _request(
             "POST",
-            "/api/accounts/return",
+            "/automation/return-account",
             json={"email": address, "service": service},
-            api_base=_root_api_base(api_base),
+            api_base=_api_base(api_base),
             api_key=api_key,
             retry_connection_error=True,
         )
     except Exception as exc:  # noqa: BLE001 - 退号失败不能阻塞本地删除
         logger.warning("[EmailButler] 退号失败，本地删除继续: %s %s", address, str(exc)[:160])
         return {"ok": False, "reason": str(exc)[:160]}
-    results = payload.get("results") or []
-    errors = payload.get("errors") or []
-    first = results[0] if results else {}
     return {
-        "ok": not errors and bool(results),
-        "released": bool(first.get("released")),
-        "removed": int(payload.get("removed") or 0),
-        "remaining": first.get("remaining") or [],
-        "reason": (errors[0].get("message") if errors else ""),
+        "ok": int(payload.get("code") or 0) == 200,
+        "released": bool(payload.get("released")),
+        "removed": int(bool(payload.get("removed"))),
+        "remaining": payload.get("service_tags") or [],
+        "reason": str(payload.get("message") or ""),
     }
 
 
