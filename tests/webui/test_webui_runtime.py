@@ -257,6 +257,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
     def test_native_account_setup_records_remote_intent_and_requires_local_proof(self):
         class FakeContext:
+            task_type = "account_setup_retry"
             run = {
                 "data": {
                     "steps": ["password"],
@@ -618,6 +619,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         context = SimpleNamespace(
             account_id=591, email="pending@example.test", task_id=999, run_id=1000,
+            task_type="account_setup_retry",
             config_snapshot={}, run={"data": {"completion_auth": True, "steps": ["twofa"]}},
             lease=lambda **_kwargs: nullcontext(), report=Mock(),
             remote_request_started=Mock(), remote_request_receipt=Mock(),
