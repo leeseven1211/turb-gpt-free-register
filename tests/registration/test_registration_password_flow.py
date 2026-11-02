@@ -444,6 +444,8 @@ def _saved_password_refresh_flow(*, landing="otp", first_landing=None, explicit_
         }
 
     def execute(_script, *args):
+        if _script == "return arguments[0].value;":
+            return args[0].value
         if args and args[0] in {"input", "recovery_input"}:
             if args[0] == "recovery_input" and (not identity_matches or clock.value < ready_at):
                 return {"ok": False, "reason": "login_identity_unconfirmed"}

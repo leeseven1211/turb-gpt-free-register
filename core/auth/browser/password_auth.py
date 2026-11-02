@@ -1515,6 +1515,12 @@ def _fill_password_page_if_present(
                     logger.info("%s 密码输入阶段=开始；仅输入原保存或本次生成的密码", _log_prefix(driver))
                     try:
                         _human_type_text(driver, filled_input, password, clear=True)
+                        if _log_prefix(driver) == "[Roxy注册]":
+                            # Roxy 可能吞掉按键且不抛错；只补回同一节点的原密码，
+                            # 后续仍由原 queue 校验节点、身份、值和表单有效性。
+                            actual = driver.execute_script("return arguments[0].value;", filled_input)
+                            if actual != password:
+                                _set_element_value(driver, filled_input, password)
                         typing_completed = True
                     except Exception as exc:
                         if not _is_stale_element_error(exc):
