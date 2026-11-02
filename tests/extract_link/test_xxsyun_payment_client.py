@@ -124,6 +124,18 @@ class XXSYUNClientTests(unittest.TestCase):
                 if status == 429:
                     self.assertEqual(19, caught.exception.retry_after_seconds)
 
+    def test_http_server_error_with_business_body_keeps_original_submission_unknown(self):
+        response = SimpleNamespace(status_code=500, headers={"Retry-After": "900"},
+            json=lambda: {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "synthetic-at"}})
+        client, _ = self.client(response)
+        with self.assertRaises(PaymentError) as caught:
+            client.submit(BODY, "stable-key")
+        self.assertEqual("INTERNAL_ERROR", caught.exception.code)
+        self.assertTrue(caught.exception.retryable)
+        self.assertTrue(caught.exception.submission_unknown)
+        self.assertEqual(900, caught.exception.retry_after_seconds)
+        self.assertNotIn("synthetic-at", str(caught.exception))
+
     def test_order_query_normalizes_terminal_states_and_identity(self):
         for remote, normalized in (("completed", "succeeded"), ("failed", "failed"), ("expired", "failed"), ("cancelled", "failed"), ("awaiting_worker", "pending"), ("claimed", "pending"), ("verifying", "pending"), ("processing", "pending"), ("future-state", "unknown")):
             with self.subTest(remote=remote):

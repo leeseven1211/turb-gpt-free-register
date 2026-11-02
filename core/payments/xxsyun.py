@@ -204,7 +204,12 @@ class XXSYUNClient:
             data = None
         secrets = tuple(row.get("at", "") for row in (body or {}).get("items", []) if isinstance(row, dict))
         if isinstance(data, dict) and isinstance(data.get("error"), dict):
-            raise self._business_error(data["error"], retry_after=retry_after, secrets=secrets)
+            error = self._business_error(data["error"], retry_after=retry_after, secrets=secrets)
+            # 服务端异常可能发生在建单后，错误对象也不能证明付款请求未送达。
+            if type(status) is int and status >= 500:
+                error.retryable = True
+                error.submission_unknown = method == "POST"
+            raise error
         if type(status) is not int or not 200 <= status < 300:
             code = "RATE_LIMITED" if status == 429 else "UNAUTHENTICATED" if status == 401 else "UPSTREAM_HTTP_ERROR"
             raise PaymentError(code, retryable=code != "UNAUTHENTICATED", submission_unknown=method == "POST" and status not in (401, 403, 429), retry_after_seconds=retry_after)
