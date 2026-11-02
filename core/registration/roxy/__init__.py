@@ -169,6 +169,8 @@ def _unique_submission_receipt_for_endpoint(driver, endpoint_kind: str):
         item for item in history
         if getattr(item, "phase", "") not in {"prepared", "not_dispatched"}
         and _receipt_accepts_submission_endpoint(item, endpoint_kind)
+        and not (endpoint_kind == "otp_resend" and getattr(item, "phase", "") == "confirmed"
+                 and getattr(item, "request_binding", None) is not None)
     ]
     # 同 target/endpoint 的迟到 request 无法证明属于哪一次提交时，宁可不
     # 补 request_fact，页面回执仍保留原有的安全结论。
@@ -225,6 +227,9 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                 return
             if receipt.endpoint_kind == "profile_submit" and endpoint_kind != "profile_submit":
                 return
+            if receipt.endpoint_kind == "otp_resend" and (
+                    endpoint_kind != "otp_resend" or receipt.request_binding != request_key):
+                return
             if monitor_otp_network and receipt.endpoint_kind == "otp_submit" and endpoint_kind != "otp_submit":
                 return
             if (monitor_otp_network and receipt.endpoint_kind == "otp_submit"
@@ -234,11 +239,21 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                 return
             submission_requests.pop(request_key, None)
         else:
+            if endpoint_kind == "otp_resend":
+                history = getattr(driver, "_browser_submission_receipts", None)
+                if any(_receipt_accepts_submission_endpoint(item, endpoint_kind)
+                       and getattr(item, "request_binding", None) == request_key
+                       for item in (history if isinstance(history, list) else ())):
+                    # 已绑定旧请求的重复事件不能冒充下一次独立重发。
+                    return
             receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
             if receipt is None:
                 return
-            if endpoint_kind == "profile_submit":
-                # 一个资料动作只接一个请求；迟到的其他请求不能替换已经绑定的动作。
+            if endpoint_kind == "otp_resend" and (
+                    not receipt.dispatch_target_id or receipt.dispatch_target_id != request_key[0]):
+                return
+            if endpoint_kind in {"profile_submit", "otp_resend"}:
+                # 一个资料或重发动作只接一个请求；迟到请求不能替换已经绑定的动作。
                 if receipt.request_binding not in (None, request_key):
                     return
                 receipt.request_binding = request_key
@@ -266,6 +281,14 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                     and receipt.auth_error.get("code") == "wrong_email_otp_code"
                 )
         phase, response_result = _submission_response_fact(endpoint_kind, meta.get("http_status"))
+        if (meta.get("response") and endpoint_kind == "otp_resend"
+                and receipt.endpoint_kind == "otp_resend" and receipt.request_binding == request_key
+                and meta.get("otp_resend_success") is True
+                and type(meta.get("http_status")) in {int, float} and 200 <= meta["http_status"] < 300):
+            # 仅确认当前配对重发响应的明确业务成功，不根据后续 OTP accepted
+            # 推测其他旧提交的结果，也不放宽任何 dispatch 围栏。
+            receipt.response_binding = request_key
+            phase, response_result = "confirmed", "success"
         error_type = ""
         if (endpoint_kind == "profile_submit" and meta.get("response")
                 and meta.get("http_status") == 400

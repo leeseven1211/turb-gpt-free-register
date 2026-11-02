@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from config import registration_debug as _cfg
-from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, safe_auth_error, safe_response_headers
+from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, otp_resend_success_from_body, safe_auth_error, safe_response_headers
 from core.operations.stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
 
 logger = logging.getLogger('core.registration_debug')
@@ -169,6 +169,11 @@ def _pending_auth_failure_cause(network: list[dict], failure_stage: str = "") ->
                     and not evidence.get("failure")
                     and safe_auth_error(evidence.get("auth_error")).get("code") == "wrong_email_otp_code"):
                 return "email_otp_code_rejected"
+            if (final_stage == "login_password" and evidence.get("stage") == final_stage
+                    and evidence.get("auth_endpoint") == "password_submit" and evidence.get("status") == 401
+                    and not evidence.get("failure")
+                    and safe_auth_error(evidence.get("auth_error")).get("code") == "password_reset_required"):
+                return "password_change_required"
             return "roxy_proxy_tunnel_failed" if evidence.get("transport_cause") == "roxy_proxy_tunnel_failed" else ""
     return ""
 
@@ -606,9 +611,16 @@ class RegistrationDebugSession:
                  or code.endswith("_receipt_missing")
                  or (code == "external.email" and re.search(r"(?<![\w])otp_request_unconfirmed(?![\w])", str(reason))))
         )
+        # 密码页文案可能使用未覆盖的语言。只在失败诊断中采用同阶段最新的
+        # 结构化拒绝原因，不改变登录分支、提交回执或任务的远端结果状态。
+        password_page_symptom = (
+            (self.failure_stage or self.current_stage) == "login_password"
+            and code in {"", "unknown.unclassified", "password_page_error"}
+        )
         if ((cause == "auth_cloudflare_challenge" and (_challenge_explains_error(info) or roxy_email_symptom))
                 or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)
-                or (cause == "email_otp_code_rejected" and otp_wait_symptom)):
+                or (cause == "email_otp_code_rejected" and otp_wait_symptom)
+                or (cause == "password_change_required" and password_page_symptom)):
             info = self._classify_error(reason, result_summary={"cause_code": cause}) or info
         self.error_info = info
         return self.error_info
@@ -1455,7 +1467,11 @@ class _RoxyTargetCollector:
         if session_diagnostic and status != 404:
             return False
         mime = record.get("response_headers", {}).get("content-type") or record.get("mime_type")
-        return 400 <= status < 600 and 0 <= length <= 65536 and mime in {
+        # 重发只有明确 success:true 才能收口；共用已有的限时元数据读取，
+        # 不开启正文抓包，也不改变业务请求、页面等待或重试。
+        resend_success_candidate = (auth_submission_endpoint(record.get("url")) == "otp_resend"
+                                    and 200 <= status < 300)
+        return (400 <= status < 600 or resend_success_candidate) and 0 <= length <= 65536 and mime in {
             "application/json", "application/problem+json",
         }
 
@@ -1493,6 +1509,10 @@ class _RoxyTargetCollector:
                     auth_error = auth_error_from_body(body)
                     if auth_error:
                         record["auth_error"] = auth_error
+                    if (auth_submission_endpoint(record.get("url")) == "otp_resend"
+                            and 200 <= int(record.get("status") or 0) < 300
+                            and otp_resend_success_from_body(body)):
+                        record["otp_resend_success"] = True
                 self._finish_request(request_id, body_unavailable="auth_error_metadata_only")
                 return
             result = message.get("result") or {}
@@ -1513,16 +1533,24 @@ class _RoxyTargetCollector:
                 status = record.get("status")
                 eligible_status = (type(status) is int and 400 <= status < 600
                                    and (not session_diagnostic or status == 404))
+                resend_success_candidate = (
+                    auth_submission_endpoint(record.get("url")) == "otp_resend"
+                    and type(status) in {int, float} and 200 <= status < 300
+                )
                 mime = safe_response_headers({"content-type": record.get("mime_type")}).get("content-type")
                 length = record.get("encoded_data_length")
                 if (pending.get("capture_request_id") == record.get("capture_request_id")
-                        and eligible_status and record.get("method") == ("GET" if session_diagnostic else "POST")
+                        and (eligible_status or resend_success_candidate)
+                        and record.get("method") == ("GET" if session_diagnostic else "POST")
                         and (session_diagnostic or auth_submission_endpoint(record.get("url")))
                         and mime in {"application/json", "application/problem+json"}
                         and isinstance(length, (int, float)) and 0 <= length <= 65536):
-                    auth_error = auth_error_from_body(body)
-                    if auth_error:
-                        record["auth_error"] = auth_error
+                    if eligible_status:
+                        auth_error = auth_error_from_body(body)
+                        if auth_error:
+                            record["auth_error"] = auth_error
+                    if resend_success_candidate and otp_resend_success_from_body(body):
+                        record["otp_resend_success"] = True
                 safe_body, truncated = _raw_body(body, str(record.get("mime_type") or ""))
                 record["response_body"] = safe_body
                 if truncated:

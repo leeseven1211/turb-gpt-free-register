@@ -444,3 +444,56 @@ def test_transport_evidence_does_not_replace_specific_password_or_local_failure(
     session.update_stage("email_otp", state="running")
     session.record_network(otp_record())
     assert session._classify_failure(reason)["code"] == expected
+
+
+def password_reset_record(**changes):
+    return {
+        "method": "POST", "url": "https://auth.openai.com/api/accounts/password/verify",
+        "stage": "login_password", "status": 401,
+        "auth_error": {"code": "password_reset_required", "type": "invalid_request_error"},
+        **changes,
+    }
+
+
+@pytest.mark.parametrize("reason", [
+    "PasswordPageError: 密码登录页显示错误，具体原因未识别",
+    "password_page_error: PasswordPageError: 密码登录页显示错误，具体原因未识别",
+])
+def test_current_password_reset_response_refines_failure_without_changing_execution(session, reason):
+    session.update_stage("login_password", state="running")
+    session.record_network(password_reset_record())
+    original_job = dict(session.job)
+    info = session._classify_failure(reason)
+    assert info["code"] == "password_change_required"
+    assert info["display_code"] == "AUTH-PWD-RESET"
+    assert info["summary"] == "OpenAI 要求修改密码后重新登录"
+    assert session.summary()["error_info"]["code"] == "password_change_required"
+    assert session.job == original_job
+
+
+@pytest.mark.parametrize("changes", [
+    {"url": "https://auth.openai.com.evil.test/api/accounts/password/verify"},
+    {"url": "https://auth.openai.com/api/accounts/email-otp/validate"},
+    {"method": "GET"}, {"status": 200}, {"status": 500}, {"stage": "email_otp"},
+    {"failure": "net::ERR_ABORTED"}, {"auth_error": {"code": "invalid_password"}},
+])
+def test_password_reset_diagnosis_requires_current_exact_failed_password_response(session, changes):
+    session.update_stage("login_password", state="running")
+    session.record_network(password_reset_record(**changes))
+    assert session._classify_failure("PasswordPageError: 密码登录页显示错误，具体原因未识别")["code"] != "password_change_required"
+
+
+@pytest.mark.parametrize("following", ["success", "progress", "later_stage", "explicit_password_error"])
+def test_old_password_reset_response_cannot_replace_later_outcome(session, following):
+    session.update_stage("login_password", state="running")
+    session.record_network(password_reset_record())
+    reason = "PasswordPageError: 密码登录页显示错误，具体原因未识别"
+    if following == "success":
+        session.record_network(password_reset_record(status=200, auth_error={}))
+    elif following == "progress":
+        session.update_stage("login_password", state="success")
+    elif following == "later_stage":
+        session.update_stage("profile", state="running")
+    else:
+        reason = "password_rejected"
+    assert session._classify_failure(reason)["code"] != "password_change_required"

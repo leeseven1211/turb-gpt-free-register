@@ -352,7 +352,7 @@ def _account_login_password(row: dict) -> str:
 
 
 def _job_error_info(row: dict) -> dict | None:
-    """只用同一 Roxy 调试任务已保存的挑战原因细化邮箱未确认展示。"""
+    """只用同一 Roxy 任务保存的明确诊断细化展示，不改写任务结果。"""
     message = row.get("error_message")
     kwargs = {
         "stage": str(row.get("progress_stage") or ""),
@@ -364,6 +364,29 @@ def _job_error_info(row: dict) -> dict | None:
         data = row.get("data")
         snapshot = data.get("config_snapshot") if isinstance(data, dict) else {}
     snapshot = snapshot if isinstance(snapshot, dict) else {}
+    if (
+        (info or {}).get("code") in {"unknown.unclassified", "password_page_error"}
+        and row.get("job_type") in {"registration", "registration_resume"}
+        and row.get("status") in {"failed", "request_unknown"}
+        and (snapshot.get("registration_driver") or row.get("registration_driver")) == "roxy"
+        and kwargs["stage"] in {"login_password", "complete"}
+        and type(row.get("id")) is int
+    ):
+        for key in ("debug_capture_summary", "failure_diagnostics_summary"):
+            capture = row.get(key)
+            capture = capture if isinstance(capture, dict) else {}
+            saved_error = capture.get("error_info")
+            saved_error = saved_error if isinstance(saved_error, dict) else {}
+            if (
+                type(capture.get("job_id")) is int and capture["job_id"] == row["id"]
+                and capture.get("capture_mode") in {"full", "failure_only"}
+                and capture.get("failure_stage") == "login_password"
+                and saved_error.get("code") == saved_error.get("cause_code") == "password_change_required"
+            ):
+                return classify_task_error(
+                    message, stage="login_password", task_type=kwargs["task_type"],
+                    result_summary={"cause_code": "password_change_required"},
+                )
     summary = row.get("debug_capture_summary")
     summary = summary if isinstance(summary, dict) else {}
     saved = summary.get("error_info")

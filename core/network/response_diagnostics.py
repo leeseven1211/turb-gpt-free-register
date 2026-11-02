@@ -97,8 +97,8 @@ def is_auth_session_diagnostic(url: object) -> bool:
         return False
 
 
-def auth_error_from_body(body: object) -> dict[str, str]:
-    """有限解析认证失败 JSON，只返回结构化固定枚举，不返回原始正文。"""
+def _auth_payload_from_body(body: object) -> Mapping:
+    """限制认证响应 JSON 的大小和结构，歧义正文不作为回执证据。"""
     if isinstance(body, bytes):
         if len(body) > _AUTH_ERROR_LIMIT:
             return {}
@@ -118,7 +118,7 @@ def auth_error_from_body(body: object) -> dict[str, str]:
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError("认证错误 JSON 包含重复字段")
+                raise ValueError("认证响应 JSON 包含重复字段")
             result[key] = value
         return result
 
@@ -128,7 +128,18 @@ def auth_error_from_body(body: object) -> dict[str, str]:
         return {}
     if not isinstance(payload, Mapping):
         return {}
-    return safe_auth_error(payload.get("error"))
+    return payload
+
+
+def auth_error_from_body(body: object) -> dict[str, str]:
+    """有限解析认证失败 JSON，只返回结构化固定枚举，不返回原始正文。"""
+    return safe_auth_error(_auth_payload_from_body(body).get("error"))
+
+
+def otp_resend_success_from_body(body: object) -> bool:
+    """只有顶层 success 真布尔值且无错误字段才是明确的重发成功。"""
+    payload = _auth_payload_from_body(body)
+    return payload.get("success") is True and "error" not in payload
 
 
 def safe_response_headers(headers: object) -> dict[str, str]:

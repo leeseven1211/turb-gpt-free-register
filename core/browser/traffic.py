@@ -617,6 +617,9 @@ class _SummaryOnlyCDPSession:
                 "request_id": record.get("request_id"),
                 "target_id": record.get("target_id"),
                 **({"auth_error": auth_error} if auth_error else {}),
+                **({"otp_resend_success": True}
+                   if response and endpoint_kind == "otp_resend" and record.get("otp_resend_success") is True
+                   else {}),
             })
         except Exception:
             logger.debug("[浏览器流量] 认证提交事实分发失败", exc_info=True)

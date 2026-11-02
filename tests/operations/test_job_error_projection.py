@@ -110,3 +110,54 @@ def test_untrusted_or_obsolete_summary_cannot_replace_original_job_error(surface
         row["error_message"] = "_PasswordTransitionTimeout: request_unknown: 密码结果未确认"
         expected = "password_result_unknown"
     assert projection(row, surface, client)["error_info"]["code"] == expected
+
+
+@pytest.mark.parametrize("surface", ["list", "log"])
+@pytest.mark.parametrize("capture_mode,summary_key", [
+    ("full", "debug_capture_summary"), ("failure_only", "failure_diagnostics_summary"),
+])
+def test_current_password_reset_diagnosis_reaches_job_display_without_changing_job(surface, capture_mode, summary_key, client):
+    row = challenged_job()
+    row.pop("debug_capture_summary")
+    row.update({
+        "debug_enabled": capture_mode == "full", "progress_stage": "complete",
+        "error_message": "password_page_error: PasswordPageError: 密码登录页显示错误，具体原因未识别",
+        summary_key: {"job_id": 992, "capture_mode": capture_mode, "failure_stage": "login_password",
+                      "error_info": {"code": "password_change_required", "cause_code": "password_change_required",
+                                     "summary": "不直接信任此文案"}},
+    })
+    original = deepcopy(row)
+    result = projection(row, surface, client)
+    assert result["error_info"]["code"] == "password_change_required"
+    assert result["error_info"]["display_code"] == "AUTH-PWD-RESET"
+    assert result["error_info"]["summary"] == "OpenAI 要求修改密码后重新登录"
+    assert result["error_info"]["stage"] == "login_password"
+    assert result["error_message"] == original["error_message"]
+    assert result["status"] == "failed"
+    assert result["retryable"] is True
+    assert row == original
+
+
+@pytest.mark.parametrize("change", ["other_job", "other_stage", "other_driver", "success", "specific_failure", "missing_cause"])
+def test_obsolete_password_reset_diagnosis_cannot_replace_job_error(change):
+    row = challenged_job()
+    row.update({"progress_stage": "complete", "error_message": "password_page_error: PasswordPageError: 密码登录页显示错误，具体原因未识别"})
+    summary = row["debug_capture_summary"]
+    summary.update({"failure_stage": "login_password", "error_info": {
+        "code": "password_change_required", "cause_code": "password_change_required",
+    }})
+    expected = "password_page_error"
+    if change == "other_job":
+        summary["job_id"] = 993
+    elif change == "other_stage":
+        summary["failure_stage"] = "email_otp"
+    elif change == "other_driver":
+        row["config_snapshot"]["registration_driver"] = "protocol_oss_2"
+    elif change == "success":
+        row["status"] = "success"
+    elif change == "missing_cause":
+        summary["error_info"].pop("cause_code")
+    else:
+        row["error_message"] = "password_rejected"
+        expected = "password_rejected"
+    assert _compact_job_for_list(row, include_progress=False)["error_info"]["code"] == expected
