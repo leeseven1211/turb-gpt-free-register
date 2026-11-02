@@ -73,6 +73,8 @@ class BrowserSubmissionReceipt:
     duration_ms: int | None = None
     # 仅供当前 CDP 连接配对，不写入提交事实或公开投影。
     dispatch_target_id: str = field(default="", repr=False)
+    dispatch_started_at: float | None = field(default=None, repr=False)
+    dispatch_wall_time: float | None = field(default=None, repr=False)
     request_binding: tuple[str, str] | None = field(default=None, repr=False)
     response_binding: tuple[str, str] | None = field(default=None, repr=False)
     auth_error: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -181,7 +183,7 @@ def record_browser_submission_fact(driver: Any, phase: str, *, receipt: BrowserS
     if receipt is None:
         return None
     if phase == "dispatch_intent":
-        if receipt.endpoint_kind == "otp_resend" and receipt.phase == "prepared":
+        if receipt.endpoint_kind in {"otp_resend", "password_submit"} and receipt.phase == "prepared":
             # 恢复流程可能先切换新页面；按本次实际派发页限定重发请求归属，
             # 不让 CDP 线程额外调用 Selenium，也不把 target 写入持久事实。
             try:
@@ -190,6 +192,8 @@ def record_browser_submission_fact(driver: Any, phase: str, *, receipt: BrowserS
                 receipt.dispatch_target_id = target if re.fullmatch(r"[A-Za-z0-9_-]{1,160}", target) else ""
             except Exception:
                 receipt.dispatch_target_id = ""
+            receipt.dispatch_started_at = time.monotonic()
+            receipt.dispatch_wall_time = time.time()
         # CDP request 事件可能晚于页面回执到达；保留本次 Run 已进入派发窗口
         # 的候选集合。观测器无法唯一关联时宁可不补 request_fact，也不能把
         # 迟到的旧请求误绑到当前新提交。

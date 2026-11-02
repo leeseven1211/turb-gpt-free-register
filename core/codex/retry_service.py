@@ -1143,6 +1143,19 @@ def request_stop(email: str) -> dict:
     return {"ok": True, "message": "已记录停止请求，将在安全检查点退出", "state": "cancelling", "running": True}
 
 
+def _manual_password_recovery_owner(email: str, account_id: int, execution_fence: dict | None) -> dict:
+    """手动改密沿用持久操作的当前执行及账号租约。"""
+    fence = execution_fence if isinstance(execution_fence, dict) else {}
+    if not account_id or not all(fence.get(key) for key in ("run_id", "execution_id", "lease_token")):
+        raise RuntimeError("password_recovery_owner_missing: 手动改密缺少当前操作执行或账号租约")
+    return {
+        "email": email, "account_id": int(account_id), "purpose": "manual",
+        "operation_run_id": int(fence["run_id"]), "operation_execution_id": str(fence["execution_id"]),
+        "operation_lease_token": str(fence["lease_token"]), "attempt_id": None,
+        "registration_run_id": None, "registration_execution_id": None,
+    }
+
+
 def run_twofa_worker(
     email: str,
     *,
@@ -1157,6 +1170,7 @@ def run_twofa_worker(
     plan_driver_override: str | None = None,
     force_password_reset: bool = False,
     force_twofa_change: bool = False,
+    execution_fence: dict | None = None,
 ) -> dict:
     """重新登录并执行指定账号配置步骤，不重复执行 Codex OAuth。
 
@@ -1491,6 +1505,14 @@ def run_twofa_worker(
                 )
             )
         )
+        password_recovery = None
+        if force_password_reset:
+            from core.auth.browser.password_recovery import PasswordRecoverySession
+
+            password_recovery = PasswordRecoverySession(**_manual_password_recovery_owner(
+                email, int(account.get("id") or 0), execution_fence,
+            ))
+            password_recovery.resume()
 
         def _checkpoint_password_reset(value: str) -> None:
             with _ACCOUNT_SETUP_DB_LOCK:
@@ -1505,9 +1527,9 @@ def run_twofa_worker(
             )
 
         def _confirm_password_reset(value: str) -> None:
-            with _ACCOUNT_SETUP_DB_LOCK:
-                if not db.update_account_login_password(email, value, source="password_change"):
-                    raise RuntimeError("修改密码远端确认后写入本地检查点失败")
+            checkpoint = password_recovery.checkpoint if password_recovery is not None else None
+            if checkpoint is None or checkpoint.state != "confirmed" or checkpoint.password != value:
+                raise RuntimeError("password_recovery_unconfirmed: 修改密码尚未完成私有检查点确认")
             _report_account_setup_event(
                 task_id,
                 stage="login_password_result",
@@ -1539,6 +1561,7 @@ def run_twofa_worker(
                 if force_password_reset:
                     action_kwargs["on_password_confirmed"] = _confirm_password_reset
                     action_kwargs["force_password_reset"] = True
+                    action_kwargs["password_recovery"] = password_recovery
                 from core.network.protocol_traffic import correlation_context
 
                 lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
@@ -1555,6 +1578,10 @@ def run_twofa_worker(
                         email,
                         **action_kwargs,
                     )
+                if password_recovery is not None and (
+                    password_recovery.checkpoint is None or password_recovery.checkpoint.state != "confirmed"
+                ):
+                    raise RuntimeError("password_recovery_unconfirmed: 手动改密尚未完成候选认证与密码同步")
                 break
             except (CodexRetryStopped, AccountUnusableError):
                 raise

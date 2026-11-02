@@ -616,6 +616,8 @@ class _SummaryOnlyCDPSession:
                 # 仅在当前 CDP 连接内做请求/响应配对；不进入持久事实或公共投影。
                 "request_id": record.get("request_id"),
                 "target_id": record.get("target_id"),
+                **({"started_wall_time": record.get("started_wall_time")}
+                   if not response and endpoint_kind == "password_submit" else {}),
                 **({"auth_error": auth_error} if auth_error else {}),
                 **({"otp_resend_success": True}
                    if response and endpoint_kind == "otp_resend" and record.get("otp_resend_success") is True

@@ -727,44 +727,113 @@ def _submit_reset_password_and_wait(
     *,
     on_password_submitted=None,
     timeout: int = 60,
+    recovery=None,
+    allow_profile_handoff: bool = False,
 ) -> None:
+    if recovery is not None:
+        # 私有写入发生在输入之前；保存失败时不能触碰或提交新密码。
+        password = recovery.prepare(lambda: password)
     targets = _reset_password_targets(driver)
     if not targets.get('ok'):
         raise RuntimeError(f"密码重置新密码表单识别失败：{targets}")
     for field in targets.get('inputs') or []:
         _human_type_text(driver, field, password, clear=True)
     human_delay('form', minimum=0.4, maximum=1.2)
-    _human_click(driver, targets.get('submit'), label='password_reset_submit')
-    if on_password_submitted is not None:
-        on_password_submitted(password)
+    if recovery is not None:
+        recovery.mark_started()
+    try:
+        _human_click(driver, targets.get('submit'), label='password_reset_submit')
+        if on_password_submitted is not None:
+            on_password_submitted(password)
+    except BaseException:
+        if recovery is not None:
+            recovery.mark_unknown()
+        raise
     logger.info('[Codex][Browser] 密码重置新密码已提交，等待远端确认：email=%s', email)
 
     end = time.time() + max(20, timeout)
     password_submitted_at = time.time()
     login_password_submitted = False
-    while time.time() < end:
-        check_cancelled()
-        if _is_login_advanced(driver):
-            return
-        if _is_totp_login_page(driver):
-            # A reset normally establishes the session directly. If OpenAI asks
-            # for TOTP, the account-level caller still has to provide its secret;
-            # this path is intentionally surfaced as a normal login failure.
-            raise MfaSecretMissingError('密码重置后仍要求 Authenticator 验证')
-        if _is_login_password_page(driver) and not login_password_submitted:
-            _submit_saved_login_password(driver, email, password)
-            login_password_submitted = True
-            password_submitted_at = time.time()
-            continue
-        if not _reset_password_targets(driver).get('ok'):
-            # The reset route has gone away. Session acquisition below will make
-            # the final login-state decision; do not resubmit the new password.
-            if time.time() - password_submitted_at >= 1.0:
+    try:
+        while time.time() < end:
+            check_cancelled()
+            if _is_login_advanced(driver):
                 return
-        time.sleep(0.5)
-    raise PasswordResetTransitionUnknown(
-        f'密码重置新密码已提交，但 {int(timeout)} 秒内未确认远端结果：url={str(getattr(driver, "current_url", ""))[:180]}'
+            if allow_profile_handoff and _is_password_recovery_profile_page(driver):
+                # 这里只交接当前页面，密码仍须独立候选认证后才能确认。
+                return
+            if _is_totp_login_page(driver):
+                if recovery is not None:
+                    # 恢复路径交给独立候选认证，沿用调用方的原 TOTP 密钥。
+                    return
+                # 重置后仍需 TOTP 时，账号级调用方必须提供原密钥，不能跳过验证。
+                raise MfaSecretMissingError('密码重置后仍要求 Authenticator 验证')
+            if _is_login_password_page(driver) and not login_password_submitted:
+                if recovery is not None:
+                    # 恢复路径统一在独立认证中提交候选，不复用可能残留的旧 Cookie。
+                    return
+                _submit_saved_login_password(driver, email, password)
+                login_password_submitted = True
+                password_submitted_at = time.time()
+                continue
+            if not _reset_password_targets(driver).get('ok'):
+                # 表单消失只允许交回后续核验，不能重复提交，也不能确认密码成功。
+                if time.time() - password_submitted_at >= 1.0:
+                    return
+            time.sleep(0.5)
+        raise PasswordResetTransitionUnknown(
+            f'密码重置新密码已提交，但 {int(timeout)} 秒内未确认远端结果'
+        )
+    except BaseException:
+        if recovery is not None:
+            recovery.mark_unknown()
+        raise
+
+
+def _is_password_recovery_profile_page(driver, state: dict | None = None) -> bool:
+    """资料交接只接受可信认证源上可见的资料表单，不代表会话已成功。"""
+    state = _login_challenge_state(driver) if state is None else state
+    if not isinstance(state, dict) or state.get('errors') or auth_page_error(state) is not None:
+        return False
+    try:
+        location = urlparse(str(state.get('url') or ''))
+        if (location.scheme != 'https' or location.hostname != 'auth.openai.com'
+                or location.port not in (None, 443) or location.username or location.password
+                or location.path.rstrip('/') not in {'/about-you', '/profile', '/create-account/about'}):
+            return False
+    except ValueError:
+        return False
+    visible_inputs = [item for item in state.get('inputs', []) if isinstance(item, dict) and item.get('visible', True)]
+    profile_input = any(
+        str(item.get('type') or '').lower() not in {'password', 'hidden', 'email'}
+        and any(marker in ' '.join(str(item.get(key) or '') for key in ('name', 'id', 'autocomplete')).lower()
+                for marker in ('name', 'birth', 'age'))
+        for item in visible_inputs
     )
+    return profile_input and any(
+        isinstance(item, dict) and item.get('visible', True)
+        for item in state.get('buttons', [])
+    )
+
+
+def _candidate_login_confirmed(driver, previous_receipts: set[int]) -> bool:
+    """候选认证必须有本次真实密码 POST 的配对成功及页面确认。"""
+    receipts = getattr(driver, '_browser_submission_receipts', [])
+    current = getattr(driver, '_browser_submission_receipt', None)
+    candidates = [*receipts, current] if isinstance(receipts, list) else [current]
+    for receipt in candidates:
+        if not isinstance(receipt, BrowserSubmissionReceipt) or id(receipt) in previous_receipts:
+            continue
+        request = receipt.request_binding
+        if (receipt.kind in {'password', 'resume_login'} and receipt.stage == 'login_password'
+                and receipt.endpoint_kind == 'password_submit' and receipt.http_method == 'POST'
+                and receipt.phase == 'confirmed' and receipt.result == 'success'
+                and type(receipt.http_status) is int and 200 <= receipt.http_status < 300
+                and request and request == receipt.response_binding and request[1]
+                and receipt.dispatch_target_id and request[0] == receipt.dispatch_target_id
+                and not receipt.auth_error):
+            return True
+    return False
 
 
 def _relogin_after_password_reset(
@@ -775,8 +844,18 @@ def _relogin_after_password_reset(
     otp_provider,
     *,
     stage_reporter=None,
-) -> None:
+    recovery=None,
+    allow_profile_handoff: bool = False,
+) -> str | None:
     """密码重置后，用独立的邮箱提交预算重新建立 ChatGPT 会话。"""
+    previous = getattr(driver, '_browser_submission_receipts', [])
+    previous_receipts = {id(item) for item in previous} if isinstance(previous, list) else set()
+    previous_receipts.add(id(getattr(driver, '_browser_submission_receipt', None)))
+    if recovery is not None:
+        # 调用方可能仍持有旧密码；真实认证只能使用已私有持久化的同一候选。
+        password = recovery.prepare(lambda: password)
+        clear_roxy_browser_auth_state(driver)
+        driver._registration_otp_after_ts = time.time()
     _clear_confirmed_email_submission(driver)
     _report_login_stage(stage_reporter, 'login', '密码重置已完成，使用新密码重新建立账号会话')
     _safe_get(
@@ -804,7 +883,7 @@ def _relogin_after_password_reset(
         _report_login_stage(stage_reporter, 'login', '已确认重置密码后邮箱登录的后续认证页面', state='success')
     except Exception:
         state = _login_challenge_state(driver)
-        if _is_login_advanced(driver, state):
+        if recovery is None and _is_login_advanced(driver, state):
             return
         if not (_is_login_password_page(driver) or _is_email_verification_page(driver)):
             raise
@@ -817,7 +896,20 @@ def _relogin_after_password_reset(
         otp_provider=otp_provider,
         allow_password_reset=False,
         stage_reporter=stage_reporter,
+        **({'allow_profile_handoff': True} if allow_profile_handoff else {}),
     )
+    if recovery is not None:
+        # CDP 正文元数据可略晚于 DOM 转换到达；只等待本次回执，不重新提交。
+        confirmation_deadline = time.monotonic() + 5
+        while not _candidate_login_confirmed(driver, previous_receipts):
+            check_cancelled()
+            if time.monotonic() >= confirmation_deadline:
+                raise PasswordResetTransitionUnknown('request_unknown: 候选密码认证未取得本次配对成功响应，保留恢复检查点')
+            time.sleep(0.1)
+        recovery.confirm('candidate_login')
+        # 已用本次原邮箱和候选密码确认身份，旧连接的待核验标记可以收口。
+        driver._registration_retained_identity_required = False
+        return next_state
     if next_state != 'advanced':
         raise RuntimeError('密码重置后重新登录仍要求邮箱验证码，未自动重复提交旧验证码')
 
@@ -832,8 +924,64 @@ def _reset_password_via_email(
     on_password_confirmed=None,
     totp_secret: str = '',
     timeout: int = 120,
-) -> bool:
+    recovery=None,
+    allow_profile_handoff: bool = False,
+) -> bool | str:
     """Run the explicit forgot-password flow for an existing account."""
+    def finish_reset() -> bool | str:
+        from core.auth.browser.selenium_auth import registration_password
+
+        password = recovery.prepare(registration_password) if recovery is not None else registration_password()
+        extra = {'recovery': recovery, 'allow_profile_handoff': allow_profile_handoff} if recovery is not None else {}
+        _submit_reset_password_and_wait(
+            driver, email, password, on_password_submitted=on_password_submitted, **extra,
+        )
+        try:
+            _relogin_after_password_reset(
+                driver, email, password, totp_secret, otp_provider,
+                stage_reporter=stage_reporter, **extra,
+            )
+        except BaseException:
+            if recovery is not None and recovery.checkpoint.state == 'started':
+                recovery.mark_unknown()
+            raise
+        if on_password_confirmed is not None:
+            on_password_confirmed(password)
+        _report_login_stage(stage_reporter, 'password_reset', '密码重置完成并已保存本地检查点', state='success')
+        return password if recovery is not None else True
+
+    if recovery is not None:
+        if recovery.checkpoint is None:
+            recovery.resume()
+        pending = recovery.checkpoint
+        if pending is not None and pending.state in {'started', 'unknown', 'confirmed'}:
+            # 已派发或结果未知时先验证同一候选，绝不重复原改密动作。
+            password = recovery.prepare(lambda: pending.password)
+            _relogin_after_password_reset(
+                driver, email, password, totp_secret, otp_provider,
+                stage_reporter=stage_reporter, recovery=recovery,
+                allow_profile_handoff=allow_profile_handoff,
+            )
+            if on_password_confirmed is not None:
+                on_password_confirmed(password)
+            return password
+        if pending is not None and pending.state == 'prepared':
+            # 旧窗口的表单不能证明邮箱归属；重建原邮箱入口后才允许继续忘记密码。
+            recovery.prepare(lambda: pending.password)
+            clear_roxy_browser_auth_state(driver)
+            driver._registration_otp_after_ts = time.time()
+            _clear_confirmed_email_submission(driver)
+            _safe_get(driver, 'https://chatgpt.com/auth/login', timeout=30, attempts=2,
+                      accept_hosts=('chatgpt.com', 'auth.openai.com'))
+            human_delay('navigate')
+            _maybe_accept(driver)
+            from core.auth.browser.email_otp import _submit_email_and_wait_next
+
+            _submit_email_and_wait_next(driver, email, allow_login_password=True)
+            if not _is_login_password_page(driver):
+                _open_offered_saved_password(driver, time.time() + 30)
+            if not _is_login_password_page(driver):
+                raise PasswordResetTransitionUnknown('password_recovery_identity_unconfirmed: 未确认原邮箱密码入口，保留候选且未提交重置')
     target = _forgot_password_target(driver)
     if target is None:
         return False
@@ -882,27 +1030,7 @@ def _reset_password_via_email(
             raise RuntimeError('密码重置验证码页面缺少提交按钮')
         outcome = _wait_for_reset_password_form(driver, timeout=min(45, max(10, int(deadline - time.monotonic()))))
         if outcome == 'accepted':
-            from core.auth.browser.selenium_auth import registration_password
-
-            password = registration_password()
-            _submit_reset_password_and_wait(
-                driver,
-                email,
-                password,
-                on_password_submitted=on_password_submitted,
-            )
-            _relogin_after_password_reset(
-                driver,
-                email,
-                password,
-                totp_secret,
-                otp_provider,
-                stage_reporter=stage_reporter,
-            )
-            if on_password_confirmed is not None:
-                on_password_confirmed(password)
-            _report_login_stage(stage_reporter, 'password_reset', '密码重置完成并已保存本地检查点', state='success')
-            return True
+            return finish_reset()
         if attempt >= 3 or time.monotonic() >= deadline:
             break
         if not _is_email_verification_page(driver):
@@ -1024,8 +1152,10 @@ def _complete_login_challenge_after_email(
     force_password_reset: bool = False,
     stage_reporter=None,
     password_already_submitted: bool = False,
+    password_recovery=None,
+    allow_profile_handoff: bool = False,
 ) -> str:
-    """Resolve password/TOTP challenges and return ``email_otp`` or ``advanced``."""
+    """解析登录挑战；启用恢复时可返回资料交接，完整会话仍由上层核验。"""
     end = time.time() + max(5, int(timeout))
     password_submitted_at = 0.0
     password_unknown_retry_done = False
@@ -1051,16 +1181,37 @@ def _complete_login_challenge_after_email(
     next_wait_log_at = 0.0
 
     def reset_password(*, forced: bool = False) -> bool:
+        nonlocal password
         if otp_provider is None:
             raise RuntimeError("强制密码修改缺少邮箱验证码提供器" if forced else "密码重置流程缺少邮箱验证码提供器")
-        checkpoint = {} if forced else {"on_password_submitted": on_password_reset_submitted}
-        return _reset_password_via_email(
+        checkpoint = {} if forced and password_recovery is None else {"on_password_submitted": on_password_reset_submitted}
+        if password_recovery is not None:
+            checkpoint.update(recovery=password_recovery, allow_profile_handoff=True)
+        result = _reset_password_via_email(
             driver, email, otp_provider,
             stage_reporter=stage_reporter,
             on_password_confirmed=on_password_confirmed,
             totp_secret=totp_secret,
             **checkpoint,
         )
+        if isinstance(result, str):
+            password = result
+        return bool(result)
+
+    def reset_next_state() -> str:
+        if allow_profile_handoff or password_recovery is not None:
+            if _is_password_recovery_profile_page(driver):
+                return 'profile_handoff'
+            if _is_email_verification_page(driver):
+                return 'email_otp'
+        return 'advanced'
+
+    if password_recovery is not None:
+        if password_recovery.checkpoint is None:
+            password_recovery.resume()
+        if password_recovery.checkpoint is not None and password_recovery.checkpoint.state in {'started', 'unknown'}:
+            if reset_password():
+                return reset_next_state()
 
     def confirm_unknown_password_receipt() -> None:
         nonlocal password_unknown_receipt
@@ -1106,6 +1257,9 @@ def _complete_login_challenge_after_email(
                 "OpenAI 认证错误页："
                 f"path={_auth_path_for_log(state.get('url'))}"
             )
+        if allow_profile_handoff and _is_password_recovery_profile_page(driver, state):
+            _clear_confirmed_email_submission(driver)
+            return 'profile_handoff'
         url = str(state.get("url") or "")
         if url != last_url:
             logger.info("[Codex][Browser] 邮箱提交后登录分支：path=%s", _auth_path_for_log(url))
@@ -1295,12 +1449,12 @@ def _complete_login_challenge_after_email(
             _clear_confirmed_email_submission(driver)
             if force_password_reset:
                 if reset_password(forced=True):
-                    return "advanced"
+                    return reset_next_state()
                 raise RuntimeError("登录密码页没有找到忘记密码入口")
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
                     if allow_password_reset and reset_password():
-                        return "advanced"
+                        return reset_next_state()
                     raise PasswordRejectedError(
                         "远端明确拒绝本地保存的账号密码；已停止重复提交"
                     )
@@ -1315,7 +1469,7 @@ def _complete_login_challenge_after_email(
                     _submit_saved_login_password(driver, email, password)
                 except PasswordRejectedError:
                     if allow_password_reset and reset_password():
-                        return "advanced"
+                        return reset_next_state()
                     raise
                 except _PasswordTransitionTimeout as exc:
                     if password_unknown_retry_done:
@@ -1326,7 +1480,7 @@ def _complete_login_challenge_after_email(
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
                         if allow_password_reset and reset_password():
-                            return "advanced"
+                            return reset_next_state()
                         raise PasswordRejectedError(
                             "远端明确拒绝本地保存的账号密码；已停止重复提交"
                         ) from exc
@@ -1350,7 +1504,7 @@ def _complete_login_challenge_after_email(
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
                         if allow_password_reset and reset_password():
-                            return "advanced"
+                            return reset_next_state()
                         raise PasswordRejectedError(
                             "远端明确拒绝本地保存的账号密码；已停止重复提交"
                         ) from exc
@@ -1383,7 +1537,7 @@ def _complete_login_challenge_after_email(
             if not passwordless_clicked and passwordless_clicks < 2:
                 if allow_password_reset:
                     if reset_password():
-                        return "advanced"
+                        return reset_next_state()
                 if not passwordless_wait_started:
                     passwordless_wait_started = time.monotonic()
                 result = _click_passwordless_signup_if_present(driver)
@@ -1487,6 +1641,8 @@ def complete_openai_login_challenge(
     force_password_reset: bool = False,
     stage_reporter=None,
     password_already_submitted: bool = False,
+    password_recovery=None,
+    allow_profile_handoff: bool = False,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
     extra_kwargs = {}
@@ -1504,6 +1660,10 @@ def complete_openai_login_challenge(
         extra_kwargs['stage_reporter'] = stage_reporter
     if password_already_submitted:
         extra_kwargs['password_already_submitted'] = True
+    if password_recovery is not None:
+        extra_kwargs['password_recovery'] = password_recovery
+    if allow_profile_handoff:
+        extra_kwargs['allow_profile_handoff'] = True
     return _complete_login_challenge_after_email(
         driver,
         email,
@@ -1653,81 +1813,106 @@ def _fill_email_and_otp(
     on_password_reset_submitted=None,
     on_password_confirmed=None,
     force_password_reset: bool = False,
+    password_recovery=None,
 ) -> None:
     check_cancelled()
     _report_login_stage(stage_reporter, "login", "打开 OpenAI 登录授权页")
     otp_after_ts = time.time()
     password, totp_secret = _account_login_credentials(email)
-    logger.info("[Codex][Browser] 打开授权地址")
-    _safe_get(
-        driver,
-        auth_url,
-        timeout=min(45, int(getattr(_roxy_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
-        attempts=2,
-        accept_hosts=("chatgpt.com", "auth.openai.com", "localhost:1455"),
-    )
-    human_delay("navigate")
-    logger.info("[Codex][Browser] 授权页加载完成，检查是否需要邮箱登录")
-    _maybe_accept(driver)
-    if _select_existing_account_if_present(driver, email):
-        human_delay("form")
-
-    # 可能已经处于账号选择/授权页；如果有邮箱输入框则完整登录。
-    # 非日本出口时按钮文案/顺序会变，不能按可见文字点“继续”，否则可能误点 Google。
-    try:
-        entry = urlparse(auth_url)
-        if (entry.scheme == "https" and entry.hostname == "chatgpt.com"
-                and entry.port in (None, 443) and entry.path.rstrip("/") == "/auth/login"):
-            from core.auth.browser.email_otp import _submit_email_and_wait_next
-
-            # 账号补全也可能先看到未水合的 SSR 表单。复用注册的准备/提交预算、
-            # 派发回执和一次导航恢复；不能吞掉未提交错误后直接读取未登录 session。
-            _submit_email_and_wait_next(
-                driver, email, allow_login_password=True,
-                on_progress=lambda phase, message: _report_login_stage(
-                    stage_reporter, "login", message, detail={"email_phase": phase},
-                ),
+    resumed_email_otp = False
+    if password_recovery is not None:
+        if password_recovery.checkpoint is None:
+            password_recovery.resume()
+        pending = password_recovery.checkpoint
+        if pending is not None and pending.state in {'started', 'unknown'}:
+            next_state = _relogin_after_password_reset(
+                driver, email, pending.password, totp_secret, otp_provider,
+                stage_reporter=stage_reporter, recovery=password_recovery, allow_profile_handoff=True,
             )
-            _report_login_stage(stage_reporter, "login", "已确认邮箱登录的后续认证页面", state="success")
-        else:
-            _type_email_address(driver, email, timeout=12)
-            logger.info("[Codex][Browser] 已填写邮箱：%s", email)
+            password = pending.password
+            if next_state in {'advanced', 'profile_handoff'}:
+                return
+            # 候选密码已被接受、当前邮箱 OTP 仍交给本函数原有的验证码流程。
+            force_password_reset = False
+            allow_password_reset = False
+            resumed_email_otp = True
+    if not resumed_email_otp:
+        logger.info("[Codex][Browser] 打开授权地址")
+        _safe_get(
+            driver,
+            auth_url,
+            timeout=min(45, int(getattr(_roxy_cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+            attempts=2,
+            accept_hosts=("chatgpt.com", "auth.openai.com", "localhost:1455"),
+        )
+        human_delay("navigate")
+        logger.info("[Codex][Browser] 授权页加载完成，检查是否需要邮箱登录")
+        _maybe_accept(driver)
+        if _select_existing_account_if_present(driver, email):
             human_delay("form")
-            _submit_email_step(driver)
-            _report_login_stage(stage_reporter, "login", "已提交 OpenAI 登录邮箱", state="success")
-        logger.info("[Codex][Browser] 继续识别密码、TOTP 或邮箱 OTP 分支")
-    except Exception as exc:
-        check_cancelled()
-        if isinstance(exc, AuthPageError):
-            raise
-        state = _login_challenge_state(driver)
-        _raise_auth_page_error(driver, state)
-        if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
-            logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
-        elif _is_login_advanced(driver, state):
-            _clear_confirmed_email_submission(driver)
-            logger.info("[Codex][Browser] 当前会话已越过登录挑战，无需邮箱 OTP")
-            return
-        else:
-            logger.warning("[Codex][Browser] 邮箱提交尚未进入后续认证页面，保留原始错误：%s", type(exc).__name__)
-            raise
 
-    next_state = complete_openai_login_challenge(
-        driver,
-        email,
-        password,
-        totp_secret,
-        timeout=45,
-        otp_provider=otp_provider,
-        allow_password_reset=allow_password_reset,
-        on_password_reset_submitted=on_password_reset_submitted,
-        on_password_confirmed=on_password_confirmed,
-        force_password_reset=force_password_reset,
-        stage_reporter=stage_reporter,
-    )
-    if next_state == "advanced":
-        logger.info("[Codex][Browser] 密码/TOTP 登录已完成，无需邮箱 OTP")
-        return
+        # 可能已经处于账号选择/授权页；如果有邮箱输入框则完整登录。
+        # 非日本出口时按钮文案/顺序会变，不能按可见文字点“继续”，否则可能误点 Google。
+        try:
+            entry = urlparse(auth_url)
+            if (entry.scheme == "https" and entry.hostname == "chatgpt.com"
+                    and entry.port in (None, 443) and entry.path.rstrip("/") == "/auth/login"):
+                from core.auth.browser.email_otp import _submit_email_and_wait_next
+
+                # 账号补全也可能先看到未水合的 SSR 表单。复用注册的准备/提交预算、
+                # 派发回执和一次导航恢复；不能吞掉未提交错误后直接读取未登录 session。
+                _submit_email_and_wait_next(
+                    driver, email, allow_login_password=True,
+                    on_progress=lambda phase, message: _report_login_stage(
+                        stage_reporter, "login", message, detail={"email_phase": phase},
+                    ),
+                )
+                _report_login_stage(stage_reporter, "login", "已确认邮箱登录的后续认证页面", state="success")
+            else:
+                _type_email_address(driver, email, timeout=12)
+                logger.info("[Codex][Browser] 已填写邮箱：%s", email)
+                human_delay("form")
+                _submit_email_step(driver)
+                _report_login_stage(stage_reporter, "login", "已提交 OpenAI 登录邮箱", state="success")
+            logger.info("[Codex][Browser] 继续识别密码、TOTP 或邮箱 OTP 分支")
+        except Exception as exc:
+            check_cancelled()
+            if isinstance(exc, AuthPageError):
+                raise
+            state = _login_challenge_state(driver)
+            _raise_auth_page_error(driver, state)
+            if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
+                logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
+            elif _is_login_advanced(driver, state):
+                _clear_confirmed_email_submission(driver)
+                logger.info("[Codex][Browser] 当前会话已越过登录挑战，无需邮箱 OTP")
+                return
+            else:
+                logger.warning("[Codex][Browser] 邮箱提交尚未进入后续认证页面，保留原始错误：%s", type(exc).__name__)
+                raise
+
+        next_state = complete_openai_login_challenge(
+            driver,
+            email,
+            password,
+            totp_secret,
+            timeout=45,
+            otp_provider=otp_provider,
+            allow_password_reset=allow_password_reset,
+            on_password_reset_submitted=on_password_reset_submitted,
+            on_password_confirmed=on_password_confirmed,
+            force_password_reset=force_password_reset,
+            stage_reporter=stage_reporter,
+            **({'password_recovery': password_recovery} if password_recovery is not None else {}),
+        )
+        if password_recovery is not None and password_recovery.checkpoint is not None:
+            if password_recovery.checkpoint.state == 'confirmed':
+                password = password_recovery.checkpoint.password
+                force_password_reset = False
+                allow_password_reset = False
+        if next_state in {"advanced", "profile_handoff"}:
+            logger.info("[Codex][Browser] 密码/TOTP 登录已完成，无需邮箱 OTP")
+            return
 
     # 提交邮箱后不再执行任何全局“继续/授权/分支”兜底点击；后续只等待验证码页。
     # 避免页面已进入 OAuth consent 时误点授权按钮。
@@ -1771,8 +1956,9 @@ def _fill_email_and_otp(
                     on_password_reset_submitted=on_password_reset_submitted,
                     on_password_confirmed=on_password_confirmed,
                     force_password_reset=force_password_reset, stage_reporter=stage_reporter,
+                    **({'password_recovery': password_recovery} if password_recovery is not None else {}),
                 )
-                if restart_state == "advanced":
+                if restart_state in {"advanced", "profile_handoff"}:
                     return "advanced"
             except OperationCancelled:
                 raise
@@ -1887,8 +2073,9 @@ def _fill_email_and_otp(
                 on_password_confirmed=on_password_confirmed,
                 force_password_reset=force_password_reset,
                 stage_reporter=stage_reporter,
+                **({'password_recovery': password_recovery} if password_recovery is not None else {}),
             )
-            if next_state == "advanced":
+            if next_state in {"advanced", "profile_handoff"}:
                 _report_login_stage(
                     stage_reporter,
                     "email_otp",
@@ -3919,6 +4106,7 @@ def run_roxy_chatgpt_account_action(
     on_password_reset_submitted=None,
     on_password_confirmed=None,
     force_password_reset: bool = False,
+    password_recovery=None,
 ):
     """打开或创建账号绑定的 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
@@ -3972,6 +4160,13 @@ def run_roxy_chatgpt_account_action(
     asset_cache = None
     try:
         driver = _build_driver(opened)
+        if password_recovery is not None:
+            from core.registration.roxy import _make_submission_observer
+
+            capture = getattr(opened, 'traffic_capture', None)
+            observe = getattr(capture, 'set_submission_observer', None)
+            if callable(observe):
+                observe(_make_submission_observer(driver))
         registration_debug.attach_current_roxy(getattr(opened, "debugger_address", None))
         _center_browser_window(driver)
         try:
@@ -4002,6 +4197,7 @@ def run_roxy_chatgpt_account_action(
             on_password_reset_submitted=on_password_reset_submitted,
             on_password_confirmed=on_password_confirmed,
             force_password_reset=force_password_reset,
+            **({'password_recovery': password_recovery} if password_recovery is not None else {}),
         )
         from core.auth.browser.selenium_auth import complete_profile_page as _complete_profile_page, fetch_chatgpt_session as _fetch_chatgpt_session
 
