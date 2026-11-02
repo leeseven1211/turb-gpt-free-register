@@ -1724,6 +1724,12 @@ def run_roxy_registration(
                 if reopened_retained.driver is not None and hasattr(reopened_retained.driver, attr):
                     setattr(driver, attr, getattr(reopened_retained.driver, attr))
             driver._registration_otp_after_ts = reopened_retained.otp_after_ts
+            if (getattr(opened, "created_by_run", False) is True
+                    and str(opened.profile_id).strip() != str(reopened_retained.opened.profile_id).strip()):
+                # 本轮明确新建的替代环境尚无原认证页；仅清空本地启动页，
+                # 再由原恢复检查核验密码与提交事实并选择原身份登录。
+                _check_manual_stop()
+                driver.get("about:blank")
         if bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             if retained is not None and driver is not None:
                 # 新 Selenium 连接没有旧 driver 属性；首次保存前恢复原邮件

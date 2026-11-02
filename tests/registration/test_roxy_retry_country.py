@@ -2,7 +2,7 @@
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.browser.roxy.client import RoxyBrowserClient
 from core.registration import retained_resume, roxy
@@ -181,6 +181,21 @@ class RoxyReopenedIdentityTests(unittest.TestCase):
             "plan_check_enabled": False, "proxy_country": "JP", "retry_proxy_country_override": "JP",
         })
 
+    @contextmanager
+    def dashboard_context(self, *, created_by_run=True, profile_id="replacement-profile", private_password="unit-original-password"):
+        with self.reopened_context(private_password=private_password) as state:
+            state.mocks["opened"].return_value = SimpleNamespace(
+                profile_id=profile_id, debugger_address="127.0.0.1:9222",
+                created_by_run=created_by_run, account_bound=False, raw={},
+            )
+            state.driver.current_url = "http://127.0.0.1/dashboard.html"
+            state.snapshot.update(text="Roxy dashboard", inputs=[])
+            state.driver.get = Mock(side_effect=lambda url: setattr(state.driver, "current_url", url))
+            with patch.object(retained_resume, "_email_otp_page_state", side_effect=lambda _driver: {
+                **state.snapshot, "url": state.driver.current_url,
+            }):
+                yield state
+
     def assert_no_submission(self, state):
         for name in ("_submit_email_and_wait_next", "_fill_password_page_if_present", "wait_for_otp", "_complete_profile_page"):
             state.mocks[name].assert_not_called()
@@ -249,6 +264,49 @@ class RoxyReopenedIdentityTests(unittest.TestCase):
         restored = state.driver._browser_submission_receipts
         self.assertEqual([(item.submission_id, item.phase) for item in restored], [("original-unknown-otp", "unknown")])
         self.assertTrue(all(value == 1234.5 for value in state.saved_boundaries[:1]))
+        self.assert_no_submission(state)
+
+    def test_new_replacement_profile_clears_dashboard_to_blank_then_uses_original_login(self):
+        with self.dashboard_context() as state:
+            result = self.run_reopened()
+        self.assertFalse(result["success"])
+        state.driver.get.assert_called_once_with("about:blank")
+        state.prepare.assert_called_once()
+        self.assertEqual(state.prepare.call_args.kwargs["otp_after_ts"], 1234.5)
+        self.assertEqual(state.mocks["navigate"].call_args.args[1], "https://chatgpt.com/auth/login")
+        self.assertEqual(state.saved_boundaries[0], 1234.5)
+        self.assert_no_submission(state)
+        self.assertEqual(state.private_facts[0]["phase"], "unknown")
+
+    def test_dashboard_is_not_accepted_without_exact_new_replacement_provenance(self):
+        for created, profile in ((False, "replacement-profile"), (True, "unit-profile"), (False, "unit-profile")):
+            with self.subTest(created=created, profile=profile), self.dashboard_context(
+                created_by_run=created, profile_id=profile,
+            ) as state:
+                result = self.run_reopened()
+            self.assertFalse(result["success"])
+            self.assertIn("原窗口来源无法核验", result["error"])
+            state.driver.get.assert_not_called()
+            state.mocks["navigate"].assert_not_called()
+            self.assert_no_submission(state)
+
+    def test_new_replacement_blank_page_still_rejects_private_password_conflict(self):
+        with self.dashboard_context(private_password="different-private-password") as state:
+            result = self.run_reopened()
+        self.assertFalse(result["success"])
+        self.assertIn("原任务密码与恢复凭据不一致", result["error"])
+        state.driver.get.assert_called_once_with("about:blank")
+        state.mocks["navigate"].assert_not_called()
+        self.assert_no_submission(state)
+
+    def test_new_replacement_must_observe_actual_blank_page_before_login(self):
+        with self.dashboard_context() as state:
+            state.driver.get.side_effect = None
+            result = self.run_reopened()
+        self.assertFalse(result["success"])
+        self.assertIn("原窗口来源无法核验", result["error"])
+        state.driver.get.assert_called_once_with("about:blank")
+        state.mocks["navigate"].assert_not_called()
         self.assert_no_submission(state)
 
 
