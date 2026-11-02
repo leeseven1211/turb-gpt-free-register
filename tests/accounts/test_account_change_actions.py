@@ -1,18 +1,92 @@
 # -*- coding: utf-8 -*-
 import logging
+import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from flask import Flask
 
 from core.codex.roxy import oauth as roxy_codex_oauth
+from core.codex import retry_service
 from core.operations import progress as task_progress
 from core.registration import roxy as roxy_registration
 from webui import runtime
 
 
 class AccountChangeActionTests(unittest.TestCase):
+    def test_manual_worker_reuses_private_session_and_requires_confirmation(self):
+        from core.auth.browser import password_recovery
+
+        for confirmed in (False, True):
+            with self.subTest(confirmed=confirmed):
+                session = SimpleNamespace(resume=Mock(return_value=True), checkpoint=SimpleNamespace(state="unknown"))
+                route = Mock(proxy_url="http://proxy.example", provider="unit", region="JP", mode="pool")
+                route.public_dict.return_value = {"network_route": "proxy"}
+                def browser_action(_email, **kwargs):
+                    self.assertIs(session, kwargs["password_recovery"])
+                    if confirmed:
+                        session.checkpoint = SimpleNamespace(state="confirmed", password="private-candidate")
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    patch.object(retry_service.db, "get_account_by_email", return_value={
+                        "id": 17, "email": "account@example.com", "extra_json": {"account_password": "original-password"},
+                    }),
+                    patch.object(retry_service.db, "update_account_login_password") as legacy_write,
+                    patch.object(retry_service.account_task_store, "get_task", return_value={}),
+                    patch.object(retry_service.account_task_store, "append_event"),
+                    patch.object(retry_service, "check_stop_requested"),
+                    patch("config.reload_all"),
+                    patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
+                    patch.object(password_recovery, "PasswordRecoverySession", return_value=session) as factory,
+                    patch.object(roxy_codex_oauth, "run_roxy_chatgpt_account_action", side_effect=browser_action),
+                ):
+                    result = retry_service.run_twofa_worker(
+                        "account@example.com", target_log_path=Path(directory) / "action.log", task_id=0,
+                        steps={"password"}, manage_task=False, clear_log=False, force_password_reset=True,
+                        execution_fence={"run_id": 702, "execution_id": "current-worker", "lease_token": "current-lease"},
+                    )
+                self.assertEqual(confirmed, result["ok"])
+                self.assertEqual("current-lease", factory.call_args.kwargs["operation_lease_token"])
+                session.resume.assert_called_once()
+                legacy_write.assert_not_called()
+
+    def test_manual_recovery_owner_requires_current_operation_lease(self):
+        fence = {"run_id": 702, "execution_id": "current-worker", "lease_token": "current-lease"}
+        owner = retry_service._manual_password_recovery_owner("account@example.com", 17, fence)
+        self.assertEqual({
+            "email": "account@example.com", "account_id": 17, "purpose": "manual",
+            "operation_run_id": 702, "operation_execution_id": "current-worker",
+            "operation_lease_token": "current-lease", "attempt_id": None,
+            "registration_run_id": None, "registration_execution_id": None,
+        }, owner)
+        with self.assertRaisesRegex(RuntimeError, "password_recovery_owner_missing"):
+            retry_service._manual_password_recovery_owner(
+                "account@example.com", 17, {"run_id": 702, "execution_id": "current-worker"},
+            )
+
+    def test_manual_change_handler_passes_real_execution_fence_to_worker(self):
+        fence = {"run_id": 702, "execution_id": "current-worker", "lease_token": "current-lease"}
+        context = SimpleNamespace(
+            run={"data": {"steps": ["password"]}}, task_type="password_change", config_snapshot={},
+            account_id=17, task_id=701, run_id=702, email="account@example.com",
+            report=Mock(), finished=False, last_result=None, execution_fence=fence,
+            lease=Mock(return_value=nullcontext()), remote_request_started=Mock(),
+            remote_request_receipt=Mock(), finish=Mock(),
+        )
+        with (
+            patch.object(runtime, "_completion_settings_from_snapshot", return_value={}),
+            patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
+                "ok": True, "status": "success",
+            }) as worker,
+            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
+        ):
+            result = runtime._handle_native_account_setup(context)
+        self.assertEqual("success", result.status)
+        self.assertEqual(fence, worker.call_args.kwargs["execution_fence"])
+
     def test_password_reset_calls_confirmed_checkpoint_only_after_relogin(self):
         driver = Mock()
         target = object()

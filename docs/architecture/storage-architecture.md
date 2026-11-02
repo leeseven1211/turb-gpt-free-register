@@ -46,6 +46,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（兼容模型） |
 | `extract_link_provider_jobs` | 按 Run 保存提链平台原单、付款材料和平台自带支付状态 |
 | `extract_link_payment_orders` | 独立支付尝试、稳定幂等键、远端订单身份、支付状态和加密恢复请求 |
+| `account_password_recoveries` | Roxy 原账号及手动改密的密文候选、执行归属和确认历史 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
 ### 独立支付订单
@@ -149,6 +150,8 @@ fence 校验下写回 Run 和账号投影；恢复先结算中断切片，已成
 和账号行数保持不变。
 
 `registration_attempts.private_context` 保存协议注册的原密码及私有恢复上下文，仅内部恢复接口读取；普通 Attempt/Run、operation 读模型与事件投影不返回该列。公开检查点只暴露 `has_password` 和 `password_state` 等阶段信息，区分准备、开始提交和远端确认；写入必须匹配当前 Run/执行实例。CLI 按规范化邮箱绑定稳定 Attempt，不能接管已有 WebUI 意图或正在运行的实例。2FA 待确认密钥不会写成已启用的 `totp_secret`，核心账号和完整 session 在后处理前保存。
+
+`account_password_recoveries` 独立保存 Roxy 原账号续跑及手动改密的私有恢复记录，不随任务历史清理级联删除。旧密码、唯一候选和账号密码版本摘要使用 `TURB_CONFIG_ENCRYPTION_KEY` 加密，普通账号、任务和事件投影不读取密文。检查点按 `prepared → started → unknown/confirmed` 推进；未完成候选按账号和邮箱唯一，重跑只在原执行结束后由真实的新执行接管。注册路径同时核验 OperationRun、RegistrationRun、Job 和 Attempt；手动路径核验当前操作执行及有效账号租约。候选登录明确确认后，在同一事务内校验密码版本、更新账号及同身份关联 Attempt 的当前密码，并保留密文历史与原有注册进度、Token 和套餐字段。缺少主密钥、归属不符或密码冲突均在提交新密码前失败。
 
 **派生列** 由 `TableSpec.derived` 声明：`deactivated` 从 `account_status` 推导。
 部分更新时，只有来源字段出现在本次改动里才重算，避免无关更新把它连带清零。

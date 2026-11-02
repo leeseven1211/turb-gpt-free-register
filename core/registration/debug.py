@@ -1586,6 +1586,7 @@ class _RoxyTargetCollector:
                     "target_id": self.target_id,
                     "redirect_index": self._redirect_seq[request_id],
                     "started_monotonic": params.get("timestamp"),
+                    "started_wall_time": params.get("wallTime"),
                     "method": request.get("method"),
                     "request_body_bytes": len(str(post_data).encode("utf-8")) if post_data is not None else 0,
                     "url": _raw_url(request.get("url")),
@@ -1616,6 +1617,8 @@ class _RoxyTargetCollector:
                             "request": True,
                             "request_id": request_id,
                             "target_id": self.target_id,
+                            **({"started_wall_time": params.get("wallTime")}
+                               if endpoint_kind == "password_submit" else {}),
                         })
                     except Exception:
                         logger.debug("[Debug] 认证请求事实分发失败", exc_info=True)

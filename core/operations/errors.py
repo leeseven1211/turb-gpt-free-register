@@ -819,6 +819,101 @@ def _error_projection(
     return result
 
 
+_PASSWORD_RECOVERY_STORAGE_CAUSES = {
+    'encryption_key_missing': ('configuration.missing', 'CFG-PWD-REC-001', '密码恢复主密钥未配置'),
+    'encryption_key_invalid': ('configuration.invalid', 'CFG-PWD-REC-002', '密码恢复主密钥格式无效'),
+    'credential_context_invalid': ('internal.storage', 'SYS-PWD-REC-001', '密码恢复私有凭据格式无效'),
+    'credential_decryption_failed': ('internal.storage', 'SYS-PWD-REC-002', '密码恢复私有凭据解密失败'),
+    'candidate_generation_failed': ('internal.code', 'SYS-PWD-REC-003', '密码恢复候选密码生成失败'),
+    'candidate_invalid': ('internal.code', 'SYS-PWD-REC-004', '密码恢复候选密码不符合保存要求'),
+}
+_PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
+    'owner_invalid': ('FLOW-PWD-REC-001', '密码恢复执行归属参数无效'),
+    'operation_inactive': ('FLOW-PWD-REC-002', '密码恢复操作已不在执行中'),
+    'operation_execution_mismatch': ('FLOW-PWD-REC-003', '密码恢复操作执行身份不匹配'),
+    'operation_identity_mismatch': ('FLOW-PWD-REC-004', '密码恢复操作与账号或邮箱不匹配'),
+    'registration_identity_mismatch': ('FLOW-PWD-REC-005', '密码恢复原注册任务身份不匹配'),
+    'registration_execution_mismatch': ('FLOW-PWD-REC-006', '密码恢复注册执行身份不匹配'),
+    'registration_operation_mapping_mismatch': ('FLOW-PWD-REC-007', '密码恢复注册任务与操作 Run 映射不匹配'),
+    'manual_operation_mismatch': ('FLOW-PWD-REC-008', '密码恢复手动操作归属不匹配'),
+    'account_identity_mismatch': ('FLOW-PWD-REC-009', '密码恢复账号与原邮箱不匹配'),
+    # 这是本地账号状态检查，不足以证明 OpenAI 已停用账号。
+    'account_deactivated': ('FLOW-PWD-REC-010', '本地账号已停用，密码恢复身份检查未通过'),
+    'operation_lease_invalid': ('FLOW-PWD-REC-011', '密码恢复当前账号租约无效'),
+    'owner_active': ('FLOW-PWD-REC-012', '密码恢复检查点仍由其他执行持有'),
+    'registration_attempt_conflict': ('FLOW-PWD-REC-013', '密码恢复检查点与当前注册 Attempt 冲突'),
+    'password_conflict': ('FLOW-PWD-REC-014', '密码恢复时账号密码版本冲突'),
+    'recovery_not_found': ('FLOW-PWD-REC-015', '密码恢复私有检查点不存在'),
+    'recovery_owner_mismatch': ('FLOW-PWD-REC-016', '密码恢复检查点执行归属不匹配'),
+    'attempt_password_conflict': ('FLOW-PWD-REC-017', '密码恢复时原注册 Attempt 密码版本冲突'),
+    'state_invalid': ('FLOW-PWD-REC-018', '密码恢复目标状态无效'),
+    'confirmation_invalid': ('FLOW-PWD-REC-019', '密码恢复缺少有效的明确确认类型'),
+    'version_conflict': ('FLOW-PWD-REC-020', '密码恢复检查点版本冲突'),
+    'state_transition_invalid': ('FLOW-PWD-REC-021', '密码恢复检查点不允许本次状态推进'),
+    'checkpoint_missing': ('FLOW-PWD-REC-022', '密码恢复尚未建立私有检查点'),
+    'owner_missing': ('FLOW-PWD-REC-023', '密码恢复缺少当前操作执行或原账号归属'),
+    'identity_unconfirmed': ('FLOW-PWD-REC-024', '密码恢复尚未确认原邮箱登录入口，候选已保留且未提交重置'),
+}
+_PASSWORD_RECOVERY_UNKNOWN_CAUSES = {
+    'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),
+    'candidate_login_unconfirmed': ('AUTH-PWD-REC-002', '密码恢复候选认证缺少本次配对成功响应，已保留私有检查点'),
+    'reset_result_unknown': ('AUTH-PWD-REC-003', '密码恢复新密码已提交，远端结果尚未确认，已保留私有检查点'),
+}
+
+
+def _password_recovery_error_projection(
+    raw: str, *, stage: str, error_code: str, summary: dict[str, Any],
+) -> dict[str, Any] | None:
+    """只读投影限定用途的恢复错误，不用裸版本冲突推断密码或远端状态。"""
+    suffix = ''
+    for candidate in (summary.get('cause_code'), error_code):
+        if isinstance(candidate, str) and candidate.startswith('password_recovery_'):
+            suffix = candidate.removeprefix('password_recovery_')
+            break
+    if not suffix:
+        matched = re.search(r'密码恢复失败[：:]\s*([A-Za-z0-9_]{1,100})(?![\w])', raw)
+        if matched:
+            suffix = matched.group(1)
+        else:
+            matched = re.search(r'(?<![\w])password_recovery_([a-z_]{1,100})(?![\w])', raw)
+            if matched:
+                suffix = matched.group(1)
+    if not suffix and '候选密码认证未取得本次配对成功响应，保留恢复检查点' in raw:
+        suffix = 'candidate_login_unconfirmed'
+    if not suffix and re.search(r'密码重置新密码已提交，但 \d+ 秒内未确认远端结果', raw):
+        suffix = 'reset_result_unknown'
+    if not suffix:
+        return None
+    if re.fullmatch(r'database_[A-Za-z0-9_]{1,80}', suffix):
+        suffix = 'database_error'
+        code, display, message = 'internal.storage', 'SYS-DB-PWD-REC', '密码恢复私有检查点数据库操作失败'
+    elif suffix in _PASSWORD_RECOVERY_STORAGE_CAUSES:
+        code, display, message = _PASSWORD_RECOVERY_STORAGE_CAUSES[suffix]
+    elif suffix in _PASSWORD_RECOVERY_WORKFLOW_CAUSES:
+        display, message = _PASSWORD_RECOVERY_WORKFLOW_CAUSES[suffix]
+        code = f'workflow.password_recovery.{suffix}'
+    elif suffix in _PASSWORD_RECOVERY_UNKNOWN_CAUSES:
+        display, message = _PASSWORD_RECOVERY_UNKNOWN_CAUSES[suffix]
+        code = 'request_unknown'
+    else:
+        # 将来出现未登记固定码时仍明确归为本地诊断遗漏，不冒充远端改密失败。
+        suffix = 'cause_unregistered'
+        code, display, message = 'internal.code', 'SYS-PWD-REC-005', '密码恢复返回未登记的本地错误原因'
+    source, source_label = (
+        ('internal', '内部存储' if code == 'internal.storage' else '内部错误') if code.startswith('internal.')
+        else ('configuration', '本地配置') if code.startswith('configuration.')
+        else ('workflow', '密码恢复流程')
+    )
+    projection = _error_projection(
+        code, source, source_label, message, stage=stage, error_code='', raw=raw,
+        summary=message, display_code=display,
+    )
+    projection.update(cause_code=f'password_recovery_{suffix}', cause_display_code=display, cause_summary=message)
+    if error_code:
+        projection['original_error_code'] = error_code
+    return projection
+
+
 def _email_change_error_projection(
     raw: str,
     haystack: str,
@@ -1760,6 +1855,22 @@ def classify_task_error(
             "禁止直接重试", "远端结果待确认", "结果待核验",
         ))
     )
+    recovery_projection = _password_recovery_error_projection(
+        raw, stage=stage, error_code=error_code, summary=summary_data,
+    )
+    if recovery_projection is not None:
+        # 本次只补主原因展示；沿用旧原文分类的恢复提示，避免细分类改变重跑资格。
+        previous = _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code) or {}
+        for name in ('retryability', 'remote_state_impact', 'next_action'):
+            recovery_projection.pop(name, None)
+            if name in previous:
+                recovery_projection[name] = previous[name]
+        if reconcile_required:
+            recovery_projection.update({
+                'reconcile_required': True, 'retryability': 'manual_only',
+                'remote_state_impact': 'unknown', 'next_action': 'manual_reconcile',
+            })
+        return recovery_projection
     cause = _stored_specific_error_cause(raw, task_type, summary_data) or _specific_error_cause(summary_data)
     if cause and cause["cause_code"].startswith("extract_order_"):
         stage = "remote_sync"

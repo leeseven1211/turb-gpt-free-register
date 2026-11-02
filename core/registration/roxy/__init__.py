@@ -169,6 +169,8 @@ def _unique_submission_receipt_for_endpoint(driver, endpoint_kind: str):
         item for item in history
         if getattr(item, "phase", "") not in {"prepared", "not_dispatched"}
         and _receipt_accepts_submission_endpoint(item, endpoint_kind)
+        and (endpoint_kind != "password_submit" or getattr(driver, "_browser_submission_receipt", None) is None
+             or item is driver._browser_submission_receipt)
         and not (endpoint_kind == "otp_resend" and getattr(item, "phase", "") == "confirmed"
                  and getattr(item, "request_binding", None) is not None)
     ]
@@ -195,6 +197,100 @@ def _submission_response_fact(endpoint_kind: str, status: object) -> tuple[str, 
     return "response_observed", ""
 
 
+def _password_reset_required_for_current_submission(driver) -> bool:
+    """只接纳当前密码派发页、本次 requestId 明确要求重置的响应。"""
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    if not isinstance(receipt, BrowserSubmissionReceipt):
+        return False
+    binding = receipt.request_binding
+    return bool(
+        receipt.kind == "resume_login" and receipt.stage == "login_password"
+        and receipt.endpoint_kind == "password_submit" and receipt.phase == "rejected"
+        and receipt.http_method == "POST" and type(receipt.http_status) is int and receipt.http_status == 401
+        and receipt.dispatch_target_id and binding and binding[0] == receipt.dispatch_target_id
+        and binding == receipt.response_binding and receipt.auth_error.get("code") == "password_reset_required"
+    )
+
+
+def _wait_for_current_password_reset_required(driver) -> bool:
+    """在原密码提交预算内，等待最多一轮采集正文延迟；不派发任何新动作。"""
+    if _password_reset_required_for_current_submission(driver):
+        return True
+    receipt = getattr(driver, "_browser_submission_receipt", None)
+    if not (isinstance(receipt, BrowserSubmissionReceipt)
+            and receipt.kind == "resume_login" and receipt.stage == "login_password"
+            and receipt.endpoint_kind == "password_submit" and receipt.http_method == "POST"
+            and receipt.phase in {"dispatch_intent", "ui_queued", "ui_dispatched", "request_observed", "response_observed", "rejected", "unknown"}
+            and receipt.dispatch_target_id and receipt.dispatch_started_at is not None):
+        return False
+    deadline = min(time.monotonic() + 2.2, receipt.dispatch_started_at + _password_transition_timeout_seconds())
+    while time.monotonic() < deadline:
+        _check_manual_stop()
+        if getattr(driver, "_browser_submission_receipt", None) is not receipt:
+            return False
+        if _password_reset_required_for_current_submission(driver):
+            return True
+        if receipt.request_binding is not None and receipt.request_binding == receipt.response_binding:
+            return False
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+    return _password_reset_required_for_current_submission(driver)
+
+
+def _registration_password_recovery_owner(email: str, facts: dict) -> dict | None:
+    """把本次注册执行映射到操作 Run，保留两套独立的执行标识。"""
+    from core import db
+    from core.storage.operations import store as operations
+
+    if not all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id", "job_id")):
+        raise RuntimeError("password_recovery_owner_missing: 当前注册执行身份不完整")
+    account = db.get_account_by_email(email) or {}
+    if not account.get("id"):
+        # 尚未形成本地账号的旧续跑不具备换密同步目标，保留原认证行为。
+        return None
+    job_id = int(facts["job_id"])
+    progress = operations.get_registration_progress([job_id]).get(job_id) or {}
+    operation_run_id = progress.get("operation_run_id")
+    operation_run = operations.get_run(int(operation_run_id)) if operation_run_id else None
+    if not operation_run or not operation_run.get("execution_id"):
+        raise RuntimeError("password_recovery_owner_missing: 原账号与当前操作 Run 无法核验")
+    return {
+        "email": email, "account_id": int(account["id"]), "purpose": "registration",
+        "operation_run_id": int(operation_run_id),
+        "operation_execution_id": str(operation_run["execution_id"]), "operation_lease_token": None,
+        "attempt_id": int(facts["attempt_id"]), "registration_run_id": int(facts["run_id"]),
+        "registration_execution_id": str(facts["execution_id"]),
+    }
+
+
+def _registration_password_recovery_session(email: str, facts: dict):
+    # 兼容不带真实 Run 的旧内部调用；这些入口无法获得自动重置资格。
+    if not all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id", "job_id")):
+        return None
+    from core.auth.browser.password_recovery import PasswordRecoverySession
+
+    owner = _registration_password_recovery_owner(email, facts)
+    return PasswordRecoverySession(**owner) if owner is not None else None
+
+
+def _recover_roxy_password(
+    driver, email: str, recovery, *, email_source: str | None, totp_secret: str | None = None,
+) -> str:
+    """恢复对象确认账号和 Attempt 同步后，才把新密码交回原注册流程。"""
+    if recovery is None:
+        raise RuntimeError("password_recovery_owner_missing: 当前执行没有可核验的密码恢复归属")
+    from core.codex.roxy.oauth import _reset_password_via_email
+
+    otp_provider = lambda address, **kwargs: wait_for_otp(address, email_source=email_source, **kwargs)
+    _reset_password_via_email(
+        driver, email, otp_provider, recovery=recovery, allow_profile_handoff=True,
+        totp_secret=str(totp_secret or ""),
+    )
+    checkpoint = recovery.checkpoint
+    if checkpoint is None or checkpoint.state != "confirmed":
+        raise RuntimeError("password_recovery_unconfirmed: 新密码尚未获得明确认证确认，已保留恢复检查点")
+    return checkpoint.password
+
+
 def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
     """为当前浏览器连接配对请求与响应，不发起任何认证请求。"""
     submission_requests = {}
@@ -214,6 +310,8 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
             str(meta.get("request_id") or ""),
         )
         endpoint_kind = str(meta.get("endpoint_kind") or "")
+        if endpoint_kind == "password_submit" and meta.get("http_method") != "POST":
+            return
         if (monitor_otp_network and endpoint_kind == "otp_submit"
                 and (not otp_target or request_key[0] != otp_target)):
             return
@@ -226,6 +324,9 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                 # 响应必须沿用请求时已绑定的回执，不重选当前提交或处理重复响应。
                 return
             if receipt.endpoint_kind == "profile_submit" and endpoint_kind != "profile_submit":
+                return
+            if receipt.endpoint_kind == "password_submit" and (
+                    endpoint_kind != "password_submit" or receipt.request_binding != request_key):
                 return
             if receipt.endpoint_kind == "otp_resend" and (
                     endpoint_kind != "otp_resend" or receipt.request_binding != request_key):
@@ -249,11 +350,19 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
             receipt = _unique_submission_receipt_for_endpoint(driver, endpoint_kind)
             if receipt is None:
                 return
-            if endpoint_kind == "otp_resend" and (
+            if endpoint_kind in {"otp_resend", "password_submit"} and (
                     not receipt.dispatch_target_id or receipt.dispatch_target_id != request_key[0]):
                 return
-            if endpoint_kind in {"profile_submit", "otp_resend"}:
-                # 一个资料或重发动作只接一个请求；迟到请求不能替换已经绑定的动作。
+            if endpoint_kind == "password_submit":
+                # CDP 回调可能排队到下一次动作之后；只用真实请求 wallTime
+                # 与本机派发 wall clock 比较，不混用 Chrome 和 Python 的 monotonic。
+                started, dispatched = meta.get("started_wall_time"), receipt.dispatch_wall_time
+                if not (type(started) in {int, float} and math.isfinite(started)
+                        and type(dispatched) in {int, float} and math.isfinite(dispatched)
+                        and 0 < dispatched <= started <= time.time() + 1.0):
+                    return
+            if endpoint_kind in {"profile_submit", "otp_resend", "password_submit"}:
+                # 一个资料、密码或重发动作只接一个请求；迟到请求不能替换已绑定动作。
                 if receipt.request_binding not in (None, request_key):
                     return
                 receipt.request_binding = request_key
@@ -265,7 +374,7 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                 receipt._otp_network_request_unknown = True
                 receipt._otp_network_http_status = None
             submission_requests[request_key] = receipt
-        if (meta.get("response") and (endpoint_kind == "profile_submit" or (
+        if (meta.get("response") and (endpoint_kind in {"profile_submit", "password_submit"} or (
                 monitor_otp_network and endpoint_kind == "otp_submit"
                 and receipt.endpoint_kind == "otp_submit" and receipt.request_binding == request_key))):
             from core.network.response_diagnostics import safe_auth_error
@@ -306,6 +415,14 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
             result=response_result,
             **({"error_type": error_type} if error_type else {}),
         )
+        if (meta.get("response") and endpoint_kind == "password_submit"
+                and receipt.request_binding == receipt.response_binding == request_key):
+            # DOM 确认可能早于 CDP 正文；只合并已配对的安全元数据，绝不回退已收口阶段。
+            safe = receipt.safe_fact(http_method=meta.get("http_method"), http_status=meta.get("http_status"))
+            if safe["http_status"] is not None:
+                receipt.http_status = safe["http_status"]
+            if safe["http_method"]:
+                receipt.http_method = safe["http_method"]
 
     return observe
 
@@ -1568,6 +1685,7 @@ def run_roxy_registration(
     cf_proxy_rotation_profile_id = ''
     existing_profile_unverified = False
     existing_profile_reconciliation = False
+    password_recovery = None
     native_signin_diagnostics = None
     email_entry_waiting = False
     try:
@@ -1643,6 +1761,16 @@ def run_roxy_registration(
         retained_state = None
         restart_login = False
         rejected_existing_profile = False
+        password_recovered_before_resume = False
+        if resume_scope and _browser_helpers is None:
+            password_recovery = _registration_password_recovery_session(email, context)
+            if password_recovery is not None and password_recovery.resume():
+                report_job_progress("login_password", "running", "正在恢复原账号未完成的密码检查点")
+                existing_password = _recover_roxy_password(
+                    driver, email, password_recovery, email_source=selected_email_source,
+                    totp_secret=existing_totp_secret,
+                )
+                password_recovered_before_resume = True
         if resume_scope:
             try:
                 private = registration.get_private_resume_context(int(context["attempt_id"]), email=email)
@@ -1655,11 +1783,12 @@ def run_roxy_registration(
             verified_resume_session = _read_registration_resume_session(driver, email)
             if verified_resume_session:
                 existing_profile_unverified = False
-        if retained:
+        if retained or password_recovered_before_resume:
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
                 verified_session=verified_resume_session,
-                otp_after_ts=retained.otp_after_ts,
+                otp_after_ts=(getattr(driver, "_registration_otp_after_ts", None)
+                              if password_recovered_before_resume else retained.otp_after_ts),
             )
             existing_password = retained_state.password
             restart_login = bool(getattr(retained_state, "restart_login", False))
@@ -1667,7 +1796,11 @@ def run_roxy_registration(
                 logger.info("[Roxy注册] 原认证提交仍未确认，使用原邮箱和保存密码自动继续登录")
                 retained_state = None
                 driver._registration_otp_tracker = None
-        otp_after_ts = retained.otp_after_ts if retained and not restart_login else time.time()
+        otp_after_ts = (
+            getattr(driver, "_registration_otp_after_ts", None)
+            if password_recovered_before_resume and not restart_login
+            else retained.otp_after_ts if retained and not restart_login else time.time()
+        )
         if (retained_state and retained_state.page_state == PageState.OTP_EMAIL
                 and retained_state.pending_otp is None and otp_after_ts is None):
             raise RuntimeError("request_unknown: 原验证码邮件时间未能核验，已保留原浏览器")
@@ -1829,9 +1962,21 @@ def run_roxy_registration(
                     on_password_prepared=_checkpoint_prepared_password,
                     on_password_submitted=_checkpoint_submitted_password,
                 ) or existing_password
-        except _PasswordTransitionTimeout:
-            report_job_progress("login_password", "failed", "已触发密码提交操作，远端结果仍待确认")
-            raise
+        except (PasswordPageError, _PasswordTransitionTimeout) as exc:
+            if not (resume_scope and _browser_helpers is None
+                    and _wait_for_current_password_reset_required(driver)):
+                if isinstance(exc, _PasswordTransitionTimeout):
+                    report_job_progress("login_password", "failed", "已触发密码提交操作，远端结果仍待确认")
+                raise
+            report_job_progress("login_password", "running", "本次密码验证明确要求重置，正在恢复原账号密码")
+            existing_password = openai_password = _recover_roxy_password(
+                driver, email, password_recovery, email_source=selected_email_source,
+                totp_secret=existing_totp_secret,
+            )
+            otp_after_ts = getattr(driver, "_registration_otp_after_ts", None)
+            # 重置后的页面由原 OTP/资料流程处理，不沿用已拒绝密码页的缓存状态。
+            retained_state = None
+            password_submitted_this_run = True
         except Exception as exc:
             if password_stage_expected and not verified_resume_session:
                 report_job_progress("login_password", "failed", f"账号密码处理失败: {type(exc).__name__}: {str(exc)[:180]}")
@@ -2684,6 +2829,13 @@ def run_roxy_registration(
             and bool(getattr(exc, "submission_unknown", False))
         )
         error_text = str(exc)
+        from core.storage.accounts.password_recovery import PasswordRecoveryError
+
+        password_recovery_error_code = (
+            f"password_recovery_{exc.code}" if isinstance(exc, PasswordRecoveryError)
+            else next((code for code in ("password_recovery_owner_missing", "password_recovery_unconfirmed")
+                       if error_text.startswith(f"{code}:")), "")
+        )
         account_unusable = isinstance(exc, AccountUnusableError)
         pre_account_transport_failure = _is_disposable_pre_account_failure(
             error_text,
@@ -2752,6 +2904,8 @@ def run_roxy_registration(
         auth_error_code = (
             ProfileAccountAlreadyExistsError.error_type
             if existing_profile_reconciliation
+            else password_recovery_error_code
+            if password_recovery_error_code
             else
             exc.code
             if isinstance(exc, (PasswordPageError, AuthPageError, EmailOtpNetworkError))
@@ -2781,6 +2935,7 @@ def run_roxy_registration(
             **native_failure_diagnostic,
             **({"cause_code": exc.code} if isinstance(exc, AuthPageError) else {}),
             **({"cause_code": exc.cause_code} if isinstance(exc, EmailOtpNetworkError) else {}),
+            **({"cause_code": password_recovery_error_code} if password_recovery_error_code else {}),
             'cf_proxy_rotation_ready': cf_proxy_rotation_ready,
             'cf_proxy_rotation_profile_id': cf_proxy_rotation_profile_id if cf_proxy_rotation_ready else '',
             **({'cf_proxy_rotation_context': {key: facts[key] for key in (

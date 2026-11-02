@@ -977,6 +977,7 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
                 plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
                 force_password_reset=force_password_reset,
                 force_twofa_change=force_twofa_change,
+                **({"execution_fence": context.execution_fence} if context.task_type == "password_change" else {}),
             )
         except Exception as exc:
             try:
