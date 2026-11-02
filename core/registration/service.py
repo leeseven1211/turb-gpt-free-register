@@ -471,7 +471,14 @@ def _ensure_registration_run_context(job: dict | None) -> dict | None:
         _THREAD_CTX.attempt_id = attempt_id
         _THREAD_CTX.run_id = int(run["id"]) if run.get("id") is not None else None
         _THREAD_CTX.execution_id = execution_id
-        return {"attempt_id": attempt_id, "run_id": getattr(_THREAD_CTX, "run_id", None), "execution_id": execution_id}
+        context = {"attempt_id": attempt_id, "run_id": getattr(_THREAD_CTX, "run_id", None), "execution_id": execution_id}
+        try:
+            from core.registration import debug as registration_debug
+
+            registration_debug.update_current_context(**context)
+        except Exception:
+            logger.exception("[Job %s] 同步注册调试上下文失败；注册流程继续执行", job_id)
+        return context
     except Exception:
         # Storage availability must not turn compatibility/test jobs into a
         # second failure path.  The job's legacy lifecycle remains authoritative
