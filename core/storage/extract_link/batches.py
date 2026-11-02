@@ -121,7 +121,7 @@ def normalize_filters(filters: dict | None) -> dict[str, str]:
     result["promotion"] = result["promotion"] or "eligible"
     if result["promotion"] not in _PROMOTION_FILTERS:
         raise ValueError("套餐优惠筛选无效")
-    if result["never_provider"] not in {"", "legacy", "lumen_flow", "huanguang"}:
+    if result["never_provider"] not in {"", "legacy", "lumen_flow", "huanguang", "anguang"}:
         raise ValueError("历史提链平台筛选无效")
     for key in ("date_from", "date_to"):
         if result[key]:

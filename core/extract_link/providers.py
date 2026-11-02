@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.extract_link.contracts import ProviderConfig, ProviderError
+from core.extract_link.anguang.client import AnguangProvider
 from core.extract_link.huanguang.client import HuanguangProvider
 from core.extract_link.legacy.client import LegacyProvider
 from core.extract_link.lumen_flow.client import LumenFlowProvider
@@ -10,6 +11,7 @@ _REGISTRY = {
     "legacy": LegacyProvider,
     "lumen_flow": LumenFlowProvider,
     "huanguang": HuanguangProvider,
+    "anguang": AnguangProvider,
 }
 
 

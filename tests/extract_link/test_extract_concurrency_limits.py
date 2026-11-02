@@ -16,9 +16,9 @@ class ExtractConcurrencyLimitTests(unittest.TestCase):
         with (
             patch("config.codex.ACCOUNT_BATCH_WORKERS", 1),
             patch.object(extract_link_service, "_provider_dispatch_capacity_limit",
-                         side_effect=lambda provider: {"legacy": 4, "lumen_flow": 7, "huanguang": 11}[provider]),
+                         side_effect=lambda provider: {"legacy": 4, "lumen_flow": 7, "huanguang": 11, "anguang": 3}[provider]),
         ):
-            self.assertEqual(22, configured_extract_workers())
+            self.assertEqual(25, configured_extract_workers())
 
     def test_dispatch_pools_do_not_block_each_other(self):
         from core.operations import task_gateway

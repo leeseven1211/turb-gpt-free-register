@@ -421,8 +421,30 @@ def list_recoverable_workbench_jobs() -> list[dict]:
               ))
               AND (job.provider_id NOT IN ('huanguang', 'legacy')
                    OR job.public_state->'summary'->'local_reconcile_halted' IS DISTINCT FROM 'true'::jsonb)
+              AND (job.provider_id<>'anguang' OR (
+                  job.payment_state<>'failed'
+                  AND COALESCE(job.public_state->'summary'->>'outcome', '')<>'REJECTED'
+                  AND job.public_state->'summary'->'remote_terminal_failure' IS DISTINCT FROM 'true'::jsonb
+                  AND (
+                      (job.private_data->>'anguang_submission_pending'='true'
+                       AND NULLIF(job.private_data->>'anguang_request_encrypted', '') IS NOT NULL)
+                      OR (NULLIF(BTRIM(job.job_id), '') IS NOT NULL AND (
+                          (job.payment_state<>'succeeded'
+                           AND job.public_state->'summary'->'automatic_payment_terminal' IS DISTINCT FROM 'true'::jsonb
+                           AND (job.extraction_state IN ('pending', 'queued', 'running', 'unknown')
+                                OR job.payment_state IN ('pending', 'not_started', 'unknown')))
+                          OR (job.payment_state='succeeded'
+                              AND job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed'
+                              AND (run.status='interrupted'
+                                   OR run.result_summary->>'cause_code'='worker_interrupted'
+                                   OR job.public_state->'summary'->'local_plan_check_pending'='true'::jsonb))
+                      ))
+                  )
+              ))
               AND (
                   (job.provider_id<>'huanguang' AND NULLIF(BTRIM(job.job_id), '') IS NOT NULL)
+                  OR (job.provider_id='anguang' AND job.private_data->>'anguang_submission_pending'='true'
+                      AND NULLIF(job.private_data->>'anguang_request_encrypted', '') IS NOT NULL)
                   OR (job.provider_id='huanguang' AND (
                       (job.private_data->>'batch_receipt_pending'='true'
                        AND NULLIF(job.private_data->>'batch_receipt_secret', '') IS NOT NULL)
@@ -607,7 +629,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         private = _json_object(job["private_data"], field_name="平台恢复数据")
         result_summary = _json_object(run.get("result_summary") or {}, field_name="执行摘要")
         interrupted_verification = (
-            job["provider_id"] == "legacy" and job["payment_state"] == "succeeded"
+            job["provider_id"] in {"legacy", "anguang"} and job["payment_state"] == "succeeded"
             and (run["status"] == "interrupted" or result_summary.get("cause_code") == "worker_interrupted")
             and (isinstance(private.get("local_reconcile"), dict) or summary.get("local_plan_check_pending") is True)
         )
@@ -722,7 +744,7 @@ def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, 
         "COALESCE(task.data->>'payment_source', 'native')<>'xxsyun'",
         "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success','interrupted')",
         "task.status IN ('attention_required','request_unknown','partial_success','success','interrupted')", "run.cancel_requested_at IS NULL",
-        "job.provider_id IN ('huanguang','legacy','lumen_flow')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
+        "job.provider_id IN ('huanguang','legacy','lumen_flow','anguang')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
         "(run.status<>'success' OR job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed')",
     ]
     params = []

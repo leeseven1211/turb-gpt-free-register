@@ -1455,7 +1455,15 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 ### 提链平台配置
 
-提链工作台由 `EXTRACT_LINK_ENABLED` 总开关控制，默认平台为虾扯蛋链（内部标识 `legacy`），默认模式为 `extract_only`。全局提取、手动支付、自动支付和支付后检查/刷新 AT/查询套餐开关，与对应平台开关取交集；自动支付及支付后操作默认关闭。支付后刷新 AT 还依赖支付后检查，并且只在检查确认 AT 失效时触发。每个平台可单独设置启用状态、能力开关和并发，默认并发为 1；`lumen_flow`、`huanguang` 新平台默认关闭。
+提链工作台由 `EXTRACT_LINK_ENABLED` 总开关控制，默认平台为虾扯蛋链（内部标识 `legacy`），默认模式为 `extract_only`。全局提取、手动支付、自动支付和支付后检查/刷新 AT/查询套餐开关，与对应平台开关取交集；自动支付及支付后操作默认关闭。支付后刷新 AT 还依赖支付后检查，并且只在检查确认 AT 失效时触发。每个平台可单独设置启用状态、能力开关和并发，默认并发为 1；`lumen_flow`、`huanguang`、`anguang` 新平台默认关闭。
+
+**暗光（XXSYUN 一条龙）**是独立提链平台，内部标识为 `anguang`，配置位于“配置 → 提链 → 暗光（XXSYUN 一条龙）”。服务入口为 [ytc.xxsyun.xyz](https://ytc.xxsyun.xyz)，[接口文档](https://ytc.xxsyun.xyz/api-docs)对应的 API 根地址为 `https://ytc.xxsyun.xyz/openapi/v1`。它与普通独立扫码的 `https://upi.xxsyun.xyz/api/v1` 是两个接口，必须单独配置 `EXTRACT_LINK_ANGUANG_API_KEY` 一条虫 Key；普通扫码 Key 不受理。系统不会迁移或复制 `EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY`、幻光后台备用扫码 Key 或其他平台凭据。密钥加密保存在运行配置数据库中，配置 API 只返回是否已配置，任务快照不包含明文。
+
+暗光仅支持 `auto_payment` / UPI，支付来源固定为 `native`。平台必自动扫码，不能关闭，因此不提供纯提链或手动支付开关，也不会另外向独立 XXSYUN 提交扫码订单。`EXTRACT_LINK_ANGUANG_ENABLED` 与 `EXTRACT_LINK_ANGUANG_AUTO_PAYMENT_ENABLED` 均默认关闭；使用前需显式启用全局自动支付及暗光平台自动支付并保存独立 Key。选择暗光不会自动开启这些开关，也不会把默认的 `extract_only` 模式转换成自动付款。
+
+暗光默认并发 `EXTRACT_LINK_ANGUANG_CONCURRENCY=1`，支持 1–50；请求超时默认 30 秒（5–300），轮询间隔默认 10 秒（10–300），每轮查询一次原单后释放执行线程，按配置间隔定时续查。`EXTRACT_LINK_ANGUANG_PROCESSING_MODE=STANDARD` 使用流光，`STRICT` 使用 sea；首版仅接入 Plus，`EXTRACT_LINK_ANGUANG_PLAN_NAME` 固定接受 `chatgptplusplan`，由本地独立套餐查询核验到账。`EXTRACT_LINK_ANGUANG_AUTO_RETRY=false` 默认关闭平台内部自动重试。这些设置在任务创建时固定，原单同步沿用原请求。价格、积分扣费及套餐可用性以平台实际和账户接口为准，不使用普通扫码余额代替一条龙账户额度。
+
+暗光返回 `status=SUCCEEDED` 只表示出链；`scan.status=completed`（界面说明中的 `scan.completed`）表示扫码完成。Plus 到账由本地独立套餐查询核对，工作台分别显示提链、支付与 Plus 核验结果，不把出链成功当作支付成功或 Plus 已到账。
 
 提链前行为可在“配置 → 提链 → 通用配置”调整：`EXTRACT_LINK_PREFLIGHT_ENABLED` 控制“提链前预检”，`EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED` 控制“预检失败时刷新 AT”，两项默认开启，保持原有流程。保存后热加载，对下一次执行或重跑生效；已开始的执行沿用本次设置。只有启用预检并确认 AT 失效时才会按刷新开关尝试刷新；关闭刷新后，预检确认 AT 失效会结束本次提链。关闭预检后直接使用库中保存的 AT，不执行提链前检查或刷新；账号是否归档、停用、缺少 AT 等基础资格仍会校验。
 
@@ -1509,7 +1517,7 @@ XXSYUN Key 下方的“查询剩余次数”单独查询备用扫码额度，不
 
 提链工作台通过“新建批次”按注册日期、邮箱来源、邮箱搜索、历史提链状态和套餐优惠筛选账号。套餐优惠可选全部（包含已确认有优惠和无优惠）、全部可提链优惠、Plus 免费试用、半价、其他折扣、其他优惠或无优惠；“无优惠”需单独选择，表示本地上次成功查询未发现 Plus 优惠，不代表当前没有优惠，提链结果以平台实际返回为准。未知、套餐待查及非 free 套餐不进入提链批次。预览显示总匹配数、本批计划数与前 20 个账号，无需逐个勾选。提交和执行前都会重新校验资格，排除归档、停用、没有 AT 或正在执行交互任务的账号；AT 过期的账号仍可进入批次，并按通用配置决定是否预检和刷新。新建批次可按所选平台选择提链类型，幻光当前仅支持 UPI。每批可设置并发账号数（1–50），默认值由配置项 `EXTRACT_LINK_BATCH_WORKERS` 控制。该值保存在批次中，任务重跑继续沿用；实际运行同时受本批并发和平台并发限制。旧批次没有单独并发值时沿用平台并发限制。
 
-候选预览和批次创建 API 的 `filters` 支持 `never_provider`（空值、`legacy`、`lumen_flow` 或 `huanguang`），筛选未在指定平台运行过的账号；该条件与全局 `extract_status` 同时生效。`promotion=all` 包含已知优惠和已确认无优惠，不包含优惠未知或套餐待查的账号。
+候选预览和批次创建 API 的 `filters` 支持 `never_provider`（空值、`legacy`、`lumen_flow`、`huanguang` 或 `anguang`），筛选未在指定平台运行过的账号；该条件与全局 `extract_status` 同时生效。`promotion=all` 包含已知优惠和已确认无优惠，不包含优惠未知或套餐待查的账号。
 
 “启用平台”只控制平台开关；新建批次还要求该平台配置有效 API 地址和 CDK。启用但缺少连接配置的平台会在平台选项中显示为不可用并说明缺项。
 
@@ -1614,7 +1622,7 @@ ENABLE_CODEX_AUTO = False
 │   │   ├── email_butler/ / icloud_hide/ / gptmail/ / mailnest/
 │   │   └── remail/ / mailcode/ / xigua/ / cloudmail/
 │   ├── extract_link/               # 提链服务、查询、对账、支付确认与公共契约
-│   │   └── legacy/ / lumen_flow/ / huanguang/ # 各平台客户端
+│   │   └── legacy/ / lumen_flow/ / huanguang/ / anguang/ # 各平台客户端
 │   ├── proxy/ / sms/               # 代理租约、库存、线路与接码生命周期
 │   ├── operations/                 # 跨业务任务、执行池、进度、取消、日志与保留策略
 │   ├── storage/                    # PostgreSQL 基础设施与按业务归组的仓储

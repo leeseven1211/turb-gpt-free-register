@@ -196,7 +196,8 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
 
         with (
             patch.object(extract_link_service, "_bool_setting", return_value=True),
-            patch.object(extract_link_service, "_provider_enabled", return_value=True),
+            patch.object(extract_link_service, "_provider_enabled",
+                         side_effect=lambda provider_id: provider_id in {"legacy", "lumen_flow", "huanguang"}),
             patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
             patch.object(extract_link_service, "_provider_configuration", side_effect=provider_configuration),
             patch.object(extract_link_service, "_runtime_setting", side_effect=lambda key, default=None: default),

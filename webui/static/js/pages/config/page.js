@@ -445,7 +445,7 @@ const CONFIG_EXTRACT_LINK_LEGACY_KEYS_V2 = new Set([
   'EXTRACT_LINK_REQUEST_TIMEOUT', 'EXTRACT_LINK_EVENT_TIMEOUT',
 ]);
 const CONFIG_EXTRACT_LINK_PROVIDER_LABELS_V2 = Object.freeze({
-  legacy: '虾扯蛋链', lumen_flow: '流光', huanguang: '幻光',
+  legacy: '虾扯蛋链', lumen_flow: '流光', huanguang: '幻光', anguang: '暗光（XXSYUN 一条龙）',
 });
 function extractLinkProviderEnabledKeyV2(providerId) {
   return `EXTRACT_LINK_${String(providerId || '').trim().toUpperCase()}_ENABLED`;
@@ -1663,6 +1663,7 @@ function renderExtractLinkSectionV2(fields) {
       <div class="config-subtabs-v2" role="group" aria-label="提链配置分类">
         ${sections.map(section => `<button type="button" data-extract-link-tab="${attrEsc(section)}" class="${section === active ? 'active' : ''}" aria-pressed="${section === active}">${esc(section)}</button>`).join('')}
       </div>
+      ${selectedProvider?.value === 'anguang' ? '<p class="config-section-v2-subhelp">仅支持 UPI 自动支付；平台必自动扫码，不能关闭。SUCCEEDED 只表示出链，scan.completed 表示扫码完成；Plus 由本地独立核对。必须单独配置一条虫 Key，普通扫码 Key 不受理，不迁移或复制普通扫码配置。</p>' : ''}
       ${body}
       ${renderConfigSaveActions()}
     </section>

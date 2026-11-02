@@ -30,7 +30,7 @@ _MAX_BATCH_WORKERS = 50
 _CANDIDATE_FILTER_FIELDS = {"query", "source", "date_from", "date_to", "extract_status", "promotion", "never_provider"}
 _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none", "all"}
-_NEVER_PROVIDERS = {"", "legacy", "lumen_flow", "huanguang"}
+_NEVER_PROVIDERS = {"", "legacy", "lumen_flow", "huanguang", "anguang"}
 _BATCH_COUNT_FIELDS = (
     "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
     "plus_confirmed", "needs_attention",
@@ -169,6 +169,16 @@ def _public_config(value: Any) -> dict[str, Any] | None:
         link_types = provider.get("link_types")
         if not isinstance(link_types, list):
             link_types = []
+        payment_details = {}
+        if provider["id"] == "anguang":
+            payment_details = {"payment_source": "native", "payment_source_label": "平台自带", "payment_sources": ["native"]}
+        elif "payment_source" in provider:
+            independent = provider.get("payment_source") == "xxsyun"
+            payment_details = {
+                "payment_source": "xxsyun" if independent else "native",
+                "payment_source_label": "XXSYUN" if independent else "平台自带",
+                "payment_sources": ["native", "xxsyun"],
+            }
         providers.append({
             "id": provider["id"],
             "label": provider.get("label") if isinstance(provider.get("label"), str) else provider["id"],
@@ -178,9 +188,7 @@ def _public_config(value: Any) -> dict[str, Any] | None:
                 if isinstance(value, str) and value in extract_link_service.SUPPORTED_LINK_TYPES
             )),
             "modes": [mode for mode in modes if isinstance(mode, str) and mode in _MODES],
-            **({"payment_source": "xxsyun" if provider.get("payment_source") == "xxsyun" else "native",
-                "payment_source_label": "XXSYUN" if provider.get("payment_source") == "xxsyun" else "平台自带",
-                "payment_sources": ["native", "xxsyun"]} if "payment_source" in provider else {}),
+            **payment_details,
         })
     unavailable_providers = []
     unavailable = value.get("unavailable_providers")

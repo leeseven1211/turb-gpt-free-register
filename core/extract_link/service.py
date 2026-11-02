@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 import os
 import re
 import threading
@@ -246,6 +247,12 @@ _PROVIDER_SETTINGS = {
         "concurrency_key": "EXTRACT_LINK_HUANGUANG_CONCURRENCY",
         "supports": {"extract_only": True, "manual_payment": True, "auto_payment": True},
     },
+    "anguang": {
+        "label": "暗光（XXSYUN 一条龙）",
+        "prefix": "EXTRACT_LINK_ANGUANG",
+        "concurrency_key": "EXTRACT_LINK_ANGUANG_CONCURRENCY",
+        "supports": {"extract_only": False, "manual_payment": False, "auto_payment": True},
+    },
 }
 
 
@@ -286,6 +293,11 @@ def _provider_mode_enabled(provider_id: str, mode: str, payment_source: str = "n
         return False
     if not provider["supports"].get(mode, False):
         return False
+    if provider_id == "anguang":
+        return bool(payment_source == "native"
+            and _bool_setting("EXTRACT_LINK_AUTO_PAYMENT_ENABLED", False)
+            and _bool_setting("EXTRACT_LINK_ANGUANG_AUTO_PAYMENT_ENABLED", False)
+            and str(_runtime_setting("EXTRACT_LINK_ANGUANG_API_KEY", "") or "").strip())
     if mode == "auto_payment" and payment_source == "xxsyun":
         from core.payments.runtime import configuration
         return bool(_provider_mode_enabled(provider_id, "extract_only")
@@ -327,14 +339,18 @@ def _provider_configuration(provider_id: str, *, for_query: bool = False):
     if not settings:
         raise ValueError("未知提链平台")
     prefix = settings["prefix"]
-    saved_query = for_query and provider_id == "legacy"
+    saved_query = for_query and provider_id in {"legacy", "anguang"}
     if not saved_query and not _bool_setting("EXTRACT_LINK_ENABLED", True):
         raise ValueError("提链工作台已关闭")
     if not saved_query and not _bool_setting(f"{prefix}_ENABLED", provider_id == "legacy"):
         raise ValueError("提链平台未启用")
     config_prefix = settings.get("config_prefix", prefix)
-    api_base = _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", ""))
-    cdk = str(_runtime_setting(f"{config_prefix}_CDK", "") or "").strip()
+    default_base = "https://ytc.xxsyun.xyz/openapi/v1" if provider_id == "anguang" else ""
+    api_base = _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", default_base))
+    credential_name = f"{config_prefix}_API_KEY" if provider_id == "anguang" else f"{config_prefix}_CDK"
+    cdk = str(_runtime_setting(credential_name, "") or "").strip()
+    if saved_query and provider_id == "anguang" and not api_base:
+        api_base = default_base
     if not api_base or (not cdk and not saved_query):
         raise ValueError("提链平台 API 地址或 CDK 未配置")
     default_type = str(_runtime_setting(f"{config_prefix}_DEFAULT_TYPE", "") or "").strip().lower()
@@ -342,12 +358,13 @@ def _provider_configuration(provider_id: str, *, for_query: bool = False):
         default_type = str(_runtime_setting("EXTRACT_LINK_TYPE", "pix") or "pix").strip().lower()
     if default_type not in SUPPORTED_LINK_TYPES:
         default_type = "pix"
-    if provider_id == "huanguang":
+    if provider_id in {"huanguang", "anguang"}:
         # 兼容旧版配置写入的 pix；当前平台仅开放 UPI。
         default_type = "upi"
     timeout = _int_setting(f"{config_prefix}_REQUEST_TIMEOUT", 30, 5, 300)
     event_timeout = _int_setting(f"{config_prefix}_EVENT_TIMEOUT", 180, 30, 900)
-    poll_interval = _int_setting(f"{config_prefix}_POLL_INTERVAL", 5, 1, 60)
+    poll_interval = (_int_setting(f"{config_prefix}_POLL_INTERVAL", 10, 10, 300) if provider_id == "anguang"
+                     else _int_setting(f"{config_prefix}_POLL_INTERVAL", 5, 1, 60))
     capabilities = {
         "extract": _provider_mode_enabled(provider_id, "extract_only"),
         "payment": (
@@ -356,6 +373,9 @@ def _provider_configuration(provider_id: str, *, for_query: bool = False):
         ),
         "auto_payment": _provider_mode_enabled(provider_id, "auto_payment"),
     }
+    if provider_id == "anguang":
+        # 平台的一条龙创建包含提链，但不提供独立的纯提链模式。
+        capabilities["extract"] = saved_query or capabilities["auto_payment"]
     config = ProviderConfig(
         provider_id=provider_id,
         api_base=api_base,
@@ -444,6 +464,11 @@ def _provider(provider_id: str, runtime_config=None):
     from core.extract_link.providers import get_provider
 
     runtime_config = runtime_config or _provider_configuration(provider_id)
+    if provider_id == "anguang":
+        from core.extract_link.anguang.client import AnguangHTTPTransport
+
+        return get_provider(provider_id, config=runtime_config.config,
+                            transport=AnguangHTTPTransport(runtime_config.api_base))
     payment_options = {}
     if provider_id == "legacy":
         payment_options["payment_transport"] = _ProviderHTTPTransport(
@@ -474,7 +499,8 @@ def workbench_config() -> dict:
                     missing = []
                     if not _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", "")):
                         missing.append("API 地址")
-                    if not str(_runtime_setting(f"{config_prefix}_CDK", "") or "").strip():
+                    credential_name = f"{config_prefix}_API_KEY" if provider_id == "anguang" else f"{config_prefix}_CDK"
+                    if not str(_runtime_setting(credential_name, "") or "").strip():
                         missing.append("CDK")
                     if missing == ["API 地址", "CDK"]:
                         reason = "缺少API地址和平台授权信息"
@@ -495,7 +521,7 @@ def workbench_config() -> dict:
             except TypeError:
                 continue
             from core.extract_link.independent_payment import configured_source
-            payment_source = configured_source(provider_id, _runtime_setting)
+            payment_source = "native" if provider_id == "anguang" else configured_source(provider_id, _runtime_setting)
             modes = [
                 mode for mode in ("extract_only", "manual_payment", "auto_payment")
                 if _provider_mode_enabled(provider_id, mode, payment_source)
@@ -519,7 +545,7 @@ def workbench_config() -> dict:
                 "modes": modes,
                 "payment_source": payment_source,
                 "payment_source_label": "XXSYUN" if payment_source == "xxsyun" else "平台自带",
-                "payment_sources": ["native", "xxsyun"],
+                "payment_sources": ["native"] if provider_id == "anguang" else ["native", "xxsyun"],
             })
     default_provider = str(_runtime_setting("EXTRACT_LINK_DEFAULT_PROVIDER", "legacy") or "legacy").strip()
     if not any(item["id"] == default_provider for item in providers):
@@ -569,7 +595,7 @@ DEFAULT_LINK_TYPE_ORDER = (
 def _provider_link_types(provider_id: str) -> list[str]:
     """返回服务端可校验的平台提链类型选项。"""
     provider_id = str(provider_id or "").strip().lower()
-    if provider_id == "huanguang":
+    if provider_id in {"huanguang", "anguang"}:
         return ["upi"]
     if provider_id == "lumen_flow":
         return [value for value in DEFAULT_LINK_TYPE_ORDER if value not in {"ideal_short", "ph_short"}]
@@ -1856,13 +1882,28 @@ def _provider_link_type(provider_id: str, value: object, default: str) -> str:
         raise ValueError("提链类型无效")
     if provider_id == "lumen_flow" and link_type in {"ideal_short", "ph_short"}:
         raise ValueError("Lumen Flow 不支持当前提链类型")
-    if provider_id == "huanguang" and link_type != "upi":
-        raise ValueError("幻光当前仅支持 UPI 提链")
+    if provider_id in {"huanguang", "anguang"} and link_type != "upi":
+        raise ValueError(f"{_PROVIDER_SETTINGS[provider_id]['label']}当前仅支持 UPI 提链")
     return link_type
 
 
 def _provider_request_options(provider_id: str, options: object, *, mode: str, link_type: str) -> dict:
     source = options if isinstance(options, dict) else {}
+    if provider_id == "anguang":
+        if mode != "auto_payment" or link_type != "upi":
+            raise ValueError("暗光仅支持 UPI 原生自动支付")
+        result = {
+            "processing_mode": source.get("processing_mode", _runtime_setting("EXTRACT_LINK_ANGUANG_PROCESSING_MODE", "STANDARD")),
+            "plan_name": source.get("plan_name", _runtime_setting("EXTRACT_LINK_ANGUANG_PLAN_NAME", "chatgptplusplan")),
+            "auto_retry": source.get("auto_retry", _bool_setting("EXTRACT_LINK_ANGUANG_AUTO_RETRY", False)),
+        }
+        if not isinstance(result["processing_mode"], str) or result["processing_mode"] not in {"STANDARD", "STRICT"}:
+            raise ValueError("暗光处理模式无效")
+        if result["plan_name"] != "chatgptplusplan":
+            raise ValueError("暗光工作台当前仅支持 Plus 套餐")
+        if type(result["auto_retry"]) is not bool:
+            raise ValueError("暗光自动重试必须是布尔值")
+        return result
     if provider_id == "legacy":
         if mode == "auto_payment" and link_type != "upi":
             raise ValueError("虾扯蛋链自动支付仅支持 UPI")
@@ -2022,7 +2063,10 @@ def _provider_has_reference(job) -> bool:
     if not isinstance(job, dict):
         return False
     summary = (job.get("public_state") or {}).get("summary") or {}
-    return bool(job.get("job_id") or summary.get("submission_receipt_pending") is True)
+    private = job.get("private_data") or {}
+    return bool(job.get("job_id") or summary.get("submission_receipt_pending") is True
+                or (job.get("provider_id") == "anguang" and private.get("anguang_submission_pending") is True
+                    and private.get("anguang_request_encrypted")))
 
 
 def _provider_resume_private(provider_id, private, state):
@@ -2050,6 +2094,38 @@ def _legacy_needs_continuation(state: dict, *, mode: str) -> bool:
     return (state.get("extraction_state") in {"pending", "queued", "running", "unknown"}
             or (mode == "auto_payment" and state.get("payment_state") in {"pending", "not_started", "unknown"}
                 and summary.get("automatic_payment_terminal") is not True))
+
+
+def _anguang_needs_continuation(state: dict) -> bool:
+    """原生扫码未结束或提交回执不明时，仅继续同步同一提交意图。"""
+    summary = state.get("summary") or {}
+    if (summary.get("outcome") == "REJECTED" or state.get("payment_state") in {"succeeded", "failed"}
+            or summary.get("automatic_payment_terminal") is True or summary.get("remote_terminal_failure") is True):
+        return False
+    return bool(summary.get("submission_receipt_pending") is True or summary.get("remote_polling") is True
+                or state.get("extraction_state") in {"pending", "queued", "running", "unknown"}
+                or (state.get("extraction_state") == "succeeded"
+                    and state.get("payment_state") in {"not_started", "pending", "unknown"}))
+
+
+def _provider_submission_rejected(state: dict, *, provider_id: str) -> bool:
+    summary = state.get("summary") or {}
+    return bool(str(summary.get("outcome") or "").upper() == "REJECTED" or (
+        provider_id == "anguang" and state.get("extraction_state") == "failed"
+        and summary.get("submission_receipt_pending") is False
+        and summary.get("automatic_payment_terminal") is True))
+
+
+def _defer_anguang_job(context, runtime, state, private, *, job_id, reason="等待暗光原单同步"):
+    state["message"] = reason
+    _update_provider_job(context, "anguang", job_id or None, state, private)
+    not_before = private.get("anguang_retry_not_before")
+    delay = max(10, runtime.poll_interval)
+    if type(not_before) in {int, float} and math.isfinite(not_before):
+        delay = max(delay, math.ceil(not_before - time.time()))
+    context.defer(delay_seconds=delay, reason=reason, data={
+        "extract_poll_continuation": True, "workbench_action": "sync_status", "provider_job_run_id": context.run_id,
+    })
 
 
 def _legacy_awaiting_platform_plus(state: dict, private: dict) -> bool:
@@ -2199,6 +2275,8 @@ def _workbench_creation_route(provider_id, mode, link_type, options, payment_sou
     from core.extract_link.independent_payment import configured_source
 
     source = payment_source or (configured_source(provider_id, _runtime_setting) if mode == "auto_payment" else "native")
+    if provider_id == "anguang" and source != "native":
+        raise ValueError("暗光一条龙仅支持平台原生自动支付")
     if not _provider_mode_enabled(provider_id, mode, source):
         raise ValueError("当前配置未启用该平台或运行模式")
     runtime = _provider_configuration(provider_id)
@@ -2611,17 +2689,20 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
 
     requested_action = str(action or "").strip().lower()
     from core.extract_link.independent_payment import frozen_source, perform_action
-    if frozen_source(data) == "xxsyun":
+    if provider_id != "anguang" and frozen_source(data) == "xxsyun":
         return perform_action({**task, "id": task_id}, action=requested_action, latest_run_id=latest_run_id,
                               prior_job=prior_job, service=__import__(__name__, fromlist=["service"]))
-    saved_legacy_query = provider_id == "legacy" and requested_action == "sync_status" and _provider_has_reference(prior_job)
+    saved_legacy_query = (provider_id in {"legacy", "anguang"}
+        and (requested_action == "sync_status" or (provider_id == "anguang" and requested_action == "retry"))
+        and _provider_has_reference(prior_job))
     if not saved_legacy_query and (not _bool_setting("EXTRACT_LINK_ENABLED", True) or not _provider_enabled(provider_id)):
         return {"accepted": False}
     workbench_action = requested_action
     run_data = {"provider_id": provider_id, "mode": mode}
     if requested_action == "retry":
         halted = provider_id == "huanguang" and (prior_state.get("summary") or {}).get("local_reconcile_halted") is True
-        if not halted and _provider_has_reference(prior_job) and str(prior_state.get("extraction_state") or "") not in {"failed"}:
+        if _provider_has_reference(prior_job) and (provider_id == "anguang" or (
+                not halted and str(prior_state.get("extraction_state") or "") not in {"failed"})):
             workbench_action = "sync_status"
         else:
             if not _provider_mode_enabled(provider_id, mode):
@@ -2659,7 +2740,7 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
             "provider_id": provider_id,
             "mode": mode,
             "provider_job_run_id": latest_run_id,
-            **({"extract_poll_continuation": False} if provider_id == "huanguang" else {}),
+            **({"extract_poll_continuation": False} if provider_id in {"huanguang", "anguang"} else {}),
         })
     else:
         run_data["provider_job_run_id"] = latest_run_id if workbench_action == "sync_status" else None
@@ -2810,6 +2891,10 @@ def _restore_huanguang_proxy_references(private):
 def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id, mode, action):
     """在有限预算内跟踪远端任务，并持久化可供排障的安全进度。"""
     from core.extract_link.contracts import ProviderJob
+
+    if provider_id == "anguang":
+        # 每段只提交或读取一次，调度器延迟 10 秒续查，释放工作线程。
+        return job, state, ""
 
     started_at = time.monotonic()
     deadline = started_at + runtime.event_timeout
@@ -3116,7 +3201,8 @@ def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id:
 
 def _handle_provider_operation(context):
     from core.extract_link.independent_payment import frozen_source, handle
-    if frozen_source(context.run.get("data")) == "xxsyun":
+    run_data = context.run.get("data") or {}
+    if str(run_data.get("provider_id") or "").strip().lower() != "anguang" and frozen_source(run_data) == "xxsyun":
         import sys
         return handle(context, sys.modules[__name__])
     from core.extract_link.contracts import ExtractRequest, ProviderJob
@@ -3125,8 +3211,11 @@ def _handle_provider_operation(context):
     data = context.run.get("data") if isinstance(context.run.get("data"), dict) else {}
     provider_id = str(data.get("provider_id") or "legacy").strip().lower()
     mode = str(data.get("mode") or "extract_only").strip().lower()
+    if provider_id == "anguang" and frozen_source(data) != "native":
+        context.finish(status="failed", message="暗光一条龙仅支持平台原生自动支付", error="暗光支付来源无效")
+        return None
     action = str(data.get("workbench_action") or "create").strip().lower()
-    continuation = provider_id in {"huanguang", "legacy"} and data.get("extract_poll_continuation") is True
+    continuation = provider_id in {"huanguang", "legacy", "anguang"} and data.get("extract_poll_continuation") is True
     if continuation:
         action = "sync_status"
     if context.account_id is None:
@@ -3140,6 +3229,11 @@ def _handle_provider_operation(context):
     if db.account_is_deactivated(account):
         context.finish(status="cancelled", message="账号已停用，取消提链", error="账号已停用")
         return None
+    # 同一执行重入时，先恢复发送前落盘的意图，不能再走预检覆盖原材料。
+    prior_run_id = int(data.get("provider_job_run_id") or (context.run_id if continuation or provider_id == "anguang" else 0))
+    prior_job = _provider_job_for_sync(prior_run_id) if prior_run_id else None
+    if provider_id == "anguang" and _provider_has_reference(prior_job):
+        action = "sync_status"
     from core.accounts.plans import promotion as plus_promotion
     if action == "create" and not (plus_promotion.is_extract_link_eligible(account) or (
         data.get("allow_no_promotion") is True
@@ -3147,9 +3241,7 @@ def _handle_provider_operation(context):
     )):
         context.finish(status="failed", message="账号已不符合 Plus 优惠资格，未提交提链", error="账号不符合提链资格")
         return None
-    prior_run_id = int(data.get("provider_job_run_id") or (context.run_id if continuation else 0))
-    prior_job = _provider_job_for_sync(prior_run_id) if prior_run_id else None
-    saved_legacy_query = provider_id == "legacy" and action == "sync_status" and _provider_has_reference(prior_job)
+    saved_legacy_query = provider_id in {"legacy", "anguang"} and action == "sync_status" and _provider_has_reference(prior_job)
     if provider_id not in _PROVIDER_SETTINGS or (not saved_legacy_query and not _provider_enabled(provider_id)):
         context.finish(status="failed", message="平台或运行模式已在配置中关闭", error="平台或运行模式未启用")
         return None
@@ -3158,7 +3250,7 @@ def _handle_provider_operation(context):
         return None
     runtime = _provider_configuration(provider_id, for_query=True) if saved_legacy_query else _provider_configuration(provider_id)
     link_type = _provider_link_type(provider_id, data.get("link_type"), runtime.default_type)
-    options = _provider_request_options(
+    options = {} if provider_id == "anguang" and action == "sync_status" else _provider_request_options(
         provider_id, data.get("options") or data.get("payment_options"),
         mode=mode, link_type=link_type,
     )
@@ -3254,7 +3346,7 @@ def _handle_provider_operation(context):
                 def checkpoint_submission(private_data):
                     nonlocal prior_private
                     prior_private = {**prior_private, **private_data}
-                    if provider_id == "huanguang":
+                    if provider_id in {"huanguang", "anguang"}:
                         state["summary"].update({"submission_receipt_pending": True, "remote_polling": True})
                     _update_provider_job(context, provider_id, None, state, prior_private)
 
@@ -3267,7 +3359,7 @@ def _handle_provider_operation(context):
                     options=options,
                     entry_proxies=proxy_routes.get("entry", ()),
                     exit_proxies=proxy_routes.get("exit", ()),
-                    submission_checkpoint=checkpoint_submission if provider_id in {"huanguang", "legacy"} else None,
+                    submission_checkpoint=checkpoint_submission if provider_id in {"huanguang", "legacy", "anguang"} else None,
                 )
                 context.report(stage="extraction", state="running", message=f"正在向 {provider_id} 提交提链任务")
                 request_id = str(uuid.uuid4())
@@ -3288,7 +3380,7 @@ def _handle_provider_operation(context):
                     preflight_status=state["preflight_status"],
                     plus_status="not_applicable",
                 )
-                if provider_id in {"huanguang", "legacy"}:
+                if provider_id in {"huanguang", "legacy", "anguang"}:
                     from dataclasses import replace
                     private = _record_huanguang_reconcile(
                         context, {**prior_private, **job.private_data}, state,
@@ -3313,7 +3405,7 @@ def _handle_provider_operation(context):
                         )
                 else:
                     _update_provider_job(context, provider_id, None, state, job.private_data)
-                    if str(state.get("summary", {}).get("outcome") or "").upper() == "REJECTED":
+                    if _provider_submission_rejected(state, provider_id=provider_id):
                         if callable(getattr(context, "remote_request_receipt", None)):
                             context.remote_request_receipt(
                                 outcome="rejected",
@@ -3336,7 +3428,7 @@ def _handle_provider_operation(context):
                             request_id=request_id,
                             detail={"response_observed": True, "remote_result_confirmed": False},
                         )
-                    if not (provider_id == "huanguang" and state["summary"].get("submission_receipt_pending") is True):
+                    if not (provider_id in {"huanguang", "anguang"} and state["summary"].get("submission_receipt_pending") is True):
                         terminal_status = "request_unknown"
                         status_message = "平台响应未能确认远端任务，保留结果并允许后续重跑"
                         raise RuntimeError("request_unknown: 提链服务未返回可确认的任务 ID")
@@ -3401,7 +3493,7 @@ def _handle_provider_operation(context):
                 sync_query_succeeded = True
                 _update_provider_job(context, provider_id, job_id, state, job.private_data or prior_private)
                 intent = data.get("remote_intent")
-                if (provider_id == "huanguang" and isinstance(intent, dict)
+                if (provider_id in {"huanguang", "anguang"} and isinstance(intent, dict)
                         and intent.get("action") == "extract_link_create"
                         and (intent.get("receipt_state") or intent.get("state")) not in {"confirmed", "rejected", "not_submitted"}):
                     if job_id:
@@ -3411,7 +3503,7 @@ def _handle_provider_operation(context):
                                     "local_business_writeback_confirmed": True, "local_readback_confirmed": True,
                                     "response_observed": True},
                         )
-                    elif state.get("summary", {}).get("outcome") == "REJECTED":
+                    elif _provider_submission_rejected(state, provider_id=provider_id):
                         context.remote_request_receipt(
                             outcome="rejected", action="extract_link_create", request_id=intent.get("request_id"),
                             detail={"response_observed": True, "remote_result_confirmed": False},
@@ -3423,6 +3515,10 @@ def _handle_provider_operation(context):
                 context, provider, runtime, job, state,
                 provider_id=provider_id, mode=mode, action=action,
             )
+            if (provider_id == "anguang" and callable(getattr(context, "defer", None))
+                    and _anguang_needs_continuation(state)):
+                _defer_anguang_job(context, runtime, state, {**prior_private, **job.private_data}, job_id=job_id)
+                return None
             if provider_id == "huanguang":
                 from dataclasses import replace
                 private = _record_huanguang_reconcile(
@@ -3712,6 +3808,12 @@ def _handle_provider_operation(context):
 
             prior_public = (prior_job or {}).get("public_state") or {}
             prior_summary = prior_public.get("summary") or {}
+            if (provider_id == "anguang" and callable(getattr(context, "defer", None))
+                    and (job_id or prior_private.get("anguang_request_encrypted"))
+                    and _anguang_needs_continuation(state)):
+                context.report(stage="remote_sync", level="warning", message="暗光原单查询暂时失败，保留原提交身份续查")
+                _defer_anguang_job(context, runtime, state, prior_private, job_id=job_id, reason="暗光原单状态待确认，稍后续查")
+                return None
             if (provider_id == "legacy" and action == "sync_status" and not sync_query_succeeded
                     and prior_public.get("payment_state") == "succeeded"
                     and prior_public.get("plus_status") == "confirmed"
@@ -3759,7 +3861,7 @@ def _handle_provider_operation(context):
                 context.report(stage="extraction", level="warning", message=f"原单查询暂时失败，保留上次结果并稍后续查：{safe_error}")
                 _defer_huanguang_job(context, runtime, state, reason="原单查询暂时失败，等待重试")
                 return None
-            remote_rejected = str(state.get("summary", {}).get("outcome") or "").upper() == "REJECTED"
+            remote_rejected = _provider_submission_rejected(state, provider_id=provider_id)
             if remote_write_started and terminal_status != "request_unknown" and not remote_rejected:
                 terminal_status = "request_unknown"
                 status_message = "远端提链结果待确认"
@@ -3927,7 +4029,7 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
     for item in extract_link_jobs.list_recoverable_workbench_jobs():
         provider_id = str(item.get("provider_id") or "legacy").strip().lower()
         payment_source = str(item.get("payment_source") or "native")
-        if continuous_only and payment_source != "xxsyun" and provider_id not in {"huanguang", "legacy"}:
+        if continuous_only and payment_source != "xxsyun" and provider_id not in {"huanguang", "legacy", "anguang"}:
             continue
         mode = str(item.get("mode") or "extract_only").strip().lower()
         task_id = int(item.get("task_id") or 0)
@@ -3949,7 +4051,7 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
                     **({"payment_source": payment_source} if payment_source == "xxsyun" else {}),
                     "workbench_action": "sync_status",
                     "provider_job_run_id": int(item.get("provider_job_run_id") or run_id),
-                    **({"extract_poll_continuation": True} if provider_id in {"huanguang", "legacy"} else {}),
+                    **({"extract_poll_continuation": True} if provider_id in {"huanguang", "legacy", "anguang"} else {}),
                 },
             )
         except Exception:

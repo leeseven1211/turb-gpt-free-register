@@ -38,5 +38,5 @@ def payment_scan_completed(state: dict, *, provider_id: str) -> bool:
     if str(state.get("extraction_state") or "").lower() in {"failed", "cancelled", "canceled"}:
         return False
     if str(state.get("payment_state") or "").lower() == "succeeded":
-        return provider_id in {"legacy", "huanguang", "lumen_flow"}
+        return provider_id in {"legacy", "huanguang", "lumen_flow", "anguang"}
     return provider_id == "huanguang" and huanguang_scan_completed(state)

@@ -1596,7 +1596,7 @@ def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
     return bool(
         str(run.get("task_type") or "") == "extract_link"
         and isinstance(data, Mapping)
-        and data.get("provider_id") in {"huanguang", "legacy"}
+        and data.get("provider_id") in {"huanguang", "legacy", "anguang"}
         and data.get("extract_poll_continuation") is True
     )
 
@@ -1681,7 +1681,7 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             break
         submitted += 1
         data = run.get("data")
-        if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") in {"huanguang", "legacy"}:
+        if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") in {"huanguang", "legacy", "anguang"}:
             with _RUN_DISPATCH_LOCK:
                 _PREFER_EXTRACT_CONTINUATIONS = not _is_extract_continuation(run)
         try:

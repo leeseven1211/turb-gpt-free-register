@@ -68,7 +68,7 @@ def configured_extract_workers() -> int:
     from core.extract_link.service import _provider_dispatch_capacity_limit
 
     return sum(_provider_dispatch_capacity_limit(provider) for provider in (
-        "legacy", "lumen_flow", "huanguang",
+        "legacy", "lumen_flow", "huanguang", "anguang",
     ))
 
 
