@@ -77,6 +77,18 @@ def _encrypt(cipher: Fernet, raw: str) -> str:
         raise RuntimeConfigStoreError("encryption_failed") from None
 
 
+def encrypt_private_text(raw: str) -> str:
+    """领域恢复凭据复用运行配置主密钥与 Fernet 格式。"""
+    if not isinstance(raw, str):
+        raise RuntimeConfigStoreError("invalid_private_payload")
+    return _encrypt(_cipher(), raw)
+
+
+def decrypt_private_text(encrypted: str) -> str:
+    """解密仅供后台恢复使用的数据；错误不携带原始内容。"""
+    return _decrypt(_cipher(), encrypted)
+
+
 def _metadata(conn) -> dict | None:
     table = postgres_store.qualified("runtime_config_meta")
     with conn.cursor(row_factory=dict_row) as cur:
