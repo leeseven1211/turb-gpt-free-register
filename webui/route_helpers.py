@@ -2,6 +2,8 @@
 """Shared, side-effect-free helpers used by WebUI route groups."""
 from __future__ import annotations
 
+import re
+
 from flask import jsonify, request
 
 from core import db
@@ -391,6 +393,28 @@ def _job_error_info(row: dict) -> dict | None:
     summary = summary if isinstance(summary, dict) else {}
     saved = summary.get("error_info")
     saved = saved if isinstance(saved, dict) else {}
+    if (
+        (info or {}).get("code") == "external.email"
+        and re.search(r"(?<![\w])otp_request_unconfirmed:\s*验证码请求缺少页面或网络确认", str(message))
+        and row.get("job_type") in {"registration", "registration_resume"}
+        and row.get("status") in {"failed", "request_unknown"} and row.get("debug_enabled") is True
+        and (snapshot.get("registration_driver") or row.get("registration_driver")) == "roxy"
+        and kwargs["stage"] in {"email_otp", "complete"} and summary.get("failure_stage") == "email_otp"
+        and type(row.get("id")) is int and type(summary.get("job_id")) is int
+        and summary["job_id"] == row["id"] and summary.get("capture_mode") == "full"
+        and type(summary.get("run_id")) is int and summary["run_id"] > 0
+        and bool(summary.get("execution_id"))
+        and (row.get("run_id") is None or row["run_id"] == summary["run_id"])
+        and (not row.get("execution_id") or row["execution_id"] == summary["execution_id"])
+        and saved.get("code") == saved.get("cause_code") == "email_otp_no_mail"
+        and saved.get("otp_request_accepted") is True
+    ):
+        refined = classify_task_error(
+            message, stage="email_otp", task_type=kwargs["task_type"],
+            result_summary={"cause_code": "email_otp_no_mail"},
+        )
+        if refined is not None:
+            return {**refined, "otp_request_accepted": True}
     # 不信任任意保存的展示字段；固定原因码重新交给统一分类器，沿用原未知语义。
     if (
         (info or {}).get("code") == "email_submit_unconfirmed"

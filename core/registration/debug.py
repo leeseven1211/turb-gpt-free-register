@@ -465,6 +465,9 @@ class RegistrationDebugSession:
         self._pending_network: deque[dict] = deque(maxlen=100)
         self._pending_events: deque[dict] = deque(maxlen=200)
         self._failure_network_seen: deque[dict] = deque(maxlen=100)
+        # 仅用于失败展示；请求开始即替换旧证据，不能按响应完成顺序猜测最后一次重发。
+        self._otp_delivery_request: dict[str, Any] | None = None
+        self._capture_started_wall_time = time.time()
         self._stage_started_at: dict[str, float] = {}
         self._stage_timings: list[dict[str, Any]] = []
         self._stage_state: dict[str, str] = {}
@@ -586,7 +589,7 @@ class RegistrationDebugSession:
         except Exception:
             return None
 
-    def _classify_failure(self, reason: Any) -> dict[str, Any] | None:
+    def _classify_failure(self, reason: Any, *, driver: Any = None) -> dict[str, Any] | None:
         info = self._classify_error(reason)
         cause = _pending_auth_failure_cause(
             list(self._failure_network_seen), self.failure_stage or self.current_stage,
@@ -622,8 +625,95 @@ class RegistrationDebugSession:
                 or (cause == "email_otp_code_rejected" and otp_wait_symptom)
                 or (cause == "password_change_required" and password_page_symptom)):
             info = self._classify_error(reason, result_summary={"cause_code": cause}) or info
-        self.error_info = info
-        return self.error_info
+        with self._lock:
+            observed_delivery = self._otp_delivery_request
+            delivery = dict(observed_delivery or {})
+        paired = None
+        if driver is not None:
+            from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+
+            receipt = getattr(driver, "_browser_submission_receipt", None)
+            context = getattr(driver, "_registration_fact_context", None)
+            current_key = delivery.get("key", ())
+            paired = bool(
+                isinstance(receipt, BrowserSubmissionReceipt)
+                and receipt.stage == receipt.endpoint_kind == "otp_resend"
+                and receipt.phase == "confirmed" and receipt.result == "success"
+                and receipt.http_method == "POST" and type(receipt.http_status) is int
+                and 200 <= receipt.http_status < 300
+                and len(current_key) == 3 and receipt.request_binding == receipt.response_binding == current_key[:2]
+                and receipt.dispatch_target_id == current_key[0]
+                and isinstance(context, dict)
+                and (context.get("job_id"), context.get("run_id"), context.get("execution_id"))
+                == (self.job_id, self.run_id, self.execution_id)
+            )
+        with self._lock:
+            # 配对读取期间可能开始下一次重发或阶段推进；只用仍为当前代的证据，
+            # 并把核验与展示更新放在同一把锁内，不能复用已作废的副本。
+            delivery = self._otp_delivery_request if self._otp_delivery_request is observed_delivery else None
+            if delivery is not None and paired is not None:
+                delivery["submission_confirmed"] = paired
+            if (
+                code == "external.email"
+                and re.search(r"(?<![\w])otp_request_unconfirmed:\s*验证码请求缺少页面或网络确认", str(reason))
+                and self.capture_mode == "full" and self.job.get("debug_enabled") is True
+                and self.job.get("job_type") in {"registration", "registration_resume"}
+                and (snapshot.get("registration_driver") or self.job.get("registration_driver")) == "roxy"
+                and self.current_stage == self.failure_stage == "email_otp"
+                and type(self.run_id) is int and self.run_id > 0 and bool(self.execution_id)
+                and delivery is not None
+                and delivery.get("context") == (self.job_id, self.run_id, self.execution_id)
+                and delivery.get("stage") == "email_otp" and delivery.get("accepted") is True
+                and delivery.get("submission_confirmed") is True
+            ):
+                refined = self._classify_error(reason, result_summary={"cause_code": "email_otp_no_mail"})
+                if refined is not None:
+                    info = {**refined, "otp_request_accepted": True}
+            self.error_info = info
+            return self.error_info
+
+    def _observe_otp_delivery_request(self, record: dict, *, request_id: str, started_wall_time: Any) -> None:
+        """旁路记住本 Run 最后认证请求，绝不改写浏览器提交回执或派发动作。"""
+        endpoint = _submission_endpoint_kind(record.get("url"))
+        if self.capture_mode != "full" or not endpoint:
+            return
+        valid_started = (
+            type(started_wall_time) in {int, float}
+            and self._capture_started_wall_time <= started_wall_time <= time.time() + 1.0
+        )
+        with self._lock:
+            previous = self._otp_delivery_request or {}
+            if (valid_started and previous.get("started_wall_time") is not None
+                    and started_wall_time < previous["started_wall_time"]):
+                return
+            self._otp_delivery_request = {
+                "key": (record.get("target_id"), request_id, record.get("capture_request_id")),
+                "context": (self.job_id, self.run_id, self.execution_id),
+                "stage": normalize_stage(record.get("stage") or self.current_stage),
+                "endpoint": endpoint, "method": record.get("method"),
+                "started_wall_time": started_wall_time if valid_started else None,
+                "accepted": False,
+            }
+
+    def _observe_otp_delivery_response(self, record: dict) -> None:
+        """只接纳同一请求的明确业务成功，不把 HTTP 200 当作邮件已送达。"""
+        with self._lock:
+            current = self._otp_delivery_request
+            if not current or current.get("completed") or current.get("key") != (
+                record.get("target_id"), record.get("request_id"), record.get("capture_request_id"),
+            ):
+                return
+            current["completed"] = True
+            status = record.get("status")
+            current["accepted"] = bool(
+                current.get("started_wall_time") is not None
+                and current.get("context") == (self.job_id, self.run_id, self.execution_id)
+                and current.get("stage") == "email_otp" and current.get("endpoint") == "otp_resend"
+                and current.get("method") == record.get("method") == "POST"
+                and type(status) in {int, float} and 200 <= status < 300
+                and not record.get("failure") and record.get("otp_resend_success") is True
+                and otp_resend_success_from_body(record.get("response_body"))
+            )
 
     def _error_payload(self, message: Any, *, stage: str | None = None, status: int = 0) -> dict[str, Any]:
         info = self._classify_error(message) if message else None
@@ -784,6 +874,8 @@ class RegistrationDebugSession:
         next_stage = normalize_stage(stage) if stage else self.current_stage
         now = time.monotonic()
         if next_stage != self.current_stage:
+            with self._lock:
+                self._otp_delivery_request = None
             self._finish_stage(self.current_stage, state=self._stage_state.get(self.current_stage, "success"), ended=now)
             self.current_stage = next_stage
             self.trigger_stage = self.trigger_stage or next_stage
@@ -799,6 +891,7 @@ class RegistrationDebugSession:
             "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
         }:
             with self._lock:
+                self._otp_delivery_request = None
                 self._failure_network_seen.append({"auth_progress_confirmed": True})
         self._stage_started_at.setdefault(next_stage, now)
         event = {
@@ -834,6 +927,7 @@ class RegistrationDebugSession:
 
     def record_network(self, record: dict) -> None:
         item = dict(record or {})
+        self._observe_otp_delivery_response(item)
         item["kind"] = "network_request"
         status = int(item.get("status") or 0)
         expected_data_saver_failure = _is_expected_data_saver_failure(item)
@@ -1060,7 +1154,7 @@ class RegistrationDebugSession:
                     "response_status": int(item.get("responseStatus") or 0),
                 })
             text_limit = max(1, int(getattr(_cfg, "REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB", 32) or 32)) * 1024
-            error_info = self._classify_failure(reason)
+            error_info = self._classify_failure(reason, driver=driver)
             state = {
                 "captured_at": _now_iso(),
                 "reason": str(reason or "")[:1000],
@@ -1218,6 +1312,7 @@ class RegistrationDebugSession:
             "job_id": self.job_id,
             "attempt_id": self.attempt_id,
             "run_id": self.run_id,
+            "execution_id": self.execution_id,
             "trigger_stage": self.trigger_stage,
             "last_confirmed_state": self.last_confirmed_state,
             "failure_stage": self.failure_stage,
@@ -1640,6 +1735,9 @@ class _RoxyTargetCollector:
                 "initiator": params.get("initiator") or {},
                 "document_url": _raw_url(params.get("documentURL")),
             }
+            observe_delivery = getattr(self.session, "_observe_otp_delivery_request", None)
+            if callable(observe_delivery):
+                observe_delivery(self._requests[request_id], request_id=request_id, started_wall_time=params.get("wallTime"))
         elif method == "Network.requestWillBeSentExtraInfo":
             request_id = str(params.get("requestId") or "")
             if request_id in self._requests and not getattr(self.session, "summary_only", False):

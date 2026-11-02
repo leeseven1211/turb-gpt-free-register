@@ -185,3 +185,85 @@ def test_obsolete_password_reset_diagnosis_cannot_replace_job_error(change):
         row["error_message"] = "password_rejected"
         expected = "password_rejected"
     assert _compact_job_for_list(row, include_progress=False)["error_info"]["code"] == expected
+
+
+def accepted_resend_job():
+    row = challenged_job()
+    row.update({
+        "progress_stage": "complete", "run_id": 17, "execution_id": "unit-execution",
+        "error_message": ("otp_request_unconfirmed: 验证码请求缺少页面或网络确认；"
+                          "不能断言服务端已经发信"),
+        "debug_capture_summary": {
+            "job_id": 992, "run_id": 17, "execution_id": "unit-execution", "capture_mode": "full",
+            "failure_stage": "email_otp", "error_info": {
+                "code": "email_otp_no_mail", "cause_code": "email_otp_no_mail",
+                "otp_request_accepted": True, "summary": "不可直接信任的正文", "private_extra": "private-value",
+            },
+        },
+    })
+    return row
+
+
+@pytest.mark.parametrize("surface", ["list", "log"])
+def test_current_accepted_resend_refines_no_mail_display_without_changing_retry(surface, client):
+    row = accepted_resend_job()
+    original = deepcopy(row)
+    baseline = deepcopy(row)
+    baseline.pop("debug_capture_summary")
+    original_projection = projection(baseline, surface, client)
+    result = projection(row, surface, client)
+    info = result["error_info"]
+    assert info["code"] == "email_otp_no_mail"
+    assert info["cause_code"] == "email_otp_no_mail"
+    assert info["display_code"] == "MAIL-OTP-005"
+    assert info["summary"] == "等待窗口内未收到验证码邮件"
+    assert info["otp_request_accepted"] is True
+    assert "private_extra" not in info
+    for key in ("status", "error_message", "request_unknown", "retryable", "retry_action"):
+        assert (key in result) == (key in original_projection)
+        assert result.get(key) == original_projection.get(key)
+    assert row == original
+
+
+def test_actual_capture_summary_reaches_job_list_after_delayed_resend_acceptance():
+    from tests.registration.test_registration_otp_delivery_diagnostics import Capture
+
+    capture = Capture(id=992)
+    capture.request()
+    capture.response()
+    assert capture.classify()["code"] == "email_otp_no_mail"
+    row = accepted_resend_job()
+    row["debug_capture_summary"] = capture.session.summary()
+    assert _compact_job_for_list(row, include_progress=False)["error_info"]["code"] == "email_otp_no_mail"
+
+
+@pytest.mark.parametrize("change", [
+    "other_job", "other_run", "other_execution", "other_stage", "other_driver", "no_debug",
+    "failure_only", "missing_acceptance", "missing_cause", "success", "other_failure",
+])
+def test_obsolete_or_unaccepted_resend_cannot_replace_job_failure(change):
+    row = accepted_resend_job()
+    summary = row["debug_capture_summary"]
+    if change == "other_job":
+        summary["job_id"] = 993
+    elif change == "other_run":
+        summary["run_id"] = 18
+    elif change == "other_execution":
+        summary["execution_id"] = "other-execution"
+    elif change == "other_stage":
+        summary["failure_stage"] = "login_password"
+    elif change == "other_driver":
+        row["config_snapshot"]["registration_driver"] = "protocol_oss_2"
+    elif change == "no_debug":
+        row["debug_enabled"] = False
+    elif change == "failure_only":
+        summary["capture_mode"] = "failure_only"
+    elif change == "missing_acceptance":
+        summary["error_info"].pop("otp_request_accepted")
+    elif change == "missing_cause":
+        summary["error_info"].pop("cause_code")
+    elif change == "success":
+        row["status"] = "success"
+    else:
+        row["error_message"] = "otp_request_unconfirmed: 原验证码提交仍未确认"
+    assert _compact_job_for_list(row, include_progress=False)["error_info"]["code"] != "email_otp_no_mail"
