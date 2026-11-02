@@ -857,7 +857,11 @@ def _relogin_after_password_reset(
         clear_roxy_browser_auth_state(driver)
         driver._registration_otp_after_ts = time.time()
     _clear_confirmed_email_submission(driver)
-    _report_login_stage(stage_reporter, 'login', '密码重置已完成，使用新密码重新建立账号会话')
+    _report_login_stage(
+        stage_reporter, 'login',
+        '新密码检查点已保存，正在独立验证候选并建立账号会话'
+        if recovery is not None else '密码重置已完成，使用新密码重新建立账号会话',
+    )
     _safe_get(
         driver,
         'https://chatgpt.com/auth/login',

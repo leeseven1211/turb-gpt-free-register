@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 
 from core.storage import postgres as pg, records as rs, registration
 from core.storage.operations import store as operations
+from core.storage.registration import jobs
 from tests.support_pg import PostgresTestCase
 
 
@@ -31,30 +32,46 @@ class Password_Recovery_Store(PostgresTestCase):
             "extra_json": json.dumps({"account_password": "Old-login-1", "unrelated": "保留"}),
             "current_plan_type": "plus", "account_status": "active",
         })
-        self.attempt_id = registration.create_attempt(self.email, driver="roxy")["id"]
+        root = jobs.create_job("outlook", data={"registration_driver": "roxy"})
+        self.root_job_id = int(root["id"])
+        jobs.update_job(self.root_job_id, email=self.email, account_id=self.account_id, status="failed")
+        self.attempt_id = int(jobs.get_job(self.root_job_id)["attempt_id"])
+        first_run = registration.list_runs(self.attempt_id)[0]
+        registration.finish_run(int(first_run["id"]), status="failed")
         with pg.connect() as conn, conn.cursor() as cur:
             cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET account_id=%s, checkpoint='otp_confirmed', private_context=%s::jsonb WHERE id=%s",
                         (self.account_id, json.dumps({"password": "Old-login-1", "password_state": "confirmed", "preserve": 42}), self.attempt_id))
         self.owner = self._registration_owner()
 
     def _registration_owner(self):
-        registration_execution_id = uuid.uuid4().hex
-        operation_execution_id = uuid.uuid4().hex
-        job_id = rs.insert_row(rs.JOBS, {
-            "job_uuid": uuid.uuid4().hex, "email": self.email, "status": "running",
-            "account_id": self.account_id, "attempt_id": self.attempt_id,
-            "execution_id": registration_execution_id, "action_type": "registration_resume",
-        })
-        run = registration.start_run(self.attempt_id, job_id=job_id, action_type="registration_resume",
-                                     execution_id=registration_execution_id, initial_status="running")
-        with pg.connect() as conn, conn.cursor() as cur:
-            cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET active_execution_id=%s WHERE id=%s",
-                        (registration_execution_id, self.attempt_id))
-        operation_run_id = self._operation_run("registration_jobs", str(job_id), operation_execution_id, "registration_resume")
+        job, created = jobs.create_retry_job(
+            self.root_job_id, job_type="registration_resume", email_source="outlook",
+            email=self.email, account_id=self.account_id,
+        )
+        self.assertTrue(created)
+        context = self._start_job_run(job)
+        registration.advance_checkpoint(
+            self.attempt_id, "otp_confirmed", run_id=context["run_id"], job_id=job["id"],
+            execution_id=context["execution_id"],
+        )
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        operation_run = operations.get_run(int(task["last_run_id"]))
+        self.assertEqual(str(job["id"]), operation_run["source_id"])
+        self.assertEqual(job["job_uuid"], operation_run["execution_id"])
         return dict(email=self.email, account_id=self.account_id, purpose="registration",
-                    operation_run_id=operation_run_id, operation_execution_id=operation_execution_id,
-                    operation_lease_token=None, attempt_id=self.attempt_id, registration_run_id=run["id"],
-                    registration_execution_id=registration_execution_id)
+                    operation_run_id=operation_run["id"], operation_execution_id=operation_run["execution_id"],
+                    operation_lease_token=None, attempt_id=self.attempt_id, registration_run_id=context["run_id"],
+                    registration_execution_id=context["execution_id"])
+
+    def _start_job_run(self, job):
+        from core.registration import service
+
+        self.assertTrue(jobs.claim_job_for_execution(int(job["id"])))
+        with patch.multiple(service._THREAD_CTX, job_id=int(job["id"]), attempt_id=None,
+                            run_id=None, execution_id=None, create=True):
+            context = service._ensure_registration_run_context(jobs.get_job(int(job["id"])))
+        self.assertIsNotNone(context)
+        return context
 
     def _operation_run(self, source, source_id, execution_id, action):
         with pg.connect() as conn, conn.cursor() as cur:
@@ -83,6 +100,16 @@ class Password_Recovery_Store(PostgresTestCase):
 
     def _private(self):
         return registration.get_private_resume_context(self.attempt_id, email=self.email)
+
+    def test_real_retry_job_without_execution_id_can_prepare_resume_and_confirm(self):
+        run = registration.get_run(self.owner["registration_run_id"])
+        job = jobs.get_job(int(run["job_id"]))
+        self.assertIsNone(job.get("execution_id"))
+        self.assertNotEqual(self.owner["registration_execution_id"], job["job_uuid"])
+        self.assertIsNone(self.store.resume_password_recovery(**self.owner))
+        cp = self._transition(self._prepare(), "started")
+        self.assertEqual(cp.recovery_id, self.store.resume_password_recovery(**self.owner).recovery_id)
+        self.assertEqual("confirmed", self._transition(cp, "confirmed", confirmation="candidate_login").state)
 
     def test_prepare_once_keeps_current_credentials_and_ciphertext_private(self):
         calls = []
@@ -143,6 +170,8 @@ class Password_Recovery_Store(PostgresTestCase):
         with pg.connect() as conn, conn.cursor() as cur:
             for table, identifier in (("registration_runs", old_owner["registration_run_id"]), ("operation_runs", old_owner["operation_run_id"])):
                 cur.execute(f"UPDATE {pg.qualified(table)} SET status='interrupted' WHERE id=%s", (identifier,))
+        old_run = registration.get_run(old_owner["registration_run_id"])
+        jobs.update_job(int(old_run["job_id"]), status="interrupted")
         self.owner = self._registration_owner()
         recovered = self.store.resume_password_recovery(**self.owner)
         self.assertEqual(cp.recovery_id, recovered.recovery_id)
@@ -173,6 +202,7 @@ class Password_Recovery_Store(PostgresTestCase):
             self._transition(cp, "started", owner)
 
     def test_confirm_atomically_updates_matching_attempt_and_preserves_other_fields(self):
+        checkpoint_before = registration.get_attempt(self.attempt_id)["checkpoint"]
         cp = self._transition(self._prepare(), "started")
         rs.patch_row(rs.ACCOUNTS, self.account_id, {"current_plan_type": "pro", "note": "并发套餐更新"})
         confirmed = self._transition(cp, "confirmed", confirmation="password_change_response")
@@ -186,7 +216,7 @@ class Password_Recovery_Store(PostgresTestCase):
         self.assertEqual("保留", json.loads(account["extra_json"])["unrelated"])
         self.assertEqual("New-login-2", self._private()["password"])
         self.assertEqual(42, self._private()["preserve"])
-        self.assertEqual("otp_confirmed", registration.get_attempt(self.attempt_id)["checkpoint"])
+        self.assertEqual(checkpoint_before, registration.get_attempt(self.attempt_id)["checkpoint"])
         self.assertEqual("Old-login-1", confirmed.old_password)
         self.assertEqual(confirmed, self._transition(cp, "confirmed", confirmation="password_change_response"))
         self.assertIsNone(self.store.resume_password_recovery(**self.owner))
@@ -325,6 +355,37 @@ class Password_Recovery_Store(PostgresTestCase):
                         (self.owner["registration_run_id"],))
         with self.assertRaises(self.store.PasswordRecoveryError):
             self.store.get_password_recovery(cp.recovery_id, **self.owner)
+
+    def test_replaced_job_uuid_cannot_access_or_advance_checkpoint(self):
+        cp = self._prepare()
+        run = registration.get_run(self.owner["registration_run_id"])
+        rs.patch_row(rs.JOBS, int(run["job_id"]), {"job_uuid": str(uuid.uuid4())})
+        for action in (lambda: self.store.get_password_recovery(cp.recovery_id, **self.owner),
+                       lambda: self.store.resume_password_recovery(**self.owner),
+                       lambda: self._transition(cp, "started")):
+            with self.subTest(action=action), self.assertRaisesRegex(
+                    self.store.PasswordRecoveryError, "registration_operation_mapping_mismatch"):
+                action()
+
+    def test_different_real_registration_run_cannot_access_checkpoint(self):
+        cp = self._prepare()
+        other = jobs.create_job("outlook")
+        jobs.update_job(int(other["id"]), email="other@example.test")
+        context = self._start_job_run(other)
+        with self.assertRaisesRegex(self.store.PasswordRecoveryError, "registration_execution_mismatch"):
+            self.store.get_password_recovery(cp.recovery_id, **{
+                **self.owner, "registration_run_id": context["run_id"],
+            })
+
+    def test_missing_or_replaced_attempt_execution_cannot_access_checkpoint(self):
+        cp = self._prepare()
+        for execution_id in (None, "replacement"):
+            with pg.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET active_execution_id=%s WHERE id=%s",
+                            (execution_id, self.attempt_id))
+            with self.subTest(execution_id=execution_id), self.assertRaisesRegex(
+                    self.store.PasswordRecoveryError, "registration_identity_mismatch"):
+                self.store.get_password_recovery(cp.recovery_id, **self.owner)
 
     def test_wrong_master_key_and_ciphertext_fail_without_exposing_credentials(self):
         cp = self._prepare()
