@@ -108,6 +108,87 @@ class Password_Recovery_Store(PostgresTestCase):
         self.assertEqual(cp.recovery_id, self.store.resume_password_recovery(**self.owner).recovery_id)
         self.assertEqual("confirmed", self._transition(cp, "confirmed", confirmation="candidate_login").state)
 
+    def test_batch_projection_keeps_current_retry_password_recovery_active(self):
+        operation_run = operations.get_run(self.owner["operation_run_id"])
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        self.assertEqual("running", operation_run["status"])
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertIsNone(self.store.resume_password_recovery(**self.owner))
+        self.assertEqual("running", operations.get_run(self.owner["operation_run_id"])["status"])
+        self.assertEqual("running", registration.get_run(self.owner["registration_run_id"])["status"])
+        cp = self._transition(self._prepare(), "started")
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual("confirmed", self._transition(cp, "confirmed", confirmation="candidate_login").state)
+
+    def test_batch_projection_repairs_finished_job_without_closing_new_retry(self):
+        old_owner = self.owner
+        old_run = registration.get_run(old_owner["registration_run_id"])
+        jobs.update_job(int(old_run["job_id"]), status="failed")
+        registration.finish_run(int(old_run["id"]), status="failed", error_message="上一轮已失败")
+        self.owner = self._registration_owner()
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {pg.qualified('operation_runs')} SET status='running', completed_at=NULL "
+                        "WHERE id=%s", (old_owner["operation_run_id"],))
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual("failed", operations.get_run(old_owner["operation_run_id"])["status"])
+        self.assertEqual("running", operations.get_run(self.owner["operation_run_id"])["status"])
+        self.assertIsNone(self.store.resume_password_recovery(**self.owner))
+
+    def test_batch_projection_does_not_assign_unlinked_historical_fact(self):
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {pg.qualified('registration_runs')} SET job_id=NULL "
+                        "WHERE attempt_id=%s AND status='failed'", (self.attempt_id,))
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual("running", operations.get_run(self.owner["operation_run_id"])["status"])
+        self.assertIsNone(self.store.resume_password_recovery(**self.owner))
+
+    def test_batch_projection_does_not_close_native_run_from_registration_history(self):
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {pg.qualified('operation_runs')} SET source_system='native_operations' "
+                        "WHERE id=%s", (self.owner["operation_run_id"],))
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual("running", operations.get_run(self.owner["operation_run_id"])["status"])
+
+    def test_batch_projection_keeps_matching_unknown_result_attention_required(self):
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
+        registration.finish_run(self.owner["registration_run_id"], status="request_unknown")
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual("attention_required", operations.get_run(self.owner["operation_run_id"])["status"])
+        with self.assertRaisesRegex(self.store.PasswordRecoveryError, "operation_inactive"):
+            self.store.resume_password_recovery(**self.owner)
+
+    def test_batch_projection_keeps_other_task_run_active_in_same_attempt(self):
+        previous = registration.get_run(self.owner["registration_run_id"])
+        jobs.update_job(int(previous["job_id"]), status="failed")
+        registration.finish_run(int(previous["id"]), status="failed")
+        job, created = jobs.create_retry_job(
+            int(previous["job_id"]), job_type="twofa_retry", email_source="outlook",
+            email=self.email, account_id=self.account_id,
+        )
+        self.assertTrue(created)
+        current = self._start_job_run(job)
+        task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:twofa_retry")
+        operations._project_claimed_batch({
+            "batch_id": task["batch_id"], "batch_source_system": "registration_batches",
+        })
+        self.assertEqual(self.attempt_id, registration.get_run(current["run_id"])["attempt_id"])
+        self.assertEqual("running", operations.get_run(task["last_run_id"])["status"])
+
     def test_prepare_once_keeps_current_credentials_and_ciphertext_private(self):
         calls = []
         def candidate():

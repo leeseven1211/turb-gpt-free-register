@@ -2421,19 +2421,22 @@ def _repair_terminal_task_projection(cur, batch_id: int) -> int:
             "request_unknown", "manual_reconcile",
         )
         fact_placeholders = ", ".join("%s" for _ in fact_statuses)
+        # 同一 Attempt 的旧终态只能收口同一 Job 的投影，不能套到新重跑。
+        # 缺少 job_id 的历史事实无法确认归属，保留原投影等待明确来源。
         cur.execute(
             f"""
             WITH latest_fact AS (
-                SELECT DISTINCT ON (task.id)
+                SELECT
                        task.id AS task_id, run.id AS operation_run_id,
                        rr.status AS fact_status, rr.completed_at AS fact_completed_at,
                        rr.error_message AS fact_error_message
                 FROM {_table('operation_tasks')} task
-                JOIN {_table('registration_runs')} rr ON rr.attempt_id=task.attempt_id
                 JOIN {_table('operation_runs')} run ON run.task_id=task.id
+                    AND run.source_system='registration_jobs'
+                JOIN {_table('registration_runs')} rr ON rr.attempt_id=task.attempt_id
+                    AND rr.job_id::text=run.source_id
                 WHERE task.batch_id=%s
                   AND rr.status IN ({fact_placeholders})
-                ORDER BY task.id, rr.run_no DESC, rr.id DESC, run.run_no DESC, run.id DESC
             )
             UPDATE {_table('operation_runs')} run
             SET status=CASE latest_fact.fact_status
