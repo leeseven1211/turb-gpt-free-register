@@ -13,6 +13,8 @@ const CONFIG_ACTIVE_DOMAIN_V2 = {};
 const CONFIG_MULTI_PICKER_FIELDS_V2 = new Map();
 let CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2 = 0;
 const CONFIG_HUANGUANG_XXSYUN_QUOTA_V2 = {loading: false, text: ''};
+let CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2 = 0;
+const CONFIG_XXSYUN_PAYMENT_BALANCE_V2 = {loading: false, text: ''};
 const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
   extraction: {key: 'EXTRACT_LINK_HUANGUANG_CDK', label: '幻光提链 CDK', request: 0, inflight: null, loading: false, text: ''},
   payment: {key: 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK', label: '幻光支付扫码 CDK', request: 0, inflight: null, loading: false, text: ''},
@@ -470,6 +472,7 @@ function extractLinkProviderOptionsV2(fields = CONFIG) {
 }
 function extractLinkProviderSectionForFieldV2(field) {
   const key = String(field?.key || '');
+  if (key.startsWith('EXTRACT_LINK_PAYMENT_')) return '独立支付';
   if (CONFIG_EXTRACT_LINK_COMMON_KEYS_V2.has(key)
     || extractLinkProviderOptionsV2().some(provider => provider.enabledKey === key)) return '通用配置';
   const provider = extractLinkProviderOptionsV2().find(item => extractLinkProviderFieldBelongsV2(field, item.value));
@@ -1273,6 +1276,13 @@ function renderConfigControlMarkupV2(f) {
       <p class="config-setting-short-help-v2" data-huanguang-xxsyun-quota-status role="status" aria-live="polite">${esc(quota.text)}</p>
     </div>`;
   }
+  if (f.key === 'EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY') {
+    const balance = CONFIG_XXSYUN_PAYMENT_BALANCE_V2;
+    control = `<div data-xxsyun-payment-key>${control}
+      <button type="button" class="btn" data-query-xxsyun-payment-balance aria-label="查询 XXSYUN 积分"${balance.loading ? ' disabled' : ''}>${balance.loading ? '正在查询…' : '查询积分'}</button>
+      <p class="config-setting-short-help-v2" data-xxsyun-payment-balance-status role="status" aria-live="polite">${esc(balance.text)}</p>
+    </div>`;
+  }
   const cdkKind = Object.keys(CONFIG_HUANGUANG_CDK_QUOTAS_V2).find(kind => CONFIG_HUANGUANG_CDK_QUOTAS_V2[kind].key === f.key);
   if (cdkKind) {
     const quota = CONFIG_HUANGUANG_CDK_QUOTAS_V2[cdkKind];
@@ -1318,6 +1328,7 @@ function syncHuanguangCdkQuotaV2(kind) {
 }
 
 function resetHuanguangQuotaForKeyV2(key) {
+  if (key === 'EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY' || key === 'EXTRACT_LINK_PAYMENT_XXSYUN_API_BASE') resetXxsyunPaymentBalanceV2();
   if (key === 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY' || key === 'EXTRACT_LINK_HUANGUANG_API_BASE') resetHuanguangXxsyunQuotaV2();
   Object.entries(CONFIG_HUANGUANG_CDK_QUOTAS_V2).forEach(([kind, quota]) => {
     if (key !== quota.key && key !== 'EXTRACT_LINK_HUANGUANG_API_BASE') return;
@@ -1387,6 +1398,87 @@ function resetHuanguangXxsyunQuotaV2() {
   CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2 += 1;
   Object.assign(CONFIG_HUANGUANG_XXSYUN_QUOTA_V2, {loading: false, text: ''});
   syncHuanguangXxsyunQuotaV2();
+}
+
+function syncXxsyunPaymentBalanceV2() {
+  const balance = CONFIG_XXSYUN_PAYMENT_BALANCE_V2;
+  document.querySelectorAll('#tab-config [data-query-xxsyun-payment-balance]').forEach(button => {
+    button.disabled = balance.loading;
+    button.textContent = balance.loading ? '正在查询…' : '查询积分';
+  });
+  document.querySelectorAll('#tab-config [data-xxsyun-payment-balance-status]').forEach(status => {
+    status.textContent = balance.text;
+  });
+}
+
+function resetXxsyunPaymentBalanceV2() {
+  CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2 += 1;
+  Object.assign(CONFIG_XXSYUN_PAYMENT_BALANCE_V2, {loading: false, text: ''});
+  syncXxsyunPaymentBalanceV2();
+}
+
+function xxsyunPaymentBalanceErrorV2(error) {
+  const code = String(error?.code || error?.error_code || '').toLowerCase();
+  const messages = {
+    config_invalid: '积分查询配置无效，请检查服务地址并保存后重试',
+    api_key_missing: '未配置 XXSYUN API Key，请填写后重试',
+    key_missing: '未配置 XXSYUN API Key，请填写后重试',
+    api_key_invalid: 'XXSYUN API Key 无效或已失效，请更新后重试',
+    key_invalid: 'XXSYUN API Key 无效或已失效，请更新后重试',
+    unauthorized: 'XXSYUN API Key 无效或已失效，请更新后重试',
+    unauthenticated: 'XXSYUN API Key 无效或已失效，请更新后重试',
+    forbidden: '当前 XXSYUN API Key 无权查询积分',
+    employer_pending: 'XXSYUN 平台账号尚未就绪，请在平台检查账号状态',
+    password_change_required: 'XXSYUN 平台要求先修改密码，请在平台处理后重试',
+    insufficient_quota: 'XXSYUN 积分不足，请在平台检查积分余额',
+    rate_limited: '积分查询过于频繁，请稍后重试',
+    request_timeout: '积分查询超时，请稍后重试',
+    transport_error: '积分查询遇到网络连接异常，请稍后重试',
+    invalid_response: '上游积分响应无效，请稍后重试',
+    upstream_http_error: '上游服务暂时无法查询积分，请稍后重试',
+  };
+  return messages[code] || '查询积分失败，请检查 XXSYUN 配置或稍后重试';
+}
+
+async function queryXxsyunPaymentBalanceV2(button) {
+  const balance = CONFIG_XXSYUN_PAYMENT_BALANCE_V2;
+  if (balance.loading) return;
+  if (Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'EXTRACT_LINK_PAYMENT_XXSYUN_API_BASE')) {
+    balance.text = '请先保存服务地址的更改，再查询积分';
+    syncXxsyunPaymentBalanceV2();
+    return;
+  }
+  const key = 'EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY';
+  const input = button.closest('[data-xxsyun-payment-key]')?.querySelector(`[data-key="${key}"]`);
+  const pending = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key);
+  const value = String(input?.value ?? (pending ? CONFIG_PENDING_UPDATES[key] : '')).trim();
+  const payload = value ? {api_key: value}
+    : input?.dataset.secretClear === 'true' || (pending && String(CONFIG_PENDING_UPDATES[key] ?? '').trim() === '')
+      ? {api_key: ''} : {};
+  const request = ++CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2;
+  Object.assign(balance, {loading: true, text: '正在查询积分…'});
+  syncXxsyunPaymentBalanceV2();
+  try {
+    const result = await api('/api/extract-link/payments/xxsyun/balance', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+    });
+    if (request !== CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2) return;
+    if (result?.ok !== true) throw result;
+    const values = result.balance;
+    const keys = ['available_points', 'pending_points', 'used_points', 'cost_points'];
+    const valid = value => value == null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    if (!values || typeof values !== 'object' || Array.isArray(values) || !keys.every(key => valid(values[key]))) throw {code: 'invalid_response'};
+    const points = value => value == null ? '未知' : `${value} 积分`;
+    balance.text = `可用 ${points(values.available_points)} · 预占 ${points(values.pending_points)} · 已用 ${points(values.used_points)} · 每单 ${points(values.cost_points)}`;
+  } catch (error) {
+    if (request !== CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2) return;
+    balance.text = xxsyunPaymentBalanceErrorV2(error);
+  } finally {
+    if (request === CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2) {
+      balance.loading = false;
+      syncXxsyunPaymentBalanceV2();
+    }
+  }
 }
 
 async function queryHuanguangXxsyunQuotaV2(button) {
@@ -1541,7 +1633,7 @@ function renderExtractLinkProviderSelectionV2(providers) {
 
 function renderExtractLinkSectionV2(fields) {
   const providers = extractLinkProviderOptionsV2(fields);
-  const sections = ['通用配置', ...providers.map(provider => provider.label)];
+  const sections = ['通用配置', ...providers.map(provider => provider.label), '独立支付'];
   let active = CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2;
   if (!sections.includes(active)) active = sections[0];
   CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = active;
@@ -1550,14 +1642,15 @@ function renderExtractLinkSectionV2(fields) {
   const providerFieldMatches = field => providers.some(provider =>
     extractLinkProviderFieldBelongsV2(field, provider.value));
   const commonFields = fields.filter(field =>
-    !providerEnabledKeys.has(field.key) && !providerFieldMatches(field));
+    !providerEnabledKeys.has(field.key) && !providerFieldMatches(field) && !field.key.startsWith('EXTRACT_LINK_PAYMENT_'));
   const selectedProvider = providers.find(provider => provider.label === active);
-  const pageFields = selectedProvider
+  const independentPayment = active === '独立支付';
+  const pageFields = independentPayment ? fields.filter(field => field.key.startsWith('EXTRACT_LINK_PAYMENT_')) : selectedProvider
     ? fields.filter(field => extractLinkProviderFieldBelongsV2(field, selectedProvider.value))
     : commonFields;
   const switches = pageFields.filter(field => field.type === 'bool');
   const inputs = pageFields.filter(field => field.type !== 'bool');
-  const body = selectedProvider
+  const body = selectedProvider || independentPayment
     ? `${switches.length ? `<div class="config-switches-v2">${switches.map(field => renderFeatureSwitchField(field, {withIcon: false})).join('')}</div>` : ''}
        ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`
     : `${renderExtractLinkProviderSelectionV2(providers)}
@@ -2086,6 +2179,7 @@ function bindConfigLayoutV2() {
 async function loadConfig() {
   try {
     CONFIG = await apiCached('/api/config', {}, 30000);
+    resetXxsyunPaymentBalanceV2();
     resetHuanguangXxsyunQuotaV2();
     resetHuanguangQuotaForKeyV2('EXTRACT_LINK_HUANGUANG_API_BASE');
     renderConfigLayoutV2();
@@ -2308,6 +2402,11 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const balanceButton = e.target.closest('[data-query-xxsyun-payment-balance]');
+  if (balanceButton) {
+    e.preventDefault();
+    return queryXxsyunPaymentBalanceV2(balanceButton);
+  }
   const cdkQuotaButton = e.target.closest('[data-query-huanguang-cdk-quota]');
   if (cdkQuotaButton) {
     e.preventDefault();

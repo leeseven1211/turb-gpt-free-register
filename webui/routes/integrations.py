@@ -107,6 +107,36 @@ def create_integrations_blueprint(context: WebUIContext):
             return response({"ok": False, "error": "查询未成功，请核对 XXSYUN API Key 或在平台查看剩余次数",
                              "error_code": "query_failed", "code": "query_failed"}, 400)
 
+    @bp.post("/api/extract-link/payments/xxsyun/balance")
+    def api_xxsyun_payment_balance():
+        """只读查询独立支付积分，区分已保存、草稿与明确清空的 Key。"""
+        def response(payload, status=200):
+            result = jsonify(payload)
+            result.status_code = status
+            result.headers["Cache-Control"] = "no-store"
+            return result
+
+        data = request.get_json(silent=True)
+        if (request.query_string or not isinstance(data, dict) or set(data) - {"api_key"}
+                or ("api_key" in data and (not isinstance(data["api_key"], str) or len(data["api_key"]) > 512))):
+            return response({"ok": False, "error": "查询参数无效，请检查 XXSYUN API Key",
+                             "error_code": "config_invalid", "code": "config_invalid"}, 400)
+        try:
+            from core.payments.runtime import query_xxsyun_balance
+
+            balance = query_xxsyun_balance(api_key=data.get("api_key"))
+            if not isinstance(balance, dict) or balance.get("ok") is not True or not isinstance(balance.get("balance"), dict):
+                return response({"ok": False, "error": "上游积分响应无效，请稍后重试",
+                                 "error_code": "invalid_response", "code": "invalid_response"}, 400)
+            return response(balance)
+        except Exception as exc:
+            code = str(getattr(exc, "code", "") or "query_failed")
+            logger.warning("查询独立 XXSYUN 积分失败：%s", code)
+            retry_after = getattr(exc, "retry_after_seconds", 0)
+            return response({"ok": False, "error": "查询积分未成功，请核对 XXSYUN 配置或稍后重试",
+                             "error_code": code, "code": code,
+                             "retry_after_seconds": retry_after if type(retry_after) is int and retry_after >= 0 else 0}, 400)
+
     @bp.get("/api/extract-link/huanguang/cdk-quota/<kind>")
     def api_huanguang_single_cdk_quota(kind):
         """独立查询一项已保存 CDK，拒绝查询参数和请求正文。"""

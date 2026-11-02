@@ -188,11 +188,13 @@ function renderExtractWorkbenchTaskCard(task) {
   const linkButton = (kind, label, icon, enabled) => `<button type="button" class="btn" data-workbench-link="${kind}" data-task-id="${taskId}"${enabled ? '' : ' disabled'}>${extractWorkbenchIcon(icon)}${label}</button>`;
   const note = extractWorkbenchEscape(task?.error || task?.message || progressLabel || outcome.copy);
   const linkType = task?.link_type ? ` · ${extractWorkbenchEscape(String(task.link_type).toUpperCase())}` : '';
+  const paymentSource = mode === 'auto_payment' ? extractWorkbenchPaymentSourceLabel(task) : '';
   return `<article class="extract-workbench-task" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
     <header class="extract-workbench-top"><div class="extract-workbench-id-line"><span class="extract-workbench-number">任务 #${taskId}</span><span class="extract-workbench-state extract-workbench-state--${outcome.tone}">${outcome.state}</span></div><span class="extract-workbench-percent">${percent === null ? '—' : `${percent}%`}</span></header>
     <div class="extract-workbench-identity"><span class="extract-workbench-email" title="${email}">${email}</span><button type="button" class="extract-workbench-copy-mini" data-workbench-copy-email="${taskId}" aria-label="复制邮箱">复制</button></div>
     <div class="extract-workbench-data-rows">
       <div class="extract-workbench-data-row"><span class="extract-workbench-data-label">提链平台</span><span class="extract-workbench-data-value extract-workbench-provider-mark"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}" aria-hidden="true"></i>${extractWorkbenchEscape(providerLabel)}${linkType}</span></div>
+      ${paymentSource ? `<div class="extract-workbench-data-row"><span class="extract-workbench-data-label">自动支付来源</span><span class="extract-workbench-data-value">${extractWorkbenchEscape(paymentSource)}</span></div>` : ''}
       ${renderExtractWorkbenchStage('preflight', '账号 / AT 预检', task?.preflight_status)}
       ${renderExtractWorkbenchStage('extraction', '提链', extractionStatus)}
       ${renderExtractWorkbenchStage('payment', '支付', task?.payment_status)}
@@ -306,6 +308,17 @@ function extractWorkbenchModeLabel(mode) {
   return ({extract_only:'仅提链', manual_payment:'手动支付', auto_payment:'自动支付'})[mode] || mode;
 }
 
+function extractWorkbenchPaymentSourceLabel(item) {
+  const source = String(item?.payment_source || '');
+  if (!source) return '';
+  return String(item?.payment_source_label || ({native:'平台自带', xxsyun:'XXSYUN'})[source] || '未知来源');
+}
+
+function extractWorkbenchPaymentSourceSuffix(item) {
+  const label = item?.mode === 'auto_payment' ? extractWorkbenchPaymentSourceLabel(item) : '';
+  return label ? ` · 自动支付来源：${label}` : '';
+}
+
 function extractWorkbenchRenderModes() {
   const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value;
   const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
@@ -322,7 +335,7 @@ function extractWorkbenchRenderModes() {
   const count = previewValid ? Number(EXTRACT_WORKBENCH_STATE.preview?.selected_count || 0) : 0;
   if (createButton) createButton.disabled = EXTRACT_WORKBENCH_STATE.creating || !provider || !modes.includes(modeSelect.value) || count === 0 || extractWorkbenchBatchWorkers() === null;
   const selectedCount = extractWorkbenchNode('[data-workbench-selection-count]');
-  if (selectedCount) selectedCount.textContent = `本批计划运行 ${count.toLocaleString('zh-CN')} 个账号`;
+  if (selectedCount) selectedCount.textContent = `本批计划运行 ${count.toLocaleString('zh-CN')} 个账号${extractWorkbenchPaymentSourceSuffix({...provider, mode: modeSelect.value})}`;
 }
 
 function extractWorkbenchRenderLinkTypes() {
@@ -381,7 +394,7 @@ function extractWorkbenchRenderBatches() {
     const batches = [...EXTRACT_WORKBENCH_STATE.batches];
     const current = EXTRACT_WORKBENCH_STATE.batchDetail;
     if (current && !batches.some(batch => String(batch.batch_id) === String(current.batch_id))) batches.unshift(current);
-    select.innerHTML = '<option value="">全部任务（含历史单独任务）</option>' + batches.map(batch => `<option value="${extractWorkbenchEscape(batch.batch_id)}">${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)} · ${Number(batch.requested_count || 0)} 个 · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))}</option>`).join('');
+    select.innerHTML = '<option value="">全部任务（含历史单独任务）</option>' + batches.map(batch => `<option value="${extractWorkbenchEscape(batch.batch_id)}">${extractWorkbenchEscape(batch.title || `批次 #${batch.batch_id}`)} · ${Number(batch.requested_count || 0)} 个 · ${extractWorkbenchEscape(extractWorkbenchBatchStatus(batch.status))}${extractWorkbenchEscape(extractWorkbenchPaymentSourceSuffix(batch))}</option>`).join('');
     select.value = EXTRACT_WORKBENCH_STATE.batch;
   }
   const pages = Math.max(1, Math.ceil(EXTRACT_WORKBENCH_STATE.batchTotal / 20));
@@ -554,7 +567,7 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
   const summary = extractWorkbenchNode('[data-workbench-summary]');
   const total = Number(EXTRACT_WORKBENCH_STATE.total || 0);
   const first = items.length ? (EXTRACT_WORKBENCH_STATE.page - 1) * EXTRACT_WORKBENCH_PAGE_SIZE + 1 : 0;
-  if (summary) summary.textContent = `显示 ${first}–${first ? first + items.length - 1 : 0} / ${total.toLocaleString('zh-CN')} 个任务`;
+  if (summary) summary.textContent = `显示 ${first}–${first ? first + items.length - 1 : 0} / ${total.toLocaleString('zh-CN')} 个任务${extractWorkbenchPaymentSourceSuffix(EXTRACT_WORKBENCH_STATE.batchDetail)}`;
   extractWorkbenchRenderStatusTabs();
   const page = Number(EXTRACT_WORKBENCH_STATE.page || 1);
   const pages = Math.max(1, Math.ceil(Number(EXTRACT_WORKBENCH_STATE.total || 0) / EXTRACT_WORKBENCH_PAGE_SIZE));
@@ -606,7 +619,19 @@ function extractWorkbenchFindTaskCard(tasksNode, taskId) {
 
 function extractWorkbenchDetailHtml(result) {
   const events = Array.isArray(result?.events) ? result.events : [];
-  return events.length ? `<ul>${events.map(event => `<li><strong>${extractWorkbenchEscape(event.label || event.stage || '事件')}</strong><span>${extractWorkbenchEscape(extractWorkbenchStatusLabel(event.status))}</span><p>${extractWorkbenchEscape(event.message || '')}</p></li>`).join('')}</ul>` : '<p>暂无阶段事件</p>';
+  const item = result?.item || result?.task || {};
+  const source = extractWorkbenchPaymentSourceLabel(item);
+  const order = item.payment_order || result?.payment_order;
+  const summary = [];
+  if (source) summary.push(`自动支付来源：${source}`);
+  if (order && typeof order === 'object') {
+    summary.push(`支付订单：${order.remote_order_id || '等待平台回执'}`);
+    if (order.submission_state) summary.push(`支付提交：${({reserved:'等待提交', submitting:'提交中', submitted:'已提交', unknown:'回执待恢复', failed:'提交失败'})[order.submission_state] || extractWorkbenchStatusLabel(order.submission_state)}`);
+    summary.push(`支付状态：${extractWorkbenchStatusLabel(order.payment_state, '待确认')}`);
+    summary.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '待确认')}`);
+  }
+  const status = summary.map(text => `<p>${extractWorkbenchEscape(text)}</p>`).join('');
+  return status + (events.length ? `<ul>${events.map(event => `<li><strong>${extractWorkbenchEscape(event.label || event.stage || '事件')}</strong><span>${extractWorkbenchEscape(extractWorkbenchStatusLabel(event.status))}</span><p>${extractWorkbenchEscape(event.message || '')}</p></li>`).join('')}</ul>` : '<p>暂无阶段事件</p>');
 }
 
 function extractWorkbenchLoadTaskDetail(taskId) {
@@ -824,7 +849,8 @@ async function extractWorkbenchSubmit() {
   const payload = {workers,title:extractWorkbenchNode('[data-workbench-batch-title]')?.value?.trim() || '',provider_id:selected.provider_id,mode:selected.mode,type:selected.type,filters:extractWorkbenchCandidateFilters(),limit:Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 100)};
   const button = extractWorkbenchNode('[data-workbench-create]');
   if (button) button.disabled = true;
-  if (payload.mode === 'auto_payment' && !window.confirm(`将为本批约 ${count} 个账号启用自动支付任务，确认继续？`)) {
+  const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
+  if (payload.mode === 'auto_payment' && !window.confirm(`将为本批约 ${count} 个账号启用自动支付任务${extractWorkbenchPaymentSourceSuffix({...provider, mode: payload.mode})}，确认继续？`)) {
     if (button) button.disabled = false;
     return;
   }

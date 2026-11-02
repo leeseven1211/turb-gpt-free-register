@@ -61,6 +61,7 @@ function createView({timers = null} = {}) {
     renderPaymentEntry: renderExtractWorkbenchPaymentEntry,
     showPaymentEntry: extractWorkbenchShowPaymentEntry,
     showDetail: extractWorkbenchShowDetail,
+    detailHtml: extractWorkbenchDetailHtml,
     scheduleRefresh: extractWorkbenchScheduleRefresh,
     copyPaymentEntry: extractWorkbenchCopyPaymentEntry,
     paymentQrError: extractWorkbenchPaymentQrError,
@@ -74,6 +75,37 @@ function createView({timers = null} = {}) {
   };`, context);
   return {api: context.workbench, nodes, requests, window, copied, document, toasts, confirmations};
 }
+
+test('自动支付创建提示使用配置来源，任务和批次使用冻结来源并兼容旧native记录', () => {
+  const {api} = createView();
+  const provider = {id: 'legacy', label: '虾扯蛋链', modes: ['auto_payment'], payment_source: 'xxsyun', payment_source_label: 'XXSYUN'};
+  api.setConfig({providers: [provider]});
+  const selectors = {
+    '[data-workbench-provider]': {value: 'legacy'}, '[data-workbench-mode]': {value: 'auto_payment', innerHTML: ''},
+    '[data-workbench-selection-count]': {textContent: ''}, '[data-workbench-batch-select]': {value: '', innerHTML: ''},
+  };
+  api.setRoot({querySelector(selector) { return selectors[selector] || null; }});
+  api.renderModes();
+  assert.match(selectors['[data-workbench-selection-count]'].textContent, /自动支付来源：XXSYUN/);
+  const frozen = {task_id: 8, mode: 'auto_payment', payment_source: 'native', payment_source_label: '平台自带'};
+  assert.match(api.renderCard(frozen), /自动支付来源<\/span><span[^>]*>平台自带/);
+  assert.doesNotMatch(api.renderCard({...frozen, payment_source: undefined, payment_source_label: undefined}), /自动支付来源/);
+  api.setState({batches: [{batch_id: 7, mode: 'auto_payment', payment_source: 'native', payment_source_label: '平台自带'}]});
+  api.renderBatches();
+  assert.match(selectors['[data-workbench-batch-select]'].innerHTML, /自动支付来源：平台自带/);
+});
+
+test('任务详情保留冻结来源和独立支付订单状态，到账核验独立呈现', () => {
+  const {api} = createView();
+  const html = api.detailHtml({item: {payment_source: 'xxsyun', payment_source_label: 'XXSYUN',
+    payment_order: {remote_order_id: 'order-42', payment_state: 'succeeded', submission_state: 'submitted'},
+    plus_status: 'pending'}, events: []});
+  assert.match(html, /自动支付来源：XXSYUN/);
+  assert.match(html, /支付订单：order-42/);
+  assert.match(html, /支付状态：已完成/);
+  assert.match(html, /Plus 到账核验：等待执行/);
+  assert.doesNotMatch(api.detailHtml({events: []}), /自动支付来源/);
+});
 
 function createBatchCancelView() {
   const view = createView();

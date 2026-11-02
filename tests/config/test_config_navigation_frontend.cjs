@@ -100,6 +100,29 @@ function createConfigView(fields = []) {
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
 
+test('提链独立支付分类只呈现公共XXSYUN配置，搜索Key会定位该分类', () => {
+  const key = 'EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY';
+  const fields = [
+    field('EXTRACT_LINK_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_DEFAULT_PROVIDER', '提链', {options: [{value: 'legacy', label: '虾扯蛋链'}]}),
+    field('EXTRACT_LINK_LEGACY_ENABLED', '提链', {type: 'bool', value: true}),
+    field('EXTRACT_LINK_LEGACY_AUTO_PAYMENT_SOURCE', '提链', {value: 'native'}),
+    field(key, '提链', {secret: true, configured: true}),
+    field('EXTRACT_LINK_PAYMENT_XXSYUN_CONCURRENCY', '提链', {type: 'int', value: 1}),
+  ];
+  const {view} = createConfigView(fields);
+  const common = view.renderDomain('提链', fields);
+  assert.match(common, /data-extract-link-tab="独立支付"/);
+  assert.doesNotMatch(common, new RegExp(`data-key="${key}"`));
+  view.search(key);
+  const payment = view.renderDomain('提链', fields);
+  assert.equal(view.state().extractLink, '独立支付');
+  assert.match(payment, new RegExp(`data-key="${key}"`));
+  assert.match(payment, /data-key="EXTRACT_LINK_PAYMENT_XXSYUN_CONCURRENCY"/);
+  assert.doesNotMatch(payment, /data-key="EXTRACT_LINK_LEGACY_AUTO_PAYMENT_SOURCE"/);
+  assert.doesNotMatch(payment, /data-key="EXTRACT_LINK_ENABLED_PROVIDERS"/);
+});
+
 test('搜索授权后自动上传开关会定位 sub2api 子节并呈现独立开关', () => {
   const key = 'CODEX_OAUTH_AUTO_UPLOAD_SUB2API';
   const fields = [
