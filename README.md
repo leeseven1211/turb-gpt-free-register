@@ -1470,6 +1470,18 @@ callback 的 `state`。工作区缺失或冲突时仍需浏览器驱动；任务
 
 接口契约以[流光文档](https://int31.space/public/checkout-api)和[幻光文档](https://chongyun-link.xiaoliai.shop/static/api-docs.html)为准。流光记录平台步骤、百分比、任务/步骤尝试次数及 `failureCode/failureType`；平台 Plus 验证不能代替本地套餐核验。幻光当前仅开放 UPI，默认类型为 `upi`；出链成功依据有效支付材料判断，顶层任务 `done` 本身不足以证明成功。
 
+虾扯蛋链、流光、幻光的配置页各有“自动支付来源”（`EXTRACT_LINK_<平台>_AUTO_PAYMENT_SOURCE`），可选“平台自带”（`native`，默认）或“XXSYUN”（`xxsyun`）。全局和该提链平台的自动支付开关仍须开启；选择 XXSYUN 时，提链平台只负责提链，不携带其自带支付参数，也不要求它的支付 CDK。当前独立 XXSYUN 仅支持 UPI，流光平台自带自动支付仍按原接口支持 MOMO。只提链和手动支付不使用独立支付配置。
+
+「配置 → 提链 → 独立支付」统一配置 XXSYUN API 地址、API Key、请求超时、轮询间隔和并发，对应 `EXTRACT_LINK_PAYMENT_XXSYUN_API_BASE`、`EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY`、`EXTRACT_LINK_PAYMENT_XXSYUN_REQUEST_TIMEOUT`、`EXTRACT_LINK_PAYMENT_XXSYUN_POLL_INTERVAL`、`EXTRACT_LINK_PAYMENT_XXSYUN_CONCURRENCY`。默认地址为 `https://upi.xxsyun.xyz/api/v1`，请求超时 30 秒、查询间隔 10 秒、共享并发 1。三个提链来源共同占用未结束的 XXSYUN 支付订单名额，等待期间释放本地线程，原订单结束后处理后续账号。
+
+API Key 使用运行配置密钥机制加密保存；旁边的“查询积分”可查询已保存 Key 或当前非空草稿，不保存或覆盖配置。结果分别显示可用、预占、已用积分和每单价格，未知字段显示未知，零积分显示 0；积分不等同于剩余扫码次数。接口约定以[XXSYUN 官方文档](https://upi.xxsyun.xyz/employer/api/)为准，使用 Bearer API Key，无需复制浏览器 Cookie。已有“幻光超时后转 XXSYUN”及其 Key 仍用于幻光平台后台转单，与这里的独立支付配置分别生效。
+
+独立支付使用账号 AT 与真实 Stripe UPI instructions 链接提交；普通展示页、checkout 页、短链、二维码图片或 `upi://` 原文不能直接当作已兼容的支付链接。提链已成功但缺少兼容材料时保留提链结果，并单独显示支付材料原因。批次、任务和 Run 在创建时冻结支付来源，已有任务缺少来源字段时按平台自带处理，后续更改配置不改派原单。
+
+XXSYUN 提交前保存支付意图、原请求体与幂等键；请求超时或回执缺失时沿原键、原请求体恢复，不另建随机付款意图。整批重跑会按保存阶段继续提链、提交支付、查询原订单或核验套餐。HTTP 200 不等于全部建单成功，逐项处理 `created`、`duplicated`、`failed`，保存远端订单 ID 后查询同一原单；服务重启也恢复尚未结束的独立支付。扫码完成和 Plus 到账分别记录，本次订单提交前的历史套餐查询不能作为本次到账证据。
+
+本地取消不会取消远端订单或补发支付请求。已取得远端订单 ID 时继续只读查询，远端结束后释放共享名额；尚未发送的预约直接释放。若请求已发送但回执未知，保留未知状态与名额，重跑时才以原幂等意图恢复，避免取消后意外补发新单。
+
 幻光提链失败时，卡片优先显示平台返回的具体错误、失败阶段和原因；例如“提链 CDK 次数已用完，任务未执行”，不会被通用的“任务处理失败”覆盖。旧任务也会从已经保存的失败信息中补全显示，无需同步或重跑；没有具体记录时保留原错误，不推测原因。
 
 幻光新提链执行前会只读检查提链 CDK 额度；自动支付还检查支付扫码 CDK。任一 CDK 次数耗尽、停用或额度暂无法确认时，原任务保留排队并显示等待原因，每 60 秒重新检查，不查 AT、不领取代理、不提交提链。补充额度或更新 CDK 后按原批次并发继续；已有原单的状态同步、支付和到账核验不受影响。正额度不缓存，本机并发提交也会先占用本地预算，避免同时使用最后一次；本地预算不代替平台实际扣次。提链平台明确关闭计次时放行，XXSYUN 备用扫码额度不能代替幻光主扫码额度。可通过只读 `GET /api/extract-link/huanguang/cdk-quota` 查询两种已配置 CDK 的可用次数，接口不返回密钥。配置页的提链 CDK、支付扫码 CDK 各有独立的“查询剩余次数”按钮，只查询已保存的值；修改 CDK 或 API 地址后应先保存再查询。对应单项只读接口为 `GET /api/extract-link/huanguang/cdk-quota/extraction` 和 `GET /api/extract-link/huanguang/cdk-quota/payment`，一项失败不影响另一项查询，次数未知不会显示为零。

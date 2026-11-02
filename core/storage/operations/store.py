@@ -6421,6 +6421,33 @@ def _confirmed_extract_terminal_failure(cur, run: dict, result_summary: dict) ->
     )
 
 
+def _confirmed_independent_payment_partial(cur, run: dict, result_summary: dict) -> bool:
+    """外接付款外围失败已有完整事实时，保留提链成功的部分完成终态。"""
+    data = _decode(run.get("data"))
+    data = data if isinstance(data, dict) else {}
+    if (str(run.get("task_type") or "") != "extract_link"
+            or data.get("payment_source") != "xxsyun" or data.get("mode") != "auto_payment"
+            or result_summary.get("payment_source") != "xxsyun"
+            or result_summary.get("extraction_status") != "succeeded"
+            or result_summary.get("payment_status") not in {"not_started", "failed"}):
+        return False
+    cur.execute(f"SELECT extraction_state, payment_state, public_state FROM {_table('extract_link_provider_jobs')} WHERE run_id=%s FOR SHARE", (int(run["id"]),))
+    job = cur.fetchone()
+    if (not job or job["extraction_state"] != "succeeded"
+            or job["payment_state"] != result_summary.get("payment_status")):
+        return False
+    public = _decode(job["public_state"])
+    summary = public.get("summary") if isinstance(public, dict) else {}
+    summary = summary if isinstance(summary, dict) else {}
+    if summary.get("payment_order_id"):
+        cur.execute(f"SELECT task_id, payment_state FROM {_table('extract_link_payment_orders')} WHERE id=%s FOR SHARE", (int(summary["payment_order_id"]),))
+        order = cur.fetchone()
+        return bool(order and int(order["task_id"]) == int(run["task_id"])
+                    and order["payment_state"] == "failed" and job["payment_state"] == "failed")
+    return (summary.get("failure_code") == result_summary.get("failure_code")
+            and summary.get("failure_code") in {"MATERIAL_MISSING", "MATERIAL_UNSUPPORTED", "INVALID_AT"})
+
+
 def finish_run(
     run_id: int,
     *,
@@ -6499,8 +6526,12 @@ def finish_run(
                     "password_change_required", "password_page_error",
                 }
             )
+            confirmed_independent_partial = (
+                status_value == "partial_success" and receipt == "confirmed"
+                and _confirmed_independent_payment_partial(cur, found, dependency_result)
+            )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
-                not (explicit_remote_rejection or confirmed_extract_failure)
+                not (explicit_remote_rejection or confirmed_extract_failure or confirmed_independent_partial)
                 and (status_value != "success" or receipt != "confirmed")
             ):
                 # 未确认的远端写入保留在当前 Run，人工重跑会创建新的 Run，
@@ -6696,6 +6727,9 @@ def cleanup_terminal_history(
         )
         if not bool(cur.fetchone()["locked"]):
             return {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
+        # 与订单预约、关联写入共用锁，避免候选选出后出现新的原单引用。
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"{_schema_name()}:independent-payment:xxsyun",))
         cur.execute(
             f"""
             SELECT task.*
@@ -6703,6 +6737,20 @@ def cleanup_terminal_history(
             WHERE task.status IN ({_TERMINAL_STATUS_SQL})
               AND task.completed_at IS NOT NULL
               AND task.completed_at < %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('extract_link_payment_orders')} payment
+                  WHERE payment.task_id=task.id
+                    AND (payment.payment_state IN ('pending','unknown')
+                      OR (payment.payment_state='succeeded'
+                        AND COALESCE(payment.summary->>'plus_verification_status', '')
+                            NOT IN ('confirmed','not_applicable')))
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {_table('extract_link_payment_orders')} original
+                  JOIN {_table('extract_link_payment_orders')} linked
+                    ON linked.summary->>'related_payment_order_id'=original.id::text
+                  WHERE original.task_id=task.id AND linked.task_id<>task.id
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM {_table('operation_runs')} uncertain_run
                   WHERE uncertain_run.task_id=task.id
@@ -6882,6 +6930,10 @@ def cleanup_terminal_history(
                 (task_ids,),
             ) if task_ids else []
         )
+        payment_orders = (
+            fetch(f"SELECT * FROM {_table('extract_link_payment_orders')} WHERE task_id=ANY(%s) ORDER BY id",
+                  (task_ids,)) if task_ids else []
+        )
         snapshot = {
             "version": 1,
             "created_at": _now().isoformat(),
@@ -6896,6 +6948,7 @@ def cleanup_terminal_history(
             "batches": [_row(row) or {} for row in batches],
             "projection_queue": [_row(row) or {} for row in projection_queue],
             "dependencies": [_row(row) or {} for row in dependencies],
+            "extract_link_payment_orders": [_row(row) or {} for row in payment_orders],
         }
         archive_result = archive(snapshot)
 
