@@ -40,7 +40,7 @@ _ITEM_FIELDS = (
     "preflight_status", "extraction_status", "payment_status", "plus_status", "payment_confirmation_source",
     "run_count", "progress", "created_at", "updated_at", "message", "error",
     "has_extract_link", "has_payment_link", "has_payment_entry", "has_qr",
-    "local_reconcile_halted",
+    "local_reconcile_halted", "payment_source", "payment_source_label", "payment_order",
 )
 _PRIVATE_KEY_NAMES = {
     "accesstoken", "refreshtoken", "idtoken", "at", "token", "authorization",
@@ -108,7 +108,7 @@ def _public_batch(value: Any) -> dict[str, Any] | None:
         return None
     workers = value.get("workers")
     result = {"batch_id": value["batch_id"], "workers": workers if _valid_batch_workers(workers) else None}
-    for field in ("title", "provider_id", "mode", "status", "created_at"):
+    for field in ("title", "provider_id", "mode", "status", "created_at", "payment_source", "payment_source_label"):
         if field in value:
             result[field] = value[field]
     for field in ("requested_count", "started_count", "skipped_count", "submission_failed_count"):
@@ -178,6 +178,9 @@ def _public_config(value: Any) -> dict[str, Any] | None:
                 if isinstance(value, str) and value in extract_link_service.SUPPORTED_LINK_TYPES
             )),
             "modes": [mode for mode in modes if isinstance(mode, str) and mode in _MODES],
+            **({"payment_source": "xxsyun" if provider.get("payment_source") == "xxsyun" else "native",
+                "payment_source_label": "XXSYUN" if provider.get("payment_source") == "xxsyun" else "平台自带",
+                "payment_sources": ["native", "xxsyun"]} if "payment_source" in provider else {}),
         })
     unavailable_providers = []
     unavailable = value.get("unavailable_providers")
@@ -201,6 +204,7 @@ def _public_config(value: Any) -> dict[str, Any] | None:
     return {
         "default_provider": default_provider if _valid_identifier(default_provider) else "",
         "default_mode": default_mode if isinstance(default_mode, str) and default_mode in _MODES else "",
+        "default_payment_source": "xxsyun" if value.get("default_payment_source") == "xxsyun" else "native",
         "providers": providers,
         "unavailable_providers": unavailable_providers,
         "batch_workers_default": value.get("batch_workers_default") if _valid_batch_workers(value.get("batch_workers_default")) else 1,

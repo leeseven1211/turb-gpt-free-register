@@ -161,8 +161,12 @@ class PaymentOrderStorageTests(PostgresTestCase):
             args["concurrency"] = 2
             orders.append(payments.reserve_payment_order(**args))
         payments.update_payment_order(orders[0]["id"], run_id=tasks[0]["run"]["id"], remote_order_id="shared")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(payments.PaymentOrderIdentityConflict) as caught:
             payments.update_payment_order(orders[1]["id"], run_id=tasks[1]["run"]["id"], remote_order_id="shared")
+        self.assertEqual(orders[0]["id"], caught.exception.existing_order["id"])
+        self.assertEqual(orders[0]["id"], payments.lookup_payment_order(api_base=BASE, payment_provider="xxsyun", remote_order_id="shared")["id"])
+        with self.assertRaises(ValueError):
+            payments.update_payment_order(orders[1]["id"], run_id=tasks[1]["run"]["id"], summary={"related_payment_order_id": orders[0]["id"]})
         with self.assertRaises(ValueError):
             payments.update_payment_order(orders[0]["id"], run_id=tasks[0]["run"]["id"], remote_order_id="different")
 

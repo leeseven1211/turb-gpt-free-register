@@ -72,6 +72,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     run_summary = row.get("result_summary") if isinstance(row.get("result_summary"), dict) else {}
     provider_id = str(data.get("provider_id") or row.get("job_provider_id") or "legacy")
     mode = str(data.get("mode") or "extract_only")
+    payment_source = "xxsyun" if data.get("payment_source") == "xxsyun" else "native"
     task_status = str(row.get("run_status") or row.get("task_status") or "queued").lower()
     if task_status == "attention_required":
         task_status = "request_unknown"
@@ -97,7 +98,8 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     plus = str(state.get("plus_status") or run_summary.get("plus_status") or "unknown").lower()
     if mode in {"auto_payment", "manual_payment"} and extraction == "success":
         from core.storage.extract_link.jobs import independent_plus_is_confirmed
-        if independent_plus_is_confirmed(account, task_created_at=row.get("task_created_at")):
+        anchor = summary.get("payment_submitted_at") if payment_source == "xxsyun" else row.get("task_created_at")
+        if independent_plus_is_confirmed(account, task_created_at=anchor):
             plus = "confirmed"
     progress = {
         "label": str(summary.get("current_step") or row.get("progress_stage") or row.get("current_stage") or ""),
@@ -144,6 +146,12 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "email": str(row.get("email") or ""),
         "provider_id": provider_id,
         "mode": mode,
+        "payment_source": payment_source,
+        "payment_source_label": "XXSYUN" if payment_source == "xxsyun" else "平台自带",
+        "payment_order": ({"id": summary.get("payment_order_id"), "remote_order_id": summary.get("payment_remote_order_id") or "",
+                           "submission_state": summary.get("payment_submission_state") or "reserved",
+                           "payment_state": state.get("payment_state") or "pending", "submitted_at": summary.get("payment_submitted_at") or None}
+                          if payment_source == "xxsyun" and summary.get("payment_order_id") else None),
         "link_type": str(data.get("link_type") or "")[:80],
         "task_status": task_status,
         "preflight_status": preflight,
@@ -283,6 +291,8 @@ def workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
         "batch_id": int(batch["id"]), "title": str(batch.get("title") or "提链批次")[:240],
         "workers": workers,
         "provider_id": str(data.get("provider_id") or "legacy"), "mode": str(data.get("mode") or "extract_only"),
+        "payment_source": "xxsyun" if data.get("payment_source") == "xxsyun" else "native",
+        "payment_source_label": "XXSYUN" if data.get("payment_source") == "xxsyun" else "平台自带",
         "status": status, "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
         "requested_count": requested, "started_count": counts["all"], "skipped_count": skipped,
         "submission_failed_count": failed, "submission_incomplete": bool(incomplete), "counts": counts,

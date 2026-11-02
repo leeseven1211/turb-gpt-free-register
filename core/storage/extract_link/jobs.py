@@ -33,6 +33,8 @@ _SUMMARY_FIELDS = frozenset({
     "submission_receipt_pending", "auto_relink_status", "auto_relink_attempt", "remote_chain_length", "remote_chain_error",
     "extraction_ever_succeeded", "local_plan_check_pending",
     "local_reconcile_halted", "local_reconcile_reason", "local_reconcile_halted_at",
+    "payment_source", "payment_order_id", "payment_provider", "payment_submitted_at",
+    "payment_remote_order_id", "payment_submission_state",
 })
 _REMOTE_STATUSES = frozenset({
     "QUEUED", "RUNNING", "AWAITING_BLIK_CODE", "SUCCEEDED", "FAILED",
@@ -59,7 +61,7 @@ def _public_state(value: Mapping[str, Any]) -> dict:
     result: dict[str, Any] = {}
     for field_name in (
         "extraction_state", "payment_state", "preflight_status", "plus_status",
-        "aftercare_status", "message",
+        "aftercare_status", "message", "payment_source",
     ):
         field_value = value.get(field_name)
         if isinstance(field_value, str):
@@ -372,7 +374,8 @@ def list_recoverable_workbench_jobs() -> list[dict]:
                    run.id AS run_id,
                    job.run_id AS provider_job_run_id,
                    COALESCE(job.provider_id, run.data->>'provider_id', task.data->>'provider_id', 'legacy') AS provider_id,
-                   COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') AS mode
+                   COALESCE(run.data->>'mode', task.data->>'mode', 'extract_only') AS mode,
+                   COALESCE(task.data->>'payment_source', 'native') AS payment_source
             FROM {operation_store._table('operation_tasks')} task
             JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
             LEFT JOIN {operation_store._table('operation_batches')} batch ON batch.id=task.batch_id
@@ -392,7 +395,8 @@ def list_recoverable_workbench_jobs() -> list[dict]:
               AND run.status IN ('attention_required', 'interrupted')
               AND run.cancel_requested_at IS NULL
               AND (batch.id IS NULL OR batch.status NOT IN ('cancelled', 'stopped', 'paused'))
-              AND (job.provider_id<>'legacy' OR run.data->>'extract_poll_continuation'='true'
+              AND (task.data->>'payment_source'='xxsyun' OR (
+                  (job.provider_id<>'legacy' OR run.data->>'extract_poll_continuation'='true'
                    OR jsonb_typeof(job.private_data->'local_reconcile')='object'
                    OR job.public_state->'summary'->'local_plan_check_pending'='true'::jsonb)
               AND (job.provider_id<>'legacy' OR (
@@ -435,6 +439,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
                                    AND COALESCE(job.public_state->'summary'->>'remote_terminal_failure', '')<>'true')))
                   ))
               )
+              ))
             ORDER BY job.updated_at, run.id
             """
         )
@@ -583,6 +588,8 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         if task["status"] not in {"attention_required", "request_unknown", "partial_success", "success", "interrupted"} or not task["account_id"]:
             return False
         data = _json_object(task["data"], field_name="任务数据")
+        if data.get("payment_source") == "xxsyun":
+            return False
         if data.get("mode") not in {"auto_payment", "manual_payment"}:
             return False
         cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=%s FOR UPDATE", (run_id,))
@@ -712,6 +719,7 @@ def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, 
     where = [
         "task.source_system='native_operations'", "task.task_type='extract_link'",
         "task.data->>'mode' IN ('auto_payment','manual_payment')",
+        "COALESCE(task.data->>'payment_source', 'native')<>'xxsyun'",
         "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success','interrupted')",
         "task.status IN ('attention_required','request_unknown','partial_success','success','interrupted')", "run.cancel_requested_at IS NULL",
         "job.provider_id IN ('huanguang','legacy','lumen_flow')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
@@ -761,9 +769,11 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
         COALESCE(data->'has_active_subscription' NOT IN
             ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{}'::jsonb), FALSE) AS subscribed"""
     checked_at_sql = _workbench_timestamp_sql("COALESCE(by_id.plan_checked_at, by_email.plan_checked_at)")
+    payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
-            t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode
+            t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
+            COALESCE(t.data->>'payment_source', 'native') AS task_payment_source
         FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
     ), missing_account_emails AS MATERIALIZED (
         SELECT DISTINCT LOWER(BTRIM(t.email_snapshot)) AS email_key
@@ -777,6 +787,7 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
         GROUP BY LOWER(fallback_account.email)
     ), raw AS (
         SELECT t.id AS task_id, t.created_at AS task_created_at,
+            CASE WHEN t.task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE t.created_at END AS plus_freshness_anchor,
             COALESCE(r.created_at, t.created_at) AS sort_created_at,
             CASE WHEN LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))='attention_required'
                 THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
@@ -820,7 +831,7 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
         FROM raw
     ), projected AS (
         SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
-            AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > task_created_at
+            AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
             THEN 'confirmed'
             ELSE plus END AS plus_status
         FROM normalized

@@ -280,12 +280,18 @@ def _provider_enabled(provider_id: str) -> bool:
     return _bool_setting(f"{provider['prefix']}_ENABLED", provider_id == "legacy")
 
 
-def _provider_mode_enabled(provider_id: str, mode: str) -> bool:
+def _provider_mode_enabled(provider_id: str, mode: str, payment_source: str = "native") -> bool:
     provider = _PROVIDER_SETTINGS.get(str(provider_id or "").strip())
     if not provider or not _provider_enabled(provider_id):
         return False
     if not provider["supports"].get(mode, False):
         return False
+    if mode == "auto_payment" and payment_source == "xxsyun":
+        from core.payments.runtime import configuration
+        return bool(_provider_mode_enabled(provider_id, "extract_only")
+            and _bool_setting("EXTRACT_LINK_AUTO_PAYMENT_ENABLED", False)
+            and _bool_setting(f"{provider['prefix']}_AUTO_PAYMENT_ENABLED", False)
+            and configuration(_runtime_setting).api_key)
     if provider_id in {"legacy", "huanguang"} and mode == "auto_payment" and not str(
         _runtime_setting(f"EXTRACT_LINK_{provider_id.upper()}_PAYMENT_CDK", "") or ""
     ).strip():
@@ -488,13 +494,15 @@ def workbench_config() -> dict:
                 continue
             except TypeError:
                 continue
+            from core.extract_link.independent_payment import configured_source
+            payment_source = configured_source(provider_id, _runtime_setting)
             modes = [
                 mode for mode in ("extract_only", "manual_payment", "auto_payment")
-                if _provider_mode_enabled(provider_id, mode)
+                if _provider_mode_enabled(provider_id, mode, payment_source)
             ]
-            if provider_id == "lumen_flow" and runtime_config.default_type != "momo":
+            if payment_source == "native" and provider_id == "lumen_flow" and runtime_config.default_type != "momo":
                 modes = [mode for mode in modes if mode != "auto_payment"]
-            if provider_id == "legacy" and runtime_config.default_type != "upi":
+            if payment_source == "native" and provider_id == "legacy" and runtime_config.default_type != "upi":
                 modes = [mode for mode in modes if mode != "auto_payment"]
             if not modes:
                 unavailable_providers.append({
@@ -506,9 +514,12 @@ def workbench_config() -> dict:
             providers.append({
                 "id": provider_id,
                 "label": settings["label"],
-                "default_type": runtime_config.default_type,
+                "default_type": "upi" if payment_source == "xxsyun" else runtime_config.default_type,
                 "link_types": _provider_link_types(provider_id),
                 "modes": modes,
+                "payment_source": payment_source,
+                "payment_source_label": "XXSYUN" if payment_source == "xxsyun" else "平台自带",
+                "payment_sources": ["native", "xxsyun"],
             })
     default_provider = str(_runtime_setting("EXTRACT_LINK_DEFAULT_PROVIDER", "legacy") or "legacy").strip()
     if not any(item["id"] == default_provider for item in providers):
@@ -523,6 +534,7 @@ def workbench_config() -> dict:
         "batch_workers_max": 50,
         "default_provider": default_provider,
         "default_mode": default_mode,
+        "default_payment_source": (provider or {}).get("payment_source", "native"),
         "providers": providers,
         "unavailable_providers": unavailable_providers,
     }
@@ -2183,6 +2195,25 @@ def _provider_payment_sync_due(private_data: object, *, now: datetime | None = N
     return current >= due_at
 
 
+def _workbench_creation_route(provider_id, mode, link_type, options, payment_source=None):
+    from core.extract_link.independent_payment import configured_source
+
+    source = payment_source or (configured_source(provider_id, _runtime_setting) if mode == "auto_payment" else "native")
+    if not _provider_mode_enabled(provider_id, mode, source):
+        raise ValueError("当前配置未启用该平台或运行模式")
+    runtime = _provider_configuration(provider_id)
+    selected_type = _provider_link_type(provider_id, link_type, "upi" if source == "xxsyun" else runtime.default_type)
+    if source == "xxsyun" and selected_type != "upi":
+        raise ValueError("XXSYUN 自动支付仅支持 UPI")
+    effective_mode = "extract_only" if source == "xxsyun" else mode
+    safe_options = _provider_request_options(provider_id, options, mode=effective_mode, link_type=selected_type)
+    if source == "xxsyun" and provider_id == "lumen_flow":
+        safe_options["payment_method"] = "UPI"
+    if mode == "auto_payment" and source == "native" and not runtime.capabilities.get("payment"):
+        raise ValueError("平台没有可用的支付能力")
+    return source, selected_type, safe_options
+
+
 def create_workbench_tasks(
     *, account_ids: list[int], provider_id: str, mode: str,
     type: str | None = None, options: dict | None = None,
@@ -2191,13 +2222,10 @@ def create_workbench_tasks(
 ) -> dict:
     provider_id = str(provider_id or "").strip().lower()
     mode = str(mode or "").strip().lower()
-    if not _provider_mode_enabled(provider_id, mode):
-        raise ValueError("当前配置未启用该平台或运行模式")
-    runtime_config = _provider_configuration(provider_id)
-    link_type = _provider_link_type(provider_id, type, runtime_config.default_type)
-    safe_options = _provider_request_options(provider_id, options, mode=mode, link_type=link_type)
-    if mode == "auto_payment" and not runtime_config.capabilities.get("payment"):
-        raise ValueError("平台没有可用的支付能力")
+    payment_source, link_type, safe_options = _workbench_creation_route(
+        provider_id, mode, type, options,
+        (_submission_context or {}).get("payment_source"),
+    )
     ids = []
     for value in account_ids if isinstance(account_ids, list) else []:
         account_id = int(value)
@@ -2240,6 +2268,7 @@ def create_workbench_tasks(
             data = {
                 "provider_id": provider_id,
                 "mode": mode,
+                "payment_source": payment_source,
                 "link_type": link_type,
                 "options": safe_options,
                 "workbench_action": "create",
@@ -2321,13 +2350,7 @@ def create_workbench_batch(
             return existing
     provider_id = str(provider_id or "").strip().lower()
     mode = str(mode or "").strip().lower()
-    if not _provider_mode_enabled(provider_id, mode):
-        raise ValueError("当前配置未启用该平台或运行模式")
-    runtime_config = _provider_configuration(provider_id)
-    link_type = _provider_link_type(provider_id, type, runtime_config.default_type)
-    safe_options = _provider_request_options(provider_id, options, mode=mode, link_type=link_type)
-    if mode == "auto_payment" and not runtime_config.capabilities.get("payment"):
-        raise ValueError("平台没有可用的支付能力")
+    payment_source, link_type, safe_options = _workbench_creation_route(provider_id, mode, type, options)
     if not isinstance(title, str) or len(title.strip()) > 120:
         raise ValueError("批次名称最多 120 个字符")
     selected_title = title.strip() or f"提链批次 · {datetime.now():%Y-%m-%d %H:%M}"
@@ -2335,6 +2358,7 @@ def create_workbench_batch(
         reservation = extract_link_batches.reserve_submission(
             submission_id=submission_id, title=selected_title, provider_id=provider_id,
             mode=mode, link_type=link_type, filters=filters, limit=limit, workers=selected_workers,
+            payment_source=payment_source,
         )
         if not reservation["created"]:
             return reservation["result"]
@@ -2349,6 +2373,7 @@ def create_workbench_batch(
             trigger="extract_workbench_batch",
             data={
                 "workbench_batch": True, "provider_id": provider_id, "mode": mode,
+                "payment_source": payment_source,
                 "link_type": link_type, "filters": candidates["filters"], "limit": candidates["limit"],
                 "submission_complete": False, "workers": selected_workers,
             },
@@ -2361,6 +2386,7 @@ def create_workbench_batch(
         # 同一批次捕获一次原始配置；gateway 按 allowlist 完成唯一一次键名投影。
         submission_context = {
             "config_snapshot": get_config_snapshot(),
+            "payment_source": payment_source,
             "next_ordinal": 1,
         }
         for offset in range(0, len(ids), 500):
@@ -2584,6 +2610,10 @@ def perform_extract_workbench_action(task_id: int, action: str) -> dict:
     prior_state = prior_job.get("public_state") if prior_job and isinstance(prior_job.get("public_state"), dict) else {}
 
     requested_action = str(action or "").strip().lower()
+    from core.extract_link.independent_payment import frozen_source, perform_action
+    if frozen_source(data) == "xxsyun":
+        return perform_action({**task, "id": task_id}, action=requested_action, latest_run_id=latest_run_id,
+                              prior_job=prior_job, service=__import__(__name__, fromlist=["service"]))
     saved_legacy_query = provider_id == "legacy" and requested_action == "sync_status" and _provider_has_reference(prior_job)
     if not saved_legacy_query and (not _bool_setting("EXTRACT_LINK_ENABLED", True) or not _provider_enabled(provider_id)):
         return {"accepted": False}
@@ -3085,6 +3115,10 @@ def _reconcile_huanguang_automatic_payment(context, state: dict, *, provider_id:
 
 
 def _handle_provider_operation(context):
+    from core.extract_link.independent_payment import frozen_source, handle
+    if frozen_source(context.run.get("data")) == "xxsyun":
+        import sys
+        return handle(context, sys.modules[__name__])
     from core.extract_link.contracts import ExtractRequest, ProviderJob
     from core.storage.extract_link import jobs as extract_link_jobs
 
@@ -3887,10 +3921,13 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
         logger.warning("[提链] 支付状态补齐异常：error_type=%s", type(exc).__name__)
     if not _bool_setting("EXTRACT_LINK_ENABLED", True):
         return 0
-    resumed = 0
+    from core.extract_link.independent_payment import resume_orders
+    import sys
+    resumed = resume_orders(sys.modules[__name__])
     for item in extract_link_jobs.list_recoverable_workbench_jobs():
         provider_id = str(item.get("provider_id") or "legacy").strip().lower()
-        if continuous_only and provider_id not in {"huanguang", "legacy"}:
+        payment_source = str(item.get("payment_source") or "native")
+        if continuous_only and payment_source != "xxsyun" and provider_id not in {"huanguang", "legacy"}:
             continue
         mode = str(item.get("mode") or "extract_only").strip().lower()
         task_id = int(item.get("task_id") or 0)
@@ -3909,6 +3946,7 @@ def resume_known_remote_jobs(*, continuous_only: bool = False) -> int:
                 data={
                     "provider_id": provider_id,
                     "mode": mode,
+                    **({"payment_source": payment_source} if payment_source == "xxsyun" else {}),
                     "workbench_action": "sync_status",
                     "provider_job_run_id": int(item.get("provider_job_run_id") or run_id),
                     **({"extract_poll_continuation": True} if provider_id in {"huanguang", "legacy"} else {}),

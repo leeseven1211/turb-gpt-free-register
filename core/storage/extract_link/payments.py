@@ -20,8 +20,17 @@ _SUMMARY_FIELDS = {
     "payment_check_status", "payment_source", "submission_unknown", "local_reconcile_halted",
     "local_reconcile_reason", "local_reconcile_halted_at", "last_query_at", "query_failures",
     "amount_due_minor", "currency", "error_category",
-    "plus_failure_code", "plus_failure_message",
+    "plus_failure_code", "plus_failure_message", "related_payment_order_id",
 }
+
+
+class PaymentOrderIdentityConflict(ValueError):
+    """远端原单已经有本地唯一归属，交给编排核对并关联。"""
+    code = "LOCAL_PAYMENT_IDENTITY_CONFLICT"
+
+    def __init__(self, existing_order):
+        self.existing_order = existing_order
+        super().__init__("支付远端订单身份已由其他意图占用")
 
 
 class PaymentCapacityUnavailable(RuntimeError):
@@ -104,11 +113,15 @@ def reserve_payment_order(*, task_id, run_id, account_id, extract_provider_id,
         previous = cur.fetchone()
         if previous and (not new_attempt or previous["payment_state"] != "failed"):
             return _public(previous)
+        if (previous and (previous.get("summary") or {}).get("failure_code") == "LOCAL_PAYMENT_IDENTITY_CONFLICT"
+                and previous["material_fingerprint"] == material_fingerprint):
+            return _public(previous)
         try:
             limit = max(1, min(50, int(concurrency)))
         except (TypeError, ValueError, OverflowError):
             raise ValueError("支付并发必须是有效整数") from None
-        cur.execute(f"SELECT count(*) AS count FROM {_table()} WHERE payment_provider=%s AND payment_state IN ('pending','unknown')", (payment_provider,))
+        cur.execute(f"""SELECT count(*) AS count FROM {_table()} WHERE payment_provider=%s AND payment_state IN ('pending','unknown')
+            AND NOT (summary ? 'related_payment_order_id')""", (payment_provider,))
         if cur.fetchone()["count"] >= limit:
             raise PaymentCapacityUnavailable()
         base = validate_api_base(api_base)
@@ -196,6 +209,16 @@ def update_payment_order(order_id: int, *, run_id: int, execution_fence=None, **
                     if key == "submitted_at" and row["submitted_at"] is not None and value != row["submitted_at"]:
                         raise ValueError("不可替换首次支付提交时间")
                     changes[key] = value
+            related_id = (changes.get("summary") or {}).get("related_payment_order_id")
+            if "related_payment_order_id" in (changes.get("summary") or {}):
+                if type(related_id) is not int or related_id <= 0 or related_id == row["id"]:
+                    raise ValueError("关联支付订单身份无效")
+                cur.execute(f"SELECT * FROM {_table()} WHERE id=%s FOR UPDATE", (related_id,))
+                related = cur.fetchone()
+                if (not related or row["account_id"] is None or not related["remote_order_id"] or row["remote_order_id"]
+                        or any(related[key] != row[key] for key in ("account_id", "material_fingerprint", "api_base", "payment_provider"))
+                        or (row["summary"].get("related_payment_order_id") not in {None, related_id})):
+                    raise ValueError("关联支付订单的账号或材料身份不匹配")
             if "submitted_at" in changes and changes["submitted_at"] is None and row["submitted_at"] is not None:
                 raise ValueError("不可清除支付提交时间")
             if not changes:
@@ -211,7 +234,18 @@ def update_payment_order(order_id: int, *, run_id: int, execution_fence=None, **
             cur.execute(f"UPDATE {_table()} SET {', '.join(assignments)}, updated_at=now() WHERE id=%s RETURNING *", (*values, int(order_id)))
             return _public(cur.fetchone())
     except UniqueViolation:
-        raise ValueError("支付远端订单身份已由其他意图占用") from None
+        existing = lookup_payment_order(api_base=row["api_base"], payment_provider=row["payment_provider"],
+                                        remote_order_id=changes.get("remote_order_id"))
+        raise PaymentOrderIdentityConflict(existing) from None
+
+
+def lookup_payment_order(*, api_base, payment_provider, remote_order_id, include_private=False):
+    """只按不可变远端身份定位原单，调用方仍须核对账号与材料。"""
+    operation.init()
+    with operation._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table()} WHERE api_base=%s AND payment_provider=%s AND remote_order_id=%s",
+                    (api_base, payment_provider, remote_order_id))
+        return _public(cur.fetchone(), include_private=include_private)
 
 
 def list_recoverable_payment_orders() -> list[dict]:

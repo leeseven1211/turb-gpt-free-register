@@ -248,7 +248,8 @@ def submission_result(submission_id: str) -> dict | None:
 
 
 def reserve_submission(*, submission_id: str, title: str, provider_id: str, mode: str,
-                       link_type: str, filters: dict | None, limit: int, workers: int | None = None) -> dict:
+                       link_type: str, filters: dict | None, limit: int, workers: int | None = None,
+                       payment_source: str = "native") -> dict:
     """锁定提交标识，原子保存候选快照与批次身份，再由提交者创建子任务。"""
     operation.init()
     with operation._connect() as conn, conn.cursor() as cur:
@@ -262,6 +263,7 @@ def reserve_submission(*, submission_id: str, title: str, provider_id: str, mode
             raise ValueError("当前筛选没有符合提链条件的账号")
         metadata = {
             "workbench_batch": True, "provider_id": provider_id, "mode": mode,
+            "payment_source": payment_source,
             "link_type": link_type, "filters": candidates["filters"], "limit": candidates["limit"],
             "submission_id": submission_id, "submission_account_ids": ids,
             "submission_complete": False,
@@ -297,6 +299,7 @@ def batch_rows(*, page: int = 1, page_size: int = 20, batch_id: int | None = Non
             f"""SELECT b.id, b.title, b.status, b.requested_count, b.skipped_count,
                        b.created_at, jsonb_build_object(
                            'provider_id', b.data->'provider_id', 'mode', b.data->'mode',
+                           'payment_source', COALESCE(b.data->>'payment_source', 'native'),
                            'workers', b.data->'workers',
                            'submission_complete', b.data->'submission_complete',
                            'submission_skipped', b.data->'submission_skipped',
@@ -319,10 +322,12 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
     operation.init()
     accounts = admin_repository._q(record_store.ACCOUNTS)
     checked_at_sql = _workbench_timestamp_sql("COALESCE(NULLIF(BTRIM(account.data->>'plan_checked_at'), ''), NULLIF(BTRIM(account.plan_last_success_at), ''), NULLIF(BTRIM(fallback.data->>'plan_checked_at'), ''), NULLIF(BTRIM(fallback.plan_last_success_at), ''))")
+    payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
     with operation._connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""WITH raw AS (
                 SELECT task.batch_id, task.created_at AS task_created_at,
+                    CASE WHEN task.data->>'payment_source'='xxsyun' THEN {payment_anchor_sql} ELSE task.created_at END AS plus_freshness_anchor,
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
                     COALESCE(NULLIF(task.data->>'provider_id', ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
                     COALESCE(NULLIF(task.data->>'mode', ''), 'extract_only') AS mode,
@@ -368,7 +373,7 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                 FROM raw
             ), projected AS (
                 SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
-                    AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > task_created_at
+                    AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
                     THEN 'confirmed'
                     ELSE plus END AS plus_status
                 FROM normalized
