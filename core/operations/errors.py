@@ -1102,6 +1102,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "auth_page_unknown": ("AUTH-PAGE-001", "认证页面状态未识别"),
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
     "auth_cloudflare_challenge": ("OA-AUTH-CF-CHALLENGE", "认证请求被 Cloudflare 挑战阻断"),
+    "browser_auth_navigation_failed": ("NET-AUTH-NAVIGATION", "浏览器认证导航失败"),
     "cf_proxy_new_ip_unverified": ("NET-ROXY-CF-001", "CF 换线未确认新的出口 IP"),
     "codex_consent_unverifiable": (
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
@@ -1484,6 +1485,11 @@ def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, 
         if marker in raw:
             return _specific_error_cause({"cause_code": code})
     if re.fullmatch(
+        r"(?:registration_failed:\s*)?RuntimeError:\s*浏览器导航失败：path=(?:-|/[a-z0-9/*_-]+)", raw,
+    ):
+        # Chrome 错误页只证明导航失败；原异常没有保存代理或 TLS 的具体细因。
+        return _specific_error_cause({"cause_code": "browser_auth_navigation_failed"})
+    if re.fullmatch(
         r"(?:registration_failed:\s*)?RuntimeError:\s*邮箱提交后未进入密码页/验证码页，最后状态=\{[\s\S]*\}", raw,
     ):
         return _specific_error_cause({"cause_code": "email_submit_unconfirmed"})
@@ -1713,6 +1719,13 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
             "cause_summary": f"MFA 页面网络传输失败（{mfa_network.group(1)}）",
         }
     if task_key in {"registration", "registration_resume"}:
+        if re.fullmatch(
+            r"(?:request_unknown:\s*)?_EmailSubmissionUnknown: email_submit_unconfirmed: "
+            r"当前认证入口尚未进入下一步，交回服务层检查线路; "
+            r"auth_cloudflare_challenge: 认证入口请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口", raw,
+        ):
+            # 只兼容驱动在当前结构化挑战诊断仍有效时生成的完整异常，不猜测普通 403。
+            return _specific_error_cause({"cause_code": "auth_cloudflare_challenge"})
         if re.search(
             r"(?:^|\n)\s*(?:registration_failed: )?"
             r"ValueError: 当前 Run 仍有未决浏览器提交，拒绝重复派发请求(?:$|\n)", raw,

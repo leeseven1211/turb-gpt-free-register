@@ -12,9 +12,62 @@ _PROFILE_PREFIX = (
 )
 _PROFILE_SUFFIX = "；已保留原身份与密码，需沿原任务链恢复"
 _CONFLICT = "ValueError: 当前 Run 仍有未决浏览器提交，拒绝重复派发请求"
+_CF_NATIVE_ERROR = (
+    "request_unknown: _EmailSubmissionUnknown: email_submit_unconfirmed: "
+    "当前认证入口尚未进入下一步，交回服务层检查线路; "
+    "auth_cloudflare_challenge: 认证入口请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口"
+)
 
 
 class RoxyFailureCauseTests(unittest.TestCase):
+    def test_generated_browser_error_page_has_fixed_navigation_cause(self):
+        for task_type in ("registration", "registration_resume"):
+            for path in ("-", "/email-verification", "/log-in/password"):
+                with self.subTest(task_type=task_type, path=path):
+                    info = classify_task_error(
+                        f"registration_failed: RuntimeError: 浏览器导航失败：path={path}",
+                        task_type=task_type, stage="login_password",
+                    )
+                    self.assertEqual("browser_auth_navigation_failed", info["code"])
+                    self.assertEqual("NET-AUTH-NAVIGATION", info["display_code"])
+                    self.assertEqual("浏览器认证导航失败", info["summary"])
+                    self.assertNotIn("代理", info["summary"])
+                    self.assertNotIn("TLS", info["summary"])
+
+    def test_navigation_cause_requires_generated_exception_shape(self):
+        for raw, task_type in (
+            ("浏览器导航失败：path=-", "registration"),
+            ("RuntimeError: 其他错误，浏览器导航失败：path=-", "registration"),
+            ("TimeoutError: 浏览器导航失败：path=-", "registration"),
+            ("RuntimeError: 浏览器导航失败：path=-；其他原因", "registration"),
+            ("RuntimeError: 浏览器导航失败：path=-", "extract_link"),
+        ):
+            with self.subTest(raw=raw, task_type=task_type):
+                info = classify_task_error(raw, task_type=task_type)
+                self.assertNotEqual("browser_auth_navigation_failed", (info or {}).get("code"))
+
+    def test_generated_native_cloudflare_evidence_precedes_email_symptom(self):
+        for task_type in ("registration", "registration_resume"):
+            with self.subTest(task_type=task_type):
+                info = classify_task_error(_CF_NATIVE_ERROR, task_type=task_type, stage="complete")
+                self.assertEqual("auth_cloudflare_challenge", info["code"])
+                self.assertEqual("OA-AUTH-CF-CHALLENGE", info["display_code"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("manual_only", info["retryability"])
+
+    def test_native_cloudflare_text_requires_the_complete_generated_evidence(self):
+        for raw, task_type in (
+            (_CF_NATIVE_ERROR, "extract_link"),
+            (_CF_NATIVE_ERROR.replace("HTTP 403", "HTTP 200"), "registration"),
+            (_CF_NATIVE_ERROR.replace("; auth_cloudflare_challenge:", "; 其他原因:"), "registration"),
+            (_CF_NATIVE_ERROR.split("; ", 1)[0], "registration"),
+            (_CF_NATIVE_ERROR.split("; ", 1)[1], "registration"),
+            ("auth_cloudflare_challenge", "registration"),
+        ):
+            with self.subTest(raw=raw, task_type=task_type):
+                info = classify_task_error(raw, task_type=task_type)
+                self.assertNotEqual("auth_cloudflare_challenge", (info or {}).get("code"))
+
     def test_generated_email_wait_failure_is_a_fixed_symptom(self):
         message = (
             "RuntimeError: 邮箱提交后未进入密码页/验证码页，最后状态="

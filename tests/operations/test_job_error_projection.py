@@ -42,6 +42,36 @@ def projection(row, surface, client):
 
 
 @pytest.mark.parametrize("surface", ["list", "log"])
+@pytest.mark.parametrize("raw,code,display_code,unknown", [
+    (
+        "registration_failed: RuntimeError: 浏览器导航失败：path=-",
+        "browser_auth_navigation_failed", "NET-AUTH-NAVIGATION", False,
+    ),
+    (
+        "request_unknown: _EmailSubmissionUnknown: email_submit_unconfirmed: "
+        "当前认证入口尚未进入下一步，交回服务层检查线路; "
+        "auth_cloudflare_challenge: 认证入口请求返回 HTTP 403，Cloudflare 挑战阻断邮箱入口",
+        "auth_cloudflare_challenge", "OA-AUTH-CF-CHALLENGE", True,
+    ),
+])
+def test_generated_navigation_and_cloudflare_causes_preserve_job_fields(surface, raw, code, display_code, unknown, client):
+    row = challenged_job()
+    row.pop("debug_capture_summary")
+    row.update(debug_enabled=False, progress_stage="complete", error_message=raw,
+               error_code="request_unknown" if unknown else "registration_failed", request_unknown=unknown)
+    original = deepcopy(row)
+    result = projection(row, surface, client)
+    assert result["error_info"]["code"] == code
+    assert result["error_info"]["display_code"] == display_code
+    assert bool(result["error_info"].get("reconcile_required")) is unknown
+    assert result["status"] == original["status"]
+    assert result["error_message"] == original["error_message"]
+    assert result["retryable"] == original["retryable"]
+    assert result["retry_action"] == original["retry_action"]
+    assert row == original
+
+
+@pytest.mark.parametrize("surface", ["list", "log"])
 @pytest.mark.parametrize("job_type", ["registration", "registration_resume"])
 def test_password_prepare_failure_is_classified_without_changing_retry(surface, job_type, client):
     row = challenged_job()
