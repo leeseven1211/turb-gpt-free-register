@@ -9,7 +9,6 @@ import math
 import random
 import re
 import time
-import uuid
 from contextvars import ContextVar
 from dataclasses import replace
 from functools import wraps
@@ -4210,9 +4209,13 @@ def run_roxy_chatgpt_account_action(
         # 个资料页处理函数，避免“补齐账号配置”误入口把半成品账号继续留在半成品状态。
         current_url = str(getattr(driver, "current_url", "") or "").lower()
         if any(marker in current_url for marker in ("about-you", "profile", "create-account/about")):
+            from core.registration.name_samples import random_display_name
             from core.registration.profile_utils import generate_random_birthday
 
-            display_name = f"User{uuid.uuid4().hex[:8]}"
+            # 与正常注册共用姓名规则；数字会违反 OpenAI name_invalid_chars 约束。
+            display_name = random_display_name()
+            if not isinstance(display_name, str) or not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*", display_name):
+                raise ValueError("profile_name_invalid_chars: 资料姓名只允许英文字母和空格，尚未提交资料")
             if not _complete_profile_page(driver, display_name, generate_random_birthday(), timeout=60):
                 raise RuntimeError("邮箱验证后进入账号资料页，但资料未能完成")
             logger.info("[Codex][Browser] 已从待验证检查点完成账号资料页：%s", email)
