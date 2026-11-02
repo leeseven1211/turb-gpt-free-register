@@ -180,6 +180,8 @@ class XXSYUNClient:
 
     def _request(self, method, path, *, body=None, key=None):
         headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json", "Content-Type": "application/json", "Cache-Control": "no-store"}
+        # 上游网关会在鉴权前拒绝 urllib 默认的 Python User-Agent。
+        headers["User-Agent"] = "Mozilla/5.0"
         if key is not None:
             headers["Idempotency-Key"] = key
         error_code = None

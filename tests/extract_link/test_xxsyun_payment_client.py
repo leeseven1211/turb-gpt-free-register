@@ -1,5 +1,8 @@
 """独立支付只使用官方接口，并保留可恢复的提交语义。"""
 from copy import deepcopy
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from threading import Thread
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -155,6 +158,41 @@ class XXSYUNClientTests(unittest.TestCase):
         self.assertEqual({"available_points": 0, "pending_points": 0, "used_points": 0, "cost_points": 10}, client.query_balance())
         client, _ = self.client({"ok": True, "summary": {"available_points": 0}})
         self.assertIsNone(client.query_balance()["pending_points"])
+
+    def test_balance_and_order_requests_pass_user_agent_gateway(self):
+        class Gateway(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.reply()
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.reply()
+
+            def reply(self):
+                allowed = self.headers.get("User-Agent", "").startswith("Mozilla/5.0")
+                order = {"id": "one", "status": "pending"}
+                payload = ({"ok": True, "summary": {"available_points": 12},
+                            "created": [{"order": order}], "order": order}
+                           if allowed else {"message": "Forbidden"})
+                self.send_response(200 if allowed else 403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Gateway) as server:
+            thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+            thread.start()
+            try:
+                client = XXSYUNClient(f"http://127.0.0.1:{server.server_port}/api/v1", "synthetic-key")
+                self.assertEqual(12, client.query_balance()["available_points"])
+                self.assertEqual("one", client.submit(BODY, "stable-key")["order_id"])
+                self.assertEqual("pending", client.get_order("one")["state"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
 
     def test_unsupported_url_or_body_rejected_before_request(self):
         client, transport = self.client()
