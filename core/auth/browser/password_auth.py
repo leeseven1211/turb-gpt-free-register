@@ -20,7 +20,7 @@ from core.auth.state_machine import PageState, StageBudget, StageTimeout, classi
 from core.auth.page_errors import auth_page_error
 
 from core.auth.browser.auth_context import checkpoint as _checkpoint, install_dispatches, time_proxy
-from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact
+from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact, complete_saved_password_relogin
 from core.auth.browser.submission_recovery import RECOVERY_WINDOW_SECONDS, auth_session_missing, begin_auth_session, has_visible_auth_inputs, log_submission_diagnostics, recover_submission_page
 from core.auth.browser.email_otp import _clear_otp_inputs, _is_email_verification_page, _type_otp, _wait_email_otp_page_ready
 from core.auth.browser.selenium_dom import _budget_timeout, _button_after_input, _check_manual_stop, _click_any, _click_if_enabled_submit, _fill_birthday_or_age, _dispatch_trusted_click, _find_any, _human_click, _human_type_text, _is_login_password_page, _is_profile_like, _is_signup_password_page, _log_prefix, _maybe_accept, _page_snapshot, _page_warmup, _password_page_state, _refresh_chatgpt_settings_shell_if_needed, _safe_get, _select_or_type, _settings_page_not_ready, _set_element_value, _type_any
@@ -1085,6 +1085,16 @@ def _fill_password_page_if_present(
     auth_mode = _registration_auth_mode()
     switched_from_otp = False
     saved_form_recoveries = 0
+    saved_login_previous_receipt = None
+
+    def confirm_password(receipt):
+        record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        if saved_login_previous_receipt is not None:
+            complete_saved_password_relogin(
+                driver, original=saved_login_previous_receipt, replacement=receipt,
+                email=email, password=str(existing_password or ""),
+            )
+
     pre_submit_recovery_checked = False
     pre_submit_recovery_used = False
     transition_deadline = None
@@ -1690,7 +1700,7 @@ def _fill_password_page_if_present(
                 existing_password and recovered_state == PageState.MFA_TOTP
             )
             if (next_form and has_visible_auth_inputs(snapshot, allow_password=False)) or _has_access_token(driver, budget=_budget):
-                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                confirm_password(submission_receipt)
                 return True
             return None
 
@@ -1742,15 +1752,15 @@ def _fill_password_page_if_present(
             transition_page = classify_page(transition_state)
             if (existing_password and transition_page in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.PROFILE}
                     and has_visible_auth_inputs(transition_state, allow_password=False)):
-                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                confirm_password(submission_receipt)
                 logger.info("%s 密码提交后已进入 %s，交回认证调度", _log_prefix(driver), transition_page.value)
                 return password
             if _is_email_verification_page(driver):
-                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                confirm_password(submission_receipt)
                 logger.info("%s 密码提交后已进入邮箱验证码页", _log_prefix(driver))
                 return password
             if _has_access_token(driver):
-                record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                confirm_password(submission_receipt)
                 logger.info("%s 密码提交后已检测到登录态", _log_prefix(driver))
                 return password
             # Poll the body only every two seconds.  This catches an explicit
@@ -1791,7 +1801,7 @@ def _fill_password_page_if_present(
                     record_browser_submission_fact(driver, "unknown", receipt=submission_receipt, result="unknown")
                     raise _PasswordTransitionTimeout("request_unknown: 密码提交后进入认证错误页，未确认密码结果")
                 if next_page == PageState.PROFILE or (existing_password and next_page == PageState.MFA_TOTP):
-                    record_browser_submission_fact(driver, "confirmed", receipt=submission_receipt, result="success")
+                    confirm_password(submission_receipt)
                     return password
             if time.time() >= next_diagnostic_at:
                 log_submission_diagnostics(driver, "password", "waiting", receipt=submission_receipt,
@@ -1809,6 +1819,7 @@ def _fill_password_page_if_present(
             # 离开密码页可能只是空壳或错误跳转；继续等待明确的下一页。
             time.sleep(min(0.5, max(0.0, wait_end - time.time())))
         if continue_saved_login:
+            saved_login_previous_receipt = submission_receipt
             saved_form_recoveries += 1
             end = wait_end
             logger.warning(

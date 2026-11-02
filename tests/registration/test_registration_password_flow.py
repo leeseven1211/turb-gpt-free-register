@@ -667,7 +667,7 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
             self.assertEqual(error.code, "password_page_error")
             self.assertNotIn("test_private_value", str(error))
 
-    def test_saved_password_refills_only_new_document_and_preserves_the_old_unknown_receipt(self):
+    def test_saved_password_refills_new_document_and_supersedes_old_unknown_after_confirmation(self):
         for landing in ("otp", "mfa", "profile", "session"):
             with self.subTest(landing=landing), _saved_password_refresh_flow(landing=landing) as flow:
                 result = password_auth._fill_password_page_if_present(
@@ -678,7 +678,10 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
                 self.assertEqual(len(set(flow.driver.queues)), 2)
                 self.assertEqual(len(flow.driver.navigations), 1)
                 old, new = flow.driver._browser_submission_receipts
-                self.assertEqual(old.phase, "unknown")
+                self.assertEqual(old.phase, "superseded")
+                self.assertEqual(old.result, "unknown")
+                self.assertEqual(old.replacement_submission_id, new.submission_id)
+                self.assertTrue(any(call.args[1] == "unknown" and call.kwargs.get("receipt") is old for call in flow.facts.call_args_list))
                 self.assertEqual(new.phase, "confirmed")
                 self.assertLess(flow.clock.value, 20)
 

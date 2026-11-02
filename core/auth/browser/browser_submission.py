@@ -78,6 +78,7 @@ class BrowserSubmissionReceipt:
     request_binding: tuple[str, str] | None = field(default=None, repr=False)
     response_binding: tuple[str, str] | None = field(default=None, repr=False)
     auth_error: dict[str, Any] = field(default_factory=dict, repr=False)
+    replacement_submission_id: str = ""
 
     def __post_init__(self) -> None:
         self.kind = _bounded_text(self.kind, 40) or "unknown"
@@ -90,12 +91,21 @@ class BrowserSubmissionReceipt:
         current_phase = phase or self.phase
         if current_phase not in SUBMISSION_PHASES:
             raise ValueError(f"未知浏览器提交阶段: {current_phase}")
-        if current_phase == "superseded" and not (
+        replacement = _bounded_text(changes.get("replacement_submission_id", self.replacement_submission_id), 80)
+        # 这里只限制序列化形状；落库必须通过专用入口校验原身份及新旧事实。
+        saved_relogin = (
+            self.kind == "resume_login" and self.stage == "login_password"
+            and self.endpoint_kind == "password_submit" and self.http_method == "POST"
+            and changes.get("error_type", self.error_type) == "saved_password_relogin"
+            and replacement and replacement != self.submission_id
+            and changes.get("result", self.result) == "unknown"
+        )
+        if current_phase == "superseded" and not (saved_relogin or (
             self.kind in {"otp", "resume_login"} and self.stage == "email_otp"
             and self.endpoint_kind == "otp_submit"
             and changes.get("error_type", self.error_type) == "otp_refresh_retry"
-        ):
-            raise ValueError("只有验证码刷新后补交可以替代原提交回执")
+        )):
+            raise ValueError("只有验证码刷新后补交或受控已保存密码重登录可以替代原提交回执")
         method = _bounded_text(changes.get("http_method", self.http_method), 12).upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", ""}:
             method = ""
@@ -107,7 +117,7 @@ class BrowserSubmissionReceipt:
             duration = max(0, min(900_000, int(duration))) if duration is not None else None
         except (TypeError, ValueError):
             duration = None
-        return {
+        fact = {
             "submission_id": _bounded_text(self.submission_id, 80),
             "kind": self.kind,
             "stage": self.stage,
@@ -119,11 +129,14 @@ class BrowserSubmissionReceipt:
             "error_type": _bounded_text(changes.get("error_type", self.error_type), 80),
             "duration_ms": duration,
         }
+        if replacement:
+            fact["replacement_submission_id"] = replacement
+        return fact
 
     def transition(self, phase: str, **changes: Any) -> dict[str, Any]:
         fact = self.safe_fact(phase=phase, **changes)
         self.phase = phase
-        for name in ("http_method", "http_status", "result", "error_type", "duration_ms"):
+        for name in ("http_method", "http_status", "result", "error_type", "duration_ms", "replacement_submission_id"):
             if name in changes:
                 setattr(self, name, fact[name] if fact[name] is not None else getattr(self, name))
         if self.duration_ms is None and phase in {"confirmed", "rejected", "not_dispatched", "unknown", "response_observed"}:
@@ -147,6 +160,7 @@ def fact_from_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
         result=_bounded_text(raw.get("result"), 20),
         error_type=_bounded_text(raw.get("error_type"), 80),
         duration_ms=raw.get("duration_ms"),
+        replacement_submission_id=_bounded_text(raw.get("replacement_submission_id"), 80),
     )
     return receipt.safe_fact(phase=_bounded_text(raw.get("phase"), 40) or "unknown")
 
@@ -227,6 +241,38 @@ def record_browser_submission_fact(driver: Any, phase: str, *, receipt: BrowserS
     if _PHASE_PRIORITY.get(phase, 0) >= _PHASE_PRIORITY.get(receipt.phase, 0):
         receipt.transition(phase, **changes)
     return persisted
+
+
+def complete_saved_password_relogin(driver, *, original, replacement, email: str, password: str):
+    """仅由已核验同邮箱新表单的受控刷新调用；持久化成功后才推进内存回执。"""
+    if not (
+        getattr(driver, "_registration_resume_login", False) and password
+        and original is not replacement and original.phase in {"unknown", "rejected", "confirmed", "not_dispatched"}
+        and replacement.phase == "confirmed" and replacement.result == "success"
+        and all(item.kind == "resume_login" and item.stage == "login_password"
+                and item.endpoint_kind == "password_submit" and item.http_method == "POST"
+                for item in (original, replacement))
+    ):
+        raise ValueError("已保存密码重登录回执不匹配")
+    changes = {"result": "unknown", "error_type": "saved_password_relogin",
+               "replacement_submission_id": replacement.submission_id}
+    fact = original.safe_fact(phase="superseded", **changes) if original.phase == "unknown" else original.safe_fact()
+    context = getattr(driver, "_registration_fact_context", None)
+    if isinstance(context, Mapping) and context.get("attempt_id") is not None:
+        from core.storage import registration
+
+        fact = registration.supersede_saved_password_login_submission(
+            int(context["attempt_id"]), run_id=context.get("run_id"),
+            execution_id=context.get("execution_id"), job_id=context.get("job_id"),
+            email=email, password=password, submission_id=original.submission_id,
+            replacement_submission_id=replacement.submission_id,
+        )
+    # 迟到的可信响应可能在事务前后收口原动作；不能把真实终态降为替代。
+    if _PHASE_PRIORITY.get(fact["phase"], 0) >= _PHASE_PRIORITY.get(original.phase, 0):
+        original.transition(fact["phase"], **{
+            key: fact[key] for key in ("result", "error_type", "http_status", "replacement_submission_id")
+            if key in fact
+        })
 
 
 __all__ = [

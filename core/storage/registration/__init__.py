@@ -1323,6 +1323,7 @@ def record_submission_fact(
     result: str = "",
     error_type: str = "",
     duration_ms: int | None = None,
+    replacement_submission_id: str = "",
 ) -> dict:
     """追加浏览器提交事实并建立当前 Run 的 dispatch 围栏。
 
@@ -1336,7 +1337,10 @@ def record_submission_fact(
         "submission_id": submission_id, "kind": kind, "stage": stage, "phase": phase,
         "endpoint_kind": endpoint_kind, "http_method": http_method, "http_status": http_status,
         "result": result, "error_type": error_type, "duration_ms": duration_ms,
+        "replacement_submission_id": replacement_submission_id,
     })
+    if fact["phase"] == "superseded" and fact["error_type"] == "saved_password_relogin":
+        raise ValueError("已保存密码重登录替代必须使用专用校验入口")
     init()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
@@ -1457,6 +1461,69 @@ def record_submission_fact(
                 uuid.NAMESPACE_URL, f"turb-auth-submission:{attempt_id}:{fact['submission_id']}:{fact['phase']}"
             )),
         )
+        return fact
+
+
+def supersede_saved_password_login_submission(
+    attempt_id: int, *, submission_id: str, replacement_submission_id: str,
+    email: str, password: str, run_id: int, execution_id: str, job_id: int | None = None,
+) -> dict:
+    """已确认的同身份重登录替代受控刷新前的未知登录，保留原始未知历史。"""
+    from core.auth.browser.browser_submission import _PHASE_PRIORITY, fact_from_mapping
+
+    if not submission_id or not replacement_submission_id or submission_id == replacement_submission_id:
+        raise ValueError("已保存密码重登录必须关联两个不同提交")
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        raw = cur.fetchone()
+        attempt = _row(raw)
+        if attempt is None:
+            raise LookupError("注册 Attempt 不存在")
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        cur.execute(f"SELECT action_type, job_id FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
+        run = _row(cur.fetchone()) or {}
+        if run.get("action_type") != "registration_resume" or run.get("job_id") != job_id:
+            raise ValueError("已保存密码重登录必须使用原任务的显式续跑")
+        private = dict(_decode(raw.get("private_context")) or {})
+        if not password or private.get("password") != password:
+            raise ValueError("已保存密码重登录的原密码不匹配")
+        facts = list(private.get("submission_facts") or [])
+        pair = []
+        for identifier in (submission_id, replacement_submission_id):
+            history = [item for item in facts if isinstance(item, dict) and item.get("submission_id") == identifier]
+            if not history or not all(
+                item.get("kind") == "resume_login" and item.get("stage") == "login_password"
+                and item.get("endpoint_kind") == "password_submit" and item.get("http_method") == "POST"
+                and item.get("run_id") == int(run_id) for item in history
+            ) or not any(item.get("phase") == "dispatch_intent" for item in history):
+                raise ValueError("已保存密码重登录的同 Run 原提交不匹配")
+            pair.append(max(history, key=lambda item: _PHASE_PRIORITY.get(item.get("phase"), 0)))
+        old, new = pair
+        if new.get("phase") != "confirmed" or new.get("result") != "success":
+            raise ValueError("替代登录尚未确认成功")
+        # 已绑定的迟到响应可以先于本事务收口旧动作，保留该真实终态即可。
+        if old.get("phase") in {"confirmed", "rejected", "not_dispatched"}:
+            return old
+        if old.get("phase") == "superseded":
+            if (old.get("replacement_submission_id") == replacement_submission_id
+                    and old.get("error_type") == "saved_password_relogin" and old.get("result") == "unknown"):
+                return old
+            raise ValueError("原登录已被其他提交替代")
+        if old.get("phase") != "unknown":
+            raise ValueError("原登录并非未知提交")
+        fact = fact_from_mapping({**old, "phase": "superseded", "result": "unknown",
+                                  "error_type": "saved_password_relogin",
+                                  "replacement_submission_id": replacement_submission_id})
+        stored = {**fact, "run_id": int(run_id)}
+        private["submission_facts"] = [*facts, stored]
+        cur.execute(f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, updated_at=%s WHERE id=%s",
+                    (json.dumps(private, ensure_ascii=False), _now(), int(attempt_id)))
+        _insert_event(cur, attempt_id=int(attempt_id), run_id=run_id, job_id=job_id,
+                      checkpoint=str(attempt.get("checkpoint") or "created"), event_type="auth_submission_fact",
+                      level="INFO", message="已保存密码重登录已确认，原未知登录由新提交替代", detail=fact,
+                      execution_id=execution_id, event_uuid=str(uuid.uuid5(
+                          uuid.NAMESPACE_URL, f"turb-auth-submission:{attempt_id}:{submission_id}:superseded")))
         return fact
 
 
