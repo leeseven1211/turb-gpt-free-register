@@ -189,7 +189,8 @@ def _fence(cur, owner: _Owner) -> tuple[dict, list[dict]]:
     attempts = cur.fetchall()
     if owner.purpose == "registration":
         attempt = next((item for item in attempts if item["id"] == owner.attempt_id), {})
-        if not attempt or attempt.get("active_execution_id") != owner.registration_execution_id:
+        if (not attempt or (attempt.get("active_execution_id")
+                            and attempt["active_execution_id"] != owner.registration_execution_id)):
             raise PasswordRecoveryError("registration_identity_mismatch")
         # start_run/finish_run 均在事务内锁定或更新 Attempt；依靠已持有的 Attempt
         # 锁串行化归属变更，避免与 finish_run 的 Run → Attempt 顺序反向加锁。
@@ -201,8 +202,8 @@ def _fence(cur, owner: _Owner) -> tuple[dict, list[dict]]:
             raise PasswordRecoveryError("registration_execution_mismatch")
         cur.execute(f"SELECT * FROM {pg.qualified('registration_jobs')} WHERE id=%s", (registration_run.get("job_id"),))
         job = cur.fetchone() or {}
-        # Job 可不保存注册 worker 的执行标识；该标识由活动 Attempt 与
-        # RegistrationRun 共同确认，兼容操作 Run 则始终绑定 Job.job_uuid。
+        # Job 可不保存注册 worker 的执行标识；该标识由当前 RegistrationRun
+        # 与已锁定 Attempt 共同确认，兼容操作 Run 则始终绑定 Job.job_uuid。
         if (job.get("attempt_id") != owner.attempt_id or job.get("status") != "running"
                 or (job.get("execution_id") and job["execution_id"] != owner.registration_execution_id)
                 or str(job.get("email") or "").strip().casefold() != owner.email

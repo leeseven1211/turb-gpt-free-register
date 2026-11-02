@@ -50,10 +50,6 @@ class Password_Recovery_Store(PostgresTestCase):
         )
         self.assertTrue(created)
         context = self._start_job_run(job)
-        registration.advance_checkpoint(
-            self.attempt_id, "otp_confirmed", run_id=context["run_id"], job_id=job["id"],
-            execution_id=context["execution_id"],
-        )
         task = operations.find_task_by_source("registration_chains", f"{self.root_job_id}:registration_resume")
         operation_run = operations.get_run(int(task["last_run_id"]))
         self.assertEqual(str(job["id"]), operation_run["source_id"])
@@ -105,6 +101,7 @@ class Password_Recovery_Store(PostgresTestCase):
         run = registration.get_run(self.owner["registration_run_id"])
         job = jobs.get_job(int(run["job_id"]))
         self.assertIsNone(job.get("execution_id"))
+        self.assertIsNone(registration.get_attempt(self.attempt_id).get("active_execution_id"))
         self.assertNotEqual(self.owner["registration_execution_id"], job["job_uuid"])
         self.assertIsNone(self.store.resume_password_recovery(**self.owner))
         cp = self._transition(self._prepare(), "started")
@@ -377,15 +374,13 @@ class Password_Recovery_Store(PostgresTestCase):
                 **self.owner, "registration_run_id": context["run_id"],
             })
 
-    def test_missing_or_replaced_attempt_execution_cannot_access_checkpoint(self):
+    def test_replaced_attempt_execution_cannot_access_checkpoint(self):
         cp = self._prepare()
-        for execution_id in (None, "replacement"):
-            with pg.connect() as conn, conn.cursor() as cur:
-                cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET active_execution_id=%s WHERE id=%s",
-                            (execution_id, self.attempt_id))
-            with self.subTest(execution_id=execution_id), self.assertRaisesRegex(
-                    self.store.PasswordRecoveryError, "registration_identity_mismatch"):
-                self.store.get_password_recovery(cp.recovery_id, **self.owner)
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET active_execution_id='replacement' WHERE id=%s",
+                        (self.attempt_id,))
+        with self.assertRaisesRegex(self.store.PasswordRecoveryError, "registration_identity_mismatch"):
+            self.store.get_password_recovery(cp.recovery_id, **self.owner)
 
     def test_wrong_master_key_and_ciphertext_fail_without_exposing_credentials(self):
         cp = self._prepare()
