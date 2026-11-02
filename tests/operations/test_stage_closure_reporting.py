@@ -186,6 +186,29 @@ class CodexCancellationStageTests(unittest.TestCase):
 
 
 class CompatibilityCompletionClosureTests(unittest.TestCase):
+    def test_native_setup_keeps_an_explicit_password_reset_flag(self):
+        from webui import runtime
+
+        context = SimpleNamespace(
+            run={"data": {"steps": ["password"], "force_password_reset": True}},
+            task_type="password_setup", config_snapshot={},
+            account_id=103, task_id=104, run_id=105, email="fixture@example.test",
+            report=Mock(), finished=False, last_result=None,
+            lease=Mock(return_value=nullcontext()), remote_request_started=Mock(),
+            remote_request_receipt=Mock(), finish=Mock(),
+        )
+        with (
+            patch.object(runtime, "_completion_settings_from_snapshot", return_value={}),
+            patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
+                "ok": True, "status": "success",
+            }) as worker,
+            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
+        ):
+            result = runtime._handle_native_account_setup(context)
+
+        self.assertEqual("success", result.status)
+        self.assertTrue(worker.call_args.kwargs["force_password_reset"])
+
     def test_actual_setup_success_closes_coordinator_scope(self):
         from webui import runtime
 
@@ -222,6 +245,7 @@ class CompatibilityCompletionClosureTests(unittest.TestCase):
         ):
             context = SimpleNamespace(
                 run={"data": {"steps": ["password"]}, "trigger": "fixture"},
+                task_type="account_setup_retry",
                 config_snapshot={}, account_id=103, task_id=104, run_id=105,
                 email="fixture@example.test", report=Mock(), finished=False, last_result=None,
                 lease=Mock(return_value=nullcontext()), remote_request_started=Mock(),

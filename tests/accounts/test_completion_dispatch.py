@@ -46,6 +46,45 @@ class CompletionDispatchTests(PostgresTestCase):
             config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST,
         )
 
+    def test_persisted_password_change_recovers_reset_intent_without_changing_setup(self):
+        for task_type, completion_auth, expected_reset in (
+            ("password_change", False, True),
+            ("password_setup", False, False),
+            ("account_setup_retry", True, False),
+        ):
+            with self.subTest(task_type=task_type):
+                email = f"{task_type}@example.test"
+                account_id = record_store.insert_row(record_store.ACCOUNTS, {
+                    "email": email,
+                    "extra_json": {"account_password": "synthetic-password"},
+                })
+                task_gateway.register_operation_handler(
+                    task_type, runtime._handle_native_account_setup,
+                    source_systems=("webui_runtime",),
+                    config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST,
+                )
+                queued = task_gateway.submit_durable_operation(
+                    task_type=task_type, account_id=account_id, email=email,
+                    source_system="webui_runtime", source_id=f"reset-intent:{task_type}",
+                    data={
+                        "steps": ["password"],
+                        "completion_auth": completion_auth,
+                        "force_password_reset": expected_reset,
+                    },
+                    config_snapshot={}, config_allowlist=tuple(runtime._RUNTIME_CONFIG_ALLOWLIST),
+                    dispatch=False,
+                )
+                persisted = operation.get_run(int(queued["run_id"]))
+                # 真实持久化会去掉含 password 的键，改密意图仍须从任务类型恢复。
+                self.assertNotIn("force_password_reset", persisted["data"])
+                self.setup_worker.reset_mock()
+                self.setup_worker.return_value = {"ok": True, "status": "success"}
+
+                result = task_gateway._execute_operation_handler(task_type, int(queued["run_id"]))
+
+                self.assertEqual("success", result["status"])
+                self.assertEqual(expected_reset, self.setup_worker.call_args.kwargs["force_password_reset"])
+
     def test_coordinator_dispatches_setup_child_with_real_storage(self):
         email = "completion-dispatch@example.test"
         account_id = record_store.insert_row(record_store.ACCOUNTS, {

@@ -935,7 +935,8 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
         }
     settings = _completion_settings_from_snapshot(context.config_snapshot)
     task_trigger = str(data.get("task_trigger") or context.run.get("trigger") or "manual_account_setup")
-    force_password_reset = bool(data.get("force_password_reset"))
+    # 持久化脱敏会移除含 password 的键；改密任务仍须保留其明确操作意图。
+    force_password_reset = context.task_type == "password_change" or bool(data.get("force_password_reset"))
     force_twofa_change = bool(data.get("force_twofa_change"))
     from core.runtime.capabilities import account_setup_unavailable
 
