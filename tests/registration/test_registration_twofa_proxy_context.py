@@ -62,6 +62,12 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
         self.assertNotIn("proxy_lease_id", proxy_context)
 
     def test_twofa_browser_retries_bind_current_lease_without_inheriting_registration_lease(self):
+        self._check_browser_retry_leases()
+
+    def test_explicit_retry_country_is_preserved_when_browser_rotates_proxy(self):
+        self._check_browser_retry_leases(country="JP")
+
+    def _check_browser_retry_leases(self, country=None):
         def route(lease_id):
             value = SimpleNamespace(
                 proxy_url="http://route.example:8080", provider="unit", mode="pool", region="JP",
@@ -93,7 +99,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             stack.enter_context(patch.object(codex_retry_service.account_task_store, "append_event"))
             stack.enter_context(patch.object(task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler()))
             stack.enter_context(patch("config.reload_all"))
-            stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", side_effect=routes))
+            acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", side_effect=routes))
             stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
             stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
             stack.enter_context(patch.object(codex_retry_service.time, "sleep"))
@@ -113,6 +119,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             result = codex_retry_service.run_twofa_worker(
                 "unit@example.test", task_id=81, target_log_path=Path(tempdir) / "twofa.log",
                 clear_log=False, manage_task=False, steps={"password"}, password_driver_override="roxy",
+                **({"proxy_country_override": country} if country is not None else {}),
             )
             self.assertEqual(protocol_traffic.current_correlation(), before)
 
@@ -121,6 +128,45 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
         self.assertTrue(all("registration_job_id" not in value for value in observed))
         self.assertEqual([value["lease_id"] for value in persisted], ["account-lease-1", "account-lease-2"])
         self.assertEqual([value["operation_task_id"] for value in persisted], [501, 501])
+        self.assertEqual(acquire.call_count, 2)
+        for call in acquire.call_args_list:
+            if country is None:
+                self.assertNotIn("region", call.kwargs)
+            else:
+                self.assertEqual(call.kwargs["region"], country)
+
+    def test_explicit_retry_country_applies_to_plan_and_account_routes(self):
+        route = SimpleNamespace(
+            proxy_url="http://route.example:8080", provider="unit", mode="pool", region="JP",
+            lease=SimpleNamespace(lease_id="jp-lease"), release=Mock(),
+            public_dict=Mock(return_value={"proxy_mode": "pool", "network_route": "proxy"}),
+        )
+        with tempfile.TemporaryDirectory() as tempdir, ExitStack() as stack:
+            stack.enter_context(patch("config.reload_all"))
+            stack.enter_context(patch.object(codex_retry_service.db, "get_account_by_email", return_value={
+                "id": 44, "registration_proxy_region": "IN",
+            }))
+            stack.enter_context(patch.object(codex_retry_service.account_task_store, "get_task", return_value={}))
+            stack.enter_context(patch.object(codex_retry_service.account_task_store, "append_event"))
+            stack.enter_context(patch.object(task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler()))
+            stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
+            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+            stack.enter_context(patch.object(codex_retry_service, "_run_retry_plan_check", return_value={
+                "ok": True, "status": "success",
+            }))
+            stack.enter_context(patch.object(codex_retry_service, "_RUNNING_THREADS", {}))
+            stack.enter_context(patch.object(codex_retry_service, "_RESERVED_AT", {}))
+            stack.enter_context(patch.object(codex_retry_service, "_STOP_REQUESTED", set()))
+            acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
+            stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action"))
+            result = codex_retry_service.run_twofa_worker(
+                "unit@example.test", task_id=81, target_log_path=Path(tempdir) / "twofa.log",
+                clear_log=False, manage_task=False, steps={"password", "plan_check"},
+                password_driver_override="roxy", proxy_country_override="JP",
+            )
+        self.assertTrue(result["ok"], result.get("message"))
+        self.assertEqual([call.kwargs["purpose"] for call in acquire.call_args_list], ["plan-check", "password-setup"])
+        self.assertEqual([call.kwargs["region"] for call in acquire.call_args_list], ["JP", "JP"])
 
     def test_twofa_worker_writes_internal_logs_in_native_and_legacy_contexts(self):
         for native in (True, False):

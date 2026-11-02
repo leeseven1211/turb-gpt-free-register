@@ -1171,11 +1171,13 @@ def run_twofa_worker(
     force_password_reset: bool = False,
     force_twofa_change: bool = False,
     execution_fence: dict | None = None,
+    proxy_country_override: str | None = None,
 ) -> dict:
     """重新登录并执行指定账号配置步骤，不重复执行 Codex OAuth。
 
     ``steps`` 为空时兼容历史行为：执行 password + plan_check + twofa。
     ``manage_task=False`` 用于“补全账号”协调器复用同一个父任务生命周期。
+    ``proxy_country_override`` 仅覆盖本次显式重跑及其换线，不改账号注册国家。
     """
     fh: logging.Handler | None = None
     root_logger = logging.getLogger()
@@ -1184,6 +1186,7 @@ def run_twofa_worker(
     plan_route = None
     route_summary: dict = {}
     plan_route_summary: dict = {}
+    route_country = {"region": proxy_country_override} if proxy_country_override else {}
     browser_stage_started = False
     browser_stage_finished = False
     browser_retry_attempts = 0
@@ -1307,6 +1310,7 @@ def run_twofa_worker(
                 email=email,
                 purpose="plan-check",
                 cancel=lambda: check_stop_requested(email),
+                **route_country,
             )
             plan_route_summary = plan_route.public_dict()
             route_summary = plan_route_summary
@@ -1374,6 +1378,7 @@ def run_twofa_worker(
             email=email,
             purpose=setup_proxy_purpose,
             cancel=lambda: check_stop_requested(email),
+            **route_country,
         )
         route_summary = account_route.public_dict()
         _report_account_setup_event(
@@ -1633,6 +1638,7 @@ def run_twofa_worker(
                     email=email,
                     purpose=f"{setup_proxy_purpose}-retry-{browser_attempt + 1}",
                     cancel=lambda: check_stop_requested(email),
+                    **route_country,
                 )
                 route_summary = account_route.public_dict()
                 _report_account_setup_event(

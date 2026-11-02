@@ -435,6 +435,115 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertTrue(result["debug_warning"])
                 executor.submit.assert_not_called()
 
+    def test_proxy_country_override_changes_only_new_roxy_child(self):
+        for action in ("registration", "registration_resume", "twofa"):
+            with self.subTest(action=action):
+                source, account, attempt = self._facts()
+                source["config_snapshot"].update(registration_driver="roxy", proxy_country="IN")
+                original_source, original_attempt = copy.deepcopy(source), copy.deepcopy(attempt)
+                if action == "registration":
+                    account = None
+                elif action == "twofa":
+                    account["access_token"] = "unit-existing-token"
+                result, create_call, executor = self._retry(
+                    source, account, attempt, action=action, driver_choice=None, proxy_country="JP",
+                )
+                self.assertTrue(result["ok"], result)
+                snapshot = create_call.kwargs["data"]["config_snapshot"]
+                self.assertEqual(snapshot["proxy_country"], "JP")
+                self.assertEqual(snapshot["retry_proxy_country_override"], "JP")
+                self.assertEqual(create_call.kwargs["email"], source["email"])
+                self.assertEqual(source, original_source)
+                self.assertEqual(attempt, original_attempt)
+                executor.submit.assert_called_once()
+
+    def test_proxy_country_override_rejects_invalid_values_before_storage(self):
+        for country in ("", "  ", "ZZ", "Japan", 1, True, [], {}):
+            with self.subTest(country=country), patch.object(db, "get_job") as read:
+                result = registration_service.retry_job(21, proxy_country=country)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], 400)
+                read.assert_not_called()
+
+    def test_proxy_country_override_requires_roxy_registration_or_twofa_action(self):
+        for driver, action in (("protocol_oss_2", "registration"), ("roxy_oss", "registration_resume"),
+                               ("roxy", "codex"), ("roxy", "plan_check")):
+            with self.subTest(driver=driver, action=action):
+                source, account, attempt = self._facts()
+                source["config_snapshot"]["registration_driver"] = driver
+                result, create_call, executor = self._retry(
+                    source, account, attempt, action=action, driver_choice=None, proxy_country="JP",
+                )
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["status"], 409)
+                self.assertIsNone(create_call)
+                executor.submit.assert_not_called()
+
+    def test_proxy_country_override_only_reuses_matching_active_job(self):
+        for status in ("pending", "running"):
+            for country, marker, expected in (("IN", None, False), ("JP", None, False),
+                                             ("JP", "IN", False), ("JP", "JP", True)):
+                with self.subTest(status=status, country=country, marker=marker):
+                    source, account, attempt = self._facts()
+                    source["config_snapshot"].update(registration_driver="roxy", proxy_country="IN")
+                    active = {"id": 22, "status": status, "job_type": "registration_resume",
+                              "config_snapshot": {"registration_driver": "roxy", "proxy_country": country}}
+                    if marker:
+                        active["config_snapshot"]["retry_proxy_country_override"] = marker
+                    original = copy.deepcopy(active)
+                    result, _, executor = self._retry(
+                        source, account, attempt, child=active, proxy_country="JP", driver_choice=None,
+                    )
+                    self.assertIs(result["ok"], expected, result)
+                    if expected:
+                        self.assertTrue(result["reused"])
+                    else:
+                        self.assertEqual(result["status"], 409)
+                    self.assertEqual(active, original)
+                    executor.submit.assert_not_called()
+
+    def test_retry_without_proxy_override_preserves_historical_snapshot(self):
+        source, account, attempt = self._facts()
+        source["config_snapshot"].update(registration_driver="roxy", proxy_country="IN")
+        result, create_call, _ = self._retry(source, account, attempt, driver_choice=None)
+        self.assertTrue(result["ok"], result)
+        snapshot = create_call.kwargs["data"]["config_snapshot"]
+        self.assertEqual(snapshot["proxy_country"], "IN")
+        self.assertNotIn("retry_proxy_country_override", snapshot)
+
+    def test_retry_without_new_country_does_not_inherit_old_override_permission(self):
+        source, account, attempt = self._facts()
+        source["config_snapshot"].update(registration_driver="roxy", proxy_country="JP",
+                                         retry_proxy_country_override="JP")
+        original = copy.deepcopy(source)
+        result, create_call, _ = self._retry(source, account, attempt, driver_choice=None)
+        self.assertTrue(result["ok"], result)
+        snapshot = create_call.kwargs["data"]["config_snapshot"]
+        self.assertEqual(snapshot["proxy_country"], "JP")
+        self.assertNotIn("retry_proxy_country_override", snapshot)
+        self.assertEqual(source, original)
+
+    def test_retry_api_validates_and_passes_explicit_proxy_country(self):
+        client = create_app(auth_code="test-auth").test_client()
+        for country in ("JP", " jp ", "", None, 1, True, [], {}, "ZZ"):
+            with self.subTest(country=country), patch("webui.app.svc.retry_job", return_value={"ok": True}) as retry:
+                response = client.post("/api/jobs/21/retry", json={"workers": 1, "proxy_country": country},
+                                       headers={"X-Auth-Code": "test-auth"})
+                if isinstance(country, str) and country.strip().upper() == "JP":
+                    self.assertEqual(response.status_code, 200)
+                    retry.assert_called_once_with(21, workers=1, proxy_country="JP")
+                else:
+                    self.assertEqual(response.status_code, 400)
+                    retry.assert_not_called()
+
+    def test_bulk_retry_rejects_proxy_country_before_submitting_any_job(self):
+        client = create_app(auth_code="test-auth").test_client()
+        with patch("webui.app.svc.retry_job", return_value={"ok": True}) as retry:
+            response = client.post("/api/jobs/retry-bulk", json={"job_ids": [21, 23], "proxy_country": "JP"},
+                                   headers={"X-Auth-Code": "test-auth"})
+        self.assertEqual(response.status_code, 400)
+        retry.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

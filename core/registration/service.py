@@ -2741,6 +2741,15 @@ def _run_twofa_retry_job(
                 and retry_snapshot.get("registration_driver") == "roxy"
                 and retry_snapshot.get("twofa_driver") == "browser"):
             worker_overrides = {"twofa_driver_override": "browser", "password_driver_override": "roxy"}
+        if isinstance(retry_snapshot, dict) and retry_snapshot.get("registration_driver") == "roxy":
+            override = retry_snapshot.get("retry_proxy_country_override")
+            if override is not None:
+                from config.countries import ISO_3166_ALPHA2
+
+                if (not isinstance(override, str) or override not in ISO_3166_ALPHA2
+                        or override != _normalize_registration_country(retry_snapshot.get("proxy_country"))):
+                    raise ValueError("重跑代理国家覆盖与本轮线路配置不一致")
+                worker_overrides["proxy_country_override"] = override
         # 账号动作领取的租约必须归属真实 operation Run；结束后恢复父注册日志上下文。
         # 不继承注册阶段的旧 lease_id，避免新中继绑定到另一条供应商线路。
         with task_run_log.stage_context(
@@ -3770,12 +3779,18 @@ def retry_job(
     batch_size: int | None = None,
     registration_driver: str | None = None,
     debug_enabled: bool | None = None,
+    proxy_country: str | None = None,
 ) -> dict:
-    """按原身份重跑终态任务，显式驱动覆盖只冻结到新子任务。"""
+    """按原身份重跑终态任务，显式驱动或国家覆盖只冻结到新子任务。"""
     if registration_driver is not None and registration_driver != "roxy":
         return {"ok": False, "error": "单任务驱动覆盖仅支持 roxy", "status": 400}
     if debug_enabled is not None and type(debug_enabled) is not bool:
         return {"ok": False, "error": "debug_enabled 必须是布尔值", "status": 400}
+    retry_country = None
+    if proxy_country is not None:
+        if not isinstance(proxy_country, str) or not _normalize_registration_country(proxy_country):
+            return {"ok": False, "error": "proxy_country 必须是有效的两位国家码", "status": 400}
+        retry_country = _normalize_registration_country(proxy_country)
     source = db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
@@ -3791,6 +3806,10 @@ def retry_job(
         return {"ok": False, "error": reason, "status": 409}
 
     action = str(retry_info["retry_action"])
+    if retry_country is not None:
+        retry_driver = registration_driver or registration_options_for_job(source).get("registration_driver")
+        if retry_driver != "roxy" or action not in {"registration", "registration_resume", "twofa"}:
+            return {"ok": False, "error": "国家覆盖仅支持 Roxy 注册、续跑或账号配置重跑", "status": 409}
     retry_debug_enabled = bool(source.get("debug_enabled", False)) if debug_enabled is None else debug_enabled
     debug_notice = ({
         "debug_enabled": False,
@@ -3915,10 +3934,15 @@ def retry_job(
             **debug_notice,
         }
     retry_snapshot = registration_options_for_job(source)
+    # 国家可沿任务链冻结；强制换线许可只属于本次明确请求，不能跨重跑继承。
+    retry_snapshot.pop("retry_proxy_country_override", None)
     if registration_driver == "roxy":
         retry_snapshot["registration_driver"] = "roxy"
         if action == "twofa":
             retry_snapshot["twofa_driver"] = "browser"
+    if retry_country is not None:
+        retry_snapshot["proxy_country"] = retry_country
+        retry_snapshot["retry_proxy_country_override"] = retry_country
     if action == "twofa":
         # 此旧入口固定补密码、套餐和 2FA，执行器必需浏览器会话。
         from core.runtime.capabilities import browser_operation_unavailable
@@ -3969,6 +3993,18 @@ def retry_job(
             codex_retry_service.release(email)
         if debug_enabled is not None and bool(job.get("debug_enabled", False)) != debug_enabled:
             return {"ok": False, "error": "同一 Attempt 已有不同调试设置的运行，不能中途切换抓包", "status": 409}
+        if retry_country is not None:
+            active_snapshot = job.get("config_snapshot")
+            if not isinstance(active_snapshot, dict):
+                active_data = job.get("data")
+                active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
+            observed_country = _normalize_registration_country(job.get("proxy_region"))
+            if (not isinstance(active_snapshot, dict)
+                    or active_snapshot.get("registration_driver") != "roxy"
+                    or _snapshot_registration_country(active_snapshot) != retry_country
+                    or active_snapshot.get("retry_proxy_country_override") != retry_country
+                    or (observed_country and observed_country != retry_country)):
+                return {"ok": False, "error": "同一 Attempt 已有其他国家配置的任务，不能中途切换线路", "status": 409}
         if registration_driver == "roxy":
             active_snapshot = job.get("config_snapshot")
             if not isinstance(active_snapshot, dict):

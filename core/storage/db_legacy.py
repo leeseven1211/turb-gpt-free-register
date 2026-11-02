@@ -370,7 +370,15 @@ def _ensure_registration_attempt_job(row: dict) -> None:
 
     _ensure_compat_schema("registration", registration.init)
     job_data = row.get("data") if isinstance(row.get("data"), dict) else {}
-    attempt = registration.ensure_attempt_for_job(int(row["id"]), data=job_data)
+    attempt_data = job_data
+    snapshot = job_data.get("config_snapshot")
+    if (row.get("parent_job_id") and isinstance(snapshot, dict)
+            and snapshot.get("registration_driver") == "roxy"
+            and "retry_proxy_country_override" in snapshot):
+        # 显式换国家只属于这次子任务；其 Run 保留完整快照，原 Attempt
+        # 仍保存最初的注册配置，其他元数据继续按既有规则合并。
+        attempt_data = {key: value for key, value in job_data.items() if key != "config_snapshot"}
+    attempt = registration.ensure_attempt_for_job(int(row["id"]), data=attempt_data)
     attempt_id = int(attempt["id"])
     row["attempt_id"] = attempt_id
     record_store.patch_row(record_store.JOBS, int(row["id"]), {"attempt_id": attempt_id})

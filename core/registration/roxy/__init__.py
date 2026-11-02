@@ -1125,6 +1125,7 @@ def _open_roxy_profile_with_capacity_wait(
     profile_id: str | None = None,
     progress_callback=None,
     data_saver_flow: str | None = None,
+    require_existing_profile: bool = False,
 ) -> RoxyOpenResult:
     """仅在 /browser/open 遇到可恢复的窗口忙时等待，避免快速消费后续任务槽位。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
@@ -1152,6 +1153,8 @@ def _open_roxy_profile_with_capacity_wait(
                 open_kwargs["data_saver_flow"] = data_saver_flow
             if debug_headless is not None:
                 open_kwargs["headless"] = debug_headless
+            if require_existing_profile:
+                open_kwargs["require_existing_profile"] = True
             if profile_id is None:
                 opened = client.open_profile(**open_kwargs)
             else:
@@ -1580,11 +1583,21 @@ def run_roxy_registration(
     from core.registration.service import registration_fact_context
 
     facts = registration_fact_context()
+    retry_country = options.get("retry_proxy_country_override")
+    explicit_retry_route = False
+    if retry_country is not None and _browser_helpers is None:
+        from config.countries import ISO_3166_ALPHA2
+
+        if (not isinstance(retry_country, str) or retry_country not in ISO_3166_ALPHA2
+                or retry_country != options.get("proxy_country")):
+            raise ValueError("重跑代理国家与本轮线路配置不一致")
+        explicit_retry_route = True
     rotation_context = _validated_resume_proxy_rotation(options, facts, profile_id)
     cf_rotation_context = (
         _validated_roxy_cf_proxy_rotation(options, facts, profile_id) if _browser_helpers is None else {}
     )
     retained = None
+    reopened_retained = None
     if not (rotation_context.get("reopen_profile_id") or cf_rotation_context.get('reopen_profile_id')
             or cf_rotation_context.get('previous_cf_temporary_profile_deleted') is True):
         retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
@@ -1592,6 +1605,12 @@ def run_roxy_registration(
             retained = recover_attempt_failed_browser(email=email, profile_id=profile_id, facts=facts)
         if retained is None:
             retained = recover_bound_failed_browser(email=email, profile_id=profile_id, facts=facts)
+    if retained is not None and explicit_retry_route:
+        # 先沿原身份核验并找回 Profile，再由既有关闭确认/更新代理路径重开；
+        # 接管旧 driver 会沿用旧中继，无法兑现本轮显式选择的国家。
+        profile_id = str(retained.opened.profile_id)
+        reopened_retained = retained
+        retained = None
     report_job_progress("browser", "running", "正在接管原失败窗口" if retained else "正在打开或创建 Roxy 浏览器环境")
     client = RoxyBrowserClient()
     retained_driver = None
@@ -1632,6 +1651,7 @@ def run_roxy_registration(
             profile_id=profile_id,
             progress_callback=report_job_progress,
             data_saver_flow="registration",
+            **({"require_existing_profile": True} if explicit_retry_route and profile_id else {}),
         )
     try:
         from core.browser import traffic as browser_traffic
@@ -1662,6 +1682,7 @@ def run_roxy_registration(
                 logger.exception("[Roxy注册] 绑定失败后的替代环境清理失败")
             raise
     driver = retained_driver
+    resume_metadata = retained or reopened_retained
     data_saver = None
     public_asset_cache = None
     postprocess_data_saver = None
@@ -1694,6 +1715,15 @@ def run_roxy_registration(
             attach_current_roxy(opened.debugger_address)
         except Exception:
             logger.exception("[Roxy注册][Debug] 启动浏览器网络抓包失败；注册流程继续执行")
+        if reopened_retained is not None:
+            driver = _build_driver(opened)
+            # 换线重开只更换连接；原身份、未决回执和邮件时间仍交原恢复围栏核验。
+            driver._registration_retained_identity_required = True
+            for attr in ("_browser_submission_receipt", "_browser_submission_receipts",
+                         "_registration_otp_tracker", "_email_otp_page_refresh_done"):
+                if reopened_retained.driver is not None and hasattr(reopened_retained.driver, attr):
+                    setattr(driver, attr, getattr(reopened_retained.driver, attr))
+            driver._registration_otp_after_ts = reopened_retained.otp_after_ts
         if bool(_cfg.ROXY_KEEP_BROWSER_OPEN):
             if retained is not None and driver is not None:
                 # 新 Selenium 连接没有旧 driver 属性；首次保存前恢复原邮件
@@ -1778,17 +1808,17 @@ def run_roxy_registration(
                 existing_profile_unverified = rejected_existing_profile
             except Exception:
                 raise RuntimeError("request_unknown: 同一 Attempt 的原资料拒绝事实无法核验，已保留原身份") from None
-        if retained or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
+        if resume_metadata or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
             report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
             verified_resume_session = _read_registration_resume_session(driver, email)
             if verified_resume_session:
                 existing_profile_unverified = False
-        if retained or password_recovered_before_resume:
+        if resume_metadata or password_recovered_before_resume:
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
                 verified_session=verified_resume_session,
                 otp_after_ts=(getattr(driver, "_registration_otp_after_ts", None)
-                              if password_recovered_before_resume else retained.otp_after_ts),
+                              if password_recovered_before_resume else resume_metadata.otp_after_ts),
             )
             existing_password = retained_state.password
             restart_login = bool(getattr(retained_state, "restart_login", False))
@@ -1799,7 +1829,7 @@ def run_roxy_registration(
         otp_after_ts = (
             getattr(driver, "_registration_otp_after_ts", None)
             if password_recovered_before_resume and not restart_login
-            else retained.otp_after_ts if retained and not restart_login else time.time()
+            else resume_metadata.otp_after_ts if resume_metadata and not restart_login else time.time()
         )
         if (retained_state and retained_state.page_state == PageState.OTP_EMAIL
                 and retained_state.pending_otp is None and otp_after_ts is None):
@@ -2065,7 +2095,7 @@ def run_roxy_registration(
             )
         last_otp_ui_ack = "unconfirmed"
         current_otp = otp_code
-        submitted_otps = getattr(driver, "_registration_otp_tracker", None) if retained else None
+        submitted_otps = getattr(driver, "_registration_otp_tracker", None) if resume_metadata else None
         if not isinstance(submitted_otps, _OtpAttemptTracker):
             submitted_otps = _OtpAttemptTracker()
         driver._registration_otp_tracker = submitted_otps

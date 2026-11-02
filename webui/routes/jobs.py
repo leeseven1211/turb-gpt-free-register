@@ -375,6 +375,12 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "registration_driver 仅支持 roxy"}), 400
         if "debug_enabled" in data and type(data["debug_enabled"]) is not bool:
             return jsonify({"ok": False, "error": "debug_enabled 必须是布尔值"}), 400
+        proxy_country = None
+        if "proxy_country" in data:
+            value = data["proxy_country"]
+            if not isinstance(value, str) or not svc._normalize_registration_country(value):
+                return jsonify({"ok": False, "error": "proxy_country 必须是有效的两位国家码"}), 400
+            proxy_country = svc._normalize_registration_country(value)
         try:
             workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
         except (TypeError, ValueError):
@@ -382,6 +388,8 @@ def create_jobs_blueprint(context: WebUIContext):
         retry_kwargs = {"registration_driver": registration_driver} if registration_driver else {}
         if "debug_enabled" in data:
             retry_kwargs["debug_enabled"] = data["debug_enabled"]
+        if proxy_country is not None:
+            retry_kwargs["proxy_country"] = proxy_country
         result = svc.retry_job(job_id, workers=workers, **retry_kwargs)
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)
@@ -395,6 +403,8 @@ def create_jobs_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         if "registration_driver" in data:
             return jsonify({"ok": False, "error": "registration_driver 仅支持单任务待验证账号续跑"}), 400
+        if "proxy_country" in data:
+            return jsonify({"ok": False, "error": "proxy_country 仅支持单任务 Roxy 重跑"}), 400
         if "debug_enabled" in data and type(data["debug_enabled"]) is not bool:
             return jsonify({"ok": False, "error": "debug_enabled 必须是布尔值"}), 400
         retry_kwargs = {"debug_enabled": data["debug_enabled"]} if "debug_enabled" in data else {}

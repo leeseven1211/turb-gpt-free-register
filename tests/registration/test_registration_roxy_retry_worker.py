@@ -9,7 +9,7 @@ from core.registration import service as registration_service
 
 
 class RegistrationRoxyRetryWorkerTests(unittest.TestCase):
-    def _run_worker(self, snapshot, *, nested=False):
+    def _run_worker(self, snapshot, *, nested=False, expected_status="success"):
         job = {"id": 31, "root_job_id": 21, "attempt_id": 41, "account_id": 44, "status": "running"}
         if snapshot is not None:
             if nested:
@@ -34,7 +34,11 @@ class RegistrationRoxyRetryWorkerTests(unittest.TestCase):
             stack.enter_context(patch.object(codex_retry_service, "release"))
             stack.enter_context(patch.object(registration_service.account_task_store, "finish_task"))
             registration_service._run_twofa_retry_job(31, "/tmp/unit-roxy-twofa.log", "unit@example.test", 44, 81)
-        self.assertEqual(job["status"], "success")
+        self.assertEqual(job["status"], expected_status)
+        if expected_status == "failed":
+            worker.assert_not_called()
+            self.assertIn("国家覆盖", job["error"])
+            return None
         return worker.call_args.kwargs
 
     def test_roxy_browser_snapshot_selects_existing_browser_executors(self):
@@ -56,6 +60,34 @@ class RegistrationRoxyRetryWorkerTests(unittest.TestCase):
                 kwargs = self._run_worker(snapshot)
                 self.assertNotIn("twofa_driver_override", kwargs)
                 self.assertNotIn("password_driver_override", kwargs)
+
+    def test_explicit_roxy_retry_country_reaches_account_worker(self):
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                kwargs = self._run_worker({
+                    "registration_driver": "roxy", "twofa_driver": "browser",
+                    "proxy_country": "JP", "retry_proxy_country_override": "JP",
+                }, nested=nested)
+                self.assertEqual(kwargs["proxy_country_override"], "JP")
+
+    def test_ordinary_country_snapshot_does_not_override_account_worker(self):
+        for snapshot in (
+            {"registration_driver": "roxy", "proxy_country": "JP"},
+            {"registration_driver": "protocol", "proxy_country": "JP", "retry_proxy_country_override": "JP"},
+        ):
+            with self.subTest(snapshot=snapshot):
+                kwargs = self._run_worker(snapshot)
+                self.assertNotIn("proxy_country_override", kwargs)
+
+    def test_invalid_or_mismatched_country_permission_blocks_account_worker(self):
+        for nested in (False, True):
+            for country, marker in (("JP", "IN"), ("JP", "ZZ"), ("JP", ""),
+                                    ("JP", 1), ("JP", True), (None, "JP")):
+                with self.subTest(nested=nested, country=country, marker=marker):
+                    self._run_worker({
+                        "registration_driver": "roxy", "twofa_driver": "browser",
+                        "proxy_country": country, "retry_proxy_country_override": marker,
+                    }, nested=nested, expected_status="failed")
 
 
 if __name__ == "__main__":
