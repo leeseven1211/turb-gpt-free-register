@@ -1467,6 +1467,7 @@ def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, 
         ("ERR_PROXY_CONNECTION_FAILED", "roxy_proxy_tunnel_failed"),
         ("_EmailSubmissionUnknown", "email_submit_unconfirmed"),
         ("_PasswordTransitionTimeout", "password_result_unknown"),
+        ("password_form_not_ready:", "roxy_password_prepare_timeout"),
         ("找不到邮箱输入框/邮箱入口", "email_entry_not_ready"),
     )
     if task_key in registration_task_types:

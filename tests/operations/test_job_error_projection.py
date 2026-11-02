@@ -43,6 +43,30 @@ def projection(row, surface, client):
 
 @pytest.mark.parametrize("surface", ["list", "log"])
 @pytest.mark.parametrize("job_type", ["registration", "registration_resume"])
+def test_password_prepare_failure_is_classified_without_changing_retry(surface, job_type, client):
+    row = challenged_job()
+    row.update(
+        job_type=job_type, progress_stage="complete", request_unknown=False,
+        error_code="registration_failed",
+        error_message=("registration_failed: RuntimeError: password_form_not_ready: "
+                       "密码表单在提交前未就绪，尚未提交密码：password_value_changed；"
+                       "path=/log-in/password inputs=3 buttons=3 text_length=155"),
+    )
+    row.pop("debug_capture_summary")
+    original = deepcopy(row)
+    result = projection(row, surface, client)
+    assert result["error_info"]["code"] == "roxy_password_prepare_timeout"
+    assert result["error_info"]["display_code"] == "AUTH-PWD-PREPARE"
+    assert result["error_info"]["summary"] == "密码表单准备超时"
+    assert not result["error_info"].get("reconcile_required", False)
+    assert result["retryable"] is True
+    assert result["retry_action"] == "registration_resume"
+    assert result["error_message"] == original["error_message"]
+    assert row == original
+
+
+@pytest.mark.parametrize("surface", ["list", "log"])
+@pytest.mark.parametrize("job_type", ["registration", "registration_resume"])
 @pytest.mark.parametrize("terminal_stage", ["auth_redirect", "complete"])
 def test_saved_current_roxy_challenge_reaches_list_and_log_without_changing_unknown(surface, job_type, terminal_stage, client):
     row = challenged_job()
