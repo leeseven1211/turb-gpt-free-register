@@ -1024,13 +1024,11 @@ class RoxyBrowserClient:
         data_saver_flow: str | None = None,
         progress_callback: Callable[[str, str, str], object] | None = None,
         stop_checker: Callable[[], object] | None = None,
-        require_existing_profile: bool = False,
+        prefer_existing_profile: bool = False,
     ) -> RoxyOpenResult:
-        """Reuse an account-bound Profile; create only after an explicit miss."""
+        """复用账号绑定环境，明确不存在时替代；显式优先复用可覆盖全局开关。"""
         normalized_profile = self._normalize_profile_id(profile_id)
         reuse_enabled = bool(getattr(_cfg, "ROXY_REUSE_ACCOUNT_PROFILE", True))
-        if require_existing_profile and not normalized_profile:
-            raise RuntimeError("Roxy 显式换国重跑缺少原 Profile，不能创建替代环境")
 
         def open_with(**kwargs):
             if headless is not None:
@@ -1078,7 +1076,7 @@ class RoxyBrowserClient:
                 )
             return open_with(profile_id="", proxy_url=proxy_url)
 
-        if normalized_profile and (reuse_enabled or require_existing_profile):
+        if normalized_profile and (reuse_enabled or prefer_existing_profile):
             try:
                 # Roxy may keep a deleted Profile in its recycle-bin view while
                 # still returning a generic window-quota error from /browser/open.
@@ -1086,8 +1084,6 @@ class RoxyBrowserClient:
                 # instead of waiting for capacity on an unusable Profile.
                 active_profile = self._find_active_profile_by_id(normalized_profile)
                 if active_profile is None:
-                    if require_existing_profile:
-                        raise RuntimeError("Roxy 原绑定 Profile 不存在，显式换国重跑不能创建替代环境")
                     logger.warning(
                         "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
                     )
@@ -1110,7 +1106,7 @@ class RoxyBrowserClient:
                 _mark_profile_bound(normalized_profile)
                 return opened
             except Exception as exc:
-                if require_existing_profile or not _is_profile_not_found_error(exc):
+                if not _is_profile_not_found_error(exc):
                     raise
                 _close_profile_relay(normalized_profile)
                 logger.warning(

@@ -1125,7 +1125,7 @@ def _open_roxy_profile_with_capacity_wait(
     profile_id: str | None = None,
     progress_callback=None,
     data_saver_flow: str | None = None,
-    require_existing_profile: bool = False,
+    prefer_existing_profile: bool = False,
 ) -> RoxyOpenResult:
     """仅在 /browser/open 遇到可恢复的窗口忙时等待，避免快速消费后续任务槽位。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
@@ -1153,8 +1153,8 @@ def _open_roxy_profile_with_capacity_wait(
                 open_kwargs["data_saver_flow"] = data_saver_flow
             if debug_headless is not None:
                 open_kwargs["headless"] = debug_headless
-            if require_existing_profile:
-                open_kwargs["require_existing_profile"] = True
+            if prefer_existing_profile:
+                open_kwargs["prefer_existing_profile"] = True
             if profile_id is None:
                 opened = client.open_profile(**open_kwargs)
             else:
@@ -1651,7 +1651,7 @@ def run_roxy_registration(
             profile_id=profile_id,
             progress_callback=report_job_progress,
             data_saver_flow="registration",
-            **({"require_existing_profile": True} if explicit_retry_route and profile_id else {}),
+            **({"prefer_existing_profile": True} if explicit_retry_route and profile_id else {}),
         )
     try:
         from core.browser import traffic as browser_traffic

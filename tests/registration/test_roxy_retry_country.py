@@ -92,19 +92,29 @@ class RoxyRetryCountryTests(unittest.TestCase):
         self.assertEqual(state.events[2][1]["profile_id"], "original-profile")
         self.assertIsNone(state.events[2][1]["proxy_url"])
 
-    def test_missing_original_profile_never_creates_replacement(self):
-        with self.context(profile_exists=False) as state:
-            with self.assertRaisesRegex(RuntimeError, "原.*Profile.*不存在"):
-                self.run_registration()
+    def test_confirmed_missing_original_profile_creates_replacement_on_current_jp_route(self):
+        with self.context(profile_exists=False) as state, self.assertRaises(_OpenedForTest):
+            self.run_registration()
         state.retained.assert_not_called()
         state.close.assert_not_called()
         state.modify.assert_not_called()
-        state.opened.assert_not_called()
+        state.opened.assert_called_once_with(profile_id="", proxy_url="http://jp.example.test:8080",
+                                             data_saver_flow="registration")
 
-    def test_original_profile_disappearing_during_open_never_creates_replacement(self):
+    def test_original_profile_explicitly_not_found_during_open_creates_replacement(self):
         with self.context() as state:
-            state.opened.side_effect = RuntimeError("profile not found")
-            with self.assertRaisesRegex(RuntimeError, "profile not found"):
+            state.opened.side_effect = [RuntimeError("profile not found"), _OpenedForTest()]
+            with self.assertRaises(_OpenedForTest):
+                self.run_registration()
+        self.assertEqual(state.opened.call_count, 2)
+        self.assertEqual(state.opened.call_args_list[0].kwargs["profile_id"], "original-profile")
+        self.assertEqual(state.opened.call_args_list[1].kwargs["profile_id"], "")
+        self.assertEqual(state.opened.call_args_list[1].kwargs["proxy_url"], "http://jp.example.test:8080")
+
+    def test_generic_open_failure_never_creates_replacement(self):
+        with self.context() as state:
+            state.opened.side_effect = RuntimeError("connection failed")
+            with self.assertRaisesRegex(RuntimeError, "connection failed"):
                 self.run_registration()
         self.assertEqual(state.opened.call_count, 1)
         self.assertEqual(state.opened.call_args.kwargs["profile_id"], "original-profile")
