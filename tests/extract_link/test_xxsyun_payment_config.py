@@ -14,6 +14,16 @@ from webui.routes import integrations
 
 
 class XXSYUNPaymentConfigurationTests(unittest.TestCase):
+    def test_credential_help_explains_native_scope_and_shared_extraction_cdk(self):
+        for key in ("EXTRACT_LINK_LEGACY_PAYMENT_CDK", "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK",
+                    "EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY", "EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED"):
+            with self.subTest(key=key):
+                self.assertIn("平台自带", schema.CONFIG_SCHEMA[key].help)
+                self.assertIn("独立", schema.CONFIG_SCHEMA[key].help)
+        flow = schema.CONFIG_SCHEMA["EXTRACT_LINK_LUMEN_FLOW_CDK"].help
+        self.assertIn("提链", flow)
+        self.assertIn("仍需", flow)
+
     def test_provider_sources_default_to_native_and_only_accept_known_sources(self):
         for provider in ("LEGACY", "LUMEN_FLOW", "HUANGUANG"):
             key = f"EXTRACT_LINK_{provider}_AUTO_PAYMENT_SOURCE"
