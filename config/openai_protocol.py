@@ -9,7 +9,7 @@ SENTINEL_SV 是 sdk.js 的版本号，会随 OpenAI 更新而变化，
 from config.env_loader import apply_env_overrides
 from config.schema import schema_default
 
-# Protocol 版本选择。只有同时实现 v1/v2 的步骤会读取它；单版本步骤
+# Protocol 版本选择。只有具备多个版本的刷新 AT 步骤会读取它；单版本步骤
 # 会直接使用自己的唯一实现，浏览器步骤不受影响。
 OPENAI_PROTOCOL_VERSION = schema_default("OPENAI_PROTOCOL_VERSION")
 
@@ -63,10 +63,14 @@ OPENAI_PROXY_RETRY_DELAY = 1.0
 # 避免失效节点按全局 30 秒超时长时间占住注册 worker。
 OPENAI_PREFLIGHT_TIMEOUT = 12.0
 
+# 通用协议实验能力必须显式开启；缺少 runtime/隔离环境时保留原预检结果。
+OPENAI_CF_PREFLIGHT_ENABLED = schema_default("OPENAI_CF_PREFLIGHT_ENABLED")
+
 
 apply_env_overrides(globals(), {
     "OPENAI_PROTOCOL_VERSION": "str",
     "OPENAI_PROXY_RETRY_MAX_ATTEMPTS": "int",
     "OPENAI_PROXY_RETRY_DELAY": "float",
     "OPENAI_PREFLIGHT_TIMEOUT": "float",
+    "OPENAI_CF_PREFLIGHT_ENABLED": "bool",
 })

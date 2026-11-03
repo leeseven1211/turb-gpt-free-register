@@ -43,6 +43,23 @@ def create_config_blueprint(context: WebUIContext):
     def api_config_get():
         return jsonify(config_editor.get_config())
 
+    @bp.get("/api/maintenance/sentinel")
+    def api_sentinel_maintenance():
+        from core.maintenance.sentinel import get_service
+
+        return jsonify(get_service().status())
+
+    @bp.post("/api/maintenance/sentinel/check")
+    def api_sentinel_maintenance_check():
+        from core.maintenance.sentinel import get_service
+
+        # The only accepted instruction is an explicit check. Resource URLs,
+        # cache paths, configuration drafts and activation options are rejected.
+        data = request.get_json(silent=True)
+        if request.args or not isinstance(data, dict) or data:
+            return jsonify({"ok": False, "error_code": "invalid_request"}), 400
+        return jsonify(get_service().start_check()), 202
+
     @bp.get("/api/config/snapshot")
     def api_config_snapshot():
         """返回任务可绑定的非敏感配置快照；进程内对象本身保持不可变。"""

@@ -17,6 +17,7 @@ import pyotp
 from flask import Response, jsonify, make_response, redirect, render_template, request, url_for
 
 from core.accounts.inspection import service as account_inspection_service
+from core.accounts import registration_retry as account_registration_retry
 from core import account_task_store
 from core.storage import admin_repository
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
@@ -233,6 +234,7 @@ def create_accounts_blueprint(context: WebUIContext):
             date_from=date_from or "",
             date_to=date_to or "",
         )
+        account_registration_retry.attach_projection(result.get("items") or [])
         result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
         result.update({
             "ok": True, "page": page, "page_size": page_size, "compact": True,
@@ -242,6 +244,28 @@ def create_accounts_blueprint(context: WebUIContext):
         if not (paged or page_arg is not None or page_size_arg is not None):
             return jsonify(result["items"])
         return jsonify(result)
+
+    @bp.post("/api/accounts/<int:acc_id>/registration-retry")
+    def api_account_registration_retry(acc_id: int):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        try:
+            result = account_registration_retry.retry_accounts([acc_id])
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify(result), 202 if result["started_count"] or result["reused_count"] else 200
+
+    @bp.post("/api/accounts/registration-retry-bulk")
+    def api_accounts_registration_retry_bulk():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        try:
+            result = account_registration_retry.retry_accounts(data.get("account_ids"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify(result), 202 if result["started_count"] or result["reused_count"] else 200
 
     @bp.get("/api/accounts/<int:acc_id>/roxy-profile")
     def api_account_roxy_profile(acc_id: int):

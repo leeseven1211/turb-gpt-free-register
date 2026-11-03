@@ -15,6 +15,10 @@ let CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2 = 0;
 const CONFIG_HUANGUANG_XXSYUN_QUOTA_V2 = {loading: false, text: ''};
 let CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2 = 0;
 const CONFIG_XXSYUN_PAYMENT_BALANCE_V2 = {loading: false, text: ''};
+const CONFIG_SENTINEL_MAINTENANCE_V2 = {
+  snapshot: null, loading: false, posting: false, visible: false,
+  request: 0, timer: null, observer: null, error: '', retryAction: 'status',
+};
 const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
   extraction: {key: 'EXTRACT_LINK_HUANGUANG_CDK', label: '幻光提链 CDK', request: 0, inflight: null, loading: false, text: ''},
   payment: {key: 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK', label: '幻光支付扫码 CDK', request: 0, inflight: null, loading: false, text: ''},
@@ -356,7 +360,7 @@ function codexConfigSectionForKey(key) {
   if (key.startsWith('CPA_')) {
     return ['CPA配置', 'CPA 授权链接生成、回调上传和管理接口配置'];
   }
-  if (['SUB2API_API_BASE','SUB2API_API_KEY','SUB2API_API_TIMEOUT','CODEX_OAUTH_AUTO_UPLOAD_SUB2API'].includes(key)) {
+  if (key.startsWith('SUB2API_') || key === 'CODEX_OAUTH_AUTO_UPLOAD_SUB2API') {
     return ['sub2api', 'sub2api 的 API 基址、鉴权和超时配置；用于 Codex OAuth 授权和凭证上传'];
   }
   return ['基础配置', ''];
@@ -1602,11 +1606,11 @@ async function testProxyProviderV2() {
     if (btn) { btn.disabled = false; btn.textContent = '提取并测试 1 个 IP'; }
   }
 }
-function renderMixedConfigSectionV2(name, fields, intro) {
+function renderMixedConfigSectionV2(name, fields, intro, toolsMarkup = '') {
   const slug = configGroupSlug(name);
   const switches = fields.filter(f => f.type === 'bool');
   const inputs = fields.filter(f => f.type !== 'bool');
-  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : '';
+  const extra = name === 'RoxyBrowser' ? renderRoxyWorkspaceToolsV2() : toolsMarkup;
   return `
     <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
       ${renderConfigSectionHead(name, intro || '')}
@@ -1857,6 +1861,186 @@ function _configValueV2(key) {
   const f = CONFIG.find(x => x.key === key);
   return f ? String(f.value ?? '') : '';
 }
+function renderSentinelMaintenanceContentV2() {
+  const state = CONFIG_SENTINEL_MAINTENANCE_V2;
+  const snapshot = state.snapshot;
+  const candidate = snapshot?.candidate;
+  const busy = state.posting || snapshot?.running;
+  const comparison = {
+    not_checked: '尚未检查', same: '同当前一致', version_changed: '发现新版本',
+    content_changed: '同版本内容变化', unknown: '暂无法比较',
+  }[snapshot?.comparison || 'not_checked'] || '暂无法比较';
+  const staticLabel = value => ({
+    static_markers_present: '通过（未运行验证）', needs_adaptation: '需要适配',
+  }[value] || '尚未检查');
+  const checkedAt = Number(snapshot?.last_checked_at);
+  const checkedTime = checkedAt > 0 && Number.isFinite(checkedAt)
+    ? new Date(checkedAt * 1000).toLocaleString('zh-CN', {hour12: false}) : '尚未检查';
+  const status = state.error || (busy ? '正在检查 Sentinel 更新…'
+    : state.loading ? '正在读取检查状态…'
+      : ({
+        never: '尚未检查', refreshed: '检查完成；候选资源尚未运行验证。', cached: '检查完成；候选资源尚未运行验证。',
+        stale: '候选资源已过期，可重新检查。', missing: '尚无候选资源，可手动检查。',
+        corrupt: '候选资源不可用，请重新检查。', failed: '检查失败，请重试。',
+      }[snapshot?.last_status] || '尚未检查'));
+  return `<div class="config-setting-group-head-v2">Sentinel 检查</div>
+    <div class="config-setting-list-v2" aria-busy="${busy || state.loading ? 'true' : 'false'}">
+      <div class="config-setting-row-v2">
+        <div class="config-setting-copy-v2">
+          <div class="config-setting-label-v2">检查 Sentinel 更新</div>
+          <p class="config-setting-help-v2">手动获取候选资源；不自动切换现用版本。</p>
+        </div>
+        <div class="config-setting-control-v2">
+          <button type="button" class="btn" data-sentinel-maintenance-action="check"${busy || state.loading ? ' disabled' : ''}>${busy ? '检查中…' : '检查 Sentinel 更新'}</button>
+        </div>
+      </div>
+      <div class="config-setting-row-v2 config-setting-row-v2--readonly">
+        <div class="config-setting-copy-v2">
+          <div class="config-setting-label-v2">当前内置版本 <span class="config-field-status-v2">${esc(snapshot?.builtin?.version || '读取后显示')}</span></div>
+          <p class="config-setting-help-v2">发现版本：${esc(candidate?.version || '尚未发现')}</p>
+          <p class="config-setting-help-v2">上次检查时间：${esc(checkedTime)}</p>
+        </div>
+        <div class="config-setting-control-v2">
+          <div class="config-setting-readonly-v2">
+            <strong>${esc(comparison)}</strong>
+            <span>generic 静态检查：${esc(staticLabel(candidate?.generic_status))}</span>
+            <span>Proto2 静态检查：${esc(staticLabel(candidate?.proto2_status))}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="config-setting-help-v2" role="status" aria-live="polite">${esc(status)}${state.error ? ` <button type="button" class="btn" data-sentinel-maintenance-action="retry"${state.posting || state.loading ? ' disabled' : ''}>重试</button>` : ''}</div>`;
+}
+function renderSentinelMaintenanceV2() {
+  return `<div class="config-setting-group-v2" data-sentinel-maintenance>${renderSentinelMaintenanceContentV2()}</div>`;
+}
+function sentinelMaintenanceIsVisibleV2() {
+  const tab = document.getElementById('tab-config');
+  return !!document.querySelector('#configSectionsV2 [data-sentinel-maintenance]')
+    && !!tab && !tab.classList.contains('hidden') && !document.hidden;
+}
+function updateSentinelMaintenanceV2() {
+  const panel = document.querySelector('#configSectionsV2 [data-sentinel-maintenance]');
+  if (panel) panel.innerHTML = renderSentinelMaintenanceContentV2();
+}
+function scheduleSentinelMaintenanceV2() {
+  const state = CONFIG_SENTINEL_MAINTENANCE_V2;
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  if (!state.visible || !sentinelMaintenanceIsVisibleV2() || !state.snapshot?.running
+    || state.loading || state.posting || state.error) return;
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    return querySentinelMaintenanceV2('status');
+  }, 1500);
+}
+async function querySentinelMaintenanceV2(action = 'status') {
+  const state = CONFIG_SENTINEL_MAINTENANCE_V2;
+  const check = action === 'check';
+  if (!state.visible || !sentinelMaintenanceIsVisibleV2() || state.posting
+    || (check ? state.snapshot?.running : state.loading)) return;
+  const request = ++state.request;
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  state.loading = !check;
+  state.posting = check;
+  state.error = '';
+  state.retryAction = action;
+  updateSentinelMaintenanceV2();
+  try {
+    const result = await api(check ? '/api/maintenance/sentinel/check' : '/api/maintenance/sentinel', check
+      ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'} : {});
+    if (request !== state.request) return;
+    if (!result?.ok) throw new Error('sentinel_status_unavailable');
+    const previous = state.snapshot;
+    state.snapshot = {
+      ...result,
+      candidate: result.candidate || previous?.candidate || null,
+      comparison: !result.candidate && previous?.candidate ? previous.comparison : result.comparison,
+    };
+    if (!result.running && (['failed', 'corrupt'].includes(result.last_status) || result.error_code)) {
+      state.error = result.last_status === 'corrupt' ? '候选资源不可用，请重试。' : '检查失败，请重试。';
+      state.retryAction = 'check';
+    }
+  } catch (error) {
+    if (request !== state.request) return;
+    state.error = check ? '检查请求未完成，请重试。' : '状态读取失败，请重试。';
+  } finally {
+    if (request === state.request) {
+      state.loading = false;
+      state.posting = false;
+      updateSentinelMaintenanceV2();
+      scheduleSentinelMaintenanceV2();
+    }
+  }
+}
+function syncSentinelMaintenanceV2() {
+  const state = CONFIG_SENTINEL_MAINTENANCE_V2;
+  const visible = sentinelMaintenanceIsVisibleV2();
+  const entered = visible && !state.visible;
+  state.visible = visible;
+  if (!visible) {
+    if (state.timer !== null) clearTimeout(state.timer);
+    state.timer = null;
+    if (state.loading) {
+      state.request += 1;
+      state.loading = false;
+    }
+    return;
+  }
+  updateSentinelMaintenanceV2();
+  if (entered && !state.posting) querySentinelMaintenanceV2('status');
+}
+function bindSentinelMaintenanceV2() {
+  const state = CONFIG_SENTINEL_MAINTENANCE_V2;
+  const tab = document.getElementById('tab-config');
+  if (tab && !state.observer) {
+    state.observer = new MutationObserver(syncSentinelMaintenanceV2);
+    state.observer.observe(tab, {attributes: true, attributeFilter: ['class', 'hidden']});
+    document.addEventListener('visibilitychange', syncSentinelMaintenanceV2);
+  }
+  syncSentinelMaintenanceV2();
+}
+function renderSub2ApiAutomationToolsV2() {
+  return `<div class="config-tool-panel-v2">
+    <div><b>同步与异常巡检</b><p class="hint">使用已保存配置检查远端异常账号，修复进度可在任务中心查看。</p></div>
+    <div class="config-inline-row">
+      <button type="button" class="btn" data-sub2api-automation="status">查看状态</button>
+      <button type="button" class="btn" data-sub2api-automation="check">立即巡检</button>
+    </div>
+    <p class="config-setting-short-help-v2" data-sub2api-automation-status role="status" aria-live="polite">尚未查询</p>
+  </div>`;
+}
+async function querySub2ApiAutomationV2(button) {
+  const panel = button.closest('.config-tool-panel-v2');
+  const status = panel.querySelector('[data-sub2api-automation-status]');
+  const buttons = panel.querySelectorAll('button');
+  buttons.forEach(item => { item.disabled = true; });
+  status.textContent = '正在查询…';
+  try {
+    if (button.dataset.sub2apiAutomation === 'check') {
+      const result = await api('/api/sub2api/automation/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+      if (!result.ok) throw new Error(result.error || '巡检未完成');
+      const summary = result.result || {};
+      const labels = {
+        account_busy: '账号忙碌', cooldown: '冷却中', account_archived: '账号已归档', account_deactivated: '账号已停用',
+        automatic_login_material_missing: '自动登录资料不足', unrecognized_remote_error: '远端错误原因未识别',
+        remote_transient_error: '远端网络或限流错误', needs_reconciliation: '上次请求结果待核实', repair_in_progress: '修复进行中',
+      };
+      const reasons = Object.entries(summary.reasons || {}).map(([code, count]) => `${labels[code] || code} ${count}`).join('，');
+      status.textContent = `本轮检查 ${summary.remote_errors || 0} 条异常记录，已调度同步 ${summary.sync_queued || 0}、刷新 ${summary.refresh_queued || 0}、重授权 ${summary.reauth_queued || 0}。${reasons ? `处理说明：${reasons}。` : ''}`;
+    } else {
+      const result = await api('/api/sub2api/automation');
+      if (!result.ok) throw new Error(result.error || '状态读取失败');
+      const counts = result.sync?.counts || {};
+      status.textContent = `自动补传${result.sync?.enabled ? '已开启' : '已关闭'}；异常巡检${result.monitor?.enabled ? '已开启' : '已关闭'}。待同步 ${counts.pending || 0}，排队 ${counts.queued || 0}，执行 ${counts.running || 0}。`;
+    }
+  } catch (error) {
+    status.textContent = error.message || '查询未完成，请稍后重试';
+  } finally {
+    buttons.forEach(item => { item.disabled = false; });
+  }
+}
 function renderCodexSectionV2(fields) {
   const slug = configGroupSlug('Codex');
   const preferred = ['基础配置', 'CPA配置', 'sub2api'];
@@ -1896,6 +2080,7 @@ function renderCodexSectionV2(fields) {
       ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${orderedInputs.length ? `<div class="config-section-v2-body">${orderedInputs.map(renderCodexFieldV2).join('')}</div>` : ''}
+      ${active === 'sub2api' ? renderSub2ApiAutomationToolsV2() : ''}
       ${renderConfigSaveActions()}
     </section>
   `;
@@ -1906,6 +2091,7 @@ function renderScheduledConfigSectionV2(fields) {
     ['Email Butler 风险扫描', fields.filter(f => f.key.startsWith('EMAIL_BUTLER_'))],
     ['ChatGPT AT 自动刷新', fields.filter(f => f.key.startsWith('AT_'))],
     ['Codex Token 自动刷新', fields.filter(f => f.key.startsWith('CODEX_TOKEN_'))],
+    ['sub2api 同步与异常巡检', fields.filter(f => f.key.startsWith('SUB2API_'))],
   ];
   const known = new Set(sections.flatMap(([, items]) => items.map(f => f.key)));
   return `
@@ -1979,7 +2165,8 @@ function renderConfigDomainSectionV2(name, fields) {
       'proxy-section-v2'
     );
   }
-  return renderMixedConfigSectionV2(name, fields, configSectionIntro(name));
+  return renderMixedConfigSectionV2(name, fields, configSectionIntro(name),
+    name === '通用配置' ? renderSentinelMaintenanceV2() : '');
 }
 function applyConfigNavFilter() {
   const query = CONFIG_NAV_QUERY_V2.trim().toLowerCase();
@@ -2013,6 +2200,7 @@ function renderConfigLayoutV2() {
   if (!names.length) {
     nav.innerHTML = '<div class="muted" style="padding:8px 12px;font-size:13px;">暂无分组</div>';
     sections.innerHTML = '';
+    syncSentinelMaintenanceV2();
     const count = document.getElementById('configNavCountV2');
     if (count) count.textContent = '0';
     updateConfigSaveUi();
@@ -2033,6 +2221,7 @@ function renderConfigLayoutV2() {
   bindConfigCountryPickersV2();
   bindConfigMultiSelectsV2();
   updateConfigSaveUi();
+  syncSentinelMaintenanceV2();
 }
 
 function resetPendingConfigUpdates() {
@@ -2077,6 +2266,7 @@ function openConfigGroup(name) {
   resetConfigViewportV2();
 }
 function bindConfigLayoutV2() {
+  bindSentinelMaintenanceV2();
   const nav = document.getElementById('configNavV2');
   const search = document.getElementById('configNavSearchV2');
   if (search && !search.dataset.bound) {
@@ -2403,6 +2593,17 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const sentinelButton = e.target.closest('[data-sentinel-maintenance-action]');
+  if (sentinelButton) {
+    e.preventDefault();
+    return querySentinelMaintenanceV2(sentinelButton.dataset.sentinelMaintenanceAction === 'retry'
+      ? CONFIG_SENTINEL_MAINTENANCE_V2.retryAction : 'check');
+  }
+  const sub2apiButton = e.target.closest('[data-sub2api-automation]');
+  if (sub2apiButton) {
+    e.preventDefault();
+    return querySub2ApiAutomationV2(sub2apiButton);
+  }
   const balanceButton = e.target.closest('[data-query-xxsyun-payment-balance]');
   if (balanceButton) {
     e.preventDefault();

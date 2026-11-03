@@ -269,6 +269,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             run_id = 71
             task_id = 81
             account_id = 91
+            execution_fence = {"run_id": 71, "execution_id": "fixture-execution", "lease_token": "fixture-lease"}
             email = "setup@example.test"
             config_snapshot = {
                 "password_driver": "roxy",

@@ -585,6 +585,7 @@ def _perform_refresh(
     on_remote_receipt: Callable[..., Any] | None = None,
     defer_refresh_marker_clear: bool = False,
     persist_pending: bool = True,
+    sync_sub2api: bool = True,
 ) -> dict[str, Any]:
     """Run the single refresh attempt shared by native and compatibility handlers."""
     cancel = is_cancel_requested or (lambda: False)
@@ -889,7 +890,9 @@ def _perform_refresh(
             ) from exc
     metadata = oauth_metadata(updated)
     try:
-        sync_result = _sync_sub2_if_needed(actual_filename)
+        # 巡检固定原后端与目标 ID，由持久修复阶段接续，避免配置切换后泛导入到新后端。
+        sync_result = (_sync_sub2_if_needed(actual_filename) if sync_sub2api
+                       else {"status": "deferred_to_original_targets"})
     except Exception as exc:
         sync_result = {"status": "failed", "error": _safe_error(exc)}
     summary = {
@@ -959,17 +962,31 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
     if int(row.get("sub2_uploaded_count") or 0) <= 0:
         return {"status": "not_previously_uploaded"}
 
-    from core.integrations.sub2api.client import upload_configured_codex_oauth_credential
+    from core.integrations.sub2api import client as sub2api_client
 
     text, _ = db.read_codex_credential(filename)
     try:
-        result = upload_configured_codex_oauth_credential(json.loads(text))
+        result = sub2api_client.upload_and_enable_configured_codex_oauth_credential(json.loads(text))
     except Exception as exc:
         error = _safe_error(exc)
         db.mark_codex_sub2_sync_error(filename, error)
-        return {"status": "failed", "error": error}
+        summary = {
+            "status": "failed", "error": error,
+            "stage": getattr(exc, "stage", "upload"),
+            "error_code": getattr(exc, "code", "sub2api_sync_execution_error"),
+            "uploaded": bool(getattr(exc, "uploaded", False)),
+            "sub2api_account_id": getattr(exc, "sub2api_account_id", None),
+            "backend_identity": getattr(exc, "backend_identity", ""),
+        }
+        try:
+            from core.integrations.sub2api import jobs
+            jobs.record_sync_failure(filename, summary)
+        except Exception:
+            logger.exception("Codex 刷新后的 sub2api 待补传状态保存失败")
+            summary["retry_error_code"] = "sub2api_retry_persist_failed"
+        return summary
     db.mark_codex_sub2_uploaded(filename)
-    return {"status": "success", "updated": result.get("updated")}
+    return {"status": "success", "updated": result.get("updated"), "uploaded": True, "enabled": bool(result.get("enabled")), "sub2api_account_id": result.get("sub2api_account_id")}
 
 
 def _run_data(run: Mapping[str, Any]) -> dict[str, Any]:
@@ -1251,6 +1268,7 @@ def _handle_operation_context(context: Any) -> Any:
                     on_remote_response=on_remote_response,
                     on_remote_receipt=on_remote_receipt,
                     defer_refresh_marker_clear=True,
+                    sync_sub2api=not bool(_run_data(run).get("sub2api_sync_deferred")),
                 )
         _update_account_state(
             email,
@@ -1647,6 +1665,8 @@ def enqueue_refresh(
             "credential_filename": filename,
             "resource_family": RESOURCE_FAMILY,
         }
+        if trigger == "sub2api_monitor":
+            data["sub2api_sync_deferred"] = True
         if allow_unknown_manual_retry:
             data["manual_retry_unknown"] = True
         if batch_id is not None and native_batch_id is None:

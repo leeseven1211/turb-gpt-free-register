@@ -26,6 +26,25 @@ class FlaskRouteContractTests(PostgresTestCase):
     # 保持这些变更显式记录，不从当前路由表推导基线。
     EXPECTED_ROUTE_COUNT = 163
     EXPECTED_SHA256 = "2ac1dc2665779900d8deeb126cc0bcf96a109e4b5ffa16c8a59be949d3da99b5"
+    # Already committed additions since the 4e38812 baseline, with no changed
+    # or removed routes. Keep these explicit rather than replacing its hash.
+    PREEXISTING_ADDED_ROUTES = {
+        "/api/accounts/<int:acc_id>/plan-details\tGET\tapi_account_plan_details",  # 47bd4de
+        "/api/extract-link/huanguang/cdk-quota/<kind>\tGET\tapi_huanguang_single_cdk_quota",  # dde1223
+        "/api/extract-link/payments/xxsyun/balance\tPOST\tapi_xxsyun_payment_balance",  # e03c999
+        "/api/extract-workbench/batches/<int:batch_id>/cancel\tPOST\tcancel_extract_workbench_batch",  # f5672de
+        "/api/extract-workbench/tasks/<int:task_id>/payment-query-credential\tPOST\trestore_extract_workbench_payment_query_credential",  # 1119f6a
+    }
+    # Explicit additive maintenance/integration routes; the previous 163-route
+    # baseline remains independently verified after removing only these rows.
+    ADDED_ROUTES = {
+        "/api/sub2api/automation\tGET\tapi_sub2api_automation",
+        "/api/sub2api/automation/check\tPOST\tapi_sub2api_automation_check",
+        "/api/maintenance/sentinel\tGET\tapi_sentinel_maintenance",
+        "/api/maintenance/sentinel/check\tPOST\tapi_sentinel_maintenance_check",
+        "/api/accounts/<int:acc_id>/registration-retry\tPOST\tapi_account_registration_retry",
+        "/api/accounts/registration-retry-bulk\tPOST\tapi_accounts_registration_retry_bulk",
+    }
 
     def test_public_route_map_matches_refactor_baseline(self):
         app = create_app(auth_code="route-contract")
@@ -33,6 +52,9 @@ class FlaskRouteContractTests(PostgresTestCase):
             f"{rule.rule}\t{','.join(sorted(rule.methods - {'HEAD', 'OPTIONS'}))}\t{rule.endpoint}"
             for rule in app.url_map.iter_rules()
         )
+        added_routes = self.PREEXISTING_ADDED_ROUTES | self.ADDED_ROUTES
+        self.assertTrue(added_routes.issubset(set(rows)), "新增路由契约不完整")
+        rows = [row for row in rows if row not in added_routes]
         payload = "\n".join(rows) + "\n"
 
         self.assertEqual(self.EXPECTED_ROUTE_COUNT, len(rows), payload)

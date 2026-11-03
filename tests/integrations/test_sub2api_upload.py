@@ -63,11 +63,13 @@ class Sub2ApiUploadTests(unittest.TestCase):
         }
         post.return_value = response
 
-        with self.assertRaisesRegex(RuntimeError, "refresh token invalid"):
+        with self.assertRaises(sub2api_client.Sub2ApiSyncError) as raised:
             upload_codex_oauth_credential(
                 {"email": "bad@example.com", "refresh_token": "invalid"},
                 "https://sub2.example/api/v1/admin/accounts/import/codex-session",
             )
+        self.assertEqual(raised.exception.code, "sub2api_upload_rejected")
+        self.assertNotIn("refresh token invalid", str(raised.exception))
 
 
 class Sub2ApiUploadAndEnableTests(unittest.TestCase):
@@ -82,6 +84,9 @@ class Sub2ApiUploadAndEnableTests(unittest.TestCase):
         )
         self.config_patch.start()
         self.addCleanup(self.config_patch.stop)
+        list_patch = patch.object(sub2api_client.requests, "get", return_value=self.response({"items": [], "pages": 1}))
+        list_patch.start()
+        self.addCleanup(list_patch.stop)
 
     @staticmethod
     def response(data, status=200):
@@ -192,7 +197,7 @@ class Sub2ApiUploadAndEnableTests(unittest.TestCase):
 
         post.return_value = self.imported()
         cancellation = Cancelled("已取消")
-        checkpoint = Mock(side_effect=[None, cancellation])
+        checkpoint = Mock(side_effect=[None, None, cancellation])
         with self.assertRaises(Cancelled) as raised:
             sub2api_client.upload_and_enable_configured_codex_oauth_credential(self.auth, checkpoint=checkpoint)
         self.assertIs(raised.exception, cancellation)
@@ -208,7 +213,7 @@ class Sub2ApiUploadAndEnableTests(unittest.TestCase):
 
         lease_loss = LeaseLost("租约已失效")
         post.side_effect = [self.imported(), self.response({"id": 41, "status": "active"})]
-        checkpoint = Mock(side_effect=[None, None, lease_loss])
+        checkpoint = Mock(side_effect=[None, None, None, lease_loss])
         with self.assertRaises(LeaseLost) as raised:
             sub2api_client.upload_and_enable_configured_codex_oauth_credential(self.auth, checkpoint=checkpoint)
         self.assertIs(raised.exception, lease_loss)
@@ -274,6 +279,12 @@ class Sub2ApiUploadAndEnableTests(unittest.TestCase):
 
 class Sub2ApiWebUploadTests(PostgresTestCase):
     def setUp(self):
+        config_patch = patch.multiple(sub2api_config, SUB2API_API_BASE="https://sub2.example", SUB2API_API_KEY="synthetic-key")
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
+        list_patch = patch.object(sub2api_client.requests, "get", return_value=Mock(status_code=200, json=Mock(return_value={"code": 0, "data": {"items": [], "pages": 1}})))
+        list_patch.start()
+        self.addCleanup(list_patch.stop)
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
 

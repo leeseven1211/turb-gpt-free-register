@@ -11,6 +11,12 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261030-layout-v2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
+    #accountsPanelV2 > #accountRegistrationRetryResultV2 { flex-wrap: wrap; overflow: visible; align-items: center; }
+    #accountRegistrationRetryResultV2 details { min-width: 0; max-width: 100%; font-size: 12px; }
+    #accountRegistrationRetryResultV2 summary { cursor: pointer; }
+    #accountRegistrationRetryResultV2 ul { max-height: 220px; overflow: auto; padding-left: 22px; margin: 8px 0 0; }
+    #accountRegistrationRetryResultV2 li { margin-bottom: 6px; overflow-wrap: anywhere; }
+    #accountRegistrationRetryResultV2 :is(button, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
     #butlerImportModal { padding: 0; margin: auto; width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); color: var(--ui-color-text); }
     #butlerImportModal:not([open]) { display: none; }
     #butlerImportModal::backdrop { background: rgba(15, 23, 42, .45); }
@@ -454,13 +460,14 @@
           <div class="toolbar-overflow-menu">
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">操作</span>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="通过邮箱 OTP 重新登录并刷新最新 AT">刷新 AT</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="按已保存的刷新驱动获取最新 AT">刷新 AT</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddTwofaSelectedAccountsV2" disabled title="只给选中账号补充 Authenticator 2FA">补 2FA</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnChangePasswordSelectedAccountsV2" disabled title="强制通过忘记密码流程修改选中账号密码">修改密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnChangeTwofaSelectedAccountsV2" disabled title="先关闭旧 Authenticator，再启用并确认新的 2FA">修改 2FA</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnCompleteSelectedAccountsV2" disabled title="按配置补全账号密码、套餐、2FA、Codex；刷新 AT 是否包含由配置决定">补全账号</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedRegistrationV2" disabled title="找到选中账号的原注册任务，按当前进度继续注册或补跑缺失步骤">重跑注册</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补 Codex</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="仅给已确认 Plus 免费试用资格的 free 账号批量提链；折扣优惠会跳过">提链</button>
             </div>
@@ -505,6 +512,7 @@
       </div>
       <div class="column-filter-summary account-search-summary" id="accountSearchSummaryV2" aria-label="已生效的高级搜索条件" hidden></div>
       <div class="column-filter-summary" data-filter-summary="accounts" hidden></div>
+      <div class="column-filter-summary account-search-summary" id="accountRegistrationRetryResultV2" role="status" aria-live="polite" hidden></div>
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2" data-resizable-table="accounts" data-filter-multiple="true">
           <colgroup>
@@ -1131,14 +1139,14 @@
 <script src="{{ url_for('static', filename='js/shared/common.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261103-at-v3-registration-retry') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-butler-unlimited') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261103-sentinel-maintenance') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

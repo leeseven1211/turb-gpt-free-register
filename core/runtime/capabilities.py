@@ -41,6 +41,7 @@ def browser_operation_unavailable(
 
 def account_setup_unavailable(
     steps: set[str], settings: dict[str, Any], *, force_twofa_change: bool = False,
+    force_password_reset: bool = False,
 ) -> dict[str, Any] | None:
     """按现有账号配置执行器的实际浏览器需求检查所选步骤。"""
     if browser_enabled():
@@ -48,12 +49,13 @@ def account_setup_unavailable(
     from config import account
     from core.auth.twofa import canonical_twofa_executor
 
-    if "password" in steps or ("twofa" in steps and force_twofa_change):
+    protocol_password = str(settings.get("password_driver") or "roxy").strip().lower() == "protocol"
+    if ("password" in steps and (not protocol_password or force_password_reset)) or ("twofa" in steps and force_twofa_change):
         return browser_operation_unavailable("browser")
     if "twofa" not in steps:
         return None
-    # 组合配置执行器只有单独 twofa 才直接运行协议；补全协调器会单独处理套餐。
-    driver = "browser" if len(steps) > 1 else canonical_twofa_executor(settings.get("twofa_driver"))
+    # 套餐查询独立执行；协议补密码完成后，2FA 仍按自己的驱动与兜底设置运行。
+    driver = canonical_twofa_executor(settings.get("twofa_driver"))
     return browser_operation_unavailable(
         driver,
         # 账号配置执行器目前从运行配置读取兜底，历史 snapshot 不覆盖此值。
@@ -221,6 +223,7 @@ def feature_availability() -> dict[str, Any]:
     from config import codex, email, extract_link, sub2api, roxybrowser
     from core.accounts.liveness import service as live_service
     from core.accounts.liveness.router import resolve_driver, LiveCheckDriverError
+    from config import account as account_cfg
 
     plan_proxy = proxy_configuration_status("plan-check")
     live_proxy = proxy_configuration_status("live-check")
@@ -290,14 +293,23 @@ def feature_availability() -> dict[str, Any]:
         ("1024Proxy 提取 API", getattr(proxy_cfg, "PROXY_1024_API_URL", "")),
     ])
 
+    setup_settings = account_cfg.completion_settings()
+    password_unavailable = account_setup_unavailable({"password"}, setup_settings)
+    setup_steps = {
+        step for step, enabled in (
+            ("password", setup_settings.get("password_enabled")),
+            ("twofa", setup_settings.get("twofa_enabled")),
+        ) if enabled
+    }
+    setup_unavailable = account_setup_unavailable(setup_steps, setup_settings)
     features = {
         "register": _feature(register_ok, register_reason),
         "plan_check": dict(account_proxy_feature),
         "live_check": dict(live_proxy_feature),
         "token_refresh": refresh_feature,
-        "password_setup": _feature(browser_enabled(), browser_unavailable_reason()),
+        "password_setup": _feature(not password_unavailable, (password_unavailable or {}).get("error", "")),
         "twofa_change": _feature(browser_enabled(), browser_unavailable_reason()),
-        "account_setup": _feature(browser_enabled(), browser_unavailable_reason()),
+        "account_setup": _feature(not setup_unavailable, (setup_unavailable or {}).get("error", "")),
         "codex_retry": _codex_retry_status(),
         "extract_link": _feature(extract_ok, extract_reason),
         "sub2_upload": _feature(sub2_ok, sub2_reason),

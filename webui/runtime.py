@@ -168,7 +168,7 @@ def _account_setup_readback(
             extra.get("account_password")
             or extra.get("login_password")
             or extra.get("registration_password")
-            or account.get("password")
+            or account.get("account_password")
             or account.get("login_password")
             or account.get("registration_password")
             or ""
@@ -198,6 +198,42 @@ def _account_setup_receipt(
         "remote_result_confirmed": status in {"success", "completed", "deactivated"}
         or bool(result.get("ok")),
     }
+    if result.get("password_driver") == "protocol":
+        completed = set()
+        rejected = False
+        evidence = []
+        for step in sorted(steps):
+            value = result.get({"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step, ""))
+            outcome = value if isinstance(value, Mapping) else {}
+            receipt_state = outcome.get("remote_receipt_state")
+            if step == "plan_check":
+                receipt_state = "confirmed" if outcome.get("ok") else "not_submitted"
+            elif receipt_state in {None, "none", "not_submitted"} and outcome.get("mutation_submitted") is False:
+                receipt_state = "not_submitted"
+            elif receipt_state is None and outcome.get("ok"):
+                receipt_state = "confirmed"
+            evidence.append({"step": step, "ok": bool(outcome.get("ok")), "receipt_state": receipt_state or "unknown"})
+            detail["setup_step_receipts"] = evidence
+            if receipt_state == "rejected":
+                rejected = True
+            elif receipt_state == "not_submitted":
+                continue
+            elif receipt_state == "confirmed" and outcome.get("ok"):
+                completed.add(step)
+            else:
+                return "unknown", detail
+        if not completed:
+            if rejected:
+                return "rejected", detail
+            return "not_submitted", {**detail, "mutation_submitted": False, "action_dispatched": False}
+        local_confirmed, checks = _account_setup_readback(account_id, email, completed, result)
+        detail.update({
+            "remote_result_confirmed": True,
+            "local_business_writeback_confirmed": local_confirmed,
+            "local_readback_confirmed": local_confirmed,
+            "local_readback_checks": checks,
+        })
+        return ("confirmed" if local_confirmed else "local_commit_required"), detail
     if status == "unsupported":
         return "rejected", detail
     if status not in {"success", "completed", "deactivated"} and not result.get("ok"):
@@ -294,10 +330,12 @@ def _safe_operation_result(
             "browser_opened", "account_status_persisted", "proxy_provider",
             "proxy_region", "proxy_mode", "credential_confirmed",
             "mutation_submitted", "action_dispatched", "reconcile_required", "manual_reconcile",
+            "password_setup", "password_driver", "twofa_setup", "remote_receipt_state",
+            "stop_requested",
         )
         if key in result and result.get(key) is not None
     }
-    cause_code = str(result.get("cause_code") or "")
+    cause_code = str(result.get("cause_code") or result.get("error_code") or "")
     if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", cause_code):
         summary["cause_code"] = cause_code
     for key in ("auth_diagnostics", "cause_diagnostics"):
@@ -317,6 +355,8 @@ def _safe_operation_result(
         return task_gateway.OperationResult("deactivated", summary, message, message)
     if status == "unsupported":
         return task_gateway.OperationResult("unsupported", summary, message, message)
+    if status == "partial_success":
+        return task_gateway.OperationResult("partial_success", summary, message, error or message)
     return task_gateway.OperationResult("failed", summary, message, error or message)
 
 
@@ -693,6 +733,7 @@ def _run_account_completion_worker(
                     twofa_driver_override=str(settings.get("twofa_driver") or "auto"),
                     password_driver_override=str(settings.get("password_driver") or "roxy"),
                     plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
+                    **({"execution_fence": context.execution_fence} if context is not None else {}),
                 )
             except Exception:
                 if context is not None and remote_write_started and remote_receipt_state is None:
@@ -720,7 +761,7 @@ def _run_account_completion_worker(
                     request_id=f"account-setup:{context.run_id}",
                     detail=receipt_detail,
                 )
-                if remote_receipt_state not in {"confirmed", "rejected"}:
+                if remote_receipt_state not in {"confirmed", "rejected", "not_submitted"}:
                     result_summary.update({
                         "outcome": "request_unknown",
                         "reconcile_required": True,
@@ -741,6 +782,9 @@ def _run_account_completion_worker(
                 "status": setup_result.get("status"),
                 "message": setup_result.get("message"),
                 "plan_check": setup_result.get("plan_check"),
+                "password_setup": setup_result.get("password_setup"),
+                "password_driver": setup_result.get("password_driver"),
+                "twofa_setup": setup_result.get("twofa_setup"),
                 "twofa_driver": setup_result.get("twofa_driver"),
                 "auth_source": setup_result.get("auth_source"),
                 "browser_opened": setup_result.get("browser_opened"),
@@ -940,7 +984,9 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     force_twofa_change = bool(data.get("force_twofa_change"))
     from core.runtime.capabilities import account_setup_unavailable
 
-    unavailable = account_setup_unavailable(steps, settings, force_twofa_change=force_twofa_change)
+    unavailable = account_setup_unavailable(
+        steps, settings, force_twofa_change=force_twofa_change, force_password_reset=force_password_reset,
+    )
     if unavailable:
         return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
     context.report(
@@ -977,7 +1023,7 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
                 plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
                 force_password_reset=force_password_reset,
                 force_twofa_change=force_twofa_change,
-                **({"execution_fence": context.execution_fence} if context.task_type == "password_change" else {}),
+                execution_fence=context.execution_fence,
             )
         except Exception as exc:
             try:
@@ -1004,7 +1050,9 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
             request_id=request_id,
             detail=receipt_detail,
         )
-        if receipt_state not in {"confirmed", "rejected"}:
+        if receipt_detail.get("setup_step_receipts"):
+            normalized.summary["setup_step_receipts"] = receipt_detail["setup_step_receipts"]
+        if receipt_state not in {"confirmed", "rejected", "not_submitted"}:
             pending_summary = dict(normalized.summary)
             pending_error = normalized.error
             pending_message = normalized.message
@@ -1203,7 +1251,10 @@ def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
         from core.runtime.capabilities import account_setup_unavailable
 
         steps = set(data.get("steps") or {"password", "plan_check", "twofa"})
-        unavailable = account_setup_unavailable(steps, settings, force_twofa_change=bool(data.get("force_twofa_change")))
+        unavailable = account_setup_unavailable(
+            steps, settings, force_twofa_change=bool(data.get("force_twofa_change")),
+            force_password_reset=task.get("task_type") == "password_change" or bool(data.get("force_password_reset")),
+        )
     else:
         from core.registration import service as registration_service
 
@@ -1681,6 +1732,7 @@ class WebUIContext:
 
         unavailable = account_setup_unavailable(
             requested_steps, settings, force_twofa_change=str(operation or "").strip().lower() == "twofa_change",
+            force_password_reset=str(operation or "").strip().lower() == "password_change",
         )
         if unavailable:
             return unavailable
@@ -2078,6 +2130,11 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         start_periodic_scanner()
         start_periodic_refresher()
         start_codex_token_refresher()
+        from core.integrations.sub2api.jobs import start_periodic_sync
+        from core.integrations.sub2api.monitor import start_periodic_monitor
+
+        start_periodic_sync()
+        start_periodic_monitor()
         from core.accounts.auth_context_cleanup import start_periodic_cleanup
         from core.operations.retention import start_periodic_cleanup as start_task_center_retention
 

@@ -39,6 +39,8 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `email_otp_requests` | 完整派生地址的认证租约、执行 fence、challenge 和候选消息事实，不保存验证码 |
 | `codex_credentials` | Codex OAuth 凭证 |
 | `codex_callback_receipts` | CPA/sub2 callback 提交回执；与可用 OAuth 凭证分开保存 |
+| `sub2api_sync_jobs` | 凭证行引用、后端摘要、远端目标、代际、补传阶段和重试时间；不复制 Token |
+| `sub2api_monitor_repairs` | 按后端与本地账号保存刷新、重授权、定向补传的接续阶段 |
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
@@ -47,6 +49,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `extract_link_provider_jobs` | 按 Run 保存提链平台原单、付款材料和平台自带支付状态 |
 | `extract_link_payment_orders` | 独立支付尝试、稳定幂等键、远端订单身份、支付状态和加密恢复请求 |
 | `account_password_recoveries` | Roxy 原账号及手动改密的密文候选、执行归属和确认历史 |
+| `account_protocol_sessions` | v3 刷新 AT 使用的加密登录 Cookie、设备画像和已验证身份，绑定账号及当前邮箱，默认保存 24 小时 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
 ### 独立支付订单

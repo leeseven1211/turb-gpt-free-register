@@ -37,7 +37,7 @@ def _password_present(account: Mapping) -> bool:
             extra.get("account_password")
             or extra.get("login_password")
             or extra.get("registration_password")
-            or account.get("password")
+            or account.get("account_password")
             or account.get("login_password")
             or account.get("registration_password")
             or ""
@@ -126,7 +126,7 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         else:
             blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
     if enabled["password"] and not _password_present(account):
-        if _password_setup_repeat_blocked(account):
+        if str(cfg.get("password_driver") or "roxy").strip().lower() != "protocol" and _password_setup_repeat_blocked(account):
             if enabled["password_reset"]:
                 missing.append("password")
             else:

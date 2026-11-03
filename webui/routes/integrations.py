@@ -38,6 +38,37 @@ def create_integrations_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("integrations", __name__)
     logger = context.logger
 
+    @bp.get("/api/sub2api/automation")
+    def api_sub2api_automation():
+        """只返回同步和巡检计数，不返回账号凭据或管理员配置。"""
+        from core.integrations.sub2api import jobs, monitor
+        try:
+            return jsonify({"ok": True, "sync": jobs.status(), "monitor": monitor.status()})
+        except Exception:
+            logger.exception("读取 sub2api 自动化状态失败")
+            return jsonify({"ok": False, "error_code": "sub2api_status_unavailable", "error": "暂时无法读取同步状态"}), 503
+
+    @bp.post("/api/sub2api/automation/check")
+    def api_sub2api_automation_check():
+        """手动检查仅使用已保存配置，不接受草稿密钥或目标覆盖。"""
+        if request.args or request.get_json(silent=True):
+            return jsonify({"ok": False, "error": "请先保存配置，再检查已配置的 sub2api"}), 400
+        from core.integrations.sub2api import monitor
+        try:
+            result = monitor.run_once(force=True)
+            reasons = result.get("reasons") or {}
+            for code, message in (
+                ("backend_not_configured", "尚未配置 sub2api，请先保存服务地址和鉴权配置"),
+                ("local_state_unavailable", "本地同步状态暂不可用，请稍后重试"),
+                ("remote_scan_failed", "远端异常列表读取失败，请检查已保存的 sub2api 地址、鉴权和连接；已入队修复仍保留"),
+            ):
+                if reasons.get(code):
+                    return jsonify({"ok": False, "error_code": code, "error": message, "result": result}), 503
+            return jsonify({"ok": True, "result": result})
+        except Exception:
+            logger.exception("手动巡检 sub2api 失败")
+            return jsonify({"ok": False, "error_code": "sub2api_check_failed", "error": "巡检未完成，请查看任务状态后重试"}), 503
+
 
     @bp.get("/api/roxy/workspaces")
     def api_roxy_workspaces():

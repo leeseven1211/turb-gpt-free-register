@@ -28,7 +28,7 @@ _TABLE = "account_password_recoveries"
 _READY_KEY = ""
 _LOCK = threading.RLock()
 _ACTIVE = {"running", "cancelling", "settling"}
-_CONFIRMATIONS = {"password_change_response", "candidate_login"}
+_CONFIRMATIONS = {"password_change_response", "password_add_response", "candidate_login"}
 
 
 class PasswordRecoveryError(RuntimeError):
@@ -88,6 +88,10 @@ def init() -> None:
             return
         with _database_errors():
             operations.init()
+            # 仅导入账号的新实例也需完整的 Attempt 结构；本操作不创建或执行注册。
+            from core.storage import registration
+
+            registration.init()
             with pg.connect() as conn, conn.cursor() as cur:
                 cur.execute(f"""
                     CREATE TABLE IF NOT EXISTS {pg.qualified(_TABLE)} (
@@ -214,8 +218,17 @@ def _fence(cur, owner: _Owner) -> tuple[dict, list[dict]]:
                 or task.get("attempt_id") != owner.attempt_id
                 or task.get("task_type") not in {"registration", "registration_resume"}):
             raise PasswordRecoveryError("registration_operation_mapping_mismatch")
-    elif task.get("task_type") != "password_change" or int(run.get("account_id") or 0) != owner.account_id:
-        raise PasswordRecoveryError("manual_operation_mismatch")
+    else:
+        task_type = task.get("task_type")
+        task_data = {**_json_object(task.get("data")), **_json_object(run.get("data"))}
+        setup_steps = task_data.get("steps")
+        setup_has_password = setup_steps is None or (
+            isinstance(setup_steps, (list, tuple)) and "password" in setup_steps
+        )
+        if (int(run.get("account_id") or 0) != owner.account_id
+                or not (task_type in {"password_change", "password_setup"}
+                        or task_type == "account_setup_retry" and setup_has_password)):
+            raise PasswordRecoveryError("manual_operation_mismatch")
     account = records.get_row(records.ACCOUNTS, owner.account_id, conn=cur.connection, for_update=True)
     if not account or str(account.get("email") or "").strip().casefold() != owner.email:
         raise PasswordRecoveryError("account_identity_mismatch")
@@ -345,6 +358,31 @@ def get_password_recovery(recovery_id: int, **owner) -> PrivateCheckpoint:
         return _checkpoint(_owned_checkpoint(cur, recovery_id, identity), cipher)
 
 
+def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict, **owner) -> None:
+    """与执行/账号租约同事务保存已认证会话，不将候选密码确认成正式密码。"""
+    from core.accounts.plans.client import token_claims
+
+    identity = _owner(owner)
+    if identity.purpose != "manual" or not str(access_token or "").strip() or not isinstance(session_info, dict):
+        raise PasswordRecoveryError("session_context_invalid")
+    claims = token_claims(access_token)
+    init()
+    with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        account, _ = _fence(cur, identity)
+        _owned_checkpoint(cur, recovery_id, identity)
+        extra = _json_object(account.get("extra_json"))
+        extra["registration_checkpoint"] = "registered"
+        extra.pop("registration_pending_reason", None)
+        records.patch_row(records.ACCOUNTS, identity.account_id, {
+            "access_token": access_token,
+            "expires_at": session_info.get("expires") or account.get("expires_at"),
+            "token_expires_at": claims.get("token_expires_at"), "token_expired": claims.get("token_expired"),
+            "chatgpt_session": json.dumps(session_info, ensure_ascii=False),
+            "extra_json": json.dumps(extra, ensure_ascii=False),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, conn=cur.connection)
+
+
 def _validate_attempt_passwords(attempts: list[dict], allowed: set[str]) -> None:
     for attempt in attempts:
         private = _json_object(attempt["private_context"])
@@ -411,6 +449,8 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
         account, attempts = _fence(cur, identity)
         row = _owned_checkpoint(cur, recovery_id, identity)
         payload = _credentials(row, cipher)
+        if confirmation == "password_add_response" and (identity.purpose != "manual" or payload["old_password"]):
+            raise PasswordRecoveryError("password_add_context_invalid")
         original_fact = None
         if candidate_login:
             from core.storage import registration
@@ -454,4 +494,4 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
 
 
 __all__ = ["PrivateCheckpoint", "PasswordRecoveryError", "prepare_password_recovery", "resume_password_recovery",
-           "get_password_recovery", "transition_password_recovery"]
+           "get_password_recovery", "transition_password_recovery", "save_password_recovery_session"]

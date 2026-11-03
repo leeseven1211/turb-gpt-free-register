@@ -1190,6 +1190,7 @@ def run_twofa_worker(
     browser_stage_started = False
     browser_stage_finished = False
     browser_retry_attempts = 0
+    password_result = None
     key = (email or "").strip().lower()
     requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
         str(item or "").strip().lower() for item in steps
@@ -1256,8 +1257,9 @@ def run_twofa_worker(
             if plan_driver_override is not None
             else getattr(account_cfg, "ACCOUNT_PLAN_CHECK_DRIVER", "protocol")
         ).strip().lower()
-        if "password" in requested_steps and password_driver not in {"roxy", "roxybrowser", "browser"}:
-            raise RuntimeError(f"账号密码补全当前仅支持 roxy 驱动，当前驱动={password_driver or '-'}")
+        if "password" in requested_steps and password_driver not in {"protocol", "roxy", "roxybrowser", "browser"}:
+            raise RuntimeError(f"账号密码补全不支持当前驱动={password_driver or '-'}")
+        protocol_password = "password" in requested_steps and password_driver == "protocol" and not force_password_reset
         if "plan_check" in requested_steps and plan_driver not in {"protocol", "api", "http"}:
             raise RuntimeError(f"套餐补全当前仅支持 protocol 驱动，当前驱动={plan_driver or '-'}")
         if "twofa" in requested_steps:
@@ -1293,7 +1295,7 @@ def run_twofa_worker(
 
         # 账号密码和显式 browser 2FA 需要浏览器会话；这和 Codex OAuth
         # 的驱动是两个独立边界，不能拿 CODEX_OAUTH_DRIVER 误拦截账号配置。
-        browser_session_required = "password" in requested_steps or (
+        browser_session_required = ("password" in requested_steps and not protocol_password) or (
             "twofa" in requested_steps and selected_twofa_mode == "browser"
         )
 
@@ -1394,6 +1396,44 @@ def run_twofa_worker(
             state="success",
         )
 
+        remaining_setup_steps = requested_steps & {"password", "twofa"}
+        if protocol_password:
+            from core.accounts.password_setup.service import run_protocol_password_setup
+            from core.network.protocol_traffic import correlation_context
+
+            lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
+            operation_context = task_run_log.current_context()
+            native_operation = operation_context.get("identifier_namespace") == "operation"
+            with correlation_context(
+                inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
+                account_id=account.get("id"), purpose=setup_proxy_purpose,
+                operation_task_id=operation_context.get("task_id") if native_operation else None,
+                operation_run_id=operation_context.get("run_id") if native_operation else None,
+            ):
+                password_result = run_protocol_password_setup(
+                    email, proxy=account_route.proxy_url, execution_fence=execution_fence,
+                    checkpoint=lambda: check_stop_requested(email),
+                    report=lambda **event: _report_account_setup_event(task_id, **event),
+                )
+            remaining_setup_steps.discard("password")
+            account = db.get_account_by_email(email) or account
+            if (not remaining_setup_steps or password_result.get("stop_requested")
+                    or password_result.get("status") in {"deactivated", "stopped", "cancelled"}):
+                result = {
+                    **password_result,
+                    "plan_check": plan_result or {"status": "skipped", "ok": True, "message": "本次未请求套餐补全"},
+                    "proxy_provider": account_route.provider,
+                    "proxy_region": account_route.region,
+                    "proxy_mode": account_route.mode,
+                }
+                if result.get("status") == "deactivated":
+                    result["account_status_persisted"] = _persist_account_deactivated_result(
+                        email, result, source="account_setup",
+                    )
+                elif password_result.get("stop_requested") and remaining_setup_steps:
+                    result.update(ok=False, status="partial_success", message="账号密码已确认保存，已停止后续安全设置")
+                return result
+
         context_plan = plan_twofa_context(
             selected_twofa_mode,
             has_access_token=bool(str(account.get("access_token") or "").strip()),
@@ -1401,7 +1441,7 @@ def run_twofa_worker(
         )
         browser_twofa_driver = context_plan.executor
         direct_protocol_failed = False
-        if requested_steps == {"twofa"} and context_plan.executor == "protocol":
+        if remaining_setup_steps == {"twofa"} and context_plan.executor == "protocol":
             try:
                 direct_result = _run_protocol_direct_twofa(
                     email,
@@ -1501,7 +1541,7 @@ def run_twofa_worker(
             )
 
         allow_password_reset = bool(
-            "password" in requested_steps
+            "password" in remaining_setup_steps
             and (
                 force_password_reset
                 or (
@@ -1552,7 +1592,7 @@ def run_twofa_worker(
                         email,
                         task_id,
                         proxy=(account_route.proxy_url if account_route is not None else None),
-                        include_password="password" in requested_steps,
+                    include_password="password" in remaining_setup_steps,
                         include_twofa="twofa" in requested_steps,
                         twofa_driver=browser_twofa_driver,
                         browser_fallback_enabled=browser_fallback_enabled,
@@ -1742,6 +1782,37 @@ def run_twofa_worker(
         logger.exception("[账号配置重试] %s 异常", email)
         return result
     finally:
+        if password_result is not None:
+            if "twofa" in requested_steps:
+                if password_result.get("stop_requested") or password_result.get("status") in {"deactivated", "stopped", "cancelled"}:
+                    result["twofa_setup"] = {
+                        "ok": False, "status": "skipped", "message": "前置步骤已停止，未执行 2FA",
+                        "mutation_submitted": False, "remote_receipt_state": "not_submitted",
+                    }
+                else:
+                    result["twofa_setup"] = {
+                        key: result[key] for key in (
+                            "ok", "status", "message", "error_code", "twofa_driver", "browser_opened",
+                        ) if key in result
+                    }
+            result["password_setup"] = dict(password_result)
+            result["password_driver"] = "protocol"
+            if plan_result is not None:
+                result["plan_check"] = plan_result
+            if result.get("status") not in {"deactivated", "stopped", "cancelled"}:
+                if not password_result.get("ok"):
+                    other_success = ("twofa" in requested_steps and bool(result.get("ok"))) or bool((plan_result or {}).get("ok"))
+                    result.update(
+                        ok=False, status="partial_success" if other_success else password_result.get("status", "failed"),
+                        message=password_result.get("message") or "协议补密码未完成",
+                        error_code=password_result.get("error_code"),
+                    )
+                elif not result.get("ok"):
+                    result["status"] = "partial_success"
+                if "plan_check" in requested_steps and not bool((plan_result or {}).get("ok")):
+                    result["plan_check"] = plan_result or {"ok": False, "status": "failed", "message": "套餐查询未完成"}
+                    if result.get("ok"):
+                        result.update(ok=False, status="partial_success", message="账号密码和安全设置已处理，套餐查询未完成")
         _attach_auth_projection(
             result,
             auth_method=str(
@@ -1791,6 +1862,9 @@ def run_twofa_worker(
                         "status": result.get("status"),
                         "message": result.get("message"),
                         "plan_check": result.get("plan_check"),
+                        "password_setup": result.get("password_setup"),
+                        "password_driver": result.get("password_driver"),
+                        "twofa_setup": result.get("twofa_setup"),
                         "twofa_driver": result.get("twofa_driver"),
                         "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),

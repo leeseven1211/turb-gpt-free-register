@@ -36,10 +36,11 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
             "access_token": "synthetic-new-access", "refresh_token": "synthetic-new-refresh",
         }
 
-    def _execute(self, *, enabled=True, confirmed=True, sync_error=None, credential=None, cancelled=False, saved_snapshot=True):
+    def _execute(self, *, enabled=True, confirmed=True, sync_error=None, credential=None, cancelled=False, saved_snapshot=True, targets=None):
         task = service.operation_task_store.create_runtime_task(
             task_type="codex_retry", account_id=self.account_id, email=self.email,
-            data={"config_snapshot": {"oauth_driver": "protocol", "auto_upload_sub2api": enabled}} if saved_snapshot else {},
+            data={"config_snapshot": {"oauth_driver": "protocol", "auto_upload_sub2api": enabled},
+                  **({"sub2api_targets": targets} if targets else {})} if saved_snapshot else {},
         )
         route = Mock(proxy_url=None, provider="test", mode="direct", region="")
         route.public_dict.return_value = {"network_route": "test-direct"}
@@ -71,6 +72,25 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
         run = service.operation_task_store.get_run(int(task["run"]["id"]))
         row = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
         return returned, run, row, upload
+
+    def test_monitor_success_queues_original_targets_without_generic_upload(self):
+        targets = {"backend_identity": "original-backend", "remote_account_ids": [41, 42]}
+        with patch("core.integrations.sub2api.jobs.queue_sync", return_value={"accepted": True, "pending": True}) as queue:
+            returned, run, _, upload = self._execute(targets=targets)
+        self.assertEqual("success", run["status"])
+        self.assertEqual("pending", returned["sub2api_sync"]["status"])
+        self.assertEqual("original-backend", queue.call_args.kwargs["expected_backend"])
+        self.assertEqual([41, 42], queue.call_args.kwargs["remote_account_ids"])
+        upload.assert_not_called()
+
+    def test_monitor_cancel_after_oauth_skips_followup_sync(self):
+        targets = {"backend_identity": "original-backend", "remote_account_ids": [41]}
+        with patch("core.integrations.sub2api.jobs.queue_sync") as queue:
+            returned, run, _, upload = self._execute(targets=targets, cancelled=True)
+        self.assertEqual("success", run["status"])
+        self.assertEqual("cancelled", returned["sub2api_sync"]["status"])
+        queue.assert_not_called()
+        upload.assert_not_called()
 
     def test_enabled_uploads_current_credential_and_saves_success_summary(self):
         returned, run, row, upload = self._execute()

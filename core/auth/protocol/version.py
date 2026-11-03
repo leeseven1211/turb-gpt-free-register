@@ -7,28 +7,30 @@ import os
 from config import openai_protocol
 
 
-VALID_PROTOCOL_VERSIONS = frozenset({"v1", "v2"})
+VALID_PROTOCOL_VERSIONS = frozenset({"v1", "v2", "v3"})
 DEFAULT_PROTOCOL_VERSION = "v1"
 
-# A step only consults the global version when both implementations exist.
+# A step only consults the global version when multiple implementations exist.
 # Browser steps are intentionally absent: they do not use the Protocol version.
 PROTOCOL_STEP_CAPABILITIES = {
     "registration": frozenset({"v1"}),
     "twofa": frozenset({"v1"}),
     "plan_check": frozenset({"v1"}),
     "live_check": frozenset({"v1"}),
-    "refresh_at": frozenset({"v1", "v2"}),
+    "refresh_at": frozenset({"v1", "v2", "v3"}),
     "codex_oauth": frozenset({"v1"}),
 }
 
 
 def normalize_protocol_version(value: str | None, default: str = DEFAULT_PROTOCOL_VERSION) -> str:
-    """Normalize the public protocol version value to ``v1`` or ``v2``."""
+    """将公开协议版本规范化为 v1、v2 或 v3。"""
     fallback = str(default or DEFAULT_PROTOCOL_VERSION).strip().lower()
     if fallback in {"1", "v_1"}:
         fallback = "v1"
     elif fallback in {"2", "v_2"}:
         fallback = "v2"
+    elif fallback in {"3", "v_3"}:
+        fallback = "v3"
     if fallback not in VALID_PROTOCOL_VERSIONS:
         fallback = DEFAULT_PROTOCOL_VERSION
 
@@ -38,9 +40,11 @@ def normalize_protocol_version(value: str | None, default: str = DEFAULT_PROTOCO
         "v_1": "v1",
         "2": "v2",
         "v_2": "v2",
+        "3": "v3",
+        "v_3": "v3",
     }.get(raw, raw or fallback)
     if normalized not in VALID_PROTOCOL_VERSIONS:
-        raise ValueError("协议版本只支持 v1 或 v2")
+        raise ValueError("协议版本只支持 v1、v2 或 v3")
     return normalized
 
 
@@ -66,7 +70,7 @@ def resolve_protocol_version(step: str, requested: str | None = None) -> str:
     """Resolve a step's effective version from its declared capabilities.
 
     A single-version step always uses that implementation.  Only a step with
-    both v1 and v2 support follows the global configuration or an explicit
+    multiple versions follows the global configuration or an explicit
     normalized request.
     """
     step_name = str(step or "").strip().lower()

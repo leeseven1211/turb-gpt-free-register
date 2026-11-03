@@ -29,6 +29,7 @@ def sync_confirmed_credential(
     uploaded = False
     enabled = False
     account_id = None
+    backend_identity = ""
     try:
         checkpoint()
         if not filename:
@@ -39,6 +40,7 @@ def sync_confirmed_credential(
             raise Sub2ApiSyncError(stage, "sub2api_credential_identity_mismatch", "本次凭证邮箱与授权账号不一致")
         stage = "upload"
         synced = sub2api_client.upload_and_enable_configured_codex_oauth_credential(credential, checkpoint=checkpoint)
+        backend_identity = synced.get("backend_identity") or ""
         uploaded = bool(synced.get("uploaded"))
         enabled = bool(synced.get("enabled"))
         account_id = synced.get("sub2api_account_id")
@@ -48,6 +50,7 @@ def sync_confirmed_credential(
         return {
             "status": "success", "uploaded": uploaded, "enabled": enabled,
             "sub2api_account_id": account_id,
+            "backend_identity": synced.get("backend_identity") or backend_identity,
         }
     except (OperationCancelled, OperationLeaseLost) as exc:
         uploaded = bool(getattr(exc, "sub2api_uploaded", uploaded))
@@ -66,6 +69,7 @@ def sync_confirmed_credential(
     except Sub2ApiSyncError as exc:
         uploaded = bool(exc.uploaded)
         account_id = exc.sub2api_account_id
+        backend_identity = getattr(exc, "backend_identity", "") or backend_identity
         summary = {
             "status": "failed", "stage": exc.stage, "error_code": exc.code,
             "error": str(exc), "uploaded": uploaded, "enabled": enabled,
@@ -90,4 +94,11 @@ def sync_confirmed_credential(
     except Exception:
         summary["metadata_error_code"] = "sub2api_sync_metadata_write_failed"
         logger.warning("sub2api 同步结果写回失败：阶段=%s 原因=%s", summary["stage"], summary["error_code"])
+    if summary.get("status") == "failed" and stage not in {"read_credential", "persist_metadata"}:
+        try:
+            from core.integrations.sub2api import jobs
+            jobs.record_sync_failure(filename, {**summary, "backend_identity": backend_identity})
+        except Exception:
+            summary["retry_error_code"] = "sub2api_retry_persist_failed"
+            logger.exception("sub2api 待补传状态保存失败")
     return summary

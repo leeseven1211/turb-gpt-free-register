@@ -1202,6 +1202,29 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "post_register_failure": ("OA-REG-POST-001", "注册请求之后流程失败（细项未记录）"),
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
+    "protocol_v3_unknown_error": ("AUTH-PROTOCOL-003", "协议 v3 认证发生未确认异常"),
+    "identity_mismatch": ("AUTH-IDENTITY-001", "认证返回的账号身份与目标账号不一致"),
+    "identity_unconfirmed": ("AUTH-IDENTITY-002", "认证响应缺少可核验的账号身份"),
+    "account_reference_mismatch": ("AUTH-IDENTITY-003", "本地账号与刷新目标邮箱不一致"),
+    "access_token_expired": ("AUTH-SESSION-003", "认证返回的 AT 已过期，未确认为刷新成功"),
+    "auth_context_ambiguous": ("AUTH-PAGE-AMBIGUOUS", "认证 Cookie 上下文存在冲突，无法确认当前挑战"),
+    "workspace_ambiguous": ("AUTH-WORKSPACE-001", "存在多个工作区，无法确认目标工作区"),
+    "workspace_missing": ("AUTH-WORKSPACE-002", "认证响应缺少可用工作区"),
+    "account_profile_required": ("AUTH-PROFILE-001", "账号资料尚未完成，请从原注册任务继续"),
+    "untrusted_auth_url": ("AUTH-URL-001", "认证响应指向非受信任的地址"),
+    "auth_challenge_loop": ("AUTH-CHALLENGE-001", "认证挑战重复或超出本次处理次数"),
+    "cached_session_network_failed": ("NET-SESSION-001", "复用登录会话时网络请求失败"),
+    "cached_session_http_failed": ("NET-SESSION-002", "复用登录会话时服务端拒绝或暂不可用"),
+    "cached_session_invalid_response": ("AUTH-SESSION-001", "复用登录会话时返回格式无效"),
+    "auth_redirect_invalid": ("AUTH-URL-002", "认证跳转缺少有效目标地址"),
+    "auth_redirect_limit": ("AUTH-URL-003", "认证跳转超出本次处理次数"),
+    "auth_navigation_failed": ("NET-AUTH-002", "认证页面请求未完成"),
+    "session_fetch_failed": ("NET-SESSION-003", "认证后读取登录会话失败"),
+    "session_invalid_response": ("AUTH-SESSION-002", "认证后的登录会话响应无效"),
+    "email_otp_validate_failed": ("AUTH-OTP-VALIDATE-001", "邮箱验证码验证请求未完成"),
+    "email_otp_validate_invalid_response": ("AUTH-OTP-VALIDATE-002", "邮箱验证码验证响应无效"),
+    "workspace_select_failed": ("AUTH-WORKSPACE-003", "工作区选择请求未完成"),
+    "workspace_select_invalid_response": ("AUTH-WORKSPACE-004", "工作区选择响应无效"),
     "refresh_driver_exception": ("SYS-REFRESH-001", "AT 刷新执行异常"),
     "roxy_not_configured": ("ROXY-REFRESH-000", "Roxy 连接配置不完整"),
     "roxy_profile_open_failed": ("ROXY-REFRESH-001", "Roxy 环境创建或启动失败"),
@@ -1950,7 +1973,7 @@ def classify_task_error(
         cause = _registration_browser_error_cause(raw, task_type=task_type)
     raw_projection = None
     if cause is not None and cause["cause_code"] in {
-        "refresh_driver_exception", "protocol_v2_unknown_error", "post_register_failure",
+        "refresh_driver_exception", "protocol_v2_unknown_error", "protocol_v3_unknown_error", "post_register_failure",
     }:
         raw_projection = _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
         # 驱动兜底异常只定位失败范围；明确的代理、数据库等原始错误仍应作为主原因。

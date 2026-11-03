@@ -283,6 +283,38 @@ def _request_with_proxy_retry(
     raise last_exc if last_exc else RuntimeError(f"{label} 重试耗尽但无异常记录")
 
 
+def _login_preflight_get(session, *, timeout: float, enabled: bool):
+    """Preserve the original navigation exactly unless explicitly opted in."""
+    headers = session.get_chatgpt_navigate_headers(referer="")
+    if not enabled:
+        return session.get("https://chatgpt.com/auth/login", headers=headers, allow_redirects=True, timeout=timeout)
+
+    from contextlib import nullcontext
+    from core.auth.challenge import AuthCancelledError
+    from core.auth.state_machine import StageBudget
+
+    def cancelled():
+        _check_stop_requested()
+        return False
+
+    budget = StageBudget.start(timeout, cancel=cancelled)
+    scope = getattr(session, "request_budget", None)
+    with scope(budget) if callable(scope) else nullcontext():
+        response = session.get("https://chatgpt.com/auth/login", headers=headers,
+                               allow_redirects=True, timeout=budget.require("登录预检"))
+        try:
+            from core.network.cloudflare_adapters import recover_browser_preflight
+            return recover_browser_preflight(session, response, headers=headers, budget=budget)
+        except AuthCancelledError:
+            raise
+        except Exception as exc:
+            from core.registration.service import StopRequested
+            if isinstance(exc, StopRequested):
+                raise
+            logger.info("[CF] 可选预检能力不可用，保留原响应 (%s)", type(exc).__name__)
+            return response
+
+
 def network_preflight(
     session: BrowserSession,
     *,
@@ -297,15 +329,9 @@ def network_preflight(
     # 成功 Roxy 链路在 OAuth authorize 前只访问 ChatGPT 登录页；提前直打
     # auth/log-in 和 Sentinel frame 会制造浏览器中不存在的跨站访问序列。
     timeout = max(1.0, float(getattr(_protocol_cfg, "OPENAI_PREFLIGHT_TIMEOUT", 12.0)))
+    cf_enabled = getattr(_protocol_cfg, "OPENAI_CF_PREFLIGHT_ENABLED", False) is True
     checks = [
-        ("chatgpt-auth-login", lambda: session.get(
-            "https://chatgpt.com/auth/login",
-            # 成功浏览器样本是地址栏级顶层导航：无 Referer、
-            # Sec-Fetch-Site=none。伪造同源 Referer/缓存刷新头会触发 CF challenge。
-            headers=session.get_chatgpt_navigate_headers(referer=""),
-            allow_redirects=True,
-            timeout=timeout,
-        )),
+        ("chatgpt-auth-login", lambda: _login_preflight_get(session, timeout=timeout, enabled=cf_enabled)),
     ]
     for label, fn in checks:
         try:

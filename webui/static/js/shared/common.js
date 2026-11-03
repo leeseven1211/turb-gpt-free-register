@@ -87,13 +87,13 @@ const LIST_FACET_LABELS = {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
     email_change:'换绑邮箱', password_change:'修改密码', twofa_change:'修改 2FA',
-    codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新',
+    codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', sub2api_sync:'sub2api 凭据同步',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
   },
   trigger: {
     manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
     registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
-    codex_token_refresh_scheduled:'Codex 定时刷新',
+    codex_token_refresh_scheduled:'Codex 定时刷新', sub2api_monitor:'sub2api 异常巡检', sub2api_sync_retry:'sub2api 自动补传',
   },
   target_status: {
     not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',

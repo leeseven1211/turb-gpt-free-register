@@ -223,6 +223,11 @@ def _compact_account_for_list(row: dict) -> dict:
         "totp_enabled": bool(row.get("totp_enabled")) or bool(row.get("totp_secret")),
         "email_invalid": row.get("email_invalid") is True,
     }
+    retry = row.get("registration_retry")
+    if isinstance(retry, dict):
+        out["registration_retry"] = {
+            key: retry.get(key) for key in ("available", "source_job_id", "action", "label", "reason", "active")
+        }
     for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):
         out[key] = row.get(key) if out["email_invalid"] else None
     # 仅展示已记录的远端密码结果，不从本地密码、Token 或认证方式反推。

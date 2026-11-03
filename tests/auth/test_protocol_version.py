@@ -8,13 +8,13 @@ from core.auth.protocol.version import PROTOCOL_STEP_CAPABILITIES, normalize_pro
 
 
 class ProtocolVersionTests(unittest.TestCase):
-    def test_normalize_accepts_only_public_v1_or_v2_values(self):
+    def test_normalize_accepts_public_versions(self):
         self.assertEqual("v1", normalize_protocol_version("1"))
         self.assertEqual("v2", normalize_protocol_version("v2"))
         with self.assertRaises(ValueError):
             normalize_protocol_version("protocol_v2")
 
-    def test_two_version_step_follows_shared_protocol_version(self):
+    def test_multi_version_step_follows_shared_protocol_version(self):
         with patch.object(openai_protocol, "OPENAI_PROTOCOL_VERSION", "v2", create=True):
             self.assertEqual("v2", resolve_protocol_version("refresh_at"))
 
@@ -27,10 +27,10 @@ class ProtocolVersionTests(unittest.TestCase):
             self.assertEqual("v1", resolve_protocol_version("twofa"))
             self.assertEqual("v1", resolve_protocol_version("plan_check"))
 
-    def test_capability_matrix_exposes_only_refresh_as_v1_and_v2_for_now(self):
+    def test_capability_matrix_exposes_multiple_versions_only_for_refresh(self):
         dual_version_steps = {
             step for step, versions in PROTOCOL_STEP_CAPABILITIES.items()
-            if versions == frozenset({"v1", "v2"})
+            if len(versions) > 1
         }
         self.assertEqual({"refresh_at"}, dual_version_steps)
 

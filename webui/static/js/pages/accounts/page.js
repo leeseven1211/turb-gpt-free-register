@@ -7,6 +7,7 @@ let planStatusRevision = '';
 let accountSessionDownloadLoading = false;
 let ACCOUNT_BATCH_WORKERS = 3;
 const ACCOUNT_SELECTED_EMAILS = new Map();
+const ACCOUNT_REGISTRATION_RETRY_PENDING = new Set();
 function accountIsDeactivated(account) {
   return ['account_status', 'codex_status', 'codex_credential_state'].some(
     key => String(account?.[key] || '').toLowerCase() === 'deactivated',
@@ -51,9 +52,12 @@ function accountAtRefreshUiSettings(fields = CONFIG) {
   const driver = String(driverField?.value || 'protocol').trim().toLowerCase() === 'browser_roxy' ? 'browser_roxy' : 'protocol';
   const debugValue = items.find(item => item.key === 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED')?.value;
   const debugEnabled = debugValue === true || String(debugValue).trim().toLowerCase() === 'true';
-  const version = String(items.find(item => item.key === 'OPENAI_PROTOCOL_VERSION')?.value || 'v1').trim().toLowerCase() === 'v2' ? 'v2' : 'v1';
+  const requestedVersion = String(items.find(item => item.key === 'OPENAI_PROTOCOL_VERSION')?.value || 'v1').trim().toLowerCase();
+  const version = ['v2', 'v3'].includes(requestedVersion) ? requestedVersion : 'v1';
   const label = driverField ? (driver === 'browser_roxy' ? 'Roxy 指纹浏览器' : `协议刷新（${version}）`) : '已保存的刷新驱动';
-  const description = `使用${label}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`;
+  const description = driver === 'protocol' && version === 'v3'
+    ? `使用${label}先复用该账号有效的登录会话；会话失效或尚未保存时，按实际挑战完成密码、2FA 或邮箱验证，核对账号身份并保存最新 accessToken。`
+    : `使用${label}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`;
   const debugDescription = debugEnabled ? 'Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。' : '';
   return {driver, debugEnabled, label, description, debugDescription, title: description + (debugEnabled ? ' Roxy 调试已开启，失败保留窗口。' : '')};
 }
@@ -1180,6 +1184,12 @@ function _deactivationMailCell(r) {
   return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line">${button}</div></div>`;
 }
 function _accountsV2MoreMenu(r) {
+  const retry = r.registration_retry;
+  const registrationRetry = retry?.active && Number(retry.source_job_id) > 0
+    ? `<button type="button" data-account-registration-task="${esc(retry.source_job_id)}" data-account-id="${esc(r.id)}" title="${esc(retry.reason || '原注册任务正在执行')}">查看进行中的注册任务</button>`
+    : retry?.available && !accountIsDeactivated(r)
+      ? `<button type="button" data-account-registration-retry="${esc(r.id)}" title="${esc(retry.reason || '复用原注册记录，继续未完成步骤')}">${esc(retry.label || '重跑注册')}</button>`
+      : retry ? `<button type="button" title="${esc(retry.reason || '当前没有可重跑的原注册任务')}" disabled>重跑注册</button>` : '';
   const parts = [
     `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
     `<button type="button" data-account-copy-secret="chatgpt_session" data-account-id="${esc(r.id)}" title="复制完整 ChatGPT session JSON">复制 ChatGPT session</button>`,
@@ -1189,6 +1199,7 @@ function _accountsV2MoreMenu(r) {
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
+    registrationRetry,
     accountIsDeactivated(r) ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
     accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="${esc(accountAtRefreshUiSettings().title)}">刷新AT</button>`,
@@ -1405,16 +1416,30 @@ function positionAccountsV2MoreMenu(wrap) {
   const menu = wrap.querySelector('.acc-v2-more-menu');
   if (!btn || !menu) return;
   const rect = btn.getBoundingClientRect();
+  const margin = 8;
+  const gap = 4;
+  // 每次打开重新测量自然高度；长菜单在按钮上下更宽裕的一侧滚动。
+  menu.style.maxHeight = '';
+  menu.style.boxSizing = 'border-box';
+  menu.style.overflowY = 'auto';
+  menu.style.overscrollBehavior = 'contain';
   const menuW = Math.max(menu.offsetWidth || 148, 148);
-  const menuH = menu.offsetHeight || 0;
+  const naturalHeight = menu.offsetHeight || 0;
+  const spaceBelow = Math.max(0, window.innerHeight - margin - rect.bottom - gap);
+  const spaceAbove = Math.max(0, rect.top - gap - margin);
+  const openAbove = naturalHeight > spaceBelow && spaceAbove > spaceBelow;
+  const availableHeight = openAbove ? spaceAbove : spaceBelow;
+  const menuH = Math.min(naturalHeight, availableHeight);
+  menu.style.maxHeight = `${availableHeight}px`;
   let left = rect.right - menuW;
-  left = Math.max(8, Math.min(left, window.innerWidth - menuW - 8));
-  let top = rect.bottom + 4;
-  if (top + menuH > window.innerHeight - 8 && rect.top - menuH - 4 > 8) {
-    top = rect.top - menuH - 4;
-  }
+  left = Math.max(margin, Math.min(left, window.innerWidth - menuW - margin));
+  const top = Math.max(margin, openAbove ? rect.top - menuH - gap : rect.bottom + gap);
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+}
+function onAccountsMoreMenuScroll(event) {
+  if (event.target?.closest?.('.accounts-table-v2 .acc-v2-more-menu')) return;
+  closeAccountsV2MoreMenus();
 }
 function getOpenAccountsV2MoreId() {
   const open = document.querySelector('.accounts-table-v2 .acc-v2-more.open');
@@ -1536,7 +1561,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnEmailChangeSelectedV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
-    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
+    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnRetrySelectedRegistrationV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedExtractLinksV2',
     'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
@@ -1546,7 +1571,8 @@ function updateAccountSelectionUi(pageRows = null) {
   v2Ids.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.disabled = none || (id === 'btnDownloadSelectedSessionsV2' && accountSessionDownloadLoading);
+    el.disabled = none || (id === 'btnDownloadSelectedSessionsV2' && accountSessionDownloadLoading)
+      || (id === 'btnRetrySelectedRegistrationV2' && Array.from(ACCOUNT_SELECTED).some(accountId => ACCOUNT_REGISTRATION_RETRY_PENDING.has(Number(accountId))));
     if (id === 'btnArchiveSelectedAccountsV2') {
       el.textContent = archiveLabel;
       el.title = archiveTitle;
@@ -1620,6 +1646,20 @@ async function onAccountsBodyClick(e) {
   if (e.target.closest('.acc-v2-more-menu')) {
     // 点菜单项后收起，再继续走下面的动作处理
     closeAccountsV2MoreMenus();
+  }
+
+  const registrationRetryBtn = e.target.closest('[data-account-registration-retry]');
+  if (registrationRetryBtn) {
+    await retryAccountRegistration([Number(registrationRetryBtn.dataset.accountRegistrationRetry)], registrationRetryBtn);
+    return;
+  }
+  const registrationTaskBtn = e.target.closest('[data-account-registration-task]');
+  if (registrationTaskBtn) {
+    openAccountRegistrationRetryTasks([{
+      account_id: Number(registrationTaskBtn.dataset.accountId),
+      job_id: Number(registrationTaskBtn.dataset.accountRegistrationTask),
+    }]);
+    return;
   }
 
   const emailChangeBtn = e.target.closest('[data-account-email-change]');
@@ -1874,7 +1914,7 @@ function syncAccountsSelectAll(checked) {
     if (e.target.closest('.acc-v2-more')) return;
     closeAccountsV2MoreMenus();
   });
-  window.addEventListener('scroll', () => closeAccountsV2MoreMenus(), true);
+  window.addEventListener('scroll', onAccountsMoreMenuScroll, true);
   window.addEventListener('resize', () => closeAccountsV2MoreMenus());
 })();
 function setAccountsFilterToggle(el, on) {
@@ -2857,6 +2897,102 @@ function changePasswordSelectedAccounts() { return runSelectedAccountAction('pas
 function changeTwofaSelectedAccounts() { return runSelectedAccountAction('twofa_change', '修改 2FA', 'twofa_change'); }
 function completeSelectedAccounts() { return runSelectedAccountAction('complete', '补全账号', 'account_completion'); }
 
+function accountRegistrationRetrySummary(result) {
+  const started = Number(result.started_count ?? result.started?.length ?? 0);
+  const reused = Number(result.reused_count ?? result.reused?.length ?? 0);
+  const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0);
+  return `注册重跑：已创建 ${started} 个，进行中 ${reused} 个，跳过 ${skipped} 个`;
+}
+
+function renderAccountRegistrationRetryResult(result) {
+  const started = Array.isArray(result.started) ? result.started : [];
+  const reused = Array.isArray(result.reused) ? result.reused : [];
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  const tasks = [...started, ...reused];
+  const taskRows = tasks.map((item, index) => {
+    const taskId = item.task_id || item.operation_task_id;
+    const targetId = taskId || item.job_id;
+    const taskAttributes = taskId ? ` data-registration-retry-task-id="${esc(taskId)}"${item.run_id ? ` data-registration-retry-run-id="${esc(item.run_id)}"` : ''}` : '';
+    return `<li>账号 #${esc(item.account_id)} · ${index < started.length ? '已创建' : '进行中'} <button type="button" class="jobs-tb-btn" data-registration-retry-result="${index}"${taskAttributes}>查看任务${targetId ? ` #${esc(targetId)}` : ''}</button></li>`;
+  }).join('');
+  const skippedRows = skipped.map(item => `<li>账号 #${esc(item.account_id)} · ${esc(item.reason || item.error || '当前不可重跑')}</li>`).join('');
+  return `<span class="column-filter-summary-label">${esc(accountRegistrationRetrySummary(result))}</span>
+    ${tasks.length ? '<button type="button" class="jobs-tb-btn" data-registration-retry-tasks>打开任务中心</button>' : ''}
+    ${taskRows || skippedRows ? `<details><summary>查看${skipped.length ? '任务及跳过原因' : '任务'}</summary><ul>${taskRows}${skippedRows}</ul></details>` : ''}`;
+}
+
+function showAccountRegistrationRetryResult(result) {
+  const panel = $('#accountRegistrationRetryResultV2');
+  if (!panel) return;
+  panel.hidden = false;
+  panel.innerHTML = renderAccountRegistrationRetryResult(result);
+  const tasks = [...(result.started || []), ...(result.reused || [])];
+  panel.querySelector('[data-registration-retry-tasks]')?.addEventListener('click', () => openAccountRegistrationRetryTasks(tasks));
+  panel.querySelectorAll('[data-registration-retry-result]').forEach(button => {
+    button.addEventListener('click', () => {
+      const item = tasks[Number(button.dataset.registrationRetryResult)];
+      if (item) openAccountRegistrationRetryTasks([item]);
+    });
+  });
+}
+
+function openAccountRegistrationRetryTasks(items = []) {
+  const single = items.length === 1 ? items[0] : null;
+  const account = single ? ACCOUNTS.find(row => Number(row.id) === Number(single.account_id)) : null;
+  // 清除历史任务筛选，避免切到任务中心后新执行被旧状态或批次条件隐藏。
+  for (const selector of [
+    '#accountTaskIdFilterV2', '#accountTaskTypeFilterV2', '#accountTaskStatusFilterV2',
+    '#accountTaskTargetStatusFilterV2', '#accountTaskBatchFilterV2', '#accountTaskRunCountFilterV2',
+    '#accountTaskStageFilterV2', '#accountTaskDateFromV2', '#accountTaskDateToV2', '#accountTaskResultFilterV2',
+  ]) {
+    const field = $(selector);
+    if (field) field.value = '';
+  }
+  const search = $('#accountTaskTargetFilterV2');
+  if (search) search.value = single?.email || account?.email || '';
+  PAGERS.accountTasks.page = 1;
+  activateTab('tasks');
+  const taskId = single?.task_id || single?.operation_task_id;
+  if (taskId) openAccountTaskLog(Number(taskId), single.run_id ? Number(single.run_id) : null);
+  else if (single?.job_id) openLog(Number(single.job_id));
+}
+
+async function retryAccountRegistration(idsArg = null, btnArg = null) {
+  const ids = [...new Set((idsArg || Array.from(ACCOUNT_SELECTED)).map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  if (ids.some(id => ACCOUNT_REGISTRATION_RETRY_PENDING.has(id))) { showToast('所选账号的注册重跑正在提交，请稍后查看结果'); return; }
+  const btn = btnArg || $('#btnRetrySelectedRegistrationV2');
+  if (btn?.disabled) return;
+  const account = ids.length === 1 ? ACCOUNTS.find(row => Number(row.id) === ids[0]) : null;
+  const label = account?.registration_retry?.label || '重跑原注册任务';
+  const scope = ids.length === 1 ? `账号 #${ids[0]}` : `选中的 ${ids.length} 个账号`;
+  if (!confirm(`确定为${scope}${label}吗？\n\n复用原注册记录，按当前进度重跑或补齐缺失步骤。正在执行、已完成或没有原任务的账号会显示对应结果。`)) return;
+  const old = btn ? btn.textContent : '';
+  ids.forEach(id => ACCOUNT_REGISTRATION_RETRY_PENDING.add(id));
+  if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+  let submissionConfirmed = false;
+  try {
+    const result = await api(ids.length === 1 ? `/api/accounts/${ids[0]}/registration-retry` : '/api/accounts/registration-retry-bulk', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(ids.length === 1 ? {} : {account_ids: ids}),
+    });
+    submissionConfirmed = true;
+    showToast(accountRegistrationRetrySummary(result));
+    showAccountRegistrationRetryResult(result);
+    if (ids.length === 1) {
+      const item = (result.started || [])[0] || (result.reused || [])[0];
+      if (item) openAccountRegistrationRetryTasks([item]);
+    }
+    await loadAccounts();
+  } catch (error) {
+    showToast((submissionConfirmed ? '注册重跑请求已处理，页面更新失败: ' : '注册重跑提交失败: ') + error.message);
+  } finally {
+    ids.forEach(id => ACCOUNT_REGISTRATION_RETRY_PENDING.delete(id));
+    if (btn) { btn.textContent = old; btn.disabled = false; }
+    updateAccountSelectionUi();
+  }
+}
+
 async function copySelectedAccountTokens() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
@@ -2883,6 +3019,7 @@ async function copySelectedAccountTokens() {
   bind('btnChangePasswordSelectedAccountsV2', changePasswordSelectedAccounts);
   bind('btnChangeTwofaSelectedAccountsV2', changeTwofaSelectedAccounts);
   bind('btnCompleteSelectedAccountsV2', completeSelectedAccounts);
+  bind('btnRetrySelectedRegistrationV2', event => retryAccountRegistration(null, event.currentTarget));
   bind('btnUploadSelectedCodexSub2V2', uploadSelectedCodexSub2);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);

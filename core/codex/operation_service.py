@@ -491,6 +491,7 @@ def submit(
     driver: str | None = None,
     idempotency_key: str | None = None,
     completion_auth: bool = False,
+    sub2api_targets: Mapping[str, Any] | None = None,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -521,6 +522,7 @@ def submit(
             data={
                 "config_snapshot": snapshot,
                 **({"completion_auth": True} if completion_auth else {}),
+                **({"sub2api_targets": dict(sub2api_targets)} if sub2api_targets else {}),
             },
             idempotency_key=idempotency_key,
         )
@@ -568,6 +570,31 @@ def submit(
         "status": "queued",
         "trigger": str(trigger or "manual"),
     }
+
+
+def enqueue_oauth(
+    account_id: int,
+    *,
+    trigger: str = "sub2api_monitor",
+    remote_account_ids: list[int] | None = None,
+    backend_identity: str | None = None,
+) -> dict:
+    """异常巡检复用既有 OAuth 任务，仅附加原远端账号同步目标。"""
+    from core.integrations.sub2api import client
+
+    account = db.get_account(int(account_id)) or {}
+    if not account:
+        return {"accepted": False, "error_code": "account_missing", "error": "本地账号不存在"}
+    if not remote_account_ids or any(type(item) is not int or item <= 0 for item in remote_account_ids):
+        return {"accepted": False, "error_code": "sub2api_target_missing", "error": "巡检重授权缺少有效远端账号 ID"}
+    targets = {
+        "backend_identity": backend_identity or client.configured_backend_identity(),
+        "remote_account_ids": list(dict.fromkeys(int(item) for item in (remote_account_ids or []) if int(item) > 0)),
+    }
+    return submit(
+        str(account.get("email") or ""), trigger=trigger,
+        completion_auth=False, sub2api_targets=targets,
+    )
 
 
 def submit_bulk(
@@ -1167,6 +1194,32 @@ def _execute_run(run_id: int) -> dict:
                 )
                 if not persisted:
                     logger.error("Codex OAuth 废号状态写回失败：account_id=%s run_id=%s", account_id, run_id)
+            sub2api_targets = (current.get("data") or {}).get("sub2api_targets") or {}
+            if final_status == "success" and sub2api_targets:
+                from core.integrations.sub2api import jobs as sub2api_jobs
+
+                try:
+                    token.checkpoint()
+                    queued_sync = sub2api_jobs.queue_sync(
+                        Path(str(result.get("file_path") or "")).name,
+                        remote_account_ids=sub2api_targets.get("remote_account_ids") or [],
+                        trigger="sub2api_monitor",
+                        expected_backend=sub2api_targets.get("backend_identity"),
+                    )
+                    if not queued_sync.get("accepted"):
+                        raise RuntimeError("sub2api_sync_queue_rejected")
+                    synced = {"status": "pending", "pending": True, "queued": bool(queued_sync.get("run_id"))}
+                    message = "Codex 授权成功，原 sub2api 账号已进入凭据同步队列"
+                except OperationCancelled:
+                    synced = {"status": "cancelled", "error_code": "sub2api_sync_cancelled"}
+                    message = "Codex 授权成功，已按取消请求停止后续 sub2api 同步"
+                except Exception as exc:
+                    synced = {"status": "failed", "error_code": "sub2api_sync_enqueue_failed", "error": f"同步入队失败（{type(exc).__name__}）"}
+                    message = "Codex 授权成功，sub2api 同步入队未完成，巡检将继续恢复"
+                result.update({"sub2api_sync": synced, "message": message})
+                run_summary.update({"sub2api_sync": synced, "message": message})
+                persisted = _finish_fenced(final_status, message=message, error=final_error, summary=run_summary)
+                return {**result, "status": final_status, "run_id": run_id, "persisted": persisted}
             if final_status == "success" and snapshot.get("auto_upload_sub2api", False):
                 from core.codex.sub2api_sync import sync_confirmed_credential
 

@@ -241,11 +241,22 @@ def flow_for(task_type: Any, run: dict[str, Any] | None = None) -> list[dict[str
     flow = TASK_TEMPLATES.get(task_key, _flow())
     summary_value = (run or {}).get("result_summary")
     result_summary = summary_value if isinstance(summary_value, dict) else {}
+    data_value = (run or {}).get("data")
+    data = data_value if isinstance(data_value, dict) else {}
+    config_value = data.get("config_snapshot") or (run or {}).get("config_snapshot")
+    config = config_value if isinstance(config_value, dict) else {}
+    password_driver = str(result_summary.get("password_driver") or config.get("password_driver") or "").lower()
+    twofa_driver = str(result_summary.get("twofa_driver") or config.get("twofa_driver") or "").lower()
+    if (
+        task_key in {"password_setup", "account_setup_retry", "account_completion"}
+        and password_driver == "protocol"
+        and not result_summary.get("browser_opened")
+        and not data.get("force_password_reset")
+        and not data.get("force_twofa_change")
+        and (task_key == "password_setup" or twofa_driver not in {"browser", "roxy", "roxybrowser", "browser_fallback"})
+    ):
+        flow = tuple(item for item in flow if item["id"] != "browser")
     if task_key == "codex_retry":
-        data_value = (run or {}).get("data")
-        data = data_value if isinstance(data_value, dict) else {}
-        config_value = data.get("config_snapshot")
-        config = config_value if isinstance(config_value, dict) else {}
         if config.get("auto_upload_sub2api") or result_summary.get("sub2api_sync"):
             flow = (*flow[:-1], _s("sub2api_sync"), flow[-1])
     planned_value = result_summary.get("planned_steps")

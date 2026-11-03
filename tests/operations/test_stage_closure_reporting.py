@@ -192,6 +192,7 @@ class CompatibilityCompletionClosureTests(unittest.TestCase):
         context = SimpleNamespace(
             run={"data": {"steps": ["password"], "force_password_reset": True}},
             task_type="password_setup", config_snapshot={},
+            execution_fence={"run_id": 105, "execution_id": "fixture-execution", "lease_token": "fixture-lease"},
             account_id=103, task_id=104, run_id=105, email="fixture@example.test",
             report=Mock(), finished=False, last_result=None,
             lease=Mock(return_value=nullcontext()), remote_request_started=Mock(),
@@ -246,6 +247,7 @@ class CompatibilityCompletionClosureTests(unittest.TestCase):
             context = SimpleNamespace(
                 run={"data": {"steps": ["password"]}, "trigger": "fixture"},
                 task_type="account_setup_retry",
+                execution_fence={"run_id": 105, "execution_id": "fixture-execution", "lease_token": "fixture-lease"},
                 config_snapshot={}, account_id=103, task_id=104, run_id=105,
                 email="fixture@example.test", report=Mock(), finished=False, last_result=None,
                 lease=Mock(return_value=nullcontext()), remote_request_started=Mock(),

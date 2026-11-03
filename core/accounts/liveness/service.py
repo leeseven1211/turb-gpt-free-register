@@ -170,7 +170,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "password_verify_failed", "password_verify_invalid_response",
     "password_login_unavailable", "email_verification_required",
     "passwordless_fallback_unavailable", "protocol_network_error",
-    "protocol_v2_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
+    "protocol_v2_unknown_error", "protocol_v3_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
     "refresh_cancelled", "refresh_local_commit_failed", "remote_response_missing",
     "roxy_not_configured", "roxy_profile_open_failed", "roxy_driver_attach_failed",
     "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
@@ -179,11 +179,20 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "roxy_login_page_not_ready", "roxy_login_page_timeout",
     "roxy_login_preflight_timeout", "roxy_login_preflight_failed",
     "password_entry_navigation_failed", "profile_completion_required",
+    "identity_mismatch", "identity_unconfirmed", "account_reference_mismatch",
+    "workspace_ambiguous", "workspace_missing", "account_profile_required",
+    "untrusted_auth_url", "auth_challenge_loop", "cached_session_network_failed",
+    "cached_session_http_failed", "cached_session_invalid_response",
+    "auth_redirect_invalid", "auth_redirect_limit", "auth_navigation_failed",
+    "session_fetch_failed", "session_invalid_response",
+    "email_otp_validate_failed", "email_otp_validate_invalid_response",
+    "workspace_select_failed", "workspace_select_invalid_response",
+    "access_token_expired", "auth_context_ambiguous",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
-    "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
+    "email_otp", "email_otp_send", "email_otp_validate", "workspace_select", "mfa_issue_challenge", "mfa_verify",
     "network_preflight", "password_email_fallback", "password_verify", "password_sentinel", "password_login",
-    "protocol_v2_auth",
+    "protocol_v2_auth", "protocol_v3_auth", "session_reuse",
     "roxy_open", "roxy_driver", "roxy_navigation", "roxy_login", "roxy_email_otp", "roxy_session", "roxy_callback",
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
@@ -254,7 +263,7 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
         for key in ("code", "status")
     ]
     markers = (
-        "request_unknown", "password_result_unknown", "protocol_v2_unknown_error",
+        "request_unknown", "password_result_unknown", "protocol_v2_unknown_error", "protocol_v3_unknown_error",
         "oauth_callback_failed",
     )
     return bool(
@@ -285,7 +294,7 @@ def _refresh_exception_is_unknown(exc: BaseException) -> bool:
     text = str(exc or "").strip().lower()
     return any(marker in text for marker in (
         "request_unknown", "password_result_unknown", "oauth_callback_failed",
-        "protocol_v2_unknown_error",
+        "protocol_v2_unknown_error", "protocol_v3_unknown_error",
     ))
 
 
@@ -590,6 +599,8 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
         version = "v1"
     elif value in {"v2", "2"}:
         version = "v2"
+    elif value in {"v3", "3", "protocol_v3"}:
+        version = "v3"
     elif value in {"current", "protocol", "protocol_current", "legacy", ""}:
         version = "v1"
     elif legacy_v2_alias:
@@ -604,14 +615,15 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
     if legacy_v2_alias and not bool(getattr(account_config, "ACCOUNT_AUTH_V2_ENABLED", False)):
         logger.warning("[查活] 旧配置 protocol_v2 未开启兼容开关，刷新 AT 回落 v1")
         version = "v1"
-    return "protocol_v2" if resolve_protocol_version("refresh_at", requested=version) == "v2" else "legacy"
+    version = resolve_protocol_version("refresh_at", requested=version)
+    return {"v2": "protocol_v2", "v3": "protocol_v3"}.get(version, "legacy")
 
 
 def _refresh_protocol_version(refresh_driver: str | None) -> str | None:
     """Expose the stable public version for a legacy internal driver value."""
     if refresh_driver is None or str(refresh_driver).strip().lower() == "browser_roxy":
         return None
-    return "v2" if str(refresh_driver).strip().lower() == "protocol_v2" else "v1"
+    return {"protocol_v2": "v2", "protocol_v3": "v3"}.get(str(refresh_driver).strip().lower(), "v1")
 
 
 def _refresh_driver_request(refresh_driver: str | None) -> str | None:
@@ -641,8 +653,8 @@ def _resolve_protocol_identity(
     refresh_driver: str | None,
     config_snapshot: dict | None = None,
 ):
-    """Load the optional stable identity only for the explicit Protocol v2 path."""
-    if refresh_driver != "protocol_v2":
+    """仅为显式 v2/v3 刷新加载可选的账号稳定画像。"""
+    if refresh_driver not in {"protocol_v2", "protocol_v3"}:
         return None
     from config import account as account_config
 
@@ -663,7 +675,8 @@ def _resolve_protocol_identity(
 
     identity = ensure_account_protocol_identity(account_id)
     logger.info(
-        "[查活][Protocol v2] 使用账号稳定设备画像 profile_ref=%s version=%s",
+        "[查活][%s] 使用账号稳定设备画像 profile_ref=%s version=%s",
+        refresh_driver,
         identity.profile_ref,
         identity.profile_version,
     )
@@ -696,8 +709,10 @@ def _report_roxy_password_evidence(reporter: TaskReporter, result: dict) -> None
 
 
 def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
-    """Project Protocol v2's actual auth method without inventing OTP success."""
+    """投影 v2/v3 的真实认证步骤，避免把会话复用显示成密码或验证码成功。"""
     auth_method = str(result.get("auth_method") or "protocol_v2")
+    session_reused = bool(result.get("session_reused")) or auth_method == "session_cookie"
+    protocol_label = "Protocol v3" if result.get("live_check_driver") == "protocol_v3" else "Protocol v2"
     password_status = str(result.get("password_auth_status") or "")
     diagnostics = _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")) or {}
     operation = diagnostics.get("operation")
@@ -717,8 +732,18 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         }
     )
     uses_mfa = "mfa" in auth_method or mfa_failed
+    mfa_status = "success" if uses_mfa and result.get("ok") else "skipped" if not uses_mfa else "failed"
+    email_status = "success" if uses_email and (result.get("ok") or mfa_failed) else "skipped" if not uses_email else "failed"
+    if result.get("live_check_driver") == "protocol_v3":
+        # v3 保留逐步回执；后续工作区/Session 失败不能覆盖已通过的验证码。
+        if result.get("mfa_status") in {"success", "failed", "skipped"}:
+            mfa_status = result["mfa_status"]
+        if result.get("email_otp_status") in {"success", "failed", "skipped"}:
+            email_status = result["email_otp_status"]
 
-    if password_status == "rejected":
+    if session_reused:
+        reporter.stage("login_password", "skipped", "已复用有效登录会话，本次无需密码认证")
+    elif password_status == "rejected":
         reporter.stage(
             "login_password",
             "failed",
@@ -729,7 +754,8 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     elif password_status == "verified":
         reporter.stage("login_password", "success", "账号密码验证通过")
     elif password_status == "skipped":
-        reporter.stage("login_password", "skipped", "本次认证未提交账号密码，按邮箱验证码认证")
+        reporter.stage("login_password", "skipped", "本次认证未提交账号密码，按服务端挑战继续认证"
+                       if result.get("live_check_driver") == "protocol_v3" else "本次认证未提交账号密码，按邮箱验证码认证")
     elif auth_method == "legacy_email_otp":
         reporter.stage("login_password", "skipped", "账号没有保存密码，沿用邮箱认证")
     elif result.get("ok"):
@@ -743,7 +769,7 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         reporter.stage(
             "login_password",
             "failed",
-            "Roxy 浏览器认证未完成" if is_roxy_fallback else "Protocol v2 密码认证未完成",
+            "Roxy 浏览器认证未完成" if is_roxy_fallback else f"{protocol_label} 认证未完成",
             level="ERROR",
             detail={
                 "error": result.get("error"),
@@ -754,16 +780,16 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
 
     reporter.stage(
         "mfa_challenge",
-        "success" if uses_mfa and result.get("ok") else "skipped" if not uses_mfa else "failed",
-        "TOTP MFA 验证已完成" if uses_mfa and result.get("ok") else "本次认证未进入 TOTP MFA" if not uses_mfa else "TOTP MFA 未完成",
-        level="ERROR" if uses_mfa and not result.get("ok") else "INFO",
+        mfa_status,
+        "TOTP MFA 验证已完成" if mfa_status == "success" else "本次认证未进入 TOTP MFA" if mfa_status == "skipped" else "TOTP MFA 未完成",
+        level="ERROR" if mfa_status == "failed" else "INFO",
         detail={"auth_method": auth_method, **({"auth_diagnostics": diagnostics} if mfa_failed else {})},
     )
     reporter.stage(
         "email_otp",
-        "success" if uses_email and (result.get("ok") or mfa_failed) else "skipped" if not uses_email else "failed",
-        "邮箱验证码已通过" if uses_email and (result.get("ok") or mfa_failed) else "本次认证未使用邮箱验证码" if not uses_email else "邮箱验证码未完成",
-        level="ERROR" if uses_email and not result.get("ok") and not mfa_failed else "INFO",
+        email_status,
+        "邮箱验证码已通过" if email_status == "success" else "本次认证未使用邮箱验证码" if email_status == "skipped" else "邮箱验证码未完成",
+        level="ERROR" if email_status == "failed" else "INFO",
         detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))},
     )
     if result.get("ok"):
@@ -973,7 +999,7 @@ def _run_live_check(
         # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
         # - 刷新 AT（force_refresh=True）才跳过旧 AT，按账号可用凭据重新登录。
         account = db.get_account(account_id) or {}
-        if force_refresh and account.get("email_invalid") is True and selected_refresh_driver != "browser_roxy":
+        if force_refresh and account.get("email_invalid") is True and selected_refresh_driver not in {"browser_roxy", "protocol_v3"}:
             selected_refresh_driver = "protocol_v2"
             reporter.note(
                 stage="login_password",
@@ -984,7 +1010,7 @@ def _run_live_check(
             account_id, selected_refresh_driver, config_snapshot,
         )
         auth_context_recorder = None
-        if selected_refresh_driver in {"protocol_v2", "browser_roxy"} or selected_live_check_driver in {"protocol_current", "browser_roxy"}:
+        if selected_refresh_driver in {"protocol_v2", "protocol_v3", "browser_roxy"} or selected_live_check_driver in {"protocol_current", "browser_roxy"}:
             from config import account as account_config
 
             if bool(_snapshot_value(
@@ -1077,7 +1103,7 @@ def _run_live_check(
                         "error": "refresh_driver_exception",
                         "error_category": "runtime",
                         "auth_diagnostics": {
-                            "operation": "protocol_v2_auth",
+                            "operation": "protocol_v3_auth" if driver_name == "protocol_v3" else "protocol_v2_auth",
                             "failure_kind": "runtime_exception",
                             "exception_type": type(exc).__name__[:80],
                         },
@@ -1315,8 +1341,11 @@ def _run_live_check(
         elif result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
-            if selected_refresh_driver == "protocol_v2":
-                from core.accounts.liveness.protocol.v2 import refresh_access_token
+            if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
+                if selected_refresh_driver == "protocol_v3":
+                    from core.accounts.liveness.protocol.v3 import refresh_access_token
+                else:
+                    from core.accounts.liveness.protocol.v2 import refresh_access_token
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 result = invoke_refresh(
@@ -1327,6 +1356,7 @@ def _run_live_check(
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
+                        **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
                         **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
@@ -1354,8 +1384,11 @@ def _run_live_check(
                 f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
-            if selected_refresh_driver == "protocol_v2":
-                from core.accounts.liveness.protocol.v2 import refresh_access_token
+            if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
+                if selected_refresh_driver == "protocol_v3":
+                    from core.accounts.liveness.protocol.v3 import refresh_access_token
+                else:
+                    from core.accounts.liveness.protocol.v2 import refresh_access_token
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 result = invoke_refresh(
@@ -1365,6 +1398,7 @@ def _run_live_check(
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
+                        **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
                         **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
@@ -1568,7 +1602,7 @@ def _run_live_check(
                 )
                 if result.get("ok"):
                     reporter.stage("token", "success", "最新 AT 已获取并保存")
-            elif selected_refresh_driver == "protocol_v2":
+            elif selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
                 _report_protocol_v2_refresh(reporter, result)
             elif result.get("ok"):
                 reporter.stage("login_password", "success", "邮箱登录已完成")
@@ -2104,7 +2138,7 @@ def run_account_live_check_inline(
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
 
-    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver != "browser_roxy":
+    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver not in {"browser_roxy", "protocol_v3"}:
         effective_refresh_driver = "protocol_v2"
 
     native_inline = operation_context is not None
@@ -2228,7 +2262,7 @@ def enqueue_account_live_check(
             "error": "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑",
         }
 
-    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver != "browser_roxy":
+    if force_refresh and account.get("email_invalid") is True and effective_refresh_driver not in {"browser_roxy", "protocol_v3"}:
         effective_refresh_driver = "protocol_v2"
 
     task_type = "token_refresh" if force_refresh else "live_check"

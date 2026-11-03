@@ -161,7 +161,19 @@ def _scrub(value: Any, depth: int = 0) -> Any:
             key = str(raw_key)[:100]
             lowered = key.lower()
             if any(part in lowered for part in _SECRET_PARTS):
-                continue
+                if key in account_task_store._SAFE_PASSWORD_POLICY_KEYS:
+                    valid_driver = lowered.endswith("driver") and isinstance(raw_value, str) and raw_value in {"protocol", "roxy", "roxybrowser", "browser"}
+                    valid_mode = lowered.endswith("proxy_mode") and isinstance(raw_value, str) and raw_value in {"direct", "registration", "pool"}
+                    if not (isinstance(raw_value, bool) or valid_driver or valid_mode):
+                        continue
+                elif lowered == "password_setup" and isinstance(raw_value, dict):
+                    raw_value = {k: v for k, v in raw_value.items() if k in {
+                        "ok", "status", "message", "error", "error_code", "cause_code", "failure_stage",
+                        "remote_receipt_state", "mutation_submitted", "action_dispatched", "reconcile_required",
+                        "browser_opened", "password_driver",
+                    }}
+                elif lowered != "password" or not isinstance(raw_value, bool):
+                    continue
             out[key] = _scrub(raw_value, depth + 1)
         return out
     if isinstance(value, (list, tuple)):
@@ -6454,6 +6466,59 @@ def _confirmed_independent_payment_partial(cur, run: dict, result_summary: dict)
             and summary.get("failure_code") in {"MATERIAL_MISSING", "MATERIAL_UNSUPPORTED", "INVALID_AT"})
 
 
+def _confirmed_account_setup_partial(cur, run: dict, result_summary: dict) -> bool:
+    """仅为步骤回执完整且成功项本地读回一致的协议补密码保留部分成功。"""
+    if (run.get("source_system") != "webui_runtime" or run.get("task_type") not in {"account_setup_retry", "password_setup"}
+            or run.get("resource_family") != "openai_interactive" or result_summary.get("password_driver") != "protocol"
+            or result_summary.get("reconcile_required") is True or result_summary.get("manual_reconcile") is True
+            or result_summary.get("outcome") in {"unknown", "request_unknown"}):
+        return False
+    data = _decode(run.get("data"))
+    data = data if isinstance(data, dict) else {}
+    steps = data.get("steps")
+    if (not isinstance(steps, list) or not steps or "password" not in steps
+            or any(step not in {"password", "twofa", "plan_check"} for step in steps)):
+        return False
+    intent = _remote_write_checkpoint(data)
+    receipt = data.get("remote_receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    detail = receipt.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    evidence = detail.get("setup_step_receipts")
+    if (intent.get("action") != "account_setup" or receipt.get("action") != "account_setup"
+            or receipt.get("receipt_state") != "confirmed" or not intent.get("request_id")
+            or receipt.get("request_id") != intent.get("request_id") or not isinstance(evidence, list)
+            or evidence != result_summary.get("setup_step_receipts") or len(evidence) != len(set(steps))):
+        return False
+    completed = set()
+    failed = set()
+    for item in evidence:
+        if not isinstance(item, dict) or item.get("step") not in set(steps):
+            return False
+        if item.get("ok") is True and item.get("receipt_state") == "confirmed":
+            completed.add(item["step"])
+        elif item.get("ok") is False and item.get("receipt_state") in {"rejected", "not_submitted"}:
+            failed.add(item["step"])
+        else:
+            return False
+    if not completed or not failed or completed & failed or completed | failed != set(steps):
+        return False
+    account = record_store.get_row(record_store.ACCOUNTS, int(run.get("account_id") or 0), conn=cur.connection)
+    if not account:
+        return False
+    extra = _decode(account.get("extra_json"))
+    extra = extra if isinstance(extra, dict) else {}
+    for step in completed:
+        if step == "password" and not any(str(extra.get(key) or account.get(key) or "").strip() for key in (
+                "account_password", "login_password", "registration_password")):
+            return False
+        if step == "twofa" and (not str(account.get("totp_secret") or "").strip() or extra.get("totp_setup_pending")):
+            return False
+        if step == "plan_check" and account.get("plan_check_status") != "success":
+            return False
+    return True
+
+
 def finish_run(
     run_id: int,
     *,
@@ -6534,7 +6599,8 @@ def finish_run(
             )
             confirmed_independent_partial = (
                 status_value == "partial_success" and receipt == "confirmed"
-                and _confirmed_independent_payment_partial(cur, found, dependency_result)
+                and (_confirmed_independent_payment_partial(cur, found, dependency_result)
+                     or _confirmed_account_setup_partial(cur, found, dependency_result))
             )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
                 not (explicit_remote_rejection or confirmed_extract_failure or confirmed_independent_partial)

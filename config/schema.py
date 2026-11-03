@@ -169,6 +169,7 @@ _DEFAULTS: dict[str, Any] = {
     "WEBUI_SESSION_SECRET": "",
     "ENABLE_CODEX_AUTO": False,
     "OPENAI_PROTOCOL_VERSION": "v1",
+    "OPENAI_CF_PREFLIGHT_ENABLED": False,
     "REGISTRATION_DRIVER": "roxy",
     "REGISTRATION_AUTH_MODE": "otp",
     "REGISTRATION_COUNTRY": "JP",
@@ -479,6 +480,17 @@ _DEFAULTS: dict[str, Any] = {
     "SUB2API_API_BASE": "",
     "SUB2API_API_KEY": "",
     "SUB2API_API_TIMEOUT": 20,
+    "SUB2API_UPLOAD_GROUP_IDS": '',
+    "SUB2API_UPLOAD_PROXY_ID": '',
+    "SUB2API_UPLOAD_CONCURRENCY": '',
+    "SUB2API_UPLOAD_PRIORITY": '',
+    "SUB2API_UPLOAD_LOAD_FACTOR": '',
+    "SUB2API_UPLOAD_MODELS": '',
+    "SUB2API_SYNC_RETRY_ENABLED": False,
+    "SUB2API_MONITOR_ENABLED": False,
+    "SUB2API_MONITOR_INTERVAL_SECONDS": 300,
+    "SUB2API_MONITOR_COOLDOWN_SECONDS": 300,
+    "SUB2API_MONITOR_MAX_PER_CYCLE": 20,
     "CODEX_AUTH_URL_SOURCE": "cpa",
     "CPA_MANAGEMENT_URL": "http://127.0.0.1:8317/management.html",
     "CPA_MANAGEMENT_KEY": "",
@@ -561,6 +573,10 @@ _FIELD_DEFINITIONS = [
     },
     # ---- 注册主链路 ----
     {
+        "key": "OPENAI_CF_PREFLIGHT_ENABLED", "file": "openai_protocol.py", "type": "bool", "group": "注册主链路",
+        "label": "协议登录预检挑战恢复（实验）", "help": "默认关闭；仅处理提交邮箱前的匿名登录页，每会话最多一次。缺少依赖或隔离环境时保留原预检结果，不重放密码或验证码。",
+    },
+    {
         "key": "ENABLE_CODEX_AUTO", "file": "codex.py", "type": "bool", "group": "注册主链路",
         "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
     },
@@ -570,7 +586,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "账号补全",
-        "label": "刷新 AT 协议版本", "help": "仅在刷新 AT 驱动为协议时选择 v1/v2；Roxy 指纹浏览器刷新、注册、2FA、套餐和普通查活不读取此配置。",
+        "label": "刷新 AT 协议版本", "help": "v1 使用邮箱认证；v2 支持密码和 MFA；v3 优先复用已验证会话并增强 MFA、工作区兼容。仅影响协议刷新 AT；Roxy、注册、2FA、套餐和普通查活不读取此配置。",
     },
     {
         "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
@@ -623,7 +639,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_PASSWORD_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "密码补全驱动", "help": "当前唯一实现为 RoxyBrowser，暂不可切换",
+        "label": "密码补全驱动", "help": "roxy=RoxyBrowser（默认）；protocol=纯协议登录后添加密码，无需浏览器。只处理缺少密码的账号；修改密码仍使用 Roxy，不受此选项影响",
     },
     {
         "key": "ACCOUNT_EMAIL_CHANGE_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
@@ -699,11 +715,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_AUTH_PROFILE_MODE", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "Protocol 设备画像", "help": "current 保持现状、每次会话随机设备画像；account_stable 仅在实际使用 v2 协议刷新时按账号懒创建稳定画像，不影响注册 device_id、普通查活和 v1 刷新链路",
+        "label": "Protocol 设备画像", "help": "current 为新会话生成设备画像；account_stable 在 v2/v3 协议刷新时按账号创建稳定画像。v3 复用已验证会话时保留该会话画像，不影响注册、普通查活和 v1。",
     },
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "保存认证原始上下文", "help": "默认关闭；开启后仅为 v2 协议实际认证 run 按白名单保存设备 ID、session 标识和代理上下文到受限私有表，不进入普通 API/导出；不会复用过期代理",
+        "label": "保存认证原始上下文", "help": "默认关闭；开启后为支持的 v2/v3 或 Roxy 认证运行按白名单保存设备 ID、session 标识和代理上下文到私有表。v3 的加密会话缓存独立于此诊断开关。",
     },
     {
         "key": "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", "file": "account.py", "type": "int", "group": "账号补全",
@@ -723,7 +739,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "2FA 补全驱动", "help": "auto=自动选择（优先复用有效 AT，需要时协议重认证；组合补密码时复用浏览器会话拿新 AT）；protocol=协议开通并按配置回退浏览器；browser=直接浏览器",
+        "label": "2FA 补全驱动", "help": "auto=自动选择（优先复用有效 AT，需要时协议重认证；组合补密码时复用对应驱动取得的新 AT）；protocol=协议开通并按配置回退浏览器；browser=直接浏览器",
     },
     {
         "key": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
@@ -1637,6 +1653,17 @@ _FIELD_DEFINITIONS = [
         "key": "SUB2API_API_TIMEOUT", "file": "sub2api.py", "type": "int", "group": "Codex",
         "label": "sub2 超时", "help": "sub2api 请求超时秒数",
     },
+    {"key": "SUB2API_UPLOAD_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "目标分组 ID", "help": "多个分组用逗号分隔；留空保留远端分组，巡检检查全部分组"},
+    {"key": "SUB2API_UPLOAD_PROXY_ID", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号代理 ID", "help": "填写 Sub2API 中的代理 ID；留空保留原代理"},
+    {"key": "SUB2API_UPLOAD_CONCURRENCY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号并发数", "help": "正整数；留空保留已有账号配置，新账号采用后端默认值"},
+    {"key": "SUB2API_UPLOAD_PRIORITY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号优先级", "help": "不小于 0 的整数；留空保留原配置"},
+    {"key": "SUB2API_UPLOAD_LOAD_FACTOR", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号负载因子", "help": "大于 0 的整数；留空保留原配置"},
+    {"key": "SUB2API_UPLOAD_MODELS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号允许模型", "help": "每行一个或逗号分隔；填写后更新模型映射，留空保留原映射"},
+    {"key": "SUB2API_SYNC_RETRY_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动补传 sub2api 凭据", "help": "默认关闭；同步失败后仅重传已保存凭据、清错并恢复调度，不重复登录"},
+    {"key": "SUB2API_MONITOR_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动巡检 sub2api 异常账号", "help": "默认关闭；先补传，再按明确认证错误刷新或调用现有 Codex 重授权；不会创建注册任务"},
+    {"key": "SUB2API_MONITOR_INTERVAL_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 巡检间隔（秒）", "help": "两轮检查的最短间隔，默认 300 秒"},
+    {"key": "SUB2API_MONITOR_COOLDOWN_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 修复冷却（秒）", "help": "同账号两次自动修复之间的最短间隔，默认 300 秒"},
+    {"key": "SUB2API_MONITOR_MAX_PER_CYCLE", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 每轮修复账号数", "help": "每轮最多调度的账号数量，默认 20"},
     # ---- 接码平台 ----
     # ---- Codex：基础 / CPA / sub2api 配置 ----
     {
@@ -1755,6 +1782,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "OPENAI_PROTOCOL_VERSION": _options(
         ("v1", "协议 v1（现有稳定实现）"),
         ("v2", "协议 v2（已支持的步骤）"),
+        ("v3", "协议 v3（会话复用与增强认证）"),
     ),
     "REGISTRATION_DRIVER": _options(
         ("protocol", "本地优化 Protocol"),
@@ -1766,7 +1794,7 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "REGISTRATION_AUTH_MODE": _options(
         ("otp", "不设置密码（邮箱验证码）"), ("password", "设置账号密码")
     ),
-    "ACCOUNT_PASSWORD_DRIVER": _options(("roxy", "RoxyBrowser（当前唯一实现）")),
+    "ACCOUNT_PASSWORD_DRIVER": _options(("roxy", "RoxyBrowser（默认）"), ("protocol", "纯协议（登录后添加密码）")),
     "ACCOUNT_PLAN_CHECK_DRIVER": _options(("protocol", "纯协议（当前唯一实现）")),
     "ACCOUNT_LIVE_CHECK_DRIVER": _options(
         ("protocol_current", "现有协议（保持现状）"),
@@ -2020,6 +2048,9 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "PLAN_CHECK_MIN_INTERVAL": (0, 30.0),
     "PLAN_CHECK_JITTER": (0, 30.0),
     "SUB2API_API_TIMEOUT": (1, 3600),
+    "SUB2API_MONITOR_INTERVAL_SECONDS": (30, 86400),
+    "SUB2API_MONITOR_COOLDOWN_SECONDS": (30, 86400),
+    "SUB2API_MONITOR_MAX_PER_CYCLE": (1, 200),
     "CPA_REQUEST_TIMEOUT": (1, 3600),
     "CPA_CREDENTIAL_CONFIRM_TIMEOUT": (0, 86400),
     "CPA_CALLBACK_SUBMIT_RETRIES": (0, 100),
@@ -2385,6 +2416,23 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
     result = _coerce(value, field, strict=strict)
+    if field.key.startswith("SUB2API_UPLOAD_") and result:
+        if field.key == "SUB2API_UPLOAD_GROUP_IDS":
+            parts = re.split(r"[,，\s]+", result)
+            if any(not re.fullmatch(r"[1-9]\d*", item) for item in parts if item):
+                raise ValueError("分组 ID 必须是逗号分隔的正整数")
+            result = ",".join(dict.fromkeys(str(int(item)) for item in parts if item))
+        elif field.key in {"SUB2API_UPLOAD_PROXY_ID", "SUB2API_UPLOAD_CONCURRENCY", "SUB2API_UPLOAD_PRIORITY"}:
+            if not re.fullmatch(r"\d+", result):
+                raise ValueError("必须填写非负整数或留空")
+            if int(result) < (0 if field.key == "SUB2API_UPLOAD_PRIORITY" else 1):
+                raise ValueError("代理 ID 与并发数必须大于 0，优先级不能小于 0")
+            if int(result) > 10000:
+                raise ValueError("不能大于 10000")
+            result = str(int(result))
+        elif field.key == "SUB2API_UPLOAD_LOAD_FACTOR":
+            if not re.fullmatch(r"[1-9]\d*", result) or int(result) > 10000:
+                raise ValueError("负载因子必须是 1-10000 的整数")
     if field.key == "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS":
         normalized = []
         for host in result:
