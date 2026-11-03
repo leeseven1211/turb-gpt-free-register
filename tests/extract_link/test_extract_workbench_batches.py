@@ -647,6 +647,102 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         selected = extract_link_service.list_workbench_tasks(batch_id=result["batch_id"])
         self.assertEqual([account_id], [item["account_id"] for item in selected["items"]])
 
+    def test_historical_auto_payment_states_do_not_reduce_new_batch_submission(self):
+        cases = [
+            (source, payment, status)
+            for source in ("job", "summary")
+            for payment, status in (
+                ("pending", "attention_required"), ("unknown", "failed"), ("succeeded", "cancelled"),
+            )
+        ]
+        account_ids = self.accounts([{"extract_link_status": "failed"} for _ in cases])
+        historical_task_ids = set()
+        for account_id, (source, payment, status) in zip(account_ids, cases):
+            historical = operation.create_runtime_task(
+                task_type="extract_link", account_id=account_id, email="history-payment@example.test",
+                data={"provider_id": "lumen_flow", "mode": "auto_payment"},
+            )
+            historical_task_ids.add(historical["id"])
+            run_id = historical["run"]["id"]
+            if source == "job":
+                extract_link_jobs.save_provider_job(
+                    run_id, "lumen_flow", None if payment == "unknown" else f"old-job-{account_id}",
+                    {"extraction_state": "succeeded", "payment_state": payment}, {},
+                )
+            finished = operation.finish_run(
+                run_id, status=status, message="历史提链任务已结束",
+                result_summary={"payment_status": payment if source == "summary" else "not_started"},
+            )
+            self.assertEqual(status, finished["status"])
+
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="auto_payment", workers=5, limit=6,
+                filters={"extract_status": "failed", "promotion": "free_trial"},
+                submission_id=str(uuid.uuid4()),
+            )
+
+        self.assertEqual(6, result["requested"])
+        self.assertEqual(6, result["started"])
+        self.assertEqual(0, result["skipped"])
+        self.assertEqual(0, result["failed"])
+        selected = operation.list_tasks(batch_id=result["batch_id"])["items"]
+        self.assertEqual(set(account_ids), {item["account_id"] for item in selected})
+        self.assertTrue(historical_task_ids.isdisjoint(item["id"] for item in selected))
+        self.assertTrue(all(operation.get_run(item["last_run_id"])["status"] == "queued" for item in selected))
+
+    def test_older_auto_payment_run_does_not_block_new_batch_after_later_terminal_attempt(self):
+        account_id = self.accounts([{"extract_link_status": "failed"}])[0]
+        historical = operation.create_runtime_task(
+            task_type="extract_link", account_id=account_id, email="older-payment@example.test",
+            data={"provider_id": "lumen_flow", "mode": "auto_payment"},
+        )
+        original_run_id = historical["run"]["id"]
+        extract_link_jobs.save_provider_job(
+            original_run_id, "lumen_flow", "older-payment-job",
+            {"extraction_state": "succeeded", "payment_state": "pending"}, {},
+        )
+        operation.finish_run(original_run_id, status="attention_required")
+        later = operation.retry_runtime_task(
+            historical["id"], data={"mode": "extract_only", "workbench_action": "create"},
+        )
+        operation.finish_run(later["id"], status="failed", result_summary={"payment_status": "not_started"})
+        self.assertEqual(later["id"], operation.get_task(historical["id"])["last_run_id"])
+
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_batch(
+                provider_id="lumen_flow", mode="auto_payment", limit=1,
+                filters={"extract_status": "failed", "promotion": "free_trial"},
+            )
+
+        self.assertEqual(1, result["requested"])
+        self.assertEqual(1, result["started"])
+        self.assertEqual(0, result["skipped"])
+        self.assertEqual(0, result["failed"])
+        selected = operation.list_tasks(batch_id=result["batch_id"])["items"]
+        self.assertEqual([account_id], [item["account_id"] for item in selected])
+        self.assertNotEqual(historical["id"], selected[0]["id"])
+        self.assertEqual("queued", operation.get_run(selected[0]["last_run_id"])["status"])
+
+    def test_current_account_extract_claim_still_blocks_duplicate_submission(self):
+        now = datetime.now().isoformat(timespec="seconds")
+        account_ids = self.accounts([
+            {"extract_link_status": "queued", "extract_link_queued_at": now},
+            {"extract_link_status": "running", "extract_link_started_at": now},
+        ])
+
+        with self.provider_patches():
+            result = extract_link_service.create_workbench_tasks(
+                account_ids=account_ids, provider_id="lumen_flow", mode="auto_payment", dispatch=False,
+            )
+
+        self.assertEqual({"started": 0, "skipped": 2, "failed": 0}, result)
+        self.assertEqual(0, operation.list_tasks(task_type="extract_link")["total"])
+        self.assertEqual(
+            ["queued", "running"],
+            [record_store.get_row(record_store.ACCOUNTS, account_id)["extract_link_status"] for account_id in account_ids],
+        )
+
     def test_batch_summary_counts_latest_attempt_once_and_keeps_historical_tasks(self):
         self.accounts([{}])
         with self.provider_patches():

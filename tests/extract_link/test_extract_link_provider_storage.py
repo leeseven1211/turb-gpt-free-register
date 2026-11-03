@@ -268,42 +268,6 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
         self.assertEqual(["https://example.test/result"], rows[0]["public_state"]["links"])
         self.assertNotIn("private-resume-secret", repr(rows))
 
-    def test_unresolved_auto_payment_includes_unknown_payment_without_remote_job_id(self):
-        from core.storage.extract_link import jobs as extract_link_jobs
-
-        payment_task = operation.create_runtime_task(
-            task_type="extract_link",
-            account_id=77,
-            email="redacted@example.test",
-            trigger="test",
-            data={"provider_id": "lumen_flow", "mode": "auto_payment"},
-        )
-        extract_link_jobs.save_provider_job(
-            int(payment_task["run"]["id"]),
-            "lumen_flow",
-            None,
-            {"extraction_state": "unknown", "payment_state": "unknown"},
-            {},
-        )
-
-        extraction_task = operation.create_runtime_task(
-            task_type="extract_link",
-            account_id=78,
-            email="redacted@example.test",
-            trigger="test",
-            data={"provider_id": "lumen_flow", "mode": "extract_only"},
-        )
-        extract_link_jobs.save_provider_job(
-            int(extraction_task["run"]["id"]),
-            "lumen_flow",
-            None,
-            {"extraction_state": "unknown", "payment_state": "unknown"},
-            {},
-        )
-
-        self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(77))
-        self.assertFalse(extract_link_jobs.has_unresolved_auto_payment(78))
-
     def test_recoverable_remote_jobs_only_include_interrupted_current_runs(self):
         from core.storage.extract_link import jobs as extract_link_jobs
 
@@ -543,9 +507,7 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             result_summary=summary,
         )
 
-    def test_terminal_auto_payment_create_intent_does_not_block_retry(self):
-        from core.storage.extract_link import jobs as extract_link_jobs
-
+    def test_terminal_auto_payment_create_intent_preserves_status_and_receipt(self):
         for receipt, save_job, extraction in (
             ("confirmed", True, "failed"), ("started", True, "failed"),
             ("started", False, "failed"), ("unknown", True, "unknown"),
@@ -561,33 +523,11 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
                     finish_summary={"extraction_status": extraction, "remote_terminal_failure": extraction == "failed"},
                 )
                 self.assertEqual("failed" if receipt == "confirmed" else "attention_required", finished["status"])
-                self.assertFalse(extract_link_jobs.has_unresolved_auto_payment(finished["account_id"]))
                 saved = operation.get_run(finished["id"])
                 self.assertEqual(receipt, saved["data"]["remote_intent"]["receipt_state"])
 
-    def test_terminal_auto_payment_still_blocks_actual_payment_from_job_or_summary(self):
-        from core.storage.extract_link import jobs as extract_link_jobs
-
-        for source_index, source in enumerate(("job", "summary")):
-            for payment_index, payment in enumerate(("pending", "unknown", "succeeded")):
-                with self.subTest(source=source, payment=payment):
-                    account_id = 77 + source_index * 3 + payment_index
-                    task = operation.create_runtime_task(
-                        task_type="extract_link", account_id=account_id, email="payment@example.test",
-                        data={"provider_id": "huanguang", "mode": "auto_payment"},
-                    )
-                    run_id = int(task["run"]["id"])
-                    if source == "job":
-                        extract_link_jobs.save_provider_job(run_id, "huanguang", "payment-job", {
-                            "extraction_state": "failed", "payment_state": payment,
-                        }, {})
-                    operation.finish_run(run_id, status="failed", result_summary={
-                        "payment_status": payment if source == "summary" else "not_started",
-                    })
-                    self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(account_id))
-
-    def test_active_auto_payment_create_intent_still_blocks_retry(self):
-        from core.storage.extract_link import jobs as extract_link_jobs
+    def test_active_auto_payment_create_intent_still_blocks_new_run(self):
+        from core.operations import task_gateway
 
         account_id = self.seed(record_store.ACCOUNTS, [{"email": "active@example.test"}])[0]
         task = operation.create_runtime_task(
@@ -601,7 +541,17 @@ class ExtractLinkProviderStorageTests(PostgresTestCase):
             run_id, execution_id="active-worker", lease_token=lease_token,
             action="extract_link_create", request_id="active-create",
         )
-        self.assertTrue(extract_link_jobs.has_unresolved_auto_payment(account_id))
+
+        submitted = task_gateway.submit_durable_operation(
+            task_type="extract_link", account_id=account_id, email="active@example.test",
+            data={"provider_id": "huanguang", "mode": "auto_payment"}, dispatch=False,
+        )
+
+        self.assertFalse(submitted["accepted"])
+        self.assertTrue(submitted["busy"])
+        self.assertEqual(run_id, submitted["run_id"])
+        self.assertEqual(1, operation.list_tasks(task_type="extract_link")["total"])
+        self.assertEqual("running", operation.get_run(run_id)["status"])
 
     def test_confirmed_matching_provider_terminal_failure_can_finish_failed(self):
         for remote_status in ("FAILED", "ERROR", "CANCELED", "CANCELLED"):

@@ -2314,7 +2314,6 @@ def create_workbench_tasks(
 
     started = skipped = failed = 0
     from core.accounts.plans import promotion as plus_promotion
-    from core.storage.extract_link import jobs as extract_link_jobs
     from core.storage.operations import store as operation
     register_operation_handlers()
     for account_id in ids:
@@ -2331,9 +2330,6 @@ def create_workbench_tasks(
                     skipped += 1
                     continue
             except Exception:
-                skipped += 1
-                continue
-            if mode == "auto_payment" and extract_link_jobs.has_unresolved_auto_payment(account_id, **({"conn": conn} if conn is not None else {})):
                 skipped += 1
                 continue
             if not str(account.get("access_token") or "").strip():

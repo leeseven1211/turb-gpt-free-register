@@ -167,45 +167,6 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
         self.assertEqual("fixture-cdk", config.cdk)
         self.assertEqual("pix", config.default_type)
 
-    def test_unresolved_auto_payment_skips_new_charge_but_does_not_block_extract_only(self):
-        from core.extract_link import service as extract_link_service
-
-        account = {
-            "id": 77,
-            "email": "fixture@example.test",
-            "access_token": "stored-token",
-            "plus_trial_eligible": True,
-            "plan_type": "free",
-        }
-        runtime_config = SimpleNamespace(
-            capabilities={"extract": True, "payment": True},
-            default_type="momo",
-        )
-        with (
-            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
-            patch.object(extract_link_service, "_provider_configuration", return_value=runtime_config),
-            patch.object(extract_link_service, "_provider_link_type", return_value="momo"),
-            patch.object(extract_link_service, "_provider_request_options", return_value={}),
-            patch.object(extract_link_service.db, "get_account", return_value=account),
-            patch.object(extract_link_service.db, "account_is_deactivated", return_value=False),
-            patch("core.accounts.plans.promotion.is_extract_link_eligible", return_value=True),
-            patch("core.storage.extract_link.jobs.has_unresolved_auto_payment", return_value=True) as unresolved,
-            patch.object(extract_link_service.db, "claim_account_extract", return_value=True) as claim,
-            patch.object(extract_link_service.db, "update_account_extract"),
-            patch.object(extract_link_service.account_task_store, "submit_durable_operation", return_value={"accepted": True}),
-        ):
-            payment_result = extract_link_service.create_workbench_tasks(
-                account_ids=[77], provider_id="lumen_flow", mode="auto_payment", type="momo",
-            )
-            extract_only_result = extract_link_service.create_workbench_tasks(
-                account_ids=[77], provider_id="lumen_flow", mode="extract_only", type="momo",
-            )
-
-        self.assertEqual({"started": 0, "skipped": 1, "failed": 0}, payment_result)
-        self.assertEqual({"started": 1, "skipped": 0, "failed": 0}, extract_only_result)
-        unresolved.assert_called_once_with(77)
-        self.assertEqual(1, claim.call_count)
-
     def test_startup_requeues_status_sync_for_known_interrupted_provider_jobs(self):
         from core.extract_link import service as extract_link_service
 
