@@ -109,13 +109,14 @@ def test_browserless_metadata_explains_unavailable_choices_and_keeps_protocol_op
     assert "TURB_BROWSER_ENABLED" not in metadata
 
 
-def test_local_deployment_preserves_browser_save_and_options(browserless_config, monkeypatch):
-    monkeypatch.setenv("TURB_BROWSER_ENABLED", "true")
-    result = config_editor.update_config({"REGISTRATION_DRIVER": "roxy", "LIVE_CHECK_ROXY_FALLBACK_ENABLED": True})
-    assert result["reloaded"] is True
-    metadata = {field["key"]: field for field in config_editor.get_config()}
-    assert not metadata["ROXY_API_BASE"].get("readonly", False)
-    assert all(not option.get("disabled", False) for option in metadata["REGISTRATION_DRIVER"]["options"])
+def test_local_deployment_preserves_browser_save_and_options(browserless_config):
+    # 必须先于 browserless_config 退出，避免外层 monkeypatch 把 false 写回后续测试。
+    with patch.dict(os.environ, {"TURB_BROWSER_ENABLED": "true"}):
+        result = config_editor.update_config({"REGISTRATION_DRIVER": "roxy", "LIVE_CHECK_ROXY_FALLBACK_ENABLED": True})
+        assert result["reloaded"] is True
+        metadata = {field["key"]: field for field in config_editor.get_config()}
+        assert not metadata["ROXY_API_BASE"].get("readonly", False)
+        assert all(not option.get("disabled", False) for option in metadata["REGISTRATION_DRIVER"]["options"])
 
 
 @pytest.mark.parametrize("feature,drivers", [

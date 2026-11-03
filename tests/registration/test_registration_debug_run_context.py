@@ -94,4 +94,3 @@ class RegistrationDebugRunContextTests(PostgresTestCase):
         self._assert_real_run(context)
         sync.assert_called_once_with(**context)
         self.assertEqual("running", jobs.get_job(self.active_job_id)["status"])
-
