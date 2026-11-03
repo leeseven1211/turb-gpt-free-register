@@ -8,13 +8,15 @@ from core.payments.xxsyun import API_BASE, PaymentError, XXSYUNClient, validate_
 
 
 def _setting(name, default=None):
-    from config.env_loader import load_env
-    load_env(override=True)
     import config
     return os.environ.get(name, getattr(config, name, default))
 
 
 def configuration(settings=None):
+    if settings is None:
+        from config.env_loader import load_env
+        # 一次配置读取只刷新一次，避免逐字段重复解密全部运行配置。
+        load_env(override=True)
     read = settings if settings is not None else _setting
     if isinstance(read, dict):
         read = read.get
