@@ -6,10 +6,13 @@ import json
 import os
 import threading
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
+from core.auth.browser.browser_submission import BrowserSubmissionReceipt, record_browser_submission_fact, unresolved_submission_ids
+from core.auth.browser.password_recovery import PasswordRecoverySession
 from core.storage import postgres as pg, records as rs, registration
 from core.storage.operations import store as operations
 from core.storage.registration import jobs
@@ -96,6 +99,182 @@ class Password_Recovery_Store(PostgresTestCase):
 
     def _private(self):
         return registration.get_private_resume_context(self.attempt_id, email=self.email)
+
+    def _candidate_session(self):
+        session = PasswordRecoverySession(**self.owner)
+        session.prepare(lambda: "New-login-2")
+        session.mark_started()
+        session.mark_unknown()
+        run = registration.get_run(self.owner["registration_run_id"])
+        driver = SimpleNamespace(_registration_resume_login=True, _registration_fact_context={
+            "attempt_id": self.attempt_id, "run_id": self.owner["registration_run_id"],
+            "execution_id": self.owner["registration_execution_id"], "job_id": run["job_id"],
+        })
+        registration.save_password_checkpoint(**driver._registration_fact_context, email=self.email,
+            password="Old-login-1", state="started")
+        # 本组模拟尚在认证阶段的原身份续跑，保留账号已有 Token 供换密保留字段断言。
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET checkpoint='otp_confirmed' WHERE id=%s",
+                        (self.attempt_id,))
+        return session, driver
+
+    def _login_receipt(self, driver, *, success=False):
+        receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password",
+            endpoint_kind="password_submit", http_method="POST")
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
+        if success:
+            receipt.dispatch_target_id = "fixture-target"
+            receipt.request_binding = receipt.response_binding = ("fixture-target", "memory-only-request")
+            record_browser_submission_fact(driver, "request_observed", receipt=receipt)
+            record_browser_submission_fact(driver, "response_observed", receipt=receipt, http_status=200)
+            record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        else:
+            record_browser_submission_fact(driver, "unknown", receipt=receipt, result="unknown")
+        return receipt
+
+    def _confirm_candidate(self, session, driver, receipt, original=None):
+        return session.confirm_candidate_login(driver, email=self.email, password="New-login-2",
+                                               receipt=receipt, original=original)
+
+    def test_candidate_refresh_commits_password_recovery_and_only_related_receipt_atomically(self):
+        session, driver = self._candidate_session()
+        old = self._login_receipt(driver)
+        new = self._login_receipt(driver, success=True)
+        otp = BrowserSubmissionReceipt(kind="resume_login", stage="email_otp", endpoint_kind="otp_submit", http_method="POST")
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=otp)
+        record_browser_submission_fact(driver, "unknown", receipt=otp, result="unknown")
+        with self.assertRaisesRegex(ValueError, "原密码不匹配"):
+            registration.supersede_saved_password_login_submission(**driver._registration_fact_context,
+                email=self.email, password="New-login-2", submission_id=old.submission_id,
+                replacement_submission_id=new.submission_id)
+        self.assertEqual("New-login-2", self._confirm_candidate(session, driver, new, old))
+        self.assertEqual("confirmed", session.checkpoint.state)
+        self.assertEqual("superseded", old.phase)
+        self.assertEqual("New-login-2", self._private()["password"])
+        self.assertEqual("New-login-2", json.loads(rs.get_row(rs.ACCOUNTS, self.account_id)["extra_json"])["account_password"])
+        facts = self._private()["submission_facts"]
+        self.assertEqual({otp.submission_id}, unresolved_submission_ids(facts))
+        self.assertNotIn("memory-only-request", json.dumps(facts))
+        self._confirm_candidate(session, driver, new, old)
+        self.assertEqual(1, sum(f["phase"] == "superseded" for f in self._private()["submission_facts"]))
+
+    def test_candidate_first_login_requires_its_own_persisted_success_fact(self):
+        session, driver = self._candidate_session()
+        receipt = self._login_receipt(driver, success=True)
+        self.assertEqual("New-login-2", self._confirm_candidate(session, driver, receipt))
+        self.assertEqual("confirmed", session.checkpoint.state)
+        self.assertFalse(any(f["phase"] == "superseded" for f in self._private()["submission_facts"]))
+
+    def test_candidate_mixed_case_owner_and_input_email_confirm_real_store(self):
+        self.owner = {**self.owner, "email": " Recover@Example.Test "}
+        session, driver = self._candidate_session()
+        receipt = self._login_receipt(driver, success=True)
+        self.assertEqual("recover@example.test", session.checkpoint.email)
+        self.assertEqual("New-login-2", session.confirm_candidate_login(driver, email=" RECOVER@example.TEST ",
+            password="New-login-2", receipt=receipt))
+        self.assertEqual("confirmed", session.checkpoint.state)
+        self.assertEqual("New-login-2", self._private()["password"])
+        self.assertEqual("New-login-2", json.loads(rs.get_row(rs.ACCOUNTS, self.account_id)["extra_json"])["account_password"])
+
+    def test_candidate_fact_failure_rolls_back_every_write_and_memory(self):
+        session, driver = self._candidate_session()
+        old, new = self._login_receipt(driver), self._login_receipt(driver, success=True)
+        before = session.checkpoint
+        checkpoint = self.store._checkpoint
+        def fail_after_writes(row, cipher):
+            if row["state"] == "confirmed":
+                raise RuntimeError("提交前失败")
+            return checkpoint(row, cipher)
+        with patch.object(self.store, "_checkpoint", side_effect=fail_after_writes):
+            with self.assertRaisesRegex(RuntimeError, "提交前失败"):
+                self._confirm_candidate(session, driver, new, old)
+        self.assertEqual(before, session.checkpoint)
+        self.assertEqual("unknown", old.phase)
+        self.assertEqual("unknown", self.store.get_password_recovery(before.recovery_id, **self.owner).state)
+        self.assertEqual("Old-login-1", self._private()["password"])
+        self.assertEqual("Old-login-1", json.loads(rs.get_row(rs.ACCOUNTS, self.account_id)["extra_json"])["account_password"])
+        self.assertFalse(any(f["phase"] == "superseded" for f in self._private()["submission_facts"]))
+
+    def test_candidate_late_original_terminal_is_kept(self):
+        session, driver = self._candidate_session()
+        old, new = self._login_receipt(driver), self._login_receipt(driver, success=True)
+        record_browser_submission_fact(driver, "rejected", receipt=old, result="failure", http_status=401)
+        self._confirm_candidate(session, driver, new, old)
+        self.assertEqual("rejected", old.phase)
+        self.assertFalse(any(f["phase"] == "superseded" for f in self._private()["submission_facts"]))
+
+    def test_candidate_dom_confirmation_can_precede_paired_response_fact(self):
+        session, driver = self._candidate_session()
+        receipt = BrowserSubmissionReceipt(kind="resume_login", stage="login_password",
+            endpoint_kind="password_submit", http_method="POST", dispatch_target_id="fixture-target")
+        record_browser_submission_fact(driver, "dispatch_intent", receipt=receipt)
+        record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        receipt.dispatch_target_id = "fixture-target"
+        receipt.request_binding = receipt.response_binding = ("fixture-target", "late-memory-request")
+        record_browser_submission_fact(driver, "request_observed", receipt=receipt)
+        record_browser_submission_fact(driver, "response_observed", receipt=receipt, http_status=200)
+        receipt.http_status = 200
+        self._confirm_candidate(session, driver, receipt)
+        self.assertEqual("confirmed", session.checkpoint.state)
+        confirmed = next(f for f in self._private()["submission_facts"] if f["phase"] == "confirmed")
+        self.assertIsNone(confirmed["http_status"])
+
+    def test_candidate_rechecks_durable_network_facts_and_same_run_before_any_write(self):
+        session, driver = self._candidate_session()
+        old, new = self._login_receipt(driver), self._login_receipt(driver, success=True)
+        before = self._private()["submission_facts"]
+        bad_histories = [
+            [f for f in before if f["submission_id"] != new.submission_id or f["phase"] != "confirmed"],
+            [f for f in before if f["submission_id"] != new.submission_id or f["phase"] != "request_observed"],
+            [f for f in before if f["submission_id"] != new.submission_id or f["phase"] != "response_observed"],
+            [{**f, "http_status": 401} if f["submission_id"] == new.submission_id and f["phase"] == "response_observed" else f for f in before],
+            [{**f, "run_id": self.owner["registration_run_id"] + 1} if f["submission_id"] == old.submission_id else f for f in before],
+        ]
+        for facts in bad_histories:
+            with self.subTest(phases=[f["phase"] for f in facts]):
+                with pg.connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {pg.qualified('registration_attempts')} SET private_context=jsonb_set(private_context,'{{submission_facts}}',%s::jsonb) WHERE id=%s",
+                                (json.dumps(facts), self.attempt_id))
+                with self.assertRaisesRegex(self.store.PasswordRecoveryError, "candidate_login_fact_invalid"):
+                    self._confirm_candidate(session, driver, new, old)
+                self.assertEqual("unknown", old.phase)
+                self.assertEqual("unknown", session.checkpoint.state)
+                self.assertEqual("Old-login-1", self._private()["password"])
+                self.assertEqual("Old-login-1", json.loads(rs.get_row(rs.ACCOUNTS, self.account_id)["extra_json"])["account_password"])
+
+    def test_candidate_storage_rechecks_execution_version_job_and_original_password(self):
+        session, driver = self._candidate_session()
+        old, new = self._login_receipt(driver), self._login_receipt(driver, success=True)
+        checkpoint = session.checkpoint
+        parameters = dict(self.owner, expected_version=checkpoint.version, state="confirmed", confirmation="candidate_login",
+            candidate_login_submission_id=new.submission_id, candidate_login_original_submission_id=old.submission_id,
+            candidate_login_job_id=driver._registration_fact_context["job_id"])
+        for changes in ({"expected_version": checkpoint.version - 1}, {"operation_execution_id": "stale"},
+                        {"registration_execution_id": "stale"}, {"candidate_login_job_id": 999999},
+                        {"candidate_login_submission_id": "unrelated-submission"}):
+            with self.subTest(changes=changes), self.assertRaises(self.store.PasswordRecoveryError):
+                self.store.transition_password_recovery(checkpoint.recovery_id, **{**parameters, **changes})
+        for password in ("Other-password-3", "New-login-2"):
+            rs.patch_row(rs.ACCOUNTS, self.account_id, {"extra_json": json.dumps({"account_password": password})})
+            with self.subTest(password_changed=True), self.assertRaisesRegex(self.store.PasswordRecoveryError, "password_conflict"):
+                self.store.transition_password_recovery(checkpoint.recovery_id, **parameters)
+        self.assertEqual("Old-login-1", self._private()["password"])
+        self.assertEqual("unknown", self.store.get_password_recovery(checkpoint.recovery_id, **self.owner).state)
+        self.assertEqual("unknown", old.phase)
+
+    def test_candidate_late_terminal_after_commit_never_downgrades_memory(self):
+        session, driver = self._candidate_session()
+        old, new = self._login_receipt(driver), self._login_receipt(driver, success=True)
+        transition = self.store.transition_password_recovery
+        def late_rejection(*args, **kwargs):
+            result = transition(*args, **kwargs)
+            record_browser_submission_fact(driver, "rejected", receipt=old, result="failure", http_status=401)
+            return result
+        with patch.object(self.store, "transition_password_recovery", side_effect=late_rejection):
+            self._confirm_candidate(session, driver, new, old)
+        self.assertEqual("rejected", old.phase)
+        self.assertEqual("confirmed", session.checkpoint.state)
+        self.assertNotIn(old.submission_id, unresolved_submission_ids(self._private()["submission_facts"]))
 
     def test_real_retry_job_without_execution_id_can_prepare_resume_and_confirm(self):
         run = registration.get_run(self.owner["registration_run_id"])

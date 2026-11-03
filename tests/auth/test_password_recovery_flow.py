@@ -42,11 +42,16 @@ def session():
         assert owner == OWNER and recovery_id == 1
         return current[0]
 
-    def transition(recovery_id, *, state, expected_version, confirmation, **owner):
+    def transition(recovery_id, *, state, expected_version, confirmation,
+                   candidate_login_submission_id=None, candidate_login_original_submission_id=None,
+                   candidate_login_job_id=None, **owner):
         assert owner == OWNER and recovery_id == 1
         assert expected_version == current[0].version
         if state == "confirmed":
             assert confirmation == "candidate_login"
+        if candidate_login_submission_id is not None:
+            assert candidate_login_original_submission_id is None
+            assert candidate_login_job_id == 31
         current[0] = replace(current[0], state=state, version=expected_version + 1)
         return current[0]
 
@@ -249,8 +254,9 @@ def test_confirmed_candidate_identity_passes_real_retained_profile_guard_without
     driver = SimpleNamespace(
         current_url='https://auth.openai.com/about-you', _browser_submission_receipts=[],
         _registration_retained_identity_required=True, _registration_resume_login=True,
+        _registration_fact_context={"attempt_id": 20, "run_id": 30, "execution_id": "reg-execution", "job_id": 31},
     )
-    with relogin_stack(driver, receipt_factory=login_receipt):
+    with relogin_stack(driver, receipt_factory=lambda: login_receipt(kind="resume_login")):
         oauth._relogin_after_password_reset(driver, OWNER['email'], current[0].password, '', Mock(), recovery=recovery, allow_profile_handoff=True)
     with (
         patch.object(retained_resume, '_email_otp_page_state', return_value=profile_state()),

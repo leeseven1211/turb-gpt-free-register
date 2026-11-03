@@ -33,6 +33,9 @@ STORE_CASES = [
     ('version_conflict', 'workflow.password_recovery.version_conflict', 'FLOW-PWD-REC-020', '密码恢复检查点版本冲突'),
     ('state_transition_invalid', 'workflow.password_recovery.state_transition_invalid', 'FLOW-PWD-REC-021', '密码恢复检查点不允许本次状态推进'),
     ('checkpoint_missing', 'workflow.password_recovery.checkpoint_missing', 'FLOW-PWD-REC-022', '密码恢复尚未建立私有检查点'),
+    ('candidate_login_context_invalid', 'workflow.password_recovery.candidate_login_context_invalid', 'FLOW-PWD-REC-025', '候选密码认证上下文或私有候选与当前注册续跑不匹配，请保留候选并核对执行归属'),
+    ('candidate_login_receipt_invalid', 'workflow.password_recovery.candidate_login_receipt_invalid', 'FLOW-PWD-REC-026', '候选密码认证回执缺少有效配对成功证据，请保留候选并核对本次密码提交回执'),
+    ('candidate_login_fact_invalid', 'workflow.password_recovery.candidate_login_fact_invalid', 'FLOW-PWD-REC-027', '候选密码认证的持久化提交事实不匹配，请保留候选并核对同 Run 提交记录'),
 ]
 
 
@@ -49,7 +52,29 @@ def test_every_current_private_recovery_failure_has_fact_specific_chinese_classi
     assert info['source'] in {'internal', 'configuration', 'workflow'}
     if surface == 'structured':
         assert info['reconcile_required'] is True
+        assert info['next_action'] == 'manual_reconcile'
         assert result_summary == {'cause_code': f'password_recovery_{suffix}', 'outcome': 'request_unknown'}
+
+
+@pytest.mark.parametrize('suffix', ['candidate_login_context_invalid', 'candidate_login_receipt_invalid', 'candidate_login_fact_invalid'])
+def test_candidate_confirmation_error_display_uses_registered_reason_without_private_context(suffix):
+    from core.storage.accounts.password_recovery import PasswordRecoveryError
+
+    private = {'email': 'private-account@example.test', 'password': 'private-candidate-password',
+               'request_id': 'private-request-id'}
+    result_summary = {'cause_code': f'password_recovery_{suffix}', 'outcome': 'request_unknown',
+                      'private_context': private}
+    info = classify_task_error(PasswordRecoveryError(suffix), task_type='registration_resume',
+                               stage='login_password', result_summary=result_summary)
+    assert info['code'] == f'workflow.password_recovery.{suffix}'
+    assert info['cause_code'] == f'password_recovery_{suffix}'
+    assert info['source'] == 'workflow'
+    assert info['next_action'] == 'manual_reconcile'
+    assert info['remote_state_impact'] == 'unknown'
+    assert info['reconcile_required'] is True
+    assert '请保留候选并核对' in info['summary']
+    assert all(value not in str(info) for value in private.values())
+    assert result_summary['private_context'] == private
 
 
 @pytest.mark.parametrize('database_code', ['database_23505', 'database_08006', 'database_OperationalError', 'database_PoolTimeout'])

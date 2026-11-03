@@ -1070,6 +1070,7 @@ def _fill_password_page_if_present(
     on_password_prepared=None,
     on_password_submitted=None,
     login_rejection_detector=None,
+    on_candidate_password_confirmed=None,
 ) -> str | None:
     """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
 
@@ -1089,7 +1090,12 @@ def _fill_password_page_if_present(
 
     def confirm_password(receipt):
         record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
-        if saved_login_previous_receipt is not None:
+        if on_candidate_password_confirmed is not None:
+            on_candidate_password_confirmed(
+                receipt, original=saved_login_previous_receipt,
+                budget=StageBudget(transition_deadline or end, clock=time.time),
+            )
+        elif saved_login_previous_receipt is not None:
             complete_saved_password_relogin(
                 driver, original=saved_login_previous_receipt, replacement=receipt,
                 email=email, password=str(existing_password or ""),

@@ -12,7 +12,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -55,6 +55,7 @@ class PrivateCheckpoint:
     account_password_version: str = field(repr=False)
     old_password: str = field(repr=False)
     password: str = field(repr=False)
+    candidate_login_original_fact: dict | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -388,22 +389,54 @@ def _confirm(cur, row: dict, owner: _Owner, account: dict, attempts: list[dict],
 
 
 def transition_password_recovery(recovery_id: int, *, expected_version: int, state: str,
-                                 confirmation: str | None = None, **owner) -> PrivateCheckpoint:
+                                 confirmation: str | None = None,
+                                 candidate_login_submission_id: str | None = None,
+                                 candidate_login_original_submission_id: str | None = None,
+                                 candidate_login_job_id: int | None = None, **owner) -> PrivateCheckpoint:
     """推进检查点；明确确认时，同一事务更新账号与关联 Attempt 当前密码。"""
     identity = _owner(owner)
     if state not in {"prepared", "started", "unknown", "confirmed"}:
         raise PasswordRecoveryError("state_invalid")
     if (state == "confirmed" and confirmation not in _CONFIRMATIONS) or (state != "confirmed" and confirmation is not None):
         raise PasswordRecoveryError("confirmation_invalid")
+    candidate_login = candidate_login_submission_id is not None
+    if (candidate_login and (identity.purpose != "registration" or state != "confirmed" or confirmation != "candidate_login"
+                            or not candidate_login_submission_id or type(candidate_login_job_id) is not int)):
+        raise PasswordRecoveryError("candidate_login_context_invalid")
+    if not candidate_login and (candidate_login_original_submission_id is not None or candidate_login_job_id is not None):
+        raise PasswordRecoveryError("candidate_login_context_invalid")
     cipher, key = _cipher()
     init()
     with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
         account, attempts = _fence(cur, identity)
         row = _owned_checkpoint(cur, recovery_id, identity)
         payload = _credentials(row, cipher)
+        original_fact = None
+        if candidate_login:
+            from core.storage import registration
+
+            if row["version"] != expected_version:
+                raise PasswordRecoveryError("version_conflict")
+            if row["state"] not in {"started", "unknown", "confirmed"}:
+                raise PasswordRecoveryError("state_transition_invalid")
+            # 专用候选路径必须从原正式密码收口；已确认重入只允许已提交的候选。
+            _validate_password(identity, account, attempts, payload, key, confirmed=row["state"] == "confirmed")
+            attempt = next(item for item in attempts if item["id"] == identity.attempt_id)
+            try:
+                fact = registration._complete_saved_password_login_submission(
+                    cur, attempt=attempt, submission_id=candidate_login_original_submission_id,
+                    replacement_submission_id=candidate_login_submission_id, email=identity.email,
+                    password=payload["password"] if row["state"] == "confirmed" else payload["old_password"],
+                    run_id=identity.registration_run_id, execution_id=identity.registration_execution_id,
+                    job_id=candidate_login_job_id, require_network=True,
+                )
+            except (ValueError, LookupError):
+                raise PasswordRecoveryError("candidate_login_fact_invalid") from None
+            if candidate_login_original_submission_id:
+                original_fact = fact
         if row["state"] == state == "confirmed":
             _confirm(cur, row, identity, account, attempts, payload, key)
-            return _checkpoint(row, cipher)
+            return replace(_checkpoint(row, cipher), candidate_login_original_fact=original_fact)
         if row["version"] != expected_version:
             raise PasswordRecoveryError("version_conflict")
         if row["state"] == state:
@@ -417,7 +450,7 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
         cur.execute(f"UPDATE {pg.qualified(_TABLE)} SET state=%s,version=version+1,confirmation=%s,updated_at=now(),"
                     "confirmed_at=CASE WHEN %s='confirmed' THEN now() ELSE confirmed_at END WHERE id=%s RETURNING *",
                     (state, confirmation, state, int(recovery_id)))
-        return _checkpoint(cur.fetchone(), cipher)
+        return replace(_checkpoint(cur.fetchone(), cipher), candidate_login_original_fact=original_fact)
 
 
 __all__ = ["PrivateCheckpoint", "PasswordRecoveryError", "prepare_password_recovery", "resume_password_recovery",

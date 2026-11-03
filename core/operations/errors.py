@@ -853,6 +853,9 @@ _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'checkpoint_missing': ('FLOW-PWD-REC-022', '密码恢复尚未建立私有检查点'),
     'owner_missing': ('FLOW-PWD-REC-023', '密码恢复缺少当前操作执行或原账号归属'),
     'identity_unconfirmed': ('FLOW-PWD-REC-024', '密码恢复尚未确认原邮箱登录入口，候选已保留且未提交重置'),
+    'candidate_login_context_invalid': ('FLOW-PWD-REC-025', '候选密码认证上下文或私有候选与当前注册续跑不匹配，请保留候选并核对执行归属'),
+    'candidate_login_receipt_invalid': ('FLOW-PWD-REC-026', '候选密码认证回执缺少有效配对成功证据，请保留候选并核对本次密码提交回执'),
+    'candidate_login_fact_invalid': ('FLOW-PWD-REC-027', '候选密码认证的持久化提交事实不匹配，请保留候选并核对同 Run 提交记录'),
 }
 _PASSWORD_RECOVERY_UNKNOWN_CAUSES = {
     'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),

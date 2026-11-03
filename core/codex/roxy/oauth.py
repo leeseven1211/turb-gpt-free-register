@@ -520,7 +520,7 @@ def _is_saved_login_password_route(driver) -> bool:
         return False
 
 
-def _submit_saved_login_password(driver, email: str, password: str) -> None:
+def _submit_saved_login_password(driver, email: str, password: str, *, on_candidate_password_confirmed=None) -> None:
     if not password:
         raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
     # 共享能力等待表单接管、准确点击提交按钮并观察一次提交的结果；
@@ -530,12 +530,23 @@ def _submit_saved_login_password(driver, email: str, password: str) -> None:
         "existing_password": password,
         "login_rejection_detector": _is_explicit_password_rejection_state,
     }
+    candidate_confirmation_failed = False
+    if on_candidate_password_confirmed is not None:
+        def confirm_candidate(*args, **kwargs):
+            nonlocal candidate_confirmation_failed
+            try:
+                return on_candidate_password_confirmed(*args, **kwargs)
+            except BaseException:
+                candidate_confirmation_failed = True
+                raise
+
+        fill_kwargs['on_candidate_password_confirmed'] = confirm_candidate
     try:
         _fill_password_page_if_present(
             driver, email, timeout=60, **fill_kwargs,
         )
     except RuntimeError as exc:
-        if isinstance(exc, AuthPageError):
+        if candidate_confirmation_failed or isinstance(exc, AuthPageError):
             raise
         receipt = getattr(driver, "_browser_submission_receipt", None)
         if (
@@ -823,16 +834,23 @@ def _candidate_login_confirmed(driver, previous_receipts: set[int]) -> bool:
     for receipt in candidates:
         if not isinstance(receipt, BrowserSubmissionReceipt) or id(receipt) in previous_receipts:
             continue
-        request = receipt.request_binding
-        if (receipt.kind in {'password', 'resume_login'} and receipt.stage == 'login_password'
+        if _candidate_password_receipt_confirmed(receipt):
+            return True
+    return False
+
+
+def _candidate_password_receipt_confirmed(receipt) -> bool:
+    """只验证指定密码回执，不能借用同一页面上其他动作的成功。"""
+    if not isinstance(receipt, BrowserSubmissionReceipt):
+        return False
+    request = receipt.request_binding
+    return bool(receipt.kind in {'password', 'resume_login'} and receipt.stage == 'login_password'
                 and receipt.endpoint_kind == 'password_submit' and receipt.http_method == 'POST'
                 and receipt.phase == 'confirmed' and receipt.result == 'success'
                 and type(receipt.http_status) is int and 200 <= receipt.http_status < 300
                 and request and request == receipt.response_binding and request[1]
                 and receipt.dispatch_target_id and request[0] == receipt.dispatch_target_id
-                and not receipt.auth_error):
-            return True
-    return False
+                and not receipt.auth_error)
 
 
 def _relogin_after_password_reset(
@@ -855,6 +873,41 @@ def _relogin_after_password_reset(
         password = recovery.prepare(lambda: password)
         clear_roxy_browser_auth_state(driver)
         driver._registration_otp_after_ts = time.time()
+    candidate_confirmation = None
+    candidate_confirmation_done = False
+    candidate_checkpoint = recovery.checkpoint if recovery is not None else None
+    if (candidate_checkpoint is not None
+            and getattr(candidate_checkpoint, 'purpose', None) == 'registration'
+            and getattr(driver, '_registration_resume_login', False) is True):
+        def confirm_candidate(receipt=None, *, original=None, budget=None):
+            nonlocal candidate_confirmation_done
+            if candidate_confirmation_done:
+                return
+            if receipt is None:
+                current = getattr(driver, '_browser_submission_receipt', None)
+                history = getattr(driver, '_browser_submission_receipts', [])
+                receipts = [current, *(reversed(history) if isinstance(history, list) else [])]
+                receipt = next((item for item in receipts if isinstance(item, BrowserSubmissionReceipt)
+                                and id(item) not in previous_receipts and item.stage == 'login_password'), None)
+            # 等待时不进入存储事务，不新增请求，也不能延长原阶段或执行预算。
+            remaining = min(5.0, budget.remaining()) if budget is not None else 5.0
+            context = current_execution_context()
+            if context is not None and context.remaining() is not None:
+                remaining = min(remaining, context.remaining())
+            confirmation_deadline = time.monotonic() + max(0.0, remaining)
+            while not (id(receipt) not in previous_receipts and _candidate_password_receipt_confirmed(receipt)):
+                check_cancelled()
+                _auth_checkpoint()
+                if time.monotonic() >= confirmation_deadline:
+                    raise PasswordResetTransitionUnknown('request_unknown: 候选密码认证未取得本次配对成功响应，保留恢复检查点')
+                time.sleep(min(0.1, max(0.0, confirmation_deadline - time.monotonic())))
+            recovery.confirm_candidate_login(
+                driver, email=email, password=password, receipt=receipt, original=original,
+            )
+            candidate_confirmation_done = True
+            driver._registration_retained_identity_required = False
+
+        candidate_confirmation = confirm_candidate
     _clear_confirmed_email_submission(driver)
     _report_login_stage(
         stage_reporter, 'login',
@@ -900,8 +953,12 @@ def _relogin_after_password_reset(
         allow_password_reset=False,
         stage_reporter=stage_reporter,
         **({'allow_profile_handoff': True} if allow_profile_handoff else {}),
+        **({'on_candidate_password_confirmed': candidate_confirmation} if candidate_confirmation is not None else {}),
     )
     if recovery is not None:
+        if candidate_confirmation is not None:
+            candidate_confirmation()
+            return next_state
         # CDP 正文元数据可略晚于 DOM 转换到达；只等待本次回执，不重新提交。
         confirmation_deadline = time.monotonic() + 5
         while not _candidate_login_confirmed(driver, previous_receipts):
@@ -1157,6 +1214,7 @@ def _complete_login_challenge_after_email(
     password_already_submitted: bool = False,
     password_recovery=None,
     allow_profile_handoff: bool = False,
+    on_candidate_password_confirmed=None,
 ) -> str:
     """解析登录挑战；启用恢复时可返回资料交接，完整会话仍由上层核验。"""
     end = time.time() + max(5, int(timeout))
@@ -1182,6 +1240,26 @@ def _complete_login_challenge_after_email(
     last_url = ""
     last_wait_state = None
     next_wait_log_at = 0.0
+    candidate_confirmation_failed = False
+
+    def confirm_candidate_password(receipt=None, *, original=None, budget=None):
+        nonlocal candidate_confirmation_failed, password_unknown_receipt
+        if on_candidate_password_confirmed is None:
+            return
+        receipt = receipt if receipt is not None else getattr(driver, '_browser_submission_receipt', None)
+        if original is None and password_unknown_receipt is not receipt:
+            original = password_unknown_receipt
+        confirmation_budget = StageBudget(end, clock=time.time)
+        if budget is not None:
+            confirmation_budget = confirmation_budget.child(budget.remaining())
+        try:
+            on_candidate_password_confirmed(
+                receipt, original=original, budget=confirmation_budget,
+            )
+        except BaseException:
+            candidate_confirmation_failed = True
+            raise
+        password_unknown_receipt = None
 
     def reset_password(*, forced: bool = False) -> bool:
         nonlocal password
@@ -1222,6 +1300,8 @@ def _complete_login_challenge_after_email(
             record_browser_submission_fact(
                 driver, "confirmed", receipt=password_unknown_receipt, result="success",
             )
+            if on_candidate_password_confirmed is not None:
+                confirm_candidate_password(password_unknown_receipt)
             password_unknown_receipt = None
 
     def reject_unknown_password_receipt() -> None:
@@ -1261,6 +1341,9 @@ def _complete_login_challenge_after_email(
                 f"path={_auth_path_for_log(state.get('url'))}"
             )
         if allow_profile_handoff and _is_password_recovery_profile_page(driver, state):
+            if on_candidate_password_confirmed is not None:
+                confirm_unknown_password_receipt()
+                confirm_candidate_password()
             _clear_confirmed_email_submission(driver)
             return 'profile_handoff'
         url = str(state.get("url") or "")
@@ -1338,8 +1421,14 @@ def _complete_login_challenge_after_email(
                 )
                 fallback_state = str(fallback.get("state") or "").strip().lower()
                 if fallback.get("ok") and fallback_state == "otp":
+                    if on_candidate_password_confirmed is not None:
+                        confirm_unknown_password_receipt()
+                        confirm_candidate_password()
                     return "email_otp"
                 if fallback.get("ok") and fallback_state == "advanced":
+                    if on_candidate_password_confirmed is not None:
+                        confirm_unknown_password_receipt()
+                        confirm_candidate_password()
                     return "advanced"
                 if fallback.get("ok"):
                     end = max(end, now + 45)
@@ -1367,8 +1456,14 @@ def _complete_login_challenge_after_email(
                 # 稳定状态，避免再次读取旧 DOM 等到总超时。
                 fallback_state = str(fallback.get("state") or "").strip().lower()
                 if fallback.get("ok") and fallback_state == "otp":
+                    if on_candidate_password_confirmed is not None:
+                        confirm_unknown_password_receipt()
+                        confirm_candidate_password()
                     return "email_otp"
                 if fallback.get("ok") and fallback_state == "advanced":
+                    if on_candidate_password_confirmed is not None:
+                        confirm_unknown_password_receipt()
+                        confirm_candidate_password()
                     return "advanced"
                 if fallback.get("ok"):
                     end = max(end, now + 45)
@@ -1409,6 +1504,9 @@ def _complete_login_challenge_after_email(
         # TOTP may be rendered in-place while the stale URL still ends in
         # /log-in/password, so inspect the live controls before trusting the URL.
         if _is_totp_login_page(driver, state):
+            if on_candidate_password_confirmed is not None:
+                confirm_unknown_password_receipt()
+                confirm_candidate_password()
             _clear_confirmed_email_submission(driver)
             if totp_submitted_at:
                 if state.get("errors") or any(
@@ -1469,12 +1567,18 @@ def _complete_login_challenge_after_email(
                 continue
             if password:
                 try:
-                    _submit_saved_login_password(driver, email, password)
+                    _submit_saved_login_password(
+                        driver, email, password,
+                        **({'on_candidate_password_confirmed': confirm_candidate_password}
+                           if on_candidate_password_confirmed is not None else {}),
+                    )
                 except PasswordRejectedError:
                     if allow_password_reset and reset_password():
                         return reset_next_state()
                     raise
                 except _PasswordTransitionTimeout as exc:
+                    if candidate_confirmation_failed:
+                        raise
                     if password_unknown_retry_done:
                         raise
                     password_unknown_receipt = getattr(driver, "_browser_submission_receipt", None)
@@ -1612,10 +1716,16 @@ def _complete_login_challenge_after_email(
                 offered_password_attempted = True
                 if _open_offered_saved_password(driver, end):
                     continue
+            if on_candidate_password_confirmed is not None:
+                confirm_unknown_password_receipt()
+                confirm_candidate_password()
             _clear_confirmed_email_submission(driver)
             logger.info("[Codex][Browser] 页面明确进入邮箱验证码分支：email=%s", email)
             return "email_otp"
         if _is_login_advanced(driver, state):
+            if on_candidate_password_confirmed is not None:
+                confirm_unknown_password_receipt()
+                confirm_candidate_password()
             _clear_confirmed_email_submission(driver)
             return "advanced"
         time.sleep(0.5)
