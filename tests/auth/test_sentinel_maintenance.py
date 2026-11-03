@@ -359,8 +359,11 @@ def test_default_download_process_timeout_reaps_hung_child_preserves_candidate_a
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         restored = sentinel.SentinelMaintenanceService(builtin_path=path, builtin_version=VERSION).status()
         assert restored["error_code"] == "download_timeout"
+        # 首轮短期限只验证挂死进程会被杀死并回收。正常重试会重新启动 Python
+        # 和测试依赖，不要求其在同一 0.5 秒内完成；保持独立的有界等待。
+        monkeypatch.setattr(sentinel, "_PROCESS_TIMEOUT_SECONDS", 5)
         assert maintenance.start_check()["started"] is True
-        retried = _wait_until_check_finishes(maintenance)
+        retried = _wait_until_check_finishes(maintenance, timeout=7)
         assert retried["last_status"] == "refreshed"
         assert retried["error_code"] is None
         assert retried["candidate"]["sha256"] == previous.sha256
