@@ -1071,6 +1071,8 @@ def _fill_password_page_if_present(
     on_password_submitted=None,
     login_rejection_detector=None,
     on_candidate_password_confirmed=None,
+    prefer_saved_password_entry: bool = False,
+    saved_password_entry_already_attempted: bool = False,
 ) -> str | None:
     """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
 
@@ -1084,7 +1086,7 @@ def _fill_password_page_if_present(
     password_session_recovery_started = False
     last = {}
     auth_mode = _registration_auth_mode()
-    switched_from_otp = False
+    switched_from_otp = bool(prefer_saved_password_entry and saved_password_entry_already_attempted)
     saved_form_recoveries = 0
     saved_login_previous_receipt = None
 
@@ -1187,6 +1189,35 @@ def _fill_password_page_if_present(
                         return existing_password
                     if recovered_otp_state != "session_expired":
                         raise RuntimeError("request_unknown: auth_session_unavailable: 重建登录后的验证码页不可用，已保留原 Attempt")
+                if prefer_saved_password_entry:
+                    # 只按本次调度的显式入口状态防重，旧认证会话的回执不能压掉新入口。
+                    if not switched_from_otp:
+                        if getattr(driver, "_registration_resume_login", False):
+                            ready = recovered_otp_state or _wait_email_otp_page_ready(
+                                driver, timeout=min(45.0, max(0.0, end - time.time())),
+                                budget=StageBudget(end, clock=time.time),
+                            )
+                            if ready == "session_expired":
+                                recovery_budget = StageBudget(
+                                    password_session_recovery_deadline if password_session_recovery_started
+                                    else end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS,
+                                    clock=time.time,
+                                )
+                                if _restart_expired_resume_auth(driver, email, budget=recovery_budget):
+                                    end = recovery_budget.deadline
+                                    continue
+                                raise RuntimeError("request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt")
+                            if ready != "ready":
+                                return existing_password
+                        from core.auth.browser.password_entry import open_offered_password_entry
+
+                        switched_from_otp = True
+                        driver._registration_resume_password_attempted = True
+                        path = open_offered_password_entry(driver, timeout=max(0.0, end - time.time()))
+                        if path is not None:
+                            logger.info("%s 已点击页面提供的保存密码入口，继续原密码认证", _log_prefix(driver))
+                            continue
+                    return existing_password
                 if (getattr(driver, "_registration_resume_login", False) and not switched_from_otp
                         and not getattr(driver, "_registration_resume_password_attempted", False)):
                     ready = recovered_otp_state or _wait_email_otp_page_ready(

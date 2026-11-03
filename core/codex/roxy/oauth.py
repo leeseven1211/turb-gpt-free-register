@@ -29,6 +29,8 @@ from core.auth.browser.browser_submission import BrowserSubmissionReceipt, recor
 from core.auth.state_machine import PageState, StageBudget, StageTimeout, classify_page
 from core.auth.page_errors import AuthPageError, auth_page_error
 from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS, _PasswordTransitionTimeout
+from core.auth.browser.password_entry import open_offered_password_entry
+from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, click_any as _click_any, click_continue as _click_continue, find_any as _find_any, maybe_accept as _maybe_accept, quit_driver as _quit_driver, type_any as _type_any, type_email_address as _type_email_address, submit_email_step as _submit_email_step, recover_email_submit_if_stuck as _recover_email_submit_if_stuck, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, click_email_entry_option as _click_email_entry_option, type_otp as _type_otp, clear_otp_inputs as _clear_otp_inputs, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, fill_password_page_if_present as _fill_password_page_if_present, click_passwordless_signup_if_present as _click_passwordless_signup_if_present, safe_get as _safe_get, human_click as _human_click, human_type_text as _human_type_text
 from core.auth.challenge import MfaSecretMissingError, PasswordRejectedError
 
@@ -130,20 +132,35 @@ def _raise_auth_page_error(driver, state, *, remaining: float | None = None) -> 
     raise error
 
 
+def _uses_roxy_saved_password_entry(driver) -> bool:
+    """共享 challenge 由实际驱动及当前浏览器类型共同隔离 Roxy 策略。"""
+    if getattr(driver, "_registration_local_roxy_password_entry", None) is False:
+        return False
+    return _CODEX_BROWSER_KIND.get().lower() != "cloak" and not any(
+        "cloak" in f"{cls.__module__}.{cls.__name__}".lower()
+        for cls in type(driver).__mro__
+    )
+
+
 def _open_offered_saved_password(driver, deadline: float) -> bool:
-    """已有密码时只使用验证码页真实提供的登录入口，沿用本轮预算。"""
+    """已有密码时使用页面真实入口；Roxy 单次点击，Cloak 沿用原分支。"""
     from core.auth.browser.password_auth import _resume_login_password_url
     from selenium.common.exceptions import TimeoutException
 
-    target = _resume_login_password_url(driver)
-    if target is None:
-        return False
     _auth_checkpoint()
     remaining = max(0.0, deadline - time.time())
     context = current_execution_context()
     if context is not None and context.remaining() is not None:
         remaining = min(remaining, context.remaining())
     if remaining <= 0:
+        return False
+    if _uses_roxy_saved_password_entry(driver):
+        selected = open_offered_password_entry(driver, timeout=min(10.0, remaining))
+        if selected is not None:
+            logger.info("[Codex][Browser] 验证码页已提供密码入口，继续使用原保存密码：path=%s", selected)
+        return selected is not None
+    target = _resume_login_password_url(driver)
+    if target is None:
         return False
     old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
     try:
@@ -156,6 +173,18 @@ def _open_offered_saved_password(driver, deadline: float) -> bool:
         if isinstance(old_timeout, (int, float)):
             driver.set_page_load_timeout(old_timeout)
     return True
+
+
+def _bind_password_submission_observer(opened, driver, *, force_for_recovery: bool = False) -> None:
+    """复用既有采集连接，保留显式密码恢复原有的观察器能力。"""
+    if not force_for_recovery and not _uses_roxy_saved_password_entry(driver):
+        return
+    from core.registration.roxy import _make_submission_observer
+
+    capture = getattr(opened, "traffic_capture", None)
+    observe = getattr(capture, "set_submission_observer", None)
+    if callable(observe):
+        observe(_make_submission_observer(driver))
 
 
 def _refresh_auth_challenge_after_submit(driver, stage: str) -> None:
@@ -520,6 +549,20 @@ def _is_saved_login_password_route(driver) -> bool:
         return False
 
 
+def _is_saved_create_password_page(driver, state: dict) -> bool:
+    """新增创建密码分支只接受 Roxy 的真实可信认证表单。"""
+    if not _uses_roxy_saved_password_entry(driver) or classify_page(state) != PageState.PASSWORD_CREATE:
+        return False
+    try:
+        current = urlparse(str(state.get("url") or ""))
+        return (
+            current.scheme == "https" and current.hostname == "auth.openai.com"
+            and current.port in (None, 443) and not current.username and not current.password
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _submit_saved_login_password(driver, email: str, password: str, *, on_candidate_password_confirmed=None) -> None:
     if not password:
         raise RuntimeError("账号已进入登录密码页，但本地没有保存注册密码，已在手机号验证前停止")
@@ -530,6 +573,10 @@ def _submit_saved_login_password(driver, email: str, password: str, *, on_candid
         "existing_password": password,
         "login_rejection_detector": _is_explicit_password_rejection_state,
     }
+    if _uses_roxy_saved_password_entry(driver):
+        fill_kwargs["prefer_saved_password_entry"] = True
+        # 调度已选定真实密码表单；若等待时回到 OTP，不能再点击一次入口。
+        fill_kwargs["saved_password_entry_already_attempted"] = True
     candidate_confirmation_failed = False
     if on_candidate_password_confirmed is not None:
         def confirm_candidate(*args, **kwargs):
@@ -1221,6 +1268,7 @@ def _complete_login_challenge_after_email(
     password_submitted_at = 0.0
     password_unknown_retry_done = False
     password_unknown_receipt = None
+    saved_password_created = False
     totp_submitted_at = 0.0
     passwordless_clicked = False
     passwordless_clicks = 0
@@ -1235,6 +1283,7 @@ def _complete_login_challenge_after_email(
     nextauth_fallback_done = False
     # 注册驱动可能已提交过保存密码，再交给公共状态机处理 OTP/TOTP。
     # 这次交接不能重新获得一次密码入口和提交机会。
+    roxy_saved_password_entry = _uses_roxy_saved_password_entry(driver)
     offered_password_attempted = password_already_submitted
     last_state: dict = {}
     last_url = ""
@@ -1244,7 +1293,7 @@ def _complete_login_challenge_after_email(
 
     def confirm_candidate_password(receipt=None, *, original=None, budget=None):
         nonlocal candidate_confirmation_failed, password_unknown_receipt
-        if on_candidate_password_confirmed is None:
+        if on_candidate_password_confirmed is None or saved_password_created:
             return
         receipt = receipt if receipt is not None else getattr(driver, '_browser_submission_receipt', None)
         if original is None and password_unknown_receipt is not receipt:
@@ -1321,6 +1370,13 @@ def _complete_login_challenge_after_email(
             or _has_access_token(driver)
         )
 
+    def open_initial_saved_password_entry() -> bool:
+        nonlocal offered_password_attempted
+        if password and not offered_password_attempted and not password_submitted_at:
+            offered_password_attempted = True
+            return _open_offered_saved_password(driver, end)
+        return False
+
     while (loop_now := time.time()) < end:
         # 注册的邮箱验证恢复携带原阶段预算，页面转换不能重新延长它。
         _auth_checkpoint()
@@ -1352,6 +1408,10 @@ def _complete_login_challenge_after_email(
             last_url = url
 
         page_state = classify_page(state)
+        if roxy_saved_password_entry and saved_password_created and page_state == PageState.PROFILE:
+            error = RuntimeError("profile_completion_required: 保存密码已提交，账号仍需沿原注册任务补全资料")
+            error.code = "profile_completion_required"
+            raise error
         if page_state == PageState.PASSWORD_LOGIN:
             waiting_for = "等待密码提交后的认证结果" if password_submitted_at else "等待密码表单就绪，随后提交一次并等待认证结果"
         elif page_state == PageState.MFA_TOTP:
@@ -1421,6 +1481,9 @@ def _complete_login_challenge_after_email(
                 )
                 fallback_state = str(fallback.get("state") or "").strip().lower()
                 if fallback.get("ok") and fallback_state == "otp":
+                    if (roxy_saved_password_entry and on_candidate_password_confirmed is None
+                            and open_initial_saved_password_entry()):
+                        continue
                     if on_candidate_password_confirmed is not None:
                         confirm_unknown_password_receipt()
                         confirm_candidate_password()
@@ -1456,6 +1519,9 @@ def _complete_login_challenge_after_email(
                 # 稳定状态，避免再次读取旧 DOM 等到总超时。
                 fallback_state = str(fallback.get("state") or "").strip().lower()
                 if fallback.get("ok") and fallback_state == "otp":
+                    if (roxy_saved_password_entry and on_candidate_password_confirmed is None
+                            and open_initial_saved_password_entry()):
+                        continue
                     if on_candidate_password_confirmed is not None:
                         confirm_unknown_password_receipt()
                         confirm_candidate_password()
@@ -1546,15 +1612,18 @@ def _complete_login_challenge_after_email(
             end = max(end, time.time() + 25)
             continue
 
-        if _is_login_password_page(driver):
+        saved_password_create_page = (
+            bool(password) and _is_saved_create_password_page(driver, state)
+        )
+        if _is_login_password_page(driver) or saved_password_create_page:
             _clear_confirmed_email_submission(driver)
-            if force_password_reset:
+            if force_password_reset and not saved_password_create_page:
                 if reset_password(forced=True):
                     return reset_next_state()
                 raise RuntimeError("登录密码页没有找到忘记密码入口")
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
-                    if allow_password_reset and reset_password():
+                    if allow_password_reset and not saved_password_create_page and reset_password():
                         return reset_next_state()
                     raise PasswordRejectedError(
                         "远端明确拒绝本地保存的账号密码；已停止重复提交"
@@ -1566,17 +1635,22 @@ def _complete_login_challenge_after_email(
                 time.sleep(0.5)
                 continue
             if password:
+                previous_password_receipts = password_receipt_ids(driver)
+                saved_password_created = saved_password_create_page
                 try:
                     _submit_saved_login_password(
                         driver, email, password,
                         **({'on_candidate_password_confirmed': confirm_candidate_password}
-                           if on_candidate_password_confirmed is not None else {}),
+                           if on_candidate_password_confirmed is not None and not saved_password_create_page else {}),
                     )
                 except PasswordRejectedError:
-                    if allow_password_reset and reset_password():
+                    if allow_password_reset and not saved_password_create_page and reset_password():
                         return reset_next_state()
                     raise
                 except _PasswordTransitionTimeout as exc:
+                    # 创建密码只确认本次接收，不借用登录恢复的重试/重置语义。
+                    if saved_password_create_page:
+                        raise
                     if candidate_confirmation_failed:
                         raise
                     if password_unknown_retry_done:
@@ -1635,6 +1709,22 @@ def _complete_login_challenge_after_email(
                         "[Codex][Browser] 密码提交结果未知，刷新后仍停留在无错误密码页，允许重试一次"
                     )
                     continue
+                finally:
+                    if roxy_saved_password_entry:
+                        evidence = password_evidence(driver, exclude_ids=previous_password_receipts)
+                        password_stage_result = {
+                            "verified": ("success", "账号密码验证通过"),
+                            "accepted": ("success", "账号密码设置已被接受"),
+                            "rejected": ("failed", "远端拒绝本次账号密码提交"),
+                            "unknown": ("failed", "本次密码提交结果未确认"),
+                        }.get(evidence["credential_check"])
+                        if password_stage_result is not None:
+                            password_stage_state, password_stage_message = password_stage_result
+                            _report_login_stage(
+                                stage_reporter, "login_password", password_stage_message,
+                                state=password_stage_state,
+                                detail={"auth_facts": evidence},
+                            )
                 confirm_unknown_password_receipt()
                 password_submitted_at = time.time()
                 # 密码提交和转换已由共享能力确认，保留后续 OTP/TOTP 分支的处理时间。
@@ -1712,10 +1802,8 @@ def _complete_login_challenge_after_email(
             )
 
         if _is_email_verification_page(driver):
-            if password and not offered_password_attempted and not password_submitted_at:
-                offered_password_attempted = True
-                if _open_offered_saved_password(driver, end):
-                    continue
+            if open_initial_saved_password_entry():
+                continue
             if on_candidate_password_confirmed is not None:
                 confirm_unknown_password_receipt()
                 confirm_candidate_password()
@@ -1994,7 +2082,10 @@ def _fill_email_and_otp(
                 raise
             state = _login_challenge_state(driver)
             _raise_auth_page_error(driver, state)
-            if _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
+            saved_create_page = (
+                bool(password) and _is_saved_create_password_page(driver, state)
+            )
+            if saved_create_page or _is_login_password_page(driver) or _is_totp_login_page(driver, state) or _is_email_verification_page(driver):
                 logger.info("[Codex][Browser] 邮箱输入阶段页面已进入下一登录分支，继续按页面状态处理")
             elif _is_login_advanced(driver, state):
                 _clear_confirmed_email_submission(driver)
@@ -4070,6 +4161,7 @@ def _run_roxy_codex_oauth_once(
         if not driver:
             driver = _build_driver(opened)
             _center_browser_window(driver)
+        _bind_password_submission_observer(opened, driver)
         try:
             from core.browser.flow_policy import install_for_flow
 
@@ -4182,6 +4274,15 @@ def _run_roxy_codex_oauth_once(
         )
     except Exception as exc:
         logger.warning("[Codex][Browser] 授权失败：%s", type(exc).__name__)
+        code = getattr(exc, "code", "")
+        known_failure_messages = {
+            "password_entry_navigation_failed": "页面提供的密码入口未能进入有效密码表单",
+            "profile_completion_required": "密码步骤已推进，服务端要求补全账号资料",
+        }
+        if isinstance(code, str) and code in known_failure_messages:
+            result = proto._codex_result(status="failed", email=email, message=f"{code}: {known_failure_messages[code]}")
+            result["error_code"] = code
+            return result
         return proto._codex_result(status="failed", email=email, message=f"{type(exc).__name__}: 浏览器授权流程未完成")
     finally:
         from core.browser import asset_policy as browser_asset_policy, traffic as browser_traffic
@@ -4273,13 +4374,7 @@ def run_roxy_chatgpt_account_action(
     asset_cache = None
     try:
         driver = _build_driver(opened)
-        if password_recovery is not None:
-            from core.registration.roxy import _make_submission_observer
-
-            capture = getattr(opened, 'traffic_capture', None)
-            observe = getattr(capture, 'set_submission_observer', None)
-            if callable(observe):
-                observe(_make_submission_observer(driver))
+        _bind_password_submission_observer(opened, driver, force_for_recovery=password_recovery is not None)
         registration_debug.attach_current_roxy(getattr(opened, "debugger_address", None))
         _center_browser_window(driver)
         try:

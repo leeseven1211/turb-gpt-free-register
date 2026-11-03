@@ -10,6 +10,8 @@ ROXY_LOGIN_CAUSES = {
     "roxy_login_page_timeout": ("ROXY-REFRESH-008", "Roxy 登录页未就绪，登录预检请求超时", "network"),
     "roxy_login_preflight_timeout": ("ROXY-REFRESH-009", "Roxy 登录预检请求超时", "network"),
     "roxy_login_preflight_failed": ("ROXY-REFRESH-010", "Roxy 登录预检请求失败", "response"),
+    "password_entry_navigation_failed": ("ROXY-REFRESH-011", "页面提供的密码入口未能进入有效密码表单", "auth"),
+    "profile_completion_required": ("ROXY-REFRESH-012", "密码步骤已推进，服务端要求补全账号资料", "auth"),
 }
 
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """使用 Roxy 指纹浏览器为已注册账号刷新 ChatGPT accessToken。
 
-该流程处理已有账号的密码、TOTP 和邮箱 OTP；一旦识别为新账号密码/资料页会
-立即停止，避免查活意外创建账号。
+该流程复用本地保存密码处理页面提供的密码、TOTP 和邮箱 OTP；没有保存密码时
+不创建密码，资料页仍交回明确的补全操作。
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from core.accounts.credentials import account_email_is_invalid
 from core.auth.protocol.openai_auth import AccountUnusableError, detect_account_unusable_text
 from core.auth.challenge import AuthCancelledError
 from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS
+from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
 from core.operations.runtime import OperationCancelled, check_cancelled, current_token, report_stage
 from core.operations.task_gateway import OperationLeaseLost
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, fetch_chatgpt_session as _fetch_chatgpt_session, find_any as _find_any, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, maybe_accept as _maybe_accept, page_warmup as _page_warmup, quit_driver as _quit_driver, safe_get as _safe_get, submit_email_step as _submit_email_step, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, type_email_address as _type_email_address, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit, wait_email_submit_next_state as _wait_email_submit_next_state
@@ -74,7 +75,8 @@ def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") 
     code = str(getattr(exc, "code", "") or "")
     if code in {"password_rejected", "password_result_unknown", "password_change_required", "password_page_error",
                 "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed",
-                "auth_operation_timeout", "auth_context_missing"}:
+                "auth_operation_timeout", "auth_context_missing", "password_entry_navigation_failed",
+                "profile_completion_required"}:
         return code, "auth"
     if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
         return "roxy_proxy_tunnel_failed", "network"
@@ -112,6 +114,17 @@ class _RoxyOtpSubmissionUnknown(RuntimeError):
     """邮箱验证码的本次提交尚未确认，保留现场供同一账号手动重跑。"""
 
     code = "email_submit_unconfirmed"
+
+
+def _check_profile_handoff(driver) -> None:
+    """刷新只建立会话，资料页必须保留为独立的待补全事实。"""
+    parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
+    if parsed.hostname == "auth.openai.com" and any(
+        marker in parsed.path for marker in ("about-you", "/profile", "create-account/about")
+    ):
+        error = RuntimeError("profile_completion_required: 密码步骤已推进，服务端要求补全账号资料")
+        error.code = "profile_completion_required"
+        raise error
 
 
 def available() -> bool:
@@ -235,9 +248,9 @@ def _enter_existing_account_otp(
             raise RuntimeError(f"浏览器 NextAuth 登录导航失败: {fallback}")
     if state == "logged_in" or _has_access_token(driver):
         return "logged_in"
-    if state == "password" and not _is_login_password_page(driver):
+    if state == "password" and not _is_login_password_page(driver) and not password:
         raise RuntimeError("邮箱进入新账号创建密码页，查活已停止，未创建账号")
-    if state == "login_password" or _is_login_password_page(driver):
+    if state in {"login_password", "password"} or _is_login_password_page(driver):
         # Keep the liveness flow aligned with the shared browser login state
         # machine. Some existing accounts land on /log-in/password even when
         # their saved credentials are valid; the old liveness-only path could
@@ -254,6 +267,7 @@ def _enter_existing_account_otp(
             totp_secret,
             timeout=45,
         )
+        _check_profile_handoff(driver)
         if challenge_state == "advanced":
             return "logged_in"
         if challenge_state == "email_otp":
@@ -285,6 +299,7 @@ def _enter_existing_account_otp(
             challenge_state = complete_openai_login_challenge(
                 driver, email, password, totp_secret, timeout=45,
             )
+            _check_profile_handoff(driver)
             if challenge_state == "advanced":
                 return "logged_in"
             if challenge_state == "email_otp":
@@ -323,6 +338,7 @@ def _complete_otp(
     after_ts: float,
     *,
     totp_secret: str = "",
+    on_email_confirmed=None,
 ) -> None:
     current_otp = None
     for attempt in range(1, 4):
@@ -341,6 +357,8 @@ def _complete_otp(
         outcome = _wait_after_email_otp_submit(
             driver, timeout=35, baseline_state=baseline, expected_email=email,
         )
+        if outcome in {"accepted", "email_verified", "totp_required"} and callable(on_email_confirmed):
+            on_email_confirmed()
         if outcome in {"accepted", "email_verified"}:
             return
         if outcome == "totp_required":
@@ -515,6 +533,14 @@ def refresh_access_token(
     cancelled = False
     remote_started = False
     failure_stage = "open"
+    initial_password_ids = frozenset()
+    email_challenge_started = False
+    email_challenge_completed = False
+    session_acquired = False
+
+    def email_confirmed() -> None:
+        nonlocal email_challenge_completed
+        email_challenge_completed = True
 
     def stage(value: str) -> None:
         nonlocal failure_stage
@@ -574,6 +600,13 @@ def refresh_access_token(
         effective_proxy = None if profile_reused else proxy
         stage("driver")
         driver = _build_driver(opened)
+        initial_password_ids = password_receipt_ids(driver)
+        capture = getattr(opened, "traffic_capture", None)
+        observe = getattr(capture, "set_submission_observer", None)
+        if callable(observe):
+            from core.registration.roxy import _make_submission_observer
+
+            observe(_make_submission_observer(driver))
         if debug_session is not None:
             registration_debug.attach_current_roxy(getattr(opened, "debugger_address", None))
         from core.browser import asset_policy as browser_asset_policy
@@ -636,8 +669,13 @@ def refresh_access_token(
             on_restart=restart_otp_boundary,
         )
         if state == "otp":
+            email_challenge_started = True
             stage("email_otp")
-            _complete_otp(driver, email, otp_after_ts, totp_secret=totp_secret)
+            _complete_otp(
+                driver, email, otp_after_ts, totp_secret=totp_secret,
+                on_email_confirmed=email_confirmed,
+            )
+            email_challenge_completed = True
         code = _page_account_unusable_code(driver)
         if code:
             refresh_result = {
@@ -653,6 +691,7 @@ def refresh_access_token(
         access_token = str(session_info.get("accessToken") or "").strip()
         if not access_token:
             raise RuntimeError("Roxy 登录完成但未拿到 accessToken")
+        session_acquired = True
         refresh_result = {
             "ok": True,
             "status": "live",
@@ -746,6 +785,15 @@ def refresh_access_token(
         from core.browser import asset_policy as browser_asset_policy, traffic as browser_traffic
 
         if isinstance(refresh_result, dict):
+            evidence = password_evidence(driver, exclude_ids=initial_password_ids)
+            refresh_result["password_auth_status"] = evidence["credential_check"]
+            refresh_result["password_action_dispatched"] = evidence["submitted"]
+            refresh_result["auth_facts"] = {
+                **evidence,
+                "email_challenge": ("success" if email_challenge_completed else "failed")
+                if email_challenge_started else "skipped",
+                "session_acquired": session_acquired,
+            }
             refresh_result.setdefault("live_check_driver", "browser_roxy")
             refresh_result.setdefault("auth_method", "roxy_browser")
             refresh_result.setdefault("remote_request_started", remote_started)

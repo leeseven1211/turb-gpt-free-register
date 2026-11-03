@@ -33,6 +33,21 @@ class _QueryCounter:
 
 
 class AdminRepositoryTests(PostgresTestCase):
+    def test_status_poll_preserves_separate_local_and_remote_password_facts(self):
+        acc_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "credential-status@example.test",
+            "extra_json": json.dumps({"account_password": "private-value"}),
+            "last_password_auth_status": "verified",
+            "last_auth_method": "roxy_browser",
+            "live_checked_at": "2026-11-03T12:00:00",
+        })
+        result = repo.list_account_statuses(repo.PageRequest(page=1, page_size=100), q="credential-status")
+        item = next(row for row in result["items"] if row["id"] == acc_id)
+        self.assertTrue(item["has_account_password"])
+        self.assertEqual(item["last_password_auth_status"], "verified")
+        self.assertEqual(item["last_auth_method"], "roxy_browser")
+        self.assertNotIn("private-value", json.dumps(item))
+
     def setUp(self):
         rs.reset_ready()
         rs.init()

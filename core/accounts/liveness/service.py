@@ -178,6 +178,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "roxy_proxy_tunnel_failed",
     "roxy_login_page_not_ready", "roxy_login_page_timeout",
     "roxy_login_preflight_timeout", "roxy_login_preflight_failed",
+    "password_entry_navigation_failed", "profile_completion_required",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "mfa_issue_challenge", "mfa_verify",
@@ -667,6 +668,31 @@ def _resolve_protocol_identity(
         identity.profile_version,
     )
     return identity
+
+
+def _report_roxy_password_evidence(reporter: TaskReporter, result: dict) -> None:
+    """密码、邮箱挑战和会话分别呈现，不用最终失败覆盖已确认密码。"""
+    facts = result.get("auth_facts")
+    if not isinstance(facts, dict):
+        return
+    status = facts.get("credential_check")
+    labels = {
+        "verified": ("success", "账号密码验证通过"),
+        "accepted": ("success", "账号密码设置已被接受"),
+        "rejected": ("failed", "远端拒绝本次账号密码提交"),
+        "unknown": ("failed", "本次密码提交结果未确认"),
+        "skipped": ("skipped", "本次认证未提交账号密码"),
+    }
+    if status in labels:
+        state, message = labels[status]
+        reporter.stage("login_password", state, message, detail={"auth_facts": facts})
+    email_state = facts.get("email_challenge")
+    if email_state in {"success", "failed", "skipped"}:
+        reporter.stage("email_otp", email_state, {
+            "success": "邮箱验证码已通过", "failed": "邮箱验证码未完成", "skipped": "本次认证未进入邮箱验证码处理",
+        }[email_state])
+    if not result.get("ok"):
+        reporter.stage("token", "failed", "本次未取得并保存有效 AT")
 
 
 def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
@@ -1520,7 +1546,9 @@ def _run_live_check(
                 except Exception:
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
-            if selected_refresh_driver == "browser_roxy":
+            if result.get("live_check_driver") == "browser_roxy":
+                _report_roxy_password_evidence(reporter, result)
+            if selected_refresh_driver == "browser_roxy" or result.get("live_check_driver") == "browser_roxy":
                 from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
 
                 error_message = str(result.get("error") or "")
@@ -1596,6 +1624,7 @@ def _run_live_check(
                 "fallback_used": result.get("fallback_used"),
                 "debug_browser_kept": bool(result.get("debug_browser_kept")),
                 "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),
+                "auth_facts": result.get("auth_facts"),
                 "fingerprint": result.get("fingerprint"),
                 "token_expired": result.get("token_expired"),
                 "needs_live_check": result.get("needs_live_check"),

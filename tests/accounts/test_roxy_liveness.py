@@ -8,6 +8,77 @@ from core.accounts.liveness.roxy import flow as roxy_liveness
 
 
 class RoxyLivenessFlowPolicyTests(unittest.TestCase):
+    def test_email_confirmation_survives_later_totp_failure(self):
+        from core.auth.challenge import MfaSecretMissingError
+
+        opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+        driver, client = MagicMock(), MagicMock()
+        client.open_profile_for_account.return_value = opened
+        with ExitStack() as stack:
+            for dependency in self._patch_refresh_dependencies(client=client, opened=opened, driver=driver, install=MagicMock()):
+                stack.enter_context(dependency)
+            stack.enter_context(patch.object(roxy_liveness, "_login_existing_account_with_recovery", return_value="otp"))
+            stack.enter_context(patch.object(roxy_liveness, "wait_for_otp", return_value="fixture-code"))
+            for name in ("_clear_otp_inputs", "_type_otp", "_click_continue"):
+                stack.enter_context(patch.object(roxy_liveness, name))
+            stack.enter_context(patch.object(roxy_liveness, "_email_otp_page_state", return_value={}))
+            stack.enter_context(patch.object(roxy_liveness, "_wait_after_email_otp_submit", return_value="totp_required"))
+            stack.enter_context(patch("core.codex.roxy.oauth.complete_openai_login_challenge", side_effect=MfaSecretMissingError("缺少 TOTP 密钥")))
+            result = roxy_liveness.refresh_access_token("account@example.test")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "mfa_secret_missing")
+        self.assertEqual(result["auth_facts"]["email_challenge"], "success")
+        self.assertFalse(result["auth_facts"]["session_acquired"])
+
+    def test_session_acquisition_survives_later_local_callback_failure(self):
+        for failure in ("bridge", "callback"):
+            with self.subTest(failure=failure):
+                opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+                driver, client = MagicMock(), MagicMock()
+                client.open_profile_for_account.return_value = opened
+                with ExitStack() as stack:
+                    for dependency in self._patch_refresh_dependencies(client=client, opened=opened, driver=driver, install=MagicMock()):
+                        stack.enter_context(dependency)
+                    bridge = stack.enter_context(patch.object(roxy_liveness, "_authenticated_browser_session", return_value=MagicMock()))
+                    callback = MagicMock(side_effect=RuntimeError("本地回调失败"))
+                    if failure == "bridge":
+                        bridge.side_effect = RuntimeError("本地 Cookie 桥接失败")
+                    result = roxy_liveness.refresh_access_token("account@example.test", on_authenticated=callback)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error_code"], "roxy_authenticated_callback_failed")
+                self.assertTrue(result["auth_facts"]["session_acquired"])
+                self.assertNotIn("access_token", result)
+
+    def test_password_confirmation_survives_later_email_timeout(self):
+        from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+
+        for stage, expected in (("login_password", "verified"), ("password_create", "accepted")):
+            with self.subTest(stage=stage):
+                opened = SimpleNamespace(profile_id="profile-1", account_bound=True)
+                driver, client = MagicMock(), MagicMock()
+                driver._browser_submission_receipts = []
+                client.open_profile_for_account.return_value = opened
+
+                def login(*_args, **_kwargs):
+                    driver._browser_submission_receipts.append(BrowserSubmissionReceipt(
+                        kind="password", stage=stage, endpoint_kind="password_submit",
+                        phase="confirmed", result="success", http_method="POST", http_status=200,
+                    ))
+                    return "otp"
+
+                with ExitStack() as stack:
+                    for dependency in self._patch_refresh_dependencies(client=client, opened=opened, driver=driver, install=MagicMock()):
+                        stack.enter_context(dependency)
+                    stack.enter_context(patch.object(roxy_liveness, "_login_existing_account_with_recovery", side_effect=login))
+                    stack.enter_context(patch.object(roxy_liveness, "_complete_otp", side_effect=RuntimeError("inbound_code_timeout")))
+                    result = roxy_liveness.refresh_access_token("account@example.test")
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["password_auth_status"], expected)
+                self.assertEqual(result["auth_facts"]["credential_check"], expected)
+                self.assertEqual(result["auth_facts"]["email_challenge"], "failed")
+                self.assertFalse(result["auth_facts"]["session_acquired"])
+                self.assertNotIn("access_token", result)
+
     def test_browser_proxy_error_cannot_imply_an_auth_http_response(self):
         from core.accounts.liveness import service as live_check_service
 

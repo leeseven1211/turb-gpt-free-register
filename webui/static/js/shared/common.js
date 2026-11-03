@@ -73,7 +73,7 @@ const LIST_FACET_LABELS = {
     has:'正常', expired:'过期', invalid_401:'失效 · 401', invalid_403:'失效 · 403',
     invalid_other:'失效 · 其他', none:'无 Token',
   },
-  password: {has:'已设置', none:'未设置'},
+  password: {has:'本地已保存', none:'本地未保存'},
   totp: {enabled:'已启用', disabled:'未启用'},
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
   promotion: {

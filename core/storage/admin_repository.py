@@ -432,7 +432,7 @@ def list_account_statuses(
         ", (a.data - ARRAY['access_token','id_token','refresh_token','password','login_password',"
         "'registration_password','totp_secret','extra_json']::text[] "
         "|| jsonb_build_object('has_access_token', "
-        f"{_ACCOUNT_ACCESS_TOKEN_PRESENT})) AS data"
+        f"{_ACCOUNT_ACCESS_TOKEN_PRESENT}, 'has_account_password', {_ACCOUNT_PASSWORD_PRESENT})) AS data"
     )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
@@ -465,12 +465,17 @@ def list_account_statuses(
         "codex_credential_state", "codex_execution_status", "codex_last_run_status", "codex_active_run_id",
         "codex_error", "access_token", "account_status", "account_status_reason", "account_status_at",
         "updated_at",
+        "last_password_auth_status", "last_auth_method", "live_checked_at",
     }
     items = []
     for raw in raw_rows:
         row = db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, raw))
         item = {key: value for key, value in row.items() if key in wanted | {"id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible"} and value not in (None, "")}
         item["has_access_token"] = bool(_text(row.get("has_access_token")))
+        item["has_account_password"] = row.get("has_account_password") is True
+        item["last_password_auth_status"] = row.get("last_password_auth_status") if row.get(
+            "last_password_auth_status"
+        ) in {"verified", "accepted", "rejected", "unknown", "skipped"} else None
         item["email_invalid"] = row.get("email_invalid") is True
         # 显式清除值，确保轮询合并不会残留旧邮箱失效原因和时间。
         for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):

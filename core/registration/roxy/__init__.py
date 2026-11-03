@@ -39,6 +39,7 @@ from core.registration.retained_resume import (
     _is_native_resume_start_page, has_rejected_existing_profile, prepare_retained_resume,
 )
 from core.auth.browser.password_auth import PasswordPageError, ProfileAccountAlreadyExistsError
+from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
 from core.auth.challenge import MfaSecretMissingError, PasswordRejectedError, PasswordSetupNotReadyError, RemoteExistingAccountError, auth_result_for_registration, classify_registration_identity
 
 logger = logging.getLogger(__name__)
@@ -1738,6 +1739,8 @@ def run_roxy_registration(
             persist_browser_resume_context(driver, opened, email=email, facts=facts)
         if driver is None:
             driver = _build_driver(opened)
+        # 每次绑定都重置策略，避免接管旧 driver 时混用本地与开源 Roxy 行为。
+        driver._registration_local_roxy_password_entry = _browser_helpers is None
         # 认证事实共用当前 Attempt/Run；CDP 观察器只需从 driver 读取这份只读
         # 上下文，不另起消费者或在事件里复制敏感凭据。
         try:
@@ -1950,6 +1953,7 @@ def run_roxy_registration(
 
         password_submitted_this_run = False
         password_prepared_this_run = False
+        previous_password_receipts = password_receipt_ids(driver) if _browser_helpers is None else frozenset()
 
         def _checkpoint_prepared_password(password: str) -> None:
             """在异步密码点击前保存原密码，供同一 Attempt 续跑。"""
@@ -1985,9 +1989,28 @@ def run_roxy_registration(
                     raise
 
         try:
+            retained_otp_can_try_password = bool(
+                _browser_helpers is None and existing_password and retained_state
+                and retained_state.page_state == PageState.OTP_EMAIL
+                and retained_state.pending_otp is None
+                and not password_recovered_before_resume
+            )
+            if retained_otp_can_try_password:
+                # 只读取当前 Attempt 的已持久化提交事实；原密码已提交后继续 OTP。
+                from core.storage import registration
+
+                private = registration.get_private_resume_context(int(context["attempt_id"]), email=email)
+                retained_otp_can_try_password = not any(
+                    fact.get("endpoint_kind") == "password_submit"
+                    and fact.get("phase") in {
+                        "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed",
+                        "response_observed", "unknown", "confirmed",
+                    }
+                    for fact in private.get("submission_facts") or [] if isinstance(fact, dict)
+                )
             if verified_resume_session or (retained_state and retained_state.page_state not in {
                 PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN,
-            }):
+            } and not retained_otp_can_try_password):
                 openai_password = existing_password
             else:
                 openai_password = _fill_password_page_if_present(
@@ -1997,6 +2020,7 @@ def run_roxy_registration(
                     existing_password=existing_password,
                     on_password_prepared=_checkpoint_prepared_password,
                     on_password_submitted=_checkpoint_submitted_password,
+                    **({"prefer_saved_password_entry": True} if _browser_helpers is None else {}),
                 ) or existing_password
         except (PasswordPageError, _PasswordTransitionTimeout) as exc:
             if not (resume_scope and _browser_helpers is None
@@ -2019,7 +2043,21 @@ def run_roxy_registration(
             raise
         else:
             if password_stage_expected and not verified_resume_session:
-                if password_submitted_this_run:
+                if _browser_helpers is None:
+                    evidence = password_evidence(driver, exclude_ids=previous_password_receipts)
+                    credential_check = evidence["credential_check"]
+                    if credential_check in {"verified", "accepted"}:
+                        password_result_state = "success"
+                        password_result_detail = ("远端已验证保存的登录密码" if credential_check == "verified"
+                                                  else "远端已接受本次创建密码，继续完成后续认证")
+                    elif credential_check in {"rejected", "unknown"}:
+                        password_result_state = "failed"
+                        password_result_detail = ("远端已明确拒绝本次密码" if credential_check == "rejected"
+                                                  else "本次密码已提交，远端结果仍未确认")
+                    else:
+                        password_result_state = "skipped"
+                        password_result_detail = "本次未提交或未取得密码验证回执；本地保存密码不代表远端已验证"
+                elif password_submitted_this_run:
                     password_result_state = "success"
                     password_result_detail = "账号密码已提交并进入下一步"
                 elif existing_password and openai_password and _is_email_verification_page(driver):
@@ -2892,6 +2930,8 @@ def run_roxy_registration(
             (
                 code
                 for marker, code in (
+                    ("password_entry_navigation_failed", "password_entry_navigation_failed"),
+                    ("profile_completion_required", "profile_completion_required"),
                     ("password_entry_page_not_hydrated", "workflow.password_entry_not_hydrated"),
                     ("password_entry_not_offered", "workflow.password_entry_not_offered"),
                     ("password_entry_recovery_exhausted", "workflow.password_entry_recovery_exhausted"),
@@ -2900,6 +2940,8 @@ def run_roxy_registration(
             ),
             None,
         )
+        if getattr(exc, "code", "") == "password_entry_navigation_failed":
+            password_entry_error_code = "password_entry_navigation_failed"
         mfa_secret_missing = isinstance(exc, MfaSecretMissingError) or any(marker in error_text.lower() for marker in (
             "缺少可用密码或 totp",
             "没有 totp 密钥",

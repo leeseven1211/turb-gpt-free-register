@@ -323,6 +323,7 @@ def test_nextauth_candidate_handoff_keeps_original_challenge_deadline(shell, fal
             patch.object(oauth, "_email_ui_submission_state", return_value=""),
             patch.object(oauth, "_submit_email_via_browser_nextauth", side_effect=fallback) as nextauth,
             patch.object(oauth, "_submit_saved_login_password") as password_submit,
+            patch.object(oauth, "open_offered_password_entry") as password_entry,
             pytest.raises(oauth.PasswordResetTransitionUnknown, match="候选密码认证"),
         ):
             oauth._relogin_after_password_reset(
@@ -331,6 +332,7 @@ def test_nextauth_candidate_handoff_keeps_original_challenge_deadline(shell, fal
         assert flow.clock.value <= 45.0
         nextauth.assert_called_once()
         password_submit.assert_not_called()
+        password_entry.assert_not_called()
         recovery.confirm_candidate_login.assert_not_called()
         assert recovery.checkpoint.state == "unknown"
         assert flow.driver._registration_retained_identity_required is True

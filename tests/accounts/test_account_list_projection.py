@@ -7,6 +7,33 @@ import unittest
 
 
 class AccountListProjectionTests(unittest.TestCase):
+    def test_compact_account_preserves_only_recorded_remote_password_results(self):
+        from webui.route_helpers import _compact_account_for_list
+
+        for status in ("verified", "accepted", "rejected", "unknown", "skipped"):
+            with self.subTest(status=status):
+                projected = _compact_account_for_list({
+                    "id": 20, "email": "password-status@example.test",
+                    "extra_json": {"account_password": "private-password"},
+                    "last_password_auth_status": status,
+                })
+                self.assertTrue(projected["has_account_password"])
+                self.assertEqual(status, projected.get("last_password_auth_status"))
+                self.assertNotIn("private-password", json.dumps(projected))
+
+    def test_compact_account_does_not_infer_remote_password_acceptance_from_legacy_data(self):
+        from webui.route_helpers import _compact_account_for_list
+
+        for status in (None, "", "success", "private-password"):
+            with self.subTest(status=status):
+                projected = _compact_account_for_list({
+                    "id": 21, "email": "legacy-password@example.test",
+                    "has_account_password": True, "has_access_token": True,
+                    "last_auth_method": "password", "last_password_auth_status": status,
+                })
+                self.assertTrue(projected["has_account_password"])
+                self.assertNotIn("last_password_auth_status", projected)
+
     def test_compact_account_reads_last_success_country_without_exposing_result_json(self):
         from webui.route_helpers import _compact_account_for_list
 

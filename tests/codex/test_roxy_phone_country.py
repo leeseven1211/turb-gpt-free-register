@@ -176,6 +176,8 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         shared.assert_called_once_with(
             driver, "a@example.com", timeout=60, existing_password="StoredPassword!123",
             login_rejection_detector=roxy_codex_oauth._is_explicit_password_rejection_state,
+            prefer_saved_password_entry=True,
+            saved_password_entry_already_attempted=True,
         )
         type_text.assert_not_called()
         click.assert_not_called()
@@ -491,7 +493,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         )
         data_saver.stop.assert_called_once_with()
 
-    def test_independent_oauth_opens_and_binds_codex_flow_before_navigation(self):
+    def _independent_oauth_navigation_failure(self, error):
         opened = SimpleNamespace(profile_id="profile-1", raw={})
         driver = MagicMock()
         client = MagicMock()
@@ -507,7 +509,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             patch("core.codex.oauth._build_authorize_url", return_value="https://auth.openai.com/authorize"),
             patch.object(roxy_codex_oauth, "_build_driver", return_value=driver),
             patch.object(roxy_codex_oauth, "_detect_browser_kind", return_value="roxy"),
-            patch.object(roxy_codex_oauth, "_fill_email_and_otp", side_effect=RuntimeError("stop navigation")),
+            patch.object(roxy_codex_oauth, "_fill_email_and_otp", side_effect=error),
             patch("core.browser.flow_policy.install_for_flow", return_value=data_saver) as install_for_flow,
             patch("core.browser.traffic.bind_roxy_capture") as bind_capture,
             patch.object(roxy_codex_oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False),
@@ -533,6 +535,30 @@ class RoxyPhoneCountryTests(unittest.TestCase):
         data_saver.stop.assert_called_once_with()
         driver.quit.assert_called_once_with()
         client.cleanup_profile.assert_called_once_with(opened)
+        return result
+
+    def test_independent_oauth_opens_and_binds_codex_flow_before_navigation(self):
+        result = self._independent_oauth_navigation_failure(RuntimeError("stop navigation"))
+        self.assertNotIn("error_code", result)
+        self.assertEqual(result["message"], "RuntimeError: 浏览器授权流程未完成")
+
+    def test_independent_oauth_preserves_safe_password_entry_and_profile_failures(self):
+        from core.auth.browser.password_entry import PasswordEntryNavigationError
+
+        profile_error = RuntimeError("private-profile-detail")
+        profile_error.code = "profile_completion_required"
+        cases = (
+            (PasswordEntryNavigationError("private-navigation-detail"), "password_entry_navigation_failed",
+             "页面提供的密码入口未能进入有效密码表单"),
+            (profile_error, "profile_completion_required", "密码步骤已推进，服务端要求补全账号资料"),
+        )
+        for error, code, message in cases:
+            with self.subTest(code=code):
+                result = self._independent_oauth_navigation_failure(error)
+                self.assertEqual(result.get("error_code"), code)
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["message"], f"{code}: {message}")
+                self.assertNotIn("private-", repr(result))
 
     def test_selects_virtualized_react_aria_country_with_enter(self):
         driver = _CountryDriver(current_code="1")

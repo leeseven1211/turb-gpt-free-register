@@ -1091,6 +1091,7 @@ class RetainedWindowFlowTests(unittest.TestCase):
             for name in ("_clear_otp_inputs", "_type_otp", "_submit_email_otp_current_form", "_resend_email_otp_after_failure"):
                 mocks[name] = stack.enter_context(patch.object(roxy, name))
             mocks["_has_access_token"].return_value = False
+            mocks["_fill_password_page_if_present"].return_value = "unit-original-password"
             mocks["_fetch_chatgpt_session"].return_value = SESSION
             mocks["_complete_profile_page"].return_value = False
             yield driver, mocks
@@ -1100,8 +1101,9 @@ class RetainedWindowFlowTests(unittest.TestCase):
             result = self.run_registration()
             self.assertTrue(result["success"], result.get("error"))
             self.assertEqual(driver._registration_otp_after_ts, 1234.5)
-            for name in ("opened", "driver", "navigate", "_submit_email_and_wait_next", "_fill_password_page_if_present", "login"):
+            for name in ("opened", "driver", "navigate", "_submit_email_and_wait_next", "login"):
                 mocks[name].assert_not_called()
+            self.assertTrue(mocks["_fill_password_page_if_present"].call_args.kwargs["prefer_saved_password_entry"])
             mocks["take_failed_browser"].assert_called_once()
             mocks["start_capture"].assert_called_once()
             mocks["retain_failed_browser"].assert_not_called()

@@ -1105,8 +1105,24 @@ function _tokenCellV2(r) {
   return `<div class="account-cell-lines"><div class="account-cell-line">${button}</div>${status ? `<div class="account-cell-line account-cell-line--sub">HTTP ${status}</div>` : ''}</div>`;
 }
 function _passwordCellV2(r) {
-  if (!r.has_account_password) return '<span class="acc-v2-muted">未设置</span>';
-  return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}" title="复制该账号密码">复制</button>`;
+  const remote = _accountPasswordAuthDisplay(r);
+  const local = r.has_account_password
+    ? `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}" title="本地已保存；点击复制账号密码。本地保存不代表远端已接受。">复制</button>`
+    : '<span class="acc-v2-muted">本地未保存</span>';
+  const title = `最近远端密码结果：${remote.label}；最近一次有记录的认证结果，不代表当前密码或登录态仍有效。`;
+  return `<div class="account-cell-lines"><div class="account-cell-line">${local}</div><div class="account-cell-line account-cell-line--sub"><span title="${esc(title)}">${esc(remote.cellLabel)}</span></div></div>`;
+}
+function _accountPasswordAuthDisplay(r) {
+  const states = {
+    verified: {label: '登录验证通过', cellLabel: '验证通过', tone: 'success'},
+    accepted: {label: '创建密码被接受', cellLabel: '创建已接受', tone: 'success'},
+    rejected: {label: '密码被拒绝', cellLabel: '被拒绝', tone: 'danger'},
+    unknown: {label: '未确认', cellLabel: '未确认', tone: 'warning'},
+    skipped: {label: '未提交', cellLabel: '未提交', tone: 'neutral'},
+  };
+  const status = String(r.last_password_auth_status || '');
+  return Object.prototype.hasOwnProperty.call(states, status)
+    ? states[status] : {label: '未记录', cellLabel: '远端未记录', tone: 'neutral'};
 }
 function _totpCellV2(r) {
   const button = r.totp_enabled
@@ -1290,6 +1306,7 @@ function _accountDetailMarkup(r) {
   const riskTone = r.deactivation_mail_detected ? 'danger' : (r.deactivation_mail_scan_status === 'success' ? 'success' : 'neutral');
   const authFallback = r.last_auth_fallback_used === true ? '已使用回退' : (r.last_auth_fallback_used === false ? '未使用回退' : '未记录');
   const authFallbackTone = r.last_auth_fallback_used === true ? 'warning' : (r.last_auth_fallback_used === false ? 'success' : 'neutral');
+  const passwordAuth = _accountPasswordAuthDisplay(r);
   const note = String(r.note || '').trim();
   return `<div class="account-detail-section">
     <div class="account-detail-section-title">账号与注册</div>
@@ -1305,11 +1322,13 @@ function _accountDetailMarkup(r) {
   </div>
   <div class="account-detail-section">
     <div class="account-detail-section-title">健康与安全</div>
+    <p class="account-detail-section-copy">本地保存不代表远端已接受。远端密码结果是最近一次有记录的认证结果，不代表当前密码或登录态仍有效。</p>
     <div class="account-detail-grid">
       ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `${tokenDisplay.key === 'invalid' ? 'JWT 标称到期' : '到期'} ${_fmtPlanTime(r.token_expires_at)}` : '')}
       ${_accountDetailState('在线状态', liveState, liveTone, r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '')}
       ${_accountDetailState('邮箱状态', r.email_invalid === true ? '邮箱失效' : '未标记失效', r.email_invalid === true ? 'danger' : 'neutral', r.email_invalid === true ? [r.email_invalid_reason, r.email_invalid_at ? `标记于 ${_fmtPlanTime(r.email_invalid_at)}` : ''].filter(Boolean).join('；') : '未标记不代表已验证邮箱可用')}
-      ${_accountDetailState('账号密码', r.has_account_password ? '已设置' : '未设置', r.has_account_password ? 'success' : 'neutral')}
+      ${_accountDetailState('账号密码（本地）', r.has_account_password ? '本地已保存' : '本地未保存', r.has_account_password ? 'info' : 'neutral')}
+      ${_accountDetailState('最近远端密码结果', passwordAuth.label, passwordAuth.tone)}
       ${_accountDetailState('Authenticator 2FA', r.totp_enabled ? '已启用' : '未启用', r.totp_enabled ? 'success' : 'neutral')}
       ${_accountDetailState('封号邮件', risk, riskTone)}
       ${_accountDetailState('最近认证方式', _accountDetailAuthMethod(r.last_auth_method))}
@@ -2011,9 +2030,9 @@ async function copySelectedAccountPasswords() {
   if (!ids.length) { showToast('请先选择账号'); return; }
   try {
     const lines = await fetchAccountSecrets(ids, 'account_password_line');
-    if (!lines.length) { showToast('选中账号均未设置密码'); return; }
+    if (!lines.length) { showToast('选中账号均未在本地保存密码'); return; }
     copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 个账号密码；未设置密码的账号已跳过`);
+    showToast(`已复制 ${lines.length} 个账号密码；本地未保存密码的账号已跳过`);
   } catch(err) { showToast('复制密码失败: ' + err.message); }
 }
 

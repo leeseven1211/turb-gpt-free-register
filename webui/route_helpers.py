@@ -225,6 +225,12 @@ def _compact_account_for_list(row: dict) -> dict:
     }
     for key in ("email_invalid_reason", "email_invalid_at", "email_invalid_source"):
         out[key] = row.get(key) if out["email_invalid"] else None
+    # 仅展示已记录的远端密码结果，不从本地密码、Token 或认证方式反推。
+    password_auth_status = row.get("last_password_auth_status")
+    if isinstance(password_auth_status, str) and password_auth_status in {
+        "verified", "accepted", "rejected", "unknown", "skipped",
+    }:
+        out["last_password_auth_status"] = password_auth_status
 
     # 这些是列表固定列直接展示字段。
     for key in (
