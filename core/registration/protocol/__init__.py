@@ -148,6 +148,12 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
     suffix = f" HTTP {status}" if status is not None else ""
     if diagnostics:
         suffix += " 诊断=" + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
+    if diagnostics.get("operation") == "mailbox_wait":
+        from core.operations.errors import classify_task_error
+
+        info = classify_task_error("", task_type="registration", result_summary={"cause_code": cause_code})
+        if info is not None:
+            return f"{cause_code}: {info['summary']}：{type_name}{suffix}"
     if cause_code in {"account_create_invalid_state", "account_create_user_already_exists"} or (
         cause_code.startswith("protocol_") and cause_code in descriptions
     ):
