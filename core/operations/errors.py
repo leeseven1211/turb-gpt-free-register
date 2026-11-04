@@ -1118,7 +1118,6 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_send_no_response": ("MAIL-SEND-004", "验证码发送请求未收到响应"),
     "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送结果未确认"),
     "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未收到验证码邮件"),
-    "email_otp_mailbox_failed": ("MAIL-OTP-READ", "验证码邮箱读取失败"),
     "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未确认下一步"),
     "email_transition_timeout": ("FLOW-EMAIL-002", "邮箱提交或认证跳转预算耗尽"),
     "email_entry_not_ready": ("FLOW-EMAIL-003", "邮箱输入框或邮箱入口尚未就绪"),
@@ -1246,8 +1245,6 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "email_otp_send_no_response",
     "email_otp_send_unknown",
     "email_otp_no_mail",
-    "email_otp_mailbox_failed",
-    *_BUTLER_RECIPIENT_CAUSES,
     *_OTP_PAGE_NETWORK_CAUSES,
     "post_register_failure",
     "protocol_preauth_transport_failed",
@@ -1262,13 +1259,13 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
 
 _REGISTRATION_DIAGNOSTIC_OPERATIONS = frozenset({
     "preauth", "email_submit", "password_submit", "otp_send", "otp_validate", "profile_submit",
-    "callback", "session", "auth_session", "mailbox_wait", "other",
+    "callback", "session", "auth_session", "other",
 })
 _REGISTRATION_DIAGNOSTIC_STAGES = frozenset({
     "browser", "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
 })
 _REGISTRATION_DIAGNOSTIC_FAILURE_KINDS = frozenset({
-    "transport_error", "http_error", "invalid_response", "missing_session", "no_mail", "mailbox_error", "unknown",
+    "transport_error", "http_error", "invalid_response", "missing_session", "unknown",
 })
 _REGISTRATION_EXCEPTION_TYPES = frozenset({
     "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError", "JSONDecodeError",
@@ -1277,7 +1274,6 @@ _REGISTRATION_EXCEPTION_TYPES = frozenset({
     "SSLError", "SSLCertVerificationError", "CertificateError", "TlsError", "ProxyConnectionError", "ProxyError",
     "HTTPError", "HTTPStatusError", "RequestException", "RequestError", "TransportError", "ProtocolError",
     "ConnectError", "ReadError", "WriteError", "ConnectTimeoutError", "ReadTimeoutError", "ProtocolOssRequestUnknown",
-    "EmailButlerClientError",
 })
 
 
@@ -1307,9 +1303,6 @@ def safe_registration_diagnostics(value: object) -> dict[str, Any]:
     for key in ("otp_received", "profile_confirmed"):
         if type(value.get(key)) is bool:
             result[key] = value[key]
-    mailbox_code = value.get("mailbox_error_code")
-    if isinstance(mailbox_code, str) and mailbox_code in (_BUTLER_RECIPIENT_CAUSES.keys() | {"inbound_request_failed", "invalid_key"}):
-        result["mailbox_error_code"] = mailbox_code
     exception_type = value.get("exception_type")
     if isinstance(exception_type, str):
         result["exception_type"] = exception_type if exception_type in _REGISTRATION_EXCEPTION_TYPES else "Exception"
@@ -1330,14 +1323,6 @@ def registration_diagnostic_cause_code(value: object) -> str:
     operation = diagnostics.get("operation")
     kind = diagnostics.get("failure_kind")
     status = diagnostics.get("http_status")
-    if operation == "mailbox_wait" and diagnostics.get("otp_received") is False:
-        if kind == "no_mail" and status in {None, 408}:
-            return "email_otp_no_mail"
-        if kind in {"no_mail", "mailbox_error"}:
-            mailbox_code = diagnostics.get("mailbox_error_code")
-            if mailbox_code in _BUTLER_RECIPIENT_CAUSES and mailbox_code != "inbound_code_timeout":
-                return mailbox_code
-            return "email_otp_mailbox_failed"
     if kind == "http_error" and operation == "profile_submit":
         code = diagnostics.get("auth_error", {}).get("code")
         if status == 409 and code == "invalid_state":

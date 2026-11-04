@@ -655,23 +655,23 @@ def _require_recipient_capability(api_base: str, api_key: str) -> None:
         payload = _request("GET", "/me", api_base=api_base, api_key=api_key)
     except EmailButlerClientError as exc:
         if re.search(r"HTTP (404|405)\b", str(exc)):
-            raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 缺少能力声明接口", error_code="recipient_contract_unsupported") from exc
+            raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 缺少能力声明接口") from exc
         raise
     capabilities = payload.get("capabilities")
     if not isinstance(capabilities, list) or _RECIPIENT_CAPABILITY not in capabilities:
-        raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 未声明严格收件证据能力", error_code="recipient_contract_unsupported")
+        raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 未声明严格收件证据能力")
     _RECIPIENT_CAPABILITY_CACHE[identity] = now + 60
 
 
 def _validate_recipient_match(payload: dict, target: str, strict_family: bool, mailbox: str) -> None:
     """正负查询回执都必须声明原完整地址、族隔离和最终收件箱。"""
     if payload.get("recipient_mode") != _RECIPIENT_MODE or not isinstance(payload.get("recipient_match"), dict):
-        raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 缺少严格收件回执", error_code="recipient_contract_unsupported")
+        raise EmailButlerClientError("recipient_contract_unsupported: Email Butler 缺少严格收件回执")
     match = payload["recipient_match"]
     if _cache_key(match.get("email")) != target or match.get("strict_family") is not strict_family:
-        raise EmailButlerClientError("recipient_mismatch: 严格收件回执的完整地址或族隔离标志不一致", error_code="recipient_mismatch")
+        raise EmailButlerClientError("recipient_mismatch: 严格收件回执的完整地址或族隔离标志不一致")
     if _cache_key(match.get("mailbox_email")) != mailbox:
-        raise EmailButlerClientError("mailbox_mismatch: 严格收件回执的最终收件箱不一致", error_code="mailbox_mismatch")
+        raise EmailButlerClientError("mailbox_mismatch: 严格收件回执的最终收件箱不一致")
 
 
 def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool, mailbox: str) -> None:
@@ -683,7 +683,7 @@ def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool,
     if (not isinstance(evidence, dict) or not any(evidence.get(field) for field in address_fields)
             or any(not isinstance(evidence.get(field, []), list)
                    or any(not isinstance(value, str) for value in evidence.get(field, [])) for field in address_fields)):
-        raise EmailButlerClientError("recipient_evidence_missing: 严格收件回执缺少有效投递证据", error_code="recipient_evidence_missing")
+        raise EmailButlerClientError("recipient_evidence_missing: 严格收件回执缺少有效投递证据")
     from core.email.recipients import candidate_match
 
     if not candidate_match(target, {"recipient_evidence": evidence}, forwarded=True, strict_family=strict_family):
@@ -698,7 +698,7 @@ def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool,
         ambiguous_parent = (strict_family and "+" not in target.partition("@")[0]
                             and not any(same_family(value) for value in originals) and displayed == {target})
         error_code = "recipient_ambiguous" if target in originals or ambiguous_parent else "recipient_mismatch"
-        raise EmailButlerClientError(f"{error_code}: 原始收件证据无法唯一匹配完整地址", error_code=error_code)
+        raise EmailButlerClientError(f"{error_code}: 原始收件证据无法唯一匹配完整地址")
 
 
 def fetch_inbound_otp(
@@ -736,7 +736,7 @@ def fetch_inbound_otp(
     connection = {}
     if strict:
         if not mailbox.partition("@")[0] or not mailbox.partition("@")[2]:
-            raise EmailButlerClientError("mailbox_mismatch: 严格取码必须指定最终收件箱", error_code="mailbox_mismatch")
+            raise EmailButlerClientError("mailbox_mismatch: 严格取码必须指定最终收件箱")
         connection = {"api_base": _api_base(api_base), "api_key": _api_key(api_key)}
         _require_recipient_capability(**connection)
         local_probe = None
@@ -758,7 +758,6 @@ def fetch_inbound_otp(
     started = time.monotonic()
     deadline = started + wait_seconds
     last_error = "尚未收到新的 OpenAI 验证码邮件"
-    last_error_code = ""
     chunk_index = 0
     while time.monotonic() < deadline:
         cooperative_checkpoint()
@@ -800,14 +799,10 @@ def fetch_inbound_otp(
                 logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
                 return otp
             last_error = "; ".join(str(payload.get(key) or "") for key in ("error_code", "message")).strip("; ") or "inbound_code_timeout: PG 入站等待结束但没有 OTP"
-            last_error_code = str(payload.get("error_code") or "inbound_code_timeout")
         except EmailButlerClientError as exc:
             if not _is_transient_inbound_error(exc):
                 raise
             last_error = str(exc)
-            last_error_code = exc.error_code or "inbound_request_failed"
-            if last_error_code == "inbound_code_timeout" and exc.status_code != 408:
-                last_error_code = "inbound_request_failed"
             logger.warning(
                 "[EmailButler] PG 入站等待第 %s 段瞬时失败，继续剩余等待：%s",
                 chunk_index,
@@ -843,8 +838,7 @@ def fetch_inbound_otp(
     elapsed = time.monotonic() - started
     logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，累计等待 %.1fs", elapsed)
     raise EmailButlerClientError(
-        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}; {last_error}",
-        error_code=last_error_code,
+        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}; {last_error}"
     )
 
 

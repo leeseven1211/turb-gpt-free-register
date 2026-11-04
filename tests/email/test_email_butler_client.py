@@ -193,47 +193,6 @@ class EmailButlerClientTests(unittest.TestCase):
         self.assertEqual(otp, "135790")
         request_mock.assert_called_once()
 
-    def test_inbound_wait_preserves_no_mail_and_api_failure_as_different_diagnostics(self):
-        cases = [
-            ({"code": 200}, "inbound_code_timeout"),
-            (client.EmailButlerClientError("HTTP 408", status_code=408, error_code="inbound_code_timeout"), "inbound_code_timeout"),
-            (client.EmailButlerClientError("HTTP 524", status_code=524), "inbound_request_failed"),
-            (client.EmailButlerClientError("HTTP 524", status_code=524, error_code="inbound_code_timeout"), "inbound_request_failed"),
-            (client.EmailButlerClientError("ConnectionError: 连接中断"), "inbound_request_failed"),
-        ]
-        for outcome, expected in cases:
-            with self.subTest(expected=expected, outcome=type(outcome).__name__):
-                effect = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
-                with (
-                    patch.object(client, "_request", **effect),
-                    patch.object(client.time, "monotonic", side_effect=[0, 0, 0, 1, 1]),
-                    self.assertRaises(client.EmailButlerClientError) as caught,
-                ):
-                    client.fetch_inbound_otp("alias@icloud.com", after_ts=100, max_wait=1)
-                self.assertEqual(caught.exception.error_code, expected)
-                self.assertIsNone(caught.exception.status_code)
-                self.assertFalse(caught.exception.definite_rejection)
-                self.assertNotIsInstance(caught.exception, TimeoutError)
-
-    def test_recipient_receipt_errors_keep_the_actual_local_validation_cause(self):
-        from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
-        from core.operations.errors import registration_diagnostic_cause_code
-
-        match = {"email": "alias+one@icloud.com", "strict_family": False, "mailbox_email": "inbox@example.test"}
-        payload = {"recipient_mode": "forwarded_exact_v1", "recipient_match": match}
-        cases = [
-            ({}, "recipient_contract_unsupported"),
-            ({**payload, "recipient_match": {**match, "email": "other@icloud.com"}}, "recipient_mismatch"),
-            ({**payload, "recipient_match": {**match, "mailbox_email": "other@example.test"}}, "mailbox_mismatch"),
-            (payload, "recipient_evidence_missing"),
-        ]
-        for receipt, expected in cases:
-            with self.subTest(expected=expected), self.assertRaises(client.EmailButlerClientError) as caught:
-                client._validate_recipient_receipt(receipt, "alias+one@icloud.com", False, "inbox@example.test")
-            diagnostics = RegistrationFailureDiagnostics()
-            diagnostics.progress("email_otp", "running")
-            self.assertEqual(registration_diagnostic_cause_code(diagnostics.failure(caught.exception)), expected)
-
     def test_non_idempotent_request_does_not_retry_connection_error(self):
         with patch.object(
             client.requests,

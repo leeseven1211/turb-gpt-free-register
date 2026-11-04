@@ -11,7 +11,7 @@ _EXCEPTION_TYPES = frozenset({
     "OSError", "TimeoutError", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
     "ConnectionRefusedError", "BrokenPipeError", "HTTPError", "RequestException", "Timeout",
     "ConnectTimeout", "ReadTimeout", "ProxyError", "SSLError", "TlsError", "ProxyConnectionError",
-    "JSONDecodeError", "ProtocolOssRequestUnknown", "ModuleNotFoundError", "ImportError", "EmailButlerClientError",
+    "JSONDecodeError", "ProtocolOssRequestUnknown", "ModuleNotFoundError", "ImportError",
 })
 _STAGES = frozenset({
     "browser", "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
@@ -138,19 +138,6 @@ class RegistrationFailureDiagnostics:
         selected = None
         fallback = None
         for cause in chain:
-            if self.stage == "email_otp" and not self.otp_received:
-                from core.email.email_butler.client import EmailButlerClientError
-                from core.operations.errors import safe_registration_diagnostics
-
-                if isinstance(cause, EmailButlerClientError):
-                    # 只读取最终异常链中的邮箱事实，不用当前阶段或较早请求猜测未收信。
-                    no_mail = cause.error_code == "inbound_code_timeout" and cause.status_code in {None, 408}
-                    selected = safe_registration_diagnostics({
-                        "operation": "mailbox_wait", "http_status": cause.status_code, "auth_error": {},
-                        "failure_kind": "no_mail" if no_mail else "mailbox_error",
-                        "mailbox_error_code": "" if cause.error_code == "inbound_code_timeout" else cause.error_code,
-                    })
-                    break
             selected = next((data for _, data, observed in reversed(self._events) if observed is cause), None)
             if selected is not None:
                 break
