@@ -24,6 +24,12 @@ class _Session:
     def get_auth_headers(self, referer=""):
         return {"referer": referer, "openai-sentinel-token": "stale"}
 
+    def get_auth_navigate_headers(self, referer=""):
+        return {"referer": referer}
+
+    def get(self, url, **_kwargs):
+        return SimpleNamespace(url=url, text="<p>请输入邮箱验证码</p>", raise_for_status=lambda: None)
+
     def post(self, url, headers, data, allow_redirects=False):
         self.posts.append((url, headers, json.loads(data), allow_redirects))
         return _Response(200, {"continue_url": "https://auth.openai.com/authorize/continue?code=x"})

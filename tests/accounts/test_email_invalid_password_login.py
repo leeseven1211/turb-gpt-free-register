@@ -72,6 +72,26 @@ class OfferedPasswordLoginTests(unittest.TestCase):
         self.assertEqual(target, result)
         self.assertEqual([OTP_URL, target], [call.args[0] for call in session.get.call_args_list])
 
+    def test_normal_email_without_trusted_offer_keeps_current_email_challenge(self):
+        from core.accounts.liveness.protocol import v2
+
+        for html in (
+            '<p>请输入验证码</p>',
+            '<a href="https://other.example/log-in/password">使用密码</a>',
+            '<a href="https://auth.openai.com.other.example/log-in/password">使用密码</a>',
+            '<a href="https://fixture@auth.openai.com/log-in/password">使用密码</a>',
+            '<a href="/create-account/password">创建密码</a>',
+            '<a href="javascript:location.href=\'/log-in/password\'">使用密码</a>',
+        ):
+            with self.subTest(html=html):
+                session = _Session()
+                session.get.return_value = _Response(OTP_URL, html)
+
+                result = v2._open_offered_password_login(session, OTP_URL, allow_standard_route=False)
+
+                self.assertEqual(OTP_URL, result)
+                self.assertEqual([OTP_URL], [call.args[0] for call in session.get.call_args_list])
+
     def test_unoffered_or_untrusted_links_only_try_standard_login_route(self):
         from core.accounts.liveness.protocol import v2 as v2
 
@@ -171,7 +191,7 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("password_mfa_totp", result["auth_method"])
         self.assertEqual("verified", result["password_auth_status"])
-        opened.assert_called_once_with(session, OTP_URL)
+        opened.assert_called_once_with(session, OTP_URL, allow_standard_route=True)
         verify.assert_called_once_with(session, "fixture-password")
         mfa.assert_called_once_with(session, {"continue_url": MFA_URL}, MFA_URL, "fixture-secret")
         boundary.assert_called_once()
@@ -261,18 +281,43 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         send.assert_not_called()
         email.assert_not_called()
 
-    def test_unmarked_email_keeps_existing_initial_otp_flow(self):
-        v2, _, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+    def test_unmarked_email_checks_password_offer_before_otp(self):
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.return_value = OTP_URL
 
         result = v2.refresh_access_token(EMAIL, proxy="")
 
         self.assertTrue(result["ok"])
         self.assertEqual("email_otp", result["auth_method"])
-        opened.assert_not_called()
+        opened.assert_called_once_with(session, OTP_URL, allow_standard_route=False)
         verify.assert_not_called()
         mfa.assert_not_called()
         send.assert_called_once()
         email.assert_called_once()
+        legacy.assert_not_called()
+
+    def test_unmarked_email_follows_real_password_offer_and_authenticates_without_otp(self):
+        from core.accounts.liveness.protocol import v2 as v2_module
+
+        open_offered = v2_module._open_offered_password_login
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.side_effect = open_offered
+        target = PASSWORD_URL + "?state=fixture"
+        session.get.side_effect = [
+            _Response(OTP_URL, '<a href="/log-in/password?state=fixture">使用密码</a>'),
+            _Response(target, '<input type="password">'),
+        ]
+
+        result = v2.refresh_access_token(EMAIL, proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("verified", result["password_auth_status"])
+        self.assertEqual("password_mfa_totp", result["auth_method"])
+        self.assertEqual([OTP_URL, target], [call.args[0] for call in session.get.call_args_list])
+        verify.assert_called_once_with(session, "fixture-password")
+        mfa.assert_called_once()
+        send.assert_not_called()
+        email.assert_not_called()
         legacy.assert_not_called()
 
     def test_unmarked_email_without_password_keeps_legacy_login(self):

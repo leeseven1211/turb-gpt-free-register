@@ -516,8 +516,8 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
         raise
 
 
-def _open_offered_password_login(session, final_url: str) -> str:
-    """邮箱失效时沿用当前会话，优先页面入口，再尝试标准密码登录页。"""
+def _open_offered_password_login(session, final_url: str, *, allow_standard_route: bool = True) -> str:
+    """沿用当前会话检查页面密码入口；失效邮箱可继续探测既有标准路由。"""
     def trusted_path(url: str, path: str) -> bool:
         parsed = urlparse(url)
         return (
@@ -552,6 +552,7 @@ def _open_offered_password_login(session, final_url: str) -> str:
 
     if not trusted_path(final_url, "/email-verification"):
         raise unavailable()
+    logger.info("[查活][Protocol v2] 检查邮箱验证页上的密码登录入口")
     response = navigate(final_url, _EMAIL_PATH)
     current_url = str(getattr(response, "url", "") or final_url)
     if trusted_path(current_url, "/log-in/password"):
@@ -572,12 +573,17 @@ def _open_offered_password_login(session, final_url: str) -> str:
 
     parser = PasswordLinkParser()
     parser.feed(str(getattr(response, "text", "") or ""))
+    if not parser.target and not allow_standard_route:
+        logger.info("[查活][Protocol v2] 页面未提供密码登录入口，继续邮箱验证码")
+        return current_url
+    if parser.target:
+        logger.info("[查活][Protocol v2] 发现密码登录入口，优先验证保存的密码")
     # 标准密码页是既有登录路由；只做导航，并以服务端真实落点决定能否提交密码。
     response = navigate(parser.target or _PASSWORD_PATH, current_url)
     password_url = str(getattr(response, "url", "") or "")
     if not trusted_path(password_url, "/log-in/password"):
         raise unavailable()
-    logger.info("[查活][Protocol v2] 邮箱已失效，服务端已允许进入密码登录页")
+    logger.info("[查活][Protocol v2] 服务端已允许进入密码登录页")
     return password_url
 
 
@@ -645,11 +651,13 @@ def _refresh_with_password(
 
         parsed_final_url = urlparse(str(final_url or ""))
         if (
-            email_invalid and parsed_final_url.hostname == "auth.openai.com"
+            parsed_final_url.hostname == "auth.openai.com"
             and parsed_final_url.path.rstrip("/") == "/email-verification"
         ):
             auth_method = "password"
-            final_url = _open_offered_password_login(session, str(final_url))
+            final_url = _open_offered_password_login(
+                session, str(final_url), allow_standard_route=email_invalid,
+            )
             parsed_final_url = urlparse(final_url)
         final_host = (parsed_final_url.hostname or "").lower()
         final_path = parsed_final_url.path.lower()
