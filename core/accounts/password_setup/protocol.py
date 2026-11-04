@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import uuid
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
+from core.accounts.liveness.protocol import v2 as protocol_auth
 from core.auth.protocol.openai_auth import build_sentinel_header, request_sentinel_token
 from core.auth.protocol.sentinel_runner import generate_sentinel_token
 from core.email import provider as email_provider
+from core.email.mailbox_wait import use_cooperative_wait
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
 
@@ -19,6 +22,7 @@ _AUTH = "https://auth.openai.com"
 _PASSWORD_PAGE = _AUTH + "/reset-password/new-password"
 _CONTROL_ERRORS = (OperationCancelled, OperationLeaseLost)
 _PENDING_TYPES = {"password", "new_password", "password_reset", "email_verification", "email_otp", "mfa_challenge", "about_you"}
+logger = logging.getLogger(__name__)
 
 
 class ProtocolPasswordSetupError(RuntimeError):
@@ -80,8 +84,8 @@ def _payload(response, *, final: bool = False) -> dict:
             code, message = "password_setup_already_set", "远端账号已设置密码，本操作不会重置已有密码"
         elif any(item in reason for item in ("invalid_state", "session_expired", "session_invalid", "login_required")) or status == 401:
             code, message = "password_setup_session_expired", "补密码登录状态已失效，请重新登录后重试"
-        elif "mfa" in reason:
-            code, message = "password_setup_mfa_secret_missing", "补密码重新验证需要 MFA，请先完成已有 MFA 登录"
+        elif any(item in reason for item in ("mfa", "totp")):
+            code, message = "password_setup_mfa_rejected", "补密码 2FA 验证未通过，请检查账号已有的密钥"
         elif any(item in reason for item in ("wrong_email_otp", "invalid_code", "invalid otp", "wrong code")):
             code, message = "password_setup_otp_rejected", "补密码邮箱验证码被拒绝，请重新获取本轮验证码"
         elif status == 429:
@@ -190,6 +194,46 @@ def _continuation(data: dict) -> str:
     return str(data.get("continue_url") or payload.get("url") or "")
 
 
+def _is_mfa_page(url: str) -> bool:
+    parsed = urlsplit(url)
+    path = parsed.path.rstrip("/")
+    return parsed.hostname == "auth.openai.com" and (path == "/mfa-challenge" or path.startswith("/mfa-challenge/"))
+
+
+def _verify_mfa(session, data: dict, url: str, secret: str, *, checkpoint=None) -> str:
+    if not secret:
+        raise ProtocolPasswordSetupError("password_setup_mfa_secret_missing", "补密码重新验证需要账号已有的 2FA 密钥")
+    factor_id = protocol_auth._extract_factor_id(data, url)
+    if not factor_id:
+        raise ProtocolPasswordSetupError("password_setup_mfa_factor_missing", "补密码重新验证未返回有效的 2FA 挑战")
+    logger.info("[补密码] 正在使用账号已有的 2FA 完成重新验证")
+    headers = session.get_auth_headers(referer=url)
+    headers.pop("openai-sentinel-token", None)
+    headers.pop("openai-sentinel-so-token", None)
+    _payload(_request(session, "post", _AUTH + "/api/accounts/mfa/issue_challenge",
+        headers=headers, data=json.dumps({"id": factor_id, "type": "totp", "force_fresh_challenge": False}),
+        allow_redirects=False, checkpoint=checkpoint))
+    _check(checkpoint)
+    try:
+        code = protocol_auth._totp_code(secret)
+    except protocol_auth.ProtocolV2AuthError:
+        raise ProtocolPasswordSetupError("password_setup_mfa_secret_invalid", "账号已有的 2FA 密钥无法生成验证码") from None
+    verified = _payload(_request(session, "post", _AUTH + "/api/accounts/mfa/verify",
+        headers=headers, data=json.dumps({"id": factor_id, "type": "totp", "code": code}),
+        allow_redirects=False, checkpoint=checkpoint))
+    logger.info("[补密码] 2FA 重新验证已通过")
+    return _trusted_url(_continuation(verified))
+
+
+def _follow_password_page(session, url: str, *, referer: str, checkpoint=None) -> str:
+    parsed = urlsplit(url)
+    if parsed.hostname != "auth.openai.com" or parsed.path.rstrip("/") != "/authorize/continue":
+        _require_password_page(url)
+    landing = _follow(session, url, referer=referer, checkpoint=checkpoint)
+    _require_password_page(landing)
+    return landing
+
+
 def _confirm_result(session, data: dict, *, checkpoint=None) -> None:
     page = data.get("page") if isinstance(data.get("page"), dict) else {}
     continuation = _continuation(data)
@@ -215,7 +259,8 @@ def _confirm_result(session, data: dict, *, checkpoint=None) -> None:
     raise ProtocolPasswordSetupError("password_setup_result_unconfirmed", "密码提交尚未返回受信任的完成状态，请保留候选密码后核实", True)
 
 
-def add_password(session, email: str, password: str, *, checkpoint=None, on_dispatched=None, on_confirmed=None, otp_provider=None) -> dict:
+def add_password(session, email: str, password: str, *, checkpoint=None, on_dispatched=None, on_confirmed=None,
+                 otp_provider=None, totp_secret: str = "") -> dict:
     """复用已登录会话添加密码；回调均无参数，凭据仅用于当前请求。"""
     if not isinstance(email, str) or "@" not in email or not isinstance(password, str) or not 12 <= len(password) <= 128:
         raise ProtocolPasswordSetupError("password_setup_input_invalid", "补密码所需邮箱或新密码格式无效")
@@ -233,26 +278,41 @@ def add_password(session, email: str, password: str, *, checkpoint=None, on_disp
     signin = _payload(_request(session, "post", signin_url, headers=headers, data=urlencode({"callbackUrl": _CHATGPT + "/", "csrfToken": csrf["csrfToken"], "json": "true"}), allow_redirects=False, checkpoint=checkpoint))
     authorize_url = _trusted_url(signin.get("url"))
     _check(checkpoint)
-    requested_at = time.time()
     landing = _follow(session, authorize_url, referer=_CHATGPT + "/", checkpoint=checkpoint)
+    verification = {}
     if urlsplit(landing).hostname == "auth.openai.com" and urlsplit(landing).path.rstrip("/") == "/email-verification":
         _check(checkpoint)
+        # 打开验证页不会替纯协议执行页面脚本；本轮明确发码后才开始收件。
+        # 时间锚点必须在发码前，避免漏掉请求返回前已投递的新邮件。
+        requested_at = time.time()
+        logger.info("[补密码] 正在请求本轮邮箱验证码")
+        sent_to = _follow(session, _AUTH + "/api/accounts/email-otp/send", referer=landing, checkpoint=checkpoint)
+        sent_page = urlsplit(sent_to)
+        if sent_page.hostname != "auth.openai.com" or sent_page.path.rstrip("/") != "/email-verification":
+            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码验证码发送未返回有效的验证页面")
+        logger.info("[补密码] 验证码发送已确认，等待邮件到达")
         try:
-            if otp_provider is not None:
-                otp = otp_provider(email, after_ts=requested_at)
-            else:
-                source = email_provider.resolve_email_source(email, fallback=False)
-                otp = email_provider.wait_for_otp(email, after_ts=requested_at, email_source=source, page_checkpoint=checkpoint)
+            # 仅补密码采用较长的分段和网络余量，保留原线程取消/租约检查。
+            with use_cooperative_wait(checkpoint or (lambda: None), poll_seconds=5, request_timeout=10):
+                if otp_provider is not None:
+                    otp = otp_provider(email, after_ts=requested_at)
+                else:
+                    source = email_provider.resolve_email_source(email, fallback=False)
+                    otp = email_provider.wait_for_otp(email, after_ts=requested_at, email_source=source)
         except _CONTROL_ERRORS:
             raise
         except Exception:
             raise ProtocolPasswordSetupError("password_setup_otp_unavailable", "未能取得本轮补密码邮箱验证码") from None
         if not re.fullmatch(r"\d{6}", str(otp or "")):
             raise ProtocolPasswordSetupError("password_setup_otp_invalid", "补密码邮箱验证码格式无效")
-        verified = _payload(_auth_post(session, "/api/accounts/email-otp/validate", {"code": str(otp)}, referer=landing, flow="email_otp_validate", checkpoint=checkpoint))
-        next_url = _trusted_url(_continuation(verified))
-        _require_password_page(next_url)
-        landing = _follow(session, next_url, referer=landing, checkpoint=checkpoint)
+        verification = _payload(_auth_post(session, "/api/accounts/email-otp/validate", {"code": str(otp)}, referer=sent_to, flow="email_otp_validate", checkpoint=checkpoint))
+        next_url = _trusted_url(_continuation(verification))
+        if _is_mfa_page(next_url):
+            next_url = _verify_mfa(session, verification, next_url, totp_secret, checkpoint=checkpoint)
+        landing = _follow_password_page(session, next_url, referer=sent_to, checkpoint=checkpoint)
+    elif _is_mfa_page(landing):
+        next_url = _verify_mfa(session, verification, landing, totp_secret, checkpoint=checkpoint)
+        landing = _follow_password_page(session, next_url, referer=landing, checkpoint=checkpoint)
     _require_password_page(landing)
     headers = session.get_auth_headers(referer=landing)
     headers.update(_sentinel_headers(session, "password_reset", checkpoint))

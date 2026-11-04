@@ -1,6 +1,7 @@
 """纯协议补密码的执行、准入和持久任务接入。"""
 
 from contextlib import ExitStack
+import json
 import logging
 import os
 from pathlib import Path
@@ -34,6 +35,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         plan_ok=True,
         password_status=None,
         stop_after_password=False,
+        log_records=None,
     ):
         actions = []
         account = {"id": 42, "email": "fixture@example.test", "access_token": "fixture-old-at"}
@@ -50,6 +52,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
 
         def password_setup(email, *, proxy, execution_fence, checkpoint=None, report=None):
             actions.append(("password", email, proxy, execution_fence))
+            if log_records is not None:
+                logging.getLogger("password-setup-fixture").warning("fixture wait notice")
             if password_ok:
                 account.update(access_token="fixture-new-at", extra_json={"account_password": "fixture-password"})
             return {
@@ -105,9 +109,15 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             stack.enter_context(patch.object(worker.db, "update_account_twofa_status"))
             stack.enter_context(patch.object(worker.account_task_store, "get_task", return_value={}))
             stack.enter_context(patch.object(worker.account_task_store, "append_event"))
-            stack.enter_context(
-                patch.object(worker.task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler())
-            )
+            path = Path(directory) / "setup.log"
+            if log_records is None:
+                stack.enter_context(patch.object(worker.task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler()))
+            else:
+                from core.operations.executor import operation_log_context
+                stack.enter_context(patch.object(worker.task_run_log, "_LOG_ROOT", Path(directory)))
+                stack.enter_context(operation_log_context(SimpleNamespace(
+                    run={"log_file": str(path)}, task_id=81, run_id=51,
+                )))
             stack.enter_context(patch.object(worker, "check_stop_requested"))
             stack.enter_context(patch.object(worker, "_run_protocol_direct_twofa", side_effect=twofa_setup))
             stack.enter_context(patch.object(worker, "_run_retry_plan_check", side_effect=plan_check))
@@ -137,14 +147,25 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                 task_id=81,
                 manage_task=False,
                 clear_log=False,
-                target_log_path=Path(directory) / "setup.log",
+                target_log_path=path,
                 steps=steps or {"password"},
                 password_driver_override="protocol",
                 twofa_driver_override="protocol",
                 execution_fence=fence,
                 force_password_reset=force_reset,
             )
+            if log_records is not None:
+                log_records.extend(json.loads(line) for line in path.read_text().splitlines())
         return result, actions, account, fence
+
+    def test_native_password_worker_writes_each_log_record_once(self):
+        records = []
+        result, *_ = self.run_setup(log_records=records)
+        self.assertTrue(result["ok"], result)
+        notices = [row for row in records if row.get("message") == "fixture wait notice"]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["task_id"], 81)
+        self.assertEqual(notices[0]["run_id"], 51)
 
     def test_protocol_password_setup_completes_without_browser_and_passes_fence(self):
         result, actions, account, fence = self.run_setup()

@@ -1248,14 +1248,22 @@ def run_twofa_worker(
         thread_name = threading.current_thread().name
         log_context = task_run_log.current_context()
         native_log_context = log_context.get("identifier_namespace") == "operation"
-        # 原生 Run 的日志过滤必须使用同一归属，不能拿旧账号任务 ID 丢弃内部日志。
-        fh = task_run_log.TaskRunLogHandler(
-            str(path), task_id=log_context.get("task_id") if native_log_context else task_id,
-            run_id=log_context.get("run_id") if native_log_context else None, stage="account_setup",
+        native_log_bound = native_log_context and any(
+            isinstance(getattr(handler, "log_file", None), (str, Path))
+            and Path(handler.log_file).resolve() == path.resolve()
+            and getattr(handler, "task_id", None) == log_context.get("task_id")
+            and getattr(handler, "run_id", None) == log_context.get("run_id")
+            for handler in root_logger.handlers
         )
-        fh.setLevel(logging.DEBUG)
-        fh.addFilter(lambda record: record.threadName == thread_name)
-        root_logger.addHandler(fh)
+        # 原生操作外层已接入当前 Run；重复注册会让每条普通日志写入两遍。
+        if not native_log_bound:
+            fh = task_run_log.TaskRunLogHandler(
+                str(path), task_id=log_context.get("task_id") if native_log_context else task_id,
+                run_id=log_context.get("run_id") if native_log_context else None, stage="account_setup",
+            )
+            fh.setLevel(logging.DEBUG)
+            fh.addFilter(lambda record: record.threadName == thread_name)
+            root_logger.addHandler(fh)
 
         import config as config_pkg
 

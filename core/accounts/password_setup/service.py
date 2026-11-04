@@ -5,6 +5,7 @@ import secrets
 from dataclasses import replace
 
 from core import db
+from core.accounts.credentials import get_account_totp_secret_candidate
 from core.accounts.liveness.protocol.v2 import refresh_access_token
 from core.accounts.password_setup.protocol import ProtocolPasswordSetupError, add_password
 from core.auth.browser.auth_context import (
@@ -116,7 +117,8 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             emit("login", "纯协议登录已完成，新会话已保存", state="success")
             emit("set_password", "已登录，正在通过纯协议添加账号密码")
             add_password(session, email, cp.password, checkpoint=check,
-                         on_dispatched=mark_dispatched, on_confirmed=mark_confirmed)
+                         on_dispatched=mark_dispatched, on_confirmed=mark_confirmed,
+                         totp_secret=get_account_totp_secret_candidate(db.get_account_by_email(email)))
             if not confirmed:
                 raise ProtocolPasswordSetupError("password_setup_unconfirmed", "密码提交结果尚未确认", dispatched)
             return result(True, "账号密码已通过纯协议补全", status="success", receipt="confirmed")

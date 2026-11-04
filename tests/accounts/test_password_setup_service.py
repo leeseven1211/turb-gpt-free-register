@@ -195,6 +195,16 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         self.assertNotIn(self.extra()["account_password"], json.dumps(result))
         self.assertNotIn("fresh-token", json.dumps(result))
 
+    def test_existing_totp_secret_is_passed_to_password_reauthentication(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {"totp_secret": "fixture-totp-secret"})
+        def add(_session, _email, _password, **kwargs):
+            self.assertEqual(kwargs["totp_secret"], "fixture-totp-secret")
+            kwargs["on_dispatched"]()
+            kwargs["on_confirmed"]()
+        result = self.run_service(add)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("fixture-totp-secret", json.dumps(result))
+
     def test_unknown_dispatch_keeps_same_candidate_after_execution_restart(self):
         candidates = []
         def unknown(session, email, password, **kwargs):

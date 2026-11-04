@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from core.accounts.password_setup import protocol
+from core.email import mailbox_wait
 
 
 AUTH = "https://auth.openai.com"
@@ -107,18 +108,26 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         self.assertNotIn("_so", sent["openai-sentinel-token"])
         self.assertEqual(json.loads(sent["openai-sentinel-so-token"])["flow"], "password_reset")
 
-    def test_otp_timestamp_is_captured_before_authorize_and_default_provider_is_cooperative(self):
+    def test_otp_is_explicitly_sent_before_wait_and_timestamp_precedes_send(self):
         session = FakeSession(
-            [Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)],
+            [Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"),
+             Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)],
             [Response({"url": AUTHORIZE}), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
         )
         checkpoint = Mock()
         def clock():
-            self.assertFalse(any(item[1] == AUTHORIZE for item in session.events))
+            self.assertTrue(any(item[1] == AUTHORIZE for item in session.events))
+            self.assertFalse(any(item[1].endswith("/email-otp/send") for item in session.events))
             return 123.5
-        with patch.object(protocol.time, "time", side_effect=clock), patch.object(protocol.email_provider, "resolve_email_source", return_value="generic_api") as source, patch.object(protocol.email_provider, "wait_for_otp", return_value="123456") as wait:
+        def received(*_args, **_kwargs):
+            self.assertTrue(any(item[1].endswith("/email-otp/send") for item in session.events))
+            self.assertEqual(mailbox_wait.cooperative_poll_limit(75), 5)
+            self.assertEqual(mailbox_wait.bounded_timeout(30), 10)
+            return "123456"
+        with patch.object(protocol.time, "time", side_effect=clock), patch.object(protocol.email_provider, "resolve_email_source", return_value="generic_api") as source, patch.object(protocol.email_provider, "wait_for_otp", side_effect=received) as wait:
             self.run_driver(session, checkpoint=checkpoint)
-        wait.assert_called_once_with("user@example.test", after_ts=123.5, email_source="generic_api", page_checkpoint=checkpoint)
+        wait.assert_called_once_with("user@example.test", after_ts=123.5, email_source="generic_api")
+        self.assertEqual(mailbox_wait.bounded_timeout(30), 30)
         source.assert_called_once_with("user@example.test", fallback=False)
         otp = next(item for item in session.events if item[1].endswith("/email-otp/validate"))
         self.assertEqual(json.loads(otp[2]["data"]), {"code": "123456"})
@@ -126,11 +135,88 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         self.assertGreaterEqual(checkpoint.call_count, 7)
 
     def test_custom_provider_uses_new_request_generation(self):
-        session = FakeSession([Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)], [Response({"url": AUTHORIZE}), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})])
+        session = FakeSession([Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"), Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)], [Response({"url": AUTHORIZE}), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})])
         provider = Mock(return_value="123456")
         with patch.object(protocol.time, "time", return_value=456.0):
             self.run_driver(session, otp_provider=provider)
         provider.assert_called_once_with("user@example.test", after_ts=456.0)
+
+    def test_rejected_send_does_not_wait_or_submit_password(self):
+        for response in (Response({}, status=403), Response(url=AUTH + "/error")):
+            with self.subTest(status=response.status_code):
+                session = self.session(landing=AUTH + "/email-verification")
+                session.gets.append(response)
+                provider, dispatched = Mock(), Mock()
+                with self.assertRaises(protocol.ProtocolPasswordSetupError):
+                    self.run_driver(session, otp_provider=provider, on_dispatched=dispatched)
+                provider.assert_not_called()
+                dispatched.assert_not_called()
+
+    def test_email_otp_then_existing_totp_can_reach_password_add(self):
+        mfa = AUTH + "/mfa-challenge/factor-1"
+        session = FakeSession(
+            [Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"),
+             Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)],
+            [Response({"url": AUTHORIZE}), Response({"page": {"type": "mfa_challenge"}, "continue_url": mfa}),
+             Response({}), Response({"continue_url": PASSWORD_PAGE}),
+             Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
+        )
+        with patch.object(protocol.protocol_auth, "_totp_code", return_value="654321") as code:
+            result = self.run_driver(session, otp_provider=Mock(return_value="123456"), totp_secret="fixture-secret")
+        self.assertTrue(result["password_added"])
+        code.assert_called_once_with("fixture-secret")
+        posts = [item for item in session.events if item[0] == "POST"]
+        self.assertEqual([urlsplit(item[1]).path for item in posts], [
+            "/api/auth/signin/openai", "/api/accounts/email-otp/validate", "/api/accounts/mfa/issue_challenge",
+            "/api/accounts/mfa/verify", "/api/accounts/password/add",
+        ])
+        self.assertEqual(json.loads(posts[-2][2]["data"]), {"id": "factor-1", "type": "totp", "code": "654321"})
+        self.assertNotIn("fixture-secret", str(session.events))
+
+    def test_direct_mfa_landing_uses_existing_totp(self):
+        session = self.session(landing=AUTH + "/mfa-challenge/factor-1")
+        session.gets.append(Response(url=PASSWORD_PAGE))
+        session.posts[1:1] = [Response({}), Response({"continue_url": PASSWORD_PAGE})]
+        with patch.object(protocol.protocol_auth, "_totp_code", return_value="654321"):
+            self.assertTrue(self.run_driver(session, totp_secret="fixture-secret")["password_added"])
+
+    def test_mfa_authorize_continuation_must_land_on_new_password_page(self):
+        for landing in (PASSWORD_PAGE, AUTH + "/email-verification"):
+            with self.subTest(landing=landing):
+                session = self.session(landing=AUTH + "/mfa-challenge/factor-1")
+                session.gets.append(Response(url=landing))
+                session.posts[1:1] = [Response({}), Response({"continue_url": AUTH + "/authorize/continue?state=fixture"})]
+                with patch.object(protocol.protocol_auth, "_totp_code", return_value="654321"):
+                    if landing == PASSWORD_PAGE:
+                        self.assertTrue(self.run_driver(session, totp_secret="fixture-secret")["password_added"])
+                    else:
+                        with self.assertRaises(protocol.ProtocolPasswordSetupError) as raised:
+                            self.run_driver(session, totp_secret="fixture-secret")
+                        self.assertFalse(raised.exception.request_unknown)
+                        self.assertFalse(any(item[1].endswith("/password/add") for item in session.events))
+
+    def test_mfa_rejection_or_untrusted_continuation_never_submits_password(self):
+        for final in (Response({"error": {"code": "invalid_totp"}}, status=400),
+                      Response({"continue_url": "https://foreign.example/reset-password/new-password"})):
+            with self.subTest(status=final.status_code):
+                session = self.session(landing=AUTH + "/mfa-challenge/factor-1")
+                session.posts[1:1] = [Response({}), final]
+                dispatched = Mock()
+                with patch.object(protocol.protocol_auth, "_totp_code", return_value="654321"):
+                    with self.assertRaises(protocol.ProtocolPasswordSetupError) as raised:
+                        self.run_driver(session, totp_secret="fixture-secret", on_dispatched=dispatched)
+                self.assertFalse(raised.exception.request_unknown)
+                dispatched.assert_not_called()
+
+    def test_cancel_after_mfa_challenge_stops_before_code_submission(self):
+        session = self.session(landing=AUTH + "/mfa-challenge/factor-1")
+        session.posts.insert(1, Response({}))
+        def checkpoint():
+            if any(item[1].endswith("/mfa/issue_challenge") for item in session.events):
+                raise protocol.OperationCancelled("fixture-cancel")
+        with self.assertRaises(protocol.OperationCancelled):
+            self.run_driver(session, totp_secret="fixture-secret", checkpoint=checkpoint)
+        self.assertFalse(any(item[1].endswith("/mfa/verify") for item in session.events))
 
     def test_only_final_transport_failure_is_request_unknown(self):
         for at_final in (False, True):
@@ -234,6 +320,7 @@ class PasswordSetupProtocolTests(unittest.TestCase):
 
     def test_default_otp_cancellation_is_not_wrapped(self):
         session = self.session(landing=AUTH + "/email-verification")
+        session.gets.append(Response(url=AUTH + "/email-verification"))
         cancelled = protocol.OperationCancelled("fixture-cancel")
         with patch.object(protocol.email_provider, "resolve_email_source", return_value="generic_api"), patch.object(protocol.email_provider, "wait_for_otp", side_effect=cancelled):
             with self.assertRaises(protocol.OperationCancelled) as raised:
