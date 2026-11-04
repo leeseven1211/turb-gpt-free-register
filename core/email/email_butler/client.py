@@ -540,17 +540,52 @@ def report_hme_identity(account: EmailButlerAccount, *, status: str, note: str |
     email_usage_reports.enqueue(account.email, status=state, source="email_butler")
 
 
+def _return_account_context(address: str) -> tuple[EmailButlerAccount | None, str]:
+    """退号只读取原交接编号和固定连接，不申请或续租邮箱。"""
+    from core.storage.email.local_imports import get_butler_email
+    from core.storage import records as record_store
+    from core.email.derivation import _profile_credentials
+
+    row = get_butler_email(address)
+    if row:
+        profile_id = row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
+        profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(profile_id)) if profile_id else None
+        if not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
+            raise EmailButlerClientError('fixed_route_unavailable: 退号缺少原固定收件配置')
+        connection = _profile_credentials(profile)
+        identity = profile.get('butler_identity') or {}
+        handoff = row.get('butler_handoff') or {}
+        # 本地领取意图与 Butler 交接意图不同，必须使用已保存的远端交接编号。
+        acquisition = str(handoff.get('acquisition_id') or identity.get('acquisition_id') or '')
+        if not acquisition:
+            raise EmailButlerClientError('acquisition_required: 退号缺少原 Butler 交接编号')
+        return EmailButlerAccount(email=address, mailbox_id='', provider=str(row.get('provider') or 'icloud_hme'),
+            acquisition_id=acquisition, api_base=connection['api_base'], api_key=connection['api_key']), acquisition
+    account = _restore_hme_context(address) or get_account_context(address)
+    return account, str(account.acquisition_id or '') if account else ''
+
+
 def return_account(email: str, service: str = "openai", *, api_base: str | None = None,
-                   api_key: str | None = None) -> dict:
-    """Return an unused leased identity through the authenticated public v1 API."""
+                   api_key: str | None = None, acquisition_id: str = '', lease_id: str = '') -> dict:
+    """按原交接身份退回未使用邮箱，重复调用不会影响后来的领取。"""
     address = str(email or "").strip()
     if "@" not in address:
         return {"ok": False, "reason": "invalid_email"}
     try:
+        if not acquisition_id and not lease_id:
+            account, acquisition_id = _return_account_context(_cache_key(address))
+            if account:
+                api_base, api_key = account.api_base, account.api_key
+                lease_id = account.lease_id
+        body = {"email": address, "service": service}
+        if acquisition_id:
+            body['acquisition_id'] = acquisition_id
+        if lease_id:
+            body['lease_id'] = lease_id
         payload = _request(
             "POST",
             "/automation/return-account",
-            json={"email": address, "service": service},
+            json=body,
             api_base=_api_base(api_base),
             api_key=api_key,
             retry_connection_error=True,
