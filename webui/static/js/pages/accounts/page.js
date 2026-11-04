@@ -1118,7 +1118,7 @@ function _passwordCellV2(r) {
 }
 function _accountPasswordAuthDisplay(r) {
   const states = {
-    verified: {label: '登录验证通过', cellLabel: '验证通过', tone: 'success'},
+    verified: {label: '登录验证通过', cellLabel: '已验证', tone: 'success'},
     accepted: {label: '创建密码被接受', cellLabel: '创建已接受', tone: 'success'},
     rejected: {label: '密码被拒绝', cellLabel: '被拒绝', tone: 'danger'},
     unknown: {label: '未确认', cellLabel: '未确认', tone: 'warning'},

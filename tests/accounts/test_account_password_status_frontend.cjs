@@ -60,7 +60,7 @@ test('密码列表保留按需复制，提示本地保存且显示最近远端�
   assert.match(saved, /data-account-copy-secret="account_password"/);
   assert.match(saved, /本地已保存/);
   assert.match(saved, /最近远端密码结果：登录验证通过/);
-  assert.match(saved, />验证通过<\/span>/);
+  assert.match(saved, />已验证<\/span>/);
   const legacy = page._passwordCellV2({id: 10, has_account_password: true});
   assert.match(legacy, />未验证<\/span>/);
   assert.doesNotMatch(legacy, /登录验证通过/);

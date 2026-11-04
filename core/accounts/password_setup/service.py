@@ -34,6 +34,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
     owner = None
     dispatched = False
     confirmed = False
+    existing_password_valid = False
     callback_error = None
     checkpoint_error = None
     active_stage = "login"
@@ -42,7 +43,8 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         return {"ok": ok, "status": status, "message": message, "error": error, "error_code": error,
                 "password_driver": "protocol", "browser_opened": False,
                 "mutation_submitted": dispatched, "action_dispatched": dispatched,
-                "remote_receipt_state": receipt, "password_added": confirmed,
+                "remote_receipt_state": receipt, "password_added": confirmed and not existing_password_valid,
+                "password_verified": existing_password_valid,
                 **({"request_unknown": True, "outcome": "request_unknown"} if receipt == "unknown" else {})}
 
     def check():
@@ -104,17 +106,30 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                 pass
 
     def authenticated(auth: dict, session):
-        nonlocal callback_error
+        nonlocal callback_error, cp, confirmed, existing_password_valid
         try:
             check()
-            validate_owner()
+            cp = validate_owner()
             token = str(auth.get("access_token") or "").strip()
             session_info = auth.get("session")
             if not token:
                 raise ProtocolPasswordSetupError("password_setup_session_missing", "登录后未取得有效会话")
-            recovery.save_password_recovery_session(cp.recovery_id, **owner, access_token=token,
-                session_info=session_info if isinstance(session_info, dict) else {})
+            password_verified = auth.get("ok") is True and auth.get("password_auth_status") == "verified" and bool(cp.old_password)
+            pending_submission = password_verified and cp.state in {"started", "unknown"}
+            saved = recovery.save_password_recovery_session(cp.recovery_id, **owner, access_token=token,
+                session_info=session_info if isinstance(session_info, dict) else {},
+                **({"verified_password": cp.old_password, "auth_method": str(auth.get("auth_method") or "")}
+                   if password_verified and not pending_submission else {}))
+            if password_verified and not pending_submission:
+                cp = saved
+                existing_password_valid = confirmed = True
             emit("login", "纯协议登录已完成，新会话已保存", state="success")
+            if pending_submission:
+                raise ProtocolPasswordSetupError("password_setup_previous_result_unknown",
+                    "原密码验证已通过，但上次密码提交结果仍需核验", True)
+            if existing_password_valid:
+                emit("set_password", "原密码有效，已验证", state="success")
+                return result(True, "原密码有效", status="success", receipt="confirmed")
             emit("set_password", "已登录，正在通过纯协议添加账号密码")
             add_password(session, email, cp.password, checkpoint=check,
                          on_dispatched=mark_dispatched, on_confirmed=mark_confirmed,
@@ -163,16 +178,33 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         if callback_error is not None:
             raise callback_error
         if confirmed:
-            return result(True, "账号密码已通过纯协议补全", status="success", receipt="confirmed")
+            return result(True, "原密码有效" if existing_password_valid else "账号密码已通过纯协议补全",
+                          status="success", receipt="confirmed")
         if isinstance(auth_result, dict) and auth_result.get("status") == "deactivated":
             close_stage("failed", "账号已停用，已停止补密码")
             return result(False, "账号已停用，已停止补密码", status="deactivated", error="account_deactivated")
-        close_stage("failed", "纯协议登录未完成")
-        return result(False, "纯协议登录未完成，请检查邮箱验证码、MFA 和网络后重试",
-                      error="password_setup_auth_failed")
+        errors = {
+            "password_reset_required": "远端要求重置密码，原密码当前无法用于登录",
+            "password_rejected": "原密码被拒绝，需要找回或重置密码",
+            "email_otp_failed": "登录邮箱验证码验证未完成",
+            "mfa_rejected": "登录 2FA 验证未通过",
+            "mfa_secret_missing": "登录需要账号已有的 2FA 密钥",
+            "oauth_callback_failed": "登录回调未完成，尚未取得新会话",
+            "access_token_missing": "登录未取得有效 Token",
+            "protocol_network_error": "登录网络请求未完成，请稍后重试",
+        }
+        auth_result = auth_result if isinstance(auth_result, dict) else {}
+        diagnostic = auth_result.get("auth_diagnostics") or {}
+        remote_error = diagnostic.get("auth_error") if isinstance(diagnostic, dict) else {}
+        code = remote_error.get("code") if isinstance(remote_error, dict) else None
+        code = code if isinstance(code, str) and code in errors else auth_result.get("error")
+        code = code if isinstance(code, str) else ""
+        message = errors.get(code, "纯协议登录未完成，请检查邮箱验证码、2FA 和网络")
+        close_stage("failed", message)
+        return result(False, message, error=f"password_setup_{code}" if code in errors else "password_setup_auth_failed")
     except (OperationCancelled, OperationLeaseLost, CancellationRequested):
         if confirmed:
-            return {**result(True, "账号密码已通过纯协议补全；后续步骤已停止", status="success", receipt="confirmed"),
+            return {**result(True, "原密码有效" if existing_password_valid else "账号密码已通过纯协议补全；后续步骤已停止", status="success", receipt="confirmed"),
                     "stop_requested": True}
         mark_unknown()
         raise
@@ -192,7 +224,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         if checkpoint_error is exc:
             raise
         if confirmed:
-            return result(True, "账号密码已通过纯协议补全", status="success", receipt="confirmed")
+            return result(True, "原密码有效" if existing_password_valid else "账号密码已通过纯协议补全", status="success", receipt="confirmed")
         close_stage("failed", "纯协议补密码未完成")
         return result(False, "纯协议补密码未完成，请稍后重试", error="password_setup_runtime_failed",
                       receipt="unknown" if dispatched else "none")

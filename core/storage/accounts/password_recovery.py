@@ -392,29 +392,56 @@ def get_password_recovery(recovery_id: int, **owner) -> PrivateCheckpoint:
         return _checkpoint(_owned_checkpoint(cur, recovery_id, identity), cipher)
 
 
-def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict, **owner) -> None:
-    """与执行/账号租约同事务保存已认证会话，不将候选密码确认成正式密码。"""
+def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict,
+                                   verified_password: str | None = None, auth_method: str = "",
+                                   **owner) -> PrivateCheckpoint | None:
+    """保存认证会话；明确验证原密码时，原子确认原值并结束未提交的补密码候选。"""
     from core.accounts.plans.client import token_claims
 
     identity = _owner(owner)
     if identity.purpose != "manual" or not str(access_token or "").strip() or not isinstance(session_info, dict):
         raise PasswordRecoveryError("session_context_invalid")
     claims = token_claims(access_token)
+    cipher, key = _cipher() if verified_password is not None else (None, None)
     init()
     with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
-        account, _ = _fence(cur, identity)
-        _owned_checkpoint(cur, recovery_id, identity)
+        account, attempts = _fence(cur, identity)
+        row = _owned_checkpoint(cur, recovery_id, identity)
+        confirmed_checkpoint = None
+        if verified_password is not None:
+            payload = _credentials(row, cipher)
+            if row["state"] != "prepared" or payload.get("intent") != "password_add":
+                raise PasswordRecoveryError("password_login_confirmation_not_prepared")
+            if not verified_password or verified_password != payload["old_password"]:
+                raise PasswordRecoveryError("password_login_confirmation_mismatch")
+            _validate_password(identity, account, attempts, payload, key)
+            # 此候选从未派发；确认的是本轮实际通过认证的原密码。
+            payload["password"] = verified_password
+            _confirm(cur, row, identity, account, attempts, payload, key)
+            encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+            cur.execute(f"UPDATE {pg.qualified(_TABLE)} SET state='confirmed',version=version+1,"
+                        "confirmation='existing_password_login',credential_ciphertext=%s,"
+                        "confirmed_at=now(),updated_at=now() WHERE id=%s RETURNING *",
+                        (encrypted, int(recovery_id)))
+            confirmed_checkpoint = _checkpoint(cur.fetchone(), cipher)
+            account = records.get_row(records.ACCOUNTS, identity.account_id, conn=cur.connection)
         extra = _json_object(account.get("extra_json"))
         extra["registration_checkpoint"] = "registered"
         extra.pop("registration_pending_reason", None)
-        records.patch_row(records.ACCOUNTS, identity.account_id, {
+        changes = {
             "access_token": access_token,
             "expires_at": session_info.get("expires") or account.get("expires_at"),
             "token_expires_at": claims.get("token_expires_at"), "token_expired": claims.get("token_expired"),
             "chatgpt_session": json.dumps(session_info, ensure_ascii=False),
             "extra_json": json.dumps(extra, ensure_ascii=False),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }, conn=cur.connection)
+        }
+        if verified_password is not None:
+            changes.update(last_password_auth_status="verified", last_auth_error_code="")
+            if auth_method:
+                changes["last_auth_method"] = auth_method
+        records.patch_row(records.ACCOUNTS, identity.account_id, changes, conn=cur.connection)
+        return confirmed_checkpoint
 
 
 def _validate_attempt_passwords(attempts: list[dict], allowed: set[str]) -> None:
@@ -451,6 +478,8 @@ def _confirm(cur, row: dict, owner: _Owner, account: dict, attempts: list[dict],
     for alias in ("login_password", "login_password_source", "registration_password"):
         extra.pop(alias, None)
     changes = {"extra_json": json.dumps(extra, ensure_ascii=False), "updated_at": datetime.now(timezone.utc).isoformat()}
+    if owner.purpose == "manual" and payload.get("intent") == "password_add":
+        changes["last_password_auth_status"] = "accepted"
     for alias in ("account_password", "login_password", "registration_password"):
         if alias in account:
             changes[alias] = candidate
