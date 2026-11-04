@@ -1126,7 +1126,7 @@ function _accountPasswordAuthDisplay(r) {
   };
   const status = String(r.last_password_auth_status || '');
   return Object.prototype.hasOwnProperty.call(states, status)
-    ? states[status] : {label: '未记录', cellLabel: '远端未记录', tone: 'neutral'};
+    ? states[status] : {label: '未验证', cellLabel: '未验证', tone: 'neutral'};
 }
 function _totpCellV2(r) {
   const button = r.totp_enabled

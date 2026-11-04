@@ -44,7 +44,7 @@ test('远端每一种记录有独立含义，旧数据和未识别值不追认�
   const page = view();
   for (const [status, label] of [
     ['verified', '登录验证通过'], ['accepted', '创建密码被接受'], ['rejected', '密码被拒绝'],
-    ['unknown', '未确认'], ['skipped', '未提交'], [undefined, '未记录'], ['success', '未记录'], ['constructor', '未记录'],
+    ['unknown', '未确认'], ['skipped', '未提交'], [undefined, '未验证'], ['success', '未验证'], ['constructor', '未验证'],
   ]) {
     const html = page._accountDetailMarkup({id: 8, has_account_password: true,
       has_access_token: true, last_auth_method: 'password', last_password_auth_status: status});
@@ -62,7 +62,7 @@ test('密码列表保留按需复制，提示本地保存且显示最近远端�
   assert.match(saved, /最近远端密码结果：登录验证通过/);
   assert.match(saved, />验证通过<\/span>/);
   const legacy = page._passwordCellV2({id: 10, has_account_password: true});
-  assert.match(legacy, />远端未记录<\/span>/);
+  assert.match(legacy, />未验证<\/span>/);
   assert.doesNotMatch(legacy, /登录验证通过/);
   const missing = page._passwordCellV2({id: 11});
   assert.match(missing, /本地未保存/);
