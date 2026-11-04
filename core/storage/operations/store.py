@@ -2678,6 +2678,51 @@ def repair_stale_compatibility_projections(*, limit: int = 500) -> int:
     return repaired
 
 
+def _correct_registration_failure_projection(
+    cur, *, job_id: int, error_message: str, diagnostic_summary: dict,
+) -> None:
+    """在调用方事务内只更正现有错误投影，不重建任务或推导账号状态。"""
+    cur.execute(
+        "SELECT to_regclass(%s) AS runs, to_regclass(%s) AS tasks",
+        (f"{_schema_name()}.operation_runs", f"{_schema_name()}.operation_tasks"),
+    )
+    tables = cur.fetchone()
+    if not tables["runs"] or not tables["tasks"]:
+        return
+    cur.execute(
+        f"SELECT id, task_id FROM {_table('operation_runs')} "
+        "WHERE source_system='registration_jobs' AND source_id=%s",
+        (str(int(job_id)),),
+    )
+    run = cur.fetchone()
+    if not run:
+        return
+    # 与常规投影保持任务先于执行实例的加锁顺序。
+    cur.execute(f"SELECT id FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (run["task_id"],))
+    category, code, message = _error_fields(
+        error_message, stage="email_otp", task_type="registration",
+        result_summary=diagnostic_summary, task_status="failed",
+    )
+    # 受控字段已由注册更正入口验证；不用 _json 重新过滤原恢复事实。
+    patch = {key: diagnostic_summary[key] for key in ("cause_code", "registration_diagnostics")}
+    cur.execute(
+        f"UPDATE {_table('operation_runs')} SET "
+        "error_category=%s, error_code=%s, error_message=%s, "
+        "result_summary=COALESCE(result_summary,'{}'::jsonb) || %s::jsonb, "
+        "progress_steps=CASE WHEN progress_steps->'email_otp'->>'state'='failed' "
+        "THEN jsonb_set(progress_steps, '{email_otp,detail}', %s::jsonb) ELSE progress_steps END "
+        "WHERE id=%s",
+        (category, code, message, json.dumps(patch, ensure_ascii=False),
+         json.dumps(message, ensure_ascii=False), run["id"]),
+    )
+    # 历史 Run 的诊断不能覆盖新一轮执行的当前任务错误。
+    cur.execute(
+        f"UPDATE {_table('operation_tasks')} SET error_category=%s, error_code=%s, error_message=%s "
+        "WHERE id=%s AND last_run_id=%s",
+        (category, code, message, run["task_id"], run["id"]),
+    )
+
+
 def sync_registration_job(job_id: int) -> None:
     """同步一条注册执行。调用方可在每次旧表更新后调用，失败应显式暴露。"""
     init()

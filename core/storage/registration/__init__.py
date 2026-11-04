@@ -1132,10 +1132,12 @@ def correct_run_failure_diagnostics(
                     "cause_code": "email_otp_no_mail", "evidence": dict(evidence)},
             execution_id=run.get("execution_id"), event_uuid=None,
         )
-    if job_id is not None:
-        from core.operation_task_store import sync_registration_job
+        if job_id is not None:
+            from core.storage.operations.store import _correct_registration_failure_projection
 
-        sync_registration_job(int(job_id))
+            _correct_registration_failure_projection(
+                cur, job_id=int(job_id), error_message=message, diagnostic_summary=patch,
+            )
     return updated
 
 

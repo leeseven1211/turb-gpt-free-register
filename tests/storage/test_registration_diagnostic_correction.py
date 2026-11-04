@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from unittest.mock import patch
 
 from core.storage import postgres as pg, records, registration
 from tests.support_pg import PostgresTestCase
@@ -71,6 +72,19 @@ class RegistrationDiagnosticCorrectionTests(PostgresTestCase):
                 (str(job_id),),
             )
             result["operation_execution"] = dict(cur.fetchone())
+            cur.execute(
+                f"SELECT * FROM {pg.qualified('operation_runs')} "
+                "WHERE source_system='registration_jobs' AND source_id=%s",
+                (str(job_id),),
+            )
+            result["operation_run"] = dict(cur.fetchone())
+            cur.execute(f"SELECT * FROM {pg.qualified('operation_tasks')} WHERE id=%s",
+                        (result["operation_run"]["task_id"],))
+            result["operation_task"] = dict(cur.fetchone())
+            for key, table in (("operation_events", "operation_events"),
+                               ("accounts", "registered_accounts")):
+                cur.execute(f"SELECT * FROM {pg.qualified(table)} ORDER BY id")
+                result[key] = [dict(row) for row in cur.fetchall()]
             return result
 
     def _correct(self, run_id, **kwargs):
@@ -111,6 +125,126 @@ class RegistrationDiagnosticCorrectionTests(PostgresTestCase):
         with self.assertRaises(ValueError):
             self._correct(ids[2])
         self.assertEqual(before, self._snapshot(*ids))
+
+    def test_later_account_and_non_diagnostic_projection_facts_are_preserved(self):
+        ids = self._fixture()
+        records.insert_row(records.ACCOUNTS, {
+            "email": "fixture@example.test", "access_token": "fixture-account-token",
+            "created_at": "2026-11-04T01:00:00+00:00",
+        })
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {pg.qualified('registration_attempts')} "
+                "SET updated_at='2026-11-04T02:00:00+00:00', "
+                "remote_identity_state='request_unknown', target_status='request_unknown' WHERE id=%s",
+                (ids[1],),
+            )
+            cur.execute(
+                f"UPDATE {pg.qualified('operation_runs')} "
+                "SET result_summary=result_summary || %s::jsonb, data=data || %s::jsonb, "
+                "progress_steps=%s::jsonb "
+                "WHERE source_system='registration_jobs' AND source_id=%s",
+                (json.dumps({"retained_fact": "不可覆盖", "otp_received": False}),
+                 json.dumps({"retained_data": "不可覆盖"}),
+                 json.dumps({"email_otp": {"state": "failed", "detail": "旧失败文案", "duration_ms": 120000,
+                                           "transitions": [{"state": "failed", "detail": "原事件"}]}}),
+                 str(ids[0])),
+            )
+        before = self._snapshot(*ids)
+        self._correct(ids[2])
+        after = self._snapshot(*ids)
+        for key in ("attempt", "accounts", "operation_events", "operation_execution"):
+            self.assertEqual(before[key], after[key], key)
+        expected_run = deepcopy(before["operation_run"])
+        expected_run["result_summary"].update(
+            cause_code="email_otp_no_mail", registration_diagnostics=self.diagnostics,
+        )
+        expected_run["progress_steps"]["email_otp"]["detail"] = after["run"]["error_message"]
+        for field in ("error_category", "error_code", "error_message"):
+            expected_run[field] = after["operation_run"][field]
+        self.assertEqual(expected_run, after["operation_run"])
+        expected_task = deepcopy(before["operation_task"])
+        for field in ("error_category", "error_code", "error_message"):
+            expected_task[field] = after["operation_run"][field]
+        self.assertEqual(expected_task, after["operation_task"])
+        self.assertEqual("email_otp_no_mail", after["operation_run"]["error_code"])
+
+    def test_successful_resume_attempt_times_and_projection_are_preserved(self):
+        ids = self._fixture()
+        account_id = records.insert_row(records.ACCOUNTS, {
+            "email": "fixture@example.test", "access_token": "fixture-account-token",
+        })
+        resume_job_id = records.insert_row(records.JOBS, {
+            "job_uuid": "successful-resume", "email": "fixture@example.test",
+            "job_type": "registration_resume", "root_job_id": ids[0], "parent_job_id": ids[0],
+            "status": "success", "account_id": account_id, "progress_stage": "complete",
+            "completed_at": "2026-11-04T00:39:15+00:00",
+            "updated_at": "2026-11-04T00:39:15+00:00",
+        })
+        from core.operation_task_store import sync_registration_job
+
+        sync_registration_job(resume_job_id)
+        with registration._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {pg.qualified('registration_attempts')} "
+                "SET checkpoint='completed', terminal_at='2026-11-04T00:39:15+00:00' WHERE id=%s",
+                (ids[1],),
+            )
+            cur.execute(f"SELECT * FROM {pg.qualified('operation_tasks')} "
+                        "WHERE source_system='registration_chains' AND source_id=%s",
+                        (f"{ids[0]}:registration_resume",))
+            successful_task = dict(cur.fetchone())
+            cur.execute(f"SELECT * FROM {pg.qualified('operation_runs')} "
+                        "WHERE source_system='registration_jobs' AND source_id=%s", (str(resume_job_id),))
+            successful_run = dict(cur.fetchone())
+        before = self._snapshot(*ids)
+        self.assertEqual(account_id, before["attempt"]["account_id"])
+        self.assertEqual("completed", before["attempt"]["checkpoint"])
+        self._correct(ids[2])
+        after = self._snapshot(*ids)
+        self.assertEqual(before["attempt"], after["attempt"])
+        self.assertEqual(before["operation_events"], after["operation_events"])
+        with registration._connect() as conn, conn.cursor() as cur:
+            for table, expected in (("operation_tasks", successful_task), ("operation_runs", successful_run)):
+                cur.execute(f"SELECT * FROM {pg.qualified(table)} WHERE id=%s", (expected["id"],))
+                self.assertEqual(expected, dict(cur.fetchone()))
+
+    def test_projection_failure_rolls_back_diagnostic_and_audit_together(self):
+        ids = self._fixture()
+        before = self._snapshot(*ids)
+        from core.storage.operations import store as operation
+
+        original = operation._correct_registration_failure_projection
+
+        def fail_after_write(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError("模拟投影写入后失败")
+
+        with patch.object(operation, "_correct_registration_failure_projection", side_effect=fail_after_write):
+            with self.assertRaisesRegex(RuntimeError, "模拟投影"):
+                self._correct(ids[2])
+        self.assertEqual(before, self._snapshot(*ids))
+
+    def test_historical_correction_does_not_replace_newer_current_task_error(self):
+        ids = self._fixture()
+        with registration._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {pg.qualified('operation_runs')} "
+                "(run_uuid, task_id, run_no, source_system, source_id, status, error_message) "
+                f"SELECT run_uuid || '-newer', task_id, run_no+1, source_system, source_id || '-newer', "
+                f"'running', '新执行错误' FROM {pg.qualified('operation_runs')} "
+                "WHERE source_system='registration_jobs' AND source_id=%s RETURNING id, task_id",
+                (str(ids[0]),),
+            )
+            newer = cur.fetchone()
+            cur.execute(f"UPDATE {pg.qualified('operation_tasks')} "
+                        "SET last_run_id=%s, status='running', error_message='新执行错误' WHERE id=%s",
+                        (newer["id"], newer["task_id"]))
+        before = self._snapshot(*ids)
+        self._correct(ids[2])
+        after = self._snapshot(*ids)
+        self.assertEqual(before["operation_task"], after["operation_task"])
+        self.assertEqual("email_otp_no_mail", after["operation_run"]["error_code"])
 
     def test_unknown_diagnostic_is_not_enough_to_claim_no_mail(self):
         ids = self._fixture()
