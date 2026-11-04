@@ -550,6 +550,25 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         self.assertEqual("http://proxy.example:8080", result["proxy_used"])
         session.session.close.assert_called_once()
 
+    def test_password_setup_can_allow_email_fallback_for_only_the_current_call(self):
+        from config import account as account_config
+        from core.accounts.liveness.protocol import v2
+
+        original, fallback = _Session(), _Session()
+        with (
+            patch.object(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", False),
+            patch.object(v2, "get_account_login_credentials", return_value=("old-candidate", "")),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(original, "authorize")),
+            patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/log-in/password"),
+            patch.object(v2, "_password_verify", side_effect=v2.ProtocolV2AuthError("password_rejected")),
+            patch.object(v2, "_start_email_session", return_value=(fallback, 123.0)) as start,
+            patch.object(v2, "_complete_email_otp", side_effect=v2.ProtocolV2AuthError("email_otp_failed")),
+        ):
+            result = v2.refresh_access_token("account@example.com", allow_password_email_fallback=True)
+            self.assertFalse(account_config.ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK)
+        start.assert_called_once()
+        self.assertEqual("password_rejected_email_fallback_failed", result["error"])
+
     def test_missing_password_uses_existing_email_refresh_path_without_password_post(self):
         from core.accounts.liveness.protocol import v2 as v2
 

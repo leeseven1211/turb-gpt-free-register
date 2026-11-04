@@ -638,7 +638,7 @@ class JobProgressTests(PostgresTestCase):
             "codex_status": "failed",
             "plan_check_status": "success",
             "totp_secret": "JBSWY3DPEHPK3PXP",
-            "extra_json": '{"account_password":"AccountPassword!123"}',
+            "extra_json": '{"account_password":"AccountPassword!123","account_password_state":"confirmed"}',
         }
         with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
             registration_service, "_account_for_job", return_value=account
@@ -741,7 +741,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(info["retry_action"], "twofa")
         self.assertEqual(info["retry_label"], "补齐账号配置")
 
-    def test_account_password_counts_as_current_password(self):
+    def test_confirmed_account_password_counts_as_current_password(self):
         job = {
             "id": 13,
             "status": "partial_success",
@@ -755,7 +755,7 @@ class JobProgressTests(PostgresTestCase):
             "codex_status": "success",
             "plan_check_status": "success",
             "totp_secret": "JBSWY3DPEHPK3PXP",
-            "extra_json": '{"account_password":"AccountPassword!123"}',
+            "extra_json": '{"account_password":"AccountPassword!123","account_password_state":"confirmed"}',
         }
         with patch.object(db, "get_successful_retry_for_job", return_value=None), patch.object(
             registration_service, "_account_for_job", return_value=account

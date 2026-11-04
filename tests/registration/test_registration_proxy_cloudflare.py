@@ -83,7 +83,7 @@ class CloudflareRotationPermissionTests(TestCase):
             result = cf_result()
             result["cf_proxy_rotation_context"][key] = "stale"
             cases.append(("stale_" + key, result, self.job(), FACTS))
-        cases += [("other_driver", cf_result(), self.job("roxy_oss"), FACTS),
+        cases += [("other_driver", cf_result(), self.job("protocol_oss_2"), FACTS),
                   ("job_email_mismatch", cf_result(), {**self.job(), "email": "other@example.test"}, FACTS),
                   ("no_snapshot", cf_result(), {"id": 11, "job_type": "registration"}, FACTS),
                   ("other_job", cf_result(), self.job(job_type="codex_retry"), FACTS),

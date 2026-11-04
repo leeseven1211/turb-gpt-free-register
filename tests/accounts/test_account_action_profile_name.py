@@ -8,7 +8,8 @@ from core.codex.roxy import oauth
 
 
 class AccountActionProfileNameTests(unittest.TestCase):
-    def _run_action(self, url, *, generated_name="Alice Smith", expected_error=False):
+    def _run_action(self, url, *, generated_name="Alice Smith", expected_error=False,
+                    allow_passwordless_fallback=False):
         opened = SimpleNamespace(profile_id="unit-profile", debugger_address="127.0.0.1:9222",
                                  raw={}, account_bound=True)
         driver = Mock(current_url=url)
@@ -20,8 +21,9 @@ class AccountActionProfileNameTests(unittest.TestCase):
             stack.enter_context(patch.object(oauth, "RoxyBrowserClient", return_value=client))
             stack.enter_context(patch("core.browser.roxy.profile_binding.account_profile_id_by_email", return_value="unit-profile"))
             stack.enter_context(patch.object(oauth, "_build_driver", return_value=driver))
-            for name in ("_center_browser_window", "clear_roxy_browser_auth_state", "_fill_email_and_otp", "_quit_driver"):
+            for name in ("_center_browser_window", "clear_roxy_browser_auth_state", "_quit_driver"):
                 stack.enter_context(patch.object(oauth, name))
+            fill_email = stack.enter_context(patch.object(oauth, "_fill_email_and_otp"))
             stack.enter_context(patch.object(oauth, "_detect_browser_kind", return_value="Roxy"))
             stack.enter_context(patch.object(oauth._roxy_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
             for target in (
@@ -51,9 +53,13 @@ class AccountActionProfileNameTests(unittest.TestCase):
                 fetch_session.assert_not_called()
                 action.assert_not_called()
             else:
-                result = oauth.run_roxy_chatgpt_account_action("unit@example.test", action=action)
+                result = oauth.run_roxy_chatgpt_account_action(
+                    "unit@example.test", action=action, allow_passwordless_fallback=allow_passwordless_fallback,
+                )
                 self.assertEqual(result, {"ok": True})
                 action.assert_called_once_with(driver, session_info)
+                self.assertEqual(bool(fill_email.call_args.kwargs.get("allow_passwordless_fallback")),
+                                 allow_passwordless_fallback)
         return driver, generate_name, generate_birthday, complete_profile
 
     def test_profile_page_uses_the_normal_display_name_generator(self):
@@ -68,6 +74,9 @@ class AccountActionProfileNameTests(unittest.TestCase):
         name.assert_not_called()
         birthday.assert_not_called()
         profile.assert_not_called()
+
+    def test_explicit_password_setup_passes_email_fallback_to_login(self):
+        self._run_action("https://chatgpt.com/", allow_passwordless_fallback=True)
 
     def test_invalid_generated_name_is_rejected_before_profile_submission(self):
         for invalid in ("User8490f0fe", "Alice1 Smith", "", " ", None):

@@ -845,14 +845,16 @@ def _mutate_account_extra(
     return changed
 
 
-def update_account_login_password(email: str, password: str, *, source: str = "post_registration") -> bool:
-    """保存账号当前 OpenAI 密码；旧函数名保留以兼容调用方。"""
+def update_account_login_password(email: str, password: str, *, source: str = "post_registration",
+                                  confirmed: bool = False) -> bool:
+    """保存账号密码及确认状态；表单已提交时先保留候选。"""
     normalized = str(password or "").strip()
     if not normalized:
         return False
 
     def mutate(_row, extra):
         extra["account_password"] = normalized
+        extra["account_password_state"] = "confirmed" if confirmed else "candidate"
         extra.pop("login_password", None)
         extra.pop("login_password_source", None)
         extra.pop("registration_password", None)
@@ -879,6 +881,7 @@ def update_account_email_verification_checkpoint(
         extra = _account_extra(row)
         extra.update({
             "account_password": normalized_password,
+            "account_password_state": "candidate",
             "registration_checkpoint": "email_verification_pending",
             "registration_pending_reason": "email_otp_pending",
         })

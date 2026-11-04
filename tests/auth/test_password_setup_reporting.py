@@ -103,7 +103,8 @@ class PasswordSetupReportingTests(unittest.TestCase):
     def test_password_only_action_does_not_add_unknown_twofa_steps(self):
         events = []
 
-        def set_password(_driver, _email, password, *, on_password_submitted):
+        def set_password(_driver, _email, password, *, on_password_prepared, on_password_submitted):
+            on_password_prepared(password)
             on_password_submitted(password)
 
         with (
@@ -121,4 +122,48 @@ class PasswordSetupReportingTests(unittest.TestCase):
         persisted = [{**e, "id": i, "event_type": f"stage.{e['state']}"} for i, e in enumerate(events, 1) if e.get("state")]
         progress = build_progress_snapshot(1, 2, "password_setup", {"status": "success"}, persisted)
         self.assertFalse(any(s["id"].startswith("unknown:") for s in progress["main_steps"]))
+
+    def test_existing_local_candidate_is_saved_before_click_and_confirmed_only_after_success(self):
+        account = {"access_token": "fixture-access", "extra_json": {"account_password": "Original-candidate"}}
+        saved = []
+
+        def set_password(_driver, _email, password, *, on_password_prepared, on_password_submitted):
+            self.assertEqual("Original-candidate", password)
+            on_password_prepared(password)
+            self.assertFalse(saved[-1].get("confirmed", False))
+            on_password_submitted(password)
+
+        with (
+            patch.object(service.db, "get_account_by_email", return_value=account),
+            patch.object(service.db, "update_account_login_password", side_effect=lambda *a, **kw: saved.append(kw) or True),
+            patch.object(service.db, "update_account_password_capability"),
+            patch.object(service, "_report_account_setup_event"),
+            patch("core.auth.browser.selenium_auth.registration_password") as generate,
+            patch("core.auth.browser.selenium_auth.set_login_password", side_effect=set_password),
+        ):
+            self.assertTrue(service._build_roxy_account_setup("fixture@example.test", 0, include_twofa=False)(object()))
+        generate.assert_not_called()
+        self.assertTrue(saved[-1]["confirmed"])
+
+    def test_unknown_remote_password_result_preserves_candidate_without_confirming(self):
+        from core.auth.browser.password_auth import PasswordSetupResultUnknownError
+
+        saved = []
+
+        def set_password(_driver, _email, password, *, on_password_prepared, on_password_submitted):
+            on_password_prepared(password)
+            on_password_submitted(password)
+            raise PasswordSetupResultUnknownError()
+
+        with (
+            patch.object(service.db, "get_account_by_email", return_value={"access_token": "fixture-access"}),
+            patch.object(service.db, "update_account_login_password", side_effect=lambda *a, **kw: saved.append(kw) or True),
+            patch.object(service, "_report_account_setup_event"),
+            patch("core.auth.browser.selenium_auth.registration_password", return_value="Candidate"),
+            patch("core.auth.browser.selenium_auth.set_login_password", side_effect=set_password),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "password_setup_result_unconfirmed"):
+                service._build_roxy_account_setup("fixture@example.test", 0, include_twofa=False)(object())
+        self.assertEqual(2, len(saved))
+        self.assertFalse(any(item.get("confirmed") for item in saved))
 

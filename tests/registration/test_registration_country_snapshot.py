@@ -33,9 +33,8 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
 
 
 @pytest.mark.parametrize("driver,password_enabled,password_mode", [
-    ("protocol_oss", True, "password"),
     ("protocol_oss_2", True, "password"),
-    ("roxy_oss", False, "otp"),
+    ("roxy", True, "password"),
 ])
 def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch(driver, password_enabled, password_mode):
     executor = Mock()
@@ -117,7 +116,7 @@ def test_global_open_source_driver_freezes_its_password_auth_mode():
     ):
         snapshot = service.registration_config_snapshot()
 
-    assert snapshot["registration_driver"] == "protocol_oss"
+    assert snapshot["registration_driver"] == "protocol_oss_2"
     assert snapshot["password_enabled"] is True
     assert snapshot["password_mode"] == "password"
 
@@ -131,9 +130,9 @@ def test_open_source_roxy_snapshot_keeps_selected_auth_mode(mode):
     ):
         snapshot = service.registration_config_snapshot()
 
-    assert snapshot["registration_driver"] == "roxy_oss"
-    assert snapshot["password_enabled"] is (mode == "password")
-    assert snapshot["password_mode"] == mode
+    assert snapshot["registration_driver"] == "roxy"
+    assert snapshot["password_enabled"] is True
+    assert snapshot["password_mode"] == "password"
     assert snapshot["proxy_country"] == "JP"
 
 

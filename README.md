@@ -1,12 +1,9 @@
 # Turb GPT 注册与账号管理工具
 
-ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动支持本地优化 Protocol、开源 Protocol、开源protocol-2、本地 Roxy 和开源 Roxy：
+ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动只保留开源protocol-2 与本地 Roxy：
 
-- **protocol**：本项目持续优化的纯协议注册链路，包含本地恢复、检查点、错误分类与阶段预算。
-- **protocol_oss**：隔离接入上游开源注册协议，保留独立协议流程；邮箱、代理、任务状态、PostgreSQL 和注册后处理继续使用本项目能力。
 - **protocol_oss_2**：接入 wangshen233 开源仓库的 AuthFlow 与 wreq，展示为「开源protocol-2」；复用本地邮箱、代理、原 Attempt 恢复、PostgreSQL 和注册后处理。
 - **roxy**：RoxyBrowser 指纹浏览器 + Selenium 自动化注册，兼容新版页面流，例如 `create-account/password`、`about-you` 年龄/生日表单、地区本地化页面等。
-- **roxy_oss**：使用固定上游 Roxy 页面识别和表单辅助，复用本地浏览器生命周期、认证提交、任务恢复和账号后处理。
 
 项目提供 **CLI** 和 **本地 WebUI** 两种使用方式，日常推荐使用 WebUI。本项目由我们自行维护，主仓库为
 [leeseven1211/turb-gpt-free-register](https://github.com/leeseven1211/turb-gpt-free-register)。
@@ -28,11 +25,8 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动�
 
 - 批量注册 ChatGPT 账号。
 - 支持注册驱动切换：
-  - `REGISTRATION_DRIVER = "protocol"`
-  - `REGISTRATION_DRIVER = "protocol_oss"`
   - `REGISTRATION_DRIVER = "protocol_oss_2"`
   - `REGISTRATION_DRIVER = "roxy"`
-  - `REGISTRATION_DRIVER = "roxy_oss"`
 - 注册批次使用全局默认注册方式；每个任务都会冻结所用 driver，任务列表和账号高级搜索可区分本地与开源方式。
 - 支持 RoxyBrowser 一号一环境：账号首次需要时创建 Profile，后续注册续跑、Codex、账号配置、查活和 AT 刷新优先复用同一 Profile。
 - 支持 Roxy 无头启动：`ROXY_OPEN_HEADLESS=True`。
@@ -140,7 +134,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - 当前资料请求明确返回 HTTP 400 且错误码为 `user_already_exists` 时，保留拒绝回执，只进行一次有界的登录会话对账。取得 Token 且完整邮箱精确匹配才继续保存账号；否则保留原身份和续跑入口。后续原任务续跑使用保存的原密码登录，再次进入资料页时不重复创建账号。历史通用 HTTP 400 不会被推断为此错误。
 - 密码表单持续未加载且本次密码尚未排队时，可在原预算内 GET 当前可信密码页一次，随后重新核验原邮箱再提交原密码。显式续跑确认新的邮箱登录后，保留先前邮箱 403/429 失败回执，继续当前未提交密码页的恢复。当前会话诊断明确返回 `missing_session` 时，使用原身份有界重建登录，最多两次，并共享固定恢复截止时间；新登录明确提供可用 OTP 页时继续该验证路径。只有 HTTP 404 不会触发密码页会话重建，旧会话迟到响应也不能冒充当前会话。已派发或结果未知的密码、OTP 和资料动作沿用原回执。
 - 原任务 `registration_resume` 在本轮首次登录 GET 遇到明确代理连接故障，且已确认关闭本次失败连接时，可在现有重试上限内重新领取公共池线路，继续使用原邮箱、密码和 Attempt。只有确认浏览器实际使用该租约才标记线路故障；HTTP 拒绝和页面超时保留各自原因。
-- 本地 `roxy` 的邮箱认证入口明确返回 HTTP 403 且含 `cf-mitigated: challenge` 时，在原有代理重试上限内关闭失败连接、隔离该线路并换不同出口 IP，沿用同一邮箱、密码、Attempt 和 Run。仅本轮新建且未绑定账号的临时环境会在确认关闭并进入回收站后删除；绑定环境关闭后复用。新旧出口 IP 无法核验或新出口重复时，本轮内部换线以 `cf_proxy_new_ip_unverified` 收口，保留原任务重跑入口。普通 403、RUM、旧导航的挑战和密码提交结果未知不触发此策略；`roxy_oss` 与协议驱动不受影响。
+- 本地 `roxy` 的邮箱认证入口明确返回 HTTP 403 且含 `cf-mitigated: challenge` 时，在原有代理重试上限内关闭失败连接、隔离该线路并换不同出口 IP，沿用同一邮箱、密码、Attempt 和 Run。仅本轮新建且未绑定账号的临时环境会在确认关闭并进入回收站后删除；绑定环境关闭后复用。新旧出口 IP 无法核验或新出口重复时，本轮内部换线以 `cf_proxy_new_ip_unverified` 收口，保留原任务重跑入口。普通 403、RUM、旧导航的挑战和密码提交结果未知不触发此策略；协议驱动不受影响。
 - Roxy `/browser/create` 明确返回 Profile 总额度不足时立即失败；仅 `/browser/open` 遇到可恢复的窗口忙状态会在当前任务内等待。等待上限和间隔由 `ROXY_WINDOW_WAIT_TIMEOUT`、`ROXY_WINDOW_WAIT_INTERVAL` 控制。
 - 注册完成后的套餐查询纳入任务完整进度；查活和查套餐按账号注册地区领取独立短期线路，网络预检失败时释放旧线路并换新代理重试。
 - 查活优先在线验证现有 accessToken；只有 AT 缺失、失效或用户明确要求刷新时，才重新登录刷新，避免正常账号重复登录。邮箱失效账号优先使用已保存的 OpenAI 密码登录，并按服务端要求完成 TOTP 2FA；缺少密码或所需 TOTP 密钥时明确报告原因，仍保留手动重跑入口。密码登录不能绕过服务端强制要求的邮箱验证。
@@ -148,7 +142,7 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 - accessToken 会解析并保存签发/过期时间；账号列表展示 AT 剩余时间，后台可在到期前按配置自动创建刷新任务。
 - 单个、批量以及注册任务断点触发的 Codex 补跑统一创建 `codex_retry` 任务实例。账号菜单不再单独提供“补跑日志”，补跑阶段、错误、线路和结果统一从任务实例查看，失败实例可直接重跑。
 - Roxy 注册和查活的 NextAuth 兜底会确认浏览器是否真正落到 `auth.openai.com` 或明确下一步；登录空壳、邮箱框短暂清空只作为过渡态等待。初始 `/auth/login` 的邮箱入口迟迟未挂载时，也会在确认请求尚未派发后使用一次 NextAuth 兜底，继续沿用原阶段预算。若页面已经进入密码、OTP 或登录完成状态，会停止刷新、重填邮箱和重复导航，避免竞态导致空白页或覆盖已成功的跳转。
-- 本地 Roxy 已核验的原账号续跑在保存了密码且需要重新登录时，从 `/auth/login` 填写原邮箱，由官方页面选择后续认证分支；`roxy_oss` 等页面辅助仍使用原有 `/auth/login_with?callback_path=/` 入口。已有可用会话或可接管现场时继续复用，入口跳转沿用原准备预算，服务端要求的邮箱验证码仍需正常完成。若服务端仍进入创建密码页，现有逻辑继续提交保存的原密码，不另生成密码。
+- 本地 Roxy 已核验的原账号续跑在保存了密码且需要重新登录时，从 `/auth/login` 填写原邮箱，由官方页面选择后续认证分支。已有可用会话或可接管现场时继续复用，入口跳转沿用原准备预算，服务端要求的邮箱验证码仍需正常完成。若服务端仍进入创建密码页，现有逻辑继续提交保存的原密码，不另生成密码。
 
 ---
 
@@ -548,7 +542,7 @@ WebUI 批量注册使用全局默认驱动；未显式指定 driver 的 CLI/API 
 #### 使用 RoxyBrowser 注册
 
 ```python
-REGISTRATION_DRIVER = "roxy"  # 可选 protocol / protocol_oss / protocol_oss_2 / roxy / roxy_oss
+REGISTRATION_DRIVER = "roxy"  # 可选 protocol_oss_2 / roxy
 ROXY_API_BASE = "http://127.0.0.1:50100"
 ROXY_API_TOKEN = "你的Roxy API Key"
 ROXY_WORKSPACE_ID = "你的workspaceId"
@@ -569,38 +563,13 @@ Codex OAuth 使用独立的 `ROXY_CODEX_OPEN_HEADLESS` 开关，默认显示窗�
 `ROXY_OPEN_HEADLESS = True`。如果确认当前 Roxy 版本和 OAuth consent 页面支持无头模式，再单独将
 `ROXY_CODEX_OPEN_HEADLESS` 设为 `True`。
 
-#### 使用开源 Roxy 注册
-
-在 WebUI「配置 → 注册与账号 → 注册主链路」中选择「开源 Roxy」，或设置：
-
-```python
-REGISTRATION_DRIVER = "roxy_oss"
-```
-
-来源为 [myfanhua/turb-gpt-free-register](https://github.com/myfanhua/turb-gpt-free-register)，固定提交 `9a0c55baa9b7d2f9c09ba6eea8cdec200a44eb5e`，许可证为 MIT。源码基线、实际使用的页面辅助及适配说明位于 [`core/registration/roxy_oss/upstream/`](core/registration/roxy_oss/upstream/UPSTREAM.md)。开源方式使用上游邮箱入口定位、资料字段识别与填写能力；密码、验证码和资料的提交确认、会话邮箱核验、原 Attempt 续跑、代理租约、Profile 生命周期、核心账号落库和后处理继续使用本地实现。上游单体注册入口不直接运行。
-
-两种 Roxy 共用 Roxy API 和环境配置，均需配置可用的 RoxyBrowser 与统一代理池。注册批次冻结 `roxy_oss`，重跑保留原选择；`CODEX_OAUTH_DRIVER=same_as_registration` 对应本地 Roxy OAuth。账号高级搜索可用 `roxy_oss` 或「开源Roxy」区分来源。
-
-
-#### 使用本地优化 Protocol 注册
-
-```python
-REGISTRATION_DRIVER = "protocol"
-```
-
-本地优化 Protocol 基于 `curl_cffi`、Sentinel/PoW 和代理池，带有本项目维护的阶段预算、密码/注册检查点、错误分类、未知结果保护和同 Attempt 续跑。已有优化与恢复逻辑留在 `core/registration/protocol/__init__.py`。
-
-协议驱动在原注册 Attempt 内提前保存密码和提交阶段；超时或取消后沿用原邮箱、密码与 Attempt，按照服务端返回的密码、OTP、MFA、回调或资料页继续。CLI 也使用持久化 Attempt/Run；已保存核心账号后应补跑后处理，不重复注册。开源protocol-2 的资料提交明确返回 HTTP 409 `invalid_state` 时，任务会显示“资料提交时认证会话已失效”（`account_create_invalid_state`），保留原身份供续跑，不将此前账号创建结果改为未创建。明确返回 HTTP 400 `user_already_exists` 时，任务显示“远端提示账号已存在，完整登录态尚未确认”（`account_create_user_already_exists`），继续保留待确认状态、原邮箱和重跑资格。2FA 密钥在激活前保存为待确认，只有激活确认后才显示启用。完整 session 与 AT 在登录态预热、Codex 等后处理之前持久化，后处理失败不会抹掉核心成功。
-
-OTP 轮询、验证码重试、退避与网络请求共用阶段预算；同步 HTTP 在途请求仍受底层 connect/read 超时约束，不保证持续响应的硬总耗时上限或即时取消。回调成功后只重试 session 获取，回调结果未知时停止自动重放。执行和恢复边界见[注册流程](docs/workflows/registration.md)。`wreq` 仅完成本地兼容性评估，默认后端仍为 `curl_cffi`。
-
 #### 使用开源protocol-2 注册
 
 ```dotenv
 REGISTRATION_DRIVER=protocol_oss_2
 ```
 
-来源为 [wangshen233/turb-gpt-free-register-oss-20260928](https://github.com/wangshen233/turb-gpt-free-register-oss-20260928)，固定提交 `7df094e05e48a74eeacc4ff6e3c27165def21cae`。这是独立的 AuthFlow / wreq 实现，保留现有 `protocol_oss`。需要 Python 3.11+、`wreq==0.13.0` 和可运行的 Node.js；随项目依赖安装，不需要上游 WebUI、SQLite 或浏览器引擎。
+来源为 [wangshen233/turb-gpt-free-register-oss-20260928](https://github.com/wangshen233/turb-gpt-free-register-oss-20260928)，固定提交 `7df094e05e48a74eeacc4ff6e3c27165def21cae`。这是现行唯一的纯协议注册实现，使用独立的 AuthFlow / wreq。需要 Python 3.11+、`wreq==0.13.0` 和可运行的 Node.js；随项目依赖安装，不需要上游 WebUI、SQLite 或浏览器引擎。
 
 在「配置 → 注册与账号 → 注册主链路」选择「开源protocol-2」后，新的注册批次使用该默认驱动；API 也支持通过 `registration_driver` 为单个批次指定。驱动使用邮箱验证码和密码，入队时冻结这一要求。邮箱领取/取码、代理租约、原密码检查点、任务进度、账号保存和后处理均使用本项目服务；失败后可通过原任务重跑，恢复原邮箱与已保存密码。`CODEX_OAUTH_DRIVER=same_as_registration` 对应本地 Protocol OAuth。账号高级搜索支持 `开源protocol-2`、`protocol-2` 或 `方式:protocol_oss_2`。
 
@@ -608,22 +577,11 @@ REGISTRATION_DRIVER=protocol_oss_2
 
 失败诊断由外围适配记录，不改变上游注册步骤、请求参数、调用顺序或重试行为。普通模式也保留固定请求类别、HTTP 状态、白名单错误码及异常类型；不会保存凭据或远端正文。任务可区分认证前置传输失败、收到验证码后的传输失败、认证 HTTP 拒绝及资料确认后的会话未完成；资料已成功时，后续失败显示在登录态获取阶段。Roxy 的资料提交明确返回 `registration_disallowed`，或本地未决提交回执阻止新动作时，会显示对应的具体原因；原来的结果未知语义与重跑入口保留。普通和完整抓包均保留 `wrong_email_otp_code` 等固定错误枚举，不凭其他请求的错误推断当前动作失败。远端结果未确认时仍保留原身份和恢复断点；旧记录未保存的细节不会被推测补齐。后置 2FA 错误保留 enroll／activate、HTTP 状态或传输异常类型；配置 schema 不匹配单独显示为本地配置加载错误。
 
-#### 使用开源 Protocol 注册
+#### 历史注册方式与恢复
 
-```python
-REGISTRATION_DRIVER = "protocol_oss"
-```
+现行注册仅保留 `protocol_oss_2` 和 `roxy`。旧 `protocol`、`protocol_oss`、`roxy_oss` 及历史浏览器注册实现已删除，原始实现与许可证可通过 Git 基线 `a4f20f3` 查看，例如 `git show a4f20f3:core/registration/protocol/__init__.py`。
 
-该 driver 固定同步自 [myfanhua/turb-gpt-free-register](https://github.com/myfanhua/turb-gpt-free-register)，基线提交为 `83721dc33a83b3e09dfdf7d91cc511b0124d9b4c`，许可证为 MIT。注册协议代码和许可证位于 `core/registration/protocol_oss/upstream/`，本地适配位于 `core/registration/protocol_oss/__init__.py`；上游入口 `main.py` 不直接运行。
-
-| 对比项 | `protocol` 本地优化版 | `protocol_oss` 开源版 |
-| --- | --- | --- |
-| 注册请求流程 | 本项目维护，含阶段预算、密码检查点和同 Attempt 恢复 | 固定上游协议顺序，单独适配，不回退到本地实现 |
-| 认证方式 | 按 `REGISTRATION_AUTH_MODE` 选择 OTP 或密码 | 上游固定邮箱 + 密码；入队快照会记录实际 password 模式 |
-| 本地能力 | 本地邮箱、代理、Attempt/Run、PostgreSQL 和后处理 | 同样使用本地邮箱、代理、Attempt/Run、PostgreSQL 和后处理 |
-| 后续更新 | 直接维护本项目实现 | 按 `upstream/UPSTREAM.md` 更新隔离源码，再验证适配器 |
-
-OSS 版本的 Codex OAuth 仍调用本项目的 Codex 实现；`CODEX_OAUTH_DRIVER=same_as_registration` 在 OSS 批次中解析为本地 Protocol OAuth，因为 Codex 不运行上游注册 driver。任务列表按每个任务的冻结快照显示来源；账号搜索使用「优化协议」和「开源协议」分别匹配，历史搜索「协议」仍指本地优化 Protocol。
+旧任务与账号的来源标签保留原值供查询；执行和重跑时自动将 `protocol` / `protocol_oss` 映射到 `protocol_oss_2`，将 `roxy_oss` 及旧浏览器标识映射到本地 `roxy`。旧已保存默认配置也按此规则读取，不批量修改历史数据库。新建任务的 API 显式驱动只接受两个现行值。账号查活、刷新 AT、补密码、2FA 和 Codex 的 `protocol` 驱动属于独立账号认证能力，继续使用。
 
 ---
 
@@ -1125,7 +1083,7 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 `OPENAI_PROTOCOL_VERSION` 仅为协议刷新选择 v1/v2/v3，默认 v1；直接 Roxy 刷新不读取它。注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权继续使用各自的唯一实现：
 
-Sentinel 候选版本检查与 Cloudflare 匿名预检实验见 [协议网络维护说明](docs/workflows/protocol-network-maintenance.md)。版本检查独立运行、不替换现用 SDK；本地优化 Protocol 的挑战恢复开关默认关闭，只匹配原有匿名登录页请求。开源protocol-2 的自动接入及专用开关已撤回。
+Sentinel 候选版本检查与 Cloudflare 匿名预检实验见 [协议网络维护说明](docs/workflows/protocol-network-maintenance.md)。版本检查独立运行、不替换现用 SDK；通用协议认证的挑战恢复开关默认关闭，只匹配原有匿名登录页请求。开源protocol-2 的自动接入及专用开关已撤回。
 
 ```dotenv
 ACCOUNT_AT_REFRESH_DRIVER=protocol
@@ -1150,9 +1108,9 @@ LIVE_CHECK_ROXY_FALLBACK_ENABLED=True
 
 开启 `ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED`（Roxy 刷新调试）后，实际使用 Roxy 刷新 AT 时会显示浏览器窗口并全程抓包；失败后保留窗口，可在任务日志的“诊断资源”中查看失败截图、下载完整页面现场与 HAR。该开关默认关闭，位于「配置 → 注册与账号 → 账号补全 → 刷新 AT 策略」，独立于注册任务的调试开关；它不自动打开 Chrome DevTools，也不暂停任务线程。实际启用时任务日志会明确记录。该开关只作用于实际 Roxy 刷新，不改变协议请求或普通查活。
 账号补全遇到“本地没有 OpenAI 密码、远端显示登录密码页”时，只有明确打开 `ACCOUNT_PASSWORD_RESET_ENABLED=True` 才会执行：点击多语言“忘记密码”链接 → 在重置页点击继续 → 等待该次请求之后的新邮箱验证码 → 提交验证码 → 填写并提交新密码。新密码提交后立即写入账号的 `extra_json.account_password` 检查点；若远端结果无法确认，任务会失败但保留检查点，后续重试使用该密码，不会再次盲发重置邮件。该流程只属于账号补全，不影响注册恢复、普通查活或刷新 AT。
-账号页“补密码”及组合补全的密码步骤可通过「配置 → 注册与账号 → 账号补全 → 密码补全驱动」选择 `ACCOUNT_PASSWORD_DRIVER=roxy|protocol`，默认仍为 `roxy`。`protocol` 使用纯 HTTP 登录和邮箱验证码取得 Web 会话，再通过登录后的添加密码流程处理缺少密码的已有账号；单独补密码无需浏览器，可用于 `TURB_BROWSER_ENABLED=false` 的部署。已有正式密码会跳过；远端已有密码、会话失效或添加密码阶段要求额外 MFA 时明确报告原因。该流程不会进入资料创建或注册，不替代“忘记密码”；账号页“修改密码”仍使用 Roxy。
+账号页“补密码”及组合补全的密码步骤可通过「配置 → 注册与账号 → 账号补全 → 密码补全驱动」选择 `ACCOUNT_PASSWORD_DRIVER=roxy|protocol`，默认仍为 `roxy`。`protocol` 使用纯 HTTP 登录和邮箱验证码取得 Web 会话，再通过登录后的添加密码流程处理缺少密码的已有账号；单独补密码无需浏览器，可用于 `TURB_BROWSER_ENABLED=false` 的部署。显式“补密码”即使本地已有密码或确认标记也会执行，不再按本地有值跳过；组合补全将候选和缺少确认状态的历史密码视为待补。实际远端已有密码、会话失效或添加密码阶段要求额外 MFA 时明确分类说明。该流程不会进入资料创建或注册，不替代“忘记密码”；账号页“修改密码”仍使用 Roxy。
 
-纯协议补密码在最终请求发出前，将唯一候选密码写入私有加密检查点，收到明确成功回执后才原子写成正式账号密码。提交结果未知或任务中断时保留候选，手动重跑沿用同一密码，不重新生成；远端明确拒绝与结果未知分别记录。认证取得的新 AT 独立保存，后续密码或 2FA 步骤失败不会回滚已经确认的结果。
+纯协议补密码在最终请求发出前，将唯一候选密码写入私有加密检查点，收到明确成功回执后才原子写成正式账号密码。提交结果未知或任务中断时保留候选，手动重跑沿用同一密码，不重新生成；远端明确拒绝与结果未知分别记录。认证取得的新 AT 独立保存，后续密码或 2FA 步骤失败不会回滚已经确认的结果。补密码使用协议 v2 或 Roxy 认证时，错误候选被远端明确拒绝后可在该补密码调用内改走邮箱 OTP；其他账号操作继续遵循各自密码失败策略。
 
 Roxy 补密码的首次邮箱登录和重置后重新登录分别使用有界的邮箱确认流程，调用结束后恢复临时预算与提交回调；同一次邮箱阶段内仍共享截止时间。已保存密码登录复用共享密码表单的就绪检查、一次提交回执和密码跳转确认预算；明确拒绝时按账号补全配置决定是否重置，结果未确认时保留密码与回执。任务进度按实际驱动记录分配网络、登录验证和设置密码，Roxy 路径另含启动浏览器；外层“执行账号配置”保留在执行记录中，缺少历史记录的步骤按计划位置展示“记录不完整”。
 `ACCOUNT_AUTH_PROFILE_MODE=current` 保持现有每个新会话随机设备画像；实际使用 v2/v3 协议刷新且明确改为 `account_stable` 时，按账号懒创建私有稳定 Protocol identity。v3 复用有效登录会话时沿用该会话保存的画像。它不修改注册时的 `device_id`，不影响普通查活、v1 协议刷新或浏览器兜底；画像的原始 profile key 不进入账号 JSON、导出和普通 API。
@@ -1323,10 +1281,7 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 /create-account/password
 ```
 
-是否设置密码由「配置 → 注册设置 → 注册主链路 → 注册认证方式」决定：
-
-- `otp`：直接使用邮箱一次性验证码完成无密码注册（默认）。
-- `password`：在验证码页主动进入 `/create-account/password`，设置随机密码后再完成邮箱验证。
+两种注册驱动都优先使用当前认证页面实际提供的密码入口：登录密码页提交原保存密码，创建密码页使用原候选密码；没有原值时生成并保存候选。邮箱验证仍按服务端要求完成。历史 `REGISTRATION_AUTH_MODE` 配置可以读取，但不会让当前提供的密码入口被跳过。页面没有密码入口时继续邮箱认证，最终单独判断密码是否确认。
 
 `REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS` 控制密码提交后等待验证码页、资料页或登录态的独立预算，默认 `60` 秒。该预算从点击密码页“继续”后重新计时，不占用前面的密码页识别/填写时间；密码提交请求一发出就会先保存可恢复检查点，超时且没有明确远端结果时，不会丢失已生成的密码或把邮箱重新放回注册池。邮箱表单提交后的认证跳转也会重新获得独立预算；纯代理隧道、空登录壳、页面未水合或注册前阶段预算耗尽且未产生账号状态时，会先自动刷新/强制新导航，仍为空壳才软删除本轮临时 Roxy Profile、释放代理租约并换代理线路重试。普通页面识别失败仍保留现场，已保存账号检查点的失败不会触发这项回收。
 
@@ -1338,15 +1293,15 @@ OpenAI 新版注册通常先展示邮箱验证码页；新账号页面同时提�
 
 认证会话结束页即使仍停在 `/email-verification`，也按登录已结束处理，支持中文、英文和日文提示。若既有网络观测发现认证站点最近一次 `/api/accounts/client_auth_session_dump` 返回 `404`，即使验证码表单仍可见，也停止收码或继续等待，记录 `auth_session_unavailable` 并保留原 Attempt 和未知提交；通过服务端的继续验证入口沿用原身份建立新的登录会话。该检查不额外请求认证接口，较新的成功或尚未完成请求不会沿用旧 `404` 的结论。
 
-本地 Roxy 认证入口，包括本地 Roxy 注册原身份续跑、刷新 AT、账号补全和 Codex 授权，在本地已有保存密码时，都会优先识别邮箱验证码页实际提供的同源 `/log-in/password` 或 `/create-account/password` 链接，按真实页面进入登录密码或创建密码表单并复用保存值；不猜测入口，不重新生成密码，每轮认证最多选择一次密码入口。登录密码通过与创建密码被接受分别记录，服务端随后要求邮箱验证码或 TOTP 时继续完成相应验证。页面没有密码入口时继续原收码分支。无保存密码的新注册仍遵循上述 `otp` / `password` 注册配置。开源 Roxy（`roxy_oss`）注册及其续跑沿用原有上游适配流程，协议驱动保持原行为。后续操作按各自实际选择的驱动执行：即使账号注册来源为 `roxy_oss`，独立选择本地 Roxy 执行刷新 AT、账号补全或 Codex 授权时，仍适用本地 Roxy 的上述规则。
+注册与原任务续跑中，开源protocol-2 和本地 Roxy 都按本轮实际提供的登录或创建密码入口继续；历史密码值、旧 `confirmed` 提交回执不能跳过新会话的密码步骤。同一认证会话已提交密码时继续它的 OTP、资料和回调；新会话重新核对密码入口。刷新 AT、账号补全和 Codex 授权继续按各自认证驱动处理，本地 Roxy 复用保存值与页面实际提供的密码入口。
 
 任务日志会记录「认证提交诊断」：提交回执、页面路由、加载状态、控件是否禁用、固定错误标记，以及认证接口的方法、HTTP 状态、耗时和网络错误。提交确认等待期间每 `15` 秒记录一次，刷新/回退前后分别记录，失败关闭浏览器前补记最终现场。页面、控件、资源和接口记录按同一 `capture_id` 分段写入，避免单条日志上限截断 JSON；资料会话还记录状态码、固定标记和是否有 Token。Roxy 复用既有 CDP 连接，响应头到达但响应体未结束时也会记录状态；普通失败诊断关闭时仍有这段脱敏日志。认证响应只额外保留经过值校验的 `server`、`cf-ray`、`cf-mitigated`、`content-type`、`retry-after`，不保存完整响应头或 Cookie。403 遇到 `cf-mitigated: challenge` 时标记为「检测到 Cloudflare 挑战」；只有 Cloudflare 服务标志时标记为「请求经过 Cloudflare，拒绝原因未确认」，其余情况保留来源与原因未确认，不据此判断代理 IP 被封。补充响应头允许乱序到达；重定向链只使用能可靠对应到各跳的响应头。诊断采集本身不发送额外认证请求，不保存表单值、正文、请求头或 URL 查询值；未知路径只保留指纹。资源时序里的状态 `0` 记为未知，不能当作请求失败。
 
 Roxy 的密码与当前邮箱验证码表单会先核验控件、输入值和按钮遮挡情况，再预留一次提交并通过 CDP 派发真实鼠标事件。鼠标事件派发未确认时不会再切换 JS 点击；原密码、邮箱和 Attempt 仍保留给后续续跑。没有 CDP 的兼容驱动沿用原有表单提交方式。
 
-邮箱验证码是 OpenAI 的邮箱所有权验证步骤；即使选择 `password`，设置密码后仍然需要邮箱 OTP。若 password 模式下页面没有提供创建密码入口，任务会明确失败，避免把无密码账号误报为密码注册成功。
+数据库里有密码、密码创建请求返回成功、邮箱验证码通过或到达资料页，都不足以单独确认密码生效。注册只有取得与原邮箱精确匹配的 Token，并且当前认证链实际创建或验证过该密码，才将 `account_password_state` 记为 `confirmed`。此前保存为 `candidate`；历史只有密码值而没有确认状态的记录也按候选处理。仅凭 OTP 或既有会话取得 Token 时，账号可以保存成功，密码继续保持待确认，供后续补密码使用。
 
-密码被远端接受后，OpenAI 登录页仍可能默认先展示邮箱验证码；本地 Roxy 按页面实际提供的密码入口继续。无密码注册的账号可以在账号配置补跑时设置一次密码；已有保存密码的本地 Roxy 恢复和登录复用原值。密码验证通过不代表邮箱验证、MFA、登录 Session 或 AT 已经取得，后续失败仍保留已经观测到的密码结果。
+密码请求被接受后，认证页面仍可能要求邮箱验证码、MFA、资料或回调；后续失败保留原候选密码和请求证据，原任务可继续重跑。取得 Token 前的密码校验只记录本轮观察事实，不提前将账号密码标为有效。
 
 密码始终按账号独立随机生成：14 位，包含大写、小写、数字和符号。配置页不提供固定密码输入，避免一批账号共用同一个密码。
 
@@ -1632,8 +1587,8 @@ ENABLE_CODEX_AUTO = False
 │   ├── registration/               # 注册公共编排、调试、检查点、恢复与后处理
 │   │   ├── service.py / dispatcher.py / standalone.py
 │   │   ├── roxy/ / protocol/       # 本地浏览器与协议实现，完整模块保留在 __init__.py
-│   │   ├── roxy_oss/ / protocol_oss/ / protocol_oss_2/ # 开源实现与 upstream 快照
-│   │   └── legacy/                 # browser_use/、skyvern/、cloakbrowser/ 历史实现
+│   │   ├── roxy/ / protocol_oss_2/ # 两种现行注册实现与 protocol-2 upstream 快照
+│   │   └── errors.py / driver_selection.py # 注册错误展示与历史驱动执行映射
 │   ├── accounts/                   # 凭据、补全、导出、AT 刷新与认证上下文清理
 │   │   └── liveness/ / plans/ / inspection/ / email_change/ / deactivation/
 │   ├── codex/                      # OAuth、操作编排、重试与凭证刷新；roxy/、legacy/
@@ -1652,7 +1607,7 @@ ENABLE_CODEX_AUTO = False
 │   ├── browser/                    # 浏览器产品客户端、Profile、资源与流量；roxy/、legacy/
 │   ├── network/ / runtime/ / integrations/ # 网络诊断、持久调度与外部集成
 │   └── db.py / account_task_store.py / operation_task_store.py
-│       roxy_registration.py / browser_use_registration.py # 五个模块对象兼容入口
+│       roxy_registration.py           # 本地 Roxy 模块对象兼容入口
 ├── webui/
 │   ├── app.py / blueprint.py       # Flask 装配与原 endpoint 兼容注册
 │   ├── route_helpers.py / runtime.py / auth.py / config_editor.py
@@ -1673,7 +1628,7 @@ ENABLE_CODEX_AUTO = False
 
 公共逻辑放在所属业务目录根部，具体驱动、邮箱来源和提链平台放入各自子目录；跨业务认证和浏览器能力分别放在 `core/auth/`、`core/browser/`。此次采用整文件归位，尚未从混合模块中抽取独立实现的接码和代理提供方仍保留在 `sms/provider.py`、`proxy/provider.py`、`proxy/sources.py` 中。
 
-工具的真实实现按用途放入子目录，已有 `python tools/<原脚本>.py` 命令保留为薄兼容入口；新代码和文档优先使用真实实现路径。五个 core 兼容入口绑定同一模块对象，不复制全局状态。
+工具的真实实现按用途放入子目录，已有 `python tools/<原脚本>.py` 命令保留为薄兼容入口；新代码和文档优先使用真实实现路径。保留的 core 兼容入口绑定同一模块对象，不复制全局状态。
 
 完整文档入口见[文档导航](docs/README.md)；功能入口、实现和定向测试见[功能链路与测试影响地图](docs/architecture/functional-map.md)。
 
@@ -1714,7 +1669,7 @@ Roxy 单任务重跑可通过 `POST /api/jobs/{id}/retry` 显式指定 `proxy_co
 - 如果要复用账号环境，Roxy 一号一环境和账号环境复用建议保持开启，并关闭 `ROXY_DELETE_PROFILE_AFTER_RUN`；如果优先释放 Roxy Profile/窗口额度，则开启删除开关，但后续任务会重新创建环境，不能同时获得 Profile 复用和删除后的额度释放。
 - 调试页面或接口问题时，在「发起注册」勾选「调试模式」，随后发起注册或重跑。该开关作用于本次提交的任务：Roxy 强制显示窗口，抓包按任务隔离；账号配置补跑也在登录前启动抓包，失败后在清理浏览器前保存现场。点击「释放现场」、停止任务或达到保留超时后继续自动清理。单任务重跑 API 可显式指定 `registration_driver=roxy` 和 `debug_enabled=true`，适用于完整注册、原身份续跑及账号配置补跑；仅新子任务保存覆盖设置，原任务和全局配置不变。账号配置补跑的显式 Roxy 模式使用浏览器登录和 2FA 设置，套餐查询仍沿用原查询实现。
 - 原身份续跑进入页面提供的密码登录入口时，整体导航超时后会重新检查页面；同源密码页已有可用密码框且阶段预算尚有剩余时继续登录，仍为空白或没有可用密码框时保留失败。
-- 本地 Roxy 认证在验证码页发现实际提供的同源登录或创建密码入口、且本地保存了 OpenAI 密码时，每轮认证会在原预算内最多选择一次密码入口并复用保存值，详见[账号密码说明](#账号密码说明)。密码结果与后续邮箱验证、MFA、Session 和 AT 分别记录；开源 Roxy（`roxy_oss`）注册及其续跑沿用原有上游适配流程，协议驱动保持原行为。
+- 本地 Roxy 认证在验证码页发现实际提供的同源登录或创建密码入口、且本地保存了 OpenAI 密码时，每轮认证会在原预算内最多选择一次密码入口并复用保存值，详见[账号密码说明](#账号密码说明)。密码结果与后续邮箱验证、MFA、Session 和 AT 分别记录；
 - 账号配置从 ChatGPT 登录页重新登录时，与注册共用邮箱准备、提交及认证跳转预算和一次导航恢复。表单未就绪或提交未确认时保留原始错误，不再跳过登录直接读取 session；页面进度会显示加载、派发及确认阶段。
 - Roxy 注册先保留自然捕获的权益快照（省流量模式在切换轻量页前读取，普通模式在首页观察后读取），Codex 和 2FA 结束后集中补查套餐与额度，「查询套餐」计时只覆盖这段处理。主动请求只允许在 ChatGPT 页面内发送，受浏览器内中止超时约束，结束后恢复原脚本超时；日志单独记录本轮查询耗时与来源。后台补查仍使用独立任务。
 - 在任务日志的「网络调试」区域查看请求状态、阶段、耗时和错误，可选择同批成功任务自动对比，也可下载已经脱敏和限流的 HAR。Cookie、Token、密码、OTP、邮箱和 URL 查询值不会明文写入抓包。

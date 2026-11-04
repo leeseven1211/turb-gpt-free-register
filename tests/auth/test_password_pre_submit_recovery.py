@@ -427,6 +427,27 @@ class PasswordPreSubmitRecoveryTests(unittest.TestCase):
         self.assertEqual((driver.gets, driver.queues, submitted), ([], [], []))
         self.assertEqual(driver._browser_submission_receipt.phase, "not_dispatched")
 
+    def test_local_roxy_rebuilt_session_checks_current_password_entry_once(self):
+        clock = _Clock()
+        driver = _Driver(clock)
+
+        def restart(*_args, **_kwargs):
+            driver.current_url = "https://auth.openai.com/email-verification"
+            return True
+
+        with (_resume_flow(driver, clock),
+              patch.object(password_auth, "auth_session_missing", return_value=True),
+              patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart),
+              patch.object(password_auth, "_wait_email_otp_page_ready", return_value="ready") as ready,
+              patch("core.auth.browser.password_entry.open_offered_password_entry", return_value=None) as offered):
+            result = password_auth._fill_password_page_if_present(
+                driver, EMAIL, existing_password=PASSWORD, prefer_saved_password_entry=True,
+            )
+        self.assertEqual(result, PASSWORD)
+        ready.assert_called_once()
+        offered.assert_called_once()
+        self.assertEqual(driver.queues, [])
+
     def test_missing_session_arriving_after_typing_restarts_before_first_dispatch_then_submits_once(self):
         clock = _Clock()
         driver = _Driver(clock)

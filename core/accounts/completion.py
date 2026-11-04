@@ -31,18 +31,9 @@ def _extra(account: Mapping) -> dict:
 
 
 def _password_present(account: Mapping) -> bool:
-    extra = _extra(account)
-    return bool(
-        str(
-            extra.get("account_password")
-            or extra.get("login_password")
-            or extra.get("registration_password")
-            or account.get("account_password")
-            or account.get("login_password")
-            or account.get("registration_password")
-            or ""
-        ).strip()
-    )
+    from core.accounts.password_evidence import password_is_confirmed
+
+    return password_is_confirmed(account)
 
 
 def _password_setup_repeat_blocked(account: Mapping) -> bool:

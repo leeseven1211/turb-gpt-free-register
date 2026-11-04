@@ -7,11 +7,11 @@ let REGISTRATION_DRIVERS = [];
 function registrationDriverLabel(value) {
   const driver = REGISTRATION_DRIVERS.find(item => item.value === String(value || ''));
   return driver?.label || ({
-    protocol: '本地优化 Protocol',
-    protocol_oss: '开源 Protocol',
+    protocol: '本地优化 Protocol（历史）',
+    protocol_oss: '开源 Protocol（历史）',
     protocol_oss_2: '开源protocol-2',
     roxy: '本地 Roxy',
-    roxy_oss: '开源 Roxy',
+    roxy_oss: '开源 Roxy（历史）',
   }[String(value || '')] || '未知');
 }
 async function loadRegistrationEmailSources() {

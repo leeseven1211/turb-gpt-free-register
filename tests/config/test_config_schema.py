@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import config
 from config import env_loader
 from config import schema as config_schema
@@ -312,14 +314,10 @@ class ConfigSchemaTests(unittest.TestCase):
         field = CONFIG_SCHEMA["REGISTRATION_DRIVER"]
         self.assertEqual({item.value: item.label for item in field.options}["protocol_oss_2"], "开源protocol-2")
 
-    def test_open_source_roxy_is_an_editable_registration_choice(self):
-        self.assertEqual(validate_config_updates({"REGISTRATION_DRIVER": "roxy_oss"}), {
-            "REGISTRATION_DRIVER": "roxy_oss",
-        })
-        field = CONFIG_SCHEMA["REGISTRATION_DRIVER"]
-        options = {item.value: item.label for item in field.options}
-        self.assertEqual(options["roxy_oss"], "开源 Roxy")
-        self.assertEqual(options["roxy"], "本地 Roxy")
+    def test_retired_registration_choices_are_rejected(self):
+        for driver in ("protocol", "protocol_oss", "roxy_oss"):
+            with self.subTest(driver=driver), self.assertRaises(ValueError):
+                validate_config_updates({"REGISTRATION_DRIVER": driver})
 
     def test_schema_owns_unique_fields_and_editor_consumes_it(self):
         fields = CONFIG_SCHEMA.fields
@@ -771,3 +769,19 @@ class ConfigSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_legacy_registration_defaults_resolve_without_becoming_editable_choices():
+    for previous, current in (("protocol", "protocol_oss_2"), ("protocol_oss", "protocol_oss_2"), ("roxy_oss", "roxy")):
+        resolution = config_schema.resolve_field(CONFIG_SCHEMA["REGISTRATION_DRIVER"], {"REGISTRATION_DRIVER": previous}, strict=True)
+        assert resolution.value == current
+        assert resolution.invalid is False
+        assert resolution.source == "env"
+
+
+def test_registration_password_policy_keeps_legacy_otp_readable_without_an_otp_choice():
+    field = CONFIG_SCHEMA["REGISTRATION_AUTH_MODE"]
+    assert [item.value for item in field.options] == ["password"]
+    assert config_schema.resolve_field(field, {"REGISTRATION_AUTH_MODE": "otp"}, strict=True).value == "password"
+    with pytest.raises(ConfigValidationError):
+        validate_config_updates({"REGISTRATION_AUTH_MODE": "otp"})

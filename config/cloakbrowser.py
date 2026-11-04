@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CloakBrowser 自动化注册配置。"""
+"""历史 CloakBrowser 账号认证配置；注册入口已退役。"""
 from config.env_loader import apply_env_overrides
 
 # 是否无头启动：False=显示窗口，True=无头。

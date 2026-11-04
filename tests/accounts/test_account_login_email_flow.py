@@ -39,6 +39,17 @@ class AccountLoginEmailFlowTests(unittest.TestCase):
         resolve.assert_called_once()
         self.assertTrue(any(event["state"] == "success" for event in events))
 
+    def test_explicit_setup_passes_email_fallback_through_shared_login_challenge(self):
+        driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login")
+        with self._context(driver) as stack:
+            stack.enter_context(patch.object(email_otp, "_submit_email_and_wait_next", return_value="login_password"))
+            resolve = stack.enter_context(patch.object(oauth, "complete_openai_login_challenge", return_value="advanced"))
+            oauth._fill_email_and_otp(
+                driver, "unit@example.test", Mock(), driver.current_url, allow_passwordless_fallback=True,
+            )
+        self.assertIs(resolve.call_args.kwargs["allow_passwordless_fallback"], True)
+        self.assertFalse(resolve.call_args.kwargs["allow_password_reset"])
+
     def test_failed_account_email_flow_does_not_report_submission_or_continue_to_session(self):
         driver = SimpleNamespace(current_url="https://chatgpt.com/auth/login")
         events = []

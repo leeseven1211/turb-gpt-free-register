@@ -176,7 +176,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
                 "security_action": security_action,
             },
             {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
-            {"inputs": [], "errors": [], "body": "Password added"},
+            {"url": "https://chatgpt.com/#settings/Security", "inputs": [], "errors": [], "body": "Password added"},
         ]
 
         with patch.object(roxy_registration, "_probe_chatgpt_password_eligibility", return_value=False), patch.object(
@@ -316,7 +316,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
             {"settings_route": False},
             {"action": add_password, "inputs": [], "body": "密码 添加"},
             {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
-            {"inputs": [], "errors": [], "body": "Password added"},
+            {"url": "https://chatgpt.com/#settings/Security", "inputs": [], "errors": [], "body": "Password added"},
         ]
 
         with patch.object(roxy_registration, "_safe_get") as safe_get, patch.object(
@@ -390,7 +390,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
             {"action": add_password, "inputs": [], "body": "密码 添加"},
             {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
             [fresh_input, fresh_confirm],
-            {"inputs": [], "errors": [], "body": "Password added"},
+            {"url": "https://chatgpt.com/#settings/Security", "inputs": [], "errors": [], "body": "Password added"},
         ]
 
         with patch.object(roxy_registration, "_safe_get") as safe_get, patch.object(
@@ -442,7 +442,7 @@ class RoxyTwoFactorTests(unittest.TestCase):
             },
             add_password,
             {"action": None, "inputs": [new_input, confirm_input], "body": "新密码 重新输入新密码"},
-            {"inputs": [], "errors": [], "body": "Password added"},
+            {"url": "https://chatgpt.com/#settings/Security", "inputs": [], "errors": [], "body": "Password added"},
         ]
 
         with patch.object(roxy_registration, "_safe_get"), patch.object(

@@ -1,7 +1,7 @@
 # 注册与账号认证支持矩阵
 
-**范围：** Roxy/Protocol 注册驱动、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
-**结论：** Roxy 是推荐的浏览器注册驱动；Protocol 也是可直接选择的协议注册驱动。
+**范围：** 本地 Roxy/开源protocol-2 注册驱动、账号查活、刷新 AT、补密码、补 Authenticator 2FA。
+**结论：** 注册只保留本地 Roxy 与开源protocol-2；账号认证仍有独立的 Protocol 实现。
 两者共享认证结果、挑战链和恢复边界，但 `REGISTRATION_DRIVER` 不会因为某一步失败而
 自动切换，也不会在远端结果未知时自动重新注册。
 
@@ -11,7 +11,7 @@
 
 | 步骤 | 当前支持版本 | 是否读取 `OPENAI_PROTOCOL_VERSION` | 有效实现 |
 |---|---|---:|---|
-| 注册协议 | v1 | 否 | v1 |
+| 注册协议 | 单一实现 | 否 | 开源protocol-2 AuthFlow / wreq |
 | 协议 2FA | v1 | 否 | v1 |
 | 协议补密码 | 单一实现 | 否 | 登录后添加密码 |
 | 套餐查询 | v1 | 否 | v1 |
@@ -44,11 +44,11 @@ Token、密码、OTP、TOTP Secret、Cookie、callback URL、原始响应和完�
 | 入口 | 当前定位 | 已支持 | 明确不做 |
 |---|---|---|---|
 | Roxy | 稳定主流程、页面状态权威来源、最终浏览器兜底 | 邮箱提交、创建密码、邮箱 OTP、TOTP、资料页、登录态、Token、注册后账号配置 | 不把已有账号当新账号重复创建 |
-| Protocol | 可直接选择的纯协议注册驱动，以及账号认证协议能力 | 协议注册、明确的邮箱 OTP、OAuth callback/session、v1/v2/v3 刷新 AT、协议补密码、协议 2FA | 不在未知远端结果下自动改用 Roxy 或重新创建账号；不因密码错误自动换线重试 |
+| 开源protocol-2 | 当前唯一纯协议注册驱动 | 密码入口、邮箱 OTP、OAuth callback/session、原 Attempt 续跑 | 不凭历史密码值跳过本轮密码；取得原邮箱 Token 前不确认密码有效 |
+| 账号 Protocol | 独立账号认证能力 | v1/v2/v3 刷新 AT、协议补密码、协议 2FA、Codex | 注册删链不会移除这些账号认证实现 |
 | Service/Dispatcher | 选择驱动、保存 checkpoint、决定是否重试 | 保留已有账号/邮箱/任务状态，区分 `manual_reconcile` 与普通失败 | 不以本地数据库“没有账号记录”推断远端一定没有账号 |
 
-推荐配置是 `REGISTRATION_DRIVER=roxy`；显式设置 `REGISTRATION_DRIVER=protocol` 时会直接
-运行协议驱动。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的
+推荐配置是 `REGISTRATION_DRIVER=roxy`；纯协议注册选择 `REGISTRATION_DRIVER=protocol_oss_2`。历史 `protocol` / `protocol_oss` 配置和任务执行映射到 protocol-2，历史来源保留。2FA 的公开选择统一为 `auto`、`protocol`、`browser`：`auto` 是协议优先的
 自动上下文选择，`protocol` 强制协议执行器，`browser` 强制 Roxy 安全设置页。历史值
 `protocol_direct` 仍兼容，但只作为 `auto` 的别名，不再作为独立决策。认证操作返回的
 `roxy_fallback_allowed` 只表示对应账号动作可按结果进入浏览器处理，不改变注册任务的
@@ -136,7 +136,7 @@ Roxy 已覆盖“邮箱 OTP → TOTP”；这个判断优先读取最新 DOM 控
 
 ### 4.3 补密码与补 2FA
 
-账号页“补密码”与组合补全的密码步骤由 `ACCOUNT_PASSWORD_DRIVER` 决定：默认 `roxy` 使用现有 Roxy 流程；`protocol` 使用纯 HTTP 登录后的添加密码流程。它只给已有账号补缺失密码，不执行忘记密码重置，也不进入注册或资料创建。“修改密码”保持使用 Roxy，不受该驱动选项影响。
+账号页“补密码”与组合补全的密码步骤由 `ACCOUNT_PASSWORD_DRIVER` 决定：默认 `roxy` 使用现有 Roxy 流程；`protocol` 使用纯 HTTP 登录后的添加密码流程。显式补密码允许本地已有值或确认标记的账号执行；组合补全将未确认的历史值视为候选。远端已设密码时明确报告，不按本地有值静默跳过。它不执行忘记密码重置，也不进入注册或资料创建。“修改密码”保持使用 Roxy，不受该驱动选项影响。
 
 补全按密码与 2FA 各自的驱动串行执行：
 

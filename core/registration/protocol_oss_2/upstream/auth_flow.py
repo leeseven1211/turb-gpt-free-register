@@ -19,6 +19,7 @@ import subprocess
 import time
 import uuid
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Optional, Any
 from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlunparse
 
@@ -36,6 +37,62 @@ from core.registration.protocol_oss_2.runtime import create_http_session
 from core.registration.protocol_oss_2.upstream.environment import compare_exit_observation
 
 logger = logging.getLogger(__name__)
+
+
+class PasswordEntryError(RuntimeError):
+    """密码入口异常只携带固定原因码，不复制页面或网络异常正文。"""
+
+    def __init__(self, cause_code: str):
+        descriptions = {
+            "password_entry_navigation_failed": "密码入口导航失败，已保留原候选密码",
+            "password_entry_navigation_timeout": "密码入口导航超时，已保留原候选密码",
+            "password_entry_not_offered": "认证下一步未提供可识别入口，已保留原任务",
+        }
+        self.cause_code = cause_code if cause_code in descriptions else "password_entry_navigation_failed"
+        super().__init__(descriptions[self.cause_code])
+
+
+def _password_navigation_failure(exc: Exception) -> PasswordEntryError:
+    timed_out = isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+    return PasswordEntryError("password_entry_navigation_timeout" if timed_out else "password_entry_navigation_failed")
+
+
+class _PasswordEntryLinks(HTMLParser):
+    """只读取当前认证文档中实际提供的同源密码链接。"""
+
+    def __init__(self, page_url: str):
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.links: dict[str, str] = {}
+        self._parents: list[tuple[str, bool]] = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        hidden = bool(self._parents and self._parents[-1][1]) or (
+            "hidden" in attributes or attributes.get("aria-hidden") == "true"
+            or tag in {"script", "style", "template", "noscript"}
+            or "display:none" in str(attributes.get("style") or "").replace(" ", "").lower()
+        )
+        if tag == "a" and not hidden and "disabled" not in attributes and attributes.get("aria-disabled") != "true":
+            target = urljoin(self.page_url, str(attributes.get("href") or ""))
+            base, parsed = urlparse(self.page_url), urlparse(target)
+            path = parsed.path.rstrip("/")
+            if (base.scheme == parsed.scheme == "https" and base.netloc == parsed.netloc
+                    and parsed.hostname == "auth.openai.com" and not parsed.username
+                    and not parsed.password and path in {"/log-in/password", "/create-account/password"}):
+                self.links.setdefault(path, target)
+        if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self._parents.append((tag, hidden))
+
+    def handle_endtag(self, tag):
+        for index in range(len(self._parents) - 1, -1, -1):
+            if self._parents[index][0] == tag:
+                del self._parents[index:]
+                break
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
 
 
 # ── RFC 6238 TOTP 实现（用于 mfa-challenge 计算动态码）────────────
@@ -200,6 +257,9 @@ class AuthFlow:
         #    邮箱送达，落点就是 /email-verification。signup() 原来的唯一判据
         #    （authorize/continue 响应里的 page.type）因此失效，判据迁到这里。
         self._authorize_landing_url = ""
+        self._authorize_landing_html = ""
+        self._registration_password_entry_url = ""
+        self._password_create_page_ready = False
         # ② x-openai-document-navigation-id。今天三个 auth JSON POST
         #    （user/register / email-otp/validate / create_account）全带它，且
         #    email-otp/validate 与 create_account **同值**（e2ee8921-…），
@@ -2384,7 +2444,8 @@ class AuthFlow:
         headers["sec-fetch-site"] = "cross-site"
         # 302 自动跟随不是用户手动点击，真浏览器此时不发 sec-fetch-user
         headers.pop("sec-fetch-user", None)
-        resp = self.session.get(auth_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
+        # 本轮认证文档中的密码入口决定下一步，必须读取实际文档，不能只按 URL 猜测。
+        resp = self.session.get(auth_url, headers=headers, timeout=30, allow_redirects=True)
         self._trace_http("auth_oauth_init", resp)
 
         # 记录落地 URL：signup() 的新判据（authorize/continue 的 page.type 已失效）。
@@ -2394,6 +2455,8 @@ class AuthFlow:
             self._authorize_landing_url = str(getattr(resp, "url", "") or "").strip()
         except Exception:
             self._authorize_landing_url = ""
+        self._authorize_landing_html = str(resp.text or "")
+        self._password_create_page_ready = self._landing_page_type(self._authorize_landing_url) == "create_account_password"
         if self._authorize_landing_url:
             logger.info(f"authorize 落地: {self._authorize_landing_url[:160]}")
         else:
@@ -2419,14 +2482,7 @@ class AuthFlow:
 
         # fallback: 从 HTML 提取
         if not device_id:
-            # auth_oauth_init 是 stream=True（不缓冲正文），要 HTML 只能重取一次；
-            # 只有 cookie 真缺 oai-did 时才付这笔钱。
-            _html = ""
-            try:
-                _r = self.session.get(self._authorize_landing_url or auth_url, headers=headers, timeout=20)
-                _html = _r.text or ""
-            except Exception:
-                _html = ""
+            _html = self._authorize_landing_html
             m = re.search(r'oai-did["\s:=]+([a-f0-9-]{36})', _html)
             if m:
                 device_id = m.group(1)
@@ -2544,30 +2600,57 @@ class AuthFlow:
         except Exception:
             return {}
 
-    def _classify_authorize_landing(self, landing_url: str, intent: str = "signup") -> str:
-        """把 authorize 落地 URL 映射成状态。返回 "new" / "existing" / ""（判不出）。
+    def _prefer_current_password_entry(self, page_url: str, html: str) -> str:
+        """按当前文档选择密码入口；没有实际入口时继续当前邮箱认证。"""
+        if urlparse(page_url).path.rstrip("/") != "/email-verification":
+            return page_url
+        parser = _PasswordEntryLinks(page_url)
+        parser.feed(str(html or ""))
+        known_password = bool(str(getattr(getattr(self, "result", None), "password", "") or "").strip())
+        target = parser.links.get("/log-in/password") if known_password else None
+        target = target or parser.links.get("/create-account/password")
+        if not target:
+            return page_url
+        if urlparse(target).path.rstrip("/") == "/create-account/password":
+            self._registration_password_entry_url = target
+        headers = self._navigation_headers()
+        headers.update({"Referer": page_url, "sec-fetch-site": "same-origin"})
+        try:
+            response = self.session.get(target, headers=headers, timeout=30, allow_redirects=True)
+        except Exception as exc:
+            raise _password_navigation_failure(exc) from exc
+        self._trace_http("password_entry", response)
+        if response.status_code >= 400:
+            raise PasswordEntryError("password_entry_navigation_failed")
+        self._new_document_navigation()
+        self._authorize_landing_url = str(getattr(response, "url", "") or target).strip()
+        self._authorize_landing_html = str(response.text or "")
+        self._password_create_page_ready = self._landing_page_type(self._authorize_landing_url) == "create_account_password"
+        if self._password_create_page_ready:
+            self._registration_password_entry_url = self._authorize_landing_url
+        return self._authorize_landing_url
 
-        抓包依据（2026-09-21，全新邮箱成功注册那一轮）：
-            1789985831193  Page.navigatedWithinDocument  https://auth.openai.com/email-verification
-            1789985836912  Page.navigatedWithinDocument  https://auth.openai.com/create-account/password
-        全新邮箱经 login_hint 送达后落 /email-verification，页面提供「继续使用密码」，
-        随后 POST /api/accounts/user/register **200** —— 所以注册链路里
-        /email-verification 就是"新账号"。
-
-        ⚠️ 同一个落点在**登录**链路里含义相反（已有账号等 OTP），所以必须按 intent 分流。
-        这是全流程唯一一处需要按语义分支的映射，也是唯一没有直接抓包支撑的分支
-        （今天没跑已有账号），见报告 §1.6。
-        """
-        u = (landing_url or "").strip().lower()
-        if not u:
+    @staticmethod
+    def _landing_page_type(landing_url: str) -> str:
+        parsed = urlparse(landing_url)
+        if parsed.netloc and (parsed.scheme != "https" or parsed.hostname != "auth.openai.com"
+                              or parsed.username or parsed.password):
             return ""
-        if "/create-account" in u or "/about-you" in u:
+        return {
+            "/create-account/password": "create_account_password",
+            "/log-in/password": "login_password",
+            "/email-verification": "email_otp_verification",
+            "/about-you": "about_you",
+        }.get(parsed.path.rstrip("/"), "")
+
+    def _classify_authorize_landing(self, landing_url: str, intent: str = "signup") -> str:
+        """密码创建只依据本轮明确页面；邮箱验证码页不能证明账号或密码已存在。"""
+        page_type = self._landing_page_type(landing_url)
+        if not page_type:
+            return ""
+        if page_type in {"create_account_password", "about_you"}:
             return "new"
-        if "/log-in" in u:
-            return "existing"
-        if "/email-verification" in u:
-            return "new" if (intent or "signup").lower() == "signup" else "existing"
-        return ""
+        return "existing"
 
     def _apply_signup_verdict(self, verdict: str, page_type: str = "") -> bool:
         """把 new/existing 判定写进实例状态并返回 is_new。"""
@@ -2583,30 +2666,17 @@ class AuthFlow:
 
     def signup(self, email: str, sentinel_token: str = "", landing_url: str = "",
                intent: str = "signup", sentinel_provider=None) -> bool:
-        """判定本次会话走"新注册"还是"已有账号 OTP 登录"。True = 新注册。
+        """优先使用当前文档的密码入口，再按真实落点或认证响应继续。
 
-        ── 2026-09-21 重构 ──────────────────────────────────────────────
-        旧实现：调 authorize_continue()，读响应 JSON 的 page.type / continue_url 分类。
-        今天抓包：**POST /api/accounts/authorize/continue 0 次调用**。邮箱由 signin 的
-        login_hint 带进 authorize URL，authorize 那一跳直接送达邮箱，落
-        /email-verification。旧判据的唯一输入源没了 —— 所以不是"删一个 POST"，
-        而是**换判据**：改用 authorize 落地 URL（由 auth_oauth_init 记在
-        self._authorize_landing_url）。
-
-        判定顺序：
-          ① 给了 landing_url（run_register 走这条）→ 落地 URL 分类，**不**发任何 POST；
-          ② 落地 URL 判不出（或调用方没给）→ 回退旧的 authorize_continue 探测；
-          ③ 探测也失败 → 用落地 URL 按 intent 再判一次；仍判不出则保守判"新注册"
-             （run_register 里 register_password 失败本就会回退 OTP 路径，
-              误判的代价是多一次 POST，而不是废掉一个号）。
-
-        run_protocol_login 不传 landing_url（intent 保持默认），行为与改动前一致。
+        True 仅表示本轮明确要求创建密码或提交资料。邮箱验证码页本身不能
+        推断为密码创建页；未知落点可以询问原认证接口，仍未知时保留任务供重跑。
         """
         landing = (landing_url or "").strip()
         if landing:
+            landing = self._prefer_current_password_entry(landing, getattr(self, "_authorize_landing_html", ""))
             verdict = self._classify_authorize_landing(landing, intent=intent)
             if verdict:
-                is_new = self._apply_signup_verdict(verdict)
+                is_new = self._apply_signup_verdict(verdict, page_type=self._landing_page_type(landing))
                 logger.info(
                     "注册状态判定: %s（authorize 落地=%s，未发 authorize/continue POST）",
                     "新账号" if is_new else "已有账号", landing[:120],
@@ -2632,22 +2702,23 @@ class AuthFlow:
                 trace_step="authorize_continue_signup",
             )
         except Exception as e:
-            # ③ 探测失败：用落地 URL 兜一次，判不出就保守按"新注册"。
+            # 接口失败只复用已观测落点，不凭空推断可创建密码。
             fallback = self._classify_authorize_landing(
                 landing or getattr(self, "_authorize_landing_url", ""), intent=intent
             )
             if fallback:
-                is_new = self._apply_signup_verdict(fallback)
+                fallback_url = landing or getattr(self, "_authorize_landing_url", "")
+                is_new = self._apply_signup_verdict(fallback, page_type=self._landing_page_type(fallback_url))
                 logger.warning(
                     "authorize/continue 探测失败（%s），改用落地 URL 判定: %s",
                     e, "新账号" if is_new else "已有账号",
                 )
                 return is_new
-            logger.warning(f"authorize/continue 探测失败且无落地 URL 可判（{e}），保守按新注册处理")
-            self._is_existing_account = False
+            logger.warning(f"authorize/continue 探测失败且无落地 URL 可判（{e}），无法确认密码入口")
+            self._is_existing_account = True
             self._existing_email_verification_mode = ""
             self._existing_page_type = ""
-            return True
+            raise PasswordEntryError("password_entry_not_offered") from e
 
         # 检测 page_type/continue_url，区分新账号与已有账号
         try:
@@ -2669,6 +2740,24 @@ class AuthFlow:
                 mode = (payload.get("email_verification_mode", "") or "").strip()
                 self._existing_email_verification_mode = mode
                 self._existing_page_type = page_type
+                otp_page = urljoin("https://auth.openai.com/", continue_url)
+                if self._landing_page_type(otp_page) == "email_otp_verification":
+                    try:
+                        page_response = self.session.get(
+                            otp_page, headers=self._navigation_headers(), timeout=30, allow_redirects=True,
+                        )
+                    except Exception as exc:
+                        raise _password_navigation_failure(exc) from exc
+                    if page_response.status_code >= 400:
+                        raise PasswordEntryError("password_entry_navigation_failed")
+                    current_page = str(getattr(page_response, "url", "") or otp_page)
+                    selected = self._prefer_current_password_entry(current_page, str(page_response.text or ""))
+                    selected_type = self._landing_page_type(selected)
+                    if selected_type in {"create_account_password", "login_password"}:
+                        return self._apply_signup_verdict(
+                            "new" if selected_type == "create_account_password" else "existing",
+                            page_type=selected_type,
+                        )
                 if mode == "passwordless_signup":
                     logger.info("服务端选择 passwordless 注册流程（新账号，无密码），等待 OTP")
                     self._is_existing_account = False
@@ -2687,13 +2776,8 @@ class AuthFlow:
                 continue_url[:180] or "(empty)",
             )
             return False
-        except Exception:
-            # JSON 解析失败时保守按新注册处理
-            self._is_existing_account = False
-            self._existing_email_verification_mode = ""
-            self._existing_page_type = ""
-            logger.info("注册邮箱已提交")
-            return True
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise PasswordEntryError("password_entry_not_offered") from exc
 
     # ── Step 6.5: 注册密码 ──
     def register_password(self, email: str) -> bool:
@@ -2710,20 +2794,24 @@ class AuthFlow:
         # ce246e08-032b-47d4-bc93-a83c8c04f798，与它自己的那次文档导航对应，
         # 而后续 email-otp/validate 换成了 e2ee8921-…。
         # 头用 _navigation_headers（整页导航：document/navigate），不是 XHR 那套。
-        try:
-            nav_headers = self._navigation_headers()
-            nav_headers["Referer"] = "https://auth.openai.com/create-account"
-            nav_headers["sec-fetch-site"] = "same-origin"
-            pw_page = self.session.get(
-                "https://auth.openai.com/create-account/password",
-                headers=nav_headers,
-                timeout=15,
-                stream=True,
-            )
-            logger.info(f"create-account/password 页面: {pw_page.status_code}")
-        except Exception as e:
-            logger.warning(f"访问 create-account/password 页面失败: {e}")
-        self._new_document_navigation()
+        nav_headers = self._navigation_headers()
+        nav_headers["Referer"] = self._authorize_landing_url or "https://auth.openai.com/create-account"
+        nav_headers["sec-fetch-site"] = "same-origin"
+        password_url = getattr(self, "_registration_password_entry_url", "") or (
+            self._authorize_landing_url
+            if self._landing_page_type(self._authorize_landing_url) == "create_account_password"
+            else "https://auth.openai.com/create-account/password"
+        )
+        if not getattr(self, "_password_create_page_ready", False):
+            try:
+                pw_page = self.session.get(password_url, headers=nav_headers, timeout=15, stream=True)
+            except Exception as exc:
+                raise _password_navigation_failure(exc) from exc
+            landed = str(getattr(pw_page, "url", "") or password_url)
+            if pw_page.status_code >= 400 or self._landing_page_type(landed) != "create_account_password":
+                raise PasswordEntryError("password_entry_navigation_failed")
+            self._new_document_navigation()
+        self._password_create_page_ready = False
 
         # 注册前需要刷新 sentinel token，且 flow 必须为 username_password_create
         #
@@ -2779,14 +2867,8 @@ class AuthFlow:
             logger.warning(f"密码注册返回 {resp.status_code}: {resp.text[:200]}")
             return False
         self.after_password_submit(email, password)
-        logger.info("密码注册成功")
-        # ⚠️ 走到这里 = OpenAI 侧账号连同这个密码**已经建好了**，但注册流程后面还有
-        #    发码 → 验证 OTP → create_account 三步，任何一步挂掉都到不了 save_registered。
-        #    密码是这个方法现生成的、只活在内存里，进程一退就永久没了 ——
-        #    号还在 OpenAI 那边好好的，却谁也登不进去（实测 2026-08-07 被 OTP 超时坑过一次）。
-        #    所以在这里立刻回调落盘。
-        #    位置刻意选在 POST 200 **之后**而不是生成密码时：POST 失败的密码
-        #    OpenAI 侧根本没生效，写进库里反而误导人以为能用。
+        logger.info("密码创建请求已接受，等待邮箱验证和 Token 确认")
+        # 请求被接受只保存候选值；完整认证结束前不能宣告密码已经生效。
         if self._on_password is not None:
             try:
                 self._on_password(email, password)
@@ -3886,12 +3968,10 @@ class AuthFlow:
                     f"OpenAI 静默拒绝发 OTP (识别 {email} 为已有账号, {pool_tag} 池 fast-fail)"
                 )
 
-        # ⚠️ passwordless_signup **也是新账号**，只是服务端选择了"不设密码直接发码"的注册流程。
-        #    signup() 用一个 bool 表达三种服务端状态，把它和"已有账号"压成了同一个 False，
-        #    结果新号全部走进下面的 else 分支 —— register_password 从没被调用过，
-        #    注册出来的号全是无密码号（只能靠临时邮箱收码登录，域名一失效就永久丢失）。
-        #    实测 2026-08-06: 这类号照样能走 POST user/register 设密码并成功。
-        if is_new or self._existing_email_verification_mode == "passwordless_signup":
+        # 本轮页面明确提供创建密码入口才发送注册请求；只有 OTP 时沿原认证继续。
+        if self._existing_page_type == "about_you":
+            continue_url = self.create_account()
+        elif is_new:
             # 新账号：注册密码 → 主动重新发码 → 验证 OTP → 创建账户
             password_registered = self.register_password(email)
             if password_registered:

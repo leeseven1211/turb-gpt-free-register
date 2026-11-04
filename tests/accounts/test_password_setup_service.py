@@ -57,7 +57,8 @@ class PasswordSetupFixture:
         return json.loads(records.get_row(records.ACCOUNTS, self.account_id)["extra_json"])
 
     def prepare(self):
-        return store.prepare_password_recovery(**self.owner, candidate_factory=lambda: "Candidate-pass-42")
+        return store.prepare_password_recovery(**self.owner, candidate_factory=lambda: "Candidate-pass-42",
+                                               intent="password_add")
 
     def transition(self, cp, state, confirmation=None):
         return store.transition_password_recovery(cp.recovery_id, **self.owner, expected_version=cp.version,
@@ -74,7 +75,8 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
             self.assertNotIn("Candidate-pass-42", cur.fetchone()[0])
         cp = self.transition(cp, "started")
         self.transition(cp, "confirmed", "password_add_response")
-        self.assertEqual({"account_password": "Candidate-pass-42", "preserved": 42}, self.extra())
+        self.assertEqual({"account_password": "Candidate-pass-42", "account_password_state": "confirmed",
+                          "preserved": 42}, self.extra())
 
     def test_combined_setup_requires_password_step(self):
         self.end_owner()
@@ -90,12 +92,48 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
                 with self.assertRaisesRegex(store.PasswordRecoveryError, "manual_operation_mismatch"):
                     self.prepare()
 
-    def test_add_confirmation_cannot_overwrite_an_existing_password(self):
+    def test_add_confirmation_can_replace_an_unverified_local_password(self):
         records.patch_row(records.ACCOUNTS, self.account_id, {"extra_json": json.dumps({"account_password": "Already-set-1"})})
         cp = self.transition(self.prepare(), "started")
+        self.assertEqual("Already-set-1", self.extra()["account_password"])
+        self.transition(cp, "confirmed", "password_add_response")
+        self.assertEqual("Candidate-pass-42", self.extra()["account_password"])
+        self.assertEqual("confirmed", self.extra()["account_password_state"])
+
+    def test_add_response_does_not_confirm_a_password_change_candidate(self):
+        cp = store.prepare_password_recovery(**self.owner, candidate_factory=lambda: "Candidate-pass-42")
+        cp = self.transition(cp, "started")
         with self.assertRaisesRegex(store.PasswordRecoveryError, "password_add_context_invalid"):
             self.transition(cp, "confirmed", "password_add_response")
-        self.assertEqual("Already-set-1", self.extra()["account_password"])
+
+    def test_add_does_not_take_over_a_pending_password_change(self):
+        store.prepare_password_recovery(**self.owner, candidate_factory=lambda: "Change-pass-42")
+        with self.assertRaisesRegex(store.PasswordRecoveryError, "recovery_intent_conflict"):
+            self.prepare()
+
+    def test_password_change_cannot_resume_or_confirm_an_add_candidate(self):
+        cp = self.transition(self.prepare(), "started")
+        with self.assertRaisesRegex(store.PasswordRecoveryError, "recovery_intent_conflict"):
+            store.resume_password_recovery(**self.owner, intent="password_change")
+        with self.assertRaisesRegex(store.PasswordRecoveryError, "recovery_intent_conflict"):
+            self.transition(cp, "confirmed", "password_change_response")
+
+    def test_legacy_add_candidate_resumes_without_changing_its_password(self):
+        cp = store.prepare_password_recovery(**self.owner, candidate_factory=lambda: "Legacy-add-42")
+        # 旧版补密码检查点没有 intent；模拟该旧格式，恢复仍复用原私有候选。
+        cipher, _ = store._cipher()
+        with pg.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT credential_ciphertext FROM {pg.qualified('account_password_recoveries')} WHERE id=%s",
+                        (cp.recovery_id,))
+            payload = json.loads(cipher.decrypt(cur.fetchone()[0].encode()))
+            payload.pop("intent")
+            cur.execute(f"UPDATE {pg.qualified('account_password_recoveries')} SET credential_ciphertext=%s WHERE id=%s",
+                        (cipher.encrypt(json.dumps(payload).encode()).decode(), cp.recovery_id))
+        with self.assertRaisesRegex(store.PasswordRecoveryError, "recovery_intent_conflict"):
+            store.resume_password_recovery(**self.owner, intent="password_change")
+        resumed = self.prepare()
+        self.assertEqual("Legacy-add-42", resumed.password)
+        self.assertEqual("password_add", resumed.intent)
 
     def test_session_write_checks_current_execution_and_preserves_candidate(self):
         cp = self.prepare()
@@ -188,12 +226,36 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         self.assertNotIn("account_password", self.extra())
         self.assertEqual("fresh-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
 
-    def test_existing_password_skips_without_network(self):
-        records.patch_row(records.ACCOUNTS, self.account_id, {"extra_json": json.dumps({"account_password": "Already-set-1"})})
-        def forbidden(*args, **kwargs):
-            self.fail("已有密码不应登录或补密码")
-        self.assertEqual("skipped", self.run_service(forbidden, login=forbidden)["status"])
-        self.assertEqual("Already-set-1", self.extra()["account_password"])
+    def test_existing_local_password_still_checks_remote_and_can_be_added(self):
+        for state in (None, "candidate", "confirmed"):
+            with self.subTest(state=state):
+                extra = {"account_password": "Already-set-1"}
+                if state:
+                    extra["account_password_state"] = state
+                records.patch_row(records.ACCOUNTS, self.account_id, {"extra_json": json.dumps(extra)})
+
+                def add(session, email, password, **kwargs):
+                    self.assertEqual("Already-set-1", self.extra()["account_password"])
+                    kwargs["on_dispatched"]()
+                    kwargs["on_confirmed"]()
+
+                result = self.run_service(add)
+                self.assertEqual("success", result["status"])
+                self.assertNotEqual("Already-set-1", self.extra()["account_password"])
+                self.assertEqual("confirmed", self.extra()["account_password_state"])
+
+    def test_remote_rejection_preserves_existing_local_candidate(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Candidate-only", "account_password_state": "candidate"})})
+
+        def rejected(session, email, password, **kwargs):
+            kwargs["on_dispatched"]()
+            raise self.service.ProtocolPasswordSetupError("password_setup_already_set", "远端已有密码")
+
+        result = self.run_service(rejected)
+        self.assertEqual("password_setup_already_set", result["error_code"])
+        self.assertEqual("Candidate-only", self.extra()["account_password"])
+        self.assertEqual("candidate", self.extra()["account_password_state"])
 
     def test_lost_execution_cannot_submit_or_confirm_password(self):
         def stale(session, email, password, **kwargs):

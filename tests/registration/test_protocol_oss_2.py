@@ -8,12 +8,14 @@ import pytest
 from requests.cookies import RequestsCookieJar
 
 from core.registration import dispatcher
-from core.registration.protocol_oss import ProtocolOssRequestUnknown
+from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown
 from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
 from core.registration.protocol_oss_2.runtime import run_upstream_protocol
 from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
 
 _VENDOR_WARMUP = AuthFlow.warmup
+_VENDOR_SIGNUP = AuthFlow.signup
+_VENDOR_AUTH_INIT = AuthFlow.auth_oauth_init
 
 
 class Transport:
@@ -28,6 +30,8 @@ class Transport:
         self.profile_payload = None
         self.progress_events = []
         self.otp_payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
+        self.navigation_html = {}
+        self.navigation_redirects = {}
         self.closed = False
 
     def close(self):
@@ -47,11 +51,11 @@ class Transport:
         elif url.endswith("/create_account") or url.endswith("/password/verify"):
             payload = {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture"}
         elif url.endswith("/api/auth/session"):
-            payload = {"accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user"}}
+            payload = {"accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user", "email": "protocol2@example.test"}}
         status = self.password_status if url.endswith("/user/register") else 200
         if url.endswith("/create_account"):
             status = self.profile_status
-        response = Mock(status_code=status, headers={}, content=b"{}", text="{}")
+        response = Mock(status_code=status, url=self.navigation_redirects.get(url, url), headers={}, content=b"{}", text=self.navigation_html.get(url, "{}"))
         if url.endswith("/create_account"):
             response.text = json.dumps(payload)
         response.json.return_value = payload
@@ -110,7 +114,7 @@ def test_real_upstream_flow_saves_password_before_write_and_reuses_local_mail(up
     profile = next(kw["json"] for _, url, kw in transport.requests if url.endswith("/create_account"))
     assert profile == {"name": "测试姓名", "birthdate": "1992-06-15"}
     assert result["access_token"] == "fixture-at"
-    assert result["session_info"]["user"] == {"id": "fixture-user"}
+    assert result["session_info"]["user"] == {"id": "fixture-user", "email": "protocol2@example.test"}
     assert result["password_validated"] is True
     assert session.device_id == "fixture-device"
     assert session.browser_profile["country_code"] == "JP"
@@ -376,8 +380,8 @@ def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoin
     assert "private-storage-detail" not in result["error"]
 
 
-@pytest.mark.parametrize("password_state, response_confirmed", [("prepared", False), ("started", False), ("confirmed", True)])
-def test_unknown_resume_only_preserves_original_confirmed_password_evidence(upstream, password_state, response_confirmed):
+@pytest.mark.parametrize("password_state", ["prepared", "started", "confirmed"])
+def test_unknown_resume_does_not_inherit_old_registration_response(upstream, password_state):
     session, transport, wait = upstream
     transport.password_status = 400
     wait.side_effect = RuntimeError("private-mailbox-failure")
@@ -394,7 +398,7 @@ def test_unknown_resume_only_preserves_original_confirmed_password_evidence(upst
             proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
         )
     assert result["request_unknown"] is True
-    assert result["register_response_confirmed"] is response_confirmed
+    assert result["register_response_confirmed"] is False
     assert result["core_persisted"] is False
     assert result["email"] == "protocol2@example.test"
 
@@ -432,13 +436,14 @@ def test_rejected_password_is_not_presented_as_a_confirmed_credential(upstream):
     transport.password_status = 400
     result = run_flow(session)
     assert result["access_token"] == "fixture-at"
-    assert result["registration_password"] is None
+    assert result["registration_password"]
+    assert result["password_state"] == "candidate"
     assert result["password_validated"] is False
     assert [state for stage, state, _ in transport.progress_events if stage == "password"] == ["running", "failed"]
 
 
-@pytest.mark.parametrize("password_state, validated", [("prepared", False), ("started", False), ("confirmed", True)])
-def test_resume_only_inherits_a_matching_confirmed_password(upstream, password_state, validated):
+@pytest.mark.parametrize("password_state", ["prepared", "started", "confirmed"])
+def test_resume_requires_this_run_to_confirm_the_original_password(upstream, password_state):
     session, transport, _ = upstream
     transport.password_status = 400
     transport.otp_payload = {
@@ -453,12 +458,13 @@ def test_resume_only_inherits_a_matching_confirmed_password(upstream, password_s
     ):
         result = run_flow(session, existing_password="original-password")
     assert result["access_token"] == "fixture-at"
-    assert result["password_validated"] is validated
-    assert result["registration_password"] == ("original-password" if validated else None)
+    assert result["password_validated"] is False
+    assert result["password_state"] == "candidate"
+    assert result["registration_password"] == "original-password"
     writes = [request for request in transport.requests if request[1].endswith("/user/register")]
-    assert len(writes) == (0 if validated else 1)
+    assert len(writes) == 1
     assert [state for stage, state, _ in transport.progress_events if stage == "password"] == (
-        ["skipped"] if validated else ["running", "failed"]
+        ["running", "failed"]
     )
 
 
@@ -487,7 +493,8 @@ def test_existing_password_without_confirmation_stays_unconfirmed_on_otp_login(u
         result = run_flow(session, existing_password="original-password")
     assert result["access_token"] == "fixture-at"
     assert result["password_validated"] is False
-    assert result["registration_password"] is None
+    assert result["registration_password"] == "original-password"
+    assert result["password_state"] == "candidate"
 
 
 def test_login_callback_after_password_rejection_does_not_create_account_again(upstream):
@@ -561,7 +568,11 @@ def test_dispatcher_preserves_protocol2_identity_and_resume_parameters():
     with patch("core.registration.standalone.run_registration_in_context", return_value={"success": True}) as run:
         assert dispatcher.run_registration(**kwargs)["success"]
     run.assert_called_once_with(
-        run_protocol_oss_2_registration, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss_2",
+        run_protocol_oss_2_registration,
+        {**kwargs, "registration_options": {
+            "registration_driver": "protocol_oss_2", "password_enabled": True, "password_mode": "password",
+        }},
+        entrypoint="protocol_cli", driver_name="protocol_oss_2",
     )
 
 
@@ -577,7 +588,7 @@ def test_core_persists_before_local_postprocessing_and_keeps_driver_identity():
             "registration_password": "fixture-password", "password_validated": True,
         }),
         patch("core.registration.service.persist_registration_core", side_effect=lambda **kw: order.append(("persist", kw)) or 42),
-        patch("core.registration.protocol_oss._run_local_postprocessing", side_effect=lambda **kw: order.append(("postprocess", kw)) or {"postprocess_success": True}),
+        patch("core.registration.protocol_oss_2.lifecycle._run_local_postprocessing", side_effect=lambda **kw: order.append(("postprocess", kw)) or {"postprocess_success": True}),
     ):
         result = run_protocol_oss_2_registration(
             email="protocol2@example.test", name="测试姓名", proxy=session.proxy, email_source="icloud_hide",
@@ -609,10 +620,10 @@ def test_protocol2_codex_mapping_and_account_search_are_independent():
 
 
 def test_retry_reuses_confirmed_totp_instead_of_enrolling_again():
-    from core.registration.protocol_oss import _run_local_postprocessing
+    from core.registration.protocol_oss_2.lifecycle import _run_local_postprocessing
 
     with (
-        patch("core.registration.protocol_oss._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
+        patch("core.registration.protocol_oss_2.lifecycle._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
         patch("core.registration.service.report_job_progress"),
         patch("core.accounts.export.setup_2fa_protocol") as setup,
         patch("core.db.update_account_codex_status"),

@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from core.registration.protocol_oss import ProtocolOssRequestUnknown
+from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown
 from core.email.email_butler.client import EmailButlerClientError
 from core.operations.errors import classify_task_error
 from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
@@ -119,7 +119,7 @@ def test_otp_transport_failure_records_received_code_without_changing_request_se
     assert diagnostics["failure_kind"] == "transport_error"
     assert diagnostics["exception_type"] == "TimeoutError"
     assert diagnostics["failure_stage"] == "email_otp"
-    assert diagnostics["last_confirmed_stage"] == "password"
+    assert diagnostics["last_confirmed_stage"] == "auth_redirect"
     assert diagnostics["otp_received"] is True
     assert diagnostics["profile_confirmed"] is False
     assert [(method, url.rsplit("/", 1)[-1]) for method, url, _ in transport.requests] == [
@@ -229,12 +229,12 @@ def test_otp_send_preserves_original_custom_referer(upstream, positional):
             flow.send_otp(referer)
         else:
             flow.send_otp(referer=referer)
-        flow.result.access_token = "fixture-at"
+        flow.get_auth_session()
         return flow.result
 
     with patch.object(AuthFlow, "run_register", run):
         assert run_flow(session)["access_token"] == "fixture-at"
-    assert len(transport.requests) == 1
+    assert len(transport.requests) == 2
     method, url, kwargs = transport.requests[0]
     assert (method, url) == ("GET", "https://auth.openai.com/api/accounts/email-otp/send")
     assert kwargs["headers"]["Referer"] == referer

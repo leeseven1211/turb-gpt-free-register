@@ -826,6 +826,7 @@ _PASSWORD_RECOVERY_STORAGE_CAUSES = {
     'credential_decryption_failed': ('internal.storage', 'SYS-PWD-REC-002', '密码恢复私有凭据解密失败'),
     'candidate_generation_failed': ('internal.code', 'SYS-PWD-REC-003', '密码恢复候选密码生成失败'),
     'candidate_invalid': ('internal.code', 'SYS-PWD-REC-004', '密码恢复候选密码不符合保存要求'),
+    'recovery_intent_invalid': ('internal.code', 'SYS-PWD-REC-006', '密码检查点的操作类型无效'),
 }
 _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'owner_invalid': ('FLOW-PWD-REC-001', '密码恢复执行归属参数无效'),
@@ -856,6 +857,8 @@ _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'candidate_login_context_invalid': ('FLOW-PWD-REC-025', '候选密码认证上下文或私有候选与当前注册续跑不匹配，请保留候选并核对执行归属'),
     'candidate_login_receipt_invalid': ('FLOW-PWD-REC-026', '候选密码认证回执缺少有效配对成功证据，请保留候选并核对本次密码提交回执'),
     'candidate_login_fact_invalid': ('FLOW-PWD-REC-027', '候选密码认证的持久化提交事实不匹配，请保留候选并核对同 Run 提交记录'),
+    'recovery_intent_conflict': ('FLOW-PWD-REC-028', '存在另一种密码操作的待确认候选，请继续原操作'),
+    'password_add_context_invalid': ('FLOW-PWD-REC-029', '添加密码回执与当前补密码候选不匹配'),
 }
 _PASSWORD_RECOVERY_UNKNOWN_CAUSES = {
     'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),
@@ -1195,7 +1198,35 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "passwordless_fallback_unavailable": ("AUTH-PWD-008", "邮箱免密兜底不可用"),
     "password_login_unavailable": ("AUTH-PWD-009", "邮箱已失效，服务端未提供可用的密码登录流程"),
     "email_verification_required": ("AUTH-PWD-010", "邮箱已失效，密码登录后仍需邮箱验证"),
-    "password_entry_navigation_timeout": ("FLOW-PWD-005", "创建密码页跳转超时"),
+    "password_entry_navigation_timeout": ("FLOW-PWD-005", "密码入口导航超时"),
+    "password_entry_navigation_failed": ("FLOW-PWD-006", "密码入口导航失败"),
+    "password_entry_not_offered": ("FLOW-PWD-007", "认证下一步未提供可识别入口"),
+    "password_setup_result_unconfirmed": ("AUTH-PWD-SETUP-001", "密码已提交，尚未取得明确设置成功证据"),
+    "password_setup_already_set": ("AUTH-PWD-SETUP-002", "远端账号已有密码，添加密码请求被拒绝"),
+    "password_setup_execution_fence_missing": ("FLOW-PWD-SETUP-001", "补密码缺少当前执行租约"),
+    "password_setup_unconfirmed": ("AUTH-PWD-SETUP-003", "添加密码请求尚未得到确认"),
+    "password_setup_session_missing": ("AUTH-PWD-SETUP-004", "补密码登录未取得有效会话"),
+    "password_setup_auth_failed": ("AUTH-PWD-SETUP-005", "补密码登录认证未完成"),
+    "password_setup_runtime_failed": ("SYS-PWD-SETUP-001", "补密码执行异常，候选与已有密码已保留"),
+    "password_setup_input_invalid": ("FLOW-PWD-SETUP-002", "补密码输入不完整或格式无效"),
+    "password_setup_csrf_missing": ("FLOW-PWD-SETUP-003", "补密码认证页面缺少 CSRF 状态"),
+    "password_setup_network_failed": ("NET-PWD-SETUP-001", "补密码请求发生网络错误"),
+    "password_setup_sentinel_failed": ("NET-PWD-SETUP-002", "补密码前置安全检查未完成"),
+    "password_setup_http_rejected": ("OA-PWD-SETUP-001", "远端拒绝了补密码请求"),
+    "password_setup_security_check": ("OA-PWD-SETUP-002", "补密码请求未通过远端安全校验"),
+    "password_setup_rate_limited": ("OA-PWD-SETUP-003", "补密码请求受到远端限流"),
+    "password_setup_session_expired": ("AUTH-PWD-SETUP-006", "补密码登录会话已失效"),
+    "password_setup_session_cooling_down": ("AUTH-PWD-SETUP-007", "补密码会话尚在等待期"),
+    "password_setup_mfa_secret_missing": ("AUTH-PWD-SETUP-008", "补密码需要额外 MFA 验证"),
+    "password_setup_page_unexpected": ("FLOW-PWD-SETUP-004", "补密码未进入预期认证页面"),
+    "password_setup_redirect_invalid": ("FLOW-PWD-SETUP-005", "补密码跳转缺少有效目标"),
+    "password_setup_redirect_limit": ("FLOW-PWD-SETUP-006", "补密码跳转次数超出限制"),
+    "password_setup_untrusted_redirect": ("FLOW-PWD-SETUP-007", "补密码返回不受信任的跳转目标"),
+    "password_setup_otp_invalid": ("MAIL-PWD-SETUP-001", "补密码邮箱验证码格式无效"),
+    "password_setup_otp_rejected": ("MAIL-PWD-SETUP-002", "补密码邮箱验证码被远端拒绝"),
+    "password_setup_otp_unavailable": ("MAIL-PWD-SETUP-003", "补密码未取得本轮邮箱验证码"),
+    "password_setup_request_unknown": ("AUTH-PWD-SETUP-009", "添加密码请求已发出，远端响应未确认"),
+    "password_setup_response_invalid": ("AUTH-PWD-SETUP-010", "补密码接口响应格式无法确认"),
     "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),
     "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后的登录态未确认"),
     "profile_auth_error": ("FLOW-PROFILE-003", "资料阶段进入认证错误页"),
@@ -1270,6 +1301,10 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "email_otp_send_unknown",
     "email_otp_no_mail",
     "email_otp_mailbox_failed",
+    "password_entry_navigation_failed",
+    "password_entry_navigation_timeout",
+    "password_entry_not_offered",
+    "identity_mismatch",
     *_BUTLER_RECIPIENT_CAUSES,
     *_OTP_PAGE_NETWORK_CAUSES,
     "post_register_failure",
@@ -1948,7 +1983,7 @@ def classify_task_error(
         stage = "mfa_challenge"
     if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
         cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
-    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_"))
+    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES):
         cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (

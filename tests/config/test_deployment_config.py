@@ -55,7 +55,7 @@ def test_invalid_browser_switch_is_not_silently_enabled(monkeypatch, value):
 
 
 @pytest.mark.parametrize("updates", [
-    {"REGISTRATION_DRIVER": "roxy"}, {"REGISTRATION_DRIVER": "roxy_oss"},
+    {"REGISTRATION_DRIVER": "roxy"},
     {"ACCOUNT_PASSWORD_DRIVER": "roxy"}, {"CODEX_OAUTH_DRIVER": "roxy"},
     {"ACCOUNT_CODEX_DRIVER": "roxy"}, {"ACCOUNT_AT_REFRESH_DRIVER": "browser_roxy"},
     {"ACCOUNT_LIVE_CHECK_DRIVER": "browser_roxy", "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": True},

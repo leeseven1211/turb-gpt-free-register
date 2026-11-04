@@ -100,7 +100,8 @@ class AccountRegistrationRetryTests(PostgresTestCase):
 
     def test_later_success_prevents_old_failed_registration_from_resuming(self):
         account = self._account(access_token="valid-token", codex_status="success", totp_secret="test-secret",
-                                plan_check_status="success")
+                                plan_check_status="success", extra_json={
+                                    "account_password": "confirmed-password", "account_password_state": "confirmed"})
         root, attempt = self._chain(account)
         self._child(root, attempt, account, status="success")
         self.assertFalse(self._projection(account)["available"])

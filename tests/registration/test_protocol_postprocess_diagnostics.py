@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from core.accounts.export import TwofaProtocolHTTPError, TwofaProtocolTransportError
-from core.registration.protocol_oss import _run_local_postprocessing
+from core.registration.protocol_oss_2.lifecycle import _run_local_postprocessing
 from core.operations.errors import classify_task_error
 
 
@@ -21,7 +21,7 @@ from core.operations.errors import classify_task_error
 def test_twofa_failure_keeps_safe_cause_in_final_result_without_retry(failure, expected):
     events = []
     with (
-        patch("core.registration.protocol_oss._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
+        patch("core.registration.protocol_oss_2.lifecycle._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
         patch("config.twofa.get_twofa_driver_for_options", return_value="protocol"),
         patch("core.registration.service.report_job_progress", side_effect=lambda *args: events.append(args)),
         patch("core.accounts.export.setup_2fa_protocol", side_effect=failure) as setup,

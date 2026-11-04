@@ -40,6 +40,7 @@ from core.registration.retained_resume import (
 )
 from core.auth.browser.password_auth import PasswordPageError, ProfileAccountAlreadyExistsError
 from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
+from core.accounts.password_evidence import registration_password_extra
 from core.auth.challenge import MfaSecretMissingError, PasswordRejectedError, PasswordSetupNotReadyError, RemoteExistingAccountError, auth_result_for_registration, classify_registration_identity
 
 logger = logging.getLogger(__name__)
@@ -497,6 +498,44 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
         _validate_registration_session_identity(session, email)
         logger.info("[Roxy注册] 原环境会话已核验：token_present=%s identity_matched=%s", True, True)
     return session
+
+
+def _registration_password_confirmed_after_token(driver, *, email: str, password: str | None,
+                                                previous_receipts=frozenset()) -> bool:
+    """同邮箱 Token 已核验后，只确认当前创建链或本轮真实密码登录。"""
+    if not str(password or "").strip():
+        return False
+    history = getattr(driver, "_browser_submission_receipts", None)
+    receipts = list(history) if isinstance(history, (list, tuple)) else []
+    current = getattr(driver, "_browser_submission_receipt", None)
+    if isinstance(current, BrowserSubmissionReceipt) and all(current is not item for item in receipts):
+        receipts.append(current)
+    for receipt in reversed(receipts):
+        if not isinstance(receipt, BrowserSubmissionReceipt) or receipt.submission_id in previous_receipts:
+            continue
+        if receipt.endpoint_kind != "password_submit" or receipt.phase in {"prepared", "not_dispatched"}:
+            continue
+        if receipt.stage == "login_password":
+            request = receipt.request_binding
+            return bool(
+                receipt.http_method == "POST" and receipt.phase == "confirmed" and receipt.result == "success"
+                and not receipt.auth_error and type(receipt.http_status) is int and 200 <= receipt.http_status < 300
+                and request and request == receipt.response_binding and request[0] == receipt.dispatch_target_id
+            )
+        if receipt.stage != "password_create" or receipt.phase != "confirmed" or receipt.result != "success":
+            return False
+        break
+    chain = getattr(driver, "_registration_password_creation_chain", None)
+    if isinstance(chain, dict) and (
+        chain.get("email") == str(email).strip().casefold() and chain.get("password") == password
+    ):
+        receipt = chain.get("receipt")
+        if (isinstance(receipt, BrowserSubmissionReceipt) and receipt.stage == "password_create"
+                and receipt.endpoint_kind == "password_submit" and receipt.http_method == "POST"
+                and receipt.phase == "confirmed" and receipt.result == "success" and not receipt.auth_error
+                and (receipt.http_status is None or 200 <= receipt.http_status < 300)):
+            return True
+    return False
 
 
 def _reconcile_existing_profile_session(driver, email: str) -> dict:
@@ -1238,6 +1277,7 @@ def _save_roxy_account_checkpoint(
     codex_result: dict | None = None,
     twofa_result: dict | None = None,
     registration_driver: str = "roxy",
+    password_confirmed: bool = False,
 ) -> int:
     """只落库、不做套餐查询的注册检查点。"""
     from core.db import insert_account
@@ -1262,8 +1302,7 @@ def _save_roxy_account_checkpoint(
         "twofa": twofa_result,
     }
     # 本轮直接复用登录态时可能没有返回密码，空值不能清除账号已有凭据。
-    if str(openai_password or "").strip():
-        extra["account_password"] = openai_password
+    extra.update(registration_password_extra(openai_password, confirmed=password_confirmed))
     twofa_status = str((twofa_result or {}).get("status") or "").strip().lower()
     if totp_secret and twofa_status in {"running", "failed"}:
         # The key is already persisted, but OpenAI has not yet been confirmed
@@ -1298,12 +1337,7 @@ def _save_pending_email_verification_checkpoint(
     proxy: str | None,
     email_source: str | None = None,
 ) -> int:
-    """密码提交请求发出后立即保存待邮箱验证账号。
-
-    OpenAI 在密码提交时已经创建邮箱身份；即使验证码邮件没有到达，本地也必须保存
-    这组邮箱/密码，后续重试才能走登录流程继续收码。空 access_token 明确表示账号
-    尚未完成邮箱验证，不能被套餐查询或 Codex 当成完整账号使用。
-    """
+    """保存原邮箱和恢复候选；密码创建被接受尚不能证明密码已经生效。"""
     from core.registration.checkpoints import save_email_verification_checkpoint
 
     account_id = save_email_verification_checkpoint(
@@ -1690,6 +1724,7 @@ def run_roxy_registration(
     profile_discarded = False
     create_acknowledged = False
     openai_password: str | None = None
+    password_confirmed = False
     access_token: str | None = None
     core_persisted = False
     account_id: int | None = None
@@ -1850,6 +1885,7 @@ def run_roxy_registration(
             report_job_progress("page", "skipped", "已接管原失败窗口，从当前认证页面继续")
         else:
             report_job_progress("page", "running", "正在打开 ChatGPT 注册页")
+            driver._registration_password_creation_chain = None
             # 本地恢复先经官方表单携带邮箱上下文；其他页面辅助保留现有原生入口。
             entry_url = (
                 "https://chatgpt.com/auth/login_with?callback_path=/"
@@ -1936,15 +1972,15 @@ def run_roxy_registration(
 
         # 新版注册流可能先进入 /create-account/password；参考 FlowPilot 的 fill-password 步骤，
         # 先设置密码并提交，然后再等待邮箱验证码页。
-        password_stage_expected = password_required or bool(existing_password)
+        password_stage_expected = password_required or bool(existing_password) or _browser_helpers is None
         if verified_resume_session:
             password_progress_detail = "原环境登录态已核验，保留原密码且无需再次提交"
         elif existing_password:
             password_progress_detail = "正在继续待验证账号的登录流程"
         elif password_required:
-            password_progress_detail = "正在创建并确认账号密码"
+            password_progress_detail = "正在创建恢复候选密码，之后核验同邮箱登录态"
         else:
-            password_progress_detail = "一次性验证码模式，无需创建账号密码"
+            password_progress_detail = "正在检查当前页面提供的密码入口"
         report_job_progress(
             "login_password",
             "running" if password_stage_expected and not verified_resume_session else "skipped",
@@ -1990,24 +2026,11 @@ def run_roxy_registration(
 
         try:
             retained_otp_can_try_password = bool(
-                _browser_helpers is None and existing_password and retained_state
+                _browser_helpers is None and retained_state
                 and retained_state.page_state == PageState.OTP_EMAIL
                 and retained_state.pending_otp is None
                 and not password_recovered_before_resume
             )
-            if retained_otp_can_try_password:
-                # 只读取当前 Attempt 的已持久化提交事实；原密码已提交后继续 OTP。
-                from core.storage import registration
-
-                private = registration.get_private_resume_context(int(context["attempt_id"]), email=email)
-                retained_otp_can_try_password = not any(
-                    fact.get("endpoint_kind") == "password_submit"
-                    and fact.get("phase") in {
-                        "dispatch_intent", "ui_queued", "ui_dispatched", "request_observed",
-                        "response_observed", "unknown", "confirmed",
-                    }
-                    for fact in private.get("submission_facts") or [] if isinstance(fact, dict)
-                )
             if verified_resume_session or (retained_state and retained_state.page_state not in {
                 PageState.PASSWORD_CREATE, PageState.PASSWORD_LOGIN,
             } and not retained_otp_can_try_password):
@@ -2047,9 +2070,10 @@ def run_roxy_registration(
                     evidence = password_evidence(driver, exclude_ids=previous_password_receipts)
                     credential_check = evidence["credential_check"]
                     if credential_check in {"verified", "accepted"}:
-                        password_result_state = "success"
-                        password_result_detail = ("远端已验证保存的登录密码" if credential_check == "verified"
-                                                  else "远端已接受本次创建密码，继续完成后续认证")
+                        password_result_state = "running"
+                        password_result_detail = ("本次密码登录验证已通过，等待取得同邮箱 Token"
+                                                  if credential_check == "verified"
+                                                  else "本次创建请求已被接受，密码仍作为恢复候选等待完成认证")
                     elif credential_check in {"rejected", "unknown"}:
                         password_result_state = "failed"
                         password_result_detail = ("远端已明确拒绝本次密码" if credential_check == "rejected"
@@ -2075,7 +2099,9 @@ def run_roxy_registration(
                     password_result_state,
                     password_result_detail,
                 )
-        if not verified_resume_session and (existing_password or openai_password):
+        if not verified_resume_session and (password_submitted_this_run or password_evidence(
+            driver, exclude_ids=previous_password_receipts,
+        )["credential_check"] in {"verified", "accepted"}):
             auth_challenge_chain.append("password")
         if not verified_resume_session and openai_password and account_id is None:
             account_id = _save_pending_email_verification_checkpoint(
@@ -2088,7 +2114,7 @@ def run_roxy_registration(
             report_registered_account(account_id)
             create_acknowledged = True
             logger.info(
-                "[Roxy注册] 密码已提交，待邮箱验证账号检查点已保存：id=%s email=%s resume=%s",
+                "[Roxy注册] 恢复候选已保存，继续核验账号和密码：id=%s email=%s resume=%s",
                 account_id,
                 email,
                 bool(existing_password),
@@ -2462,6 +2488,18 @@ def run_roxy_registration(
         )
         _validate_registration_session_identity(session_info, email)
         access_token = session_info["accessToken"]
+        password_confirmed = _registration_password_confirmed_after_token(
+            driver, email=email, password=openai_password, previous_receipts=previous_password_receipts,
+        )
+        if password_recovery is not None and password_recovery.checkpoint is not None:
+            recovered = password_recovery.checkpoint
+            password_confirmed = password_confirmed or (
+                recovered.state == "confirmed" and recovered.password == openai_password
+            )
+        if password_confirmed and "password" not in auth_challenge_chain:
+            auth_challenge_chain.append("password")
+        if password_confirmed:
+            report_job_progress("login_password", "success", "已取得同邮箱 Token，并确认当前账号密码有效")
         logger.info("[Roxy注册] 已拿到 accessToken：%s", email)
 
         # 注册主体到这里已经成功。先保存账号、随机登录密码和 Token，并立即绑定任务；
@@ -2483,7 +2521,7 @@ def run_roxy_registration(
                     "open_result": opened.raw,
                     "retained": True,
                 },
-                **({"account_password": openai_password} if str(openai_password or "").strip() else {}),
+                **registration_password_extra(openai_password, confirmed=password_confirmed),
                 "registration_checkpoint": "core_persisted",
                 "registration_driver": registration_driver,
             },
@@ -2593,6 +2631,7 @@ def run_roxy_registration(
             session_info=session_info,
             opened=opened,
             openai_password=openai_password,
+            password_confirmed=password_confirmed,
             proxy=proxy,
             email_source=selected_email_source,
             codex_result=codex_result,
@@ -2617,6 +2656,7 @@ def run_roxy_registration(
                         session_info=session_info,
                         opened=opened,
                         openai_password=openai_password,
+                        password_confirmed=password_confirmed,
                         proxy=proxy,
                         email_source=selected_email_source,
                         totp_secret=totp_secret,
@@ -2687,6 +2727,7 @@ def run_roxy_registration(
             session_info=session_info,
             opened=opened,
             openai_password=openai_password,
+            password_confirmed=password_confirmed,
             proxy=proxy,
             email_source=selected_email_source,
             totp_secret=totp_secret,
@@ -2771,11 +2812,14 @@ def run_roxy_registration(
             errors.append(f"2FA 未完成: {twofa_result.get('message')}")
         if not plan_result.get("ok"):
             errors.append(f"套餐查询待处理: {plan_result.get('message')}")
-        postprocess_ok = bool(codex_ok and twofa_ok and plan_result.get("ok"))
+        if password_required and not password_confirmed:
+            errors.append("账号已取得 Token；恢复候选尚未确认有效，需要补全密码")
+        postprocess_ok = bool(codex_ok and twofa_ok and plan_result.get("ok")
+                              and (not password_required or password_confirmed))
         from core.registration.postprocess import summarize_postprocess
         readiness = summarize_postprocess(
             core_success=True,
-            password_present=bool(openai_password),
+            password_present=password_confirmed,
             outcomes={"twofa": twofa_result, "codex": codex_result, "plan_check": plan_result},
             password_required=password_required,
             twofa_required=twofa_enabled,
@@ -2799,6 +2843,7 @@ def run_roxy_registration(
             "plan_check": plan_result,
             "next_actions": [action.as_dict() for action in readiness.next_actions],
             "account_readiness": readiness.account_readiness,
+            "password_validated": password_confirmed,
             "remote_identity": remote_identity,
             "remote_identity_state": "confirmed",
             "registration_intent": "reconcile" if remote_identity == "existing" else "new",

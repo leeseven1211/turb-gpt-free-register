@@ -133,60 +133,7 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                     "inputs": [{"type": "text", "autocomplete": "one-time-code"}],
                 }), PageState.LOGGED_OUT)
 
-    def test_protocol_callback_error_stops_without_retrying_session(self):
-        try:
-            from core.registration import protocol
-        except ModuleNotFoundError as exc:
-            self.skipTest(f"optional registration dependency unavailable: {exc}")
 
-        session = object()
-        with patch.object(
-            protocol,
-            "follow_oauth_callback",
-            return_value="https://chatgpt.com/auth/error?error=OAuthCallback",
-        ) as callback, patch.object(protocol, "fetch_session") as fetch, patch.object(protocol.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "AUTH_ERROR"):
-                protocol._finalize_registration_session(
-                    session,
-                    "https://auth.openai.com/authorize/continue?state=opaque",
-                    "test@example.com",
-                    total_timeout=30,
-                )
-
-        callback.assert_called_once()
-        fetch.assert_not_called()
-        sleep.assert_not_called()
-
-    def test_protocol_retry_consumes_one_shared_budget(self):
-        try:
-            from core.registration import protocol
-        except ModuleNotFoundError as exc:
-            self.skipTest(f"optional registration dependency unavailable: {exc}")
-
-        now = [100.0]
-        budget = StageBudget.start(3, clock=lambda: now[0])
-        session = object()
-
-        def transient(*_args, **_kwargs):
-            now[0] += 2.0
-            raise RuntimeError("temporary connection reset")
-
-        with patch.object(protocol, "follow_oauth_callback", return_value="https://chatgpt.com/") as callback, patch.object(
-            protocol, "fetch_session", side_effect=transient
-        ), patch.object(protocol, "human_delay"), patch.object(
-            protocol.time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)
-        ) as sleep:
-            with self.assertRaises(StageTimeout):
-                protocol._finalize_registration_session(
-                    session,
-                    "https://auth.openai.com/authorize/continue?state=opaque",
-                    "test@example.com",
-                    budget=budget,
-                )
-
-        self.assertEqual(callback.call_count, 1)
-        self.assertAlmostEqual(sum(call.args[0] for call in sleep.call_args_list), 1.0)
-        self.assertTrue(all(call.args[0] <= 0.1 for call in sleep.call_args_list))
 
     def test_roxy_session_wait_stops_on_known_callback_error(self):
         try:
@@ -265,7 +212,7 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
 
     def test_registration_snapshot_does_not_eagerly_read_codex_config(self):
         try:
-            from core.registration import protocol, roxy
+            from core.registration import roxy
         except ModuleNotFoundError as exc:
             self.skipTest(f"optional registration dependency unavailable: {exc}")
 
@@ -290,7 +237,6 @@ class RegistrationStateMachineContractTests(unittest.TestCase):
                 )
 
         self.assertNotIn("_codex_cfg", roxy.run_roxy_registration.__code__.co_varnames)
-        self.assertNotIn("_codex_cfg", protocol.run_protocol_registration.__code__.co_varnames)
 
     def test_roxy_otp_wait_exposes_email_verified_terminal(self):
         try:

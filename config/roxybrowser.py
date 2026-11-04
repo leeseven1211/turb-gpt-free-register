@@ -11,12 +11,7 @@ from config.env_loader import apply_env_overrides
 from config.schema import schema_default
 
 
-# 注册驱动：
-#   "roxy"         = RoxyBrowser 主流程（推荐）
-#   "protocol"     = 本地优化 Protocol 注册链路
-#   "protocol_oss" = 固定上游快照并适配本地任务/存储的开源 Protocol 注册链路
-#   "protocol_oss_2" = wangshen233 上游 AuthFlow 与 wreq 的开源protocol-2 注册链路
-#   "roxy_oss"     = 固定上游页面识别与表单辅助，沿用本地注册生命周期
+# 注册驱动只保留本地 Roxy 与开源protocol-2；历史配置在读取时自动映射。
 REGISTRATION_DRIVER: str = schema_default("REGISTRATION_DRIVER")
 
 # RoxyBrowser 本地 API
@@ -128,3 +123,6 @@ ROXY_CODEX_CALLBACK_TIMEOUT: int = schema_default("ROXY_CODEX_CALLBACK_TIMEOUT")
 
 # ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())
+
+from config.registration_drivers import normalize_registration_driver
+REGISTRATION_DRIVER = normalize_registration_driver(REGISTRATION_DRIVER)

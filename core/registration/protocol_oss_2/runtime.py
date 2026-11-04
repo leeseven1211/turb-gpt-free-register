@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from core.auth.challenge import AuthCancelledError
 from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint
 from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
-from core.registration.protocol_oss import ProtocolOssRequestUnknown
+from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown
 
 _CONTEXT: ContextVar[dict | None] = ContextVar("protocol_oss_2_context", default=None)
 
@@ -24,6 +24,12 @@ class _VendorCancelled(BaseException):
 
     def __init__(self, reason: BaseException):
         self.reason = reason
+
+
+class ProtocolSessionIdentityError(RuntimeError):
+    """Token 的完整邮箱无法与本轮任务对应时拒绝保存密码或账号。"""
+
+    cause_code = "identity_mismatch"
 
 
 def _check_stop_requested():
@@ -147,6 +153,11 @@ def create_http_session(**kwargs):
     _check_stop_requested()
     kwargs["proxy"] = context["proxy"]
     transport = _ObservedSession(create(**kwargs), context)
+    if context["sessions"]:
+        # 上游换指纹或预热重建会话后，旧认证链的密码接收/校验不能用于新 Token。
+        context["password_register_accepted"] = False
+        context["password_verified"] = False
+        context["session_info"] = {}
     context["sessions"].append(transport)
     return transport
 
@@ -164,7 +175,6 @@ def run_upstream_protocol(
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
 
-    password_confirmed = False
     if existing_password:
         from core.storage import registration
 
@@ -174,11 +184,10 @@ def run_upstream_protocol(
             saved_password = private.get("password")
             if saved_password and saved_password != existing_password:
                 raise RuntimeError("原 Attempt 的恢复密码不一致，已停止")
-            password_confirmed = bool(saved_password) and private.get("password_state") == "confirmed"
 
     context = {
         "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [],
-        "password_started": False, "password_confirmed": password_confirmed,
+        "password_started": False, "password_register_accepted": False, "password_verified": False,
         "profile_started": False, "write_unknown": False, "session_info": {},
         "registration_diagnostics": RegistrationFailureDiagnostics(),
     }
@@ -239,11 +248,6 @@ def run_upstream_protocol(
 
     class LocalAuthFlow(AuthFlow):
         def register_password(self, address):
-            if context["password_confirmed"]:
-                # 原 Attempt 已有远端确认，续跑沿用原密码并进入邮箱认证分支。
-                progress("password", "skipped", "复用原任务已确认的账号密码，本次不重复提交密码注册")
-                observe("progress", "password", "success")
-                return False
             accepted = super().register_password(address)
             if not accepted:
                 progress("password", "failed", "上游未接受密码注册，继续通过原邮箱验证")
@@ -269,12 +273,12 @@ def run_upstream_protocol(
             context["password_started"] = True
 
         def after_password_submit(self, address, password):
-            context["password_confirmed"] = True
+            context["password_register_accepted"] = True
             save_protocol_password_checkpoint(
                 email=address, password=password, state="confirmed",
                 proxy=session.proxy, email_source=email_source,
             )
-            progress("password", "success", "上游已确认密码注册")
+            progress("password", "running", "密码创建请求已接受，候选密码已保存；等待邮箱验证和 Token")
 
         def signup(self, *args, **kwargs):
             progress("submit_email", "running", "正在建立上游邮箱认证状态")
@@ -295,8 +299,8 @@ def run_upstream_protocol(
             progress("login_password", "running", "正在使用原密码继续上游认证")
             self.get_sentinel_token(self.result.device_id)
             result = observed_action("password_submit", super().login_password_verify, password)
-            context["password_confirmed"] = True
-            progress("login_password", "success", "原密码已通过上游认证")
+            context["password_verified"] = True
+            progress("login_password", "running", "原密码已通过本轮校验，等待取得 Token 后确认")
             return result
 
         def create_account(self):
@@ -363,7 +367,17 @@ def run_upstream_protocol(
         if not access_token:
             raise RuntimeError("上游注册结束但尚未取得 access_token，可重跑原任务继续")
         session_info = dict(context["session_info"])
-        session_info["accessToken"] = access_token
+        user = session_info.get("user")
+        actual_email = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+        if not actual_email or actual_email != str(email).strip().casefold():
+            raise ProtocolSessionIdentityError("登录会话缺少目标邮箱身份或与原任务不一致，已保留候选密码")
+        if str(session_info.get("accessToken") or "").strip() != access_token:
+            raise ProtocolSessionIdentityError("本轮 Token 与已核验的登录会话不一致，已保留候选密码")
+        password_validated = bool(context["password_register_accepted"] or context["password_verified"])
+        if context["password_register_accepted"]:
+            progress("password", "success", "本轮密码创建及认证已完成，已取得 Token")
+        elif context["password_verified"]:
+            progress("login_password", "success", "本轮原密码校验及认证已完成，已取得 Token")
         session.session.close()
         session.session = flow.session
         session.device_id = result.device_id
@@ -374,10 +388,11 @@ def run_upstream_protocol(
         context["observing"] = False
         return {
             "access_token": access_token, "session_info": session_info,
-            "registration_password": (result.password or None) if context["password_confirmed"] else None,
-            "password_validated": context["password_confirmed"],
-            "remote_identity": "existing" if existing_password or flow._is_existing_account else "new",
-            "challenge_chain": ["password", "email_otp"],
+            "registration_password": result.password or existing_password or None,
+            "password_validated": password_validated,
+            "password_state": "confirmed" if password_validated else "candidate",
+            "remote_identity": "existing" if flow._is_existing_account else "new",
+            "challenge_chain": (["password"] if password_validated else []) + ["email_otp"],
         }
     except _VendorCancelled as exc:
         raise exc.reason
@@ -390,12 +405,17 @@ def run_upstream_protocol(
                 exc.registration_diagnostics = diagnostics
             except Exception:
                 pass
-        if existing_password or any(context[key] for key in ("password_started", "password_confirmed", "profile_started", "write_unknown")):
+        if existing_password or any(context[key] for key in ("password_started", "password_register_accepted", "password_verified", "profile_started", "write_unknown")):
             unknown = ProtocolOssRequestUnknown(
                 "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
-                register_response_confirmed=context["password_confirmed"],
+                register_response_confirmed=context["password_register_accepted"],
                 cause_diagnostics=context.get("profile_diagnostics") if context.get("profile_error") is exc else None,
             )
+            if getattr(exc, "cause_code", "") in {
+                "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered",
+                "identity_mismatch",
+            }:
+                unknown.cause_code = exc.cause_code
             if diagnostics is not None:
                 unknown.registration_diagnostics = diagnostics
             raise unknown from exc

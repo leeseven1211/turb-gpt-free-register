@@ -7,9 +7,8 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from core import browser_use_registration, roxy_registration
+from core import roxy_registration
 from core.auth.browser import auth_capabilities
-from core.auth.browser.legacy import browser_use as browser_use_auth
 from core.auth.browser import selenium_auth
 from core.auth.browser.auth_context import AuthExecutionContext, CancellationRequested
 
@@ -79,18 +78,10 @@ class RegistrationCapabilityContractTests(TestCase):
                         offenders.append(f"{path.name}: {module}")
         self.assertEqual([], offenders)
 
-    def test_browser_use_facade_keeps_legacy_patch_point(self):
-        with patch.object(browser_use_registration, "_timeout_ms", return_value=1234) as timeout:
-            result = browser_use_auth.timeout_ms(12)
-
-        self.assertEqual(1234, result)
-        timeout.assert_called_once_with(12)
 
     def test_public_capability_names_are_explicit(self):
         self.assertTrue(set(selenium_auth.__all__) <= set(vars(selenium_auth)))
-        self.assertTrue(set(browser_use_auth.__all__) <= set(vars(browser_use_auth)))
         self.assertIn("fetch_chatgpt_session", selenium_auth.__all__)
-        self.assertIn("wait_after_otp", browser_use_auth.__all__)
 
     def test_core_does_not_import_private_browser_helpers_across_modules(self):
         root = Path(__file__).resolve().parents[2] / "core"

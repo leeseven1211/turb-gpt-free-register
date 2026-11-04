@@ -1320,9 +1320,9 @@ def _next_registration_actions(
         return [{"action": "codex_retry", "label": "补跑 Codex", "source_job_id": source_job_id}]
     extra = _account_extra(account)
     missing_setup = False
-    if (not has_snapshot or bool(snapshot.get("password_enabled", True))) and not str(
-        extra.get("account_password") or extra.get("login_password") or ""
-    ).strip():
+    from core.accounts.password_evidence import password_is_confirmed
+
+    if (not has_snapshot or bool(snapshot.get("password_enabled", True))) and not password_is_confirmed(account):
         missing_setup = True
     if (not has_snapshot or bool(snapshot.get("twofa_enabled", True))) and (
         not str(account.get("totp_secret") or "").strip() or bool(extra.get("totp_setup_pending"))

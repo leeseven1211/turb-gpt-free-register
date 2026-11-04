@@ -4,8 +4,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from core.registration.protocol import _safe_protocol_registration_error
-from core.registration.protocol_oss import ProtocolOssRequestUnknown, run_protocol_oss_registration
+from core.registration.errors import _safe_protocol_registration_error
+from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown, run_protocol_oss_2_lifecycle
 from core.operations.errors import classify_task_error
 
 
@@ -41,7 +41,7 @@ def test_driver_failure_keeps_safe_diagnostics_and_existing_outcome(diagnostics,
         patch("core.email.provider.retain_email") as retain,
         patch("core.email.provider.mark_email_permanently_unusable") as mark,
     ):
-        result = run_protocol_oss_registration(
+        result = run_protocol_oss_2_lifecycle(
             email="fixture@example.test", name="测试", proxy=session.proxy, email_source="outlook",
             _flow_runner=Mock(side_effect=exc), _session_factory=Mock(return_value=session),
         )

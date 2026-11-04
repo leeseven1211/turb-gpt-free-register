@@ -106,6 +106,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertEqual(create_call.kwargs["data"]["config_snapshot"], {
             "registration_driver": "roxy",
             "password_enabled": True,
+            "password_mode": "password",
             "twofa_enabled": True,
             "proxy_country": "US",
         })
@@ -132,7 +133,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
 
                 self.assertTrue(result["ok"])
                 snapshot = create_call.kwargs["data"]["config_snapshot"]
-                self.assertEqual(snapshot["registration_driver"], driver)
+                self.assertEqual(snapshot["registration_driver"], "roxy" if driver == "roxy_oss" else "protocol_oss_2")
                 self.assertTrue(snapshot["password_enabled"])
                 self.assertEqual(snapshot["password_mode"], "password")
                 executor.submit.assert_called_once()
@@ -466,7 +467,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 read.assert_not_called()
 
     def test_proxy_country_override_requires_roxy_registration_or_twofa_action(self):
-        for driver, action in (("protocol_oss_2", "registration"), ("roxy_oss", "registration_resume"),
+        for driver, action in (("protocol_oss_2", "registration"),
                                ("roxy", "codex"), ("roxy", "plan_check")):
             with self.subTest(driver=driver, action=action):
                 source, account, attempt = self._facts()

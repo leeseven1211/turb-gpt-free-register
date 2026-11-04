@@ -1375,7 +1375,8 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
             if existing and str(existing.get("access_token") or "").strip():
                 raise ValueError("同邮箱账号已有 Token，拒绝降级为待验证状态")
             extra = _decode((existing or {}).get("extra_json")) or {}
-            extra.update({"account_password": password, "registration_checkpoint": "email_verification_pending",
+            extra.update({"account_password": password, "account_password_state": "candidate",
+                          "registration_checkpoint": "email_verification_pending",
                           "registration_pending_reason": "email_otp_pending"})
             payload = {**dict(account), "email": email, "access_token": "", "extra_json": json.dumps(extra, ensure_ascii=False)}
             for key in list(payload):
@@ -1393,6 +1394,8 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
             checkpoint = current
         data = dict(attempt.get("data") or {})
         data.update({"has_password": True, "password_state": state})
+        # confirmed 兼容旧的请求回执名；没有 Token 时密码仍然只是恢复候选。
+        data["account_password_state"] = "candidate"
         cur.execute(f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, data=%s::jsonb, checkpoint=%s, account_id=%s, updated_at=%s WHERE id=%s",
                     (json.dumps(private), json.dumps(data), checkpoint, account_id, _now(), int(attempt_id)))
         if state == "confirmed":

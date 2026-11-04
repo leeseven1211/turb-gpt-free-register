@@ -171,7 +171,7 @@ _DEFAULTS: dict[str, Any] = {
     "OPENAI_PROTOCOL_VERSION": "v1",
     "OPENAI_CF_PREFLIGHT_ENABLED": False,
     "REGISTRATION_DRIVER": "roxy",
-    "REGISTRATION_AUTH_MODE": "otp",
+    "REGISTRATION_AUTH_MODE": "password",
     "REGISTRATION_COUNTRY": "JP",
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": 60,
     "REGISTRATION_PLAN_CHECK_ENABLED": True,
@@ -594,7 +594,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
-        "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，roxy_oss=开源 Roxy，protocol=本地优化 Protocol，protocol_oss=开源 Protocol，protocol_oss_2=开源protocol-2；默认推荐 roxy",
+        "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，protocol_oss_2=开源protocol-2；历史驱动自动映射到现行实现",
     },
     {
         "key": "REGISTRATION_COUNTRY", "file": "register.py", "type": "str", "group": "注册主链路",
@@ -602,7 +602,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_AUTH_MODE", "file": "register.py", "type": "str", "group": "注册主链路",
-        "label": "注册认证方式", "help": "otp=只用邮箱一次性验证码；password=设置并保存账号密码。选择 password 才会执行密码注册，但仍可能需要邮箱验证码",
+        "label": "注册密码策略", "help": "当前页面提供登录或创建密码入口时优先使用；没有密码入口时继续邮箱验证码。取得匹配邮箱的 Token 且有本轮密码证据后才确认密码生效",
     },
     {
         "key": "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS", "file": "register.py", "type": "int", "group": "注册主链路",
@@ -1785,14 +1785,11 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("v3", "协议 v3（会话复用与增强认证）"),
     ),
     "REGISTRATION_DRIVER": _options(
-        ("protocol", "本地优化 Protocol"),
-        ("protocol_oss", "开源 Protocol"),
         ("protocol_oss_2", "开源protocol-2"),
         ("roxy", "本地 Roxy"),
-        ("roxy_oss", "开源 Roxy"),
     ),
     "REGISTRATION_AUTH_MODE": _options(
-        ("otp", "不设置密码（邮箱验证码）"), ("password", "设置账号密码")
+        ("password", "优先使用页面密码入口"),
     ),
     "ACCOUNT_PASSWORD_DRIVER": _options(("roxy", "RoxyBrowser（默认）"), ("protocol", "纯协议（登录后添加密码）")),
     "ACCOUNT_PLAN_CHECK_DRIVER": _options(("protocol", "纯协议（当前唯一实现）")),
@@ -2663,6 +2660,12 @@ def _raw_for_field(field: ConfigField, values: Mapping[str, str]) -> tuple[str |
 
 def resolve_field(field: ConfigField, values: Mapping[str, str], *, strict: bool = False) -> ConfigResolution:
     raw, source_key = _raw_for_field(field, values)
+    if field.key == "REGISTRATION_DRIVER" and raw is not None:
+        from config.registration_drivers import normalize_registration_driver
+
+        raw = normalize_registration_driver(raw)
+    if field.key == "REGISTRATION_AUTH_MODE" and str(raw or "").strip().lower() == "otp":
+        raw = "password"
     if raw is None:
         return ConfigResolution(field.clone_default(), "default", configured=False)
     text = str(raw).strip()

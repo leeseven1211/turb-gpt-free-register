@@ -46,11 +46,11 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             run_roxy_registration("account@example.com", "Example", "2000-01-01")
 
     def test_protocol_registration_rejects_proxyless_business_entry(self):
-        from core.registration.protocol import run_protocol_registration
+        from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
 
         for proxy in (None, ""):
             with self.subTest(proxy=proxy), self.assertRaisesRegex(RuntimeError, "必须使用统一代理池"):
-                run_protocol_registration("account@example.com", "Example", "2000-01-01", proxy=proxy)
+                run_protocol_oss_2_registration("account@example.com", "Example", "2000-01-01", proxy=proxy)
 
     def test_browser_runtime_timeout_does_not_quarantine_proxy(self):
         from core.codex import retry_service as codex_retry_service
@@ -813,10 +813,9 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         route.release.assert_called_once_with(reason="live-check-85")
 
     def test_immediate_browser_oauth_reuses_proxy_and_login_state(self):
-        from core.registration.legacy.cloakbrowser.flow import run_cloak_registration
         from core.roxy_registration import run_roxy_registration
 
-        for func in (run_roxy_registration, run_cloak_registration):
+        for func in (run_roxy_registration,):
             keywords = self._codex_call_keywords(func)
             self.assertEqual("proxy", ast.unparse(keywords["proxy"]))
             self.assertIsInstance(keywords["clear_existing_state"], ast.Constant)

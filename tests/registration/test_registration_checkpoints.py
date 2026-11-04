@@ -22,6 +22,7 @@ class RegistrationCheckpointTests(unittest.TestCase):
         self.assertEqual(insert.call_args.kwargs["access_token"], "")
         self.assertEqual(insert.call_args.kwargs["extra"], {
             "account_password": "Password!123",
+            "account_password_state": "candidate",
             "registration_checkpoint": "email_verification_pending",
             "registration_pending_reason": "email_otp_pending",
         })

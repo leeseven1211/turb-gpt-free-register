@@ -27,12 +27,15 @@ def _trusted_path(url: object) -> str | None:
     return None
 
 
-def open_offered_password_entry(driver, *, timeout: float, allow_create: bool = True) -> str | None:
+def open_offered_password_entry(driver, *, timeout: float, allow_create: bool = True,
+                               allow_login: bool = True) -> str | None:
     """点击一次当前页面提供的可用密码链接；无入口时沿用原认证分支。"""
     checkpoint()
     if _trusted_path(driver.current_url) is None:
         return None
-    paths = ("/log-in/password", "/create-account/password") if allow_create else ("/log-in/password",)
+    paths = tuple(path for path, allowed in (
+        ("/log-in/password", allow_login), ("/create-account/password", allow_create),
+    ) if allowed)
     offered = {}
     for element in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
         try:

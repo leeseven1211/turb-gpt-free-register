@@ -123,6 +123,15 @@ class OperationProjectionContractTests(TestCase):
         self.assertEqual("deactivated", state["target_status"])
         self.assertEqual([], actions)
 
+    def test_candidate_password_does_not_hide_account_configuration_retry(self):
+        account = {"id": 7, "email": "candidate@example.test", "access_token": "fixture-at",
+                   "extra_json": {"account_password": "Candidate", "account_password_state": "candidate"}}
+        job = {"id": 9, "status": "success", "config_snapshot": {
+            "codex_enabled": False, "password_enabled": True,
+            "twofa_enabled": False, "plan_check_enabled": False}}
+        actions = operation._next_registration_actions(job, account, "account_available")
+        self.assertEqual(["twofa_retry"], [item["action"] for item in actions])
+
     def test_batch_refresh_deduplicates_and_sorts_only_explicit_ids(self):
         cursor = Mock()
         with patch.object(operation, "_refresh_batch") as refresh:

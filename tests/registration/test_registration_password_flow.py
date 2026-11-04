@@ -8,7 +8,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from core import browser_use_registration
 from core import roxy_registration
 from core.auth.browser import password_auth, selenium_auth
 from core.auth.browser.browser_submission import BrowserSubmissionReceipt, unresolved_submission_ids
@@ -356,9 +355,6 @@ class _RefreshableOtpDriver(_RoxyDriver):
         }
 
 
-class _BrowserUsePage:
-    def __init__(self):
-        self.state = "email_verification"
 
 
 class _SteppingClock:
@@ -1514,86 +1510,8 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertIsNone(result)
         switch.assert_not_called()
 
-    def test_browser_use_password_mode_switches_from_otp_before_filling_password(self):
-        page = _BrowserUsePage()
-        password = "ValidPass123!"
 
-        def state(_page):
-            return {"state": page.state, "url": "https://auth.openai.com/" + page.state}
 
-        def switch_to_password(_page, timeout=15):
-            page.state = "password"
-            return True
-
-        def click_submit(_page, _selectors, timeout_ms=1500):
-            page.state = "email_verification"
-            return True
-
-        with (
-            patch.object(browser_use_registration, "_registration_auth_mode", return_value="password"),
-            patch.object(browser_use_registration, "_browser_use_heartbeat", return_value=page),
-            patch.object(browser_use_registration, "_quick_auth_state", side_effect=state),
-            patch.object(browser_use_registration, "_click_signup_password_from_otp_if_present", side_effect=switch_to_password) as switch,
-            patch.object(browser_use_registration, "_registration_password", return_value=password),
-            patch.object(browser_use_registration, "_fill_first", return_value=True),
-            patch.object(browser_use_registration, "_click_first", side_effect=click_submit),
-            patch.object(browser_use_registration, "_bu_delay"),
-        ):
-            result = browser_use_registration._fill_password_if_present(
-                page,
-                "new@example.com",
-                timeout=2,
-                context=None,
-            )
-
-        self.assertEqual(result, password)
-        switch.assert_called_once()
-
-    def test_browser_use_password_mode_rejects_otp_page_without_password_entry(self):
-        page = _BrowserUsePage()
-        with (
-            patch.object(browser_use_registration, "_registration_auth_mode", return_value="password"),
-            patch.object(browser_use_registration, "_browser_use_heartbeat", return_value=page),
-            patch.object(
-                browser_use_registration,
-                "_quick_auth_state",
-                return_value={"state": "email_verification", "url": "https://auth.openai.com/email-verification", "hasOtp": True},
-            ),
-            patch.object(browser_use_registration, "_click_signup_password_from_otp_if_present", return_value=False) as switch,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "无法切换到创建密码页"):
-                browser_use_registration._fill_password_if_present(
-                    page,
-                    "new@example.com",
-                    timeout=2,
-                    context=None,
-                )
-        switch.assert_called_once()
-
-    def test_browser_use_password_submit_stops_on_explicit_remote_create_error(self):
-        page = _BrowserUsePage()
-        states = iter(
-            (
-                {"state": "password", "url": "https://auth.openai.com/create-account/password", "remoteCreateError": False},
-                {"state": "password", "url": "https://auth.openai.com/create-account/password", "remoteCreateError": True},
-            )
-        )
-        with (
-            patch.object(browser_use_registration, "_registration_auth_mode", return_value="password"),
-            patch.object(browser_use_registration, "_browser_use_heartbeat", return_value=page),
-            patch.object(browser_use_registration, "_quick_auth_state", side_effect=lambda _page: next(states)),
-            patch.object(browser_use_registration, "_registration_password", return_value="ValidPass123!"),
-            patch.object(browser_use_registration, "_fill_first", return_value=True),
-            patch.object(browser_use_registration, "_click_first", return_value=True),
-            patch.object(browser_use_registration, "_bu_delay"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "request_unknown.*页面报告账号创建失败"):
-                browser_use_registration._fill_password_if_present(
-                    page,
-                    "new@example.com",
-                    timeout=2,
-                    context=None,
-                )
 
 
 if __name__ == "__main__":

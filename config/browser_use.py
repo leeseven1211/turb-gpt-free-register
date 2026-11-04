@@ -6,10 +6,8 @@ Browser Use Cloud 配置。
 - https://docs.browser-use.com/cloud/browser/stealth
 - https://docs.browser-use.com/cloud/browser/playwright-puppeteer-selenium
 
-用法：
-  1. 在 config/roxybrowser.py 设置 REGISTRATION_DRIVER = "browser_use"
-  2. 在 WebUI 配置页填写 BROWSER_USE_API_KEY，密钥加密保存到数据库
-  3. 推荐先关 Codex：ENABLE_CODEX_AUTO = False
+该配置仅供历史 Browser Use 账号认证能力使用；注册已收敛为本地 Roxy 和
+protocol-2，不能再通过 REGISTRATION_DRIVER 选择 Browser Use 注册。
 """
 from config.env_loader import env_str, apply_env_overrides
 

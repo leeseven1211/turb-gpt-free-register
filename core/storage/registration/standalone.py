@@ -70,14 +70,16 @@ def prepare_attempt(
     *,
     email_source: str | None = None,
     entrypoint: str = "protocol_cli",
-    driver: str = "protocol",
+    driver: str = "protocol_oss_2",
 ) -> dict:
     """同邮箱 CLI 重跑复用原意图，已有其他任务链时停止而不猜测归属。"""
     address = str(email or "").strip()
     if not address:
         raise ValueError("CLI 注册缺少邮箱")
     source = str(entrypoint or "protocol_cli").strip() or "protocol_cli"
-    driver_name = str(driver or "protocol").strip() or "protocol"
+    from config.registration_drivers import normalize_registration_driver
+
+    driver_name = normalize_registration_driver(driver or "protocol_oss_2")
     identifier_namespace = "protocol-cli" if source == "protocol_cli" else source
     identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, f"turb:{identifier_namespace}:" + address.casefold()))
     registration.init()
@@ -100,7 +102,8 @@ def prepare_attempt(
                 raise RuntimeError("原注册 Attempt 的邮箱来源不一致，拒绝切换来源")
             existing_driver = str(existing.get("driver") or "").strip().lower()
             requested_driver = driver_name.lower()
-            if existing_driver and requested_driver and existing_driver != requested_driver:
+            if (existing_driver and requested_driver
+                    and normalize_registration_driver(existing_driver) != normalize_registration_driver(requested_driver)):
                 raise RuntimeError("原注册 Attempt 的驱动不一致，拒绝切换驱动")
             _recover_exited_cli_run(cur, candidates[0], entrypoint=source)
             attempt = registration._row(candidates[0])

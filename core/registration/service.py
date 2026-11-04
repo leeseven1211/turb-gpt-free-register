@@ -25,6 +25,7 @@ from core import db
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway as account_task_store
 from core.registration.postprocess import summarize_postprocess, decide_recovery
+from core.registration.driver_selection import normalize_registration_driver
 from core.email.remail.client import RemailOrderUncertain
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
@@ -51,25 +52,12 @@ def _now_iso() -> str:
 
 
 _REGISTRATION_DRIVER_LABELS = {
-    "protocol": "本地优化 Protocol",
-    "protocol_oss": "开源 Protocol",
     "protocol_oss_2": "开源protocol-2",
     "roxy": "本地 Roxy",
-    "roxy_oss": "开源 Roxy",
 }
 _REGISTRATION_DRIVER_HINTS = {
-    "protocol": "本项目优化实现；认证方式按本批密码配置执行。",
-    "protocol_oss": "上游流程固定使用邮箱验证码和密码，后续账号处理仍走本地服务。",
     "protocol_oss_2": "使用 wangshen233 开源协议流程，邮箱、任务恢复和账号后处理沿用本地服务。",
     "roxy": "使用本地 RoxyBrowser 注册与账号后处理流程。",
-    "roxy_oss": "使用固定上游页面识别与表单辅助，认证提交、任务恢复和账号后处理沿用本地服务。",
-}
-_REGISTRATION_DRIVER_ALIASES = {
-    "api": "protocol",
-    "http": "protocol",
-    "roxybrowser": "roxy",
-    "fingerprint": "roxy",
-    "browser": "roxy",
 }
 
 
@@ -85,15 +73,15 @@ def configured_registration_driver() -> str:
     """读取并归一化全局默认 driver，兼容历史别名。"""
     from config import roxybrowser as roxy_cfg
 
-    raw = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    return _REGISTRATION_DRIVER_ALIASES.get(raw, raw)
+    raw = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "roxy") or "roxy").strip().lower()
+    return normalize_registration_driver(raw)
 
 
 def validate_registration_driver(value: object) -> str:
     """校验注册批次显式选择的 canonical driver。"""
     driver = str(value or "").strip().lower()
     if driver not in _REGISTRATION_DRIVER_LABELS:
-        raise ValueError("registration_driver 只能是 protocol、protocol_oss、protocol_oss_2、roxy 或 roxy_oss")
+        raise ValueError("registration_driver 只能是 protocol_oss_2 或 roxy")
     return driver
 
 
@@ -111,7 +99,7 @@ def codex_driver_for_registration(options: dict | None = None) -> str:
         registration_driver = str(
             values.get("registration_driver") or configured_registration_driver()
         ).strip().lower()
-        registration_driver = _REGISTRATION_DRIVER_ALIASES.get(registration_driver, registration_driver)
+        registration_driver = normalize_registration_driver(registration_driver)
         driver = {
             "protocol_oss": "protocol",
             "protocol_oss_2": "protocol",
@@ -131,9 +119,9 @@ def codex_driver_for_registration(options: dict | None = None) -> str:
 
 def _apply_registration_driver_snapshot(snapshot: dict[str, object], driver: str) -> dict[str, object]:
     """把所选注册驱动及其固有认证要求写入任务快照。"""
-    canonical = _REGISTRATION_DRIVER_ALIASES.get(str(driver or "").strip().lower(), str(driver or "").strip().lower())
+    canonical = normalize_registration_driver(driver)
     snapshot["registration_driver"] = canonical
-    if canonical in {"protocol_oss", "protocol_oss_2"}:
+    if canonical in {"protocol_oss_2", "roxy"}:
         snapshot["password_enabled"] = True
         snapshot["password_mode"] = "password"
     return snapshot
@@ -151,10 +139,8 @@ def registration_config_snapshot() -> dict[str, object]:
     from config import twofa as twofa_cfg
     from core.email.derivation import policy_snapshot
 
-    auth_mode = str(getattr(register_cfg, "REGISTRATION_AUTH_MODE", "otp") or "otp").strip().lower()
-    if auth_mode not in {"otp", "password"}:
-        auth_mode = "otp"
-    registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    auth_mode = "password"
+    registration_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "roxy") or "roxy").strip().lower()
     snapshot = {
         "registration_driver": registration_driver,
         # 注册国家在入队时冻结；worker 只按业务国家向统一池领取，
@@ -186,7 +172,7 @@ def registration_deployment_unavailable(options: dict | None = None) -> dict | N
 
     snapshot = options if isinstance(options, dict) else registration_config_snapshot()
     unavailable = browser_operation_unavailable(
-        str(snapshot.get("registration_driver") or configured_registration_driver()),
+        normalize_registration_driver(snapshot.get("registration_driver") or configured_registration_driver()),
     )
     if unavailable:
         return unavailable
@@ -302,17 +288,17 @@ def registration_options_for_job(job: dict | None) -> dict[str, object]:
             # 事实带入重跑子任务，避免重跑时误跟随新的池默认国家。
             if not _snapshot_registration_country(options):
                 options["proxy_country"] = _registration_proxy_country_for_job(job)
-            return options
+            return _apply_registration_driver_snapshot(options, str(options.get("registration_driver") or configured_registration_driver()))
         raw_data = job.get("data")
         if isinstance(raw_data, dict) and isinstance(raw_data.get("config_snapshot"), dict):
             options = dict(raw_data["config_snapshot"])
             if not _snapshot_registration_country(options):
                 options["proxy_country"] = _registration_proxy_country_for_job(job)
-            return options
+            return _apply_registration_driver_snapshot(options, str(options.get("registration_driver") or configured_registration_driver()))
     options = registration_config_snapshot()
     if isinstance(job, dict):
         options["proxy_country"] = _registration_proxy_country_for_job(job)
-    return options
+    return _apply_registration_driver_snapshot(options, str(options.get("registration_driver") or configured_registration_driver()))
 
 
 # Workflow B owns these facts.  This adapter only translates the existing job
@@ -1393,7 +1379,8 @@ def _job_uses_local_roxy_snapshot(job: dict) -> bool:
     if not isinstance(snapshot, dict):
         data = job.get("data")
         snapshot = data.get("config_snapshot") if isinstance(data, dict) else None
-    return isinstance(snapshot, dict) and snapshot.get("registration_driver") == "roxy"
+    return (isinstance(snapshot, dict) and bool(snapshot.get("registration_driver"))
+            and normalize_registration_driver(snapshot["registration_driver"]) == "roxy")
 
 
 def _confirmed_registration_cf_proxy_failure(
@@ -3513,8 +3500,10 @@ def _build_retry_info(
         else str(twofa_step.get("state") or "").strip().lower() != "skipped"
     )
     codex_required = bool(registration_snapshot.get("codex_enabled", True)) if registration_snapshot else codex_status != "skipped"
+    from core.accounts.password_evidence import password_is_confirmed
+
     setup_missing = bool(account) and (
-        (password_required and not _account_login_password(account))
+        (password_required and not password_is_confirmed(account))
         or (plan_check_required and not _account_plan_ready(account))
         or (twofa_required and not _account_twofa_ready(account, twofa_failed))
     )
@@ -3536,7 +3525,7 @@ def _build_retry_info(
         plan_state = "success" if _account_plan_ready(account) else "pending"
         summary = summarize_postprocess(
             core_success=True,
-            password_present=bool(_account_login_password(account)),
+            password_present=password_is_confirmed(account),
             password_required=password_required,
             outcomes={
                 "twofa": {"status": twofa_state, "ok": twofa_state == "success"},
@@ -3557,7 +3546,7 @@ def _build_retry_info(
         if (
             setup_missing
             and codex_status in {"success", "skipped"}
-            and bool(_account_login_password(account))
+            and password_is_confirmed(account)
             and _account_twofa_ready(account, twofa_failed)
             and not _account_plan_ready(account)
         ):
@@ -3571,7 +3560,7 @@ def _build_retry_info(
         if codex_status in {"success", "skipped"}:
             if setup_missing:
                 config_only = not twofa_failed and (
-                    not _account_login_password(account)
+                    not password_is_confirmed(account)
                     or not _account_plan_ready(account)
                 )
                 info.update({

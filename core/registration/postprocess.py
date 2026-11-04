@@ -252,6 +252,8 @@ def summarize_postprocess(
         codex_enabled=codex_enabled,
         plan_check_required=plan_check_required,
     )
+    if core_success and password_required and not password_present and not account_deactivated:
+        actions = (NextAction("account_setup_retry", "账号密码尚未确认，可补充密码"), *actions)
     if account_deactivated:
         readiness = "deactivated"
     else:

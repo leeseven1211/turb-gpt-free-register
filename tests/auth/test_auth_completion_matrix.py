@@ -28,7 +28,7 @@ class AuthCompletionMatrixTests(unittest.TestCase):
             account = {
                 "access_token": "saved-token",
                 "totp_secret": "totp-secret" if has_totp else "",
-                "extra_json": '{"account_password":"saved-password"}' if has_password else "{}",
+                "extra_json": '{"account_password":"saved-password","account_password_state":"confirmed"}' if has_password else "{}",
             }
             self.assertEqual(missing, completion_plan(account, settings)["missing_steps"])
 

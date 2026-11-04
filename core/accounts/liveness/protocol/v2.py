@@ -590,6 +590,7 @@ def _refresh_with_password(
     context_recorder=None,
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
+    allow_password_email_fallback: bool | None = None,
 ) -> dict:
     def completed(*args, **kwargs):
         result = _success(*args, **kwargs)
@@ -734,7 +735,9 @@ def _refresh_with_password(
         except ProtocolV2AuthError as exc:
             if exc.code != "password_rejected":
                 raise
-            if email_invalid or not bool(getattr(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", False)):
+            email_fallback = (bool(getattr(account_config, "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK", False))
+                              if allow_password_email_fallback is None else allow_password_email_fallback)
+            if email_invalid or not email_fallback:
                 raise
             # Do not reuse the rejected session.  The fallback starts a fresh
             # cookie jar, while keeping the original selected proxy.
@@ -960,6 +963,7 @@ def refresh_access_token(
     context_recorder=None,
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
+    allow_password_email_fallback: bool | None = None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -982,6 +986,8 @@ def refresh_access_token(
             context_recorder=context_recorder,
             on_remote_request_started=mark_remote_request_started,
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+            **({"allow_password_email_fallback": allow_password_email_fallback}
+               if allow_password_email_fallback is not None else {}),
         )
         result.setdefault("remote_request_started", remote_request_started)
         result.setdefault(

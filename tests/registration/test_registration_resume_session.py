@@ -451,7 +451,8 @@ class ResumeSessionFlowTests(unittest.TestCase):
             result = self.run_registration(registration_options={
                 "password_enabled": True, "twofa_enabled": True, "codex_enabled": True, "plan_check_enabled": True})
         self.assertTrue(result["success"], result.get("error"))
-        self.assertTrue(result["postprocess_success"])
+        self.assertFalse(result["postprocess_success"])
+        self.assertEqual(result["account_readiness"], "incomplete")
         for name in ("persist", "codex", "twofa", "plan_read", "plan_save"):
             mocks[name].assert_called_once()
         mocks["navigate"].assert_not_called()
@@ -509,7 +510,8 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "password_enabled": True, "twofa_enabled": True,
                     "codex_enabled": False, "plan_check_enabled": True,
                 })
-        self.assertTrue(result["postprocess_success"], result)
+        self.assertFalse(result["postprocess_success"], result)
+        self.assertEqual(result["plan_check"]["status"], "success")
         mocks["plan_cached"].assert_called_once()
         mocks["plan_read"].assert_not_called()
         self.assertEqual(mocks["plan_save"].call_args.kwargs["result"]["source"], "browser_response")
@@ -576,7 +578,8 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "password_enabled": True, "twofa_enabled": False,
                     "codex_enabled": False, "plan_check_enabled": True,
                 })
-        self.assertTrue(result["postprocess_success"], result)
+        self.assertFalse(result["postprocess_success"], result)
+        self.assertEqual(result["plan_check"]["status"], "success")
         parked.assert_called_once()
         homepage.assert_not_called()
         mocks["plan_read"].assert_not_called()
@@ -593,7 +596,8 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "password_enabled": True, "twofa_enabled": True,
                     "codex_enabled": False, "plan_check_enabled": False,
                 })
-        self.assertTrue(result["postprocess_success"], result)
+        self.assertFalse(result["postprocess_success"], result)
+        self.assertEqual(result["twofa"]["status"], "success")
         protocol.assert_called_once()
         self.assertTrue(callable(protocol.call_args.kwargs["before_browser"]))
         homepage.assert_not_called()
@@ -611,7 +615,8 @@ class ResumeSessionFlowTests(unittest.TestCase):
                     "password_enabled": True, "twofa_enabled": True,
                     "codex_enabled": False, "plan_check_enabled": False,
                 })
-        self.assertTrue(result["postprocess_success"], result)
+        self.assertFalse(result["postprocess_success"], result)
+        self.assertEqual(result["twofa"]["status"], "success")
         self.assertEqual(events, ["park", "restore", "browser_twofa", "park"])
 
     def test_new_registration_keeps_profile_and_callback_resources_until_homepage_ready(self):

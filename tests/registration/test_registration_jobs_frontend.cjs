@@ -33,8 +33,8 @@ test('注册请求使用配置中的 driver 并在结果提示中显示协议名
     JOB_STATUS_COUNTS: {active: 0},
     REGISTRATION_EMAIL_SOURCES: [{value: 'outlook', label: 'Outlook 邮箱池'}],
     REGISTRATION_DRIVERS: [
-      {value: 'protocol', label: '本地优化 Protocol'},
-      {value: 'protocol_oss', label: '开源 Protocol'},
+      {value: 'protocol_oss_2', label: '开源protocol-2'},
+      {value: 'roxy', label: '本地 Roxy'},
     ],
     esc: value => String(value),
     setJobProgressBatch(value) { batchId = value; },
@@ -45,7 +45,7 @@ test('注册请求使用配置中的 driver 并在结果提示中显示协议名
       return {
         jobs: [{batch_id: 'batch-fixture'}],
         email_source: 'outlook',
-        registration_driver: 'protocol_oss',
+        registration_driver: 'protocol_oss_2',
         submitted: 50,
         workers: 3,
       };
@@ -67,7 +67,7 @@ test('注册请求使用配置中的 driver 并在结果提示中显示协议名
 
   assert.equal(requests.length, 1);
   assert.equal(Object.hasOwn(requests[0], 'registration_driver'), false);
-  assert.match(warning.innerHTML, /开源 Protocol/);
+  assert.match(warning.innerHTML, /开源protocol-2/);
   assert.equal(batchId, 'batch-fixture');
 });
 
@@ -75,7 +75,7 @@ test('注册任务可在选项尚未加载时区分开源和本地 Roxy', () => 
   const context = {REGISTRATION_DRIVERS: []};
   vm.createContext(context);
   vm.runInContext(functionSource('registrationDriverLabel'), context);
-  assert.equal(context.registrationDriverLabel('roxy_oss'), '开源 Roxy');
+  assert.equal(context.registrationDriverLabel('roxy_oss'), '开源 Roxy（历史）');
   assert.equal(context.registrationDriverLabel('roxy'), '本地 Roxy');
   assert.equal(context.registrationDriverLabel('protocol_oss_2'), '开源protocol-2');
 });

@@ -1,7 +1,6 @@
 """账号页纯协议补密码：独立认证、私有候选与明确回执确认。"""
 from __future__ import annotations
 
-import json
 import secrets
 from dataclasses import replace
 
@@ -17,20 +16,6 @@ from core.operations.task_gateway import OperationLeaseLost
 from core.storage.accounts import password_recovery as recovery
 
 
-def _saved_password(account: dict) -> str:
-    extra = account.get("extra_json") or {}
-    if isinstance(extra, str):
-        try:
-            extra = json.loads(extra)
-        except (TypeError, ValueError):
-            extra = {}
-    for source in (extra if isinstance(extra, dict) else {}, account):
-        for key in ("account_password", "login_password", "registration_password"):
-            if str(source.get(key) or "").strip():
-                return str(source[key]).strip()
-    return ""
-
-
 def _generate_password() -> str:
     groups = ("ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghjkmnpqrstuvwxyz", "23456789", "!@#$%^&*?_-+=")
     characters = [secrets.choice(group) for group in groups]
@@ -42,7 +27,7 @@ def _generate_password() -> str:
 @serialize_email_auth
 def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fence: dict | None,
                                 checkpoint=None, report=None) -> dict:
-    """给无密码的已有账号添加密码；不重置远端已有密码，不进入注册。"""
+    """登录后按远端结果补密码；本地保存值只用于认证，不阻止再次补全。"""
     email = str(email or "").strip().casefold()
     cp = None
     owner = None
@@ -145,8 +130,6 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         account = db.get_account_by_email(email) or {}
         if not account.get("id"):
             return result(False, "账号不存在", error="account_not_found")
-        if _saved_password(account):
-            return result(True, "账号已有密码，已跳过补密码", status="skipped")
         fence = execution_fence or {}
         if not all(fence.get(key) for key in ("run_id", "execution_id", "lease_token")):
             return result(False, "补密码需要有效的账号任务执行租约", error="password_setup_execution_fence_missing")
@@ -154,9 +137,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             operation_run_id=fence["run_id"], operation_execution_id=fence["execution_id"],
             operation_lease_token=fence["lease_token"], attempt_id=None,
             registration_run_id=None, registration_execution_id=None)
-        cp = recovery.prepare_password_recovery(**owner, candidate_factory=_generate_password)
-        if cp.old_password:
-            return result(False, "存在修改密码的待确认候选，请先处理原修改密码任务", error="password_setup_recovery_conflict")
+        cp = recovery.prepare_password_recovery(**owner, candidate_factory=_generate_password, intent="password_add")
         emit("login", "正在通过纯协议登录，准备添加账号密码")
         parent = current_execution_context()
 
@@ -173,7 +154,8 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
 
         auth_context = replace(parent, cancellation=probe) if parent is not None else AuthExecutionContext(cancellation=probe)
         with execution_context(auth_context):
-            auth_result = refresh_access_token(email, proxy=proxy, on_authenticated=authenticated)
+            auth_result = refresh_access_token(email, proxy=proxy, on_authenticated=authenticated,
+                                               allow_password_email_fallback=True)
         if checkpoint_error is not None:
             raise checkpoint_error
         if callback_error is not None:
@@ -202,7 +184,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         mark_unknown()
         close_stage("failed", "密码检查点或执行租约校验未通过")
         return result(False, "密码检查点或执行租约校验未通过，请重新运行账号任务",
-                      error=exc.code, receipt="unknown" if dispatched else "none")
+                      error=f"password_recovery_{exc.code}", receipt="unknown" if dispatched else "none")
     except Exception as exc:
         mark_unknown()
         if checkpoint_error is exc:

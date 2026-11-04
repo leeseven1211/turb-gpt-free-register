@@ -652,9 +652,10 @@ function getRegistrationDriverField() {
 }
 function getRegistrationDriverValue() {
   const f = getRegistrationDriverField();
-  if (!f) return 'protocol';
+  if (!f) return 'roxy';
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  return String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
+  const current = String(fv == null ? 'roxy' : fv).trim().toLowerCase() || 'roxy';
+  return ({protocol: 'protocol_oss_2', protocol_oss: 'protocol_oss_2', roxy_oss: 'roxy'})[current] || current;
 }
 function registrationDriverLabel(value) {
   const cur = String(value || '').trim().toLowerCase();
@@ -767,16 +768,10 @@ function renderRegistrationMainSectionV2(fields) {
   const postRegistration = orderedConfigFieldsV2(fields, postRegistrationKeys);
   const known = new Set([...primaryKeys, ...postRegistrationKeys]);
   const extra = fields.filter(f => !known.has(f.key));
-  const auth = fields.find(f => f.key === 'REGISTRATION_AUTH_MODE');
-  const authValue = auth ? configFieldValueV2(auth.key, auth.value || 'otp') : 'otp';
-  const showPasswordTimeout = primary.some(f => f.key === 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS' && configFieldMatchesQueryV2(f));
-  const filteredPrimary = String(authValue).trim().toLowerCase() === 'password' || showPasswordTimeout
-    ? primary
-    : primary.filter(f => f.key !== 'REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS');
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('注册主链路'))}" data-config-section="注册主链路">
       ${renderConfigSectionHead('注册主链路', configSectionIntro('注册主链路'))}
-      ${renderConfigSettingGroupV2('注册基础流程', filteredPrimary)}
+      ${renderConfigSettingGroupV2('注册基础流程', primary)}
       ${renderConfigSettingGroupV2('注册后能力', postRegistration)}
       ${renderConfigSettingGroupV2('其他注册参数', extra)}
       ${renderConfigSaveActions()}

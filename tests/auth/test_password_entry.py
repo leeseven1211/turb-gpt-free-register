@@ -60,6 +60,16 @@ def test_entry_can_choose_server_offered_create_link():
     assert create.clicks == 1
 
 
+def test_new_identity_without_password_chooses_create_instead_of_login_link():
+    driver = _driver()
+    login = Link(driver, "https://auth.openai.com/log-in/password")
+    create = Link(driver, "https://auth.openai.com/create-account/password")
+    driver.links = [login, create]
+    assert _module().open_offered_password_entry(driver, timeout=1, allow_login=False) == "/create-account/password"
+    assert login.clicks == 0
+    assert create.clicks == 1
+
+
 @pytest.mark.parametrize("href,options", [
     ("https://other.example/log-in/password", {}),
     ("https://auth.openai.com:444/log-in/password", {}),

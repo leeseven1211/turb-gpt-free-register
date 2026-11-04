@@ -10,7 +10,7 @@ function createCountryView() {
   const fields = [
     {key: 'REGISTRATION_DRIVER', label: '注册主流程驱动', type: 'str', group: '注册主链路', value: 'roxy'},
     {key: 'REGISTRATION_COUNTRY', label: '注册国家', type: 'str', group: '注册主链路', value: 'JP', country_codes: ['JP', 'US', 'NA']},
-    {key: 'REGISTRATION_AUTH_MODE', label: '注册认证方式', type: 'str', group: '注册主链路', value: 'otp'},
+    {key: 'REGISTRATION_AUTH_MODE', label: '注册密码策略', type: 'str', group: '注册主链路', value: 'password', options: [{value: 'password', label: '优先使用页面密码入口'}]},
     {key: 'PROXY_POOL_DEFAULT_COUNTRY', label: '默认国家', type: 'str', group: '代理与网络', value: 'US', country_codes: ['JP', 'US', 'NA']},
   ];
   const root = {addEventListener() {}};
@@ -61,4 +61,17 @@ test('注册国家草稿独立于池默认国家并保留NA，不被空占位规
   assert.equal(view.pending.REGISTRATION_COUNTRY, 'NA');
   assert.match(view.poolSummary(), /注册主链路的注册国家/);
   assert.doesNotMatch(view.poolSummary(), /注册入队时的池默认国家/);
+});
+
+
+test('注册配置缺省使用本地Roxy且历史值映射到现行驱动', () => {
+  const context = {document: {getElementById() { return null; }}, window: {addEventListener() {}},
+    localStorage: {getItem() { return null; }}, $() { return {addEventListener() {}}; }};
+  vm.createContext(context);
+  vm.runInContext(`${source}
+ globalThis.readDriver = values => { CONFIG = values; return getRegistrationDriverValue(); };`, context);
+  assert.equal(context.readDriver([]), 'roxy');
+  for (const [previous, current] of [['', 'roxy'], ['protocol', 'protocol_oss_2'], ['protocol_oss', 'protocol_oss_2'], ['roxy_oss', 'roxy']]) {
+    assert.equal(context.readDriver([{key: 'REGISTRATION_DRIVER', value: previous}]), current);
+  }
 });

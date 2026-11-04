@@ -18,17 +18,14 @@ CLI：main.py
   → 持久化 Attempt / Run 上下文及同一驱动
 ```
 
-`dispatcher.run_registration()` 优先读取本次任务 `registration_options` 中的驱动快照，再读取配置。已经排队的任务不会因为配置页后续改动而隐式换驱动。
+`dispatcher.run_registration()` 优先读取本次任务 `registration_options` 中的驱动快照，再读取配置。现行驱动的已排队任务沿用原快照；退役驱动只在执行时映射到现行实现，原始历史来源保持不变。
 
 | `REGISTRATION_DRIVER` | 实现目录 | 执行方式 |
 | --- | --- | --- |
 | `roxy` | [registration/roxy](../../core/registration/roxy/__init__.py) | 本地 RoxyBrowser + Selenium |
-| `roxy_oss` | [registration/roxy_oss](../../core/registration/roxy_oss/__init__.py) | 开源页面辅助与本地 Roxy 生命周期 |
-| `protocol` | [registration/protocol](../../core/registration/protocol/__init__.py) | 本地 HTTP 协议流程 |
-| `protocol_oss` | [registration/protocol_oss](../../core/registration/protocol_oss/__init__.py) | 开源 Protocol 适配 |
 | `protocol_oss_2` | [registration/protocol_oss_2](../../core/registration/protocol_oss_2/__init__.py) | 开源 Protocol-2 适配 |
 
-`api/http` 是本地 Protocol 别名，`roxybrowser/fingerprint/browser` 是本地 Roxy 别名。未知驱动明确报错，不自动换成其他实现。公共编排、恢复和后处理位于 `core/registration/` 根部；跨业务认证能力位于 `core/auth/`。驱动支持差异见[认证支持矩阵](account-auth-support-matrix.md)。
+历史 `protocol/protocol_oss/api/http` 映射为 `protocol_oss_2`，`roxy_oss/roxybrowser/fingerprint/browser` 及退役浏览器名称映射为本地 `roxy`。未知驱动明确报错，不自动换成其他实现。公共编排、恢复和后处理位于 `core/registration/` 根部；跨业务认证能力位于 `core/auth/`。驱动支持差异见[认证支持矩阵](account-auth-support-matrix.md)。
 
 ## 提交与资源领取
 
@@ -44,7 +41,7 @@ WebUI 创建 `registration_jobs`，由执行器按数据库条件抢占任务；
 
 一次注册通常涉及会话与网络预检、邮箱提交、密码或验证码挑战、必要的资料提交、OAuth 回调和 ChatGPT session。服务端可能直接返回已认证回调、MFA、已有账号密码或邮箱验证；这些分支必须结合原意图和已保存凭据判断，不能把所有落地页都当成新账号。
 
-本地 Protocol 在密码请求前保存 prepared/started 检查点，确认后记录 confirmed，并支持沿原邮箱、密码和 Attempt 恢复。浏览器驱动保存密码、Profile 和认证阶段检查点。具体驱动的恢复能力以其实现及矩阵为准，不把一个驱动的检查点保证推广到全部驱动。
+现行驱动只有开源protocol-2 与本地 Roxy。密码请求前保存原候选与提交检查点，请求被接受仅说明本轮提交事实；数据库有密码、OTP 成功或到达资料页都不能确认密码有效。只有取得原邮箱匹配的 Token 且当前认证链有真实密码创建或验证证据，才确认账号密码。两种驱动遇到实际密码入口都优先进入，登录或创建均复用原值；仅 OTP 取得会话时保留候选，后续可显式补密码。历史任务的驱动名称保留，执行时映射到现行实现。
 
 邮箱验证码按发码时间、完整收件身份和已保存游标筛选。取到候选码不表示远端接受；提交结果未知要保留候选与执行证据。重发、退避与网络请求受阶段预算约束，底层同步请求仍受 connect/read 超时限制，不能保证任意在途请求立即取消。
 
@@ -65,7 +62,7 @@ Roxy 按账号复用绑定 Profile，浏览器、代理和诊断现场均有明�
 
 2FA、Codex、套餐及 Flow 都有各自成功、跳过和失败语义。已经保存账号时，后置失败不能抹掉账号或让已用邮箱回到新库存。不同驱动的整体返回字段和后处理顺序有差异，不能只凭 `success` 或页面红绿判断核心账号事实。
 
-本地 Protocol 的 Flow 调用位于 `core/registration/protocol/__init__.py`，通过 `core/integrations/flow_trigger.py` 执行。它在账号保存后运行，失败不撤销核心账号，也不能据此假设其他驱动具有同一后处理。
+开源protocol-2 的 Flow 调用位于 `core/registration/protocol_oss_2/lifecycle.py`，通过 `core/integrations/flow_trigger.py` 执行。它在账号保存后运行，失败不撤销核心账号，也不能据此假设其他驱动具有同一后处理。
 
 ## 失败、停止与续跑
 

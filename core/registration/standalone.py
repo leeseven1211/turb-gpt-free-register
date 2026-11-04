@@ -16,7 +16,7 @@ def run_registration_in_context(
     kwargs: dict,
     *,
     entrypoint: str = "protocol_cli",
-    driver_name: str = "protocol",
+    driver_name: str = "protocol_oss_2",
 ):
     """复用已有上下文，或为 CLI 建立并收口独立 Attempt/Run。"""
     from core.registration import service as service
@@ -24,7 +24,9 @@ def run_registration_in_context(
     from core.storage.registration import standalone as registration_standalone
 
     source = str(entrypoint or "protocol_cli").strip() or "protocol_cli"
-    persisted_driver = str(driver_name or "protocol").strip() or "protocol"
+    from core.registration.driver_selection import normalize_registration_driver
+
+    persisted_driver = normalize_registration_driver(driver_name)
     facts = service.registration_fact_context()
     if all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id")):
         return driver(**kwargs)
@@ -150,14 +152,7 @@ def run_registration_in_context(
 
 
 def run_protocol_in_context(driver, kwargs: dict):
-    """Protocol 旧入口兼容包装；生命周期由通用 CLI 入口统一处理。"""
+    """保留 CLI 生命周期包装，协议注册身份统一为开源protocol-2。"""
     return run_registration_in_context(
-        driver, kwargs, entrypoint="protocol_cli", driver_name="protocol",
-    )
-
-
-def run_protocol_oss_in_context(driver, kwargs: dict):
-    """开源 Protocol 入口包装；Attempt/Run 使用独立 driver 标识。"""
-    return run_registration_in_context(
-        driver, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss",
+        driver, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss_2",
     )

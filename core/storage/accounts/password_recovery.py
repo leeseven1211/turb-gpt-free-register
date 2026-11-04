@@ -56,6 +56,7 @@ class PrivateCheckpoint:
     old_password: str = field(repr=False)
     password: str = field(repr=False)
     candidate_login_original_fact: dict | None = field(default=None, repr=False, compare=False)
+    intent: str = "password_change"
 
 
 @dataclass(frozen=True)
@@ -267,7 +268,30 @@ def _checkpoint(row: dict, cipher: Fernet) -> PrivateCheckpoint:
     return PrivateCheckpoint(recovery_id=int(row["id"]), **{key: row[key] for key in (
         "state", "version", "account_id", "email", "purpose", "operation_run_id", "operation_execution_id",
         "attempt_id", "registration_run_id", "registration_execution_id")},
-        **{key: payload[key] for key in ("account_password_version", "old_password", "password")})
+        **{key: payload[key] for key in ("account_password_version", "old_password", "password")},
+        intent=payload.get("intent", "password_change"))
+
+
+def _restore_recovery_intent(cur, row: dict, payload: dict, cipher: Fernet) -> tuple[dict, dict]:
+    """旧候选先按原任务确定用途，不能由接管它的新操作猜测用途。"""
+    if "intent" in payload:
+        return row, payload
+    cur.execute(
+        f"SELECT task.task_type, task.data FROM {pg.qualified('operation_runs')} run "
+        f"JOIN {pg.qualified('operation_tasks')} task ON task.id=run.task_id WHERE run.id=%s",
+        (row["operation_run_id"],),
+    )
+    task = cur.fetchone() or {}
+    steps = _json_object(task.get("data")).get("steps")
+    add_task = task.get("task_type") == "password_setup" or (
+        task.get("task_type") == "account_setup_retry"
+        and (steps is None or isinstance(steps, list) and "password" in steps)
+    )
+    payload["intent"] = "password_add" if add_task and not payload["old_password"] else "password_change"
+    ciphertext = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+    cur.execute(f"UPDATE {pg.qualified(_TABLE)} SET credential_ciphertext=%s WHERE id=%s RETURNING *",
+                (ciphertext, row["id"]))
+    return cur.fetchone(), payload
 
 
 def _takeover(cur, row: dict, owner: _Owner) -> dict:
@@ -291,8 +315,12 @@ def _takeover(cur, row: dict, owner: _Owner) -> dict:
     return cur.fetchone()
 
 
-def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] | None) -> PrivateCheckpoint | None:
+def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] | None,
+                       intent: str | None = None) -> PrivateCheckpoint | None:
     owner = _owner(owner_values)
+    if intent not in {None, "password_change", "password_add"} or (
+            intent == "password_add" and owner.purpose != "manual"):
+        raise PasswordRecoveryError("recovery_intent_invalid")
     cipher, key = _cipher()
     init()
     with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
@@ -301,7 +329,11 @@ def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] 
                     (owner.account_id, owner.email))
         pending = cur.fetchone()
         if pending:
-            _validate_password(owner, account, attempts, _credentials(pending, cipher), key,
+            payload = _credentials(pending, cipher)
+            pending, payload = _restore_recovery_intent(cur, pending, payload, cipher)
+            if intent is not None and payload.get("intent", "password_change") != intent:
+                raise PasswordRecoveryError("recovery_intent_conflict")
+            _validate_password(owner, account, attempts, payload, key,
                                allow_candidate=pending["state"] in {"started", "unknown"})
             return _checkpoint(_takeover(cur, pending, owner), cipher)
         if candidate_factory is None:
@@ -318,6 +350,7 @@ def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] 
             raise PasswordRecoveryError("candidate_invalid")
         payload = {"purpose": "turb_password_recovery", "format_version": 1, "account_id": owner.account_id,
                    "email": owner.email, "old_password": old_password, "password": candidate,
+                   "intent": intent or "password_change",
                    "account_password_version": _password_version(owner, old_password, key)}
         encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
         cur.execute(f"INSERT INTO {pg.qualified(_TABLE)} (account_id,email,purpose,state,operation_run_id,operation_execution_id,"
@@ -328,14 +361,15 @@ def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] 
         return _checkpoint(cur.fetchone(), cipher)
 
 
-def prepare_password_recovery(*, candidate_factory: Callable[[], str], **owner) -> PrivateCheckpoint:
+def prepare_password_recovery(*, candidate_factory: Callable[[], str], intent: str = "password_change",
+                               **owner) -> PrivateCheckpoint:
     """提交前持久化唯一候选；已存在的未完成候选永远复用。"""
-    return _prepare_or_resume(owner, candidate_factory)
+    return _prepare_or_resume(owner, candidate_factory, intent)
 
 
-def resume_password_recovery(**owner) -> PrivateCheckpoint | None:
+def resume_password_recovery(*, intent: str | None = None, **owner) -> PrivateCheckpoint | None:
     """只恢复待完成候选，允许在原执行结束后交给合法的新执行。"""
-    return _prepare_or_resume(owner, None)
+    return _prepare_or_resume(owner, None, intent)
 
 
 def _owned_checkpoint(cur, recovery_id: int, owner: _Owner) -> dict:
@@ -409,6 +443,11 @@ def _confirm(cur, row: dict, owner: _Owner, account: dict, attempts: list[dict],
         return
     extra = _json_object(account.get("extra_json"))
     extra["account_password"] = candidate
+    # 注册恢复在取得 Token 前仍保留候选；已登录账号的明确添加/改密回执可以确认。
+    extra["account_password_state"] = (
+        "confirmed" if owner.purpose == "manual" or str(account.get("access_token") or "").strip()
+        else "candidate"
+    )
     for alias in ("login_password", "login_password_source", "registration_password"):
         extra.pop(alias, None)
     changes = {"extra_json": json.dumps(extra, ensure_ascii=False), "updated_at": datetime.now(timezone.utc).isoformat()}
@@ -449,8 +488,13 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
         account, attempts = _fence(cur, identity)
         row = _owned_checkpoint(cur, recovery_id, identity)
         payload = _credentials(row, cipher)
-        if confirmation == "password_add_response" and (identity.purpose != "manual" or payload["old_password"]):
+        row, payload = _restore_recovery_intent(cur, row, payload, cipher)
+        if confirmation == "password_add_response" and (
+                identity.purpose != "manual" or payload.get("intent") != "password_add"):
             raise PasswordRecoveryError("password_add_context_invalid")
+        if confirmation in {"password_change_response", "candidate_login"} and (
+                payload.get("intent", "password_change") != "password_change"):
+            raise PasswordRecoveryError("recovery_intent_conflict")
         original_fact = None
         if candidate_login:
             from core.storage import registration

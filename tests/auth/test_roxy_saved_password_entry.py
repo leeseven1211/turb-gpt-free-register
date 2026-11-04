@@ -133,25 +133,6 @@ class RoxySavedPasswordEntryTests(unittest.TestCase):
         entry.assert_not_called()
         fill.assert_not_called()
 
-    def test_roxy_oss_marker_keeps_legacy_login_entry_selection(self):
-        target = "https://auth.openai.com/log-in/password?flow=fixture"
-        result, driver, entry, fill = self._resolve(local_roxy_marker=False, legacy_offered=target)
-        self.assertEqual(result, "email_otp")
-        entry.assert_not_called()
-        driver.get.assert_called_once_with(target)
-        fill.assert_called_once()
-        self.assertEqual(fill.call_args.kwargs["existing_password"], "saved-password")
-        self.assertNotIn("prefer_saved_password_entry", fill.call_args.kwargs)
-
-    def test_roxy_oss_marker_does_not_select_new_create_entry(self):
-        result, driver, entry, fill = self._resolve(
-            local_roxy_marker=False, offered="/create-account/password",
-        )
-        self.assertEqual(result, "email_otp")
-        entry.assert_not_called()
-        driver.get.assert_not_called()
-        fill.assert_not_called()
-
     def test_old_confirmed_password_does_not_suppress_new_session_entry(self):
         receipt = BrowserSubmissionReceipt(
             kind="password", stage="password_create", endpoint_kind="password_submit", http_method="POST",
@@ -215,14 +196,6 @@ class RoxySavedPasswordEntryTests(unittest.TestCase):
         with patch("core.registration.roxy._make_submission_observer", return_value=observer):
             oauth._bind_password_submission_observer(opened, driver)
         opened.traffic_capture.set_submission_observer.assert_called_once_with(observer)
-
-    def test_reused_roxy_oss_driver_does_not_enable_new_oauth_strategy_or_observer(self):
-        driver = MagicMock()
-        driver._registration_local_roxy_password_entry = False
-        opened = SimpleNamespace(traffic_capture=MagicMock())
-        self.assertFalse(oauth._uses_roxy_saved_password_entry(driver))
-        oauth._bind_password_submission_observer(opened, driver)
-        opened.traffic_capture.set_submission_observer.assert_not_called()
 
     def test_cloak_driver_class_does_not_enable_roxy_strategy_or_observer(self):
         driver = type("CloakSeleniumDriver", (), {})()

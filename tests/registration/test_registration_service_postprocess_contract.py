@@ -8,6 +8,20 @@ from core.registration.service import _build_retry_info
 
 
 class RegistrationServicePostprocessContractTests(unittest.TestCase):
+    def test_request_unknown_keeps_fixed_password_entry_and_identity_causes(self):
+        for cause in (
+            "password_entry_navigation_failed", "password_entry_navigation_timeout",
+            "password_entry_not_offered", "identity_mismatch",
+        ):
+            with self.subTest(cause=cause):
+                self.assertEqual({
+                    "outcome": "request_unknown", "cause_code": cause,
+                    "register_response_confirmed": False,
+                }, registration_service._registration_request_unknown_facts({
+                    "cause_code": cause, "register_response_confirmed": False,
+                    "email": "unit@example.test", "raw_response": "不可持久化",
+                }))
+
     def test_request_unknown_keeps_safe_registration_diagnostics(self):
         evidence = {
             "operation": "otp_validate", "failure_kind": "transport_error",
@@ -153,7 +167,7 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
                 "codex_status": "failed",
                 "plan_check_status": "failed",
                 "totp_secret": "JBSWY3DPEHPK3PXP",
-                "extra_json": '{"account_password":"Password!123"}',
+                "extra_json": '{"account_password":"Password!123","account_password_state":"confirmed"}',
             },
             successful_retry=None,
         )
@@ -200,7 +214,7 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
                 "codex_status": "success",
                 "plan_check_status": "failed",
                 "totp_secret": "JBSWY3DPEHPK3PXP",
-                "extra_json": '{"account_password":"Password!123"}',
+                "extra_json": '{"account_password":"Password!123","account_password_state":"confirmed"}',
             },
             successful_retry=None,
         )

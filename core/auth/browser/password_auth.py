@@ -96,6 +96,44 @@ class PasswordPageError(RuntimeError):
         super().__init__(message)
 
 
+class PasswordSetupResultUnknownError(RuntimeError):
+    """添加密码已提交，但本次远端结果仍无法确认。"""
+
+    code = "password_setup_result_unconfirmed"
+    request_unknown = True
+
+    def __init__(self):
+        super().__init__("request_unknown: password_setup_result_unconfirmed: 添加密码已提交，尚未取得明确成功结果，已保留候选")
+
+
+def _password_setup_success_marker(state: object) -> str:
+    """只识别可信页面明确表示密码已完成的文案，空壳和表单消失均不算。"""
+    if not isinstance(state, dict):
+        return ""
+    try:
+        url = urlsplit(str(state.get("url") or ""))
+        if (url.scheme != "https" or url.hostname not in {"chatgpt.com", "auth.openai.com"}
+                or url.port not in (None, 443) or url.username or url.password):
+            return ""
+    except ValueError:
+        return ""
+    text = re.sub(r"\s+", " ", str(state.get("body") or "")).strip().casefold()
+    patterns = (
+        r"\b(?:your\s+)?password\s+(?:(?:has\s+been|was)\s+)?(?:successfully\s+)?(?:added|set|created|updated|changed)(?:\s+successfully)?\b",
+        r"密码(?:已|已经|已經)(?:成功)?(?:添加|新增|设置|設定|创建|建立|更新|修改|更改)",
+        r"密码(?:添加|新增|设置|設定|创建|更新|修改|更改)成功",
+        r"パスワード(?:を|が)?(?:正常に)?(?:追加|設定|作成|更新|変更)(?:されました|しました|しました。)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match is not None:
+            context = text[max(0, match.start() - 25):match.end() + 30]
+            if re.search(r"\b(?:not|failed|failure|unable)\b|失败|失敗|未成功", context):
+                continue
+            return match.group(0)
+    return ""
+
+
 def _login_password_page_error(state: object) -> PasswordPageError | None:
     if not isinstance(state, dict):
         return None
@@ -818,6 +856,7 @@ def _restart_expired_resume_auth(driver, email: str, *, budget: StageBudget,
     log_submission_diagnostics(driver, "password", "before_expired_session_login")
     restart_count += 1
     driver._registration_auth_restart_count = restart_count
+    driver._registration_password_creation_chain = None
     driver._registration_otp_after_ts = time.time()
     old_timeout = getattr(getattr(driver, "timeouts", None), "page_load", None)
     try:
@@ -1074,7 +1113,7 @@ def _fill_password_page_if_present(
     prefer_saved_password_entry: bool = False,
     saved_password_entry_already_attempted: bool = False,
 ) -> str | None:
-    """处理注册/登录密码页，并返回本次确认可用的 OpenAI 账号密码。
+    """处理实际密码入口，返回需要保留的候选值；可用性由独立证据判断。
 
     首次注册时生成随机密码；如果本地已有 ``email_verification_pending`` 检查点，
     则使用当时保存的密码登录同一个 OpenAI 身份，继续完成邮箱验证。
@@ -1092,6 +1131,12 @@ def _fill_password_page_if_present(
 
     def confirm_password(receipt):
         record_browser_submission_fact(driver, "confirmed", receipt=receipt, result="success")
+        if receipt.stage == "password_create":
+            # 仅当前浏览器认证链可以把创建接收与之后的同邮箱 Token 关联。
+            # 新登录会清除此标记，历史 Attempt 回执不能替代它。
+            driver._registration_password_creation_chain = {
+                "email": str(email).strip().casefold(), "password": password, "receipt": receipt,
+            }
         if on_candidate_password_confirmed is not None:
             on_candidate_password_confirmed(
                 receipt, original=saved_login_previous_receipt,
@@ -1176,6 +1221,18 @@ def _fill_password_page_if_present(
                     and has_visible_auth_inputs(recovered_snapshot, allow_password=False)) or _has_access_token(driver):
                 return existing_password
         if _is_email_verification_page(driver):
+            if prefer_saved_password_entry and not existing_password:
+                if not switched_from_otp:
+                    from core.auth.browser.password_entry import open_offered_password_entry
+
+                    switched_from_otp = True
+                    path = open_offered_password_entry(
+                        driver, timeout=max(0.0, end - time.time()), allow_login=False,
+                    )
+                    if path is not None:
+                        logger.info("%s 已选择页面提供的创建密码入口，生成本次候选密码", _log_prefix(driver))
+                        continue
+                return None
             if existing_password:
                 recovered_otp_state = None
                 if password_session_recovery_started:
@@ -1184,10 +1241,12 @@ def _fill_password_page_if_present(
                         budget=StageBudget(end, clock=time.time),
                     )
                     if recovered_otp_state == "ready":
-                        # 新会话已明确提供 OTP；继续原身份验证，不再导航旧密码入口。
-                        driver._registration_resume_password_attempted = True
-                        return existing_password
-                    if recovered_otp_state != "session_expired":
+                        if not prefer_saved_password_entry:
+                            driver._registration_resume_password_attempted = True
+                            return existing_password
+                        # 新会话重新核验它实际提供的入口，不沿用旧会话的密码结论。
+                        switched_from_otp = False
+                    elif recovered_otp_state != "session_expired":
                         raise RuntimeError("request_unknown: auth_session_unavailable: 重建登录后的验证码页不可用，已保留原 Attempt")
                 if prefer_saved_password_entry:
                     # 只按本次调度的显式入口状态防重，旧认证会话的回执不能压掉新入口。
@@ -1304,7 +1363,7 @@ def _fill_password_page_if_present(
             baseline_login_error = _login_password_error_signature(last, initial_error) if initial_error else None
         passwordless = (
             _click_passwordless_signup_if_present(driver)
-            if auth_mode == 'otp' and not existing_password
+            if auth_mode == 'otp' and not existing_password and not prefer_saved_password_entry
             else {"ok": False, "reason": "password_mode_or_saved_password"}
         )
         if passwordless.get('ok'):
@@ -2287,6 +2346,7 @@ def set_roxy_login_password(
     password: str,
     *,
     timeout: int = 75,
+    on_password_prepared=None,
     on_password_submitted=None,
 ) -> str:
     """在已登录的 ChatGPT 账号设置中补充账号密码。
@@ -2449,6 +2509,7 @@ def set_roxy_login_password(
           action: target,
           inputs,
           url: String(location.href || ''),
+          body: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 3000),
           password_controls: controls,
           password_lines: lines,
           profile_action: profileAction,
@@ -2555,6 +2616,10 @@ def set_roxy_login_password(
             f"账号设置只提供当前密码输入框，未进入“Add password/设置密码”流程；页面诊断：{diagnostic}"
         )
 
+    previous_success_marker = _password_setup_success_marker(state)
+    # 真实新密码表单已就绪；派发前保存同一候选，点击抛异常也能恢复。
+    if on_password_prepared is not None:
+        on_password_prepared(normalized)
     for submit_attempt in range(2):
         try:
             for field in new_inputs:
@@ -2597,7 +2662,8 @@ def set_roxy_login_password(
     last_text = ""
     while time.time() < end:
         _check_manual_stop()
-        state = driver.execute_script(r"""
+        try:
+            state = driver.execute_script(r"""
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
         const inputs = [...document.querySelectorAll('input[type="password"],input[autocomplete*="password" i],input[name*="password" i]')].filter(visible);
@@ -2609,16 +2675,26 @@ def set_roxy_login_password(
           + '[data-testid*="error" i],[data-test-id*="error" i],[data-state="error"]'
         )].filter(visible).map(el => (el.innerText || el.textContent || '')
           .replace(/\\s+/g, ' ').trim()).filter(Boolean);
-        return {inputs, errors, body: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200)};
-        """) or {}
+        return {url: location.href, inputs, errors,
+          body: (document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 3000)};
+        """)
+        except Exception:
+            # 页面跳转或采集异常只消耗本次确认预算，不能据读取失败确认成功。
+            state = None
+        if not isinstance(state, dict):
+            time.sleep(0.5)
+            continue
+        marker = _password_setup_success_marker(state)
         last_text = "; ".join((state.get("errors") or [])[:3]) or str(state.get("body") or "")[-400:]
-        if state.get("errors"):
+        errors = [item for item in state.get("errors") or []
+                  if not _password_setup_success_marker({"url": state.get("url"), "body": item})]
+        if errors:
             raise RuntimeError(f"账号密码设置失败：{last_text}")
-        if not state.get("inputs"):
+        if marker and marker != previous_success_marker and not state.get("inputs"):
             logger.info("%s 已补充 ChatGPT 账号密码：email=%s length=%s", _log_prefix(driver), email, len(normalized))
             return normalized
         time.sleep(0.5)
-    raise RuntimeError(f"提交账号密码后页面未确认完成：{last_text[:300]}")
+    raise PasswordSetupResultUnknownError()
 
 
 install_dispatches(globals(), (

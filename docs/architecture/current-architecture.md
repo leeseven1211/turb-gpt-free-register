@@ -50,7 +50,7 @@ WebUI 只维护现代界面：主模板为 `webui/templates/index.html`，业务
 
 `core/` 内按业务查找：`registration/`、`accounts/`、`codex/`、`email/`、`extract_link/`、`proxy/` 和 `sms/`；域内共用逻辑在各自根部，具体驱动或提供方在子目录。跨业务认证、浏览器、网络、任务和调度分别在 `auth/`、`browser/`、`network/`、`operations/`、`runtime/`，仓储集中于 `storage/<业务>/`。`integrations/` 放外部流程及 sub2api 客户端。
 
-五种注册方式分别拥有 `registration/{roxy,roxy_oss,protocol,protocol_oss,protocol_oss_2}/` 目录。本地 Roxy 和 Protocol 当前保留完整 `__init__.py`，其他驱动仍保留现有复用关系。`core/` 根部只有包入口和五个模块兼容别名；新调用应使用真实实现路径。具体文件索引见 [README 项目结构](../../README.md#项目结构) 和[功能地图](functional-map.md)。
+注册只保留 `registration/roxy/` 与 `registration/protocol_oss_2/`。protocol-2 的生命周期和后处理位于自身 `lifecycle.py`，错误展示与历史驱动映射使用公共外围模块。旧注册代码可在 Git 基线 `a4f20f3` 查阅；账号协议认证与注册驱动分离。新调用应使用真实实现路径。具体文件索引见 [README 项目结构](../../README.md#项目结构) 和[功能地图](functional-map.md)。
 
 配置的模块结构与热加载名称保持不变。工具真实实现归入 `tools/{diagnostics,benchmarks,maintenance,migrations}/`，原命令保留薄入口；测试按业务归组，公共隔离与源码读取帮助文件继续位于 `tests/` 根部。
 
@@ -113,7 +113,6 @@ PostgreSQL 是账号、注册任务、邮箱池、代理租约、Codex 凭证和
 | 入口 | 真实实现 | 保留原因与删除条件 |
 | --- | --- | --- |
 | `core.roxy_registration` | `core.registration.roxy` | 旧导入路径；确认至少一个稳定版本无源码、工具或部署脚本依赖，并完成导入兼容检查后删除 |
-| `core.browser_use_registration` | `core.registration.legacy.browser_use.flow` | 已禁用入口的历史导入；稳定版本确认无外部调用后逐文件删除 |
 | `core.db` | `core.storage.db_legacy` | 业务、工具和测试仍使用的存储门面；全部切换领域仓储并完成字段对账后删除 |
 | `core.operation_task_store` | `core.storage.operations.store` | 任务中心旧导入与测试 patch 点；调用全部切换并完成观察期对账后删除 |
 | `core.account_task_store` | `core.storage.operations.legacy_task_store` | 仍在写入的旧账号任务模型；原生 operation 覆盖全部任务类型至少一个稳定版本后评估删除 |

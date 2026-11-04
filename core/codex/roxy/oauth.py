@@ -918,6 +918,7 @@ def _relogin_after_password_reset(
     if recovery is not None:
         # 调用方可能仍持有旧密码；真实认证只能使用已私有持久化的同一候选。
         password = recovery.prepare(lambda: password)
+        driver._registration_password_creation_chain = None
         clear_roxy_browser_auth_state(driver)
         driver._registration_otp_after_ts = time.time()
     candidate_confirmation = None
@@ -1075,6 +1076,7 @@ def _reset_password_via_email(
         if pending is not None and pending.state == 'prepared':
             # 旧窗口的表单不能证明邮箱归属；重建原邮箱入口后才允许继续忘记密码。
             recovery.prepare(lambda: pending.password)
+            driver._registration_password_creation_chain = None
             clear_roxy_browser_auth_state(driver)
             driver._registration_otp_after_ts = time.time()
             _clear_confirmed_email_submission(driver)
@@ -1262,6 +1264,7 @@ def _complete_login_challenge_after_email(
     password_recovery=None,
     allow_profile_handoff: bool = False,
     on_candidate_password_confirmed=None,
+    allow_passwordless_fallback: bool = False,
 ) -> str:
     """解析登录挑战；启用恢复时可返回资料交接，完整会话仍由上层核验。"""
     end = time.time() + max(5, int(timeout))
@@ -1285,6 +1288,14 @@ def _complete_login_challenge_after_email(
     # 这次交接不能重新获得一次密码入口和提交机会。
     roxy_saved_password_entry = _uses_roxy_saved_password_entry(driver)
     offered_password_attempted = password_already_submitted
+    passwordless_fallback_allowed = bool(
+        allow_passwordless_fallback and not force_password_reset and password_recovery is None
+        and on_candidate_password_confirmed is None
+    )
+    if passwordless_fallback_allowed and getattr(driver, "_account_passwordless_fallback_active", False) is True:
+        password = ""
+        allow_password_reset = False
+        offered_password_attempted = True
     last_state: dict = {}
     last_url = ""
     last_wait_state = None
@@ -1376,6 +1387,20 @@ def _complete_login_challenge_after_email(
             offered_password_attempted = True
             return _open_offered_saved_password(driver, end)
         return False
+
+    def continue_with_email_after_password_rejection() -> bool:
+        nonlocal password, password_submitted_at, offered_password_attempted, allow_password_reset
+        if not passwordless_fallback_allowed or saved_password_created:
+            return False
+        password = ""
+        password_submitted_at = 0.0
+        offered_password_attempted = True
+        allow_password_reset = False
+        driver._account_passwordless_fallback_active = True
+        driver._registration_password_creation_chain = None
+        driver._registration_otp_after_ts = time.time()
+        _report_login_stage(stage_reporter, "login", "本地候选密码被明确拒绝，正在使用邮箱验证码继续补密码")
+        return True
 
     while (loop_now := time.time()) < end:
         # 注册的邮箱验证恢复携带原阶段预算，页面转换不能重新延长它。
@@ -1623,6 +1648,8 @@ def _complete_login_challenge_after_email(
                 raise RuntimeError("登录密码页没有找到忘记密码入口")
             if password_submitted_at:
                 if _is_explicit_password_rejection_state(state):
+                    if continue_with_email_after_password_rejection():
+                        continue
                     if allow_password_reset and not saved_password_create_page and reset_password():
                         return reset_next_state()
                     raise PasswordRejectedError(
@@ -1644,6 +1671,8 @@ def _complete_login_challenge_after_email(
                            if on_candidate_password_confirmed is not None and not saved_password_create_page else {}),
                     )
                 except PasswordRejectedError:
+                    if continue_with_email_after_password_rejection():
+                        continue
                     if allow_password_reset and not saved_password_create_page and reset_password():
                         return reset_next_state()
                     raise
@@ -1660,6 +1689,8 @@ def _complete_login_challenge_after_email(
                     _raise_auth_page_error(driver, retry_state, remaining=end - time.time())
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
+                        if continue_with_email_after_password_rejection():
+                            continue
                         if allow_password_reset and reset_password():
                             return reset_next_state()
                         raise PasswordRejectedError(
@@ -1684,6 +1715,8 @@ def _complete_login_challenge_after_email(
                     _raise_auth_page_error(driver, retry_state, remaining=end - time.time())
                     if _is_explicit_password_rejection_state(retry_state):
                         reject_unknown_password_receipt()
+                        if continue_with_email_after_password_rejection():
+                            continue
                         if allow_password_reset and reset_password():
                             return reset_next_state()
                         raise PasswordRejectedError(
@@ -1742,7 +1775,7 @@ def _complete_login_challenge_after_email(
                 if result.get("ok"):
                     passwordless_clicks += 1
                     passwordless_clicked = not bool(result.get("followup"))
-                    logger.info("[Codex][Browser] 本地无注册密码，已切换到邮箱一次性验证码：email=%s", email)
+                    logger.info("[Codex][Browser] 已选择页面提供的邮箱一次性验证码入口：email=%s", email)
                     human_delay("form")
                     continue
                 # Password input and the alternate email-code action are
@@ -1844,6 +1877,7 @@ def complete_openai_login_challenge(
     password_already_submitted: bool = False,
     password_recovery=None,
     allow_profile_handoff: bool = False,
+    allow_passwordless_fallback: bool = False,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
     extra_kwargs = {}
@@ -1865,6 +1899,8 @@ def complete_openai_login_challenge(
         extra_kwargs['password_recovery'] = password_recovery
     if allow_profile_handoff:
         extra_kwargs['allow_profile_handoff'] = True
+    if allow_passwordless_fallback:
+        extra_kwargs['allow_passwordless_fallback'] = True
     return _complete_login_challenge_after_email(
         driver,
         email,
@@ -2015,12 +2051,15 @@ def _fill_email_and_otp(
     on_password_confirmed=None,
     force_password_reset: bool = False,
     password_recovery=None,
+    allow_passwordless_fallback: bool = False,
 ) -> None:
     check_cancelled()
     _report_login_stage(stage_reporter, "login", "打开 OpenAI 登录授权页")
     otp_after_ts = time.time()
     password, totp_secret = _account_login_credentials(email)
     resumed_email_otp = False
+    if allow_passwordless_fallback:
+        driver._account_passwordless_fallback_active = False
     if password_recovery is not None:
         if password_recovery.checkpoint is None:
             password_recovery.resume()
@@ -2108,7 +2147,10 @@ def _fill_email_and_otp(
             force_password_reset=force_password_reset,
             stage_reporter=stage_reporter,
             **({'password_recovery': password_recovery} if password_recovery is not None else {}),
+            **({'allow_passwordless_fallback': True} if allow_passwordless_fallback else {}),
         )
+        if allow_passwordless_fallback and getattr(driver, "_account_passwordless_fallback_active", False) is True:
+            otp_after_ts = getattr(driver, "_registration_otp_after_ts", otp_after_ts)
         if password_recovery is not None and password_recovery.checkpoint is not None:
             if password_recovery.checkpoint.state == 'confirmed':
                 password = password_recovery.checkpoint.password
@@ -2161,6 +2203,7 @@ def _fill_email_and_otp(
                     on_password_confirmed=on_password_confirmed,
                     force_password_reset=force_password_reset, stage_reporter=stage_reporter,
                     **({'password_recovery': password_recovery} if password_recovery is not None else {}),
+                    **({'allow_passwordless_fallback': True} if allow_passwordless_fallback else {}),
                 )
                 if restart_state in {"advanced", "profile_handoff"}:
                     return "advanced"
@@ -2278,6 +2321,7 @@ def _fill_email_and_otp(
                 force_password_reset=force_password_reset,
                 stage_reporter=stage_reporter,
                 **({'password_recovery': password_recovery} if password_recovery is not None else {}),
+                **({'allow_passwordless_fallback': True} if allow_passwordless_fallback else {}),
             )
             if next_state in {"advanced", "profile_handoff"}:
                 _report_login_stage(
@@ -4321,6 +4365,7 @@ def run_roxy_chatgpt_account_action(
     on_password_confirmed=None,
     force_password_reset: bool = False,
     password_recovery=None,
+    allow_passwordless_fallback: bool = False,
 ):
     """打开或创建账号绑定的 Roxy 环境，登录 ChatGPT 后执行账号级操作。
 
@@ -4406,6 +4451,7 @@ def run_roxy_chatgpt_account_action(
             on_password_confirmed=on_password_confirmed,
             force_password_reset=force_password_reset,
             **({'password_recovery': password_recovery} if password_recovery is not None else {}),
+            **({'allow_passwordless_fallback': True} if allow_passwordless_fallback else {}),
         )
         from core.auth.browser.selenium_auth import complete_profile_page as _complete_profile_page, fetch_chatgpt_session as _fetch_chatgpt_session
 

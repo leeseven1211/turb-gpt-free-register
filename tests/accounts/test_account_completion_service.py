@@ -12,7 +12,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
                 "token_expired": False,
                 "plan_check_status": "success",
                 "totp_secret": "totp",
-                "extra_json": '{"account_password":"pw"}',
+                "extra_json": '{"account_password":"pw","account_password_state":"confirmed"}',
                 "codex_status": "missing",
             },
             {
@@ -50,7 +50,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
                 "access_token": "at",
                 "plan_check_status": "success",
                 "totp_secret": "totp",
-                "extra_json": '{"totp_setup_pending":true,"account_password":"pw"}',
+                "extra_json": '{"totp_setup_pending":true,"account_password":"pw","account_password_state":"confirmed"}',
                 "codex_status": "success",
             },
             {
@@ -161,7 +161,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
             "refresh_at_enabled": True,
         })
 
-        self.assertEqual(["refresh_at", "plan_check", "twofa", "codex"], plan["missing_steps"])
+        self.assertEqual(["refresh_at", "password", "plan_check", "twofa", "codex"], plan["missing_steps"])
         self.assertFalse(plan["registration_resume"])
         self.assertFalse(plan["blocked"])
 

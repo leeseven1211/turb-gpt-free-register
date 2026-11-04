@@ -20,7 +20,7 @@ class PasswordRecoverySession:
         return self._checkpoint
 
     def resume(self) -> bool:
-        self._checkpoint = store.resume_password_recovery(**self._owner)
+        self._checkpoint = store.resume_password_recovery(**self._owner, intent="password_change")
         return self._checkpoint is not None
 
     def prepare(self, candidate_factory) -> str:
@@ -30,6 +30,8 @@ class PasswordRecoverySession:
             )
         else:
             self._checkpoint = store.get_password_recovery(self._checkpoint.recovery_id, **self._owner)
+            if self._checkpoint.intent != "password_change":
+                raise store.PasswordRecoveryError("recovery_intent_conflict")
         return self._checkpoint.password
 
     def _transition(self, state: str, confirmation: str | None = None) -> str:

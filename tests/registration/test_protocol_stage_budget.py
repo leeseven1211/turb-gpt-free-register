@@ -7,69 +7,15 @@ from unittest.mock import MagicMock, patch
 
 from core.accounts import export as account_export
 from core.email import provider as email_provider, mailbox_wait
-from core.registration import protocol
 from core.auth.state_machine import CancellationRequested, StageBudget, StageTimeout
 
 
 class ProtocolStageBudgetTests(unittest.TestCase):
-    def test_callback_completed_session_retry_does_not_replay_callback(self):
-        now = [10.0]
-        budget = StageBudget.start(20, clock=lambda: now[0])
-        with ExitStack() as stack:
-            callback = stack.enter_context(patch.object(protocol, "follow_oauth_callback", return_value="https://chatgpt.com/"))
-            fetch = stack.enter_context(patch.object(protocol, "fetch_session", side_effect=[TimeoutError("临时读取失败"), {"accessToken": "offline"}]))
-            stack.enter_context(patch.object(protocol, "human_delay"))
-            stack.enter_context(patch("core.auth.state_machine.time.sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)))
-            result = protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com", budget=budget)
-        self.assertEqual(result[1], "offline")
-        callback.assert_called_once()
-        self.assertEqual(fetch.call_count, 2)
-        self.assertLess(fetch.call_args_list[1].kwargs["timeout"], fetch.call_args_list[0].kwargs["timeout"])
-        self.assertEqual(callback.call_args.kwargs["timeout"], 20)
 
-    def test_callback_unknown_result_is_not_replayed(self):
-        with patch.object(protocol, "follow_oauth_callback", side_effect=TimeoutError("响应丢失")) as callback, patch.object(protocol, "fetch_session") as fetch:
-            with self.assertRaisesRegex(RuntimeError, "结果未知"):
-                protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com")
-        callback.assert_called_once()
-        fetch.assert_not_called()
 
-    def test_callback_server_failure_is_still_unknown_and_not_replayed(self):
-        error = RuntimeError("远端错误")
-        error.response = SimpleNamespace(url="https://chatgpt.com/api/auth/callback/openai", status_code=503, text="")
-        with patch.object(protocol, "follow_oauth_callback", side_effect=error) as callback, patch.object(protocol, "fetch_session") as fetch:
-            with self.assertRaisesRegex(RuntimeError, "结果未知"):
-                protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com")
-        callback.assert_called_once()
-        fetch.assert_not_called()
 
-    def test_callback_explicit_terminal_rejection_stops(self):
-        response = SimpleNamespace(url="https://chatgpt.com/api/auth/callback/openai", status_code=400, text="")
-        error = RuntimeError("明确拒绝")
-        error.response = response
-        with patch.object(protocol, "follow_oauth_callback", side_effect=error) as callback, patch.object(protocol, "fetch_session") as fetch:
-            with self.assertRaisesRegex(RuntimeError, "AUTH_ERROR"):
-                protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com")
-        callback.assert_called_once()
-        fetch.assert_not_called()
 
-    def test_callback_cancelled_is_not_wrapped_or_retried(self):
-        error = CancellationRequested("已停止")
-        with patch.object(protocol, "follow_oauth_callback", side_effect=error) as callback:
-            with self.assertRaises(CancellationRequested) as raised:
-                protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com")
-        self.assertIs(raised.exception, error)
-        callback.assert_called_once()
 
-    def test_session_late_result_does_not_escape_stage_deadline(self):
-        now = [0.0]
-        budget = StageBudget.start(2, clock=lambda: now[0])
-        def late_result(*args, **kwargs):
-            now[0] = 3
-            return {"accessToken": "offline"}
-        with patch.object(protocol, "follow_oauth_callback", return_value="https://chatgpt.com/"), patch.object(protocol, "human_delay"), patch.object(protocol, "fetch_session", side_effect=late_result):
-            with self.assertRaises(StageTimeout):
-                protocol._finalize_registration_session(object(), "https://auth.openai.com/continue", "test@example.com", budget=budget)
 
     def test_remaining_time_reaches_actual_callback_and_session_request(self):
         session = MagicMock()

@@ -59,6 +59,7 @@ def save_email_verification_checkpoint(
 
     extra = {
         "account_password": normalized_password,
+        "account_password_state": "candidate",
         "registration_checkpoint": "email_verification_pending",
         "registration_pending_reason": "email_otp_pending",
     }

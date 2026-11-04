@@ -823,10 +823,12 @@ def _build_roxy_account_setup(
             )
             account = db.get_account_by_email(email) or account
         account_token = str(account.get("access_token") or "").strip()
+        from core.accounts.password_evidence import password_is_confirmed
+
+        # 强制改密已在登录阶段确认时，不再追加添加密码；显式补密码仍核验远端。
         needs_password = (
-            bool(include_password) and not _account_login_password(account)
-            if force_password_reset
-            else bool(include_password and account_token) and not _account_login_password(account)
+            bool(include_password) and not password_is_confirmed(account)
+            if force_password_reset else bool(include_password and account_token)
         )
         needs_twofa = (
             bool(include_twofa)
@@ -891,14 +893,18 @@ def _build_roxy_account_setup(
         unsupported_errors: list[str] = []
 
         def _setup_password() -> tuple[bool, str | None]:
-            # 没有完整 AT 的历史检查点不能安全判断账号已完成注册，交给
-            # 外层登录流程处理；有 AT 但没有密码时才进入“添加密码”流程。
+            # 没有完整 AT 时先完成登录；显式补密码不以本地保存值作为完成依据。
             if not needs_password:
                 return False, None
             # The browser login may have recovered the password before this
             # account action starts. Re-read runtime truth to avoid opening the
             # security settings page and attempting a second password change.
-            if _account_login_password(db.get_account_by_email(email) or {}) and not force_password_reset:
+            from core.accounts.password_evidence import password_is_confirmed
+
+            refreshed_account = db.get_account_by_email(email) or {}
+            if (password_is_confirmed(refreshed_account) and not password_is_confirmed(account)
+                    and _account_login_password(refreshed_account) != _account_login_password(account)
+                    and not force_password_reset):
                 _report_account_setup_event(
                     task_id,
                     stage="login_password",
@@ -909,27 +915,29 @@ def _build_roxy_account_setup(
                 return False, None
             from core.auth.browser.selenium_auth import registration_password, set_login_password
 
-            password = registration_password()
+            # 已有值仍可添加到远端；提交结果未知后的重跑继续复用同一候选。
+            password = _account_login_password(refreshed_account or account) or registration_password()
             password_saved = False
 
-            def _checkpoint_submitted_password(value: str) -> None:
+            def _checkpoint_submitted_password(value: str, *, prepared: bool = False) -> None:
                 nonlocal password_saved
                 with _ACCOUNT_SETUP_DB_LOCK:
                     if not db.update_account_login_password(email, value, source="retry"):
-                        raise RuntimeError("账号密码提交后写入账号检查点失败")
+                        raise RuntimeError("账号密码恢复候选写入检查点失败")
                 password_saved = True
                 _report_account_setup_event(
                     task_id,
                     stage="login_password",
-                    message="账号密码提交后已写入本地检查点，等待页面确认",
-                    detail={"saved": True, "checkpoint": "password_submitted"},
+                    message=("候选密码已保存，准备提交添加密码"
+                             if prepared else "账号密码已提交，等待明确成功结果"),
+                    detail={"saved": True, "checkpoint": "password_prepared" if prepared else "password_submitted"},
                     state="running",
                 )
 
             _report_account_setup_event(
                 task_id,
                 stage="login_password",
-                message="账号缺少账号密码，先在安全设置中补充随机密码",
+                message="正在核验远端密码设置并尝试添加账号密码",
                 state="running",
             )
             try:
@@ -938,10 +946,13 @@ def _build_roxy_account_setup(
                         driver,
                         email,
                         password,
+                        on_password_prepared=lambda value: _checkpoint_submitted_password(value, prepared=True),
                         on_password_submitted=_checkpoint_submitted_password,
                     )
                 if not password_saved:
                     _checkpoint_submitted_password(password)
+                if not db.update_account_login_password(email, password, source="retry", confirmed=True):
+                    raise RuntimeError("账号密码已确认，但确认状态写入失败")
                 db.update_account_password_capability(
                     email,
                     eligible=True,
@@ -1011,15 +1022,20 @@ def _build_roxy_account_setup(
                     raise PasswordSetupUnsupportedError(
                         "设置页没有添加账号密码入口"
                     ) from exc
+                reason = str(getattr(exc, "code", "") or "")
+                if reason == "password_setup_result_unconfirmed":
+                    detail_error = f"{reason}: 添加密码已提交，远端结果尚未确认，已保留候选"
+                else:
+                    detail_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                 _report_account_setup_event(
                     task_id,
                     stage="login_password_result",
                     message="账号密码补充失败，停止后续账号配置",
                     level="ERROR",
-                    detail={"error": f"{type(exc).__name__}: {str(exc)[:220]}"},
+                    detail={"error": detail_error},
                     state="failed",
                 )
-                return False, f"{type(exc).__name__}: {str(exc)[:180]}"
+                return False, detail_error
             _report_account_setup_event(
                 task_id,
                 stage="login_password_result",
@@ -1592,7 +1608,7 @@ def run_twofa_worker(
                         email,
                         task_id,
                         proxy=(account_route.proxy_url if account_route is not None else None),
-                    include_password="password" in remaining_setup_steps,
+                        include_password="password" in remaining_setup_steps,
                         include_twofa="twofa" in requested_steps,
                         twofa_driver=browser_twofa_driver,
                         browser_fallback_enabled=browser_fallback_enabled,
@@ -1601,6 +1617,8 @@ def run_twofa_worker(
                     ),
                     "allow_password_reset": allow_password_reset,
                 }
+                if "password" in remaining_setup_steps and not force_password_reset:
+                    action_kwargs["allow_passwordless_fallback"] = True
                 if allow_password_reset and not force_password_reset:
                     action_kwargs["on_password_reset_submitted"] = _checkpoint_password_reset
                 if force_password_reset:
@@ -2036,7 +2054,9 @@ def _run_worker_legacy(
             not bool(str(account.get("totp_secret") or "").strip())
             or _totp_setup_pending(account)
         )
-        needs_login_password = bool(str(account.get("access_token") or "").strip()) and not _account_login_password(account)
+        from core.accounts.password_evidence import password_is_confirmed
+
+        needs_login_password = bool(str(account.get("access_token") or "").strip()) and not password_is_confirmed(account)
         needs_roxy_setup = needs_twofa or needs_login_password
         allow_password_reset = str(task_trigger or "").strip() == "manual_sub2api_repair"
 

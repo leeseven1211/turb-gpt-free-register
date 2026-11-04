@@ -14,8 +14,8 @@ REGISTER_EMAIL = schema_default("REGISTER_EMAIL")
 # 注册任务按此国家向统一代理池申请，独立于代理池默认国家。
 REGISTRATION_COUNTRY = schema_default("REGISTRATION_COUNTRY")
 
-# 注册认证流程：otp=优先一次性验证码；password=遇到注册密码页时设置密码。
-# 即使选择 password，OpenAI 仍可能在后续要求邮箱验证码。
+# 注册固定优先使用页面提供的登录/创建密码入口；没有入口时继续邮箱验证码。
+# OpenAI 仍可能在密码步骤后要求邮箱验证码；旧 otp 配置按现行策略读取。
 REGISTRATION_AUTH_MODE = schema_default("REGISTRATION_AUTH_MODE")
 
 # 密码提交后的页面跳转使用独立预算。慢代理下 OpenAI 可能在表单提交后数十秒才
@@ -32,3 +32,5 @@ REGISTER_NAME = schema_default("REGISTER_NAME")
 
 # ---- 统一运行配置覆盖 ----
 apply_env_overrides(globals())
+if str(REGISTRATION_AUTH_MODE).strip().lower() == "otp":
+    REGISTRATION_AUTH_MODE = "password"
