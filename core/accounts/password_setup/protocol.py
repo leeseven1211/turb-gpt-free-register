@@ -16,6 +16,7 @@ from core.auth.protocol.sentinel_runner import generate_sentinel_token
 from core.auth.state_machine import CancellationRequested
 from core.email import provider as email_provider
 from core.email.mailbox_wait import use_cooperative_wait
+from core.network.response_diagnostics import _auth_payload_from_body
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
 
@@ -25,6 +26,12 @@ _PASSWORD_PAGE = _AUTH + "/reset-password/new-password"
 _CONTROL_ERRORS = (CancellationRequested, OperationCancelled, OperationLeaseLost)
 _PENDING_TYPES = {"password", "new_password", "password_reset", "email_verification", "email_otp", "mfa_challenge", "about_you"}
 logger = logging.getLogger(__name__)
+_OTP_RESPONSE_OPERATIONS = {"otp_context", "otp_context_recheck", "otp_initial_send", "otp_resend"}
+_OTP_REMOTE_ERROR_CODES = {
+    "invalid_auth_step", "invalid_request", "invalid_request_error", "invalid_state", "missing_session",
+    "session_expired", "session_invalid", "session_not_found", "login_required", "identity_provider_mismatch",
+    "rate_limit_exceeded", "too_many_requests", "access_denied", "account_deactivated", "account_suspended",
+}
 
 
 class ProtocolPasswordSetupError(RuntimeError):
@@ -185,12 +192,39 @@ def _auth_post(session, path: str, payload: dict, *, referer: str, flow: str, ch
     return _request(session, "post", _AUTH + path, headers=headers, data=json.dumps(payload), allow_redirects=False, checkpoint=checkpoint)
 
 
-def _email_verification_context(session, email: str, *, referer: str, checkpoint=None) -> dict:
+def _log_otp_response(operation: str, response) -> None:
+    """只记录固定阶段、HTTP 状态及有限错误枚举，拒绝正文和任意字段值。"""
+    if operation not in _OTP_RESPONSE_OPERATIONS:
+        return
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+        status = status if 100 <= status <= 599 else 0
+        data = _auth_payload_from_body(getattr(response, "text", ""))
+    except _CONTROL_ERRORS:
+        raise
+    except Exception as exc:
+        protocol_auth._reraise_control(exc)
+        status, data = 0, {}
+    page = data.get("page")
+    page_type = page.get("type") if isinstance(page, dict) else None
+    page_label = "email_otp_verification" if page_type == "email_otp_verification" else (
+        "other" if isinstance(page, dict) and "type" in page else "missing")
+    error = data.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    code_label = code if isinstance(code, str) and code in _OTP_REMOTE_ERROR_CODES else (
+        "other" if isinstance(error, dict) and "code" in error else "missing")
+    logger.info("[补密码] 发码接口响应：operation=%s status=%s page.type=%s remote.error.code=%s",
+        operation, status, page_label, code_label)
+
+
+def _email_verification_context(session, email: str, *, referer: str, checkpoint=None,
+                                operation: str = "otp_context") -> dict:
     """按当前客户端契约读取嵌套会话，只保留本轮发码需要的字段。"""
     headers = session.get_auth_headers(referer=referer)
     headers.pop("content-type", None)
     response = _request(session, "get", _AUTH + "/api/accounts/client_auth_session_dump",
         headers=headers, allow_redirects=False, checkpoint=checkpoint)
+    _log_otp_response(operation, response)
     payload = _payload(response)
     context = payload.get("client_auth_session")
     if not isinstance(context, dict):
@@ -222,11 +256,13 @@ def _send_email_verification_code(session, email: str, *, referer: str, after_ts
     initial = pending and ("email_verification_mode" not in context
                            or context["email_verification_mode"] in {"passwordless_login", "passwordless_signup"})
     headers = session.get_auth_headers(referer=referer)
-    headers.pop("content-type", None)
+    # 无正文 POST 仅删键仍会被 libcurl 补成表单类型；None 明确禁止该头，匹配网页请求。
+    headers["content-type"] = None
     if initial:
         logger.info("[补密码] 验证页存在待发送状态，正在准备本轮初发请求")
         headers.update(_sentinel_headers(session, "authorize_continue", checkpoint))
-        current = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint)
+        current = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint,
+                                              operation="otp_context_recheck")
         if any(context.get(key) != current.get(key) or (key in context) != (key in current)
                for key in ("session_id", "email", "email_verification_mode")):
             raise ProtocolPasswordSetupError("password_setup_otp_context_changed", "补密码发码前认证会话发生变化，尚未发送验证码")
@@ -243,6 +279,7 @@ def _send_email_verification_code(session, email: str, *, referer: str, after_ts
         after_ts = time.time()
     headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
     response = _request(session, "post", _AUTH + path, headers=headers, allow_redirects=False, checkpoint=checkpoint)
+    _log_otp_response("otp_initial_send" if initial else "otp_resend", response)
     status = int(getattr(response, "status_code", 0) or 0)
     if initial:
         data = _payload(response)

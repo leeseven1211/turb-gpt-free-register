@@ -1,6 +1,9 @@
 """补密码协议的请求边界、明确结果与未知结果。"""
 import json
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from queue import Queue
+from threading import Thread
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -26,6 +29,7 @@ class Response:
     def __init__(self, payload=None, *, url="", status=200, location=None):
         self.payload, self.url, self.status_code = payload, url, status
         self.headers = {"location": location} if location else {}
+        self.text = json.dumps(payload) if not isinstance(payload, Exception) else ""
 
     def json(self):
         if isinstance(self.payload, Exception):
@@ -117,7 +121,7 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         self.assertEqual(["GET", "GET", "POST"], [item[0] for item in session.events])
         self.assertEqual(AUTH + "/api/accounts/passwordless/send-otp", session.events[-1][1])
         self.assertNotIn("data", session.events[-1][2])
-        self.assertNotIn("content-type", session.events[-1][2]["headers"])
+        self.assertIsNone(session.events[-1][2]["headers"]["content-type"])
         self.assertEqual("fixture-otp-token", session.events[-1][2]["headers"]["openai-sentinel-token"])
         self.assertTrue(session.events[-1][2]["headers"]["x-access-flow-invocation-id"])
         self.assertEqual("authorize_continue", protocol.build_sentinel_header.call_args.args[2])
@@ -143,9 +147,49 @@ class PasswordSetupProtocolTests(unittest.TestCase):
                 self.assertEqual(("POST", AUTH + "/api/accounts/email-otp/resend"), sent[:2])
                 self.assertNotIn("openai-sentinel-token", sent[2]["headers"])
                 self.assertNotIn("openai-sentinel-so-token", sent[2]["headers"])
-                self.assertNotIn("content-type", sent[2]["headers"])
+                self.assertIsNone(sent[2]["headers"]["content-type"])
                 self.assertNotIn("data", sent[2])
         protocol.request_sentinel_token.assert_not_called()
+
+    def test_initial_and_resend_transport_omit_content_type_and_keep_empty_body(self):
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests import Session
+
+        observed = Queue()
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                observed.put({"content_type": self.headers.get("Content-Type"),
+                              "content_length": self.headers.get("Content-Length"), "body_bytes": len(body)})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(SEND_PAGE).encode())
+
+            def log_message(self, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with Session(impersonate="chrome", trust_env=False, curl_options={CurlOpt.PROXY: ""}) as transport:
+                for initial in (True, False):
+                    with self.subTest(initial=initial):
+                        session = FakeSession([email_context(), email_context()] if initial else
+                                              [email_context(pending=False)], [])
+                        def post(url, **kwargs):
+                            session.events.append(("POST", url, kwargs))
+                            return transport.post(f"http://127.0.0.1:{server.server_port}/", **kwargs, timeout=5)
+                        session.post = post
+                        self.send_code(session)
+                        self.assertEqual({"content_type": None, "content_length": "0", "body_bytes": 0},
+                                         observed.get(timeout=5))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_pending_unsupported_mode_and_missing_pending_use_the_page_resend_action(self):
         missing_pending = email_context()
@@ -231,6 +275,53 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         self.assertTrue(caught.exception.proxy_transport_failed)
         self.assertFalse(caught.exception.request_unknown)
         self.assertNotIn("private-route", str(caught.exception))
+
+    def test_response_diagnostics_distinguish_context_recheck_and_initial_post_failure(self):
+        cases = (([email_context(), Response({"error": {"code": "invalid_request"}}, status=400)], [],
+                  "operation=otp_context_recheck status=400", "otp_initial_send"),
+                 ([email_context(), email_context()], [Response({"error": {"code": "invalid_auth_step"}}, status=400)],
+                  "operation=otp_initial_send status=400", None))
+        for gets, posts, expected, absent in cases:
+            with self.subTest(expected=expected):
+                session = FakeSession(gets, posts)
+                with self.assertLogs(protocol.logger, level="INFO") as logs:
+                    with self.assertRaises(protocol.ProtocolPasswordSetupError):
+                        self.send_code(session)
+                output = " ".join(logs.output)
+                self.assertIn("operation=otp_context status=200", output)
+                self.assertIn(expected, output)
+                if absent:
+                    self.assertNotIn(absent, output)
+
+    def test_response_diagnostics_only_log_safe_page_and_error_enums(self):
+        payloads = (({"page": {"type": "email_otp_verification"}, "error": {"code": "invalid_state"}},
+                     "page.type=email_otp_verification remote.error.code=invalid_state"),
+                    ({"page": {"type": "private-page"}, "error": {"code": "private-code", "message": "private-body"}},
+                     "page.type=other remote.error.code=other"),
+                    ({"page": {"type": None}, "error": {"code": None}}, "page.type=other remote.error.code=other"),
+                    ({}, "page.type=missing remote.error.code=missing"))
+        for payload, expected in payloads:
+            with self.subTest(expected=expected):
+                response = Response({**payload, "email": "private@example.test", "token": "private-token"}, status=400)
+                with self.assertLogs(protocol.logger, level="INFO") as logs:
+                    protocol._log_otp_response("otp_resend", response)
+                output = " ".join(logs.output)
+                self.assertIn("operation=otp_resend status=400", output)
+                self.assertIn(expected, output)
+                for private in ("private-page", "private-code", "private-body", "private@example.test", "private-token"):
+                    self.assertNotIn(private, output)
+
+    def test_response_diagnostics_reject_ambiguous_or_oversized_json(self):
+        bodies = ('{"error":{"code":"invalid_state","code":"private-code"}}',
+                  '{"error":{"code":"invalid_state"},"extra":"' + "x" * 65536 + '"}')
+        for body in bodies:
+            with self.subTest(bytes=len(body)):
+                response = Response({}, status=400)
+                response.text = body
+                with self.assertLogs(protocol.logger, level="INFO") as logs:
+                    protocol._log_otp_response("otp_context", response)
+                self.assertIn("remote.error.code=missing", " ".join(logs.output))
+                self.assertNotIn("invalid_state", " ".join(logs.output))
 
     def test_direct_password_page_uses_independent_signin_and_hooks_in_order(self):
         session = self.session()
