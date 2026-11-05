@@ -32,6 +32,12 @@ class ProtocolSessionIdentityError(RuntimeError):
     cause_code = "identity_mismatch"
 
 
+class ProtocolSessionResponseError(RuntimeError):
+    """本轮还没有可核验的完整 Session，原任务保留重跑。"""
+
+    cause_code = "registration_session_invalid_response"
+
+
 def _check_stop_requested():
     from core.registration.service import StopRequested, check_stop_requested
 
@@ -73,6 +79,8 @@ class _ObservedSession:
         _check_stop_requested()
         context = self._context
         path = urlsplit(url).path
+        if path.endswith("/api/auth/session"):
+            context["session_response_incomplete"] = False
         if method.upper() == "POST" and path.endswith("/create_account"):
             context["profile_started"] = True
         profile_submit = method.upper() == "POST" and auth_submission_endpoint(url) == "profile_submit"
@@ -96,9 +104,28 @@ class _ObservedSession:
                     # 诊断提取失败不能覆盖远端响应或读取原始异常正文。
                     pass
             if path.endswith("/api/auth/session") and response.status_code == 200:
-                payload = response.json()
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
                 if isinstance(payload, dict):
-                    context["session_info"] = payload
+                    access_token = str(payload.get("accessToken") or payload.get("access_token") or "").strip()
+                    user = payload.get("user")
+                    actual_email = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+                    if access_token and actual_email:
+                        normalized = dict(payload, accessToken=access_token)
+                        context["session_info"] = normalized
+                        expected = str(context.get("email") or "").strip().casefold()
+                        context["session_identity_mismatch"] = bool(
+                            (expected and expected != actual_email)
+                            or (payload.get("accessToken") and payload.get("access_token")
+                                and payload["accessToken"] != payload["access_token"])
+                        )
+                    else:
+                        # 后续空响应不能抹掉同一认证链已核验的完整 Session。
+                        context["session_response_incomplete"] = True
+                else:
+                    context["session_response_incomplete"] = True
             return response
         except BaseException as exc:
             error = exc
@@ -158,6 +185,7 @@ def create_http_session(**kwargs):
         context["password_register_accepted"] = False
         context["password_verified"] = False
         context["session_info"] = {}
+        context.pop("session_identity_mismatch", None)
     context["sessions"].append(transport)
     return transport
 
@@ -170,7 +198,7 @@ def run_upstream_protocol(
     from core.email.provider import wait_for_otp
     from config import email as email_cfg
     from core.registration.checkpoints import save_protocol_password_checkpoint
-    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
+    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow, RegistrationStateError
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
@@ -186,7 +214,7 @@ def run_upstream_protocol(
                 raise RuntimeError("原 Attempt 的恢复密码不一致，已停止")
 
     context = {
-        "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [],
+        "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [], "email": email,
         "password_started": False, "password_register_accepted": False, "password_verified": False,
         "profile_started": False, "write_unknown": False, "session_info": {},
         "registration_diagnostics": RegistrationFailureDiagnostics(),
@@ -248,15 +276,12 @@ def run_upstream_protocol(
 
     class LocalAuthFlow(AuthFlow):
         def register_password(self, address):
-            accepted = super().register_password(address)
-            if not accepted:
-                progress("password", "failed", "上游未接受密码注册，继续通过原邮箱验证")
-            return accepted
+            return observed_action("password_submit", super().register_password, address)
 
         def _random_password(self):
-            if existing_password:
+            if self.result.password or existing_password:
                 # 上次可能停在提交前；远端仍走新注册时复用原密码完成该请求。
-                return existing_password
+                return self.result.password or existing_password
             password = super()._random_password()
             save_protocol_password_checkpoint(
                 email=email, password=password, state="prepared",
@@ -323,11 +348,22 @@ def run_upstream_protocol(
             observe("progress", "token", "running")
             return result
 
+        def get_auth_session(self):
+            result = super().get_auth_session()
+            if context.get("session_identity_mismatch"):
+                raise ProtocolSessionIdentityError("登录会话身份或 Token 字段冲突，原任务已保留")
+            verified = context.get("session_info") or {}
+            if verified:
+                self.session_info = dict(verified)
+                self.result.access_token = verified["accessToken"]
+                return self.result.session_token, self.result.access_token
+            return result
+
         def _resolve_login_password(self, address):
             # 本地没有原密码时，由上游邮箱认证分支处理；不提交推测密码。
             password = str(self.result.password or existing_password or "")
             if not password:
-                raise RuntimeError("已有账号需要原密码，请使用原任务重跑补全凭据")
+                raise RegistrationStateError("registration_password_unconfirmed")
             return password, True
 
     token = _CONTEXT.set(context)
@@ -369,11 +405,15 @@ def run_upstream_protocol(
         session_info = dict(context["session_info"])
         user = session_info.get("user")
         actual_email = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
-        if not actual_email or actual_email != str(email).strip().casefold():
+        if not actual_email:
+            raise ProtocolSessionResponseError("本轮未取得包含目标身份的完整 Session，原任务可重跑")
+        if actual_email != str(email).strip().casefold():
             raise ProtocolSessionIdentityError("登录会话缺少目标邮箱身份或与原任务不一致，已保留候选密码")
         if str(session_info.get("accessToken") or "").strip() != access_token:
             raise ProtocolSessionIdentityError("本轮 Token 与已核验的登录会话不一致，已保留候选密码")
         password_validated = bool(context["password_register_accepted"] or context["password_verified"])
+        if getattr(flow, "_registration_password_required", False) and not password_validated:
+            raise RegistrationStateError("registration_password_unconfirmed")
         if context["password_register_accepted"]:
             progress("password", "success", "本轮密码创建及认证已完成，已取得 Token")
         elif context["password_verified"]:
@@ -391,7 +431,7 @@ def run_upstream_protocol(
             "registration_password": result.password or existing_password or None,
             "password_validated": password_validated,
             "password_state": "confirmed" if password_validated else "candidate",
-            "remote_identity": "existing" if flow._is_existing_account else "new",
+            "remote_identity": "new" if getattr(flow, "_registration_new_identity", False) or not flow._is_existing_account else "existing",
             "challenge_chain": (["password"] if password_validated else []) + ["email_otp"],
         }
     except _VendorCancelled as exc:
@@ -399,7 +439,14 @@ def run_upstream_protocol(
     except (StopRequested, AuthCancelledError):
         raise
     except Exception as exc:
-        diagnostics = observe("failure", exc)
+        if (context.get("session_response_incomplete") and not context.get("session_info")
+                and not context.get("profile_error") and not getattr(exc, "cause_code", "")):
+            invalid = ProtocolSessionResponseError("本轮 Session 响应缺少完整身份或 Token，原任务可重跑")
+            invalid.__cause__ = exc
+            exc = invalid
+        # 有界恢复未完成时仍保留原资料提交的失败事实，避免变成泛化无凭证错误。
+        primary = context.get("profile_error") or exc
+        diagnostics = observe("failure", primary)
         if diagnostics is not None:
             try:
                 exc.registration_diagnostics = diagnostics
@@ -409,11 +456,13 @@ def run_upstream_protocol(
             unknown = ProtocolOssRequestUnknown(
                 "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
                 register_response_confirmed=context["password_register_accepted"],
-                cause_diagnostics=context.get("profile_diagnostics") if context.get("profile_error") is exc else None,
+                cause_diagnostics=context.get("profile_diagnostics"),
             )
             if getattr(exc, "cause_code", "") in {
                 "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered",
                 "identity_mismatch",
+                "registration_password_create_rejected", "registration_password_unconfirmed",
+                "registration_auth_state_unrecognized", "registration_session_invalid_response",
             }:
                 unknown.cause_code = exc.cause_code
             if diagnostics is not None:

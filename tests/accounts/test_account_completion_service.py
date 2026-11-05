@@ -106,7 +106,7 @@ class AccountCompletionPlanTests(unittest.TestCase):
         self.assertIn("password", plan["missing_steps"])
         self.assertFalse(plan["blocked"])
 
-    def test_confirmed_missing_password_entry_blocks_repeat_completion(self):
+    def test_confirmed_missing_password_entry_is_rechecked_on_explicit_completion(self):
         plan = completion_plan(
             {
                 "access_token": "at",
@@ -123,8 +123,10 @@ class AccountCompletionPlanTests(unittest.TestCase):
             },
         )
 
-        self.assertNotIn("password", plan["missing_steps"])
-        self.assertEqual("password", plan["blocked"][0]["step"])
+        self.assertIn("password", plan["missing_steps"])
+        self.assertIn("password", plan["required_steps"])
+        self.assertFalse(plan["blocked"])
+        self.assertFalse(plan["ready"])
 
     def test_legacy_missing_password_entry_cache_is_rechecked(self):
         plan = completion_plan(

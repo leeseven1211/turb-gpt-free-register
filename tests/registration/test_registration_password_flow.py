@@ -1158,7 +1158,8 @@ class RegistrationPasswordFlowTests(unittest.TestCase):
         self.assertTrue(result["native_click_fallback"])
         self.assertEqual(len(native_click_scripts), 1)
         self.assertIn("document.querySelectorAll('a[href]')", native_click_scripts[0])
-        self.assertIn("url.pathname === '/create-account/password'", native_click_scripts[0])
+        self.assertIn("url.origin === location.origin", native_click_scripts[0])
+        self.assertIn("url.pathname === (arguments[0] || '/create-account/password')", native_click_scripts[0])
         self.assertNotIn("location.href =", native_click_scripts[0])
 
     def test_roxy_password_target_supports_japanese_text_only_link(self):

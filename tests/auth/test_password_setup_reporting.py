@@ -56,7 +56,8 @@ class PasswordSetupReportingTests(unittest.TestCase):
 
     def test_native_run_records_real_stage_order_and_password_checkpoint(self):
         result, events, saved, legacy = self._run_native()
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual("not_executed", result["password_setup"]["status"])
         self.assertEqual(
             [(e["stage"], e["state"]) for e in events[:4]],
             [("network", "running"), ("network", "success"), ("browser", "running"), ("browser", "success")],

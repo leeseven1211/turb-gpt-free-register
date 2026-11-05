@@ -397,6 +397,8 @@ def run_protocol_oss_2_lifecycle(
         password_entry_cause = getattr(exc, "cause_code", "")
         if password_entry_cause in {
             "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered", "identity_mismatch",
+            "registration_password_create_rejected", "registration_password_unconfirmed",
+            "registration_auth_state_unrecognized", "registration_session_invalid_response",
         }:
             cause_code = password_entry_cause
         missing_module = str(getattr(exc, "name", "") or "")

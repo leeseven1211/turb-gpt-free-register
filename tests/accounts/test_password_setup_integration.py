@@ -61,7 +61,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             if log_records is not None:
                 logging.getLogger("password-setup-fixture").warning("fixture wait notice")
             if password_ok:
-                account.update(access_token="fixture-new-at", extra_json={"account_password": "fixture-password"})
+                account.update(access_token="fixture-new-at", extra_json={"account_password": "fixture-password", "account_password_state": "confirmed"})
             return {
                 "ok": password_ok,
                 "status": password_status or ("success" if password_ok else "failed"),
@@ -95,6 +95,13 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         def browser_setup(*_args, **kwargs):
             self.assertEqual(force_reset, kwargs["allow_password_reset"])
             actions.append(("browser",))
+            options = worker._build_roxy_account_setup.call_args.kwargs
+            for step in ("password", "twofa"):
+                if options.get(f"include_{step}"):
+                    options["step_results"][step] = {
+                        "ok": True, "status": "success", "message": "离线浏览器步骤已确认",
+                        "remote_receipt_state": "confirmed",
+                    }
 
         def plan_check(*_args, **_kwargs):
             actions.append(("plan",))
@@ -224,7 +231,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         self.assertEqual("deactivated", result["status"])
         self.assertTrue(result["account_status_persisted"])
         self.assertEqual("deactivated", account["account_status"])
-        self.assertEqual("skipped", result["twofa_setup"]["status"])
+        self.assertEqual("not_executed", result["twofa_setup"]["status"])
         state, _detail = runtime._account_setup_receipt(42, "fixture@example.test", {"password", "twofa"}, result)
         self.assertEqual("not_submitted", state)
 
@@ -234,7 +241,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         self.assertEqual("partial_success", result["status"])
         self.assertTrue(result["password_setup"]["ok"])
         self.assertEqual("confirmed", result["password_setup"]["remote_receipt_state"])
-        self.assertEqual("skipped", result["twofa_setup"]["status"])
+        self.assertEqual("not_executed", result["twofa_setup"]["status"])
         with patch.object(runtime.db, "get_account", return_value=account):
             state, _detail = runtime._account_setup_receipt(42, "fixture@example.test", {"password", "twofa"}, result)
         self.assertEqual("confirmed", state)
@@ -246,10 +253,10 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         self.assertTrue(result["stop_requested"])
         self.assertEqual("success", result["status"])
 
-    def test_password_rejection_keeps_successful_plan_as_partial(self):
+    def test_password_rejection_keeps_failed_status_and_successful_plan(self):
         result, actions, _account, _fence = self.run_setup(steps={"plan_check", "password"}, password_ok=False)
         self.assertEqual(["plan", "password"], [item[0] for item in actions])
-        self.assertEqual("partial_success", result["status"])
+        self.assertEqual("failed", result["status"])
         self.assertTrue(result["plan_check"]["ok"])
         self.assertFalse(result["password_setup"]["ok"])
 
@@ -257,7 +264,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         result, actions, account, _fence = self.run_setup(steps={"password", "twofa"}, twofa_ok=False)
         self.assertEqual(["password", "twofa"], [item[0] for item in actions])
         self.assertFalse(result["ok"])
-        self.assertEqual("partial_success", result["status"])
+        self.assertEqual("failed", result["status"])
         self.assertTrue(result["password_setup"]["ok"])
         self.assertFalse(result["twofa_setup"]["ok"])
         self.assertIn("account_password", account["extra_json"])
@@ -401,7 +408,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             "twofa_setup": {"ok": False, "status": "failed", "remote_receipt_state": "rejected"},
         }
         with patch.object(
-            runtime.db, "get_account", return_value={"extra_json": {"account_password": "fixture-password"}}
+            runtime.db, "get_account", return_value={"access_token": "fixture-at", "extra_json": {"account_password": "fixture-password", "account_password_state": "confirmed"}}
         ):
             state, detail = runtime._account_setup_receipt(42, "fixture@example.test", {"password", "twofa"}, result)
         self.assertEqual("confirmed", state)
@@ -516,7 +523,7 @@ class PasswordSetupDurableIntegrationTests(PostgresTestCase):
             {
                 "email": "durable-password@example.test",
                 "access_token": "fixture-at",
-                "extra_json": {"account_password": "fixture-password"},
+                "extra_json": {"account_password": "fixture-password", "account_password_state": "confirmed"},
             },
         )
         observed = []
@@ -573,7 +580,7 @@ class PasswordSetupDurableIntegrationTests(PostgresTestCase):
             {
                 "email": "partial-password@example.test",
                 "access_token": "fixture-at",
-                "extra_json": {"account_password": "fixture-password"},
+                "extra_json": {"account_password": "fixture-password", "account_password_state": "confirmed"},
             },
         )
         outcome = {

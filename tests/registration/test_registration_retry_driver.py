@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 from core import db
+from core.operations import task_gateway
 from core.registration import service as registration_service
 from webui.app import create_app
 
@@ -88,8 +89,12 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             stack.enter_context(patch.object(registration_service.codex_retry_service, "reserve", return_value=True))
             stack.enter_context(patch.object(registration_service.codex_retry_service, "release"))
             stack.enter_context(patch.object(registration_service.account_task_store, "create_task", return_value=77))
+            native = stack.enter_context(patch.object(task_gateway, "submit_durable_operation", return_value={
+                "accepted": True, "task_id": 81, "run_id": 82,
+            }))
+            stack.enter_context(patch("core.operation_task_store.find_task_by_source", return_value=None))
             result = registration_service.retry_job(21, registration_driver=driver_choice, **kwargs)
-            call = create_retry.call_args
+            call = native.call_args if action == "twofa" else create_retry.call_args
         return result, call, executor
 
     def test_roxy_resume_overrides_only_new_child_snapshot(self):
@@ -183,58 +188,36 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertIs(result["job"]["debug_enabled"], True)
         executor.assert_called_once_with(22, account_task_id=None)
 
-    def test_roxy_twofa_retry_freezes_browser_mode_without_changing_original_snapshot(self):
+    def test_roxy_setup_retry_uses_native_run_and_keeps_original_snapshot(self):
         source, account, attempt = self._facts()
         account["access_token"] = "unit-existing-token"
         source["config_snapshot"].update(registration_driver="protocol_oss_2", twofa_driver="protocol")
         original = copy.deepcopy(source)
-
-        result, create_call, executor = self._retry(
-            source, account, attempt, action="twofa", debug_enabled=True,
-        )
-
+        result, call, executor = self._retry(source, account, attempt, action="twofa", debug_enabled=True)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(create_call.kwargs["job_type"], "twofa_retry")
-        snapshot = create_call.kwargs["data"]["config_snapshot"]
-        self.assertEqual(snapshot["registration_driver"], "roxy")
-        self.assertEqual(snapshot["twofa_driver"], "browser")
-        self.assertEqual(create_call.kwargs["account_id"], 44)
-        self.assertEqual(create_call.kwargs["email"], "pending@example.test")
+        self.assertEqual(call.kwargs["task_type"], "account_setup_retry")
+        self.assertEqual(call.kwargs["config_snapshot"]["password_driver"], "roxy")
+        self.assertEqual(call.kwargs["config_snapshot"]["twofa_driver"], "browser")
+        self.assertIs(result["debug_enabled"], False)
+        self.assertTrue(result["debug_warning"])
+        self.assertEqual(call.kwargs["account_id"], 44)
+        self.assertEqual(result["operation_task_id"], 81)
         self.assertEqual(source, original)
-        self.assertIs(result["job"]["debug_enabled"], True)
-        executor.assert_called_once_with(22, account_task_id=77)
+        executor.assert_not_called()
 
-    def test_twofa_retry_without_override_keeps_original_modes(self):
+    def test_proto2_setup_retry_does_not_require_browser_or_legacy_worker(self):
         source, account, attempt = self._facts()
         account["access_token"] = "unit-existing-token"
         source["config_snapshot"].update(registration_driver="protocol_oss_2", twofa_driver="protocol")
-
-        result, create_call, _executor = self._retry(
-            source, account, attempt, action="twofa", driver_choice=None,
-        )
-
+        with patch("config.deployment.browser_enabled", return_value=False), patch(
+            "config.account.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", False,
+        ):
+            result, call, executor = self._retry(source, account, attempt, action="twofa", driver_choice=None)
         self.assertTrue(result["ok"], result)
-        snapshot = create_call.kwargs["data"]["config_snapshot"]
-        self.assertEqual(snapshot["registration_driver"], "protocol_oss_2")
-        self.assertEqual(snapshot["twofa_driver"], "protocol")
-
-    def test_roxy_twofa_retry_only_reuses_matching_browser_mode_and_debug(self):
-        for mode, debug, expected in (("protocol", True, False), (None, True, False),
-                                      ("browser", False, False), ("browser", True, True)):
-            with self.subTest(mode=mode, debug=debug):
-                source, account, attempt = self._facts()
-                account["access_token"] = "unit-existing-token"
-                child = {"id": 22, "status": "running", "job_type": "twofa_retry", "debug_enabled": debug,
-                         "config_snapshot": {"registration_driver": "roxy", "twofa_driver": mode}}
-                result, _create_call, executor = self._retry(
-                    source, account, attempt, action="twofa", child=child, debug_enabled=True,
-                )
-                self.assertIs(result["ok"], expected, result)
-                if expected:
-                    self.assertTrue(result["reused"])
-                else:
-                    self.assertEqual(result["status"], 409)
-                executor.assert_not_called()
+        self.assertEqual(call.kwargs["config_snapshot"]["password_driver"], "protocol")
+        self.assertEqual(call.kwargs["config_snapshot"]["twofa_driver"], "protocol")
+        self.assertIn("password", call.kwargs["data"]["required_steps"])
+        executor.assert_not_called()
 
     def test_roxy_resume_does_not_reuse_active_protocol_child(self):
         source, account, attempt = self._facts()
@@ -408,14 +391,16 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 retry.assert_not_called()
 
-    def test_twofa_retry_enables_capture_before_worker_submission(self):
+    def test_setup_retry_keeps_debug_request_with_native_operation(self):
         source, account, attempt = self._facts()
         account["access_token"] = "unit-existing-token"
-        result, _, executor = self._retry(source, account, attempt, action="twofa",
-                                         driver_choice=None, debug_enabled=True)
+        result, call, executor = self._retry(source, account, attempt, action="twofa",
+                                            driver_choice=None, debug_enabled=True)
         self.assertTrue(result["ok"], result)
-        self.assertIs(result["job"]["debug_enabled"], True)
-        executor.assert_called_once_with(22, account_task_id=77)
+        self.assertIs(result["debug_enabled"], False)
+        self.assertTrue(result["debug_warning"])
+        self.assertEqual(call.kwargs["data"]["source_job_id"], source["id"])
+        executor.assert_not_called()
 
     def test_debug_request_does_not_block_native_codex_or_plan_retry(self):
         for action in ("codex", "plan_check"):
@@ -450,13 +435,17 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                     source, account, attempt, action=action, driver_choice=None, proxy_country="JP",
                 )
                 self.assertTrue(result["ok"], result)
-                snapshot = create_call.kwargs["data"]["config_snapshot"]
-                self.assertEqual(snapshot["proxy_country"], "JP")
-                self.assertEqual(snapshot["retry_proxy_country_override"], "JP")
+                if action == "twofa":
+                    self.assertEqual(create_call.kwargs["data"]["proxy_country_override"], "JP")
+                    executor.assert_not_called()
+                else:
+                    snapshot = create_call.kwargs["data"]["config_snapshot"]
+                    self.assertEqual(snapshot["proxy_country"], "JP")
+                    self.assertEqual(snapshot["retry_proxy_country_override"], "JP")
+                    executor.assert_called_once()
                 self.assertEqual(create_call.kwargs["email"], source["email"])
                 self.assertEqual(source, original_source)
                 self.assertEqual(attempt, original_attempt)
-                executor.assert_called_once()
 
     def test_proxy_country_override_rejects_invalid_values_before_storage(self):
         for country in ("", "  ", "ZZ", "Japan", 1, True, [], {}):

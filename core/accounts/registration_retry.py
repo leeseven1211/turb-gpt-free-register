@@ -207,7 +207,9 @@ def retry_accounts(account_ids: list[int]) -> dict:
             logger.exception("账号原注册重跑入队失败：account_id=%s", ident)
             skipped.append({"account_id": ident, "reason": "原注册任务入队失败，请刷新任务状态后重试"})
             continue
-        if result.get("reused") or result.get("busy"):
+        if source.get("action") == "twofa" and not result.get("ok"):
+            skipped.append({"account_id": ident, "reason": result.get("error") or "账号配置缺项尚未入队，可稍后重跑"})
+        elif result.get("reused") or result.get("busy"):
             reused.append(_result_item(ident, source, result))
         elif result.get("ok"):
             started.append(_result_item(ident, source, result))

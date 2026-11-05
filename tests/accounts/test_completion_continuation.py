@@ -105,3 +105,32 @@ class CompletionContinuationTests(unittest.TestCase):
         for key in ("awaiting_steps", "deferred_steps", "continuation_steps"):
             self.assertNotIn(key, result.summary)
         self.assertEqual(["account_setup"], summary["awaiting_steps"])
+
+    def test_empty_continuation_preserves_required_password_and_blocked_token(self):
+        summary = {
+            "configured_steps": ["password", "twofa"],
+            "required_steps": ["password", "twofa", "refresh_at"],
+            "blocked": [{"step": "refresh_at", "reason": "本轮未启用刷新 AT"}],
+            "account_setup": {"step_results": {
+                "password": {"ok": False, "status": "unsupported"},
+                "twofa": {"ok": True, "status": "success"},
+            }},
+        }
+        context = self._context({
+            "continuation_payload": {"remaining_steps": [], "result_summary": summary},
+        })
+        with (
+            patch.object(runtime.db, "get_account", return_value={"id": 41}),
+            patch.object(account_completion_service, "completion_plan", return_value={
+                "missing_steps": ["password"],
+                "blocked": [{"step": "refresh_at", "reason": "本轮未启用刷新 AT"}],
+            }),
+        ):
+            result = runtime._handle_native_account_completion(context)
+        self.assertEqual("partial_success", result.status)
+        self.assertEqual(["password", "twofa"], result.summary["configured_steps"])
+        self.assertEqual(["password", "twofa", "refresh_at"], result.summary["required_steps"])
+        self.assertEqual(["password", "refresh_at"], result.summary["pending_steps"])
+        self.assertEqual(["twofa"], result.summary["completed_steps"])
+        self.assertFalse(result.summary["ready"])
+        self.assertEqual("refresh_at", result.summary["blocked"][0]["step"])

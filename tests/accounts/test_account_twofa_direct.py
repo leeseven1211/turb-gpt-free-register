@@ -4,7 +4,7 @@ import unittest
 import json
 import traceback
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 from core.codex import retry_service as codex_retry_service
 from core.accounts.export import TwofaEnrollmentAuthRequired, TwofaProtocolHTTPError, TwofaProtocolStepError, TwofaProtocolTransportError
@@ -71,6 +71,18 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             on_secret(secret)
             return secret
 
+        def complete_browser(_email, **kwargs):
+            builder = codex_retry_service._build_roxy_account_setup
+            if isinstance(builder, Mock):
+                arguments = builder.call_args.kwargs
+                for step in ("password", "twofa"):
+                    if arguments.get(f"include_{step}"):
+                        arguments["step_results"][step] = {
+                            "ok": True, "status": "success", "message": "离线步骤已确认",
+                            "remote_receipt_state": "confirmed",
+                        }
+            return None
+
         with tempfile.TemporaryDirectory() as tempdir, patch.object(
             codex_retry_service.db, "get_account_by_email", db_mocks["get_account_by_email"]
         ), patch.object(
@@ -98,7 +110,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
         ) as setup_reauth_mock, patch(
             "core.auth.protocol.session.BrowserSession", return_value=protocol_session
         ) as browser_session, patch(
-            "core.codex.roxy.oauth.run_roxy_chatgpt_account_action"
+            "core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=complete_browser,
         ) as run_browser, patch.object(
             codex_retry_service, "check_stop_requested"
         ):
@@ -420,7 +432,8 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
                 clear_log=False,
             )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual("not_executed", result["password_setup"]["status"])
         self.assertEqual(2, run_browser.call_count)
         self.assertEqual(2, acquire_route.call_count)
         self.assertEqual(1, result["browser_retry_attempts"])
@@ -513,6 +526,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             include_twofa=True,
             twofa_driver="browser",
             browser_fallback_enabled=True,
+            step_results=ANY,
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
@@ -546,6 +560,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
                 build_action.assert_called_once_with(
                     "a@example.com", 101, proxy="http://proxy.example", include_password=False,
                     include_twofa=True, twofa_driver="browser", browser_fallback_enabled=True,
+                    step_results=ANY,
                 )
                 route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
@@ -641,6 +656,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             include_twofa=True,
             twofa_driver="protocol",
             browser_fallback_enabled=True,
+            step_results=ANY,
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
@@ -676,6 +692,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             include_twofa=True,
             twofa_driver="browser",
             browser_fallback_enabled=True,
+            step_results=ANY,
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 
@@ -711,6 +728,7 @@ class ProtocolDirectTwofaTests(unittest.TestCase):
             include_twofa=True,
             twofa_driver="protocol",
             browser_fallback_enabled=True,
+            step_results=ANY,
         )
         route.release.assert_called_once_with(reason="twofa-retry-a@example.com")
 

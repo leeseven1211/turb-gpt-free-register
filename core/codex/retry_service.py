@@ -797,8 +797,15 @@ def _build_roxy_account_setup(
     browser_fallback_enabled: bool = True,
     force_twofa_change: bool = False,
     force_password_reset: bool = False,
+    step_results: dict | None = None,
+    password_reset_confirmed=None,
 ):
     """按步骤补账号密码/Authenticator 2FA；默认保持旧的组合行为。"""
+
+    outcomes = step_results if step_results is not None else {}
+
+    def record(step: str, *, ok: bool, status: str, message: str, **detail) -> None:
+        outcomes[step] = {"ok": ok, "status": status, "message": message, **detail}
 
     def _setup(driver, session_info: dict | None = None) -> bool:
         account = db.get_account_by_email(email) or {}
@@ -828,9 +835,8 @@ def _build_roxy_account_setup(
 
         # 强制改密已在登录阶段确认时，不再追加添加密码；显式补密码仍核验远端。
         needs_password = (
-            bool(include_password) and not password_is_confirmed(account)
-            if force_password_reset else bool(include_password and account_token)
-        )
+            False if force_password_reset else bool(include_password and account_token)
+        ) and not bool(outcomes.get("password", {}).get("ok"))
         needs_twofa = (
             bool(include_twofa)
             if force_twofa_change
@@ -838,7 +844,14 @@ def _build_roxy_account_setup(
                 not bool(str(account.get("totp_secret") or "").strip())
                 or _totp_setup_pending(account)
             )
-        )
+        ) and not bool(outcomes.get("twofa", {}).get("ok"))
+        if include_password and needs_password:
+            record("password", ok=False, status="pending", message="账号密码尚未执行",
+                   mutation_submitted=False, remote_receipt_state="not_submitted")
+        if include_twofa:
+            record("twofa", ok=not needs_twofa, status="pending" if needs_twofa else "success",
+                   message="Authenticator 2FA 尚未执行" if needs_twofa else "已确认现有 Authenticator 2FA",
+                   mutation_submitted=False, remote_receipt_state="not_submitted" if needs_twofa else "confirmed")
         if not include_password and task_id:
             _report_account_setup_event(
                 task_id,
@@ -854,6 +867,15 @@ def _build_roxy_account_setup(
                 state="skipped",
             )
         if include_password and not needs_password:
+            confirmed = (
+                bool(callable(password_reset_confirmed) and password_reset_confirmed()) and password_is_confirmed(account)
+                if force_password_reset
+                else bool(outcomes.get("password", {}).get("ok")) or password_is_confirmed(account)
+            )
+            record("password", ok=confirmed, status="success" if confirmed else "failed",
+                   message="账号密码已确认" if confirmed else "本轮改密尚未确认" if force_password_reset else "账号缺少可用登录态，尚未执行密码步骤",
+                   error_code=None if confirmed else "password_recovery_unconfirmed" if force_password_reset else "password_setup_access_token_missing",
+                   mutation_submitted=False, remote_receipt_state="confirmed" if confirmed else "not_submitted")
             _report_account_setup_event(
                 task_id,
                 stage="login_password",
@@ -913,19 +935,26 @@ def _build_roxy_account_setup(
                     detail={"saved": True, "checkpoint": "password_reset_submitted"},
                     state="success",
                 )
+                record("password", ok=True, status="success", message="登录阶段已确认账号密码",
+                       password_verified=True, mutation_submitted=False, remote_receipt_state="confirmed")
                 return False, None
             from core.auth.browser.selenium_auth import registration_password, set_login_password
 
             # 已有值仍可添加到远端；提交结果未知后的重跑继续复用同一候选。
             password = _account_login_password(refreshed_account or account) or registration_password()
             password_saved = False
+            password_dispatched = False
 
             def _checkpoint_submitted_password(value: str, *, prepared: bool = False) -> None:
-                nonlocal password_saved
+                nonlocal password_saved, password_dispatched
+                password_dispatched = password_dispatched or not prepared
                 with _ACCOUNT_SETUP_DB_LOCK:
                     if not db.update_account_login_password(email, value, source="retry"):
                         raise RuntimeError("账号密码恢复候选写入检查点失败")
                 password_saved = True
+                record("password", ok=False, status="pending", message="候选密码已保存，等待确认",
+                       mutation_submitted=password_dispatched,
+                       remote_receipt_state="unknown" if password_dispatched else "not_submitted")
                 _report_account_setup_event(
                     task_id,
                     stage="login_password",
@@ -963,12 +992,19 @@ def _build_roxy_account_setup(
                 raise
             except AccountUnusableError:
                 raise
-            except PasswordSetupNotReadyError:
+            except PasswordSetupNotReadyError as exc:
                 # The settings SPA was incomplete; let the outer browser
                 # retry envelope acquire a fresh session/route instead of
                 # persisting a false unsupported capability.
+                record("password", ok=False, status="failed", message=f"{type(exc).__name__}: {str(exc)[:180]}",
+                       error_code=str(getattr(exc, "code", "") or "password_setup_page_not_ready"),
+                       mutation_submitted=password_dispatched,
+                       remote_receipt_state="unknown" if password_dispatched else "not_submitted")
                 raise
             except PasswordSetupUnsupportedError as exc:
+                record("password", ok=False, status="unsupported", message=str(exc),
+                       error_code="password_setup_unsupported", mutation_submitted=password_dispatched,
+                       remote_receipt_state="unknown" if password_dispatched else "rejected")
                 db.update_account_password_capability(
                     email,
                     eligible=False,
@@ -977,10 +1013,10 @@ def _build_roxy_account_setup(
                 _report_account_setup_event(
                     task_id,
                     stage="login_password_result",
-                    message="ChatGPT 当前不支持添加账号密码，跳过重复重试",
+                    message="本轮无法添加账号密码，保留缺项供再次重跑",
                     level="WARNING",
                     detail={"eligible": False, "reason": "remote_not_eligible"},
-                    state="skipped",
+                    state="failed",
                 )
                 unsupported_errors.append(f"{type(exc).__name__}: {str(exc)[:180]}")
                 if needs_twofa:
@@ -998,6 +1034,9 @@ def _build_roxy_account_setup(
                     or "只提供当前密码输入框" in unsupported_text
                 )
                 if password_entry_unavailable:
+                    record("password", ok=False, status="unsupported", message="设置页没有添加账号密码入口",
+                           error_code="password_settings_entry_unavailable", mutation_submitted=password_dispatched,
+                           remote_receipt_state="unknown" if password_dispatched else "rejected")
                     db.update_account_password_capability(
                         email,
                         eligible=False,
@@ -1007,13 +1046,13 @@ def _build_roxy_account_setup(
                     _report_account_setup_event(
                         task_id,
                         stage="login_password_result",
-                        message="ChatGPT 设置页没有添加账号密码入口，跳过密码并继续其它步骤",
+                        message="本轮设置页没有添加账号密码入口，保留密码缺项并继续其它步骤",
                         level="WARNING",
                         detail={
                             "eligible": False,
                             "reason": "password_settings_entry_unavailable",
                         },
-                        state="skipped",
+                        state="failed",
                     )
                     unsupported_errors.append(
                         f"PasswordSetupUnsupportedError: {unsupported_text[:180]}"
@@ -1028,15 +1067,20 @@ def _build_roxy_account_setup(
                     detail_error = f"{reason}: 添加密码已提交，远端结果尚未确认，已保留候选"
                 else:
                     detail_error = f"{type(exc).__name__}: {str(exc)[:180]}"
+                record("password", ok=False, status="failed", message=detail_error,
+                       error_code=reason or "password_setup_runtime_failed", mutation_submitted=password_dispatched,
+                       remote_receipt_state="unknown" if password_dispatched else "not_submitted")
                 _report_account_setup_event(
                     task_id,
                     stage="login_password_result",
-                    message="账号密码补充失败，停止后续账号配置",
+                    message="账号密码补充失败，保留结果并继续其它账号配置",
                     level="ERROR",
                     detail={"error": detail_error},
                     state="failed",
                 )
                 return False, detail_error
+            record("password", ok=True, status="success", message="账号密码已补充并保存",
+                   password_added=True, mutation_submitted=True, remote_receipt_state="confirmed")
             _report_account_setup_event(
                 task_id,
                 stage="login_password_result",
@@ -1049,7 +1093,16 @@ def _build_roxy_account_setup(
         def _setup_twofa() -> tuple[bool, str | None]:
             if not needs_twofa:
                 return False, None
-            return bool(twofa_setup(driver)), None
+            try:
+                changed = bool(twofa_setup(driver))
+            except Exception as exc:
+                record("twofa", ok=False, status="failed", message=f"{type(exc).__name__}: {str(exc)[:180]}",
+                       error_code=str(getattr(exc, "code", "") or "twofa_setup_failed"),
+                       remote_receipt_state="unknown")
+                raise
+            record("twofa", ok=True, status="success", message="Authenticator 2FA 已完成或确认",
+                   mutation_submitted=changed, remote_receipt_state="confirmed")
+            return changed, None
 
         changed = False
         errors: list[str] = []
@@ -1173,6 +1226,42 @@ def _manual_password_recovery_owner(email: str, account_id: int, execution_fence
     }
 
 
+def _finalize_account_setup_results(result: dict, requested_steps: set[str], outcomes: dict) -> None:
+    """逐项收口请求步骤，单项成功不能掩盖其它必需步骤的失败。"""
+    aliases = {"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}
+    steps = {}
+    for step in sorted(requested_steps):
+        value = outcomes.get(step)
+        if not isinstance(value, dict):
+            value = {
+                "ok": False, "status": "not_executed", "message": result.get("message") or "请求步骤尚未执行",
+                "error_code": result.get("error_code") or "account_setup_step_not_executed", "mutation_submitted": False,
+                "remote_receipt_state": "not_submitted",
+            }
+        steps[step] = dict(value)
+        result[aliases[step]] = dict(value)
+    result["step_results"] = steps
+    result["setup_step_results"] = [{"step": step, "result": dict(value)} for step, value in steps.items()]
+    result["requested_steps"] = sorted(requested_steps)
+    if result.get("status") not in {"success", "completed"} or result.get("ok") is not True:
+        return
+    incomplete = [value for value in steps.values() if not value.get("ok")]
+    if not incomplete:
+        result.update(ok=True, status="success")
+        result.pop("error_code", None)
+        return
+    succeeded = any(value.get("ok") for value in steps.values())
+    first = incomplete[0]
+    result.update(
+        ok=False,
+        status="partial_success" if succeeded else "unsupported" if all(
+            value.get("status") == "unsupported" for value in incomplete
+        ) else "failed",
+        message="；".join(str(value.get("message") or "请求步骤未完成") for value in incomplete),
+        error_code=first.get("error_code") or result.get("error_code") or "account_setup_step_not_completed",
+    )
+
+
 def run_twofa_worker(
     email: str,
     *,
@@ -1208,6 +1297,8 @@ def run_twofa_worker(
     browser_stage_finished = False
     browser_retry_attempts = 0
     password_result = None
+    plan_result = None
+    setup_step_results: dict = {}
     password_proxy_fault = False
     key = (email or "").strip().lower()
     requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
@@ -1666,6 +1757,11 @@ def run_twofa_worker(
                         browser_fallback_enabled=browser_fallback_enabled,
                         **({"force_twofa_change": True} if force_twofa_change else {}),
                         **({"force_password_reset": True} if force_password_reset else {}),
+                        step_results=setup_step_results,
+                        **({"password_reset_confirmed": lambda: bool(
+                            password_recovery is not None and password_recovery.checkpoint is not None
+                            and password_recovery.checkpoint.state == "confirmed"
+                        )} if force_password_reset else {}),
                     ),
                     "allow_password_reset": allow_password_reset,
                 }
@@ -1853,36 +1949,18 @@ def run_twofa_worker(
         return result
     finally:
         if password_result is not None:
-            if "twofa" in requested_steps:
-                if password_result.get("stop_requested") or password_result.get("status") in {"deactivated", "stopped", "cancelled"}:
-                    result["twofa_setup"] = {
-                        "ok": False, "status": "skipped", "message": "前置步骤已停止，未执行 2FA",
-                        "mutation_submitted": False, "remote_receipt_state": "not_submitted",
-                    }
-                else:
-                    result["twofa_setup"] = {
-                        key: result[key] for key in (
-                            "ok", "status", "message", "error_code", "twofa_driver", "browser_opened",
-                        ) if key in result
-                    }
-            result["password_setup"] = dict(password_result)
+            setup_step_results["password"] = dict(password_result)
             result["password_driver"] = "protocol"
-            if plan_result is not None:
-                result["plan_check"] = plan_result
-            if result.get("status") not in {"deactivated", "stopped", "cancelled"}:
-                if not password_result.get("ok"):
-                    other_success = ("twofa" in requested_steps and bool(result.get("ok"))) or bool((plan_result or {}).get("ok"))
-                    result.update(
-                        ok=False, status="partial_success" if other_success else password_result.get("status", "failed"),
-                        message=password_result.get("message") or "协议补密码未完成",
-                        error_code=password_result.get("error_code"),
-                    )
-                elif not result.get("ok"):
-                    result["status"] = "partial_success"
-                if "plan_check" in requested_steps and not bool((plan_result or {}).get("ok")):
-                    result["plan_check"] = plan_result or {"ok": False, "status": "failed", "message": "套餐查询未完成"}
-                    if result.get("ok"):
-                        result.update(ok=False, status="partial_success", message="账号密码和安全设置已处理，套餐查询未完成")
+        if plan_result is not None:
+            setup_step_results["plan_check"] = dict(plan_result)
+        if "twofa" in requested_steps and "twofa" not in setup_step_results and not browser_stage_started:
+            if result.get("twofa_driver") == "protocol":
+                setup_step_results["twofa"] = {
+                    key: result[key] for key in (
+                        "ok", "status", "message", "error_code", "twofa_driver", "browser_opened",
+                    ) if key in result
+                }
+        _finalize_account_setup_results(result, requested_steps, setup_step_results)
         _attach_auth_projection(
             result,
             auth_method=str(
@@ -1911,6 +1989,7 @@ def run_twofa_worker(
                 _STOP_REQUESTED.discard(key)
         task_status = (
             "success" if result.get("ok")
+            else "partial_success" if result.get("status") == "partial_success"
             else "unsupported" if result.get("status") == "unsupported"
             else "deactivated" if result.get("status") == "deactivated"
             else "cancelled" if result.get("status") == "stopped"
@@ -1924,6 +2003,7 @@ def run_twofa_worker(
                     message=(
                         setup_message
                         if task_status == "success"
+                        else "成功步骤已保存，仍有未完成步骤，可重跑补齐" if task_status == "partial_success"
                         else "账号已废号，已停止账号配置" if task_status == "deactivated"
                         else "账号配置重试已停止" if task_status == "cancelled" else "账号配置重试失败"
                     ),
@@ -1936,6 +2016,9 @@ def run_twofa_worker(
                         "password_setup": result.get("password_setup"),
                         "password_driver": result.get("password_driver"),
                         "twofa_setup": result.get("twofa_setup"),
+                        "step_results": result.get("step_results"),
+                        "setup_step_results": result.get("setup_step_results"),
+                        "requested_steps": result.get("requested_steps"),
                         "twofa_driver": result.get("twofa_driver"),
                         "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),

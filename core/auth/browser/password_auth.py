@@ -502,8 +502,8 @@ const authInitialization = (() => {
 """
 
 
-def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dict:
-    """从新账号 OTP 页切换到 create-account/password。
+def _click_signup_password_from_otp_if_present(driver, timeout: int = 15, *, allow_login: bool = False) -> dict:
+    """从 OTP 页进入创建密码页；注册续跑可显式允许原密码登录入口。
 
     OpenAI 当前默认先展示邮箱验证码页；password 模式必须主动点击页面上的
     `/create-account/password`，否则会直接完成无密码注册。
@@ -527,6 +527,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
         _checkpoint()
         try:
             result = driver.execute_script(_AUTH_INITIALIZATION_SNAPSHOT_JS + r"""
+        const allowLogin = arguments[0] === true;
         const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
           && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
         const enabled = el => !el.disabled && String(el.getAttribute('aria-disabled') || '').toLowerCase() !== 'true';
@@ -555,6 +556,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
           );
           const conflictingLoginPath = path === '/log-in/password';
           return path === '/create-account/password'
+            || (allowLogin && path === '/log-in/password')
             || (!conflictingLoginPath && path.includes('/password') && passwordLabel)
             || (name === 'intent' && value === 'passwordless_signup_use_password')
             || (!conflictingLoginPath && passwordLabel);
@@ -585,7 +587,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
           name: target.getAttribute('name') || '',
           value: target.getAttribute('value') || ''
         };
-            """) or {"ok": False, "reason": "empty_result"}
+            """, *([True] if allow_login else [])) or {"ok": False, "reason": "empty_result"}
         except Exception as exc:
             last_result = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
             time.sleep(0.4)
@@ -599,7 +601,10 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             parsed_target_href = urlsplit(target_href)
             allow_native_click_fallback = (
                 str(result.get("tag") or "").strip().upper() == "A"
-                and parsed_target_href.path == "/create-account/password"
+                and parsed_target_href.path in (
+                    {"/create-account/password", "/log-in/password"} if allow_login
+                    else {"/create-account/password"}
+                )
                 and parsed_target_href.netloc.lower() in {"", "auth.openai.com"}
             )
             clicked_at = time.time()
@@ -607,7 +612,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             native_click_fallback_used = False
             while time.time() < wait_end:
                 _checkpoint()
-                if _is_signup_password_page(driver):
+                if _is_signup_password_page(driver) or (allow_login and _is_login_password_page(driver)):
                     result["reason"] = "entered_create_account_password"
                     return result
                 if _has_access_token(driver):
@@ -631,13 +636,14 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                           try {
                             const url = new URL(el.getAttribute('href'), location.href);
                             return location.protocol === 'https:' && location.hostname === 'auth.openai.com'
-                              && url.origin === location.origin && url.pathname === '/create-account/password';
+                              && url.origin === location.origin
+                              && url.pathname === (arguments[0] || '/create-account/password');
                           } catch (_) { return false; }
                         });
                         if (!anchor) return {ok:false, reason:'password_anchor_missing'};
                         anchor.click();
                         return {ok:true, reason:'password_anchor_clicked'};
-                        """) or {}
+                        """, *([parsed_target_href.path] if allow_login else [])) or {}
                         if isinstance(fallback_result, dict):
                             fallback_reason = fallback_result.get("reason")
                             result["native_click_fallback_reason"] = (
@@ -655,7 +661,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
                             _log_prefix(driver),
                             type(exc).__name__,
                         )
-                    if _is_signup_password_page(driver):
+                    if _is_signup_password_page(driver) or (allow_login and _is_login_password_page(driver)):
                         result["reason"] = "entered_create_account_password"
                         result["native_click_fallback"] = bool(
                             isinstance(fallback_result, dict) and fallback_result.get("ok")
@@ -679,7 +685,7 @@ def _click_signup_password_from_otp_if_present(driver, timeout: int = 15) -> dic
             }
 
         last_result = result
-        if _is_signup_password_page(driver):
+        if _is_signup_password_page(driver) or (allow_login and _is_login_password_page(driver)):
             return {"ok": True, "reason": "already_on_create_account_password"}
         if _has_access_token(driver):
             return {"ok": False, "reason": "logged_in_before_password_target"}
@@ -1112,6 +1118,7 @@ def _fill_password_page_if_present(
     on_candidate_password_confirmed=None,
     prefer_saved_password_entry: bool = False,
     saved_password_entry_already_attempted: bool = False,
+    password_required: bool = False,
 ) -> str | None:
     """处理实际密码入口，返回需要保留的候选值；可用性由独立证据判断。
 
@@ -1124,7 +1131,8 @@ def _fill_password_page_if_present(
     password_session_recovery_deadline = end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS
     password_session_recovery_started = False
     last = {}
-    auth_mode = _registration_auth_mode()
+    # 只有注册调用显式要求密码；独立登录和 AT 刷新沿用原入口策略。
+    auth_mode = "password" if password_required else _registration_auth_mode()
     switched_from_otp = bool(prefer_saved_password_entry and saved_password_entry_already_attempted)
     saved_form_recoveries = 0
     saved_login_previous_receipt = None
@@ -1221,6 +1229,45 @@ def _fill_password_page_if_present(
                     and has_visible_auth_inputs(recovered_snapshot, allow_password=False)) or _has_access_token(driver):
                 return existing_password
         if _is_email_verification_page(driver):
+            if password_required and not switched_from_otp:
+                if existing_password and getattr(driver, "_registration_resume_login", False):
+                    ready = _wait_email_otp_page_ready(
+                        driver, timeout=min(45.0, max(0.0, end - time.time())),
+                        budget=StageBudget(end, clock=time.time),
+                    )
+                    if ready == "session_expired":
+                        recovery_budget = StageBudget(
+                            password_session_recovery_deadline if password_session_recovery_started
+                            else end + RESUME_AUTH_RECOVERY_TIMEOUT_SECONDS,
+                            clock=time.time,
+                        )
+                        if _restart_expired_resume_auth(driver, email, budget=recovery_budget):
+                            end = recovery_budget.deadline
+                            continue
+                        raise RuntimeError(
+                            "request_unknown: auth_session_unavailable: 原身份登录的认证会话不可用，已保留原 Attempt"
+                        )
+                    if ready != "ready":
+                        raise RuntimeError(
+                            "registration_password_entry_unavailable: 原认证页尚未就绪，未执行必需密码验证"
+                        )
+                switched_from_otp = True
+                remaining = max(1, int(end - time.time()))
+                switched = _click_signup_password_from_otp_if_present(
+                    driver, timeout=remaining,
+                    **({"allow_login": True} if existing_password else {}),
+                )
+                if not switched.get("ok"):
+                    raise RuntimeError(
+                        "registration_password_entry_unavailable: 必须完成账号密码，"
+                        f"页面等待及恢复后仍未进入密码页：{switched}"
+                    )
+                logger.info("%s 必需密码阶段已进入页面提供的密码入口，继续创建或验证原密码", _log_prefix(driver))
+                continue
+            if password_required:
+                raise RuntimeError(
+                    "registration_password_entry_unavailable: 密码入口切换后未保留密码表单，未执行必需密码创建或验证"
+                )
             if prefer_saved_password_entry and not existing_password:
                 if not switched_from_otp:
                     from core.auth.browser.password_entry import open_offered_password_entry
@@ -1380,6 +1427,10 @@ def _fill_password_page_if_present(
             logger.info("%s 已点击一次性验证码入口，未立即检测到 OTP 页，交给后续 OTP 阶段继续处理", _log_prefix(driver))
             return None
         if is_login_password and not existing_password:
+            if password_required:
+                raise RuntimeError(
+                    "registration_password_entry_unavailable: 当前账号需要原密码，原任务没有可恢复候选，请补全账号密码后重跑"
+                )
             logger.info("%s 当前是登录密码页但未找到一次性验证码入口，跳过密码填写并交给 OTP 阶段：state=%s", _log_prefix(driver), last)
             return None
         password = str(existing_password or _registration_password())
@@ -1934,6 +1985,10 @@ def _fill_password_page_if_present(
             f"request_unknown: 已触发密码提交操作，等待 {int(transition_timeout)} 秒仍未确认远端结果，"
             f"尚未确认下一步：{_password_page_state_summary(stuck_state)}；"
             f"提交观测：{_password_submission_summary(submission_snapshot)}"
+        )
+    if password_required and not _has_access_token(driver):
+        raise RuntimeError(
+            "registration_password_entry_unavailable: 必需密码阶段预算已耗尽，未检测到可创建或验证的密码页"
         )
     if auth_mode == "password" and not existing_password and not _has_access_token(driver):
         raise RuntimeError(

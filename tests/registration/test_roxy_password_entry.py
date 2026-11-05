@@ -83,6 +83,7 @@ def test_local_roxy_retained_otp_without_password_fact_can_try_saved_entry():
     assert result["success"], result.get("error")
     assert mocks["_fill_password_page_if_present"].call_count == 1
     assert mocks["_fill_password_page_if_present"].call_args.kwargs["prefer_saved_password_entry"] is True
+    assert mocks["_fill_password_page_if_present"].call_args.kwargs["password_required"] is True
 
 
 @pytest.mark.parametrize("phase", ["confirmed", "unknown", "ui_dispatched"])
@@ -159,6 +160,7 @@ def test_retained_driver_uses_current_registration_password_entry_policy():
 
 @pytest.mark.parametrize("error,code", [
     (PasswordEntryNavigationError("页面提供的密码入口未能确认导航"), "password_entry_navigation_failed"),
+    (RuntimeError("registration_password_entry_unavailable: 页面恢复后仍未提供密码入口"), "registration_password_entry_unavailable"),
     (RuntimeError("profile_completion_required: 保存密码已提交，账号仍需补全资料"), "profile_completion_required"),
 ])
 def test_registration_preserves_specific_password_entry_and_profile_failure_codes(error, code):
@@ -224,6 +226,153 @@ def test_new_registration_without_real_password_entry_continues_otp():
                 fixture.driver, "saved@example.test", prefer_saved_password_entry=True, timeout=10,
             ) is None
     entry.assert_called_once()
+    assert not fixture.driver.queues
+
+
+def test_required_registration_password_waits_for_entry_instead_of_skipping_otp_page():
+    prepared = []
+    with _saved_password_refresh_flow(signup=True, first_landing="otp", explicit_resume=False) as fixture:
+        fixture.driver.state = "otp"
+
+        def enter(*_args, **kwargs):
+            assert "allow_login" not in kwargs
+            fixture.clock.value += 2
+            fixture.driver.state = "password"
+            return {"ok": True, "reason": "entered_create_account_password"}
+
+        with (
+            patch.object(password_auth, "_click_signup_password_from_otp_if_present", side_effect=enter) as switch,
+            patch.object(password_auth, "_registration_password", return_value="SyntheticRequired!"),
+            patch("core.auth.browser.password_entry.open_offered_password_entry") as optional_entry,
+        ):
+            candidate = password_auth._fill_password_page_if_present(
+                fixture.driver, "saved@example.test", password_required=True,
+                prefer_saved_password_entry=True, on_password_prepared=prepared.append, timeout=10,
+            )
+    assert candidate == "SyntheticRequired!"
+    assert prepared == [candidate]
+    assert fixture.driver.typed == [candidate]
+    assert len(fixture.driver.queues) == 1
+    switch.assert_called_once()
+    optional_entry.assert_not_called()
+
+
+def test_required_registration_password_missing_entry_is_explicit_failure():
+    with _saved_password_refresh_flow(explicit_resume=False) as fixture:
+        fixture.driver.state = "otp"
+        with (
+            patch.object(password_auth, "_click_signup_password_from_otp_if_present", return_value={
+                "ok": False, "reason": "password_entry_not_offered", "refresh_count": 1,
+            }) as switch,
+            patch("core.auth.browser.password_entry.open_offered_password_entry") as optional_entry,
+            pytest.raises(RuntimeError, match="registration_password_entry_unavailable.*password_entry_not_offered"),
+        ):
+            password_auth._fill_password_page_if_present(
+                fixture.driver, "saved@example.test", password_required=True,
+                prefer_saved_password_entry=True, timeout=10,
+            )
+    switch.assert_called_once()
+    optional_entry.assert_not_called()
+    assert not fixture.driver.queues
+
+
+def test_required_registration_resume_verifies_original_candidate():
+    original = "OriginalCandidate!"
+    with _saved_password_refresh_flow(first_landing="otp", explicit_resume=False) as fixture:
+        fixture.driver.state = "otp"
+
+        def enter(*_args, **kwargs):
+            assert kwargs["allow_login"] is True
+            fixture.driver.state = "password"
+            return {"ok": True, "reason": "entered_create_account_password"}
+
+        with (
+            patch.object(password_auth, "_click_signup_password_from_otp_if_present", side_effect=enter) as switch,
+            patch.object(password_auth, "_registration_password", side_effect=AssertionError("不能替换原候选")),
+        ):
+            candidate = password_auth._fill_password_page_if_present(
+                fixture.driver, "saved@example.test", existing_password=original,
+                password_required=True, prefer_saved_password_entry=True, timeout=10,
+            )
+    assert candidate == original
+    assert fixture.driver.typed == [original]
+    assert len(fixture.driver.queues) == 1
+    switch.assert_called_once()
+
+
+def test_required_resume_password_entry_reuses_bounded_refresh_for_login_link():
+    with _saved_password_refresh_flow(explicit_resume=False) as fixture:
+        fixture.driver.state = "otp"
+        refreshed = []
+        target = object()
+
+        def refresh():
+            refreshed.append(fixture.clock.value)
+
+        def snapshot(script, *args):
+            assert "const allowLogin" in script
+            assert args == (True,)
+            if refreshed:
+                return {"ok": True, "reason": "create_account_password_target", "target": target,
+                        "tag": "A", "href": "/log-in/password"}
+            return {"ok": False, "reason": "missing_create_account_password_target",
+                    "input_count": 1, "button_count": 1, "body_text_length": 30}
+
+        fixture.driver.refresh = refresh
+        fixture.driver.execute_script.side_effect = snapshot
+        with (
+            patch.object(password_auth, "_human_click", side_effect=lambda *_args, **_kwargs:
+                         setattr(fixture.driver, "state", "password")) as clicked,
+            patch.object(password_auth, "_is_login_password_page", side_effect=lambda _driver:
+                         fixture.driver.state == "password"),
+        ):
+            result = password_auth._click_signup_password_from_otp_if_present(
+                fixture.driver, timeout=10, allow_login=True,
+            )
+    assert result["ok"] is True
+    assert len(refreshed) == 1
+    assert 0 < fixture.clock.value < 10
+    clicked.assert_called_once()
+    assert not fixture.driver.navigations
+    assert not fixture.driver.queues
+
+
+def test_required_password_keeps_expired_resume_session_recovery():
+    with _saved_password_refresh_flow(first_landing="otp") as fixture:
+        fixture.driver.state = "otp"
+
+        def restart(*_args, **_kwargs):
+            fixture.driver.state = "password"
+            return True
+
+        with (
+            patch.object(password_auth, "_wait_email_otp_page_ready", return_value="session_expired"),
+            patch.object(password_auth, "_restart_expired_resume_auth", side_effect=restart) as restarted,
+            patch.object(password_auth, "_click_signup_password_from_otp_if_present") as switch,
+        ):
+            result = password_auth._fill_password_page_if_present(
+                fixture.driver, "saved@example.test", existing_password="OriginalCandidate!",
+                password_required=True, prefer_saved_password_entry=True, timeout=10,
+            )
+    assert result == "OriginalCandidate!"
+    restarted.assert_called_once()
+    switch.assert_not_called()
+    assert fixture.driver.typed == [result]
+
+
+def test_required_candidate_without_password_form_cannot_finish_as_optional_skip():
+    with _saved_password_refresh_flow(explicit_resume=False) as fixture:
+        fixture.driver.state = "pending"
+        with (
+            patch.object(password_auth, "_is_signup_password_page", return_value=False),
+            patch.object(password_auth, "_is_login_password_page", return_value=False),
+            pytest.raises(RuntimeError, match="registration_password_entry_unavailable.*预算已耗尽"),
+        ):
+            password_auth._fill_password_page_if_present(
+                fixture.driver, "saved@example.test", existing_password="OriginalCandidate!",
+                password_required=True, prefer_saved_password_entry=True, timeout=2,
+            )
+    assert not fixture.driver.typed
     assert not fixture.driver.queues
 
 

@@ -164,15 +164,9 @@ def _account_setup_readback(
     extra = raw_extra if isinstance(raw_extra, Mapping) else {}
     checks: dict[str, bool] = {}
     if "password" in steps:
-        checks["password"] = bool(str(
-            extra.get("account_password")
-            or extra.get("login_password")
-            or extra.get("registration_password")
-            or account.get("account_password")
-            or account.get("login_password")
-            or account.get("registration_password")
-            or ""
-        ).strip())
+        from core.accounts.password_evidence import password_is_confirmed
+
+        checks["password"] = password_is_confirmed(account)
     if "twofa" in steps:
         checks["twofa"] = bool(str(account.get("totp_secret") or "").strip()) and not bool(
             extra.get("totp_setup_pending")
@@ -198,12 +192,14 @@ def _account_setup_receipt(
         "remote_result_confirmed": status in {"success", "completed", "deactivated"}
         or bool(result.get("ok")),
     }
-    if result.get("password_driver") == "protocol":
+    if result.get("password_driver") == "protocol" or isinstance(result.get("step_results"), Mapping):
         completed = set()
         rejected = False
         evidence = []
         for step in sorted(steps):
-            value = result.get({"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step, ""))
+            value = (result.get("step_results") or {}).get(step) or result.get(
+                {"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step, "")
+            )
             outcome = value if isinstance(value, Mapping) else {}
             receipt_state = outcome.get("remote_receipt_state")
             if step == "plan_check":
@@ -331,7 +327,7 @@ def _safe_operation_result(
             "proxy_region", "proxy_mode", "credential_confirmed",
             "mutation_submitted", "action_dispatched", "reconcile_required", "manual_reconcile",
             "password_setup", "password_driver", "twofa_setup", "remote_receipt_state",
-            "stop_requested",
+            "stop_requested", "step_results", "setup_step_results", "requested_steps",
         )
         if key in result and result.get(key) is not None
     }
@@ -472,10 +468,30 @@ def _run_account_completion_worker(
     started = False
     result_summary: dict[str, Any] = dict(initial_result_summary or {})
     result_summary["planned_steps"] = list(planned_steps)
+    configured = result_summary.setdefault("configured_steps", [
+        step for step in STEP_LABELS if bool(settings.get(f"{step}_enabled", step in planned_steps))
+    ])
+    result_summary.setdefault("required_steps", list(dict.fromkeys([*configured, *planned_steps])))
+    result_summary.setdefault("blocked", [])
     task_store = _NativeTaskLifecycle(context) if context is not None else account_task_store
     reservation_held = (context is None) if reservation_held is None else bool(reservation_held)
     remote_write_started = False
     remote_receipt_state: str | None = None
+
+    def refresh_completion_state() -> None:
+        """终态按完整原始要求读回，续接剩余步骤不能丢掉已阻塞的缺项。"""
+        account = db.get_account(int(account_id)) or {}
+        current = completion_plan(account, settings)
+        required = list(result_summary.get("required_steps") or [])
+        current_blocked = [dict(item) for item in current.get("blocked") or [] if isinstance(item, Mapping)]
+        missing = set(current.get("missing_steps") or []) | {item.get("step") for item in current_blocked}
+        retained = [dict(item) for item in result_summary.get("blocked") or []
+                    if isinstance(item, Mapping) and item.get("step") in missing]
+        blocked = {str(item.get("step")): item for item in [*retained, *current_blocked]}
+        result_summary["blocked"] = list(blocked.values())
+        result_summary["pending_steps"] = [step for step in required if step in missing]
+        result_summary["completed_steps"] = [step for step in required if step not in missing]
+        result_summary["ready"] = not result_summary["pending_steps"] and not blocked
 
     def release_parent_reservation() -> None:
         nonlocal reservation_held
@@ -785,6 +801,8 @@ def _run_account_completion_worker(
                 "password_setup": setup_result.get("password_setup"),
                 "password_driver": setup_result.get("password_driver"),
                 "twofa_setup": setup_result.get("twofa_setup"),
+                "step_results": setup_result.get("step_results"),
+                "setup_step_results": setup_result.get("setup_step_results"),
                 "twofa_driver": setup_result.get("twofa_driver"),
                 "auth_source": setup_result.get("auth_source"),
                 "browser_opened": setup_result.get("browser_opened"),
@@ -792,6 +810,7 @@ def _run_account_completion_worker(
             }
             setup_status = str(setup_result.get("status") or "").lower()
             if setup_status == "deactivated":
+                refresh_completion_state()
                 task_store.finish_task(
                     task_id,
                     status="deactivated",
@@ -802,6 +821,7 @@ def _run_account_completion_worker(
                 )
                 return
             if setup_status == "unsupported":
+                refresh_completion_state()
                 task_store.finish_task(
                     task_id,
                     status="unsupported",
@@ -884,13 +904,9 @@ def _run_account_completion_worker(
             }
             release_parent_reservation()
 
-        pending_steps = set(result_summary.get("pending_steps") or [])
-        result_summary["completed_steps"] = [
-            step for step in planned_steps
-            if step not in remaining and step not in pending_steps
-        ]
+        refresh_completion_state()
         task_status = "partial_success" if (
-            result_summary.get("pending_steps") or result_summary.get("awaiting_steps")
+            result_summary.get("pending_steps") or result_summary.get("blocked") or result_summary.get("awaiting_steps")
         ) else "success"
         task_store.finish_task(
             task_id,
@@ -898,7 +914,7 @@ def _run_account_completion_worker(
             message=(
                 "补全步骤已完成，等待子任务成功后系统自动继续"
                 if result_summary.get("awaiting_steps")
-                else "密码/2FA 已完成，套餐查询待后续单独重试"
+                else "已保存成功步骤，账号仍有未完成或受阻步骤，可重跑补齐"
                 if task_status == "partial_success"
                 else "补全计划已提交，独立操作将在任务中心继续执行"
             ),
@@ -918,6 +934,7 @@ def _run_account_completion_worker(
         raise
     except Exception as exc:
         result_summary["error"] = f"{type(exc).__name__}: {str(exc)[:220]}"
+        refresh_completion_state()
         if (
             context is not None
             and remote_write_started
@@ -939,7 +956,7 @@ def _run_account_completion_worker(
             return context.last_result if context is not None else None
         task_store.finish_task(
             task_id,
-            status="failed",
+            status="partial_success" if result_summary.get("completed_steps") else "failed",
             message="账号补全计划执行失败",
             error=result_summary["error"],
             result_summary=result_summary,
@@ -982,6 +999,12 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     # 持久化脱敏会移除含 password 的键；改密任务仍须保留其明确操作意图。
     force_password_reset = context.task_type == "password_change" or bool(data.get("force_password_reset"))
     force_twofa_change = bool(data.get("force_twofa_change"))
+    country = data.get("proxy_country_override")
+    if country is not None:
+        from config.countries import ISO_3166_ALPHA2
+
+        if not isinstance(country, str) or country not in ISO_3166_ALPHA2:
+            return _finish_native_context(context, task_gateway.OperationResult.failed("重跑代理国家覆盖无效"))
     from core.runtime.capabilities import account_setup_unavailable
 
     unavailable = account_setup_unavailable(
@@ -1024,6 +1047,7 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
                 force_password_reset=force_password_reset,
                 force_twofa_change=force_twofa_change,
                 execution_fence=context.execution_fence,
+                **({"proxy_country_override": country} if country is not None else {}),
             )
         except Exception as exc:
             try:
@@ -1120,7 +1144,10 @@ def _handle_native_account_completion(context: task_gateway.OperationHandlerCont
     if unavailable:
         return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
     initial_summary = continuation.get("result_summary")
-    initial_summary = dict(initial_summary) if isinstance(initial_summary, Mapping) else None
+    initial_summary = dict(initial_summary) if isinstance(initial_summary, Mapping) else {}
+    for key in ("configured_steps", "required_steps", "blocked"):
+        if key not in initial_summary and key in data:
+            initial_summary[key] = data[key]
     if initial_summary is not None:
         # 已成功完成依赖的等待状态不应带入下一轮，保留各子任务的执行证据。
         for key in ("awaiting_steps", "deferred_steps", "continuation_steps"):
@@ -1859,6 +1886,9 @@ class WebUIContext:
                 resource_family=_COMPLETION_RESOURCE_FAMILY,
                 data={
                     "planned_steps": list(plan["missing_steps"]),
+                    "configured_steps": list(plan["configured_steps"]),
+                    "required_steps": list(plan.get("required_steps") or plan["configured_steps"]),
+                    "blocked": list(plan["blocked"]),
                     "task_trigger": task_trigger,
                 },
                 config_snapshot=snapshot,

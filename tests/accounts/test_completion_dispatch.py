@@ -46,6 +46,36 @@ class CompletionDispatchTests(PostgresTestCase):
             config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST,
         )
 
+    def test_native_setup_passes_valid_country_and_real_execution_fence(self):
+        email = "country-fence@example.test"
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            "email": email, "access_token": "synthetic-at", "plan_check_status": "success",
+        })
+        task_gateway.register_operation_handler(
+            "account_setup_retry", runtime._handle_native_account_setup,
+            source_systems=("webui_runtime",), config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST,
+        )
+        for country, expected in (("JP", True), ("invalid", False)):
+            with self.subTest(country=country):
+                queued = task_gateway.submit_durable_operation(
+                    task_type="account_setup_retry", account_id=account_id, email=email,
+                    source_system="webui_runtime", source_id=f"country-fence:{country}",
+                    data={"steps": ["plan_check"], "proxy_country_override": country},
+                    config_snapshot={}, config_allowlist=tuple(runtime._RUNTIME_CONFIG_ALLOWLIST), dispatch=False,
+                )
+                self.setup_worker.reset_mock()
+                self.setup_worker.return_value = {"ok": True, "status": "success"}
+                task_gateway._execute_operation_handler("account_setup_retry", int(queued["run_id"]))
+                if expected:
+                    options = self.setup_worker.call_args.kwargs
+                    self.assertEqual("JP", options["proxy_country_override"])
+                    fence = options["execution_fence"]
+                    self.assertEqual(int(queued["run_id"]), fence["run_id"])
+                    self.assertTrue(fence["execution_id"])
+                    self.assertTrue(fence["lease_token"])
+                else:
+                    self.setup_worker.assert_not_called()
+
     def test_persisted_password_change_recovers_reset_intent_without_changing_setup(self):
         for task_type, completion_auth, expected_reset in (
             ("password_change", False, True),
@@ -56,7 +86,8 @@ class CompletionDispatchTests(PostgresTestCase):
                 email = f"{task_type}@example.test"
                 account_id = record_store.insert_row(record_store.ACCOUNTS, {
                     "email": email,
-                    "extra_json": {"account_password": "synthetic-password"},
+                    "access_token": "synthetic-at",
+                    "extra_json": {"account_password": "synthetic-password", "account_password_state": "confirmed"},
                 })
                 task_gateway.register_operation_handler(
                     task_type, runtime._handle_native_account_setup,
@@ -308,6 +339,7 @@ class CompletionDispatchTests(PostgresTestCase):
         self.assertEqual(str(child_id), child_source)
         self.assertEqual("waiting", status)
         self.assertEqual(["plan_check"], payload["remaining_steps"])
+        record_store.patch_row(record_store.ACCOUNTS, account_id, {"access_token": "synthetic-refreshed-at"})
         operation.finish_run(int(child["last_run_id"]), status="success", result_summary={"ok": True})
         with postgres_store.connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -326,6 +358,7 @@ class CompletionDispatchTests(PostgresTestCase):
         setup_id = int(operation.get_run(int(resumed["last_run_id"]))["result_summary"]["account_setup"]["task_id"])
         setup = operation.get_task(setup_id, include_events=False)
         self.assertEqual(["plan_check"], operation.get_run(int(setup["last_run_id"]))["data"]["steps"])
+        record_store.patch_row(record_store.ACCOUNTS, account_id, {"plan_check_status": "success"})
         operation.finish_run(int(setup["last_run_id"]), status="success", result_summary={"ok": True})
         setup_dependency = operation.list_ready_task_dependencies()[0]
         runtime._handle_ready_completion_dependency(operation.claim_task_dependency(setup_dependency["id"]))

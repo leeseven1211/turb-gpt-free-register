@@ -2043,7 +2043,8 @@ def run_roxy_registration(
                     existing_password=existing_password,
                     on_password_prepared=_checkpoint_prepared_password,
                     on_password_submitted=_checkpoint_submitted_password,
-                    **({"prefer_saved_password_entry": True} if _browser_helpers is None else {}),
+                    **({"prefer_saved_password_entry": True, "password_required": password_required}
+                       if _browser_helpers is None else {}),
                 ) or existing_password
         except (PasswordPageError, _PasswordTransitionTimeout) as exc:
             if not (resume_scope and _browser_helpers is None
@@ -2975,6 +2976,7 @@ def run_roxy_registration(
             (
                 code
                 for marker, code in (
+                    ("registration_password_entry_unavailable", "registration_password_entry_unavailable"),
                     ("password_entry_navigation_failed", "password_entry_navigation_failed"),
                     ("profile_completion_required", "profile_completion_required"),
                     ("password_entry_page_not_hydrated", "workflow.password_entry_not_hydrated"),
@@ -3059,6 +3061,7 @@ def run_roxy_registration(
             **({"cause_code": exc.code} if isinstance(exc, AuthPageError) else {}),
             **({"cause_code": exc.cause_code} if isinstance(exc, EmailOtpNetworkError) else {}),
             **({"cause_code": password_recovery_error_code} if password_recovery_error_code else {}),
+            **({"cause_code": password_entry_error_code} if password_entry_error_code else {}),
             'cf_proxy_rotation_ready': cf_proxy_rotation_ready,
             'cf_proxy_rotation_profile_id': cf_proxy_rotation_profile_id if cf_proxy_rotation_ready else '',
             **({'cf_proxy_rotation_context': {key: facts[key] for key in (

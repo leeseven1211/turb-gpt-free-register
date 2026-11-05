@@ -2761,138 +2761,170 @@ def _run_codex_retry_job(
         _deactivate_job(job_id)
 
 
+def _submit_registration_account_setup(
+    source: dict, account: dict, snapshot: dict, *, debug_enabled: bool = False,
+) -> dict:
+    """原注册缺项交给原生账号 Run，执行器负责真实账号租约和重启恢复。"""
+    from config.account import completion_settings
+    from core.accounts.password_evidence import password_is_confirmed
+    from core.operations import task_gateway
+    from core import operation_task_store
+    from core.runtime.capabilities import account_setup_unavailable
+
+    base_settings = completion_settings()
+    setting_keys = {
+        "password_enabled", "twofa_enabled", "plan_check_enabled", "password_driver",
+        "twofa_driver", "plan_check_driver", "password_proxy_mode", "twofa_proxy_mode",
+        "plan_check_proxy_mode", "twofa_browser_fallback_enabled", "twofa_protocol_reauth_enabled",
+        "protocol_version", "auth_password_email_fallback", "auth_raw_context_enabled",
+    }
+    settings = {key: value for key, value in base_settings.items() if key in setting_keys}
+    driver = str(snapshot.get("registration_driver") or "protocol_oss_2")
+    password_required = driver == "protocol_oss_2" or bool(snapshot.get("password_enabled", True))
+    twofa_required = bool(snapshot.get("twofa_enabled", True))
+    plan_required = bool(snapshot.get("plan_check_enabled", True))
+    settings.update(
+        password_enabled=password_required, twofa_enabled=twofa_required,
+        plan_check_enabled=plan_required,
+        password_driver="protocol" if driver == "protocol_oss_2" else "roxy",
+        twofa_driver="protocol" if driver == "protocol_oss_2" else str(snapshot.get("twofa_driver") or "browser"),
+    )
+    steps = set()
+    if password_required and not password_is_confirmed(account):
+        steps.add("password")
+    if twofa_required and not _account_twofa_ready(account):
+        steps.add("twofa")
+    if plan_required and not _account_plan_ready(account):
+        steps.add("plan_check")
+    if not steps:
+        return {"ok": True, "created": False, "reused": True, "ready": True,
+                "source_job_id": int(source["id"]), "retry_action": "twofa",
+                "message": "账号已满足原注册密码、套餐和 2FA 要求", "job": source}
+    unavailable = account_setup_unavailable(steps, settings)
+    if unavailable:
+        return {"ok": False, "status": 503, **unavailable}
+    source_id = f"registration-account-setup:{int(source['id'])}"
+    data = {
+        "steps": sorted(steps), "required_steps": sorted(steps),
+        "task_trigger": "registration_job_retry", "source_job_id": int(source["id"]),
+        "registration_attempt_id": source.get("attempt_id"), "debug_enabled": bool(debug_enabled),
+        "proxy_country_override": snapshot.get("retry_proxy_country_override") if driver == "roxy" else None,
+    }
+    captured = task_gateway.normalize_config_snapshot(settings, allowlist=tuple(settings))
+    existing = operation_task_store.find_task_by_source("webui_runtime", source_id)
+    if existing:
+        existing = operation_task_store.get_task(int(existing["id"]), include_events=False) or existing
+        if existing.get("status") in {"queued", "running", "cancelling", "settling", "waiting"}:
+            runs = existing.get("runs") or []
+            run_data = (runs[-1].get("data") or {}) if runs else existing.get("data") or {}
+            active_settings = run_data.get("config_snapshot") or {}
+            if (active_settings.get("password_driver") != settings["password_driver"]
+                    or active_settings.get("twofa_driver") != settings["twofa_driver"]
+                    or run_data.get("proxy_country_override") != data["proxy_country_override"]):
+                return {"ok": False, "status": 409, "error": "原账号已有其他驱动或国家的配置任务，不能中途切换"}
+            queued = {"accepted": True, "task_id": existing["id"], "run_id": existing.get("last_run_id"), "reused": True}
+        else:
+            try:
+                run = operation_task_store.retry_runtime_task(
+                    int(existing["id"]), trigger="registration_job_retry",
+                    data={**data, "config_snapshot": captured},
+                    expected_previous_run_id=existing.get("last_run_id"),
+                )
+            except (LookupError, ValueError) as exc:
+                return {"ok": False, "status": 409, "error": str(exc)}
+            except Exception as exc:
+                if getattr(exc, "sqlstate", None) == "23505":
+                    return {"ok": False, "accepted": False, "busy": True, "status": 409,
+                            "error": "账号已有其它操作正在执行，本次密码缺项尚未入队，可稍后重跑"}
+                raise
+            if run.get("dependency_stale"):
+                return {"ok": False, "status": 409, "error": "原账号配置执行已更新，请读取当前任务后重跑"}
+            task_gateway.notify_dispatch()
+            queued = {"accepted": True, "task_id": existing["id"], "run_id": run["id"], "reused": False}
+    else:
+        parent = operation_task_store.find_task_by_source("registration_jobs", str(source["id"]))
+        queued = task_gateway.submit_durable_operation(
+            task_type="account_setup_retry", account_id=int(account["id"]),
+            email=str(account.get("email") or source.get("email") or ""),
+            trigger="registration_job_retry", source_system="webui_runtime",
+            source_id=source_id, idempotency_key=source_id,
+            parent_task_id=int(parent["id"]) if parent else None,
+            resource_family="openai_interactive", data=data,
+            config_snapshot=captured, config_allowlist=tuple(captured),
+        )
+        if queued.get("busy") and not queued.get("accepted"):
+            return {**queued, "ok": False, "status": 409,
+                    "source_job_id": int(source["id"]), "retry_action": "twofa",
+                    "error": "账号已有其它操作正在执行，本次密码缺项尚未入队，可稍后重跑"}
+    accepted = bool(queued.get("accepted"))
+    busy = bool(queued.get("busy"))
+    return {
+        **queued, "ok": accepted or busy, "status": 200 if accepted or busy else 409,
+        "created": accepted and not bool(queued.get("reused")),
+        "reused": busy or bool(queued.get("reused")),
+        "source_job_id": int(source["id"]), "retry_action": "twofa",
+        "operation_task_id": queued.get("task_id"),
+        "message": ("账号缺项已交给原生账号配置任务" if accepted
+                    else "已有账号配置任务正在执行" if busy else queued.get("error") or "账号配置任务未入队"),
+        "job": source,
+        **({"debug_enabled": False, "debug_warning": "原生账号配置暂不支持完整网络抓包，已保留步骤日志"}
+           if debug_enabled else {}),
+    }
+
+
 def _run_twofa_retry_job(
-    job_id: int,
-    log_file: str,
-    email: str,
-    account_id: int,
+    job_id: int, log_file: str, email: str, account_id: int,
     account_task_id: int | None = None,
 ) -> None:
-    """把账号配置检查/补齐作为标准注册重试任务执行。"""
+    """把升级前遗留的注册配置重跑迁交原生执行器，不伪造密码执行凭证。"""
     _activate_job(job_id)
     try:
         current = db.get_job(job_id)
-    except Exception:
-        _deactivate_job(job_id)
-        raise
-    if not current or current.get("status") == "cancelled":
-        account_task_store.finish_task(
-            account_task_id,
-            status="cancelled",
-            message="注册重试任务已取消，账号配置重试未执行",
+        if not current or current.get("status") == "cancelled":
+            account_task_store.finish_task(account_task_id, status="cancelled", message="注册配置重跑未启动")
+            return
+        if not _claim_job_for_worker(job_id):
+            latest = db.get_job(job_id) or {}
+            if latest.get("status") == "stopping":
+                db.transition_job_status(job_id, ("stopping",), "stopped",
+                                         completed_at=_now_iso(), error="用户手动停止")
+            account_task_store.finish_task(account_task_id, status="cancelled", message="注册配置重跑未获执行资格")
+            return
+        _ensure_registration_run_context(db.get_job(job_id) or current)
+        account = db.get_account(account_id)
+        if not account:
+            raise LookupError("原注册账号不存在，无法补齐配置")
+        result = _submit_registration_account_setup(
+            current, account, registration_options_for_job(current),
+            debug_enabled=bool(current.get("debug_enabled")),
         )
-        codex_retry_service.release(email)
-        _deactivate_job(job_id)
-        return
-
-    try:
-        claimed = _claim_job_for_worker(job_id)
-    except Exception:
-        _deactivate_job(job_id)
-        raise
-    if not claimed:
-        latest = db.get_job(job_id) or {}
-        if latest.get("status") == "stopping":
-            db.transition_job_status(
-                job_id,
-                ("stopping",),
-                "stopped",
-                completed_at=_now_iso(),
-                error="用户手动停止",
-            )
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or result.get("message") or "账号配置未入队")
+        status = "success" if result.get("ready") else "partial_success"
+        message = str(result.get("message") or "账号配置已交给原生任务执行")
+        db.finish_job_progress(job_id, success=bool(result.get("ready")), detail=message)
+        db.update_job(job_id, status=status, email=email, account_id=account_id,
+                      error=None if result.get("ready") else message, completed_at=_now_iso(),
+                      registration_account_task_id=result.get("operation_task_id"))
         account_task_store.finish_task(
-            account_task_id,
-            status="cancelled",
-            message="注册重试任务未启动，已取消",
+            account_task_id, status=status, message=message,
+            result_summary={"operation_task_id": result.get("operation_task_id"), "run_id": result.get("run_id")},
         )
-        codex_retry_service.release(email)
-        _deactivate_job(job_id)
-        return
-    _ensure_registration_run_context(db.get_job(job_id) or current)
-    _bind_progress_route_context((db.get_job(job_id) or current).get("route_attempt_no") or 1)
-    for stage, _label in db.JOB_PROGRESS_STAGES:
-        if stage not in {"twofa", "complete"}:
-            _persist_job_progress(job_id, stage, state="skipped", detail="账号配置重试任务")
-    _persist_job_progress(job_id, "twofa", state="running", detail="正在补齐账号密码、套餐和 Authenticator 2FA")
-    try:
-        from core.network.protocol_traffic import correlation_context
-
-        proxy_correlation = _registration_proxy_correlation(job_id, db.get_job(job_id) or current)
-        retry_snapshot = current.get("config_snapshot")
-        if not isinstance(retry_snapshot, dict):
-            retry_data = current.get("data")
-            retry_snapshot = retry_data.get("config_snapshot") if isinstance(retry_data, dict) else None
-        worker_overrides = {}
-        if (isinstance(retry_snapshot, dict)
-                and retry_snapshot.get("registration_driver") == "roxy"
-                and retry_snapshot.get("twofa_driver") == "browser"):
-            worker_overrides = {"twofa_driver_override": "browser", "password_driver_override": "roxy"}
-        if isinstance(retry_snapshot, dict) and retry_snapshot.get("registration_driver") == "roxy":
-            override = retry_snapshot.get("retry_proxy_country_override")
-            if override is not None:
-                from config.countries import ISO_3166_ALPHA2
-
-                if (not isinstance(override, str) or override not in ISO_3166_ALPHA2
-                        or override != _normalize_registration_country(retry_snapshot.get("proxy_country"))):
-                    raise ValueError("重跑代理国家覆盖与本轮线路配置不一致")
-                worker_overrides["proxy_country_override"] = override
-        # 账号动作领取的租约必须归属真实 operation Run；结束后恢复父注册日志上下文。
-        # 不继承注册阶段的旧 lease_id，避免新中继绑定到另一条供应商线路。
-        with task_run_log.stage_context(
-            "account_setup", task_id=proxy_correlation.get("operation_task_id"),
-            run_id=proxy_correlation.get("operation_run_id"), identifier_namespace="operation", inherit=False,
-        ), correlation_context(inherit=False, **proxy_correlation):
-            result = codex_retry_service.run_twofa_worker(
-                email,
-                clear_log=False,
-                target_log_path=log_file,
-                task_id=account_task_id,
-                task_trigger="registration_job_retry",
-                **worker_overrides,
-            )
-        now_iso = _now_iso()
-        proxy_fields = {}
-        if result.get("proxy_provider"):
-            proxy_fields = {
-                "proxy_provider": result.get("proxy_provider"),
-                "proxy_region": result.get("proxy_region") or "-",
-                "proxy_status": "released",
-            }
-        if is_stop_requested(job_id) or result.get("status") == "stopped":
-            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "用户手动停止")[:300], failure_state="stopped")
-            db.update_job(job_id, status="stopped", email=email, account_id=account_id, error=str(result.get("message") or "用户手动停止")[:500], completed_at=now_iso, **proxy_fields)
-        elif result.get("ok"):
-            _persist_job_progress(job_id, "twofa", state="success", detail="账号密码、套餐和 Authenticator 2FA 已确认")
-            db.finish_job_progress(job_id, success=True)
-            db.update_job(job_id, status="success", email=email, account_id=account_id, completed_at=now_iso, **proxy_fields)
-        else:
-            _persist_job_progress(job_id, "twofa", state="failed", detail=str(result.get("message") or "账号配置重试失败")[:300])
-            db.finish_job_progress(job_id, success=False, detail=str(result.get("message") or "账号配置重试失败")[:300])
-            db.update_job(job_id, status="failed", email=email, account_id=account_id, error=str(result.get("message") or "账号配置重试失败")[:500], completed_at=now_iso, **proxy_fields)
     except Exception as exc:
-        _persist_job_progress(job_id, "twofa", state="failed", detail=f"{type(exc).__name__}: {exc}"[:300])
-        db.finish_job_progress(job_id, success=False, detail=f"{type(exc).__name__}: {exc}"[:300])
-        db.update_job(
-            job_id,
-            status="failed",
-            error=f"{type(exc).__name__}: {exc}"[:500],
-            completed_at=_now_iso(),
-        )
-        codex_retry_service.release(email)
-        logger.exception("[Job %s] 账号配置重试异常", job_id)
+        message = f"{type(exc).__name__}: {exc}"[:500]
+        db.finish_job_progress(job_id, success=False, detail=message)
+        db.update_job(job_id, status="failed", error=message, completed_at=_now_iso())
+        account_task_store.finish_task(account_task_id, status="failed", message=message)
+        logger.exception("[Job %s] 原注册配置任务迁交失败", job_id)
     finally:
+        codex_retry_service.release(email)
         mark_execution_state("cleaning")
         final_job = db.get_job(job_id) or {}
-        final_status = str(final_job.get("status") or "failed").strip().lower()
-        if final_status in {"queued", "running"} or final_status not in {
-            "success", "partial_success", "failed", "stopped", "cancelled", "interrupted", "request_unknown", "manual_reconcile"
-        }:
+        final_status = str(final_job.get("status") or "failed")
+        if final_status not in {"success", "partial_success", "failed", "cancelled", "stopped"}:
             final_status = "failed"
-        _finish_registration_run(
-            final_status,
-            error_message=str(final_job.get("error") or "")[:2000] or None,
-            result_summary={"job_id": job_id, "action": "retry_twofa", "status": final_status},
-        )
+        _finish_registration_run(final_status, error_message=final_job.get("error") or None,
+                                 result_summary={"job_id": job_id, "action": "retry_twofa", "status": final_status})
         _deactivate_job(job_id)
 
 
@@ -4025,12 +4057,12 @@ def retry_job(
         retry_snapshot["proxy_country"] = retry_country
         retry_snapshot["retry_proxy_country_override"] = retry_country
     if action == "twofa":
-        # 此旧入口固定补密码、套餐和 2FA，执行器必需浏览器会话。
-        from core.runtime.capabilities import browser_operation_unavailable
-
-        unavailable = browser_operation_unavailable("browser")
-    else:
-        unavailable = registration_deployment_unavailable(retry_snapshot)
+        if not email or account_id is None:
+            return {"ok": False, "error": "已保存账号信息不完整，无法执行账号补跑", "status": 409}
+        return _submit_registration_account_setup(
+            source, account, retry_snapshot, debug_enabled=retry_debug_enabled,
+        )
+    unavailable = registration_deployment_unavailable(retry_snapshot)
     if unavailable:
         return {"ok": False, "status": 503, **unavailable}
 

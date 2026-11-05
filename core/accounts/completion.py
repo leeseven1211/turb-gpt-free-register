@@ -36,19 +36,6 @@ def _password_present(account: Mapping) -> bool:
     return password_is_confirmed(account)
 
 
-def _password_setup_repeat_blocked(account: Mapping) -> bool:
-    """Return whether the current browser code confirmed a stable no-entry page."""
-    capability = _extra(account).get("account_password_capability")
-    if not isinstance(capability, Mapping):
-        return False
-    return (
-        str(capability.get("reason") or "").strip().lower()
-        == "password_settings_entry_unavailable"
-        and str(capability.get("evidence") or "").strip().lower()
-        == "stable_settings_page"
-    )
-
-
 def _twofa_present(account: Mapping) -> bool:
     if str(account.get("totp_secret") or "").strip():
         return not bool(_extra(account).get("totp_setup_pending"))
@@ -117,17 +104,8 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         else:
             blocked.append({"step": "refresh_at", "reason": "账号缺少可用 access_token，请先单独执行刷新 AT"})
     if enabled["password"] and not _password_present(account):
-        if str(cfg.get("password_driver") or "roxy").strip().lower() != "protocol" and _password_setup_repeat_blocked(account):
-            if enabled["password_reset"]:
-                missing.append("password")
-            else:
-                blocked.append({
-                    "step": "password",
-                    "reason": "设置页已确认没有添加密码入口，已跳过重复重试",
-                })
-        else:
-            # 历史资格探测仅作参考，无密码账号仍可使用设置页的添加密码入口。
-            missing.append("password")
+        # 显式补全重新核验本轮入口；历史无入口证据不能永久取消必需密码步骤。
+        missing.append("password")
     if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
         missing.append("plan_check")
     if enabled["twofa"] and not _twofa_present(account):
@@ -143,9 +121,11 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
         codex_state = legacy_codex_state or credential_state or execution_state
     if enabled["codex"] and codex_state not in {"success"}:
         missing.append("codex")
+    configured = [step for step in ("password", "plan_check", "twofa", "codex", "refresh_at") if enabled[step]]
     return {
         "enabled": enabled,
-        "configured_steps": [step for step in ("password", "plan_check", "twofa", "codex", "refresh_at") if enabled[step]],
+        "configured_steps": configured,
+        "required_steps": list(dict.fromkeys([*configured, *(item["step"] for item in blocked)])),
         "missing_steps": missing,
         "missing_labels": [STEP_LABELS[step] for step in missing],
         "blocked": blocked,

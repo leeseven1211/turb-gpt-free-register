@@ -30,6 +30,8 @@ class Transport:
         self.profile_payload = None
         self.progress_events = []
         self.otp_payload = {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/about-you"}
+        self.otp_payloads = None
+        self.session_payloads = None
         self.navigation_html = {}
         self.navigation_redirects = {}
         self.closed = False
@@ -45,13 +47,15 @@ class Transport:
                 raise self.password_error
         payload = {}
         if url.endswith("/email-otp/validate"):
-            payload = self.otp_payload
+            payload = self.otp_payloads.pop(0) if self.otp_payloads else self.otp_payload
         elif url.endswith("/create_account") and self.profile_payload is not None:
             payload = self.profile_payload
         elif url.endswith("/create_account") or url.endswith("/password/verify"):
             payload = {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture"}
         elif url.endswith("/api/auth/session"):
-            payload = {"accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user", "email": "protocol2@example.test"}}
+            payload = self.session_payloads.pop(0) if self.session_payloads else {
+                "accessToken": "fixture-at", "sessionToken": "fixture-st", "user": {"id": "fixture-user", "email": "protocol2@example.test"},
+            }
         status = self.password_status if url.endswith("/user/register") else 200
         if url.endswith("/create_account"):
             status = self.profile_status
@@ -332,7 +336,7 @@ def test_other_profile_rejections_do_not_invent_an_expired_session_cause(upstrea
 
 
 @pytest.mark.parametrize("second_profile_attempt", [False, True])
-def test_recovered_profile_error_does_not_mask_a_later_session_failure(upstream, second_profile_attempt):
+def test_unresolved_profile_error_is_retained_until_a_new_profile_attempt(upstream, second_profile_attempt):
     session, transport, _ = upstream
     transport.profile_status = 409
     transport.profile_payload = {"error": {"code": "invalid_state", "type": "invalid_request_error"}}
@@ -356,9 +360,12 @@ def test_recovered_profile_error_does_not_mask_a_later_session_failure(upstream,
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
             proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
         )
-    assert result["cause_code"] == "protocol_failure_evidence_missing"
+    assert result["cause_code"] == ("protocol_failure_evidence_missing" if second_profile_attempt else "account_create_invalid_state")
     assert result["request_unknown"] is True
-    assert "cause_diagnostics" not in result
+    if second_profile_attempt:
+        assert "cause_diagnostics" not in result
+    else:
+        assert result["cause_diagnostics"]["http_status"] == 409
 
 
 def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoint_failure(upstream):
@@ -434,12 +441,12 @@ def test_retry_before_submission_can_register_with_the_original_password(upstrea
 def test_rejected_password_is_not_presented_as_a_confirmed_credential(upstream):
     session, transport, _ = upstream
     transport.password_status = 400
-    result = run_flow(session)
-    assert result["access_token"] == "fixture-at"
-    assert result["registration_password"]
-    assert result["password_state"] == "candidate"
-    assert result["password_validated"] is False
-    assert [state for stage, state, _ in transport.progress_events if stage == "password"] == ["running", "failed"]
+    with pytest.raises(ProtocolOssRequestUnknown) as raised:
+        run_flow(session)
+    assert raised.value.cause_code == "registration_password_create_rejected"
+    assert not any(url.endswith("/email-otp/validate") for _, url, _ in transport.requests)
+    assert [row["state"] for row in transport.checkpoints] == ["prepared", "started"]
+    assert not any(stage == "password" and state == "success" for stage, state, _ in transport.progress_events)
 
 
 @pytest.mark.parametrize("password_state", ["prepared", "started", "confirmed"])
@@ -455,16 +462,14 @@ def test_resume_requires_this_run_to_confirm_the_original_password(upstream, pas
         patch("core.storage.registration.get_private_resume_context", return_value={
             "password": "original-password", "password_state": password_state,
         }),
+        pytest.raises(ProtocolOssRequestUnknown) as raised,
     ):
-        result = run_flow(session, existing_password="original-password")
-    assert result["access_token"] == "fixture-at"
-    assert result["password_validated"] is False
-    assert result["password_state"] == "candidate"
-    assert result["registration_password"] == "original-password"
+        run_flow(session, existing_password="original-password")
+    assert raised.value.cause_code == "registration_password_create_rejected"
     writes = [request for request in transport.requests if request[1].endswith("/user/register")]
     assert len(writes) == 1
     assert [state for stage, state, _ in transport.progress_events if stage == "password"] == (
-        ["running", "failed"]
+        ["running"]
     )
 
 
@@ -481,7 +486,7 @@ def test_resume_rejects_a_password_that_does_not_match_the_original_attempt(upst
     assert transport.requests == []
 
 
-def test_existing_password_without_confirmation_stays_unconfirmed_on_otp_login(upstream):
+def test_original_candidate_reaching_profile_via_otp_completes_required_password(upstream):
     session, transport, _ = upstream
 
     def existing(flow, *args, **kwargs):
@@ -492,9 +497,11 @@ def test_existing_password_without_confirmation_stays_unconfirmed_on_otp_login(u
     with patch.object(AuthFlow, "signup", existing):
         result = run_flow(session, existing_password="original-password")
     assert result["access_token"] == "fixture-at"
-    assert result["password_validated"] is False
+    assert result["password_validated"] is True
     assert result["registration_password"] == "original-password"
-    assert result["password_state"] == "candidate"
+    assert result["password_state"] == "confirmed"
+    assert result["remote_identity"] == "new"
+    assert sum(url.endswith("/user/register") for _, url, _ in transport.requests) == 1
 
 
 def test_login_callback_after_password_rejection_does_not_create_account_again(upstream):
@@ -504,9 +511,10 @@ def test_login_callback_after_password_rejection_does_not_create_account_again(u
         "page": {"type": "external_url"},
         "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture",
     }
-    result = run_flow(session, existing_password="original-password")
+    with pytest.raises(ProtocolOssRequestUnknown) as raised:
+        run_flow(session, existing_password="original-password")
     assert not any(url.endswith("/create_account") for _, url, _ in transport.requests)
-    assert result["access_token"] == "fixture-at"
+    assert raised.value.cause_code == "registration_password_create_rejected"
 
 
 def test_initial_callback_url_is_consumed_only_once():

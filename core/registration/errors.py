@@ -62,6 +62,11 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         "password_entry_navigation_failed": "密码入口导航失败",
         "password_entry_navigation_timeout": "密码入口导航超时",
         "password_entry_not_offered": "当前认证页未提供可用密码入口",
+        "registration_password_entry_unavailable": "强制密码步骤未能进入创建或验证页面",
+        "registration_password_create_rejected": "远端拒绝了本轮强制密码创建请求",
+        "registration_password_unconfirmed": "注册认证已完成，强制密码尚未确认",
+        "registration_auth_state_unrecognized": "注册认证返回未支持的页面状态",
+        "registration_session_invalid_response": "注册认证未返回可核验的完整会话",
         "identity_mismatch": "登录会话邮箱缺失或与原注册邮箱不匹配",
         "protocol_preauth_transport_failed": "协议认证前置请求发生传输错误",
         "protocol_post_otp_transport_failed": "已取得邮箱验证码，后续认证请求发生传输错误",
@@ -107,6 +112,8 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
             return f"{cause_code}: {info['summary']}：{type_name}{suffix}"
     if cause_code in {"account_create_invalid_state", "account_create_user_already_exists"} or (
         cause_code.startswith("protocol_") and cause_code in descriptions
+    ) or (
+        cause_code.startswith("registration_") and cause_code in descriptions
     ):
         return f"{cause_code}: {descriptions[cause_code]}：{type_name}{suffix}"
     return f"{descriptions.get(cause_code, '注册流程失败')}：{type_name}{suffix}"

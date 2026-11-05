@@ -1207,6 +1207,11 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_entry_navigation_timeout": ("FLOW-PWD-005", "密码入口导航超时"),
     "password_entry_navigation_failed": ("FLOW-PWD-006", "密码入口导航失败"),
     "password_entry_not_offered": ("FLOW-PWD-007", "认证下一步未提供可识别入口"),
+    "registration_password_entry_unavailable": ("FLOW-REG-PWD-001", "强制密码步骤未能进入创建或验证页面"),
+    "registration_password_create_rejected": ("OA-REG-PWD-001", "远端拒绝了本轮强制密码创建请求"),
+    "registration_password_unconfirmed": ("AUTH-REG-PWD-001", "注册认证已完成，强制密码尚未确认"),
+    "registration_auth_state_unrecognized": ("FLOW-REG-AUTH-001", "注册认证返回未支持的页面状态"),
+    "registration_session_invalid_response": ("AUTH-REG-SESSION-001", "注册认证未返回可核验的完整会话"),
     "password_setup_result_unconfirmed": ("AUTH-PWD-SETUP-001", "密码已提交，尚未取得明确设置成功证据"),
     "password_setup_already_set": ("AUTH-PWD-SETUP-002", "远端账号已有密码，添加密码请求被拒绝"),
     "password_setup_execution_fence_missing": ("FLOW-PWD-SETUP-001", "补密码缺少当前执行租约"),
@@ -1291,6 +1296,11 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "refresh_cancelled": ("USR-REFRESH-001", "AT 刷新已取消"),
     "refresh_local_commit_failed": ("SYS-REFRESH-WRITEBACK", "AT 刷新本地写回或读回未完成"),
     "account_setup_local_commit_failed": ("SYS-SETUP-WRITEBACK", "账号配置本地写回或读回未完成"),
+    "account_setup_step_not_executed": ("FLOW-SETUP-001", "请求的账号配置步骤尚未执行"),
+    "account_setup_step_not_completed": ("FLOW-SETUP-002", "请求的账号配置步骤尚未完成"),
+    "password_setup_unsupported": ("AUTH-PWD-SETUP-014", "本轮未能添加账号密码，可保留原任务重跑"),
+    "password_setup_page_not_ready": ("FLOW-PWD-SETUP-008", "本轮密码设置页面尚未就绪"),
+    "twofa_setup_failed": ("AUTH-MFA-SETUP-001", "本轮 Authenticator 2FA 设置未完成"),
     "remote_response_missing": ("REQ-RESPONSE-001", "远端响应缺失"),
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
@@ -1324,6 +1334,11 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "password_entry_navigation_failed",
     "password_entry_navigation_timeout",
     "password_entry_not_offered",
+    "registration_password_entry_unavailable",
+    "registration_password_create_rejected",
+    "registration_password_unconfirmed",
+    "registration_auth_state_unrecognized",
+    "registration_session_invalid_response",
     "identity_mismatch",
     *_BUTLER_RECIPIENT_CAUSES,
     *_OTP_PAGE_NETWORK_CAUSES,
@@ -2283,6 +2298,10 @@ def classify_task_error(
             })
         return recovery_projection
     cause = _stored_specific_error_cause(raw, task_type, summary_data) or _specific_error_cause(summary_data)
+    if cause is None and raw.strip() == "原密码尚未确认生效" and str(task_type or "").strip().lower() in {
+        "registration", "registration_resume", "twofa_retry", "account_setup_retry",
+    }:
+        cause = _specific_error_cause({"cause_code": "registration_password_unconfirmed"})
     if cause and cause["cause_code"].startswith("extract_order_"):
         stage = "remote_sync"
     auth_diagnostics = summary_data.get("auth_diagnostics")
