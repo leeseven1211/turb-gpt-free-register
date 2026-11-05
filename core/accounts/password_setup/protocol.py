@@ -13,6 +13,7 @@ from core.accounts.liveness.protocol import v2 as protocol_auth
 from core.accounts.password_setup.proxy import is_proxy_transport_failure
 from core.auth.protocol.openai_auth import build_sentinel_header, request_sentinel_token
 from core.auth.protocol.sentinel_runner import generate_sentinel_token
+from core.auth.state_machine import CancellationRequested
 from core.email import provider as email_provider
 from core.email.mailbox_wait import use_cooperative_wait
 from core.operations.runtime import OperationCancelled
@@ -21,7 +22,7 @@ from core.operations.task_gateway import OperationLeaseLost
 _CHATGPT = "https://chatgpt.com"
 _AUTH = "https://auth.openai.com"
 _PASSWORD_PAGE = _AUTH + "/reset-password/new-password"
-_CONTROL_ERRORS = (OperationCancelled, OperationLeaseLost)
+_CONTROL_ERRORS = (CancellationRequested, OperationCancelled, OperationLeaseLost)
 _PENDING_TYPES = {"password", "new_password", "password_reset", "email_verification", "email_otp", "mfa_challenge", "about_you"}
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ def _request(session, method: str, url: str, *, checkpoint=None, final: bool = F
 def _payload(response, *, final: bool = False) -> dict:
     try:
         data = response.json()
+    except _CONTROL_ERRORS:
+        raise
     except Exception:
         data = None
     status = int(getattr(response, "status_code", 0) or 0)
@@ -138,7 +141,7 @@ def _sentinel_headers(session, flow: str, checkpoint=None) -> dict[str, str]:
     try:
         challenge = request_sentinel_token(session, flow)
         _check(checkpoint)
-        if flow == "email_otp_validate":
+        if flow in {"email_otp_validate", "authorize_continue"}:
             token, observer = build_sentinel_header(session, challenge, flow)
         else:
             # 共享 runner 尚无 password_reset 页面映射，独立指定页面，不修改注册默认值。
@@ -166,6 +169,7 @@ def _sentinel_headers(session, flow: str, checkpoint=None) -> dict[str, str]:
     except _CONTROL_ERRORS:
         raise
     except Exception as exc:
+        protocol_auth._reraise_control(exc)
         raise ProtocolPasswordSetupError("password_setup_sentinel_failed", "补密码安全令牌生成失败，尚未提交新密码",
             proxy_transport_failed=is_proxy_transport_failure(exc)) from None
     headers = {"openai-sentinel-token": token}
@@ -179,6 +183,81 @@ def _auth_post(session, path: str, payload: dict, *, referer: str, flow: str, ch
     headers.update(_sentinel_headers(session, flow, checkpoint))
     headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
     return _request(session, "post", _AUTH + path, headers=headers, data=json.dumps(payload), allow_redirects=False, checkpoint=checkpoint)
+
+
+def _email_verification_context(session, email: str, *, referer: str, checkpoint=None) -> dict:
+    """按当前客户端契约读取嵌套会话，只保留本轮发码需要的字段。"""
+    headers = session.get_auth_headers(referer=referer)
+    headers.pop("content-type", None)
+    response = _request(session, "get", _AUTH + "/api/accounts/client_auth_session_dump",
+        headers=headers, allow_redirects=False, checkpoint=checkpoint)
+    payload = _payload(response)
+    context = payload.get("client_auth_session")
+    if not isinstance(context, dict):
+        raise ProtocolPasswordSetupError("password_setup_otp_context_invalid", "补密码发码缺少有效的认证会话上下文")
+    session_id, actual_email = context.get("session_id"), context.get("email")
+    mode, pending = context.get("email_verification_mode"), context.get("passwordless_email_otp_send_pending")
+    if (context.get("is_missing_session") is True or not isinstance(session_id, str) or not session_id
+            or not isinstance(actual_email, str) or actual_email.strip().casefold() != email.strip().casefold()
+            or "email_verification_mode" in context and not isinstance(mode, str)
+            or "passwordless_email_otp_send_pending" in context and not isinstance(pending, bool)):
+        raise ProtocolPasswordSetupError("password_setup_otp_context_invalid", "补密码发码会话尚未与目标账号对应")
+    return {"session_id": session_id, "email": actual_email,
+            **({"email_verification_mode": mode} if "email_verification_mode" in context else {}),
+            "passwordless_email_otp_send_pending": pending}
+
+
+def _send_email_verification_code(session, email: str, *, referer: str, after_ts: float, checkpoint=None) -> float:
+    """执行验证页初发或明确重发，HTTP 页面跳转不作为发码回执。"""
+    # 授权跳转前已记录时间锚点，兼容服务端或另一请求完成自动发码的情况。
+    rotate = getattr(session, "rotate_document_navigation_id", None)
+    if callable(rotate):
+        rotate()
+    context = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint)
+    pending = context["passwordless_email_otp_send_pending"] is True
+    known_modes = {"passwordless_login", "passwordless_signup", "post_auth_email_verification", "post_signup", "resurrection_login"}
+    raw_mode = context.get("email_verification_mode")
+    mode_label = raw_mode if raw_mode in known_modes else "未提供" if "email_verification_mode" not in context else "其他"
+    logger.info("[补密码] 发码上下文：来源=补密码，模式=%s，待发送=%s", mode_label, "是" if pending else "否")
+    initial = pending and ("email_verification_mode" not in context
+                           or context["email_verification_mode"] in {"passwordless_login", "passwordless_signup"})
+    headers = session.get_auth_headers(referer=referer)
+    headers.pop("content-type", None)
+    if initial:
+        logger.info("[补密码] 验证页存在待发送状态，正在准备本轮初发请求")
+        headers.update(_sentinel_headers(session, "authorize_continue", checkpoint))
+        current = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint)
+        if any(context.get(key) != current.get(key) or (key in context) != (key in current)
+               for key in ("session_id", "email", "email_verification_mode")):
+            raise ProtocolPasswordSetupError("password_setup_otp_context_changed", "补密码发码前认证会话发生变化，尚未发送验证码")
+        if current["passwordless_email_otp_send_pending"] is not True:
+            logger.info("[补密码] 待发送标记已清除，等待本轮邮件")
+            return after_ts
+        path, method_label = "/api/accounts/passwordless/send-otp", "初发"
+    else:
+        logger.info("[补密码] 验证页已有认证挑战，正在明确请求重发本轮验证码")
+        headers.pop("openai-sentinel-token", None)
+        headers.pop("openai-sentinel-so-token", None)
+        path, method_label = "/api/accounts/email-otp/resend", "重发"
+        # 明确重发会开启新的验证码窗口，不能读取授权阶段已到达的旧邮件。
+        after_ts = time.time()
+    headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
+    response = _request(session, "post", _AUTH + path, headers=headers, allow_redirects=False, checkpoint=checkpoint)
+    status = int(getattr(response, "status_code", 0) or 0)
+    if initial:
+        data = _payload(response)
+        page = data.get("page")
+        payload = page.get("payload") if isinstance(page, dict) else None
+        if (not isinstance(page, dict) or page.get("type") != "email_otp_verification"
+                or isinstance(payload, dict) and payload.get("errors")):
+            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码初发未取得有效的发码回执")
+    elif not 200 <= status < 300:
+        if 300 <= status < 400:
+            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码重发未取得有效的发码回执")
+        _payload(response)
+    # 网页重发以 HTTP ok 为成功，允许空响应；初发必须取得明确验证页 JSON。
+    logger.info("[补密码] 验证码%s请求已被接口接受，等待邮件到达", method_label)
+    return after_ts
 
 
 def _require_password_page(url: str) -> None:
@@ -283,19 +362,13 @@ def add_password(session, email: str, password: str, *, checkpoint=None, on_disp
     signin = _payload(_request(session, "post", signin_url, headers=headers, data=urlencode({"callbackUrl": _CHATGPT + "/", "csrfToken": csrf["csrfToken"], "json": "true"}), allow_redirects=False, checkpoint=checkpoint))
     authorize_url = _trusted_url(signin.get("url"))
     _check(checkpoint)
+    otp_after_ts = time.time()
     landing = _follow(session, authorize_url, referer=_CHATGPT + "/", checkpoint=checkpoint)
     verification = {}
     if urlsplit(landing).hostname == "auth.openai.com" and urlsplit(landing).path.rstrip("/") == "/email-verification":
         _check(checkpoint)
-        # 打开验证页不会替纯协议执行页面脚本；本轮明确发码后才开始收件。
-        # 时间锚点必须在发码前，避免漏掉请求返回前已投递的新邮件。
-        requested_at = time.time()
-        logger.info("[补密码] 正在请求本轮邮箱验证码")
-        sent_to = _follow(session, _AUTH + "/api/accounts/email-otp/send", referer=landing, checkpoint=checkpoint)
-        sent_page = urlsplit(sent_to)
-        if sent_page.hostname != "auth.openai.com" or sent_page.path.rstrip("/") != "/email-verification":
-            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码验证码发送未返回有效的验证页面")
-        logger.info("[补密码] 验证码发送已确认，等待邮件到达")
+        requested_at = _send_email_verification_code(session, email, referer=landing, after_ts=otp_after_ts, checkpoint=checkpoint)
+        sent_to = landing
         try:
             # 仅补密码采用较长的分段和网络余量，保留原线程取消/租约检查。
             with use_cooperative_wait(checkpoint or (lambda: None), poll_seconds=5, request_timeout=10):

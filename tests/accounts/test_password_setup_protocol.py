@@ -13,6 +13,13 @@ CHATGPT = "https://chatgpt.com"
 AUTHORIZE = AUTH + "/authorize?state=fixture-state"
 PASSWORD_PAGE = AUTH + "/reset-password/new-password"
 CALLBACK = CHATGPT + "/api/auth/callback/openai?code=fixture-code&state=fixture-state"
+EMAIL_PAGE = AUTH + "/email-verification"
+SEND_PAGE = {"page": {"type": "email_otp_verification"}}
+
+
+def email_context(*, pending=True, **changes):
+    return Response({"client_auth_session": {"session_id": "fixture-auth-session", "email": "user@example.test",
+        "email_verification_mode": "passwordless_login", "passwordless_email_otp_send_pending": pending, **changes}})
 
 
 class Response:
@@ -98,6 +105,133 @@ class PasswordSetupProtocolTests(unittest.TestCase):
     def run_driver(self, session, **kwargs):
         return protocol.add_password(session, "user@example.test", self.password, **kwargs)
 
+    def send_code(self, session, **kwargs):
+        return protocol._send_email_verification_code(session, "user@example.test", referer=EMAIL_PAGE,
+                                                      after_ts=123.5, **kwargs)
+
+    def test_initial_send_uses_pending_context_and_authorize_sentinel_without_body(self):
+        session = FakeSession([email_context(), email_context()], [Response(SEND_PAGE)])
+        rotate = session.rotate_document_navigation_id = Mock()
+        with self.assertLogs(protocol.logger, level="INFO") as logs:
+            self.assertEqual(123.5, self.send_code(session))
+        self.assertEqual(["GET", "GET", "POST"], [item[0] for item in session.events])
+        self.assertEqual(AUTH + "/api/accounts/passwordless/send-otp", session.events[-1][1])
+        self.assertNotIn("data", session.events[-1][2])
+        self.assertNotIn("content-type", session.events[-1][2]["headers"])
+        self.assertEqual("fixture-otp-token", session.events[-1][2]["headers"]["openai-sentinel-token"])
+        self.assertTrue(session.events[-1][2]["headers"]["x-access-flow-invocation-id"])
+        self.assertEqual("authorize_continue", protocol.build_sentinel_header.call_args.args[2])
+        self.generate.assert_not_called()
+        rotate.assert_called_once_with()
+        self.assertNotIn("user@example.test", " ".join(logs.output))
+        self.assertNotIn("fixture-auth-session", " ".join(logs.output))
+
+    def test_pending_with_undefined_mode_uses_initial_send(self):
+        context = email_context().payload
+        context["client_auth_session"].pop("email_verification_mode")
+        session = FakeSession([Response(context), Response(context)], [Response(SEND_PAGE)])
+        self.send_code(session)
+        self.assertTrue(session.events[-1][1].endswith("/passwordless/send-otp"))
+
+    def test_explicit_resend_uses_post_and_accepts_empty_http_ok_without_sentinel(self):
+        for status in (200, 204):
+            with self.subTest(status=status):
+                session = FakeSession([email_context(pending=False)], [Response(status=status)])
+                with patch.object(protocol.time, "time", return_value=234.5):
+                    self.assertEqual(234.5, self.send_code(session))
+                sent = session.events[-1]
+                self.assertEqual(("POST", AUTH + "/api/accounts/email-otp/resend"), sent[:2])
+                self.assertNotIn("openai-sentinel-token", sent[2]["headers"])
+                self.assertNotIn("openai-sentinel-so-token", sent[2]["headers"])
+                self.assertNotIn("content-type", sent[2]["headers"])
+                self.assertNotIn("data", sent[2])
+        protocol.request_sentinel_token.assert_not_called()
+
+    def test_pending_unsupported_mode_and_missing_pending_use_the_page_resend_action(self):
+        missing_pending = email_context()
+        missing_pending.payload["client_auth_session"].pop("passwordless_email_otp_send_pending")
+        for context in (email_context(email_verification_mode="post_auth_email_verification"), missing_pending):
+            with self.subTest(context=context.payload):
+                session = FakeSession([context], [Response(status=204)])
+                self.send_code(session)
+                self.assertTrue(session.events[-1][1].endswith("/email-otp/resend"))
+
+    def test_context_requires_nested_target_identity_and_valid_field_types(self):
+        cases = (Response({"session_id": "fixture", "email": "user@example.test"}),
+                 email_context(session_id=""), email_context(email="other@example.test"),
+                 email_context(email_verification_mode=[]), email_context(pending=1),
+                 email_context(email_verification_mode=None), email_context(pending=None))
+        for response in cases:
+            with self.subTest(payload=response.payload):
+                session = FakeSession([response], [])
+                with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+                    self.send_code(session)
+                self.assertEqual("password_setup_otp_context_invalid", caught.exception.code)
+                self.assertFalse(any(item[0] == "POST" for item in session.events))
+                self.assertNotIn("other@example.test", str(caught.exception))
+
+    def test_context_rechecked_after_sentinel_and_changes_stop_before_send(self):
+        for changes in ({"session_id": "different-session"}, {"email_verification_mode": "passwordless_signup"}):
+            with self.subTest(changes=changes):
+                session = FakeSession([email_context(), email_context(**changes)], [])
+                with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+                    self.send_code(session)
+                self.assertEqual("password_setup_otp_context_changed", caught.exception.code)
+                self.assertFalse(caught.exception.request_unknown)
+                self.assertFalse(any(item[0] == "POST" for item in session.events))
+
+    def test_pending_cleared_during_sentinel_does_not_send_twice(self):
+        session = FakeSession([email_context(), email_context(pending=False)], [])
+        self.assertEqual(123.5, self.send_code(session))
+        self.assertFalse(any(item[0] == "POST" for item in session.events))
+
+    def test_initial_send_requires_real_json_receipt_not_a_document_page_or_error_payload(self):
+        for response in (Response({}, url=EMAIL_PAGE), Response(ValueError("private-body")),
+                         Response({"page": {"type": "email_otp_verification", "payload": {"errors": {"formErrors": ["private-body"]}}}}),
+                         Response({"page": {"type": "password"}}),
+                         Response({"page": {"type": "email_verification"}}), Response({"page": {"type": "email_otp"}})):
+            with self.subTest(payload_type=type(response.payload).__name__):
+                session = FakeSession([email_context(), email_context()], [response])
+                with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+                    self.send_code(session)
+                self.assertIn(caught.exception.code, {"password_setup_otp_send_unconfirmed", "password_setup_response_invalid"})
+                self.assertFalse(caught.exception.request_unknown)
+                self.assertEqual(1, len([item for item in session.events if item[0] == "POST"]))
+                self.assertNotIn("private-body", str(caught.exception))
+
+    def test_send_http_rejection_keeps_classification_and_never_auto_switches_to_resend(self):
+        for status, expected in ((403, "password_setup_security_check"), (429, "password_setup_rate_limited"),
+                                 (503, "password_setup_http_rejected")):
+            with self.subTest(status=status):
+                session = FakeSession([email_context(), email_context()], [Response({}, status=status)])
+                with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+                    self.send_code(session)
+                self.assertEqual(expected, caught.exception.code)
+                self.assertFalse(caught.exception.request_unknown)
+                self.assertEqual(1, len([item for item in session.events if item[0] == "POST"]))
+
+    def test_cancel_after_context_recheck_stops_before_initial_post(self):
+        for control in (protocol.OperationCancelled, protocol.OperationLeaseLost, protocol.CancellationRequested):
+            with self.subTest(control=control):
+                session = FakeSession([email_context(), email_context()], [])
+                signal = control("fixture-stop")
+                def checkpoint():
+                    if len(session.events) == 2:
+                        raise signal
+                with self.assertRaises(control) as caught:
+                    self.send_code(session, checkpoint=checkpoint)
+                self.assertIs(signal, caught.exception)
+                self.assertFalse(any(item[0] == "POST" for item in session.events))
+
+    def test_initial_send_transport_error_preserves_proxy_fault_without_password_unknown(self):
+        session = FakeSession([email_context(), email_context()], [RuntimeError("Proxy CONNECT aborted private-route")])
+        with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+            self.send_code(session)
+        self.assertEqual("password_setup_network_failed", caught.exception.code)
+        self.assertTrue(caught.exception.proxy_transport_failed)
+        self.assertFalse(caught.exception.request_unknown)
+        self.assertNotIn("private-route", str(caught.exception))
+
     def test_direct_password_page_uses_independent_signin_and_hooks_in_order(self):
         session = self.session()
         dispatched = lambda: session.events.append(("dispatch",))
@@ -122,16 +256,16 @@ class PasswordSetupProtocolTests(unittest.TestCase):
     def test_otp_is_explicitly_sent_before_wait_and_timestamp_precedes_send(self):
         session = FakeSession(
             [Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"),
-             Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)],
-            [Response({"url": AUTHORIZE}), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
+             email_context(), email_context(), Response(url=PASSWORD_PAGE)],
+            [Response({"url": AUTHORIZE}), Response(SEND_PAGE), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
         )
         checkpoint = Mock()
         def clock():
-            self.assertTrue(any(item[1] == AUTHORIZE for item in session.events))
-            self.assertFalse(any(item[1].endswith("/email-otp/send") for item in session.events))
+            self.assertFalse(any(item[1] == AUTHORIZE for item in session.events))
+            self.assertFalse(any(item[1].endswith("/passwordless/send-otp") for item in session.events))
             return 123.5
         def received(*_args, **_kwargs):
-            self.assertTrue(any(item[1].endswith("/email-otp/send") for item in session.events))
+            self.assertTrue(any(item[1].endswith("/passwordless/send-otp") for item in session.events))
             self.assertEqual(mailbox_wait.cooperative_poll_limit(75), 5)
             self.assertEqual(mailbox_wait.bounded_timeout(30), 10)
             return "123456"
@@ -144,19 +278,24 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         self.assertEqual(json.loads(otp[2]["data"]), {"code": "123456"})
         self.assertEqual(otp[2]["headers"]["openai-sentinel-token"], "fixture-otp-token")
         self.assertGreaterEqual(checkpoint.call_count, 7)
+        sent = next(item for item in session.events if item[1].endswith("/passwordless/send-otp"))
+        self.assertEqual("POST", sent[0])
+        self.assertNotIn("data", sent[2])
+        self.assertFalse(any(item[1].endswith("/email-otp/send") for item in session.events))
 
     def test_custom_provider_uses_new_request_generation(self):
-        session = FakeSession([Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"), Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)], [Response({"url": AUTHORIZE}), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})])
+        session = FakeSession([Response({"csrfToken": "fixture-csrf"}), Response(url=EMAIL_PAGE), email_context(), email_context(), Response(url=PASSWORD_PAGE)], [Response({"url": AUTHORIZE}), Response(SEND_PAGE), Response({"continue_url": PASSWORD_PAGE}), Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})])
         provider = Mock(return_value="123456")
         with patch.object(protocol.time, "time", return_value=456.0):
             self.run_driver(session, otp_provider=provider)
         provider.assert_called_once_with("user@example.test", after_ts=456.0)
 
     def test_rejected_send_does_not_wait_or_submit_password(self):
-        for response in (Response({}, status=403), Response(url=AUTH + "/error")):
+        for response in (Response({}, status=403), Response(status=302, location=AUTH + "/error")):
             with self.subTest(status=response.status_code):
                 session = self.session(landing=AUTH + "/email-verification")
-                session.gets.append(response)
+                session.gets.append(email_context(pending=False))
+                session.posts.insert(1, response)
                 provider, dispatched = Mock(), Mock()
                 with self.assertRaises(protocol.ProtocolPasswordSetupError):
                     self.run_driver(session, otp_provider=provider, on_dispatched=dispatched)
@@ -167,8 +306,8 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         mfa = AUTH + "/mfa-challenge/factor-1"
         session = FakeSession(
             [Response({"csrfToken": "fixture-csrf"}), Response(url=AUTH + "/email-verification"),
-             Response(url=AUTH + "/email-verification"), Response(url=PASSWORD_PAGE)],
-            [Response({"url": AUTHORIZE}), Response({"page": {"type": "mfa_challenge"}, "continue_url": mfa}),
+             email_context(), email_context(), Response(url=PASSWORD_PAGE)],
+            [Response({"url": AUTHORIZE}), Response(SEND_PAGE), Response({"page": {"type": "mfa_challenge"}, "continue_url": mfa}),
              Response({}), Response({"continue_url": PASSWORD_PAGE}),
              Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
         )
@@ -178,7 +317,7 @@ class PasswordSetupProtocolTests(unittest.TestCase):
         code.assert_called_once_with("fixture-secret")
         posts = [item for item in session.events if item[0] == "POST"]
         self.assertEqual([urlsplit(item[1]).path for item in posts], [
-            "/api/auth/signin/openai", "/api/accounts/email-otp/validate", "/api/accounts/mfa/issue_challenge",
+            "/api/auth/signin/openai", "/api/accounts/passwordless/send-otp", "/api/accounts/email-otp/validate", "/api/accounts/mfa/issue_challenge",
             "/api/accounts/mfa/verify", "/api/accounts/password/add",
         ])
         self.assertEqual(json.loads(posts[-2][2]["data"]), {"id": "factor-1", "type": "totp", "code": "654321"})
@@ -331,7 +470,8 @@ class PasswordSetupProtocolTests(unittest.TestCase):
 
     def test_default_otp_cancellation_is_not_wrapped(self):
         session = self.session(landing=AUTH + "/email-verification")
-        session.gets.append(Response(url=AUTH + "/email-verification"))
+        session.gets.append(email_context(pending=False))
+        session.posts.insert(1, Response(status=204))
         cancelled = protocol.OperationCancelled("fixture-cancel")
         with patch.object(protocol.email_provider, "resolve_email_source", return_value="generic_api"), patch.object(protocol.email_provider, "wait_for_otp", side_effect=cancelled):
             with self.assertRaises(protocol.OperationCancelled) as raised:
