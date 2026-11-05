@@ -805,6 +805,9 @@ function renderAccountCompletionSectionV2(fields) {
   ];
   const refreshKeys = [
     'ACCOUNT_AT_REFRESH_DRIVER',
+    'ACCOUNT_AT_REFRESH_COUNTRY',
+    'ACCOUNT_AT_REFRESH_NETWORK_RETRIES',
+    'ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS',
     'OPENAI_PROTOCOL_VERSION',
     'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',
     'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
@@ -1097,7 +1100,7 @@ function configCountryNameV2(code) {
 function configCountryOptionsV2(f, query = '') {
   const common = ['JP', 'US', 'SG', 'HK', 'TW', 'KR', 'VN', 'IN', 'TH', 'MY', 'GB', 'DE', 'FR', 'CA', 'AU'];
   const search = String(query).trim().toLowerCase();
-  return (f.country_codes || []).map(code => ({code, name: configCountryNameV2(code)}))
+  return (f.country_codes || []).map(code => ({code, name: f.country_names?.[code] || configCountryNameV2(code)}))
     .filter(item => `${item.name} ${item.code}`.toLowerCase().includes(search))
     .sort((a, b) => {
       const rank = code => common.includes(code) ? common.indexOf(code) : common.length;
@@ -1201,11 +1204,12 @@ function renderConfigControlMarkupV2(f) {
   const driverChoices = configDriverChoices(f);
   if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
-  } else if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
+  } else if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY', 'ACCOUNT_AT_REFRESH_COUNTRY'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     const current = String(fv ?? '').trim().toUpperCase();
     const countryOptions = configCountryOptionsV2(f);
     const options = countryOptions.map(item => ({value: item.code, label: `${item.name} · ${item.code}`}));
     if (current && !options.some(item => item.value === current)) options.unshift({value: current, label: `当前值（${current}），需检查`});
+    if (f.key === 'ACCOUNT_AT_REFRESH_COUNTRY') options.unshift({value: '', label: '跟随注册国家'});
     control = `<select data-key="${attrEsc(f.key)}" aria-label="${attrEsc(f.label)}">${options.map(item => `<option value="${attrEsc(item.value)}"${item.value === current ? ' selected' : ''}>${esc(item.label)}</option>`).join('')}</select>`;
   } else if (['EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES', 'BROWSER_DATA_SAVER_AUTH_FLOWS', 'BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES'].includes(f.key)
     || (f.type === 'list_str_multiline' && configListOptionValuesV2(f).length)) {
@@ -1697,7 +1701,8 @@ function renderProxyTaskPoolSummaryV2() {
   const rows = [
     ['注册与账号认证', '注册主链路的注册国家；账号认证沿用账号历史国家', '独占租约'],
     ['查询套餐', '业务国家顺序（逐国申请）', '按池用途策略复用'],
-    ['查活 / 刷新 AT', '账号历史国家；缺失时使用池默认国家', '认证链路保持同一线路'],
+    ['查活', '账号历史国家；缺失时使用池默认国家', '认证链路保持同一线路'],
+    ['刷新 AT', '优先使用独立的 AT 刷新国家；留空时跟随账号注册国家', '单次登录保持同线；网络故障换线重新登录'],
     ['补密码 / 2FA / 换绑 / Codex', '账号历史国家；缺失时使用池默认国家', '独占租约'],
   ];
   return `<div class="config-proxy-pool-summary-v2" aria-label="任务用池规则">
@@ -2466,7 +2471,7 @@ function readConfigElementValue(el, f) {
   if (f.type === 'float') return parseFloat(el.value || '0');
   const value = el.value.trim();
   const option = configSchemaOptions(f).find(item => item.value.toLowerCase() === value.toLowerCase());
-  if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY'].includes(f.key)) return option ? option.value : value;
+  if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY', 'ACCOUNT_AT_REFRESH_COUNTRY'].includes(f.key)) return option ? option.value : value;
   return option ? option.value : (isPlaceholderEmpty(value) ? '' : value);
 }
 

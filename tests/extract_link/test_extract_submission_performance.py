@@ -87,13 +87,14 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
             "EXTRACT_LINK_REQUEST_TIMEOUT": 47,
             "EXTRACT_LINK_EVENT_TIMEOUT": 83,
             "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
+            "ACCOUNT_AT_REFRESH_COUNTRY": "JP",
             "OPENAI_PROTOCOL_VERSION": "v2",
             "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": True,
             "UNRELATED_SECRET": "不得持久化",
         }}
         expected = {"config_snapshot_revision": 19,
             "api_base": "https://example.test/captured", "link_type": "upi",
-            "request_timeout": 47, "event_timeout": 83, "refresh_driver": "protocol",
+            "request_timeout": 47, "event_timeout": 83, "refresh_driver": "protocol", "refresh_at_country": "JP",
             "refresh_protocol_version": "v2", "refresh_roxy_debug_enabled": True}
         with self.provider_patches(), patch.object(extract_link_service, "get_config_snapshot", return_value=raw) as capture:
             result = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=2)

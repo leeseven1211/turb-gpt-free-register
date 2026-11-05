@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime
 from functools import wraps
@@ -26,6 +27,7 @@ from core.operations.task_gateway import OperationLeaseLost
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, fetch_chatgpt_session as _fetch_chatgpt_session, find_any as _find_any, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, maybe_accept as _maybe_accept, page_warmup as _page_warmup, quit_driver as _quit_driver, safe_get as _safe_get, submit_email_step as _submit_email_step, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, type_email_address as _type_email_address, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit, wait_email_submit_next_state as _wait_email_submit_next_state
 from core.browser.roxy.client import RoxyBrowserClient
 from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_login_failure_code
+from core.network.at_transport_recovery import AtRecoveryTimeout
 
 logger = logging.getLogger('core.roxy_liveness')
 
@@ -41,6 +43,94 @@ _ROXY_STAGE_CAUSES = {
 
 
 _PROXY_BROWSER_ERRORS = ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")
+_AT_BROWSER_NETWORK_KINDS = {
+    "ERR_TUNNEL_CONNECTION_FAILED": "proxy",
+    "ERR_PROXY_CONNECTION_FAILED": "proxy",
+    "ERR_CONNECTION_RESET": "connection",
+    "ERR_CONNECTION_CLOSED": "connection",
+    "ERR_CONNECTION_REFUSED": "connection",
+    "ERR_HTTP2_PING_FAILED": "connection",
+    "ERR_NAME_NOT_RESOLVED": "dns",
+    "ERR_TIMED_OUT": "timeout",
+    "ERR_CONNECTION_TIMED_OUT": "timeout",
+    "ERR_SSL_PROTOCOL_ERROR": "tls",
+    "ERR_CERT_AUTHORITY_INVALID": "tls",
+    "ERR_CERT_DATE_INVALID": "tls",
+    "Failed to fetch": "connection",
+}
+
+
+def _at_browser_network_error(driver) -> str:
+    """只从当前浏览器错误文档读取固定传输码，不采用普通页面中的提示文字。"""
+    if driver is None:
+        return ""
+    try:
+        page = driver.execute_script(
+            "return {url: location.href, text: document.body ? document.body.innerText : ''};",
+        )
+        if not isinstance(page, dict) or not str(page.get("url") or "").startswith("chrome-error://"):
+            return ""
+        text = str(page.get("text") or "")
+        return next((code for code in _AT_BROWSER_NETWORK_KINDS if code.startswith("ERR_")
+                     and re.search(r"\b" + re.escape(code) + r"\b", text)), "")
+    except Exception:
+        return ""
+
+
+def _at_network_diagnostics(exc: Exception, stage: str, driver=None) -> dict:
+    """AT 作用域内的网络证据供外层恢复使用，不改变表单提交或业务错误码。"""
+    from core.network.at_transport_recovery import current_scope, network_failure
+
+    if current_scope() is None or stage not in {"navigation", "login", "email_otp", "session"}:
+        return {}
+    if str(getattr(exc, "code", "") or "") in {
+        "password_rejected", "password_change_required", "password_page_error", "password_missing",
+        "mfa_rejected", "mfa_secret_missing", "mfa_secret_invalid", "email_verification_required",
+        "account_deactivated", "profile_completion_required",
+    }:
+        return {}
+    # 取码服务走独立连接，收件服务网络异常不能误判为浏览器代理故障。
+    chain, item = [], exc
+    while isinstance(item, BaseException) and len(chain) < 8 and not any(item is old for old in chain):
+        chain.append(item)
+        item = item.__cause__ or (None if item.__suppress_context__ else item.__context__)
+    if any(type(item).__module__.startswith("core.email") for item in chain):
+        return {}
+    network_error = str(getattr(exc, "network_error", "") or "")
+    if network_error not in _AT_BROWSER_NETWORK_KINDS:
+        network_error = ""
+    # Chrome 的导航异常和 MFA 辅助函数均使用明确的 net::ERR_* 标记。
+    if not network_error:
+        for item in chain:
+            marker = re.search(r"\bnet::(ERR_[A-Z0-9_]+)\b", str(item))
+            if marker and marker.group(1) in _AT_BROWSER_NETWORK_KINDS:
+                network_error = marker.group(1)
+                break
+    if not network_error:
+        network_error = _at_browser_network_error(driver)
+    if network_error:
+        return {"failure_kind": "transport_error", "network_error": network_error,
+                "transport_kind": _AT_BROWSER_NETWORK_KINDS[network_error], "response_observed": False}
+    from core.auth.state_machine import StageTimeout
+
+    if any(isinstance(item, StageTimeout) for item in chain):
+        return {}
+    response = getattr(exc, "response", None)
+    request = getattr(exc, "request", None)
+    target = getattr(response, "url", None) or getattr(request, "url", None)
+    if isinstance(target, str) and target:
+        try:
+            parsed = urlparse(target)
+        except ValueError:
+            return {}
+        if parsed.scheme != "https" or parsed.hostname not in {"auth.openai.com", "chatgpt.com", "chat.openai.com", "sentinel.openai.com"}:
+            return {}
+    failure = network_failure(error=exc)
+    if not failure:
+        return {}
+    return {key: value for key, value in failure.items()
+            if key in {"failure_kind", "transport_kind", "http_status", "curl_error_code", "response_observed",
+                       "exception_type", "transport_exception_type"}}
 
 
 def _browser_proxy_error(driver, *, snapshot: dict | None = None) -> str:
@@ -415,18 +505,27 @@ def _authenticated_browser_session(driver, proxy: str | None):
 
 
 def _with_refresh_execution_context(function):
-    """把原生任务取消信号传给共享 Selenium 的每个等待检查点。"""
+    """把原生取消及 AT 恢复总时限传给共享 Selenium 等待检查点。"""
     @wraps(function)
     def wrapped(*args, **kwargs):
         from core.operations.runtime import current_token
         from core.auth.browser.auth_context import AuthExecutionContext, execution_context
+        from core.network.at_transport_recovery import current_scope
 
         token = current_token()
-        if token is None:
+        scope = current_scope()
+        if token is None and scope is None:
             return function(*args, **kwargs)
+
+        def requested() -> bool:
+            if scope is not None:
+                scope.check()
+            return bool(token is not None and token.requested())
+
         with execution_context(AuthExecutionContext(
-            cancellation=lambda: bool(token.requested()),
+            cancellation=requested,
             cancellation_error=lambda: OperationCancelled("用户手动停止刷新 AT"),
+            deadline=scope.deadline if scope is not None else None,
         )):
             return function(*args, **kwargs)
     return wrapped
@@ -531,12 +630,14 @@ def refresh_access_token(
     refresh_result = None
     callback_session = None
     cancelled = False
+    budget_exhausted = False
     remote_started = False
     failure_stage = "open"
     initial_password_ids = frozenset()
     email_challenge_started = False
     email_challenge_completed = False
     session_acquired = False
+    network_recovery_failed = False
 
     def email_confirmed() -> None:
         nonlocal email_challenge_completed
@@ -545,6 +646,16 @@ def refresh_access_token(
     def stage(value: str) -> None:
         nonlocal failure_stage
         failure_stage = value
+        from core.network.at_transport_recovery import current_scope
+
+        scope = current_scope()
+        if scope is not None:
+            if value == "callback" and session_acquired:
+                # AT 已取得后仍检查取消和租约，认证总时限不再覆盖成功事实。
+                if callable(scope.checkpoint):
+                    scope.checkpoint()
+            else:
+                scope.check()
         if callable(getattr(debug_session, "update_stage", None)):
             debug_session.update_stage({"open": "browser", "driver": "browser", "navigation": "browser",
                                         "login": "login", "session": "token", "callback": "token"}.get(value, value))
@@ -712,6 +823,9 @@ def refresh_access_token(
     except (OperationCancelled, OperationLeaseLost):
         cancelled = True
         raise
+    except AtRecoveryTimeout:
+        budget_exhausted = True
+        raise
     except AuthCancelledError as exc:
         cancelled = True
         raise OperationCancelled(str(exc) or "用户手动停止刷新 AT") from exc
@@ -764,6 +878,8 @@ def refresh_access_token(
         failure_kind = ("no_mail" if isinstance(exc, ForwardIMAPNoMailTimeout)
                         else "imap_error" if isinstance(exc, ForwardIMAPError)
                         else "runtime_exception")
+        network_diagnostics = _at_network_diagnostics(exc, failure_stage, driver) if not session_acquired else {}
+        network_recovery_failed = bool(network_diagnostics)
         refresh_result = {
             "ok": False,
             "status": "failed",
@@ -773,7 +889,7 @@ def refresh_access_token(
             "error_category": category,
             "failure_stage": failure_stage,
             "auth_diagnostics": {"operation": f"roxy_{failure_stage}", "failure_kind": failure_kind,
-                                 "exception_type": type(exc).__name__},
+                                 "exception_type": type(exc).__name__, **network_diagnostics},
             "validation_method": "roxy_email_otp",
         }
         if cause_code in {"password_change_required", "password_page_error"} and getattr(exc, "not_submitted", False):
@@ -807,10 +923,10 @@ def refresh_access_token(
                 )
             except Exception:
                 logger.exception("[查活][Roxy] 保存失败现场时发生异常")
-        keep_browser = not cancelled and (
+        keep_browser = not cancelled and not budget_exhausted and not network_recovery_failed and (
             bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)) or (full_debug and failed)
         )
-        if full_debug and failed and driver is not None and not cancelled:
+        if full_debug and failed and driver is not None and keep_browser:
             refresh_result["debug_browser_kept"] = True
         if callback_session is not None:
             callback_session.session.close()
@@ -845,6 +961,9 @@ def refresh_access_token(
             _quit_driver(driver)
         if opened is not None and not keep_browser:
             try:
+                if (network_recovery_failed or budget_exhausted) and bool(getattr(cfg, "ROXY_KEEP_BROWSER_OPEN", False)):
+                    # 只关闭本次 AT 失败环境，避免保留窗口阻塞后续同账号换线。
+                    client.close_profile(opened.profile_id)
                 client.cleanup_profile(opened)
             except Exception:
                 logger.exception("[查活][Roxy] 清理临时环境失败（profile 原值不写日志）")

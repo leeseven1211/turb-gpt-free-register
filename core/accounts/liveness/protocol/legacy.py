@@ -34,6 +34,10 @@ _RETRYABLE_NETWORK_HINTS = (
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
+    from core.network.at_transport_recovery import current_scope, exhausted, network_failure
+
+    if current_scope() is not None:
+        return not exhausted(exc) and network_failure(error=exc) is not None
     if isinstance(exc, AccountUnusableError):
         return False
     text = str(exc or "").lower()
@@ -281,6 +285,11 @@ def _network_preflight_with_retry(
     /api/auth/providers 只是 NextAuth 的能力发现接口，登录流程并不依赖它；
     该接口又更容易被 Cloudflare 单独拦截，因此查活刷新 AT 时直接从 CSRF 开始。
     """
+    from core.network.at_transport_recovery import current_scope
+
+    if current_scope() is not None:
+        # AT 的请求层负责原线恢复，跨线路重启统一由独立 AT worker 管理。
+        max_attempts = 1
     session: BrowserSession | None = None
     last_exc: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
@@ -559,7 +568,14 @@ def check_account_liveness(
             logger.warning("[查活] 已废号：%s %s", email, code)
             return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
         logger.warning("[查活] 失败：%s %s: %s", email, type(exc).__name__, str(exc)[:260])
-        return {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        result = {"ok": False, "status": "failed", "checked_at": checked_at, "error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+        from core.network.at_transport_recovery import current_scope, network_failure
+
+        if current_scope() is not None:
+            diagnostics = network_failure(error=exc)
+            if diagnostics is not None:
+                result["auth_diagnostics"] = {"operation": "protocol_v2_auth", **diagnostics}
+        return result
     finally:
         try:
             logger.info("[查活] 结束：%s", email)

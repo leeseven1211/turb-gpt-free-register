@@ -53,6 +53,10 @@ ACCOUNT_LIVE_CHECK_BROWSER_ENABLED = schema_default("ACCOUNT_LIVE_CHECK_BROWSER_
 # 刷新 AT 的驱动与协议版本独立；调试开关仅作用于实际使用 Roxy 的刷新任务。
 ACCOUNT_AT_REFRESH_DRIVER = schema_default("ACCOUNT_AT_REFRESH_DRIVER")
 ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED = schema_default("ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED")
+# 空值沿用账号注册出口国家；填写 ISO 两位国家代码时只固定独立 AT 刷新的领取国家。
+ACCOUNT_AT_REFRESH_COUNTRY = schema_default("ACCOUNT_AT_REFRESH_COUNTRY")
+ACCOUNT_AT_REFRESH_NETWORK_RETRIES = schema_default("ACCOUNT_AT_REFRESH_NETWORK_RETRIES")
+ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS = schema_default("ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS")
 
 # 旧刷新配置仅为历史 .env 兼容保留；新的协议版本统一配置位于
 # config.openai_protocol.OPENAI_PROTOCOL_VERSION。只有刷新 AT 同时支持 v1/v2，
@@ -88,6 +92,7 @@ def completion_settings() -> dict[str, object]:
         "refresh_at_enabled": bool(ACCOUNT_COMPLETION_REFRESH_AT_ENABLED),
         "at_refresh_driver": str(ACCOUNT_AT_REFRESH_DRIVER or "protocol").strip().lower() or "protocol",
         "at_refresh_roxy_debug_enabled": bool(ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED),
+        "refresh_at_country": str(ACCOUNT_AT_REFRESH_COUNTRY or "").strip().upper(),
         "password_reset_enabled": bool(ACCOUNT_PASSWORD_RESET_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",

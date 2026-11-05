@@ -1186,6 +1186,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "totp_rejected": ("AUTH-MFA-TOTP-REJECTED", "Authenticator 验证码未通过验证"),
     "email_otp_invalid": ("MAIL-OTP-004", "邮箱验证码未通过验证"),
     "network_preflight_failed": ("NET-ROUTE-001", "认证线路预检失败"),
+    "at_refresh_network_budget_exhausted": ("NET-AT-BUDGET-001", "AT 刷新网络恢复已达到总时限"),
     "oauth_callback_failed": ("AUTH-CALLBACK-001", "OAuth 回调未完成"),
     "oauth_callback_rejected": ("AUTH-CALLBACK-002", "OAuth 回调返回认证错误，未建立有效会话"),
     "password_missing": ("AUTH-PWD-001", "本地缺少账号密码"),
@@ -1692,6 +1693,29 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
         inner_code = str(diagnostics.get("cause_code") or "").strip()
         if inner_code in _CAUSE_DETAILS:
             code = inner_code
+    if code.startswith("roxy_") and diagnostics.get("failure_kind") == "transport_error":
+        browser_error = diagnostics.get("network_error")
+        browser_transport = {
+            "ERR_CONNECTION_RESET": ("connection", "003", "连接中断"),
+            "ERR_CONNECTION_CLOSED": ("connection", "003", "连接中断"),
+            "ERR_CONNECTION_REFUSED": ("connect", "007", "连接建立失败"),
+            "ERR_HTTP2_PROTOCOL_ERROR": ("connection", "003", "HTTP/2 连接中断"),
+            "ERR_HTTP2_PING_FAILED": ("connection", "003", "HTTP/2 连接中断"),
+            "Failed to fetch": ("connection", "003", "请求连接中断"),
+            "ERR_CONNECTION_TIMED_OUT": ("timeout", "028", "网络请求超时"),
+            "ERR_TIMED_OUT": ("timeout", "028", "网络请求超时"),
+            "ERR_NAME_NOT_RESOLVED": ("dns", "006", "域名解析失败"),
+            "ERR_DNS_TIMED_OUT": ("dns", "006", "域名解析超时"),
+            "ERR_SSL_PROTOCOL_ERROR": ("tls", "035", "TLS 握手失败"),
+            "ERR_CERT_AUTHORITY_INVALID": ("certificate", "060", "TLS 证书校验失败"),
+            "ERR_CERT_DATE_INVALID": ("certificate", "060", "TLS 证书有效期校验失败"),
+            "ERR_TUNNEL_CONNECTION_FAILED": ("proxy", "097", "代理隧道连接失败"),
+            "ERR_PROXY_CONNECTION_FAILED": ("proxy", "097", "代理连接失败"),
+        }.get(browser_error) if isinstance(browser_error, str) else None
+        if browser_transport:
+            kind, suffix, message = browser_transport
+            return {"cause_code": f"roxy_at_transport_{kind}", "cause_display_code": f"NET-ROXY-AT-{suffix}",
+                    "cause_summary": "Roxy AT 刷新" + message}
     for diagnostic_source in diagnostic_sources:
         cause = _auth_request_diagnostic_cause(diagnostic_source, code=code)
         if cause is not None:

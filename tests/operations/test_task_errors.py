@@ -5,6 +5,27 @@ from core.operations.errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_roxy_at_network_facts_keep_specific_cause_and_unknown_receipt(self):
+        for marker, suffix, kind, message in (
+            ("ERR_SSL_PROTOCOL_ERROR", "035", "tls", "TLS 握手失败"),
+            ("ERR_HTTP2_PING_FAILED", "003", "connection", "HTTP/2 连接中断"),
+            ("ERR_TUNNEL_CONNECTION_FAILED", "097", "proxy", "代理隧道连接失败"),
+            ("ERR_NAME_NOT_RESOLVED", "006", "dns", "域名解析失败"),
+        ):
+            with self.subTest(marker=marker):
+                summary = {"cause_code": "roxy_login_failed", "outcome": "request_unknown",
+                           "auth_diagnostics": {"operation": "roxy_login", "failure_kind": "transport_error",
+                                                "network_error": marker}}
+                info = classify_task_error(
+                    "Roxy 登录未完成", task_type="token_refresh", stage="authenticate",
+                    error_code="request_unknown", result_summary=summary, task_status="attention_required",
+                )
+                self.assertEqual(f"roxy_at_transport_{kind}", info["code"])
+                self.assertEqual(f"NET-ROXY-AT-{suffix}", info["display_code"])
+                self.assertIn(message, info["summary"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("request_unknown", summary["outcome"])
+
     def test_auth_page_errors_display_the_page_reason_without_changing_receipt(self):
         cases = (
             ("auth_operation_timeout", "AUTH-PAGE-TIMEOUT", "认证页面操作超时"),

@@ -124,7 +124,7 @@ class ConfigField:
         if self.csv_options:
             out["csv_options"] = [value for value in self.csv_options
                                   if self.key != "EMAIL_SOURCE" or value in _LOCAL_EMAIL_SOURCE_VALUES]
-        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
+        if self.key in {"PROXY_POOL_COUNTRIES", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY", "ACCOUNT_AT_REFRESH_COUNTRY"}:
             from config.countries import ISO_3166_ALPHA2
 
             out["country_codes"] = sorted(ISO_3166_ALPHA2)
@@ -195,6 +195,9 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_LIVE_CHECK_DRIVER": "protocol_current",
     "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED": False,
     "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
+    "ACCOUNT_AT_REFRESH_COUNTRY": "",
+    "ACCOUNT_AT_REFRESH_NETWORK_RETRIES": 2,
+    "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS": 900,
     "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED": False,
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK": False,
     "ACCOUNT_AUTH_PROFILE_MODE": "current",
@@ -585,12 +588,24 @@ _FIELD_DEFINITIONS = [
         "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录并保存最新 AT。普通查活保持独立。",
     },
     {
+        "key": "ACCOUNT_AT_REFRESH_COUNTRY", "file": "account.py", "type": "str", "group": "账号补全",
+        "label": "刷新 AT 国家", "help": "留空跟随账号注册国家；也可指定本次刷新使用的国家。协议与 Roxy 刷新共用，任务入队后固定本次策略，登录开始前选定国家和线路；普通查活及注册使用各自国家策略。",
+    },
+    {
+        "key": "ACCOUNT_AT_REFRESH_NETWORK_RETRIES", "file": "account.py", "type": "int", "group": "账号补全",
+        "label": "AT 网络故障换线次数", "help": "明确网络故障先尽可能沿原线路恢复一次，仍失败时换线重新登录；默认最多换线 2 次。0 表示仅原线路恢复。收件超时、验签失败、凭据拒绝及 403/429 限制不触发换线。",
+    },
+    {
+        "key": "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS", "file": "account.py", "type": "int", "group": "账号补全",
+        "label": "AT 网络恢复总时限（秒）", "help": "首次 AT 登录及自动恢复共用的时间预算，默认 900 秒；包含原线路恢复、换线等待和重新登录。达到时限后保留具体错误及全部尝试记录，可继续手动重跑。",
+    },
+    {
         "key": "OPENAI_PROTOCOL_VERSION", "file": "openai_protocol.py", "type": "str", "group": "账号补全",
         "label": "刷新 AT 协议版本", "help": "v1 使用邮箱认证；v2 支持密码和 MFA；v3 优先复用已验证会话并增强 MFA、工作区兼容。仅影响协议刷新 AT；Roxy、注册、2FA、套餐和普通查活不读取此配置。",
     },
     {
         "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
-        "label": "Roxy 刷新调试", "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。仅影响 Roxy 刷新，默认关闭。",
+        "label": "Roxy 刷新调试", "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。网络恢复或总时限耗尽时会关闭本次窗口。仅影响 Roxy 刷新，默认关闭。",
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
@@ -2020,6 +2035,8 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "REGISTRATION_PROXY_RETRY_DELAY": (0, 10.0),
     "ACCOUNT_ACTION_PROXY_RETRIES": (0, 3),
     "ACCOUNT_ACTION_PROXY_RETRY_DELAY": (0, 10.0),
+    "ACCOUNT_AT_REFRESH_NETWORK_RETRIES": (0, 5),
+    "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS": (60, 3600),
     "PROXY_1024_VALIDATE_ATTEMPTS": (1, 100),
     "PROXY_1024_RECENT_TTL": (0, 604800),
     "PROXY_1024_ACQUIRE_INTERVAL": (0, 300.0),
@@ -2399,7 +2416,7 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
     if isinstance(value, (dict, list, tuple, set)):
         raise ValueError("必须是字符串")
     text = "" if value is None else str(value).strip()
-    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
+    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY", "ACCOUNT_AT_REFRESH_COUNTRY"}:
         # NA 是纳米比亚，不是通用空占位。
         return text
     # ``none`` 是通用空占位，但也是 CLOUDFLARE_AUTH_MODE 的合法
@@ -2454,10 +2471,12 @@ def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
         if field.key in _HUANGUANG_PROXY_LIST_KEYS and len(result) > 500:
             raise ValueError("去重后最多填写 500 条代理地址")
         return result
-    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY"}:
+    if field.key in {"PROXY_POOL_DEFAULT_COUNTRY", "REGISTRATION_COUNTRY", "ACCOUNT_AT_REFRESH_COUNTRY"}:
         from config.countries import ISO_3166_ALPHA2
 
         result = result.upper()
+        if field.key == "ACCOUNT_AT_REFRESH_COUNTRY" and not result:
+            return ""
         if result not in ISO_3166_ALPHA2:
             raise ValueError("请选择有效的 ISO 两位国家代码")
         return result
@@ -2968,7 +2987,7 @@ def apply_env_namespace(namespace: dict[str, Any], explicit_schema: Mapping[str,
         raw, _ = _raw_for_field(field, os.environ)
         if raw is None:
             continue
-        if not str(raw).strip() and field.key not in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "EMAIL_SOURCE", *_HUANGUANG_PROXY_LIST_KEYS}:
+        if not str(raw).strip() and field.key not in {"PROXY_POOL", "PLAN_CHECK_COUNTRIES", "PROXY_POOL_COUNTRIES", "ACCOUNT_AT_REFRESH_COUNTRY", "EMAIL_SOURCE", *_HUANGUANG_PROXY_LIST_KEYS}:
             continue
         try:
             # 兼容旧模块的 protocol_direct 等别名：模块常量保留旧值，API 再公共化。

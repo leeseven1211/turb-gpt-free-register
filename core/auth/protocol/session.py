@@ -681,9 +681,16 @@ class BrowserSession:
 
     def _bounded_request_kwargs(self, kwargs: dict) -> dict:
         budgets = [budget for owner, budget in _REQUEST_BUDGETS.get() if owner is self]
-        if not budgets:
+        from core.network.at_transport_recovery import current_scope
+
+        scope = current_scope()
+        recovery_remaining = scope.remaining() if scope is not None else None
+        if not budgets and recovery_remaining is None:
             return kwargs
-        remaining = min(budget.require("协议 HTTP 请求") for budget in budgets)
+        limits = [budget.require("协议 HTTP 请求") for budget in budgets]
+        if recovery_remaining is not None:
+            limits.append(recovery_remaining)
+        remaining = min(limits)
         if remaining < 0.001:
             # libcurl 按毫秒向下取整；小于 1ms 会变成 0（关闭总超时）。
             from core.auth.state_machine import StageTimeout
@@ -733,6 +740,12 @@ class BrowserSession:
 
     def get(self, url: str, headers: dict = None, **kwargs):
         """发送 GET 请求"""
+        from core.network.at_transport_recovery import recover_request
+
+        return recover_request(self, "GET", url, lambda: self._get_once(url, headers=headers, **kwargs))
+
+    def _get_once(self, url: str, headers: dict = None, **kwargs):
+        """记录每次实际请求，AT 恢复时重新裁剪剩余请求预算。"""
         self._raise_if_circuit_open()
         kwargs = self._bounded_request_kwargs(kwargs)
         headers = self._attach_openai_target_headers_for_url(url, headers)
@@ -770,6 +783,12 @@ class BrowserSession:
 
     def post(self, url: str, headers: dict = None, **kwargs):
         """发送 POST 请求"""
+        from core.network.at_transport_recovery import recover_request
+
+        return recover_request(self, "POST", url, lambda: self._post_once(url, headers=headers, **kwargs))
+
+    def _post_once(self, url: str, headers: dict = None, **kwargs):
+        """保持原请求内容、计量和诊断，每次恢复前重新裁剪预算。"""
         self._raise_if_circuit_open()
         kwargs = self._bounded_request_kwargs(kwargs)
         headers = self._attach_openai_target_headers_for_url(url, headers)

@@ -93,6 +93,9 @@ EXTRACT_CONFIG_ALLOWLIST = {
     "request_timeout": "EXTRACT_LINK_REQUEST_TIMEOUT",
     "event_timeout": "EXTRACT_LINK_EVENT_TIMEOUT",
     "refresh_driver": "ACCOUNT_AT_REFRESH_DRIVER",
+    "refresh_at_country": "ACCOUNT_AT_REFRESH_COUNTRY",
+    "network_retry_limit": "ACCOUNT_AT_REFRESH_NETWORK_RETRIES",
+    "network_timeout_seconds": "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS",
     "refresh_protocol_version": "OPENAI_PROTOCOL_VERSION",
     "refresh_roxy_debug_enabled": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
 }

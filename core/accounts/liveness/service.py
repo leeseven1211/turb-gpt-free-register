@@ -42,6 +42,9 @@ LIVE_CONFIG_ALLOWLIST = {
     "refresh_roxy_debug_enabled": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
     "live_check_proxy_mode": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
     "refresh_at_proxy_mode": "ACCOUNT_REFRESH_AT_PROXY_MODE",
+    "refresh_at_country": "ACCOUNT_AT_REFRESH_COUNTRY",
+    "network_retry_limit": "ACCOUNT_AT_REFRESH_NETWORK_RETRIES",
+    "network_timeout_seconds": "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS",
     "roxy_fallback_enabled": "LIVE_CHECK_ROXY_FALLBACK_ENABLED",
     "proxy_retry_limit": "ACCOUNT_ACTION_PROXY_RETRIES",
     "proxy_retry_delay": "ACCOUNT_ACTION_PROXY_RETRY_DELAY",
@@ -55,6 +58,26 @@ def _snapshot_value(snapshot, key: str, default=None):
     if isinstance(snapshot, dict) and key in snapshot:
         return snapshot[key]
     return default
+
+
+def _resolve_at_refresh_country(*, account_id: int, email: str, config_snapshot: dict | None) -> str:
+    """独立 AT 操作在登录前固定本轮国家；旧快照缺字段时沿用注册国家。"""
+    from config import account as account_config
+    from config.countries import ISO_3166_ALPHA2
+
+    policy = (
+        config_snapshot.get("refresh_at_country", "")
+        if isinstance(config_snapshot, dict)
+        else getattr(account_config, "ACCOUNT_AT_REFRESH_COUNTRY", "")
+    )
+    country = str(policy or "").strip().upper()
+    if country:
+        if country not in ISO_3166_ALPHA2:
+            raise ValueError("AT 刷新国家必须为有效的 ISO 两位国家代码，或留空跟随注册国家")
+        return country
+    from core.proxy.account_routes import resolve_account_region
+
+    return resolve_account_region(account_id=account_id, email=email)
 
 
 def _captured_proxy_source(purpose: str) -> str | None:
@@ -188,6 +211,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "email_otp_validate_failed", "email_otp_validate_invalid_response",
     "workspace_select_failed", "workspace_select_invalid_response",
     "access_token_expired", "auth_context_ambiguous", "session_identity_mismatch",
+    "at_refresh_network_budget_exhausted",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "email_otp_validate", "workspace_select", "mfa_issue_challenge", "mfa_verify",
@@ -256,6 +280,18 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
         transport_type = value.get("transport_exception_type")
         if isinstance(transport_type, str) and transport_type in TRANSPORT_EXCEPTION_TYPES:
             safe["transport_exception_type"] = transport_type
+    if diagnostic_operation in {"roxy_navigation", "roxy_login", "roxy_email_otp", "roxy_session", "roxy_callback"}:
+        network_error = value.get("network_error")
+        if isinstance(network_error, str) and network_error in {
+            "ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_CONNECTION_RESET",
+            "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_TIMED_OUT", "ERR_TIMED_OUT",
+            "ERR_NAME_NOT_RESOLVED", "ERR_DNS_TIMED_OUT", "ERR_SSL_PROTOCOL_ERROR",
+            "ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_DATE_INVALID", "ERR_HTTP2_PROTOCOL_ERROR",
+            "ERR_HTTP2_PING_FAILED", "Failed to fetch",
+        }:
+            safe["network_error"] = network_error
+        if value.get("transport_kind") in {"proxy", "connection", "timeout", "dns", "tls", "certificate"}:
+            safe["transport_kind"] = value["transport_kind"]
     status = value.get("http_status")
     if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
         safe["http_status"] = status
@@ -560,6 +596,22 @@ def _account_action_proxy_retry_delay(config_snapshot: dict | None = None) -> fl
     return max(0.0, min(10.0, value))
 
 
+def _at_network_recovery_policy(config_snapshot: dict | None) -> tuple[int, float]:
+    """冻结本 Run 的额外换线次数和网络恢复总预算。"""
+    from config import account as account_config
+
+    def number(key, attribute, default):
+        raw = config_snapshot.get(key, default) if isinstance(config_snapshot, dict) else getattr(account_config, attribute, default)
+        try:
+            return int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    retries = number("network_retry_limit", "ACCOUNT_AT_REFRESH_NETWORK_RETRIES", 2)
+    seconds = number("network_timeout_seconds", "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS", 900)
+    return max(0, min(5, retries)), float(max(60, min(3600, seconds)))
+
+
 def _is_retryable_account_proxy_acquisition_error(error: object) -> bool:
     """只把代理平台/租约碰撞视为可换线错误。"""
     text = str(error or "").lower()
@@ -580,11 +632,19 @@ def _acquire_account_proxy_with_retries(
     retry_callback=None,
     config_snapshot: dict | None = None,
     source: str | None = None,
+    region: str | None = None,
+    timeout: float | None = None,
 ):
     """只重试账号动作的代理申请，不重跑后续认证步骤。"""
     retry_limit = _account_action_proxy_retry_limit(config_snapshot)
     base_rotation = max(0, int(rotation_index or 0))
+    deadline = None if timeout is None else time.monotonic() + max(0, float(timeout))
     for attempt in range(retry_limit + 1):
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            from core.network.at_transport_recovery import AtRecoveryTimeout
+
+            raise AtRecoveryTimeout("AT 刷新等待代理时网络恢复总预算耗尽")
         try:
             return acquire_proxy(
                 account_id=account_id,
@@ -592,6 +652,8 @@ def _acquire_account_proxy_with_retries(
                 purpose=purpose,
                 rotation_index=base_rotation + attempt,
                 **({"source": source} if source else {}),
+                **({"region": region} if region else {}),
+                **({"timeout": remaining} if remaining is not None else {}),
             )
         except Exception as exc:
             if attempt >= retry_limit or not _is_retryable_account_proxy_acquisition_error(exc):
@@ -601,7 +663,7 @@ def _acquire_account_proxy_with_retries(
                 retry_callback(next_attempt, retry_limit, exc)
             delay = _account_action_proxy_retry_delay(config_snapshot)
             if delay:
-                time.sleep(delay)
+                time.sleep(delay if deadline is None else min(delay, max(0, deadline - time.monotonic())))
 
 
 def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: dict | None = None) -> str:
@@ -878,6 +940,26 @@ def _run_live_check(
     def save_result(account_id, result):
         return result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
 
+    refresh_authenticated_hook = on_authenticated
+    if force_refresh and callable(on_authenticated):
+        def refresh_authenticated_hook(*args, **kwargs):
+            from core.network.at_transport_recovery import current_scope
+
+            scope = current_scope()
+            if scope is None:
+                return on_authenticated(*args, **kwargs)
+            authenticated = args[0] if args else kwargs.get("result")
+            if (isinstance(authenticated, dict) and authenticated.get("ok")
+                    and str(authenticated.get("access_token") or "").strip()):
+                _checkpoint(operation_context, "AT 已取得，成功回调前检查任务状态")
+            else:
+                scope.check()
+            # AT 已取得后的套餐/业务写回使用自身预算，不延伸认证恢复作用域。
+            with scope.suspend():
+                value = on_authenticated(*args, **kwargs)
+            _checkpoint(operation_context, "AT 成功回调完成后检查任务状态")
+            return value
+
     account_route = None
     result = None
     route: dict = {}
@@ -888,6 +970,15 @@ def _run_live_check(
     network_started = False
     debug_activation = None
     debug_cancelled = False
+    network_recovery_started = None
+    network_recovery_deadline = None
+    network_route_retries = 0
+    network_recovery_attempts = 0
+    same_route_retries = 0
+    network_recovery_exhausted = False
+    network_recovery_timeout = False
+    network_recovery_history: list[dict] = []
+    final_network_failure = None
     try:
         _checkpoint(operation_context)
         with _LOCK:
@@ -944,6 +1035,11 @@ def _run_live_check(
             )
         from core.proxy.account_routes import acquire_account_proxy
 
+        # 显式线路来自同一认证链，必须继续复用；普通查活仍按原入口自行解析国家。
+        refresh_country = _resolve_at_refresh_country(
+            account_id=account_id, email=email, config_snapshot=config_snapshot,
+        ) if force_refresh and not str(proxy or "").strip() else None
+
         def begin_network_stage() -> None:
             nonlocal network_open, network_started
             network_open = True
@@ -976,13 +1072,16 @@ def _run_live_check(
                 account_id=account_id,
                 email=email,
                 purpose=purpose,
-                rotation_index=max(0, attempt - 1),
+                rotation_index=max(0, attempt - 1) + (network_route_retries * 4 if force_refresh else 0),
                 retry_callback=report_retry,
                 config_snapshot=config_snapshot,
                 source=proxy_source or _snapshot_value(
                     config_snapshot,
                     "refresh_at_proxy_mode" if force_refresh else "live_check_proxy_mode",
                 ),
+                **({"region": refresh_country} if refresh_country else {}),
+                **({"timeout": max(0, network_recovery_deadline - time.monotonic())}
+                   if force_refresh and network_recovery_deadline is not None else {}),
             )
             route = account_route.public_dict()
             _append_log(
@@ -1081,11 +1180,16 @@ def _run_live_check(
         last_probe_error_category = None
         last_probe_http_status = None
 
-        def invoke_refresh(call, *, driver_name: str):
+        def invoke_refresh_once(call, *, driver_name: str):
             """在网络预检完成后建立远端请求边界，并执行一次刷新。"""
             nonlocal refresh_boundary
+            from core.network.at_transport_recovery import AtRecoveryTimeout, network_failure
+
             if operation_context is None:
                 return call(None)
+            prior_unknown = bool(refresh_boundary and refresh_boundary.get("receipt_outcome") in {
+                "unknown", "response_received", "local_commit_required",
+            })
 
             def begin_remote_request() -> None:
                 nonlocal refresh_boundary
@@ -1116,6 +1220,8 @@ def _run_live_check(
                     begin_remote_request()
             except account_task_store.OperationLeaseLost:
                 raise
+            except AtRecoveryTimeout:
+                raise
             except OperationCancelled as exc:
                 _record_refresh_receipt(
                     operation_context,
@@ -1128,23 +1234,25 @@ def _run_live_check(
                 if refresh_boundary is None:
                     # 适配器未报告阶段就抛错时，保守地按远端结果未知处理。
                     begin_remote_request()
+                transport_failure = network_failure(error=exc) if force_refresh else None
                 _record_refresh_receipt(
                     operation_context,
                     refresh_boundary,
                     "unknown",
                     {
-                        "response_observed": False,
+                        "response_observed": bool((transport_failure or {}).get("response_observed")),
                         "exception_type": type(exc).__name__,
                     },
                 )
                 return _mark_refresh_reconcile_required(
                     {
                         "error": "refresh_driver_exception",
-                        "error_category": "runtime",
+                        "error_category": "network" if transport_failure else "runtime",
                         "auth_diagnostics": {
                             "operation": "protocol_v3_auth" if driver_name == "protocol_v3" else "protocol_v2_auth",
                             "failure_kind": "runtime_exception",
                             "exception_type": type(exc).__name__[:80],
+                            **(transport_failure or {}),
                         },
                     },
                 )
@@ -1158,6 +1266,12 @@ def _run_live_check(
                 )
                 return _mark_refresh_reconcile_required({"error": "refresh_result_invalid"})
             if _refresh_result_not_submitted(remote_result):
+                if prior_unknown:
+                    reporter.note(
+                        stage="reauth", message="本轮尚未派发认证请求，前次未知回执继续保留",
+                        detail={"attempt_not_submitted": True, "previous_receipt_preserved": True},
+                    )
+                    return _mark_refresh_reconcile_required(remote_result)
                 _record_refresh_receipt(
                     operation_context, refresh_boundary, "not_submitted",
                     {
@@ -1190,6 +1304,12 @@ def _run_live_check(
                 )
                 return remote_result
             if _refresh_result_is_rejected(remote_result):
+                if prior_unknown:
+                    reporter.note(
+                        stage="reauth", message="本轮认证被拒绝，前次未知回执继续保留",
+                        detail={"attempt_rejected": True, "previous_receipt_preserved": True},
+                    )
+                    return _mark_refresh_reconcile_required(remote_result)
                 _record_refresh_receipt(
                     operation_context,
                     refresh_boundary,
@@ -1202,7 +1322,7 @@ def _run_live_check(
                 )
                 return remote_result
             if _refresh_result_before_remote_boundary(remote_result):
-                return remote_result
+                return _mark_refresh_reconcile_required(remote_result) if prior_unknown else remote_result
             _record_refresh_receipt(
                 operation_context,
                 refresh_boundary,
@@ -1210,6 +1330,120 @@ def _run_live_check(
                 {"response_observed": _unknown_refresh_response_observed(remote_result), "status": remote_result.get("status")},
             )
             return _mark_refresh_reconcile_required(remote_result)
+
+        def invoke_refresh(call, *, driver_name: str):
+            """仅 AT 自动恢复网络故障，同一 Run 的历史未知回执不阻断换线登录。"""
+            nonlocal account_route, route, network_recovery_started, network_recovery_deadline
+            nonlocal network_route_retries, network_recovery_attempts, same_route_retries
+            nonlocal network_recovery_exhausted, network_recovery_timeout, final_network_failure
+            from core.network.at_transport_recovery import AtRecoveryScope, AtRecoveryTimeout, network_failure, result_network_failure
+
+            if not force_refresh:
+                return invoke_refresh_once(call, driver_name=driver_name)
+            retry_limit, timeout_seconds = _at_network_recovery_policy(config_snapshot)
+            if network_recovery_started is None:
+                network_recovery_started = time.monotonic()
+                network_recovery_deadline = network_recovery_started + timeout_seconds
+
+            def snapshot():
+                return {
+                    "same_route_retries": same_route_retries, "route_retries": network_route_retries,
+                    "attempts": network_recovery_attempts,
+                    "elapsed_seconds": round(max(0, time.monotonic() - network_recovery_started), 3),
+                    "exhausted": network_recovery_exhausted, "timeout": network_recovery_timeout,
+                    "history": list(network_recovery_history),
+                }
+
+            def safe_failure(failure):
+                return {key: failure[key] for key in (
+                    "failure_kind", "exception_type", "curl_error_code", "http_status", "network_error",
+                    "transport_kind", "response_observed", "operation",
+                ) if key in failure}
+
+            def retry_event(event):
+                detail = {"attempt": network_recovery_attempts, **safe_failure(event)}
+                reporter.note(
+                    stage="reauth", level="WARNING", message="AT 网络请求失败，沿原线路和当前步骤重试一次",
+                    detail={**detail, "same_route_retry": True},
+                )
+                network_recovery_history.append({**detail, "event": "same_route_retry"})
+                del network_recovery_history[:-24]
+
+            while True:
+                final_network_failure = None
+                scope = AtRecoveryScope(
+                    checkpoint=lambda: _checkpoint(operation_context, "AT 网络恢复前检查任务状态"),
+                    on_event=retry_event, deadline=network_recovery_deadline,
+                )
+                network_recovery_attempts += 1
+                try:
+                    with scope.activate():
+                        attempt_result = invoke_refresh_once(call, driver_name=driver_name)
+                        if isinstance(attempt_result, dict) and attempt_result.get("ok") and str(attempt_result.get("access_token") or "").strip():
+                            # 后置套餐/落库回调耗时不能把已拿到的 AT 改写为网络超时。
+                            _checkpoint(operation_context, "AT 已获取，写回前检查任务状态")
+                        else:
+                            scope.check()
+                        failure = result_network_failure(attempt_result)
+                except AtRecoveryTimeout:
+                    same_route_retries += scope.same_route_retries
+                    if scope.pending_network_failure:
+                        final_network_failure = safe_failure(scope.pending_network_failure)
+                    network_recovery_exhausted = network_recovery_timeout = True
+                    attempt_result = {
+                        "ok": False, "status": "failed", "error": "at_refresh_network_budget_exhausted",
+                        "error_category": "network", "live_check_driver": driver_name,
+                        "roxy_fallback_allowed": False,
+                    }
+                    if refresh_boundary is not None:
+                        _record_refresh_receipt(operation_context, refresh_boundary, "unknown", {
+                            "response_observed": False, "network_recovery_timeout": True,
+                        })
+                        attempt_result = _mark_refresh_reconcile_required(attempt_result)
+                    else:
+                        attempt_result.update(mutation_submitted=False, action_dispatched=False)
+                    attempt_result["network_recovery"] = snapshot()
+                    return attempt_result
+                except (OperationCancelled, account_task_store.OperationLeaseLost):
+                    raise
+                except Exception as exc:
+                    failure = network_failure(error=exc)
+                    if failure is None:
+                        raise
+                    attempt_result = {
+                        "ok": False, "status": "failed", "error": "refresh_driver_exception",
+                        "error_category": "network", "live_check_driver": driver_name,
+                        "auth_diagnostics": {"operation": "protocol_v3_auth" if driver_name == "protocol_v3" else "protocol_v2_auth",
+                                             **failure},
+                    }
+                    if refresh_boundary is not None:
+                        attempt_result = _mark_refresh_reconcile_required(attempt_result)
+                same_route_retries += scope.same_route_retries
+                if failure is None:
+                    final_network_failure = None
+                    if isinstance(attempt_result, dict):
+                        attempt_result["network_recovery"] = snapshot()
+                    return attempt_result
+                final_network_failure = safe_failure(failure)
+                network_recovery_history.append({
+                    "event": "route_failure", "attempt": network_recovery_attempts, **final_network_failure,
+                })
+                del network_recovery_history[:-24]
+                if account_route is not None:
+                    account_route.release(reason=f"at-network-failure-{account_id}", fault=True)
+                    account_route = None
+                if str(proxy or "").strip() or network_route_retries >= retry_limit:
+                    network_recovery_exhausted = True
+                    attempt_result["network_recovery"] = snapshot()
+                    return attempt_result
+                network_route_retries += 1
+                reporter.note(
+                    stage="reauth", level="WARNING", message="AT 网络恢复仍失败，隔离原线路并换新线路重新登录",
+                    detail={"attempt": network_recovery_attempts, "route_retry": network_route_retries,
+                            "restart_login": True, **final_network_failure},
+                )
+                route = {}
+
         if saved_access_token and not force_refresh:
             probe_attempts = 4 if proxy is None else 1
             _append_log(email, "[查活] 优先验证现有 accessToken；有效则无需重复发送邮箱验证码")
@@ -1361,17 +1595,19 @@ def _run_live_check(
         if result is None and selected_refresh_driver == "browser_roxy":
             from core.accounts.liveness.roxy.flow import refresh_access_token
 
-            selected_proxy = acquire_retry_route(1) if proxy is None else acquire_explicit_route()
             _append_log(email, "[查活][Roxy] 开始浏览器登录刷新 AT")
             _checkpoint(operation_context, "Roxy 登录刷新 AT 前检查取消状态")
-            result = invoke_refresh(
-                lambda on_remote_request_started: refresh_access_token(
-                    email,
-                    proxy=selected_proxy,
+            def run_browser_refresh(on_remote_request_started):
+                selected_proxy = acquire_retry_route(1) if not str(proxy or "").strip() else acquire_explicit_route()
+                return refresh_access_token(
+                    email, proxy=selected_proxy,
                     **({"context_recorder": auth_context_recorder} if auth_context_recorder is not None else {}),
                     on_remote_request_started=on_remote_request_started,
-                    **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
-                ),
+                    **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
+                )
+
+            result = invoke_refresh(
+                run_browser_refresh,
                 driver_name="browser_roxy",
             )
             if isinstance(result, dict):
@@ -1398,7 +1634,7 @@ def _run_live_check(
                         **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
                         **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
                            if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
-                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+                        **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
                     ),
                     driver_name=selected_refresh_driver,
                 )
@@ -1411,13 +1647,12 @@ def _run_live_check(
                         clear_log=False,
                         proxy_supplier=acquire_retry_route,
                         **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
-                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+                        **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
                     ),
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
         elif result is None:
             # 有效显式线路继续复用调用方租约；空字符串按未提供线路走统一代理池。
-            selected_proxy = acquire_explicit_route()
             _append_log(
                 email,
                 "[查活] 开始后台执行 "
@@ -1432,30 +1667,34 @@ def _run_live_check(
                     from core.accounts.liveness.protocol.v2 import refresh_access_token
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
-                result = invoke_refresh(
-                    lambda on_remote_request_started: refresh_access_token(
-                        email,
-                        proxy=selected_proxy,
-                        identity=protocol_identity,
+                def run_explicit_refresh(on_remote_request_started):
+                    selected_proxy = acquire_explicit_route()
+                    return refresh_access_token(
+                        email, proxy=selected_proxy, identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
                         **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
                         **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
                            if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
-                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
-                    ),
+                        **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
+                    )
+
+                result = invoke_refresh(
+                    run_explicit_refresh,
                     driver_name=selected_refresh_driver,
                 )
             else:
                 _checkpoint(operation_context, "邮箱登录刷新 AT 前检查取消状态")
-                result = invoke_refresh(
-                    lambda on_remote_request_started: check_account_liveness(
-                        email,
-                        proxy=selected_proxy,
-                        clear_log=False,
+                def run_explicit_email_refresh(on_remote_request_started):
+                    selected_proxy = acquire_explicit_route()
+                    return check_account_liveness(
+                        email, proxy=selected_proxy, clear_log=False,
                         **({"on_remote_request_started": on_remote_request_started} if on_remote_request_started else {}),
-                        **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
-                    ),
+                        **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
+                    )
+
+                result = invoke_refresh(
+                    run_explicit_email_refresh,
                     driver_name=selected_refresh_driver or "legacy_email_otp",
                 )
         if refresh_boundary is not None:
@@ -1492,7 +1731,6 @@ def _run_live_check(
                     detail={"protocol_error": result.get("error")},
                 )
                 _append_log(email, "[查活] 协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底")
-                roxy_proxy = account_route.proxy_url if account_route is not None else proxy
                 if proxy is None and account_route is not None:
                     # A protocol failure can be caused by the current exit
                     # (403/TLS/proxy corruption). Do not send the browser
@@ -1508,54 +1746,18 @@ def _run_live_check(
                     account_route = None
                     route = {}
 
-                    def report_fallback_retry(next_attempt: int, retry_limit: int, error: Exception) -> None:
-                        message = f"Roxy 兜底申请新线路失败，准备换线重试 ({next_attempt}/{retry_limit})"
-                        _append_log(email, f"[查活] {message}: {type(error).__name__}: {str(error)[:220]}")
-                        reporter.note(
-                            stage="network",
-                            level="WARNING",
-                            message=message,
-                            detail={"error": f"{type(error).__name__}: {str(error)[:300]}"},
-                        )
-
-                    begin_network_stage()
-                    account_route = _acquire_account_proxy_with_retries(
-                        acquire_proxy=acquire_account_proxy,
-                        account_id=account_id,
-                        email=email,
-                        purpose="token-refresh",
-                        rotation_index=4,
-                        retry_callback=report_fallback_retry,
-                        config_snapshot=config_snapshot,
-                        source=proxy_source or _snapshot_value(
-                            config_snapshot, "refresh_at_proxy_mode",
-                        ),
-                    )
-                    route = account_route.public_dict()
-                    reporter.resource(
-                        "resource.acquired",
-                        message="Roxy 兜底已切换新认证线路",
-                        stage="network",
-                        detail=route,
-                    )
-                    reporter.stage(
-                        "network",
-                        "success",
-                        "Roxy 兜底认证线路已就绪",
-                        detail={
-                            key: route.get(key)
-                            for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
-                        },
-                    )
-                    network_open = False
-                    roxy_proxy = account_route.proxy_url
-
                 def run_roxy_refresh(on_remote_request_started):
+                    selected_roxy_proxy = (
+                        acquire_retry_route(5) if account_route is None and not str(proxy or "").strip()
+                        else acquire_explicit_route() if account_route is None else account_route.proxy_url
+                    )
                     if on_remote_request_started:
                         on_remote_request_started()
-                    refresh_kwargs = {"proxy": roxy_proxy}
+                    refresh_kwargs = {"proxy": selected_roxy_proxy}
                     if auth_context_recorder is not None:
                         refresh_kwargs["context_recorder"] = auth_context_recorder
+                    if callable(refresh_authenticated_hook):
+                        refresh_kwargs["on_authenticated"] = refresh_authenticated_hook
                     return refresh_access_token(email, **refresh_kwargs)
 
                 roxy_result = invoke_refresh(
@@ -1708,6 +1910,7 @@ def _run_live_check(
                 "fingerprint": result.get("fingerprint"),
                 "token_expired": result.get("token_expired"),
                 "needs_live_check": result.get("needs_live_check"),
+                **({"network_recovery": result["network_recovery"]} if "network_recovery" in result else {}),
             },
             route={**route, **{key: result.get(key) for key in ("network_route", "proxy_provider", "proxy_region", "proxy_used")}},
             validation_method=result.get("validation_method"),
@@ -1851,7 +2054,7 @@ def _run_live_check(
         return result
     finally:
         if account_route is not None:
-            if _is_proxy_transport_failure(result):
+            if _is_proxy_transport_failure(result) or force_refresh and final_network_failure:
                 account_route.release(reason=f"live-check-{account_id}", fault=True)
             else:
                 account_route.release(reason=f"live-check-{account_id}")

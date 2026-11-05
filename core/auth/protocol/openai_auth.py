@@ -158,6 +158,11 @@ def _url_path(value: object) -> str:
 
 def _proxy_retry_config() -> tuple[int, float]:
     """读取可热加载的代理网络重试配置，并约束异常配置值。"""
+    from core.network.at_transport_recovery import current_scope
+
+    if current_scope() is not None:
+        # 独立 AT 已在真实请求层拥有一次原线恢复，避免共享重试循环再次叠加。
+        return 1, 0.0
     attempts = max(1, int(getattr(_protocol_cfg, "OPENAI_PROXY_RETRY_MAX_ATTEMPTS", 3)))
     delay = max(0.0, float(getattr(_protocol_cfg, "OPENAI_PROXY_RETRY_DELAY", 1.0)))
     return attempts, delay

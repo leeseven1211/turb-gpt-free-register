@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 from core.auth.state_machine import CancellationRequested
 from core.operations.runtime import OperationAccountDeactivated, OperationCancelled, check_cancelled
 from core.operations.task_gateway import OperationLeaseLost
+from core.network.at_transport_recovery import AtRecoveryTimeout
 
 logger = logging.getLogger("core.at_callback")
 _AUTH = "https://auth.openai.com"
@@ -23,7 +24,7 @@ _REDIRECTS = {301, 302, 303, 307, 308}
 _TEMPORARY_HTTP = {502, 503, 504}
 _TEMPORARY_CURL = {5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92, 95, 97}
 _CALLBACK_ERROR_CODES = {"OAuthCallback", "OAuthSignin", "Configuration", "AccessDenied", "invalid_state", "invalid_grant"}
-_CONTROL_ERRORS = (CancellationRequested, OperationCancelled, OperationLeaseLost, OperationAccountDeactivated)
+_CONTROL_ERRORS = (CancellationRequested, OperationCancelled, OperationLeaseLost, OperationAccountDeactivated, AtRecoveryTimeout)
 
 
 class CallbackRecoveryError(RuntimeError):
@@ -113,11 +114,18 @@ def _failure(code: str, operation: str, url: str, *, kind: str, hop: int, attemp
         curl_code in _TEMPORARY_CURL
         or (curl_code is None and any(part in exception_type for part in ("timeout", "connection", "ssl", "proxy")))
     )
-    return CallbackRecoveryError(
+    failure = CallbackRecoveryError(
         code, category="network" if kind in {"transport_error", "http_error"} else "response",
         retryable=temporary_transport or (kind == "http_error" and diagnostics.get("http_status") in _TEMPORARY_HTTP),
         diagnostics=diagnostics,
     )
+    from core.network.at_transport_recovery import current_scope, exhausted, network_failure
+
+    if exhausted(exc) or exhausted(response):
+        failure._at_recovery_exhausted = current_scope()
+    if current_scope() is not None:
+        failure.retryable = network_failure(error=exc, response=response) is not None
+    return failure
 
 
 def _trusted_url(value: str, *, base: str = _AUTH) -> str:
@@ -244,7 +252,9 @@ def _read_session(session, email: str, *, recovery: _Recovery, hop: int, checkpo
             _check(checkpoint)
             return result
         except CallbackRecoveryError as exc:
-            if exc.retryable and attempt == 0 and recovery.claim():
+            from core.network.at_transport_recovery import exhausted
+
+            if exc.retryable and not exhausted(exc) and attempt == 0 and recovery.claim():
                 logger.warning("[AT回调] Session 临时失败，沿用原会话重读一次 failure_kind=%s", exc.diagnostics["failure_kind"])
                 attempt = 1
                 continue
@@ -345,7 +355,14 @@ def complete_callback(session, continue_url: str, *, referer: str, email: str, c
                     # 已有 Session Cookie 时只核验，不重放可能已消费的 code。
                     if _has_session_cookie(session):
                         raise
-                    if failure.retryable and attempt == 0 and recovery.claim():
+                    from core.network.at_transport_recovery import current_scope, exhausted
+
+                    if failure.retryable and not exhausted(failure) and attempt == 0 and recovery.claim():
+                        scope = current_scope()
+                        if scope is not None:
+                            scope.check()
+                            scope.same_route_retries += 1
+                            scope.emit({"event": "same_route_retry", "operation": "oauth_callback", "retry_attempt": 1})
                         logger.warning("[AT回调] 当前 Session 尚未建立，沿用原会话恢复失败导航一次 hop=%s", hop)
                         attempt = 1
                         continue
