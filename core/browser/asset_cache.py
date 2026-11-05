@@ -66,6 +66,11 @@ def _asset_type(url: str, *, policy: str = "strict") -> str | None:
         if not prefix:
             return None
         name = url[len(prefix):]
+        if policy == "token_refresh" and prefix == _PUBLIC_ASSET_PREFIXES[0] and name.startswith("async/"):
+            # 只覆盖 ChatGPT 公开异步脚本这一层；文件名仍须完整通过版本校验。
+            name = name[len("async/"):]
+            if not name.endswith(".js"):
+                return None
         versioned = _VERSIONED_FILE.fullmatch(name) or (
             policy == "token_refresh" and _HASHED_CSS_FILE.fullmatch(name)
         )
@@ -734,6 +739,8 @@ class PublicAssetCache:
         if method == "Network.requestServedFromCache":
             if self._source(rid, "native"):
                 self._count("native_hits")
+            if self.policy == "token_refresh" and rid in self._requests:
+                self._maybe_store(rid, self._requests[rid])
             return
         rec = self._record(rid)
         if method == "Network.requestWillBeSent":
@@ -783,7 +790,19 @@ class PublicAssetCache:
         return isinstance(url, str) and any(url.startswith(prefix) for prefix in _PUBLIC_ASSET_PREFIXES) and urlsplit(url).path.endswith((".js", ".css"))
 
     def _maybe_store(self, rid, rec):
-        if not rec.get("complete") or rec.get("done"):
+        if rec.get("done"):
+            return
+        if self.policy == "token_refresh":
+            with self._lock:
+                source = self._sources.get(rid)
+            if source in {"pending", "local", "native"}:
+                # 本地回放与原生缓存可能没有网络 ExtraInfo，无须再次证明或收录。
+                # 未确认时不标记 done，允许 fulfill 失败后的真实回源继续收录。
+                rec.pop("metadata_deadline", None)
+                if source != "pending":
+                    rec["done"] = True
+                return
+        if not rec.get("complete"):
             return
         url = rec.get("url", "")
         if not self._is_asset_candidate(url):
@@ -920,6 +939,11 @@ class PublicAssetCache:
                 self._invalidate_fulfill(tag)
                 return
             self._source(tag[2], "local")
+            if self.policy == "token_refresh":
+                rec = self._requests.get(tag[2])
+                if rec is not None:
+                    rec.pop("metadata_deadline", None)
+                    rec["done"] = True
             self._count("hits")
             self._count("local_served_bytes", tag[3])
             self._count("avoided_upstream_bytes", tag[4])

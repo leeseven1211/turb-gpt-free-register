@@ -552,6 +552,95 @@ class TokenRefreshPublicAssetTests(_TempFiles):
         for invalid in (url + "?private=1", url.replace(".css", ".js"), url.replace("/assets/", "/assets/async/")):
             self.assertIsNone(_asset_type(invalid, policy="token_refresh"))
 
+    def test_token_refresh_allows_only_one_chatgpt_async_versioned_script_layer(self):
+        url = URL.replace("/assets/", "/assets/async/")
+        self.assertEqual(_asset_type(url, policy="token_refresh"), "Script")
+        self.assertIsNone(_asset_type(url))
+        for invalid in (
+            url + "?version=1", url + "#fragment", url.replace("/async/", "/other/"),
+            url.replace("/async/", "/async/child/"), url.replace("/async/", "/async/../"),
+            url.replace("/async/", "/async/%2e%2e/"), url.replace("/async/", "/%61sync/"),
+            url.replace("entry.client-", "%2fentry.client-"), url.replace("entry.client-1234abcd.js", "entry.js"),
+            url.replace("entry.client", "sentinel"), url.replace(".js", ".css"),
+            url.replace("chatgpt.com/cdn", "auth-cdn.oaistatic.com"),
+        ):
+            with self.subTest(url=invalid):
+                self.assertIsNone(_asset_type(invalid, policy="token_refresh"))
+
+    def test_async_public_script_is_stored_then_replayed_by_a_new_token_refresh_instance(self):
+        url = URL.replace("/assets/", "/assets/async/")
+        first = self.client(policy="token_refresh")
+        self.start_workers(first)
+        self.complete(first, url=url, request_headers={"Cookie": "测试占位值"})
+        body_command = first._ws.commands[-1]
+        self.assertEqual(body_command["method"], "Network.getResponseBody")
+        first._event({"id": body_command["id"], "result": {"body": BODY.decode(), "base64Encoded": False}})
+        first._background_queue.join()
+        first.stop()
+        second = self.client(policy="token_refresh")
+        second._store.prewarm(budget=1)
+        self.event(second, "Fetch.requestPaused", requestId="fetch-1", networkId="net-2", resourceType="Script",
+                   request={"method": "GET", "url": url, "headers": {"Cookie": "另一测试占位值"}})
+        replay = second._ws.commands[-1]
+        self.assertEqual(replay["method"], "Fetch.fulfillRequest")
+        self.assertEqual(base64.b64decode(replay["params"]["body"]), BODY)
+        second._event({"id": replay["id"], "result": {}})
+        self.assertEqual(second.snapshot()["hits"], 1)
+        self.assertEqual(second.snapshot()["reject_reasons"], {})
+
+    def test_local_replay_skips_missing_network_metadata_but_failed_replay_can_store_network_response(self):
+        for confirmed in (False, True):
+            with self.subTest(confirmed=confirmed):
+                client = self.client(policy="token_refresh")
+                client._source("net-1", "pending")
+                self.complete(client, actual_headers=False,
+                              response_headers={"content-type": "application/javascript"})
+                rec = client._requests["net-1"]
+                self.assertNotIn("metadata_deadline", rec)
+                with patch.object(cache_module.time, "monotonic", return_value=time.monotonic() + 10):
+                    client._expire_metadata_waits()
+                self.assertEqual(client.snapshot()["reject_reasons"], {})
+                self.assertEqual(client.snapshot()["error_reasons"], {})
+                self.assertFalse(client._ws.commands)
+                if confirmed:
+                    client._reply(("fulfill", "fetch-1", "net-1", len(BODY), 321), {"result": {}})
+                    self.assertTrue(rec["done"])
+                    self.assertEqual(client.request_source("net-1"), "local")
+                else:
+                    self.assertFalse(rec.get("done"))
+                    client._reply(("fulfill", "fetch-1", "net-1", len(BODY), 321), {"error": {"message": "测试拒绝"}})
+                    self.event(client, "Network.responseReceived", requestId="net-1", type="Script",
+                               response={"url": URL, "status": 200, "headers": PUBLIC})
+                    self.event(client, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+                    self.event(client, "Network.responseReceivedExtraInfo", requestId="net-1", headers=PUBLIC, statusCode=200)
+                    self.assertEqual(client._ws.commands[-1]["method"], "Network.getResponseBody")
+
+    def test_native_cache_without_extra_info_is_skipped_before_or_after_network_completion(self):
+        for event, early in (("served", True), ("served", False), ("disk", True), ("disk", False)):
+            with self.subTest(event=event, early=early):
+                client = self.client(policy="token_refresh")
+                def native_event():
+                    if event == "served":
+                        self.event(client, "Network.requestServedFromCache", requestId="net-1")
+                    else:
+                        self.event(client, "Network.responseReceived", requestId="net-1", type="Script",
+                                   response={"url": URL, "status": 200, "headers": PUBLIC, "fromDiskCache": True})
+                if early:
+                    native_event()
+                self.complete(client, actual_headers=False)
+                if not early:
+                    self.assertIn("metadata_deadline", client._requests["net-1"])
+                    native_event()
+                self.assertTrue(client._requests["net-1"]["done"])
+                self.assertNotIn("metadata_deadline", client._requests["net-1"])
+                with patch.object(cache_module.time, "monotonic", return_value=time.monotonic() + 10):
+                    client._expire_metadata_waits()
+                self.assertEqual(client.snapshot()["reject_reasons"], {})
+                self.assertEqual(client.snapshot()["error_reasons"], {})
+                self.assertEqual(client.snapshot().get("body_requests", 0), 0)
+                self.assertFalse(client._ws.commands)
+                self.assertTrue(client._background_queue.empty())
+
     def test_token_refresh_still_rejects_authorization_including_late_headers(self):
         for headers in ({"Authorization": "测试占位值"}, {"Proxy-Authorization": "测试占位值"}):
             with self.subTest(headers=list(headers)):
