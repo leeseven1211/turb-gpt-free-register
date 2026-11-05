@@ -206,6 +206,51 @@ class _RoxyOtpSubmissionUnknown(RuntimeError):
     code = "email_submit_unconfirmed"
 
 
+def _is_at_totp_login_page(snapshot) -> bool:
+    """AT 只依据可信 MFA 路由和当前可操作表单提前交接 TOTP。"""
+    if not isinstance(snapshot, dict):
+        return False
+    from core.auth.state_machine import PageState, classify_page
+
+    if classify_page(snapshot) in {
+        PageState.AUTH_ERROR, PageState.LOGGED_OUT, PageState.EMAIL_VERIFIED, PageState.AUTHENTICATED,
+        PageState.PASSWORD_LOGIN, PageState.PASSWORD_CREATE, PageState.PROFILE,
+    }:
+        return False
+    try:
+        location = urlparse(str(snapshot.get("url") or ""))
+        if (location.scheme != "https" or location.hostname != "auth.openai.com" or location.port not in (None, 443)
+                or location.username or location.password or not location.path.startswith("/mfa-challenge/")
+                or not location.path.removeprefix("/mfa-challenge/")):
+            return False
+    except ValueError:
+        return False
+    inputs = [item for item in snapshot.get("inputs") or [] if isinstance(item, dict)
+              and item.get("visible") is not False and item.get("otpFieldVisible") is not False
+              and str(item.get("type") or "").lower() != "hidden"]
+    if any(str(item.get("type") or "").lower() == "password"
+           or str(item.get("autocomplete") or "").lower() == "current-password"
+           or any("password" in str(item.get(key) or "").lower() for key in ("name", "id")) for item in inputs):
+        return False
+    available = [item for item in inputs if not item.get("otpFieldDisabled", item.get("disabled"))
+                 and not item.get("otpFieldReadOnly", item.get("readOnly"))]
+    if not available:
+        return False
+    from core.codex.roxy.oauth import _is_totp_login_page
+
+    return _is_totp_login_page(None, {**snapshot, "inputs": available})
+
+
+def _classify_at_login_page(snapshot):
+    """仅 AT 补足本地化 MFA 页面；默认分类及明确错误仍由公共分类器决定。"""
+    from core.auth.state_machine import PageState, classify_page
+
+    page = classify_page(snapshot)
+    if page in {PageState.OTP_EMAIL, PageState.AUTH_TRANSIENT, PageState.UNKNOWN} and _is_at_totp_login_page(snapshot):
+        return PageState.MFA_TOTP
+    return page
+
+
 def _check_profile_handoff(driver) -> None:
     """刷新只建立会话，资料页必须保留为独立的待补全事实。"""
     parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
@@ -338,6 +383,18 @@ def _enter_existing_account_otp(
             raise RuntimeError(f"浏览器 NextAuth 登录导航失败: {fallback}")
     if state == "logged_in" or _has_access_token(driver):
         return "logged_in"
+    if _is_at_totp_login_page(_email_otp_page_state(driver)):
+        from core.codex.roxy.oauth import complete_openai_login_challenge
+
+        challenge_state = complete_openai_login_challenge(
+            driver, email, password, totp_secret, timeout=45, page_classifier=_classify_at_login_page,
+        )
+        _check_profile_handoff(driver)
+        if challenge_state == "advanced":
+            return "logged_in"
+        if challenge_state == "email_otp":
+            return "otp"
+        raise RuntimeError(f"已有账号 TOTP 登录挑战未完成：state={challenge_state}")
     if state == "password" and not _is_login_password_page(driver) and not password:
         raise RuntimeError("邮箱进入新账号创建密码页，查活已停止，未创建账号")
     if state in {"login_password", "password"} or _is_login_password_page(driver):
@@ -356,6 +413,7 @@ def _enter_existing_account_otp(
             password,
             totp_secret,
             timeout=45,
+            page_classifier=_classify_at_login_page,
         )
         _check_profile_handoff(driver)
         if challenge_state == "advanced":
@@ -388,6 +446,7 @@ def _enter_existing_account_otp(
 
             challenge_state = complete_openai_login_challenge(
                 driver, email, password, totp_secret, timeout=45,
+                page_classifier=_classify_at_login_page,
             )
             _check_profile_handoff(driver)
             if challenge_state == "advanced":
@@ -408,6 +467,7 @@ def _enter_existing_account_otp(
                         raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
                     challenge_state = complete_openai_login_challenge(
                         driver, email, password, totp_secret, timeout=45,
+                        page_classifier=_classify_at_login_page,
                     )
                     if challenge_state == "advanced":
                         return "logged_in"
@@ -446,6 +506,7 @@ def _complete_otp(
             pass
         outcome = _wait_after_email_otp_submit(
             driver, timeout=35, baseline_state=baseline, expected_email=email,
+            page_classifier=_classify_at_login_page,
         )
         if outcome in {"accepted", "email_verified", "totp_required"} and callable(on_email_confirmed):
             on_email_confirmed()
@@ -460,6 +521,7 @@ def _complete_otp(
                 "",
                 totp_secret,
                 timeout=45,
+                page_classifier=_classify_at_login_page,
             )
             if challenge_state == "advanced":
                 return

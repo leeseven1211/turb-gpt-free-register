@@ -390,7 +390,8 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
         )
 
         self.assertEqual("logged_in", result)
-        challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45)
+        challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45,
+                                          page_classifier=roxy_liveness._classify_at_login_page)
 
     def test_browser_unmarked_email_uses_offered_saved_password_before_waiting_for_mail(self):
         driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False)
@@ -400,7 +401,8 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
         )
 
         self.assertEqual("logged_in", result)
-        challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45)
+        challenge.assert_called_once_with(driver, EMAIL, "fixture-password", "fixture-secret", timeout=45,
+                                          page_classifier=roxy_liveness._classify_at_login_page)
         roxy_liveness._open_standard_password_login.assert_not_called()
 
     def test_browser_unmarked_email_returns_to_mail_if_shared_challenge_still_requires_it(self):

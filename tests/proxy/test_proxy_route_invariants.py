@@ -739,6 +739,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             "saved-password",
             "saved-totp",
             timeout=45,
+            page_classifier=roxy_liveness._classify_at_login_page,
         )
 
     def test_force_refresh_rejects_account_without_existing_access_token(self):

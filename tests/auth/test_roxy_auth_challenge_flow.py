@@ -808,6 +808,7 @@ class RoxyEmailOtpChallengeTests(unittest.TestCase):
             "saved-password",
             "totp-secret",
             timeout=45,
+            page_classifier=roxy_liveness._classify_at_login_page,
         )
 
 

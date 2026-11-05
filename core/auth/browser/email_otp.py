@@ -2634,6 +2634,7 @@ def _wait_after_email_otp_submit(
     expected_email: str | None = None,
     retry_after_refresh: bool = False,
     monitor_otp_network: bool = False,
+    page_classifier=None,
 ) -> str:
     """提交 OTP 后等待明确的资料页、邮箱已验证提示或登录态。
 
@@ -2641,6 +2642,7 @@ def _wait_after_email_otp_submit(
     网络慢时最多等待完整 timeout；超时没有明确成功证据时按 stuck 保留
     原提交。注册流程可显式接收刷新后表单就绪的结果，再补交一次原验证码。
     """
+    classify = page_classifier if callable(page_classifier) else classify_page
     timeout = _budget_timeout(budget, timeout, minimum=0.0)
     end = time.monotonic() + max(0.0, timeout)
     confirmation_budget = StageBudget(end, clock=time.monotonic, cancellation=budget.cancellation if budget is not None else None)
@@ -2726,7 +2728,7 @@ def _wait_after_email_otp_submit(
         state = state if isinstance(state, dict) else {}
         if monitor_otp_network:
             _observe_email_otp_network_error(driver, state)
-        page_state = classify_page(state)
+        page_state = classify(state)
         form_ready = _email_otp_form_is_ready(state)
         recovery_state = (page_state.value, form_ready, bool(state.get("errors")), refreshed)
         if recovery_state != last_recovery_state:
@@ -2805,7 +2807,7 @@ def _wait_after_email_otp_submit(
             last = {}
         if monitor_otp_network:
             _observe_email_otp_network_error(driver, last)
-        page_state = classify_page(last)
+        page_state = classify(last)
         if page_state == PageState.MFA_TOTP:
             logger.info("%s[OTP] 邮箱验证码后进入 Authenticator TOTP，交给公共登录状态机", _log_prefix(driver))
             return finish("totp_required")

@@ -1265,8 +1265,10 @@ def _complete_login_challenge_after_email(
     allow_profile_handoff: bool = False,
     on_candidate_password_confirmed=None,
     allow_passwordless_fallback: bool = False,
+    page_classifier=None,
 ) -> str:
     """解析登录挑战；启用恢复时可返回资料交接，完整会话仍由上层核验。"""
+    classify = page_classifier if callable(page_classifier) else classify_page
     end = time.time() + max(5, int(timeout))
     password_submitted_at = 0.0
     password_unknown_retry_done = False
@@ -1432,7 +1434,7 @@ def _complete_login_challenge_after_email(
             logger.info("[Codex][Browser] 邮箱提交后登录分支：path=%s", _auth_path_for_log(url))
             last_url = url
 
-        page_state = classify_page(state)
+        page_state = classify(state)
         if roxy_saved_password_entry and saved_password_created and page_state == PageState.PROFILE:
             error = RuntimeError("profile_completion_required: 保存密码已提交，账号仍需沿原注册任务补全资料")
             error.code = "profile_completion_required"
@@ -1878,6 +1880,7 @@ def complete_openai_login_challenge(
     password_recovery=None,
     allow_profile_handoff: bool = False,
     allow_passwordless_fallback: bool = False,
+    page_classifier=None,
 ) -> str:
     """注册恢复与 Codex OAuth 共用的密码/TOTP/邮箱 OTP 状态机。"""
     extra_kwargs = {}
@@ -1901,6 +1904,8 @@ def complete_openai_login_challenge(
         extra_kwargs['allow_profile_handoff'] = True
     if allow_passwordless_fallback:
         extra_kwargs['allow_passwordless_fallback'] = True
+    if page_classifier is not None:
+        extra_kwargs['page_classifier'] = page_classifier
     return _complete_login_challenge_after_email(
         driver,
         email,
