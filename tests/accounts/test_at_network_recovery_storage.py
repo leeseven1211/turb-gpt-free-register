@@ -17,7 +17,7 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
         operation.init()
         service.register_operation_handlers()
 
-    def scenario(self, final_result):
+    def scenario(self, final_result, *, no_mail_fallback=False):
         email = "network-recovery@example.test"
         account_id = records.insert_row(records.ACCOUNTS, {
             "email": email, "access_token": "fixture-old-at", "email_source": "cloudflare",
@@ -38,18 +38,27 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
             calls.append(1)
             if len(calls) == 1:
                 kwargs["on_remote_request_started"]()
-                return {"ok": False, "status": "failed", "error": "email_otp_failed",
+                result = {"ok": False, "status": "failed", "error": "email_otp_failed",
                         "error_category": "email", "live_check_driver": "protocol_v2",
                         "roxy_fallback_allowed": False,
                         "auth_diagnostics": {"operation": "email_otp_send", "failure_kind": "transport_error",
                                              "exception_type": "SSLError", "curl_error_code": 35}}
+                if no_mail_fallback:
+                    result["auth_diagnostics"] = {"operation": "email_otp", "failure_kind": "no_mail",
+                                                  "mailbox_error_code": "inbound_code_timeout"}
+                return result
             if not (final_result.get("mutation_submitted") is False):
                 kwargs["on_remote_request_started"]()
             return dict(final_result)
 
+        def roxy_refresh(_email, **kwargs):
+            self.assertEqual(routes[-1].proxy_url, kwargs["proxy"])
+            calls.append(1)
+            return dict(final_result)
+
         values = {"ACCOUNT_AT_REFRESH_DRIVER": "protocol", "OPENAI_PROTOCOL_VERSION": "v2",
                   "ACCOUNT_AT_REFRESH_COUNTRY": "JP", "ACCOUNT_AT_REFRESH_NETWORK_RETRIES": 1,
-                  "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS": 900, "LIVE_CHECK_ROXY_FALLBACK_ENABLED": False,
+                  "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS": 900, "LIVE_CHECK_ROXY_FALLBACK_ENABLED": no_mail_fallback,
                   "ACCOUNT_ACTION_PROXY_RETRY_DELAY": 0}
         snapshot = SimpleNamespace(revision=905, as_dict=lambda: values)
         with (
@@ -59,6 +68,8 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
             patch.object(task_gateway, "notify_dispatch"),
             patch("core.proxy.account_routes.acquire_account_proxy", side_effect=acquire),
             patch("core.accounts.liveness.protocol.v2.refresh_access_token", side_effect=refresh),
+            patch("core.accounts.liveness.roxy.flow.available", return_value=True),
+            patch("core.accounts.liveness.roxy.flow.refresh_access_token", side_effect=roxy_refresh),
             patch("core.accounts.liveness.protocol.legacy.check_account_liveness", side_effect=AssertionError("测试不得调用未替换的驱动")),
         ):
             submitted = service.enqueue_account_live_check(account_id=account_id, email=email, force_refresh=True,
@@ -84,6 +95,39 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
         self.assertEqual("fixture-new-at", db.get_account(account_id)["access_token"])
         self.assertTrue(any(call.kwargs.get("fault") is True for call in routes[0].release.call_args_list))
         self.assertEqual(1, run["result_summary"]["network_recovery"]["route_retries"])
+
+    def test_no_mail_then_roxy_success_confirms_same_intent_after_token_writeback(self):
+        session = {"accessToken": "fixture-roxy-at", "user": {"email": "network-recovery@example.test"}}
+        account_id, run, events, routes, calls = self.scenario({
+            "ok": True, "status": "live", "access_token": "fixture-roxy-at", "session": session,
+        }, no_mail_fallback=True)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("success", run["status"])
+        self.assertEqual("confirmed", run["data"]["remote_intent"]["receipt_state"])
+        self.assertEqual("confirmed", run["data"]["remote_receipt"]["outcome"])
+        self.assertEqual(1, sum(event["event_type"] == "remote.request_started" for event in events))
+        self.assertTrue(any(event["event_type"] == "remote.receipt_unknown" for event in events))
+        self.assertTrue(run["result_summary"]["fallback_used"])
+        self.assertEqual("browser_roxy", run["result_summary"]["live_check_driver"])
+        self.assertEqual("fixture-roxy-at", db.get_account(account_id)["access_token"])
+        self.assertEqual(session, db.get_account_chatgpt_session(account_id))
+        self.assertEqual(2, len(routes))
+        self.assertNotEqual(True, routes[0].release.call_args.kwargs.get("fault"))
+
+    def test_failed_roxy_after_no_mail_preserves_the_original_unknown_receipt(self):
+        account_id, run, events, _, calls = self.scenario({
+            "ok": False, "status": "failed", "error": "password_rejected",
+        }, no_mail_fallback=True)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("attention_required", run["status"])
+        self.assertEqual("unknown", run["data"]["remote_intent"]["receipt_state"])
+        self.assertEqual("unknown", run["data"]["remote_receipt"]["outcome"])
+        self.assertEqual(1, sum(event["event_type"] == "remote.request_started" for event in events))
+        self.assertTrue(any(event["event_type"] == "remote.receipt_unknown" for event in events))
+        self.assertFalse(any(event["event_type"] in {"remote.receipt_rejected", "remote.receipt_confirmed"}
+                             for event in events))
+        self.assertTrue(run["result_summary"]["fallback_used"])
+        self.assertEqual("fixture-old-at", db.get_account(account_id)["access_token"])
 
     def test_later_preflight_failure_cannot_downgrade_previous_unknown_intent(self):
         _, run, events, _, calls = self.scenario({

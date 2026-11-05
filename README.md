@@ -1117,6 +1117,8 @@ ACCOUNT_LIVE_CHECK_DRIVER=protocol_current
 
 AT 刷新遇到确认的连接、代理、TLS、DNS、请求超时或上游暂时错误时，先尽可能沿原线路在失败步骤恢复一次；仍失败则隔离旧线路，在同一任务中领取同国家新线路并重新登录。`ACCOUNT_AT_REFRESH_NETWORK_RETRIES` 默认 `2`，最多换线两次；`ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS` 默认 `900`，首次登录、恢复及等线共用这一预算。逐轮记录原失败原因和回执，最后取得匹配账号的 AT 并确认写回后才报告成功。单次授权码不能盲目重复提交，回调优先核验现有 Session；浏览器已派发表单优先观察原回执。收件超时、邮件来源验签失败、凭据拒绝及 403/429 限制不归入代理恢复。调用方显式传入同链线路时只恢复原线路，不擅自换线。该策略仅作用于 AT 刷新，注册、补密码、2FA 和普通查活保持各自的重试规则。
 
+开启 `LIVE_CHECK_ROXY_FALLBACK_ENABLED` 后，协议 v2/v3 刷新明确等待验证码邮件超时，也会尝试一次 Roxy 浏览器登录。前次协议认证的未知回执继续保留，取得新 AT 并确认写回后才确认成功。该兜底与网络换线策略独立，邮件来源验签失败、收件地址不匹配及凭据拒绝继续保留原错误。
+
 批量刷新 AT 可一次提交全部选中账号，不设 500 个账号的单次上限；重复 ID 只入队一次，任务按 `GLOBAL_TASK_WORKERS` 与 `ACCOUNT_TOKEN_REFRESH_WORKERS` 调度。
 
 `OPENAI_PROTOCOL_VERSION` 仅为协议刷新选择 v1/v2/v3，默认 v1；直接 Roxy 刷新不读取它。注册协议、协议 2FA、套餐查询、普通查活和 Codex 协议授权继续使用各自的唯一实现：

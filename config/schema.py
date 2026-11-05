@@ -803,7 +803,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED", "file": "proxy.py", "type": "bool", "group": "账号补全",
-        "label": "刷新 Roxy 兜底", "help": "控制协议刷新 AT 失败后是否使用 Roxy 登录兜底；直接选择 Roxy 指纹浏览器刷新时不读取此开关。普通查活不登录、不发送 OTP。",
+        "label": "刷新 Roxy 兜底", "help": "控制协议刷新 AT 失败后是否使用 Roxy 登录兜底，v2/v3 明确无新验证码邮件时也会尝试一次；来源验签、收件地址不匹配及凭据拒绝保留原错误。直接选择 Roxy 刷新时不读取此开关，普通查活不登录、不发码。",
     },
     {
         "key": "ACCOUNT_2FA_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",

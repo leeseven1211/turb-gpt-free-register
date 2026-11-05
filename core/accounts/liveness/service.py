@@ -386,6 +386,21 @@ def _refresh_result_not_submitted(result: dict | None) -> bool:
     return value.get("mutation_submitted") is False and value.get("action_dispatched") is False
 
 
+def _refresh_result_is_no_mail(result: dict | None) -> bool:
+    """只有明确的邮箱取码超时可按 AT 开关进入浏览器兜底。"""
+    value = result if isinstance(result, dict) else {}
+    diagnostics = value.get("auth_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    codes = {str(value.get(key) or "") for key in ("error", "error_code")}
+    return bool(
+        codes & {"email_otp_failed", "email_otp_no_mail"}
+        and not _refresh_result_is_rejected(value)
+        and (diagnostics.get("cause_operation") or diagnostics.get("operation")) == "email_otp"
+        and (diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind")) == "no_mail"
+        and diagnostics.get("mailbox_error_code") == "inbound_code_timeout"
+    )
+
+
 def _is_proxy_transport_failure(result: dict | None) -> bool:
     """仅把明确的预检网络失败标记为代理故障。"""
     value = result if isinstance(result, dict) else {}
@@ -1710,19 +1725,25 @@ def _run_live_check(
                 )
         if refresh_boundary is not None:
             _checkpoint(operation_context, "刷新 AT 请求完成后检查取消状态")
+        no_mail_roxy_fallback = (
+            force_refresh and selected_refresh_driver in {"protocol_v2", "protocol_v3"}
+            and _refresh_result_is_no_mail(result)
+        )
         if (
             not result.get("ok")
             and result.get("status") != "deactivated"
-            and not _refresh_result_is_unknown(result)
             and (
-                refresh_boundary is None
-                or refresh_boundary.get("receipt_outcome") == "rejected"
+                no_mail_roxy_fallback
+                or (
+                    not _refresh_result_is_unknown(result)
+                    and (refresh_boundary is None or refresh_boundary.get("receipt_outcome") == "rejected")
+                    and result.get("roxy_fallback_allowed", True)
+                )
             )
             and (bool(saved_access_token) or completion_auth)
             and force_refresh
             and selected_refresh_driver != "browser_roxy"
             and _roxy_fallback_enabled(config_snapshot)
-            and result.get("roxy_fallback_allowed", True)
         ):
             from core.accounts.liveness.roxy.flow import available as roxy_available, refresh_access_token
             if roxy_available():
@@ -1738,8 +1759,10 @@ def _run_live_check(
                 reporter.note(
                     stage="roxy_fallback",
                     level="WARNING",
-                    message="协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底",
-                    detail={"protocol_error": result.get("error")},
+                    message=("协议取码等待无邮件，按已启用的开关尝试 Roxy 浏览器兜底"
+                             if no_mail_roxy_fallback else "协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底"),
+                    detail={"protocol_error": result.get("error"),
+                            **({"no_mail_fallback": True, "previous_receipt_preserved": True} if no_mail_roxy_fallback else {})},
                 )
                 _append_log(email, "[查活] 协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底")
                 if proxy is None and account_route is not None:

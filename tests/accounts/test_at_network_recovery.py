@@ -42,8 +42,15 @@ class AtNetworkRecoveryTests(unittest.TestCase):
     def success(self):
         return {"ok": True, "status": "live", "access_token": "fixture-fresh", "session": {}}
 
+    def no_mail_result(self):
+        return {"ok": False, "status": "failed", "error": "email_otp_failed",
+                "roxy_fallback_allowed": False, "remote_request_started": True,
+                "auth_diagnostics": {"operation": "email_otp", "failure_kind": "no_mail",
+                                     "mailbox_error_code": "inbound_code_timeout"}}
+
     def run_worker(self, outcomes, *, proxy=None, retries=2, context=None, driver="v2", completion_auth=False,
-                   acquisition_error=None, writeback=True, on_authenticated=None):
+                   acquisition_error=None, writeback=True, on_authenticated=None, roxy_fallback=False,
+                   roxy_available=True):
         routes, acquisitions = [], []
         reporter = MagicMock()
         account = {"id": 7, "email": EMAIL, "access_token": "fixture-old"}
@@ -79,7 +86,7 @@ class AtNetworkRecoveryTests(unittest.TestCase):
             return writeback
 
         snapshot = {"refresh_at_country": "JP", "network_retry_limit": retries, "network_timeout_seconds": 900,
-                    "auth_raw_context_enabled": False, "roxy_fallback_enabled": False,
+                    "auth_raw_context_enabled": False, "roxy_fallback_enabled": roxy_fallback,
                     "proxy_retry_limit": 0, "proxy_retry_delay": 0}
         with ExitStack() as stack:
             for item in (
@@ -94,6 +101,7 @@ class AtNetworkRecoveryTests(unittest.TestCase):
                 patch("core.accounts.liveness.protocol.v2.refresh_access_token", side_effect=refresh),
                 patch("core.accounts.liveness.protocol.v3.refresh_access_token", side_effect=refresh),
                 patch("core.accounts.liveness.roxy.flow.refresh_access_token", side_effect=refresh),
+                patch("core.accounts.liveness.roxy.flow.available", return_value=roxy_available),
             ):
                 stack.enter_context(item)
             result = service._run_live_check(account_id=7, email=EMAIL, proxy=proxy, trigger="fixture",
@@ -246,6 +254,89 @@ class AtNetworkRecoveryTests(unittest.TestCase):
                 self.assertEqual(1, len(calls))
                 self.assertNotEqual(True, routes[0].release.call_args.kwargs.get("fault"))
                 self.assertFalse(actual["network_recovery"]["exhausted"])
+
+    def test_confirmed_no_mail_enters_roxy_once_and_confirms_the_same_intent(self):
+        for driver, proxy in (("v2", None), ("v3", None), ("v2", "fixture-explicit")):
+            with self.subTest(driver=driver, explicit_proxy=bool(proxy)):
+                deadlines = []
+
+                def no_mail(_kwargs):
+                    deadlines.append(current_scope().deadline)
+                    return self.no_mail_result()
+
+                def roxy(_kwargs):
+                    deadlines.append(current_scope().deadline)
+                    return self.success()
+
+                context = _Context()
+                result, calls, routes, acquisitions, reporter = self.run_worker(
+                    [no_mail, roxy], driver=driver, proxy=proxy, context=context, roxy_fallback=True)
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["fallback_used"])
+                self.assertEqual("browser_roxy", result["live_check_driver"])
+                self.assertEqual(2, len(calls))
+                self.assertEqual(1, len(context.started))
+                self.assertEqual(["unknown", "response_received", "confirmed"],
+                                 [item["outcome"] for item in context.receipts])
+                self.assertEqual(1, len({item["request_id"] for item in context.receipts}))
+                self.assertEqual(deadlines[0], deadlines[1])
+                self.assertEqual(0, result["network_recovery"]["route_retries"])
+                self.assertEqual(1, sum(call.kwargs.get("detail", {}).get("no_mail_fallback", False)
+                                        for call in reporter.note.call_args_list))
+                if proxy:
+                    self.assertEqual(1, len(routes))
+                    self.assertEqual(proxy, calls[0]["proxy"])
+                    self.assertEqual(proxy, calls[1]["proxy"])
+                else:
+                    self.assertEqual(["JP", "JP"], [item["region"] for item in acquisitions])
+                    self.assertTrue(0 < acquisitions[1]["timeout"] <= acquisitions[0]["timeout"] <= 900)
+                    self.assertNotEqual(True, routes[0].release.call_args.kwargs.get("fault"))
+                    self.assertEqual(routes[1].proxy_url, calls[1]["proxy"])
+
+    def test_failed_no_mail_roxy_fallback_keeps_previous_unknown(self):
+        for later in (self.no_mail_result(), {"ok": False, "status": "failed", "error": "password_rejected"},
+                      {"ok": False, "status": "failed", "error": "password_missing",
+                       "mutation_submitted": False, "action_dispatched": False}):
+            with self.subTest(later=later["error"]):
+                context = _Context()
+                result, calls, _, _, _ = self.run_worker(
+                    [self.no_mail_result(), later], context=context, roxy_fallback=True)
+                self.assertFalse(result["ok"])
+                self.assertEqual(2, len(calls))
+                self.assertTrue(result["fallback_used"])
+                self.assertTrue(result["reconcile_required"])
+                self.assertEqual(1, len(context.started))
+                self.assertEqual("unknown", context.state)
+                self.assertFalse(any(item["outcome"] in {"not_submitted", "rejected", "confirmed"}
+                                     for item in context.receipts))
+
+    def test_no_mail_fallback_still_requires_enabled_and_available_roxy(self):
+        for enabled, available in ((False, True), (True, False)):
+            with self.subTest(enabled=enabled, available=available):
+                result, calls, _, _, _ = self.run_worker([self.no_mail_result()], context=_Context(),
+                    roxy_fallback=enabled, roxy_available=available)
+                self.assertFalse(result["ok"])
+                self.assertEqual(1, len(calls))
+                self.assertNotIn("fallback_used", result)
+
+    def test_no_mail_exception_does_not_allow_other_mailbox_or_business_failures(self):
+        for changes in (
+            {"failure_kind": "mailbox_error", "mailbox_error_code": "source_authentication_failed"},
+            {"failure_kind": "imap_error"}, {"failure_kind": "manual_timeout"},
+            {"operation": "email_otp_send"}, {"mailbox_error_code": "recipient_mismatch"},
+        ):
+            with self.subTest(changes=changes):
+                candidate = self.no_mail_result()
+                candidate["auth_diagnostics"].update(changes)
+                result, calls, _, _, _ = self.run_worker([candidate], context=_Context(), roxy_fallback=True)
+                self.assertFalse(result["ok"])
+                self.assertEqual(1, len(calls))
+        for code in ("password_rejected", "password_rejected_email_fallback_failed", "mfa_rejected"):
+            with self.subTest(code=code):
+                candidate = {**self.no_mail_result(), "error": code, "password_auth_status": "rejected"}
+                result, calls, _, _, _ = self.run_worker([candidate], context=_Context(), roxy_fallback=True)
+                self.assertFalse(result["ok"])
+                self.assertEqual(1, len(calls))
 
     def test_unknown_then_success_uses_one_intent_and_confirms_only_after_writeback(self):
         context = _Context()
