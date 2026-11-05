@@ -251,6 +251,95 @@ def _classify_at_login_page(snapshot):
     return page
 
 
+def _at_unknown_page_detail(exc, cause_code, driver, *, browser_error="", network_diagnostics=None) -> str:
+    """只解释既有 AT 失败的末态，不参与登录、重试或提交结果判断。"""
+    if driver is None or browser_error or network_diagnostics:
+        return ""
+    if cause_code not in {"roxy_login_failed", "email_otp_failed", "email_submit_unconfirmed"}:
+        return ""
+    if not (type(exc) is RuntimeError or isinstance(exc, _RoxyOtpSubmissionUnknown)):
+        return ""
+    text = str(exc)
+    if cause_code == "email_submit_unconfirmed":
+        if not (isinstance(exc, _RoxyOtpSubmissionUnknown) and re.search(r"\bstate=stuck(?:$|[\s,，])", text)):
+            return ""
+    elif not any(marker in text for marker in (
+        "浏览器登录未进入已有账号 OTP，最后状态=", "已有账号登录挑战未完成：state=",
+        "已有账号 TOTP 登录挑战未完成：state=", "邮箱提交后未识别到密码、TOTP 或邮箱验证码分支：",
+    )):
+        return ""
+    from core.auth.page_errors import AuthPageError
+    from core.auth.state_machine import PageState, StageTimeout
+    from core.network.at_transport_recovery import current_scope, network_failure
+
+    scope = current_scope()
+    if scope is not None and scope.pending_network_failure:
+        return ""
+
+    chain, item = [], exc
+    while isinstance(item, BaseException) and len(chain) < 8 and not any(item is previous for previous in chain):
+        chain.append(item)
+        item = item.__cause__ or (None if item.__suppress_context__ else item.__context__)
+    if any(isinstance(item, (AuthPageError, StageTimeout, OperationCancelled, AuthCancelledError,
+                             OperationLeaseLost, AtRecoveryTimeout))
+           or type(item).__module__.startswith("core.email") for item in chain):
+        return ""
+    if (any(str(getattr(item, "code", "") or getattr(item, "error_code", "") or "")
+            not in {"", "email_submit_unconfirmed"} for item in chain)
+            or network_failure(error=exc) is not None or "net::ERR_" in text
+            or any(marker in text.casefold() for marker in (
+                "session_expired", "提交本地 totp 后", "本地 totp 未通过", "authenticator 验证页缺少",
+                "totp 登录链未完成", "本地保存的注册密码未通过", "邮箱验证码连续错误", "otp_request_unconfirmed",
+            ))):
+        return ""
+    try:
+        snapshot = _email_otp_page_state(driver)
+        if (not isinstance(snapshot, dict) or snapshot.get("error") or snapshot.get("errors")
+                or snapshot.get("authErrorPage") or snapshot.get("challengePresent")):
+            return ""
+        location = urlparse(str(snapshot.get("url") or ""))
+        if location.scheme == "chrome-error":
+            return ""
+        initialization = snapshot.get("initialization")
+        if isinstance(initialization, dict) and (
+            initialization.get("pending") or initialization.get("recent_activity")
+            or initialization.get("ready", "complete") != "complete"
+        ):
+            return ""
+        inputs = [item for item in snapshot.get("inputs") or [] if isinstance(item, dict)
+                  and item.get("visible") is not False and item.get("otpFieldVisible") is not False
+                  and str(item.get("type") or "").lower() != "hidden"]
+        if any(str(item.get("ariaInvalid") or "").lower() == "true" for item in inputs):
+            return ""
+        controls = [*inputs, *(item for item in snapshot.get("buttons") or [] if isinstance(item, dict)
+                              and item.get("visible") is not False and str(item.get("tag") or "").upper() != "A")]
+        if not any(not item.get("otpFieldDisabled", item.get("disabled"))
+                   and not item.get("otpFieldReadOnly", item.get("readOnly")) for item in controls):
+            return ""
+        page = _classify_at_login_page(snapshot)
+        trusted = (location.scheme == "https" and location.hostname in {"auth.openai.com", "chatgpt.com", "chat.openai.com"}
+                   and location.port in (None, 443) and not location.username and not location.password)
+        mfa_route = trusted and location.hostname == "auth.openai.com" and location.path.startswith("/mfa-challenge/")
+        unsupported_mfa = (mfa_route and page in {PageState.OTP_EMAIL, PageState.MFA_TOTP, PageState.AUTH_TRANSIENT}
+                           and not _is_at_totp_login_page(snapshot))
+        if page != PageState.UNKNOWN and not unsupported_mfa:
+            return ""
+        route = "/<external>"
+        if mfa_route:
+            route = "/mfa-challenge/<factor>"
+        elif trusted:
+            route = location.path if location.path in {
+                "/", "/auth/login", "/login", "/log-in", "/log-in/password", "/email-verification",
+                "/auth/error", "/error", "/add-phone", "/phone-verification", "/workspace", "/consent",
+            } else "/<auth-path>"
+        return f"无法识别认证页面；页面状态={page.value}；路由={route}"
+    except (OperationCancelled, AuthCancelledError, OperationLeaseLost, AtRecoveryTimeout):
+        raise
+    except Exception:
+        # 失败后的诊断读取不能取代触发收口的原始异常。
+        return ""
+
+
 def _check_profile_handoff(driver) -> None:
     """刷新只建立会话，资料页必须保留为独立的待补全事实。"""
     parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
@@ -936,12 +1025,28 @@ def refresh_access_token(
             error_detail = f"密码表单准备超时，最后等待原因={prepare_reason}"
         else:
             error_detail = str(exc)[:500]
-        logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, error_detail[:260])
         failure_kind = ("no_mail" if isinstance(exc, ForwardIMAPNoMailTimeout)
                         else "imap_error" if isinstance(exc, ForwardIMAPError)
                         else "runtime_exception")
         network_diagnostics = _at_network_diagnostics(exc, failure_stage, driver) if not session_acquired else {}
         network_recovery_failed = bool(network_diagnostics)
+        try:
+            page_detail = _at_unknown_page_detail(
+                exc, cause_code, driver, browser_error=browser_error, network_diagnostics=network_diagnostics,
+            )
+        except (OperationCancelled, OperationLeaseLost):
+            cancelled = True
+            raise
+        except AtRecoveryTimeout:
+            budget_exhausted = True
+            raise
+        except AuthCancelledError as diagnostic_error:
+            cancelled = True
+            raise OperationCancelled(str(diagnostic_error) or "用户手动停止刷新 AT") from diagnostic_error
+        if page_detail:
+            cause_code, category = "auth_page_unknown", "auth"
+            error_detail = f"{page_detail}；原始错误：{error_detail}"
+        logger.warning("[查活][Roxy] 失败：%s: %s", type(exc).__name__, error_detail[:260])
         refresh_result = {
             "ok": False,
             "status": "failed",
