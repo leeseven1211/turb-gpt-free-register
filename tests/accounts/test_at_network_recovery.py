@@ -132,6 +132,80 @@ class AtNetworkRecoveryTests(unittest.TestCase):
         self.assertEqual(0, result["network_recovery"]["route_retries"])
         self.assertTrue(any(call.kwargs.get("detail", {}).get("same_route_retry") for call in reporter.note.call_args_list))
 
+    def partial_response_preflight_failure(self, *, cause_wrapper=False):
+        from curl_cffi.requests.exceptions import Timeout
+        from core.auth.protocol.session import BrowserSession
+
+        partial = SimpleNamespace(status_code=200, headers={}, text="")
+        session = SimpleNamespace(blocked_until=0, reset_transport=Mock(), _get_once=Mock(side_effect=[
+            Timeout("fixture-partial-body-timeout", code=28, response=partial),
+            Timeout("fixture-partial-body-timeout", code=28, response=partial),
+        ]))
+
+        def preflight(_kwargs):
+            try:
+                BrowserSession.get(session, "https://auth.openai.com/authorize?fixture-private-query=secret")
+            except Timeout:
+                diagnostics = {"operation": "network_preflight", "failure_kind": "runtime_exception",
+                               "exception_type": "Timeout", "http_status": 200, "source": "fixture-driver"}
+                if cause_wrapper:
+                    diagnostics.update(operation="protocol_v2_auth", cause_operation="network_preflight",
+                                       cause_failure_kind="runtime_exception")
+                return {"ok": False, "status": "failed", "error": "network_preflight_failed",
+                        "mutation_submitted": False, "action_dispatched": False,
+                        "auth_diagnostics": diagnostics}
+            self.fail("离线 transport 应连续两次超时")
+
+        return preflight, session
+
+    def test_partial_response_timeout_retries_current_request_then_new_route(self):
+        preflight, session = self.partial_response_preflight_failure()
+        result, calls, routes, _, _ = self.run_worker([preflight, self.success()])
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, session._get_once.call_count)
+        session.reset_transport.assert_called_once()
+        self.assertEqual(2, len(calls))
+        self.assertEqual(2, len(routes))
+        self.assertTrue(routes[0].release.call_args.kwargs["fault"])
+        recovery = result["network_recovery"]
+        self.assertEqual(1, recovery["same_route_retries"])
+        self.assertEqual(1, recovery["route_retries"])
+        self.assertFalse(recovery["exhausted"])
+        failure = next(item for item in recovery["history"] if item["event"] == "route_failure")
+        self.assertEqual("Timeout", failure["exception_type"])
+        self.assertEqual(28, failure["curl_error_code"])
+        self.assertEqual(200, failure["http_status"])
+        self.assertTrue(failure["response_observed"])
+        self.assertNotIn("auth_diagnostics", result)
+        self.assertNotIn("fixture-private-query", str(recovery))
+
+    def test_exhausted_generic_wrapper_keeps_confirmed_transport_diagnostics(self):
+        for cause_wrapper in (False, True):
+            with self.subTest(cause_wrapper=cause_wrapper):
+                preflight, session = self.partial_response_preflight_failure(cause_wrapper=cause_wrapper)
+                result, calls, routes, _, reporter = self.run_worker([preflight], retries=0)
+                self.assertFalse(result["ok"])
+                self.assertEqual("network_preflight_failed", result["error"])
+                self.assertEqual(2, session._get_once.call_count)
+                self.assertEqual(1, len(calls))
+                self.assertTrue(routes[0].release.call_args.kwargs["fault"])
+                self.assertTrue(result["network_recovery"]["exhausted"])
+                diagnostic = result["auth_diagnostics"]
+                self.assertEqual("protocol_v2_auth" if cause_wrapper else "network_preflight", diagnostic["operation"])
+                self.assertEqual("fixture-driver", diagnostic["source"])
+                if cause_wrapper:
+                    self.assertEqual("network_preflight", diagnostic["cause_operation"])
+                    self.assertEqual("transport_error", diagnostic["cause_failure_kind"])
+                self.assertEqual("transport_error", diagnostic["failure_kind"])
+                self.assertEqual("Timeout", diagnostic["exception_type"])
+                self.assertEqual(28, diagnostic["curl_error_code"])
+                self.assertEqual(200, diagnostic["http_status"])
+                self.assertTrue(diagnostic["response_observed"])
+                self.assertNotIn("fixture-private-query", str(diagnostic))
+                summary = reporter.finish.call_args.kwargs["result_summary"]["auth_diagnostics"]
+                self.assertEqual("transport_error", summary["failure_kind"])
+                self.assertEqual(28, summary["curl_error_code"])
+
     def test_explicit_route_never_silently_switches_proxy(self):
         result, calls, routes, _, _ = self.run_worker([self.network_result()], proxy="fixture-explicit")
         self.assertFalse(result["ok"])

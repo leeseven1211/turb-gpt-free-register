@@ -184,6 +184,69 @@ class AtTransportScopeTests(unittest.TestCase):
 
 
 class AtTransportClassificationTests(unittest.TestCase):
+    def test_curl_transport_failure_after_partial_success_headers_recovers_once(self):
+        for status in (200, 302, 503):
+            with self.subTest(status=status):
+                partial = response(status)
+                error = curl_errors.Timeout("离线复现：已收到响应头但正文尚未完成", code=28, response=partial)
+                invoke = Mock(side_effect=error)
+                scope = AtRecoveryScope()
+                with scope.activate(), self.assertRaises(curl_errors.Timeout):
+                    recover_request(SimpleNamespace(), "GET", "https://chatgpt.com/auth/login", invoke)
+                self.assertEqual(2, invoke.call_count)
+                self.assertEqual(1, scope.same_route_retries)
+                self.assertEqual("transport_error", scope.last_failure["failure_kind"])
+                self.assertEqual(28, scope.last_failure["curl_error_code"])
+                self.assertEqual(status, scope.last_failure["http_status"])
+                self.assertIs(True, scope.last_failure["response_observed"])
+
+    def test_partial_response_keeps_business_and_restriction_exclusions(self):
+        for status, body in (
+            (400, "{}"), (401, "{}"), (403, "{}"), (409, "{}"), (422, "{}"), (429, "{}"),
+            (200, '{"error":{"code":"invalid_password","type":"server_error"}}'),
+            (503, '{"error":{"code":"invalid_password","type":"server_error"}}'),
+        ):
+            with self.subTest(status=status, body=body):
+                error = curl_errors.Timeout("离线业务边界", code=28, response=response(status, body))
+                self.assertIsNone(network_failure(error=error))
+                invoke = Mock(side_effect=error)
+                scope = AtRecoveryScope()
+                with scope.activate(), self.assertRaises(curl_errors.Timeout):
+                    recover_request(SimpleNamespace(), "GET", URL, invoke)
+                invoke.assert_called_once()
+                self.assertEqual(0, scope.same_route_retries)
+                self.assertIsNone(scope.pending_network_failure)
+
+    def test_v2_runtime_wrapper_keeps_partial_200_timeout_available_for_route_recovery(self):
+        partial = response(200)
+        error = curl_errors.Timeout("离线复现真实预检包装", code=28, response=partial)
+        scope = AtRecoveryScope()
+        with scope.activate():
+            with self.assertRaises(curl_errors.Timeout):
+                recover_request(SimpleNamespace(), "GET", "https://chatgpt.com/auth/login", Mock(side_effect=error))
+            wrapped = {"ok": False, "error": "network_preflight_failed", "auth_diagnostics": {
+                "operation": "network_preflight", "failure_kind": "runtime_exception",
+                "exception_type": "Timeout", "http_status": 200, "response_observed": True,
+            }}
+            failure = result_network_failure(wrapped)
+            self.assertEqual("transport_error", failure["failure_kind"])
+            self.assertEqual(200, failure["http_status"])
+            self.assertIs(True, failure["response_observed"])
+            self.assertEqual(28, failure["curl_error_code"])
+            self.assertEqual(1, scope.same_route_retries)
+            self.assertTrue(failure["same_route_retry_exhausted"])
+
+    def test_structured_transport_diagnostics_preserve_partial_response_evidence(self):
+        for status in (200, 302, 503):
+            with self.subTest(status=status):
+                failure = result_network_failure({"ok": False, "error": "session_fetch_failed", "auth_diagnostics": {
+                    "operation": "session_fetch", "failure_kind": "transport_error", "exception_type": "Timeout",
+                    "curl_error_code": 28, "http_status": status, "response_observed": True,
+                }})
+                self.assertEqual("transport_error", failure["failure_kind"])
+                self.assertEqual(status, failure["http_status"])
+                self.assertIs(True, failure["response_observed"])
+
     def test_network_classification_uses_real_error_types_and_numeric_curl_codes(self):
         for error in (requests.ConnectionError(PRIVATE), requests.ReadTimeout(PRIVATE),
                       ConnectionRefusedError(PRIVATE), curl_errors.ConnectionError(PRIVATE, code=56)):

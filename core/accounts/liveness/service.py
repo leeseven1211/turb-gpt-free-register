@@ -1425,6 +1425,17 @@ def _run_live_check(
                         attempt_result["network_recovery"] = snapshot()
                     return attempt_result
                 final_network_failure = safe_failure(failure)
+                # 通用驱动包装不能覆盖底层已确证的网络证据，耗尽后的错误分类也需要这份诊断。
+                diagnostics = attempt_result.get("auth_diagnostics")
+                diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+                diagnostics.update({key: value for key, value in final_network_failure.items() if key != "operation"})
+                if not diagnostics.get("operation"):
+                    diagnostics["operation"] = {
+                        "protocol_v3": "protocol_v3_auth", "browser_roxy": "roxy_login", "roxy_browser": "roxy_login",
+                    }.get(driver_name, "protocol_v2_auth")
+                if diagnostics.get("cause_operation") or "cause_failure_kind" in diagnostics:
+                    diagnostics["cause_failure_kind"] = final_network_failure["failure_kind"]
+                attempt_result["auth_diagnostics"] = diagnostics
                 network_recovery_history.append({
                     "event": "route_failure", "attempt": network_recovery_attempts, **final_network_failure,
                 })

@@ -149,21 +149,25 @@ def network_failure(error=None, response=None) -> dict | None:
         return None
     response = response if response is not None else getattr(error, "response", None)
     status = _status(response)
-    if status is not None:
-        if status not in _HTTP or _business_response(response):
-            return None
-        return {"failure_kind": "http_error", "http_status": status, "response_observed": True}
+    if status in {400, 401, 403, 409, 422, 429} or _business_response(response):
+        return None
     for item in chain:
         if isinstance(item, AtRecoveryTimeout):
             return None
         if isinstance(item, BaseException) and _transport_error(item):
             name = type(item).__name__
-            result = {"failure_kind": "transport_error", "response_observed": False,
+            # curl_cffi 在已收到响应头、正文传输超时后仍会附带部分 Response。
+            # 200/302 只能证明收到响应头，不能抹掉当前真实传输异常。
+            result = {"failure_kind": "transport_error", "response_observed": status is not None,
                       "exception_type": name if name in _TRANSPORT_TYPES else "RequestException"}
+            if status is not None:
+                result["http_status"] = status
             code = _curl_code(getattr(item, "code", None))
             if code is not None:
                 result["curl_error_code"] = code
             return result
+    if status in _HTTP:
+        return {"failure_kind": "http_error", "http_status": status, "response_observed": True}
     return None
 
 
@@ -346,13 +350,14 @@ def result_network_failure(result) -> dict | None:
         "protocol_v2_auth", "protocol_v3_auth", "session_reuse", "roxy_navigation", "roxy_login",
         "roxy_email_otp", "roxy_session",
     }
-    if type(status) is int and status in _HTTP and (codes & _NETWORK_WRAPPERS or kind == "http_error" and proven_operation):
-        return {"failure_kind": "http_error", "http_status": status, "response_observed": True}
     if kind == "transport_error":
         name = diagnostics.get("transport_exception_type") or diagnostics.get("exception_type")
         code = _curl_code(diagnostics.get("curl_error_code"))
         if proven_operation and (isinstance(name, str) and name in _TRANSPORT_TYPES or code is not None):
-            result = {"failure_kind": kind, "response_observed": False}
+            observed = type(status) is int and 100 <= status <= 599 and diagnostics.get("response_observed") is True
+            result = {"failure_kind": kind, "response_observed": observed}
+            if observed:
+                result["http_status"] = status
             if isinstance(name, str) and name in _TRANSPORT_TYPES:
                 result["exception_type"] = name
             if code is not None:
@@ -371,6 +376,8 @@ def result_network_failure(result) -> dict | None:
         if browser_kind:
             return {"failure_kind": kind, "network_error": network_error, "transport_kind": browser_kind,
                     "response_observed": False}
+    if type(status) is int and status in _HTTP and (codes & _NETWORK_WRAPPERS or kind == "http_error" and proven_operation):
+        return {"failure_kind": "http_error", "http_status": status, "response_observed": True}
     if (scope and scope._last_request_failed and codes & _NETWORK_WRAPPERS
             and scope.last_failure and not scope.last_failure.get("recovered")):
         return dict(scope.last_failure)

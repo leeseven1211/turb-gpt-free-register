@@ -1616,6 +1616,7 @@ def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) ->
     if not operation and code == "password_sentinel_failed":
         operation = "password_sentinel"
     request_template = {
+        "network_preflight": ("认证线路预检", "NET-PREFLIGHT", "OA-PREFLIGHT"),
         "password_sentinel": ("密码认证前置检查", "NET-SENTINEL", "OA-SENTINEL"),
         "password_verify": ("密码验证", "NET-PWD", "OA-PWD"),
         "mfa_verify": ("MFA 验证", "NET-MFA", "OA-MFA"),
