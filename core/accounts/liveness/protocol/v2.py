@@ -597,6 +597,7 @@ def _refresh_with_password(
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
     allow_password_email_fallback: bool | None = None,
+    on_network_failure=None,
 ) -> dict:
     def completed(*args, **kwargs):
         result = _success(*args, **kwargs)
@@ -625,6 +626,7 @@ def _refresh_with_password(
             proxy_supplier=proxy_supplier,
             on_remote_request_started=on_remote_request_started,
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
         result.setdefault("auth_method", "legacy_email_otp")
         result.setdefault("live_check_driver", "protocol_v2")
@@ -640,6 +642,7 @@ def _refresh_with_password(
             proxy_supplier=proxy_supplier,
             identity=identity,
             context_recorder=context_recorder,
+            **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
         if callable(on_remote_request_started):
             on_remote_request_started()
@@ -972,6 +975,7 @@ def refresh_access_token(
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
     allow_password_email_fallback: bool | None = None,
+    on_network_failure=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -996,6 +1000,7 @@ def refresh_access_token(
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
             **({"allow_password_email_fallback": allow_password_email_fallback}
                if allow_password_email_fallback is not None else {}),
+            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
         result.setdefault("remote_request_started", remote_request_started)
         result.setdefault(
@@ -1039,6 +1044,8 @@ def refresh_access_token(
             ).as_dict(),
         }
     except ProtocolV2AuthError as exc:
+        if callable(on_network_failure):
+            on_network_failure(exc)
         status = "deactivated" if exc.code == "account_deactivated" else "failed"
         result = {
             "ok": False,
@@ -1073,6 +1080,8 @@ def refresh_access_token(
             result["password_auth_status"] = "rejected"
         return result
     except Exception as exc:
+        if callable(on_network_failure):
+            on_network_failure(exc)
         logger.warning("[查活][Protocol v2] 认证未完成：%s", type(exc).__name__)
         error = "protocol_v2_unknown_error" if remote_request_started else "network_preflight_failed"
         status = _response_status(getattr(exc, "response", None))

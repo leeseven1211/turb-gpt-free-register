@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
@@ -1207,6 +1208,7 @@ def run_twofa_worker(
     browser_stage_finished = False
     browser_retry_attempts = 0
     password_result = None
+    password_proxy_fault = False
     key = (email or "").strip().lower()
     requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
         str(item or "").strip().lower() for item in steps
@@ -1423,32 +1425,74 @@ def run_twofa_worker(
         remaining_setup_steps = requested_steps & {"password", "twofa"}
         if protocol_password:
             from core.accounts.password_setup.service import run_protocol_password_setup
+            from core.accounts.password_setup.proxy import is_proxy_transport_failure
             from core.network.protocol_traffic import correlation_context
 
-            lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
             operation_context = task_run_log.current_context()
             native_operation = operation_context.get("identifier_namespace") == "operation"
-            with correlation_context(
-                inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
-                account_id=account.get("id"), purpose=setup_proxy_purpose,
-                operation_task_id=operation_context.get("task_id") if native_operation else None,
-                operation_run_id=operation_context.get("run_id") if native_operation else None,
-            ):
+
+            def network_failed(error):
+                nonlocal password_proxy_fault
+                password_proxy_fault = password_proxy_fault or is_proxy_transport_failure(error)
+
+            with ExitStack() as route_context:
+                def acquire_password_route(attempt):
+                    nonlocal account_route, route_summary, password_proxy_fault
+                    check_stop_requested(email)
+                    route_context.close()
+                    if attempt > 1:
+                        previous = account_route
+                        account_route = None
+                        if previous is not None:
+                            previous.release(reason="password-preflight-rotate", fault=password_proxy_fault)
+                        password_proxy_fault = False
+                        _report_account_setup_event(
+                            task_id, stage="network", state="running",
+                            message=f"补密码网络预检失败，正在更换代理（第 {attempt}/4 条线路）",
+                        )
+                        account_route = acquire_account_proxy(
+                            account_id=int(account.get("id") or 0) or None,
+                            email=email, purpose=setup_proxy_purpose,
+                            rotation_index=attempt - 1,
+                            cancel=lambda: check_stop_requested(email), **route_country,
+                        )
+                        route_summary = account_route.public_dict()
+                    lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
+                    route_context.enter_context(correlation_context(
+                        inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
+                        account_id=account.get("id"), purpose=setup_proxy_purpose,
+                        operation_task_id=operation_context.get("task_id") if native_operation else None,
+                        operation_run_id=operation_context.get("run_id") if native_operation else None,
+                        route_attempt_no=attempt,
+                    ))
+                    if attempt > 1:
+                        _report_account_setup_event(
+                            task_id, stage="network", state="success",
+                            message=f"补密码已更换代理（第 {attempt}/4 条线路）",
+                            detail={**route_summary, "route_attempt_no": attempt},
+                        )
+                        _report_account_setup_event(
+                            task_id, stage="login", state="running", message="已换线，正在重新进行登录网络预检",
+                        )
+                    return account_route.proxy_url
+
                 password_result = run_protocol_password_setup(
                     email, proxy=account_route.proxy_url, execution_fence=execution_fence,
                     checkpoint=lambda: check_stop_requested(email),
                     report=lambda **event: _report_account_setup_event(task_id, **event),
+                    proxy_supplier=acquire_password_route, on_network_failure=network_failed,
                 )
+            password_proxy_fault = password_proxy_fault or password_result.get("proxy_transport_failed") is True
             remaining_setup_steps.discard("password")
             account = db.get_account_by_email(email) or account
-            if (not remaining_setup_steps or password_result.get("stop_requested")
+            if (account_route is None or not remaining_setup_steps or password_result.get("stop_requested")
                     or password_result.get("status") in {"deactivated", "stopped", "cancelled"}):
                 result = {
                     **password_result,
                     "plan_check": plan_result or {"status": "skipped", "ok": True, "message": "本次未请求套餐补全"},
-                    "proxy_provider": account_route.provider,
-                    "proxy_region": account_route.region,
-                    "proxy_mode": account_route.mode,
+                    "proxy_provider": getattr(account_route, "provider", None),
+                    "proxy_region": getattr(account_route, "region", None),
+                    "proxy_mode": getattr(account_route, "mode", None),
                 }
                 if result.get("status") == "deactivated":
                     result["account_status_persisted"] = _persist_account_deactivated_result(
@@ -1854,7 +1898,8 @@ def run_twofa_worker(
             except Exception:
                 pass
         if account_route is not None:
-            account_route.release(reason=f"twofa-retry-{email}")
+            account_route.release(reason=f"twofa-retry-{email}",
+                                  **({"fault": True} if password_proxy_fault else {}))
         if plan_route is not None:
             plan_route.release(reason=f"plan-check-{email}")
         # “补全账号”把多个独立步骤串在同一个父任务里；子步骤结束后

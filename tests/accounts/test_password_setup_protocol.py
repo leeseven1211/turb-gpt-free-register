@@ -67,6 +67,17 @@ class FakeSession:
 class PasswordSetupProtocolTests(unittest.TestCase):
     password = "Fixture_Password_4826!"
 
+    def test_transport_fault_flag_preserves_unknown_submission_without_private_error(self):
+        for final in (False, True):
+            with self.subTest(final=final):
+                session = FakeSession([], [RuntimeError("curl: (56) Proxy CONNECT aborted; private-token")])
+                with self.assertRaises(protocol.ProtocolPasswordSetupError) as caught:
+                    protocol._request(session, "post", AUTH + "/api/accounts/password/add", final=final)
+                self.assertEqual(final, caught.exception.request_unknown)
+                self.assertTrue(caught.exception.proxy_transport_failed)
+                self.assertNotIn("private-token", str(caught.exception))
+
+
     def setUp(self):
         self.challenge = patch.object(protocol, "request_sentinel_token", return_value={"token": "fixture-challenge"})
         self.builder = patch.object(protocol, "build_sentinel_header", return_value=("fixture-otp-token", "fixture-otp-so"))

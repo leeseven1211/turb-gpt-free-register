@@ -36,6 +36,9 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         password_status=None,
         stop_after_password=False,
         log_records=None,
+        password_behavior=None,
+        routes=None,
+        proxy_country=None,
     ):
         actions = []
         account = {"id": 42, "email": "fixture@example.test", "access_token": "fixture-old-at"}
@@ -50,8 +53,11 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             public_dict=lambda: {"network_route": "proxy", "proxy_mode": "pool"},
         )
 
-        def password_setup(email, *, proxy, execution_fence, checkpoint=None, report=None):
+        def password_setup(email, *, proxy, execution_fence, checkpoint=None, report=None,
+                           proxy_supplier=None, on_network_failure=None):
             actions.append(("password", email, proxy, execution_fence))
+            if password_behavior is not None:
+                return password_behavior(proxy_supplier, on_network_failure)
             if log_records is not None:
                 logging.getLogger("password-setup-fixture").warning("fixture wait notice")
             if password_ok:
@@ -135,7 +141,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                     ),
                 )
             )
-            stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
+            stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy",
+                                     **({"side_effect": routes} if routes is not None else {"return_value": route})))
             stack.enter_context(
                 patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=browser_setup)
             )
@@ -153,6 +160,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                 twofa_driver_override="protocol",
                 execution_fence=fence,
                 force_password_reset=force_reset,
+                proxy_country_override=proxy_country,
             )
             if log_records is not None:
                 log_records.extend(json.loads(line) for line in path.read_text().splitlines())

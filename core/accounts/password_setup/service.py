@@ -27,7 +27,7 @@ def _generate_password() -> str:
 
 @serialize_email_auth
 def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fence: dict | None,
-                                checkpoint=None, report=None) -> dict:
+                                checkpoint=None, report=None, proxy_supplier=None, on_network_failure=None) -> dict:
     """登录后按远端结果补密码；本地保存值只用于认证，不阻止再次补全。"""
     email = str(email or "").strip().casefold()
     cp = None
@@ -173,9 +173,17 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             return False
 
         auth_context = replace(parent, cancellation=probe) if parent is not None else AuthExecutionContext(cancellation=probe)
+
+        def network_failed(error):
+            check()
+            if callable(on_network_failure):
+                on_network_failure(error)
+
         with execution_context(auth_context):
             auth_result = refresh_access_token(email, proxy=proxy, on_authenticated=authenticated,
-                                               allow_password_email_fallback=True)
+                allow_password_email_fallback=True,
+                **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
+                **({"on_network_failure": network_failed} if callable(on_network_failure) else {}))
         if checkpoint_error is not None:
             raise checkpoint_error
         if callback_error is not None:
@@ -215,8 +223,9 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         if exc.request_unknown:
             mark_unknown()
         close_stage("failed", str(exc))
-        return result(False, str(exc), error=exc.code,
-                      receipt="unknown" if exc.request_unknown else "rejected")
+        return {**result(False, str(exc), error=exc.code,
+                        receipt="unknown" if exc.request_unknown else "rejected"),
+                **({"proxy_transport_failed": True} if exc.proxy_transport_failed else {})}
     except recovery.PasswordRecoveryError as exc:
         mark_unknown()
         message = {

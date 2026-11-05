@@ -273,6 +273,7 @@ def _network_preflight_with_retry(
     proxy_supplier: Callable[[int], str | None] | None = None,
     identity=None,
     context_recorder=None,
+    on_preflight_failure: Callable[[BaseException], None] | None = None,
 ) -> tuple[BrowserSession, str]:
     """页面/匿名态预热 → CSRF → Signin；每轮建新会话并可换新代理。
 
@@ -317,6 +318,15 @@ def _network_preflight_with_retry(
             return session, authorize_url
         except Exception as exc:
             last_exc = exc
+            if callable(on_preflight_failure):
+                try:
+                    on_preflight_failure(exc)
+                except Exception:
+                    try:
+                        session.session.close()
+                    except Exception:
+                        pass
+                    raise
             if attempt >= attempt_limit or not _is_retryable_network_error(exc):
                 try:
                     session.session.close()
@@ -405,6 +415,7 @@ def check_account_liveness(
     proxy_supplier: Callable[[int], str | None] | None = None,
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
+    on_network_failure=None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
@@ -431,6 +442,7 @@ def check_account_liveness(
             email, proxy=proxy, proxy_supplier=proxy_supplier,
             on_remote_request_started=on_remote_request_started,
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
 
     checked_at = _now()
@@ -466,6 +478,7 @@ def check_account_liveness(
             email,
             proxy,
             proxy_supplier=proxy_supplier,
+            **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
 
         if callable(on_remote_request_started):
@@ -518,6 +531,8 @@ def check_account_liveness(
         logger.warning("[查活] 已废号：%s %s", email, code)
         return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
     except Exception as exc:
+        if callable(on_network_failure):
+            on_network_failure(exc)
         code = detect_account_unusable_text(str(exc))
         if code:
             logger.warning("[查活] 已废号：%s %s", email, code)

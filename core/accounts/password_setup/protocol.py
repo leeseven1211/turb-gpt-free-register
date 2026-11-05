@@ -10,6 +10,7 @@ from collections.abc import Callable
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from core.accounts.liveness.protocol import v2 as protocol_auth
+from core.accounts.password_setup.proxy import is_proxy_transport_failure
 from core.auth.protocol.openai_auth import build_sentinel_header, request_sentinel_token
 from core.auth.protocol.sentinel_runner import generate_sentinel_token
 from core.email import provider as email_provider
@@ -28,11 +29,13 @@ logger = logging.getLogger(__name__)
 class ProtocolPasswordSetupError(RuntimeError):
     """仅携带分类与脱敏说明；未知结果只用于最终密码提交。"""
 
-    def __init__(self, code: str, message: str, request_unknown: bool = False):
+    def __init__(self, code: str, message: str, request_unknown: bool = False,
+                 *, proxy_transport_failed: bool = False):
         super().__init__(message)
         self.code = code
         self.message = message
         self.request_unknown = request_unknown
+        self.proxy_transport_failed = proxy_transport_failed
 
 
 def _check(checkpoint: Callable[[], None] | None) -> None:
@@ -61,11 +64,12 @@ def _request(session, method: str, url: str, *, checkpoint=None, final: bool = F
         return getattr(session, method)(url, **kwargs)
     except _CONTROL_ERRORS:
         raise
-    except Exception:
+    except Exception as exc:
         raise ProtocolPasswordSetupError(
             "password_setup_request_unknown" if final else "password_setup_network_failed",
             "密码提交响应未能确认，请保留本次候选密码后核实" if final else "补密码请求未完成，请检查连接后重试",
             final,
+            proxy_transport_failed=is_proxy_transport_failure(exc),
         ) from None
 
 
@@ -161,8 +165,9 @@ def _sentinel_headers(session, flow: str, checkpoint=None) -> dict[str, str]:
             raise ValueError
     except _CONTROL_ERRORS:
         raise
-    except Exception:
-        raise ProtocolPasswordSetupError("password_setup_sentinel_failed", "补密码安全令牌生成失败，尚未提交新密码") from None
+    except Exception as exc:
+        raise ProtocolPasswordSetupError("password_setup_sentinel_failed", "补密码安全令牌生成失败，尚未提交新密码",
+            proxy_transport_failed=is_proxy_transport_failure(exc)) from None
     headers = {"openai-sentinel-token": token}
     if observer:
         headers["openai-sentinel-so-token"] = observer

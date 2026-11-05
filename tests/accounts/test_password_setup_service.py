@@ -309,7 +309,7 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         except ModuleNotFoundError:
             self.fail("尚未实现纯协议补密码服务")
 
-    def run_service(self, add, *, login=None, checkpoint=None, report=None):
+    def run_service(self, add, *, login=None, checkpoint=None, report=None, **routing):
         def authenticated(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
                 "session": matching_session(email)}, object())
@@ -317,7 +317,33 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
                 patch.object(self.service, "add_password", side_effect=add):
             return self.service.run_protocol_password_setup(self.email, proxy=None, checkpoint=checkpoint, report=report,
                 execution_fence={"run_id": self.owner["operation_run_id"],
-                    "execution_id": self.owner["operation_execution_id"], "lease_token": self.owner["operation_lease_token"]})
+                    "execution_id": self.owner["operation_execution_id"], "lease_token": self.owner["operation_lease_token"]},
+                **routing)
+
+    def test_service_passes_route_callbacks_and_keeps_unknown_password_checkpoint(self):
+        from unittest.mock import Mock
+
+        supplier, network_failed = Mock(return_value="fixture-route"), Mock()
+
+        def login(email, **kwargs):
+            self.assertIs(supplier, kwargs["proxy_supplier"])
+            failure = RuntimeError("Proxy CONNECT aborted")
+            kwargs["on_network_failure"](failure)
+            network_failed.assert_called_once_with(failure)
+            return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
+                "session": matching_session(email)}, object())
+
+        def add(_session, _email, _password, **kwargs):
+            kwargs["on_dispatched"]()
+            raise self.service.ProtocolPasswordSetupError("password_setup_request_unknown", "密码提交回执未知",
+                True, proxy_transport_failed=True)
+
+        result = self.run_service(add, login=login, proxy_supplier=supplier, on_network_failure=network_failed)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["proxy_transport_failed"])
+        self.assertTrue(result["mutation_submitted"])
+        self.assertEqual("unknown", store.resume_password_recovery(**self.owner).state)
+        self.assertNotIn("account_password", self.extra())
 
     def test_service_persists_before_dispatch_and_only_confirms_after_response(self):
         def add(session, email, password, **kwargs):
