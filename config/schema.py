@@ -1394,7 +1394,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "BROWSER_PUBLIC_ASSET_CACHE_MODE", "file": "browser.py", "type": "str", "group": "浏览器画像",
-        "label": "公共静态资源缓存", "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=注册及账号认证流程跨环境复用公开 JS/CSS。认证流程只收录浏览器已下载且确认无凭据的公共响应，认证接口和账号状态不缓存",
+        "label": "公共静态资源缓存", "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=跨环境复用公开 JS/CSS。AT 刷新允许符合公共缓存响应规则的版本资源携带 Cookie，其他流程保持严格准入；认证接口和账号状态不缓存",
     },
     {
         "key": "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB", "file": "browser.py", "type": "int", "group": "浏览器画像",

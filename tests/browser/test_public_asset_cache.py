@@ -163,18 +163,18 @@ class _Wire:
 class PublicAssetEventTests(_TempFiles):
     def client(self, **kwargs):
         c = PublicAssetCache("127.0.0.1:9222", self.directory, mode="enabled", **kwargs)
-        c._store = self.store()
+        c._store = self.store(policy=c.policy)
         c._ws = _Wire()
         return c
 
     def event(self, c, method, **params):
         c._event({"method": method, "params": params})
 
-    def complete(self, c, *, request_headers=None, response_headers=None, actual_headers=True, method="GET"):
-        self.event(c, "Network.requestWillBeSent", requestId="net-1", type="Script", request={"url": URL, "method": method, "headers": {}})
+    def complete(self, c, *, request_headers=None, response_headers=None, actual_headers=True, method="GET", url=URL, resource_type="Script"):
+        self.event(c, "Network.requestWillBeSent", requestId="net-1", type=resource_type, request={"url": url, "method": method, "headers": {}})
         if actual_headers:
             self.event(c, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers=request_headers or {}, associatedCookies=[])
-        self.event(c, "Network.responseReceived", requestId="net-1", type="Script", response={"url": URL, "status": 200, "headers": response_headers or PUBLIC})
+        self.event(c, "Network.responseReceived", requestId="net-1", type=resource_type, response={"url": url, "status": 200, "headers": response_headers or PUBLIC})
         if actual_headers:
             self.event(c, "Network.responseReceivedExtraInfo", requestId="net-1", headers=response_headers or PUBLIC, statusCode=200)
         self.event(c, "Network.loadingFinished", requestId="net-1", encodedDataLength=321)
@@ -361,6 +361,195 @@ class PublicAssetEventTests(_TempFiles):
                 self.assertFalse(c.snapshot()["replay_accounting_complete"])
                 c._event({"id": command["id"], "result": {}})
                 self.assertEqual(c.request_source("net-1"), "unknown")
+
+class TokenRefreshPublicAssetTests(_TempFiles):
+    client = PublicAssetEventTests.client
+    event = PublicAssetEventTests.event
+    complete = PublicAssetEventTests.complete
+
+    def tearDown(self):
+        for client in getattr(self, "active_clients", []):
+            client.stop()
+        super().tearDown()
+
+    def start_workers(self, client, *, names=("lookup", "background")):
+        if not hasattr(self, "active_clients"):
+            self.active_clients = []
+        self.active_clients.append(client)
+        for name, queue_ in (("lookup", client._lookup_queue), ("background", client._background_queue)):
+            if name not in names:
+                continue
+            worker = threading.Thread(target=client._work, args=(name, queue_), daemon=True)
+            client._workers.append(worker)
+            worker.start()
+
+    def test_two_new_instances_share_cookie_public_resource_and_new_version_misses(self):
+        first = self.client(policy="token_refresh")
+        self.start_workers(first)
+        self.complete(first, request_headers={"Cookie": "本测试的占位值"})
+        body_command = first._ws.commands[-1]
+        self.assertEqual(body_command["method"], "Network.getResponseBody")
+        first._event({"id": body_command["id"], "result": {"body": BODY.decode(), "base64Encoded": False}})
+        first._background_queue.join()
+        self.assertEqual(first.snapshot()["stores"], 1)
+        first.stop()
+
+        second = self.client(policy="token_refresh")
+        # 新实例已在构造时读入索引；此处只运行查询 worker，避免后台索引刷新
+        # 的非阻塞锁竞争把共享命中验证变成允许回源的并发测试。
+        self.start_workers(second, names=("lookup",))
+        self.event(second, "Fetch.requestPaused", requestId="fetch-1", networkId="net-2", resourceType="Script",
+                   request={"method": "GET", "url": URL, "headers": {"Cookie": "另一个测试的占位值"}})
+        second._lookup_queue.join()
+        second._drain_results()
+        replay = second._ws.commands[-1]
+        self.assertEqual(replay["method"], "Fetch.fulfillRequest")
+        self.assertEqual(base64.b64decode(replay["params"]["body"]), BODY)
+        self.assertFalse(any(x["name"].lower() == "set-cookie" for x in replay["params"]["responseHeaders"]))
+        second._event({"id": replay["id"], "result": {}})
+        self.assertEqual(second.snapshot()["hits"], 1)
+        self.assertEqual(second.snapshot()["avoided_upstream_bytes"], 321)
+        new_url = URL.replace("1234abcd", "2234abcd")
+        self.event(second, "Fetch.requestPaused", requestId="fetch-2", networkId="net-3", resourceType="Script",
+                   request={"method": "GET", "url": new_url, "headers": {"Cookie": "测试占位值"}})
+        self.assertEqual(second._ws.commands[-1]["method"], "Fetch.continueRequest")
+        self.assertEqual(second.snapshot()["misses"], 1)
+
+    def test_token_refresh_allows_pure_hash_css_and_strict_does_not(self):
+        url = "https://chatgpt.com/cdn/assets/2b5003e1cbf1.css"
+        self.assertIsNone(_asset_type(url))
+        self.assertEqual(_asset_type(url, policy="token_refresh"), "Stylesheet")
+        client = self.client(policy="token_refresh")
+        self.complete(client, url=url, resource_type="Stylesheet", request_headers={"Cookie": "测试占位值"},
+                      response_headers={**PUBLIC, "content-type": "text/css; charset=utf-8"})
+        self.assertEqual(client._ws.commands[-1]["method"], "Network.getResponseBody")
+        for invalid in (url + "?private=1", url.replace(".css", ".js"), url.replace("/assets/", "/assets/async/")):
+            self.assertIsNone(_asset_type(invalid, policy="token_refresh"))
+
+    def test_token_refresh_still_rejects_authorization_including_late_headers(self):
+        for headers in ({"Authorization": "测试占位值"}, {"Proxy-Authorization": "测试占位值"}):
+            with self.subTest(headers=list(headers)):
+                client = self.client(policy="token_refresh")
+                self.complete(client, request_headers=headers)
+                self.assertFalse(client._ws.commands)
+                self.assertEqual(client.snapshot()["reject_reasons"], {"request_credentials": 1})
+                self.assertTrue(client._background_queue.empty())
+                self.assertTrue(client._store.put(URL, PUBLIC, BODY))
+                self.event(client, "Fetch.requestPaused", requestId="fetch", networkId="net-2", resourceType="Script",
+                           request={"method": "GET", "url": URL, "headers": headers})
+                self.assertEqual(client._ws.commands[-1]["method"], "Fetch.continueRequest")
+                self.assertTrue(client._lookup_queue.empty())
+
+    def test_cookie_permission_requires_public_response_and_rejects_sensitive_variants(self):
+        for extra, reason in (
+            ({"cache-control": "private, max-age=3600"}, "response_cache_control"),
+            ({"cache-control": "public, no-store, max-age=3600"}, "response_cache_control"),
+            ({"vary": "Cookie"}, "response_vary"),
+            ({"vary": "Authorization"}, "response_vary"),
+            ({"vary": "Origin"}, "response_vary"),
+            ({"set-cookie": "测试占位值"}, "response_set_cookie"),
+            ({"content-type": "text/html"}, "response_mime"),
+            ({"age": "3600"}, "response_expired"),
+        ):
+            with self.subTest(reason=reason, header=list(extra)):
+                client = self.client(policy="token_refresh")
+                self.complete(client, request_headers={"Cookie": "测试占位值"}, response_headers={**PUBLIC, **extra})
+                self.assertFalse(client._ws.commands)
+                self.assertTrue(client._background_queue.empty())
+                self.assertEqual(client.snapshot()["reject_reasons"], {reason: 1})
+
+    def test_relaxed_entries_are_isolated_and_share_global_eviction_limit(self):
+        strict = self.store(max_entries=1)
+        relaxed = self.store(max_entries=1, policy="token_refresh")
+        self.assertTrue(relaxed.put(URL, PUBLIC, BODY))
+        self.assertIsNone(strict.get(URL))
+        self.assertNotEqual(strict.key(URL), relaxed.key(URL))
+        self.assertTrue(strict.put(URL, PUBLIC, BODY))
+        self.assertEqual(len(list(self.directory.glob("*.asset"))), 1)
+        self.assertIsNone(relaxed.get(URL))
+        self.assertEqual(strict.get(URL)["body"], BODY)
+
+    def test_policy_marker_prevents_loading_relaxed_file_under_strict_key(self):
+        relaxed = self.store(policy="token_refresh")
+        strict = self.store()
+        self.assertTrue(relaxed.put(URL, PUBLIC, BODY))
+        relaxed_path = self.directory / (relaxed.key(URL) + ".asset")
+        strict_path = self.directory / (strict.key(URL) + ".asset")
+        strict_path.write_bytes(relaxed_path.read_bytes())
+        self.assertIsNone(strict.get(URL))
+        self.assertEqual(relaxed.get(URL)["body"], BODY)
+
+    def test_token_refresh_requires_real_extra_info_and_reports_which_metadata_is_missing(self):
+        client = self.client(policy="token_refresh")
+        self.complete(client, actual_headers=False)
+        self.event(client, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={"Cookie": "测试占位值"}, associatedCookies=[])
+        deadline = client._requests["net-1"]["metadata_deadline"]
+        with patch.object(cache_module.time, "monotonic", return_value=deadline + .001):
+            client._expire_metadata_waits()
+        self.assertEqual(client.snapshot()["reject_reasons"], {"metadata_response_extra_missing": 1})
+        self.assertEqual(client.snapshot()["error_reasons"], {"metadata_timeout": 1})
+        self.assertFalse(client._ws.commands)
+        self.assertTrue(client._background_queue.empty())
+
+    def test_partial_response_headers_wait_for_real_metadata_before_admission(self):
+        for late_headers, expected_reason in ((PUBLIC, None), ({**PUBLIC, "set-cookie": "测试占位值"}, "response_set_cookie")):
+            with self.subTest(expected_reason=expected_reason):
+                client = self.client(policy="token_refresh")
+                self.event(client, "Network.requestWillBeSent", requestId="net-1", type="Script",
+                           request={"url": URL, "method": "GET", "headers": {}})
+                self.event(client, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+                self.event(client, "Network.responseReceived", requestId="net-1", type="Script",
+                           response={"url": URL, "status": 200, "headers": {"content-type": "application/javascript"}})
+                self.event(client, "Network.loadingFinished", requestId="net-1", encodedDataLength=321)
+                self.assertFalse(client._ws.commands)
+                self.assertFalse(client._requests["net-1"].get("done"))
+                self.event(client, "Network.responseReceivedExtraInfo", requestId="net-1", headers=late_headers, statusCode=200)
+                if expected_reason:
+                    self.assertEqual(client.snapshot()["reject_reasons"], {expected_reason: 1})
+                    self.assertFalse(client._ws.commands)
+                else:
+                    self.assertEqual(client._ws.commands[-1]["method"], "Network.getResponseBody")
+                    self.assertEqual(client.snapshot()["reject_reasons"], {})
+
+    def test_late_authorization_blocks_body_even_after_public_response_metadata(self):
+        client = self.client(policy="token_refresh")
+        self.complete(client, actual_headers=False)
+        self.event(client, "Network.responseReceivedExtraInfo", requestId="net-1", headers=PUBLIC, statusCode=200)
+        self.assertFalse(client._ws.commands)
+        self.event(client, "Network.requestWillBeSentExtraInfo", requestId="net-1",
+                   headers={"Authorization": "测试占位值"}, associatedCookies=[])
+        self.assertFalse(client._ws.commands)
+        self.assertEqual(client.snapshot()["reject_reasons"], {"request_credentials": 1})
+
+    def test_strict_policy_preserves_partial_response_rejection_order(self):
+        client = self.client()
+        self.complete(client, actual_headers=False, response_headers={"content-type": "application/javascript"})
+        self.assertTrue(client._requests["net-1"]["done"])
+        self.assertEqual(client.snapshot()["reject_reasons"], {"response_cache_control": 1})
+        self.event(client, "Network.responseReceivedExtraInfo", requestId="net-1", headers=PUBLIC, statusCode=200)
+        self.event(client, "Network.requestWillBeSentExtraInfo", requestId="net-1", headers={}, associatedCookies=[])
+        self.assertFalse(client._ws.commands)
+
+    def test_body_cdp_error_and_timeout_have_fixed_diagnostics_without_raw_error(self):
+        for failure in ("response", "timeout"):
+            with self.subTest(failure=failure):
+                client = self.client(policy="token_refresh")
+                self.complete(client, request_headers={"Cookie": "测试占位值"})
+                command = client._ws.commands[-1]
+                if failure == "response":
+                    client._event({"id": command["id"], "error": {"message": "不能进入诊断的浏览器原始错误"}})
+                    reason = "command_body"
+                    self.assertEqual(client.snapshot()["body_failures"], 1)
+                else:
+                    tag, _ = client._pending[command["id"]]
+                    client._pending[command["id"]] = (tag, 0)
+                    client._expire_commands()
+                    reason = "body_timeout"
+                    self.assertEqual(client.snapshot()["body_timeouts"], 1)
+                self.assertEqual(client.snapshot()["body_requests"], 1)
+                self.assertEqual(client.snapshot()["error_reasons"], {reason: 1})
+                self.assertNotIn("不能进入诊断", json.dumps(client.snapshot(), ensure_ascii=False))
+
 
 class PublicAssetTargetTests(_TempFiles):
     def test_explicit_target_selects_current_page_in_multi_page_profile(self):
