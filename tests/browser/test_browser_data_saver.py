@@ -195,6 +195,42 @@ class BrowserDataSaverTests(unittest.TestCase):
         self.assertNotIn("--disable-remote-fonts", auth_params["args"])
         self.assertIn("--disable-remote-fonts", registration_params["args"])
 
+    def test_token_refresh_disables_background_downloads_without_duplicate_args(self):
+        params = {"args": ["--lang=ja", "--disable-component-update"], "headless": True}
+        with patch("config.browser.BROWSER_DATA_SAVER_MODE", True), patch(
+            "config.browser.BROWSER_DATA_SAVER_AUTH_FLOWS", ["token_refresh"]
+        ):
+            self.assertIs(_apply_data_saver_open_args(params, "token_refresh"), params)
+            _apply_data_saver_open_args(params, "token_refresh")
+        self.assertEqual(params["args"].count("--disable-component-update"), 1)
+        self.assertEqual(params["args"].count("--disable-background-networking"), 1)
+        self.assertEqual(params["args"][0], "--lang=ja")
+        self.assertTrue(params["headless"])
+
+    def test_token_refresh_background_args_require_both_saver_switches(self):
+        for enabled, flows in ((False, ["token_refresh"]), (True, [])):
+            with self.subTest(enabled=enabled, flows=flows):
+                params = {"args": ["--lang=ja"]}
+                with patch("config.browser.BROWSER_DATA_SAVER_MODE", enabled), patch(
+                    "config.browser.BROWSER_DATA_SAVER_AUTH_FLOWS", flows
+                ):
+                    _apply_data_saver_open_args(params, "token_refresh")
+                self.assertEqual(params, {"args": ["--lang=ja"]})
+
+    def test_background_download_args_are_isolated_from_other_browser_flows(self):
+        for flow in (None, "registration", "live_check", "codex_oauth", "account_action"):
+            with self.subTest(flow=flow):
+                params = {"args": ["--lang=ja"]}
+                with patch("config.browser.BROWSER_DATA_SAVER_MODE", True), patch(
+                    "config.browser.BROWSER_DATA_SAVER_AUTH_FLOWS",
+                    ["token_refresh", "live_check", "codex_oauth", "account_action"],
+                ), patch("config.browser.BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES", ["image", "font"]):
+                    _apply_data_saver_open_args(params, flow)
+                expected = ["--lang=ja", "--blink-settings=imagesEnabled=false"]
+                if flow in (None, "registration"):
+                    expected.append("--disable-remote-fonts")
+                self.assertEqual(params["args"], expected)
+
     def test_auth_flow_empty_list_is_valid_for_webui_and_reload_resolution(self):
         self.assertEqual(validate_value("BROWSER_DATA_SAVER_AUTH_FLOWS", []), [])
         resolution = resolve_field(

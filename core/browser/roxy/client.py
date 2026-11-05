@@ -296,7 +296,7 @@ def _mask_proxy(proxy_url: str) -> str:
 
 
 def _apply_data_saver_open_args(params: dict, flow: str | None = None) -> dict:
-    """Disable Chromium image loading before the first page request when enabled."""
+    """启动前关闭选定资源；刷新 AT 额外关闭浏览器后台网络与组件更新。"""
     try:
         from config import browser as _browser_cfg
         if flow is None:
@@ -318,6 +318,12 @@ def _apply_data_saver_open_args(params: dict, flow: str | None = None) -> dict:
             flag = "--disable-remote-fonts"
             if flag not in args:
                 args.append(flag)
+            params["args"] = args
+        if enabled and str(flow or "").strip().lower() == "token_refresh":
+            args = list(params.get("args") or [])
+            for flag in ("--disable-background-networking", "--disable-component-update"):
+                if flag not in args:
+                    args.append(flag)
             params["args"] = args
     except Exception:
         logger.debug("[Roxy] 添加省流量启动参数失败", exc_info=True)

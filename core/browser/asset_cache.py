@@ -31,6 +31,21 @@ _PUBLIC_ASSET_PREFIXES = (
 )
 _DENIED_NAMES = ("sentinel", "challenge", "captcha", "turnstile", "arkose", "recaptcha")
 _VERSIONED_FILE = re.compile(r"^[A-Za-z0-9_.-]+[-.][A-Za-z0-9_-]{8,64}\.(js|css)$")
+_HASHED_CSS_FILE = re.compile(r"^[0-9a-f]{12,64}\.css$")
+_CACHE_POLICIES = frozenset({"strict", "token_refresh"})
+CACHE_REJECT_REASONS = frozenset({
+    "url_not_versioned", "request_method", "request_credentials", "request_bypass",
+    "response_status", "response_headers", "response_set_cookie", "response_mime",
+    "response_charset", "response_vary", "response_cache_control", "response_age",
+    "response_expired", "response_redirect", "response_service_worker", "resource_type",
+    "metadata_request_extra_missing", "metadata_response_extra_missing", "request_failed",
+    "body_invalid", "body_too_large", "store_unavailable",
+})
+CACHE_ERROR_REASONS = frozenset({
+    "startup", "connection", "send", "command_network_ready", "command_fetch_ready",
+    "command_body", "command_fulfill", "command_other", "body_timeout", "metadata_timeout",
+    "lookup_timeout", "queue_full", "worker", "shutdown_pending_body",
+})
 _HEADER_NAMES = frozenset({
     "content-type", "cache-control", "vary", "date", "age", "expires", "etag",
     "last-modified", "content-encoding", "content-security-policy",
@@ -41,7 +56,7 @@ _HEADER_NAMES = frozenset({
 })
 
 
-def _asset_type(url: str) -> str | None:
+def _asset_type(url: str, *, policy: str = "strict") -> str | None:
     """只接受两个确定目录下不含查询或身份参数的版本化 JS/CSS。"""
     try:
         p = urlsplit(url)
@@ -51,7 +66,15 @@ def _asset_type(url: str) -> str | None:
         if not prefix:
             return None
         name = url[len(prefix):]
-        if not _VERSIONED_FILE.fullmatch(name) or any(x in name.lower() for x in _DENIED_NAMES):
+        if policy == "token_refresh" and prefix == _PUBLIC_ASSET_PREFIXES[0] and name.startswith("async/"):
+            # 只覆盖 ChatGPT 公开异步脚本这一层；文件名仍须完整通过版本校验。
+            name = name[len("async/"):]
+            if not name.endswith(".js"):
+                return None
+        versioned = _VERSIONED_FILE.fullmatch(name) or (
+            policy == "token_refresh" and _HASHED_CSS_FILE.fullmatch(name)
+        )
+        if not versioned or any(x in name.lower() for x in _DENIED_NAMES):
             return None
         return "Script" if name.endswith(".js") else "Stylesheet"
     except (TypeError, ValueError):
@@ -69,9 +92,12 @@ def _request_bypasses_cache(headers: dict) -> bool:
                 or {"no-cache", "no-store", "max-age=0"} & directives or "no-cache" in h.get("pragma", "").lower())
 
 
-def _request_has_credentials(headers: dict) -> bool:
-    """带凭据请求不做本地回放；注册匿名验证仍遵循独立线路边界。"""
-    return bool({"cookie", "authorization", "proxy-authorization"} & _headers(headers).keys())
+def _request_has_credentials(headers: dict, *, policy: str = "strict") -> bool:
+    """仅 AT 刷新的公开静态资源允许 Cookie，认证授权头始终排除。"""
+    forbidden = {"authorization", "proxy-authorization"}
+    if policy != "token_refresh":
+        forbidden.add("cookie")
+    return bool(forbidden & _headers(headers).keys())
 
 
 def _unsafe_headers(headers: dict) -> bool:
@@ -82,43 +108,52 @@ def _safe_headers(headers: dict) -> dict[str, str]:
     return {k: v for k, v in _headers(headers).items() if k in _HEADER_NAMES and len(v) <= 4096}
 
 
-def _expiry(url: str, headers: dict, now: float, max_age: float) -> float | None:
-    kind = _asset_type(url)
+def _expiry_result(url: str, headers: dict, now: float, max_age: float, *, policy: str = "strict"):
+    """同时返回固定拒绝原因，不将响应头或资源地址写入诊断。"""
+    kind = _asset_type(url, policy=policy)
     h = _headers(headers)
-    if not kind or _unsafe_headers(h) or any(k in h for k in ("set-cookie", "set-cookie2", "www-authenticate")):
-        return None
+    if not kind:
+        return None, "url_not_versioned"
+    if _unsafe_headers(h):
+        return None, "response_headers"
+    if any(k in h for k in ("set-cookie", "set-cookie2", "www-authenticate")):
+        return None, "response_set_cookie"
     content_type = h.get("content-type", "").lower()
     mime = content_type.split(";", 1)[0].strip()
     if (kind == "Script" and mime not in {"application/javascript", "text/javascript"}) or (kind == "Stylesheet" and mime != "text/css"):
-        return None
+        return None, "response_mime"
     if "charset=" in content_type and content_type.split("charset=", 1)[1].strip(' \"') not in {"utf-8", "utf8", "us-ascii"}:
-        return None
+        return None, "response_charset"
     vary = {v.strip().lower() for v in h.get("vary", "").split(",") if v.strip()}
     if vary - {"accept-encoding"}:
-        return None
+        return None, "response_vary"
     directives: dict[str, str] = {}
     for part in h.get("cache-control", "").split(","):
         key, _, value = part.strip().partition("=")
         key = key.lower()
         if key in directives:
-            return None
+            return None, "response_cache_control"
         directives[key] = value.strip(' \"')
     if "public" not in directives or {"private", "no-store", "no-cache", "no-transform"} & directives.keys():
-        return None
+        return None, "response_cache_control"
     age_value = directives.get("s-maxage", directives.get("max-age", ""))
     if not re.fullmatch(r"[0-9]{1,10}", age_value):
-        return None
+        return None, "response_cache_control"
     try:
         if not re.fullmatch(r"[0-9]{1,12}", h.get("age", "0")):
-            return None
+            return None, "response_age"
         age = float(h.get("age", "0"))
         if "date" in h:
             date = email.utils.parsedate_to_datetime(h["date"]).timestamp()
             age = max(age, max(0.0, now - date))
         remaining = min(float(max_age), float(age_value) - age)
-        return now + remaining if remaining > 0 else None
+        return (now + remaining, None) if remaining > 0 else (None, "response_expired")
     except (ValueError, TypeError, OverflowError):
-        return None
+        return None, "response_age"
+
+
+def _expiry(url: str, headers: dict, now: float, max_age: float, *, policy: str = "strict") -> float | None:
+    return _expiry_result(url, headers, now, max_age, policy=policy)[0]
 
 
 def _replay_headers(headers: dict, length: int, expires_at=None) -> list[dict[str, str]]:
@@ -140,7 +175,10 @@ def _replay_headers(headers: dict, length: int, expires_at=None) -> list[dict[st
 class _AssetStore:
     """一个条目一个原子文件；进程锁只尝试一次，繁忙时按未命中处理。"""
 
-    def __init__(self, directory, *, max_total_bytes, max_entry_bytes, max_entries, max_age_seconds):
+    def __init__(self, directory, *, max_total_bytes, max_entry_bytes, max_entries, max_age_seconds, policy="strict"):
+        if policy not in _CACHE_POLICIES:
+            raise ValueError("不支持的公共资源缓存策略")
+        self.policy = policy
         self.directory = Path(directory)
         if self.directory.is_symlink():
             raise ValueError("缓存目录不能是符号链接")
@@ -152,19 +190,148 @@ class _AssetStore:
         self._thread_lock = threading.Lock()
         self._known_lock = threading.Lock()
         self._known: set[str] = set()
+        self._memory_lock = threading.Lock()
+        self._memory = collections.OrderedDict()
+        self._memory_bytes = 0
+        self._warm_paths = collections.deque()
         self.refresh()
 
-    @staticmethod
-    def key(url):
-        return hashlib.sha256(("public-asset-v1:" + url).encode()).hexdigest()
+    def key(self, url):
+        # 严格策略保留旧 key；AT 放宽条目使用独立命名空间，容量仍由同一目录统筹。
+        namespace = "public-asset-v1:" if self.policy == "strict" else "public-asset-v1:token_refresh:"
+        return hashlib.sha256((namespace + url).encode()).hexdigest()
 
     def refresh(self):
         with self._locked() as locked:
             if not locked:
                 return
-            names = {p.stem for p in self.directory.glob("*.asset") if re.fullmatch(r"[0-9a-f]{64}", p.stem) and not p.is_symlink()}
+            paths = [p for p in self.directory.glob("*.asset") if re.fullmatch(r"[0-9a-f]{64}", p.stem) and not p.is_symlink()]
+            names = {p.stem for p in paths}
             with self._known_lock:
                 self._known = names
+            if self.policy == "token_refresh":
+                # 大型、近期使用的脚本优先；每次刷新只建立索引，正文在后台分批验证。
+                def priority(path):
+                    try:
+                        info = path.stat()
+                        return info.st_size, info.st_mtime_ns
+                    except OSError:
+                        return 0, 0
+                pending = [path for path in self._warm_paths if path.stem in names]
+                queued = {path.stem for path in pending}
+                pending.extend(sorted((path for path in paths if path.stem not in queued), key=priority, reverse=True))
+                self._warm_paths = collections.deque(pending)
+
+    @staticmethod
+    def _fingerprint(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _drop_memory(self, key):
+        with self._memory_lock:
+            previous = self._memory.pop(key, None)
+            if previous is not None:
+                self._memory_bytes -= previous[2]
+
+    def get_memory(self, url):
+        """仅 AT 刷新复用已验证正文，每次核对磁盘版本和剩余有效期。"""
+        if self.policy != "token_refresh":
+            return None
+        key = self.key(url)
+        with self._memory_lock:
+            cached = self._memory.get(key)
+        if cached is None:
+            return None
+        item, fingerprint, _ = cached
+        try:
+            info = (self.directory / (key + ".asset")).stat(follow_symlinks=False)
+            now = time.time()
+            if (not stat.S_ISREG(info.st_mode) or self._fingerprint(info) != fingerprint
+                    or item["expires_at"] <= now
+                    or _expiry(url, item["headers"], now, self.max_age, policy=self.policy) is None):
+                raise ValueError("内存缓存条目已失效")
+        except (OSError, ValueError, TypeError):
+            self._drop_memory(key)
+            return None
+        with self._memory_lock:
+            if self._memory.get(key) is not cached:
+                return None
+            self._memory.move_to_end(key)
+        return {**item, "headers": dict(item["headers"])}
+
+    def _remember(self, path, item):
+        if self.policy != "token_refresh":
+            return
+        encoded = item.get("encoded_body") or base64.b64encode(item["body"]).decode("ascii")
+        size = len(item["body"]) + len(encoded)
+        if size > self.max_total_bytes:
+            return
+        try:
+            info = path.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                return
+        except OSError:
+            return
+        cached = {**item, "headers": dict(item["headers"]), "encoded_body": encoded}
+        with self._memory_lock:
+            previous = self._memory.pop(path.stem, None)
+            if previous is not None:
+                self._memory_bytes -= previous[2]
+            self._memory[path.stem] = cached, self._fingerprint(info), size
+            self._memory_bytes += size
+            while len(self._memory) > self.max_entries or self._memory_bytes > self.max_total_bytes:
+                _, removed = self._memory.popitem(last=False)
+                self._memory_bytes -= removed[2]
+
+    def _read_verified(self, path, url=None):
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > self.max_entry_bytes * 4 // 3 + 32768:
+                raise ValueError("缓存条目尺寸不合法")
+            item = json.loads(f.read())
+        now = time.time()
+        if (not isinstance(item, dict) or not isinstance(item.get("headers"), dict)
+                or item.get("version") != 1 or item.get("policy", "strict") != self.policy
+                or not isinstance(item.get("url"), str) or (url is not None and item["url"] != url)
+                or self.key(item["url"]) != path.stem
+                or not math.isfinite(float(item.get("expires_at", 0))) or float(item.get("expires_at", 0)) <= now):
+            raise ValueError("缓存条目已失效")
+        if _expiry(item["url"], item["headers"], now, self.max_age, policy=self.policy) is None:
+            raise ValueError("缓存条目不符合公开规则")
+        encoded = item["body"]
+        body = base64.b64decode(encoded, validate=True)
+        if len(body) > self.max_entry_bytes or hashlib.sha256(body).hexdigest() != item.get("sha256"):
+            raise ValueError("缓存正文校验不通过")
+        if self._fingerprint(path.stat(follow_symlinks=False)) != self._fingerprint(info):
+            raise ValueError("缓存条目在读取时已被替换")
+        item["body"] = body
+        item["encoded_body"] = encoded
+        item["expires_at"] = float(item["expires_at"])
+        return item
+
+    def prewarm(self, *, budget=.05, max_items=32):
+        """仅在启动准备或后台执行，分批预读；不在 CDP 请求事件内读取正文。"""
+        if self.policy != "token_refresh":
+            return
+        deadline = time.monotonic() + max(0, budget)
+        for _ in range(max(0, max_items)):
+            if time.monotonic() >= deadline or not self._warm_paths:
+                break
+            path = self._warm_paths.popleft()
+            with self._memory_lock:
+                cached = self._memory.get(path.stem)
+            if cached is not None and self.get_memory(cached[0]["url"]) is not None:
+                continue
+            with self._locked() as locked:
+                if not locked:
+                    self._warm_paths.appendleft(path)
+                    break
+                try:
+                    item = self._read_verified(path)
+                    self._remember(path, item)
+                except (OSError, ValueError, TypeError, KeyError):
+                    # 同目录还可能有严格策略条目；预热失败不能删除它们。
+                    continue
 
     def knows(self, url):
         with self._known_lock:
@@ -205,6 +372,8 @@ class _AssetStore:
             os.close(fd)
 
     def _forget(self, path):
+        if self.policy == "token_refresh":
+            self._drop_memory(path.stem)
         with self._known_lock:
             self._known.discard(path.stem)
         try:
@@ -213,27 +382,35 @@ class _AssetStore:
             pass
 
     def get(self, url):
+        if self.policy == "token_refresh":
+            cached = self.get_memory(url)
+            if cached is not None:
+                return cached
         path = self.directory / (self.key(url) + ".asset")
         with self._locked() as locked:
             if not locked:
                 return None
             try:
-                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                with os.fdopen(fd, "rb") as f:
-                    info = os.fstat(f.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > self.max_entry_bytes * 4 // 3 + 32768:
-                        raise ValueError("缓存条目尺寸不合法")
-                    item = json.loads(f.read())
-                now = time.time()
-                if not isinstance(item, dict) or not isinstance(item.get("headers"), dict) or item.get("version") != 1 or item.get("url") != url or not math.isfinite(float(item.get("expires_at", 0))) or float(item.get("expires_at", 0)) <= now:
-                    raise ValueError("缓存条目已失效")
-                if _expiry(url, item.get("headers", {}), now, self.max_age) is None:
-                    raise ValueError("缓存条目不符合公开规则")
-                body = base64.b64decode(item["body"], validate=True)
-                if len(body) > self.max_entry_bytes or hashlib.sha256(body).hexdigest() != item.get("sha256"):
-                    raise ValueError("缓存正文校验不通过")
-                item["body"] = body
+                if self.policy == "token_refresh":
+                    item = self._read_verified(path, url)
+                else:
+                    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "rb") as f:
+                        info = os.fstat(f.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > self.max_entry_bytes * 4 // 3 + 32768:
+                            raise ValueError("缓存条目尺寸不合法")
+                        item = json.loads(f.read())
+                    now = time.time()
+                    if not isinstance(item, dict) or not isinstance(item.get("headers"), dict) or item.get("version") != 1 or item.get("policy", "strict") != self.policy or item.get("url") != url or not math.isfinite(float(item.get("expires_at", 0))) or float(item.get("expires_at", 0)) <= now:
+                        raise ValueError("缓存条目已失效")
+                    if _expiry(url, item.get("headers", {}), now, self.max_age, policy=self.policy) is None:
+                        raise ValueError("缓存条目不符合公开规则")
+                    body = base64.b64decode(item["body"], validate=True)
+                    if len(body) > self.max_entry_bytes or hashlib.sha256(body).hexdigest() != item.get("sha256"):
+                        raise ValueError("缓存正文校验不通过")
+                    item["body"] = body
                 os.utime(path, None)
+                self._remember(path, item)
                 return item
             except (OSError, ValueError, TypeError, KeyError):
                 self._forget(path)
@@ -241,10 +418,10 @@ class _AssetStore:
 
     def put(self, url, headers, body: bytes, upstream_bytes=0):
         now = time.time()
-        expires = _expiry(url, headers, now, self.max_age)
+        expires = _expiry(url, headers, now, self.max_age, policy=self.policy)
         if not expires or not body or len(body) > self.max_entry_bytes:
             return False
-        item = {"version": 1, "url": url, "headers": _safe_headers(headers), "expires_at": expires,
+        item = {"version": 1, "policy": self.policy, "url": url, "headers": _safe_headers(headers), "expires_at": expires,
                 "sha256": hashlib.sha256(body).hexdigest(), "body": base64.b64encode(body).decode("ascii"),
                 "upstream_bytes": max(0, int(upstream_bytes)), "stored_at": now}
         content = json.dumps(item, ensure_ascii=True, separators=(",", ":")).encode()
@@ -271,7 +448,10 @@ class _AssetStore:
                 with self._known_lock:
                     if path.exists():
                         self._known.add(path.stem)
-                return path.exists()
+                exists = path.exists()
+                if exists and self.policy == "token_refresh":
+                    self._remember(path, {**item, "body": body, "encoded_body": item["body"]})
+                return exists
             finally:
                 temp.unlink(missing_ok=True)
 
@@ -287,12 +467,15 @@ class PublicAssetCache:
     def __init__(self, debugger_address, cache_dir, *, mode="off", max_total_bytes=256 * 1024 * 1024,
                  max_entry_bytes=10 * 1024 * 1024, max_entries=1000, max_age_seconds=86400,
                  proxy_url=None, allow_direct=False, anonymous_fetcher=None, ready_timeout=3.0,
-                 request_budget=0.10, metadata_timeout=0.25, target_id=None):
+                 request_budget=0.10, metadata_timeout=0.25, target_id=None, policy="strict"):
+        if policy not in _CACHE_POLICIES:
+            raise ValueError("不支持的公共资源缓存策略")
+        self.policy = policy
         self.debugger_address = str(debugger_address or "")
         self.mode = mode if mode in {"off", "observe", "enabled"} else "off"
         self.cache_dir = cache_dir
         self._store_options = dict(max_total_bytes=max_total_bytes, max_entry_bytes=max_entry_bytes,
-                                   max_entries=max_entries, max_age_seconds=max_age_seconds)
+                                   max_entries=max_entries, max_age_seconds=max_age_seconds, policy=policy)
         self._max_entry = max(1, int(max_entry_bytes))
         self._max_age = max(1, float(max_age_seconds))
         self._proxy_url = proxy_url
@@ -329,13 +512,30 @@ class PublicAssetCache:
             if not self._stats_frozen:
                 self._stats[key] += amount
 
+    def _reject(self, reason):
+        if reason not in CACHE_REJECT_REASONS:
+            raise ValueError("不支持的公共资源缓存拒绝原因")
+        self._count("rejected")
+        self._count("reject:" + reason)
+
+    def _error(self, reason):
+        if reason not in CACHE_ERROR_REASONS:
+            raise ValueError("不支持的公共资源缓存错误原因")
+        self._count("errors")
+        self._count("error:" + reason)
+
     def _source(self, rid, source):
         if rid:
             with self._lock:
+                if (self.policy == "token_refresh" and source == "native"
+                        and self._sources.get(rid) in {"pending", "local"}):
+                    return False
                 self._sources[rid] = source
                 self._sources.move_to_end(rid)
                 while len(self._sources) > 4096:
                     self._sources.popitem(last=False)
+            return True
+        return False
 
     def request_source(self, network_id, target_id=None):
         if target_id and self.target_id and target_id != self.target_id:
@@ -347,12 +547,16 @@ class PublicAssetCache:
     def snapshot(self):
         with self._lock:
             result = dict(self._stats)
+        reject_reasons = {key[7:]: result.pop(key) for key in list(result) if key.startswith("reject:")}
+        error_reasons = {key[6:]: result.pop(key) for key in list(result) if key.startswith("error:")}
         for key in ("hits", "misses", "stores", "rejected", "errors", "local_served_bytes",
                     "avoided_upstream_bytes", "anonymous_fill_bytes", "anonymous_requests", "native_hits"):
             result.setdefault(key, 0)
         result.setdefault("anonymous_accounting_complete", True)
         result.setdefault("replay_accounting_complete", True)
-        return {"mode": self.mode, "running": self._running, "ready": self._ready.is_set() and self._running, **result}
+        return {"mode": self.mode, "policy": self.policy, "running": self._running,
+                "ready": self._ready.is_set() and self._running,
+                "reject_reasons": reject_reasons, "error_reasons": error_reasons, **result}
 
     def start(self):
         if self.mode == "off":
@@ -361,6 +565,8 @@ class PublicAssetCache:
             return self._running
         try:
             self._store = _AssetStore(self.cache_dir, **self._store_options)
+            if self.policy == "token_refresh" and self.mode == "enabled":
+                self._store.prewarm(budget=.4, max_items=32)
             for name, queue_ in (("lookup", self._lookup_queue), ("background", self._background_queue)):
                 worker = threading.Thread(target=self._work, args=(name, queue_), daemon=True, name="公共资源缓存-" + name)
                 worker.start()
@@ -372,7 +578,7 @@ class PublicAssetCache:
                 return False
             return True
         except Exception:
-            self._count("errors")
+            self._error("startup")
             self.stop()
             logger.warning("[公共资源缓存] 启动失败，继续浏览器正常加载")
             return False
@@ -391,6 +597,10 @@ class PublicAssetCache:
             worker.join(timeout=max(0, deadline - time.monotonic()))
         self._running = False
         self._invalidate_pending_fulfills()
+        pending_bodies = sum(tag[0] == "body" for tag, _ in self._pending.values())
+        if pending_bodies:
+            self._count("body_shutdown_pending", pending_bodies)
+            self._error("shutdown_pending_body")
         with self._lock:
             if not self._stats_frozen:
                 # 无法终止的下载只保留已读取字节下界，禁止事后继续改变任务计量。
@@ -406,6 +616,7 @@ class PublicAssetCache:
         try:
             self._ws.send(json.dumps({"id": ident, "method": method, "params": params or {}}))
         except Exception:
+            self._error("send")
             if tag and tag[0] == "fulfill":
                 self._invalidate_fulfill(tag)
             raise
@@ -461,7 +672,7 @@ class PublicAssetCache:
                     break
                 self._event(json.loads(raw))
         except Exception:
-            self._count("errors")
+            self._error("connection")
             logger.warning("[公共资源缓存] 连接结束，缓存已停止，浏览器继续正常加载")
         finally:
             self._running = False
@@ -503,7 +714,7 @@ class PublicAssetCache:
         if method == "Fetch.requestPaused":
             request = p.get("request") or {}
             url = request.get("url", "")
-            if self.mode != "enabled" or request.get("method") != "GET" or _request_has_credentials(request.get("headers") or {}) or _request_bypasses_cache(request.get("headers") or {}) or _asset_type(url) != p.get("resourceType") or not p.get("networkId"):
+            if self.mode != "enabled" or request.get("method") != "GET" or _request_has_credentials(request.get("headers") or {}, policy=self.policy) or _request_bypasses_cache(request.get("headers") or {}) or _asset_type(url, policy=self.policy) != p.get("resourceType") or not p.get("networkId"):
                 self._continue(rid)
                 return
             # 冷请求不等待磁盘或下载；其它进程新增条目由后台周期刷新索引。
@@ -512,6 +723,11 @@ class PublicAssetCache:
                 self._continue(rid)
                 return
             self._paused[rid] = {"deadline": time.monotonic() + self._request_budget, "network_id": p["networkId"], "url": url}
+            if self.policy == "token_refresh":
+                cached = self._store.get_memory(url)
+                if cached is not None:
+                    self._fulfill_result(rid, cached)
+                    return
             try:
                 self._lookup_queue.put_nowait((rid, url))
             except queue.Full:
@@ -521,22 +737,25 @@ class PublicAssetCache:
         if not rid:
             return
         if method == "Network.requestServedFromCache":
-            self._source(rid, "native")
-            self._count("native_hits")
+            if self._source(rid, "native"):
+                self._count("native_hits")
+            if self.policy == "token_refresh" and rid in self._requests:
+                self._maybe_store(rid, self._requests[rid])
             return
         rec = self._record(rid)
         if method == "Network.requestWillBeSent":
             r = p.get("request") or {}
             rec.update(url=r.get("url", ""), method=r.get("method"), resource_type=p.get("type"))
             rec["bypass"] = bool(rec.get("bypass") or _request_bypasses_cache(r.get("headers") or {}))
-            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(r.get("headers") or {}))
+            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(r.get("headers") or {}, policy=self.policy))
             rec["redirected"] = bool(rec.get("redirected") or p.get("redirectResponse"))
         elif method == "Network.requestWillBeSentExtraInfo":
             h = _headers(p.get("headers") or {})
             cookies = p.get("associatedCookies") or []
             rec["request_extra"] = True
             rec["bypass"] = bool(rec.get("bypass") or _request_bypasses_cache(h))
-            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(h) or any(not x.get("blockedReasons") for x in cookies))
+            rec["credentialed"] = bool(rec.get("credentialed") or _request_has_credentials(h, policy=self.policy)
+                                       or (self.policy == "strict" and any(not x.get("blockedReasons") for x in cookies)))
         elif method == "Network.responseReceivedExtraInfo":
             h = _headers(p.get("headers") or {})
             rec["response_extra"] = True
@@ -553,52 +772,96 @@ class PublicAssetCache:
             rec["response_cookie"] = bool(rec.get("response_cookie") or "set-cookie" in h or "set-cookie2" in h or "www-authenticate" in h)
             rec["service_worker"] = bool(r.get("fromServiceWorker"))
             if r.get("fromDiskCache") or r.get("fromPrefetchCache"):
-                self._source(rid, "native")
-                self._count("native_hits")
+                if self._source(rid, "native"):
+                    self._count("native_hits")
         elif method == "Network.loadingFinished":
             rec["complete"] = True
             rec["upstream_bytes"] = max(0, int(p.get("encodedDataLength") or 0))
         elif method == "Network.loadingFailed":
             rec["done"] = True
+            if self._is_asset_candidate(rec.get("url", "")):
+                self._reject("request_failed")
         else:
             return
         self._maybe_store(rid, rec)
 
+    @staticmethod
+    def _is_asset_candidate(url):
+        return isinstance(url, str) and any(url.startswith(prefix) for prefix in _PUBLIC_ASSET_PREFIXES) and urlsplit(url).path.endswith((".js", ".css"))
+
     def _maybe_store(self, rid, rec):
-        if not rec.get("complete") or rec.get("done"):
+        if rec.get("done"):
+            return
+        if self.policy == "token_refresh":
+            with self._lock:
+                source = self._sources.get(rid)
+            if source in {"pending", "local", "native"}:
+                # 本地回放与原生缓存可能没有网络 ExtraInfo，无须再次证明或收录。
+                # 未确认时不标记 done，允许 fulfill 失败后的真实回源继续收录。
+                rec.pop("metadata_deadline", None)
+                if source != "pending":
+                    rec["done"] = True
+                return
+        if not rec.get("complete"):
             return
         url = rec.get("url", "")
-        if rec.get("method") != "GET" or rec.get("bypass") or rec.get("unsafe_headers") or not _asset_type(url) or rec.get("resource_type") != _asset_type(url) or rec.get("status") != 200 or rec.get("redirected") or rec.get("service_worker") or rec.get("response_cookie"):
+        if not self._is_asset_candidate(url):
             rec["done"] = True
             return
-        headers = {**rec.get("headers", {}), **rec.get("extra_headers", {})}
-        if _expiry(url, headers, time.time(), self._max_age) is None:
+        kind = _asset_type(url, policy=self.policy)
+        reason = next((reason for failed, reason in (
+            (rec.get("method") != "GET", "request_method"),
+            (rec.get("bypass"), "request_bypass"),
+            (rec.get("unsafe_headers"), "response_headers"),
+            (not kind, "url_not_versioned"),
+            (kind != rec.get("resource_type"), "resource_type"),
+            (rec.get("status") != 200, "response_status"),
+            (rec.get("redirected"), "response_redirect"),
+            (rec.get("service_worker"), "response_service_worker"),
+            (rec.get("response_cookie"), "response_set_cookie"),
+        ) if failed), None)
+        if reason:
             rec["done"] = True
-            self._count("rejected")
+            self._reject(reason)
+            return
+        if (self.policy == "token_refresh" and not rec.get("credentialed")
+                and self.request_source(rid) != "local" and not self._store.knows(url)):
+            # responseReceived 可能只有部分响应头；AT 刷新先等真实 ExtraInfo，
+            # 避免在完整的公开缓存证明到达前就用临时缺头结果永久拒绝。
+            if not self._metadata_ready(rec):
+                if rec.get("metadata_timed_out"):
+                    rec.pop("metadata_deadline", None)
+                    rec["done"] = True
+                return
+        headers = {**rec.get("headers", {}), **rec.get("extra_headers", {})}
+        expires, reason = _expiry_result(url, headers, time.time(), self._max_age, policy=self.policy)
+        if expires is None:
+            rec["done"] = True
+            self._reject(reason)
             return
         if self.mode == "observe":
             rec["done"] = True
             self._count("eligible")
-            return
-        if self.request_source(rid) == "local" or self._store.knows(url):
-            rec["done"] = True
             return
         if rec.get("credentialed"):
             # 同类带凭据请求不会本地回放，再匿名下载一份也无法减少后续流量。
             rec.pop("metadata_deadline", None)
             rec["done"] = True
             self._count("credentialed_skipped")
+            self._reject("request_credentials")
+            return
+        if self.request_source(rid) == "local" or self._store.knows(url):
+            rec["done"] = True
             return
         metadata_complete = rec.get("request_extra") and rec.get("response_extra")
         if not metadata_complete:
-            # ExtraInfo 可能晚于 loadingFinished；只等待元数据，绝不暂停业务请求。
-            deadline = rec.setdefault("metadata_deadline", time.monotonic() + self._metadata_timeout)
-            if time.monotonic() < deadline:
+            self._metadata_ready(rec)
+            if not rec.get("metadata_timed_out"):
                 return
-            self._count("metadata_timeouts")
         rec.pop("metadata_deadline", None)
         rec["done"] = True
         if self.request_source(rid) == "network" and metadata_complete:
+            self._count("body_requests")
             self._send("Network.getResponseBody", {"requestId": rid}, ("body", url, headers, rec.get("upstream_bytes", 0)))
         elif self._anonymous_fetcher or self._proxy_url or self._allow_direct:
             # 不带身份的独立校验下载只在浏览器完成资源后排队，绝不延长 paused 请求。
@@ -607,6 +870,23 @@ class PublicAssetCache:
                 if len(self._fill_seen) > 2048:
                     self._fill_seen.pop()
                 self._queue_background(("anonymous", url, rec.get("upstream_bytes", 0)))
+
+    def _metadata_ready(self, rec):
+        """只等待元数据，绝不暂停业务请求；缺失证据不能用于收录。"""
+        if rec.get("request_extra") and rec.get("response_extra"):
+            return True
+        deadline = rec.setdefault("metadata_deadline", time.monotonic() + self._metadata_timeout)
+        if time.monotonic() < deadline:
+            return False
+        if not rec.get("metadata_timed_out"):
+            rec["metadata_timed_out"] = True
+            self._count("metadata_timeouts")
+            self._error("metadata_timeout")
+            if not rec.get("request_extra"):
+                self._reject("metadata_request_extra_missing")
+            if not rec.get("response_extra"):
+                self._reject("metadata_response_extra_missing")
+        return False
 
     def _expire_metadata_waits(self):
         """用 CDP 事件循环收口已完成资源的元数据等待，不增加后台下载线程。"""
@@ -619,7 +899,9 @@ class PublicAssetCache:
     def _reply(self, tag, msg):
         kind = tag[0]
         if "error" in msg:
-            self._count("errors")
+            self._error("command_" + kind if kind in {"network_ready", "fetch_ready", "body", "fulfill"} else "command_other")
+            if kind == "body":
+                self._count("body_failures")
             if kind in {"network_ready", "fetch_ready"}:
                 self._stop.set()
             elif kind == "fulfill":
@@ -638,22 +920,30 @@ class PublicAssetCache:
             self._running = True
             self._ready.set()
         elif kind == "body":
+            self._count("body_responses")
             try:
                 r = msg.get("result") or {}
                 text = r.get("body", "")
                 if len(text) > self._max_entry * 4 // 3 + 8:
-                    raise ValueError("资源超过单项限制")
+                    self._reject("body_too_large")
+                    return
                 body = base64.b64decode(text, validate=True) if r.get("base64Encoded") else text.encode("utf-8")
                 if len(body) > self._max_entry:
-                    raise ValueError("资源超过单项限制")
+                    self._reject("body_too_large")
+                    return
                 self._queue_background(("store", tag[1], tag[2], body, tag[3]))
             except (ValueError, TypeError):
-                self._count("rejected")
+                self._reject("body_invalid")
         elif kind == "fulfill":
             if self._stop.is_set():
                 self._invalidate_fulfill(tag)
                 return
             self._source(tag[2], "local")
+            if self.policy == "token_refresh":
+                rec = self._requests.get(tag[2])
+                if rec is not None:
+                    rec.pop("metadata_deadline", None)
+                    rec["done"] = True
             self._count("hits")
             self._count("local_served_bytes", tag[3])
             self._count("avoided_upstream_bytes", tag[4])
@@ -663,6 +953,7 @@ class PublicAssetCache:
             self._background_queue.put_nowait(item)
         except queue.Full:
             self._count("queue_skipped")
+            self._error("queue_full")
 
     def _drain_results(self):
         while True:
@@ -670,24 +961,31 @@ class PublicAssetCache:
                 rid, item = self._results.get_nowait()
             except queue.Empty:
                 return
-            paused = self._paused.pop(rid, None)
-            if not paused:
-                continue
-            if not item or time.monotonic() >= paused["deadline"]:
-                self._count("misses")
-                self._continue(rid)
-                continue
-            body = item["body"]
-            self._source(paused["network_id"], "pending")
-            self._send("Fetch.fulfillRequest", {"requestId": rid, "responseCode": 200,
-                       "responseHeaders": _replay_headers(item["headers"], len(body), item.get("expires_at")), "body": base64.b64encode(body).decode("ascii")},
-                       ("fulfill", rid, paused["network_id"], len(body), item.get("upstream_bytes", 0)))
+            self._fulfill_result(rid, item)
+
+    def _fulfill_result(self, rid, item):
+        paused = self._paused.pop(rid, None)
+        if not paused:
+            return
+        if not item or time.monotonic() >= paused["deadline"]:
+            self._count("misses")
+            self._continue(rid)
+            return
+        body = item["body"]
+        encoded = item.get("encoded_body") if self.policy == "token_refresh" else None
+        if encoded is None:
+            encoded = base64.b64encode(body).decode("ascii")
+        self._source(paused["network_id"], "pending")
+        self._send("Fetch.fulfillRequest", {"requestId": rid, "responseCode": 200,
+                   "responseHeaders": _replay_headers(item["headers"], len(body), item.get("expires_at")), "body": encoded},
+                   ("fulfill", rid, paused["network_id"], len(body), item.get("upstream_bytes", 0)))
 
     def _expire_paused(self):
         now = time.monotonic()
         for rid, item in list(self._paused.items()):
             if now >= item["deadline"]:
                 self._count("lookup_timeouts")
+                self._error("lookup_timeout")
                 self._count("misses")
                 self._continue(rid)
 
@@ -702,6 +1000,11 @@ class PublicAssetCache:
                     # fulfill 结果未知时解除整个本连接拦截，避免重复完成请求。
                     self._stop.set()
                 self._count("command_timeouts")
+                if tag[0] == "body":
+                    self._count("body_timeouts")
+                    self._error("body_timeout")
+                else:
+                    self._error("command_" + tag[0] if tag[0] in {"network_ready", "fetch_ready", "fulfill"} else "command_other")
 
     def _work(self, name, queue_):
         last_refresh = 0.0
@@ -709,12 +1012,14 @@ class PublicAssetCache:
             try:
                 if name == "background" and time.monotonic() - last_refresh > 1:
                     self._store.refresh()
+                    if self.policy == "token_refresh" and self.mode == "enabled":
+                        self._store.prewarm(budget=.05, max_items=32)
                     last_refresh = time.monotonic()
                 item = queue_.get(timeout=.1)
             except queue.Empty:
                 continue
             except Exception:
-                self._count("errors")
+                self._error("worker")
                 continue
             try:
                 if name == "lookup":
@@ -726,6 +1031,8 @@ class PublicAssetCache:
                 elif item[0] == "store":
                     if not self._stop.is_set() and self._store.put(*item[1:]):
                         self._count("stores")
+                    elif not self._stop.is_set():
+                        self._reject("store_unavailable")
                 elif item[0] == "anonymous" and not self._stop.is_set():
                     with self._store.fill_claim(item[1]) as claimed:
                         if not claimed or self._store.get(item[1]) is not None:
@@ -743,12 +1050,12 @@ class PublicAssetCache:
                             with self._lock:
                                 self._anonymous_active -= 1
             except Exception:
-                self._count("errors")
+                self._error("worker")
             finally:
                 queue_.task_done()
 
     def _anonymous_download(self, url):
-        if not _asset_type(url) or self._stop.is_set() or not (self._anonymous_fetcher or self._proxy_url or self._allow_direct):
+        if not _asset_type(url, policy=self.policy) or self._stop.is_set() or not (self._anonymous_fetcher or self._proxy_url or self._allow_direct):
             return None
         self._count("anonymous_requests")
         if self._anonymous_fetcher:
@@ -769,7 +1076,7 @@ class PublicAssetCache:
             if self._proxy_url:
                 session.proxies.update({"https": self._proxy_url, "http": self._proxy_url})
             with session.get(url, timeout=(2, 2), allow_redirects=False, stream=True) as response:
-                if response.status_code != 200 or response.url != url or _expiry(url, response.headers, time.time(), self._max_age) is None:
+                if response.status_code != 200 or response.url != url or _expiry(url, response.headers, time.time(), self._max_age, policy=self.policy) is None:
                     self._count("rejected")
                     return None
                 encoding = response.headers.get("Content-Encoding", "identity").lower()

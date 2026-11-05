@@ -65,6 +65,7 @@ def _start_asset_cache(opened, *, flow: str, proxy_url: str | None = None, targe
             proxy_url=proxy_url,
             allow_direct=False,
             target_id=target_id,
+            policy="token_refresh" if flow == "token_refresh" else "strict",
         )
         if not cache.start():
             cache.stop()

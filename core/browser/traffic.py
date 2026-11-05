@@ -32,6 +32,27 @@ _CACHE_COUNTER_KEYS = (
     "cache_local_served_bytes", "cache_avoided_upstream_bytes",
     "cache_fill_download_bytes", "cache_fill_request_count",
 )
+_PUBLIC_CACHE_COUNTER_KEYS = (
+    "hits", "misses", "stores", "rejected", "errors", "eligible",
+    "local_served_bytes", "avoided_upstream_bytes", "anonymous_fill_bytes",
+    "anonymous_requests", "native_hits", "credentialed_skipped",
+    "metadata_timeouts", "command_timeouts", "unconfirmed_fulfills",
+    "queue_skipped", "coalesced_fills", "lookup_timeouts", "anonymous_timeouts",
+    "body_requests", "body_responses", "body_failures", "body_timeouts", "body_shutdown_pending",
+)
+_PUBLIC_CACHE_REJECT_REASONS = (
+    "url_not_versioned", "request_method", "request_credentials", "request_bypass",
+    "response_status", "response_headers", "response_set_cookie", "response_mime",
+    "response_charset", "response_vary", "response_cache_control", "response_age",
+    "response_expired", "response_redirect", "response_service_worker", "resource_type",
+    "metadata_request_extra_missing", "metadata_response_extra_missing", "request_failed",
+    "body_invalid", "body_too_large", "store_unavailable",
+)
+_PUBLIC_CACHE_ERROR_REASONS = (
+    "startup", "connection", "send", "command_network_ready", "command_fetch_ready",
+    "command_body", "command_fulfill", "command_other", "body_timeout",
+    "metadata_timeout", "lookup_timeout", "queue_full", "worker", "shutdown_pending_body",
+)
 
 
 def _now_iso() -> str:
@@ -204,6 +225,8 @@ def persist_summary(
         route_attempt_no=route_attempt_no,
     ))
     payload.update({key: _int_value(summary.get(key)) for key in _CACHE_COUNTER_KEYS})
+    if isinstance(summary.get("public_asset_cache"), Mapping):
+        payload["public_asset_cache"] = _safe_public_asset_cache(summary["public_asset_cache"])
     if isinstance(summary.get("proxy_transport"), Mapping):
         payload["proxy_transport"] = _safe_proxy_transport(summary["proxy_transport"])
     for key in ("resource_details", "js_coverage"):
@@ -227,6 +250,30 @@ def persist_summary(
             identifier = summary.get(field)
             payload[field] = int(identifier) if identifier is not None else None
     return record_store.upsert_row_by(TRAFFIC_SUMMARIES, "summary_key", payload)
+
+
+def _safe_public_asset_cache(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """公共缓存只保存固定策略、计数和原因分类，不接收资源或身份信息。"""
+    def count(value: Any) -> int:
+        try:
+            return min(2**63 - 1, _int_value(value))
+        except OverflowError:
+            return 0
+
+    result = {key: count(snapshot.get(key)) for key in _PUBLIC_CACHE_COUNTER_KEYS}
+    mode = snapshot.get("mode")
+    policy = snapshot.get("policy")
+    result["mode"] = mode if isinstance(mode, str) and mode in {"off", "observe", "enabled"} else "unknown"
+    result["policy"] = policy if isinstance(policy, str) and policy in {"strict", "token_refresh"} else "unknown"
+    for key, reasons in (("reject_reasons", _PUBLIC_CACHE_REJECT_REASONS),
+                         ("error_reasons", _PUBLIC_CACHE_ERROR_REASONS)):
+        raw = snapshot.get(key)
+        result[key] = {
+            reason: count(raw.get(reason))
+            for reason in reasons
+            if isinstance(raw, Mapping) and reason in raw
+        }
+    return result
 
 
 def _safe_proxy_transport(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -584,6 +631,8 @@ class _SummaryOnlyCDPSession:
         self.cache_local_request_count = 0
         self.cache_native_request_count = 0
         self.cache_local_served_bytes = 0
+        self.public_asset_cache = None
+        self._pending_cache_accounting: list[dict[str, Any]] = []
         # 与现有 CDP 消费者共享同一条事件流，仅向认证回执分发白名单元数据。
         self.submission_observer = None
         self.auth_diagnostic_observer = None
@@ -658,12 +707,59 @@ class _SummaryOnlyCDPSession:
         resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
         self.resource_type_requests[resource_type] += 1
         self.resource_type_bytes[resource_type] += upload_bytes + download_bytes
-        self.diagnostics.record_resource(item, upload_bytes, download_bytes)
+        cache = self.public_asset_cache
+        pending_accounting = (
+            getattr(cache, "policy", None) == "token_refresh"
+            and cache_source in {"network", "unknown", "native"}
+            and _int_value(item.get("status")) == 200
+            and isinstance(item.get("target_id"), str) and bool(item.get("target_id"))
+            and isinstance(item.get("request_id"), str) and bool(item.get("request_id"))
+            and len(self._pending_cache_accounting) < 4096
+        )
+        if pending_accounting:
+            from core.browser.asset_cache import _asset_type
+
+            pending_accounting = _asset_type(str(item.get("url") or ""), policy="token_refresh") is not None
+        if pending_accounting:
+            # 两条 CDP 连接可能先报告资源完成、后确认本地回放。这里只保留静态
+            # 资源的计量身份和数值，最终按原 target/request 核验，不保存头或正文。
+            self._pending_cache_accounting.append({
+                "cache": cache, "target_id": item["target_id"], "request_id": item["request_id"],
+                "upload_bytes": upload_bytes, "download_bytes": download_bytes,
+                "encoded_bytes": _int_value(item.get("encoded_data_length")),
+                "resource_type": resource_type, "source": cache_source,
+                "diagnostic": {key: item[key] for key in (
+                    "url", "resource_type", "status", "cache_source", "_data_saver_blocked",
+                ) if key in item},
+            })
+        else:
+            self.diagnostics.record_resource(item, upload_bytes, download_bytes)
         status = _int_value(item.get("status"))
         if not blocked_by_data_saver and (item.get("failure") or status >= 400):
             self.failed_count += 1
         if item.get("response_body_omitted") == "target_closed" and not item.get("failure"):
             self.unfinished_count += 1
+
+    def finalize_cache_accounting(self) -> None:
+        """采集停止后只扣除已确认的 AT 本地回放，未决请求保留原计量。"""
+        pending, self._pending_cache_accounting = self._pending_cache_accounting, []
+        for item in pending:
+            try:
+                source = item["cache"].request_source(item["request_id"], target_id=item["target_id"])
+            except Exception:
+                source = "unknown"
+            if source == "local":
+                self.upload_bytes -= item["upload_bytes"]
+                self.download_bytes -= item["download_bytes"]
+                self.resource_type_bytes[item["resource_type"]] -= item["upload_bytes"] + item["download_bytes"]
+                self.cache_local_request_count += 1
+                self.cache_local_served_bytes += item["encoded_bytes"]
+                if item["source"] == "unknown":
+                    self.unknown_count -= 1
+                elif item["source"] == "native":
+                    self.cache_native_request_count -= 1
+            else:
+                self.diagnostics.record_resource(item["diagnostic"], item["upload_bytes"], item["download_bytes"])
 
     def record(self, event: Mapping[str, Any]) -> None:
         item = event if isinstance(event, Mapping) else {}
@@ -768,6 +864,7 @@ class RoxyTrafficCapture:
     def set_public_asset_cache(self, cache: Any) -> None:
         """本地回放与匿名填充分别计量，避免把 CDP 本地传输算成代理下载。"""
         self.public_asset_cache = cache
+        self.session.public_asset_cache = cache
         if self.collector is not None:
             self.collector.public_asset_cache = cache
 
@@ -791,6 +888,7 @@ class RoxyTrafficCapture:
                 self.session.unknown_count += 1
                 logger.warning("[浏览器流量] Roxy CDP 采集停止异常：%s", type(exc).__name__)
         try:
+            self.session.finalize_cache_accounting()
             if self.unavailable_reason and self.proxy_relay is None:
                 record_unavailable(
                     summary_key=self.summary_key,
@@ -812,6 +910,8 @@ class RoxyTrafficCapture:
                 if self.public_asset_cache is not None:
                     try:
                         stats = self.public_asset_cache.snapshot()
+                        if not isinstance(stats, Mapping):
+                            raise TypeError("公共缓存快照必须是映射")
                     except Exception:
                         stats = {}
                         summary["unknown_count"] += 1
@@ -827,10 +927,18 @@ class RoxyTrafficCapture:
                     summary["cache_fill_download_bytes"] = fill_bytes
                     summary["cache_fill_request_count"] = _int_value(stats.get("anonymous_requests"))
                     summary["cache_avoided_upstream_bytes"] = _int_value(stats.get("avoided_upstream_bytes"))
+                    summary["public_asset_cache"] = _safe_public_asset_cache(stats)
                     logger.info(
                         "[浏览器流量] 公共缓存：本地命中=%s，原生命中=%s，填充下载=%s 字节，预计避免上游=%s 字节",
                         summary["cache_local_request_count"], summary["cache_native_request_count"],
                         fill_bytes, summary["cache_avoided_upstream_bytes"],
+                    )
+                    cache_diagnostics = summary["public_asset_cache"]
+                    logger.info(
+                        "[浏览器流量] 公共缓存诊断：策略=%s，写入=%s，拒绝=%s，异常=%s，拒绝原因=%s，异常原因=%s",
+                        cache_diagnostics["policy"], cache_diagnostics["stores"],
+                        cache_diagnostics["rejected"], cache_diagnostics["errors"],
+                        cache_diagnostics["reject_reasons"], cache_diagnostics["error_reasons"],
                     )
                 logger.info(
                     "[浏览器流量] Roxy资源类型汇总：bytes=%s requests=%s",

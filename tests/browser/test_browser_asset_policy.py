@@ -22,8 +22,22 @@ class BrowserAssetPolicyTests(TestCase):
         self.assertEqual(cls.call_args.kwargs["target_id"], "current-page")
         self.assertIsNone(cls.call_args.kwargs["proxy_url"])
         self.assertFalse(cls.call_args.kwargs["allow_direct"])
+        self.assertEqual(cls.call_args.kwargs["policy"], "token_refresh")
         self.assertNotIn("anonymous_fetcher", cls.call_args.kwargs)
         capture.set_public_asset_cache.assert_called_once_with(result)
+
+    def test_other_auth_flows_keep_strict_cache_policy(self):
+        for flow in ("live_check", "codex_oauth", "account_action"):
+            with self.subTest(flow=flow):
+                opened = SimpleNamespace(debugger_address="127.0.0.1:9222", traffic_capture=None)
+                driver = Mock()
+                driver.execute_cdp_cmd.return_value = {"targetInfo": {"targetId": "current-page", "type": "page"}}
+                with patch.object(browser_asset_policy._cfg, "BROWSER_PUBLIC_ASSET_CACHE_MODE", "enabled"), patch(
+                    "core.browser.asset_cache.PublicAssetCache"
+                ) as cls:
+                    browser_asset_policy.start_auth_asset_cache(opened, driver, flow=flow)
+                self.assertEqual(cls.call_args.kwargs["policy"], "strict")
+                self.assertIsNone(cls.call_args.kwargs["proxy_url"])
 
     def test_auth_cache_does_not_take_ownership_of_registration_cache(self):
         parent = Mock()
@@ -63,6 +77,7 @@ class BrowserAssetPolicyTests(TestCase):
             result = browser_asset_policy.start_registration_asset_cache(opened, proxy_url="http://127.0.0.1:7897")
         self.assertIs(result, cls.return_value)
         self.assertEqual(cls.call_args.kwargs["proxy_url"], "http://127.0.0.1:7897")
+        self.assertEqual(cls.call_args.kwargs["policy"], "strict")
         self.assertFalse(cls.call_args.kwargs["allow_direct"])
         capture.set_public_asset_cache.assert_called_once_with(result)
 
