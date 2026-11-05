@@ -7,9 +7,112 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.browser import traffic as browser_traffic
+from core.browser.asset_cache import PublicAssetCache
+from core.registration.debug import _RoxyTargetCollector
 
 
 class PublicAssetCacheTrafficTests(unittest.TestCase):
+    def test_late_fulfill_confirmation_corrects_only_its_bytes_and_resource_details_once(self):
+        from config import browser as browser_cfg
+
+        cache = PublicAssetCache("127.0.0.1:9222", "/unused-offline-accounting", policy="token_refresh", target_id="page-a")
+        opened = SimpleNamespace(profile_id="test-profile", debugger_address="127.0.0.1:9222")
+        with patch.object(browser_cfg, "BROWSER_TRAFFIC_DETAIL_LOG", True), patch.object(
+            browser_traffic, "_new_roxy_collector", return_value=Mock(),
+        ), patch.object(browser_traffic, "persist_summary") as save:
+            capture = browser_traffic.RoxyTrafficCapture(opened)
+            capture.set_public_asset_cache(cache)
+            collector = _RoxyTargetCollector(SimpleNamespace(session=capture.session, public_asset_cache=cache), "page-a", "ws://unused", "page")
+            cache._source("net-1", "pending")
+            collector._requests["net-1"] = {
+                "url": "https://chatgpt.com/cdn/assets/app-12345678.js", "resource_type": "Script",
+                "encoded_data_length": 4000000, "request_body_bytes": 11, "status": 200,
+            }
+            collector._finish_request("net-1")
+            self.assertEqual(capture.session.summary()["download_bytes"], 4000000)
+            self.assertEqual(capture.session.summary()["unknown_count"], 1)
+            capture.record_network({"url": "https://example.test/api", "resource_type": "Fetch", "encoded_data_length": 40, "status": 200})
+            cache._reply(("fulfill", "fetch-1", "net-1", 4000000, 1500000), {"result": {}})
+            capture.stop()
+            capture.stop()
+        save.assert_called_once()
+        summary = save.call_args.kwargs["summary"]
+        self.assertEqual(summary["upload_bytes"], 0)
+        self.assertEqual(summary["download_bytes"], 40)
+        self.assertEqual(summary["unknown_count"], 0)
+        self.assertEqual(summary["cache_local_request_count"], 1)
+        self.assertEqual(summary["cache_local_served_bytes"], 4000000)
+        self.assertEqual(summary["resource_type_bytes"], {"fetch": 40, "script": 0})
+        self.assertEqual([row["url"] for row in summary["resource_details"]], ["example.test/api"])
+
+    def test_unconfirmed_token_replay_retains_observed_bytes_and_diagnostics(self):
+        from config import browser as browser_cfg
+
+        cache = SimpleNamespace(policy="token_refresh", request_source=lambda *args, **kwargs: "unknown", snapshot=lambda: {})
+        opened = SimpleNamespace(profile_id="test-profile", debugger_address="127.0.0.1:9222")
+        with patch.object(browser_cfg, "BROWSER_TRAFFIC_DETAIL_LOG", True), patch.object(
+            browser_traffic, "_new_roxy_collector", return_value=Mock(),
+        ), patch.object(browser_traffic, "persist_summary") as save:
+            capture = browser_traffic.RoxyTrafficCapture(opened)
+            capture.set_public_asset_cache(cache)
+            capture.record_network({
+                "target_id": "page-a", "request_id": "net-1", "cache_source": "unknown",
+                "url": "https://chatgpt.com/cdn/assets/app-12345678.js", "resource_type": "Script",
+                "encoded_data_length": 500, "status": 200,
+            })
+            capture.stop()
+        summary = save.call_args.kwargs["summary"]
+        self.assertEqual(summary["download_bytes"], 500)
+        self.assertEqual(summary["unknown_count"], 1)
+        self.assertEqual(summary["cache_local_request_count"], 0)
+        self.assertEqual(summary["resource_details"][0]["download_bytes"], 500)
+
+    def test_strict_replay_keeps_original_accounting_when_confirmation_is_late(self):
+        cache = PublicAssetCache("127.0.0.1:9222", "/unused-offline-accounting", target_id="page-a")
+        session = browser_traffic._SummaryOnlyCDPSession("test-profile")
+        session.public_asset_cache = cache
+        cache._source("net-1", "pending")
+        session.record_network({
+            "target_id": "page-a", "request_id": "net-1", "cache_source": "unknown",
+            "url": "https://chatgpt.com/cdn/assets/app-12345678.js", "resource_type": "Script", "encoded_data_length": 500,
+        })
+        cache._reply(("fulfill", "fetch-1", "net-1", 500, 100), {"result": {}})
+        session.finalize_cache_accounting()
+        self.assertEqual(session.summary()["download_bytes"], 500)
+        self.assertEqual(session.summary()["unknown_count"], 1)
+        self.assertEqual(session.summary()["cache_local_request_count"], 0)
+
+    def test_same_request_id_in_other_target_cannot_be_reimbursed(self):
+        cache = PublicAssetCache("127.0.0.1:9222", "/unused-offline-accounting", policy="token_refresh", target_id="page-a")
+        session = browser_traffic._SummaryOnlyCDPSession("test-profile")
+        session.public_asset_cache = cache
+        for target, source, size in (("page-a", "unknown", 500), ("page-b", "network", 600)):
+            session.record_network({
+                "target_id": target, "request_id": "net-1", "cache_source": source,
+                "url": "https://chatgpt.com/cdn/assets/app-12345678.js", "resource_type": "Script", "encoded_data_length": size, "status": 200,
+            })
+        cache._source("net-1", "local")
+        session.finalize_cache_accounting()
+        session.finalize_cache_accounting()
+        self.assertEqual(session.summary()["download_bytes"], 600)
+        self.assertEqual(session.summary()["cache_local_request_count"], 1)
+        self.assertEqual(session.summary()["unknown_count"], 0)
+
+    def test_redirect_bytes_sharing_request_id_remain_network_when_final_hop_is_local(self):
+        cache = PublicAssetCache("127.0.0.1:9222", "/unused-offline-accounting", policy="token_refresh", target_id="page-a")
+        session = browser_traffic._SummaryOnlyCDPSession("test-profile")
+        session.public_asset_cache = cache
+        for status, size in ((302, 70), (200, 500)):
+            session.record_network({
+                "target_id": "page-a", "request_id": "net-1", "cache_source": "network",
+                "url": "https://chatgpt.com/cdn/assets/app-12345678.js", "resource_type": "Script",
+                "encoded_data_length": size, "status": status,
+            })
+        cache._source("net-1", "local")
+        session.finalize_cache_accounting()
+        self.assertEqual(session.summary()["download_bytes"], 70)
+        self.assertEqual(session.summary()["cache_local_request_count"], 1)
+
     def test_capture_keeps_cache_reasons_without_changing_transfer_accounting(self):
         cache = Mock()
         cache.snapshot.return_value = {

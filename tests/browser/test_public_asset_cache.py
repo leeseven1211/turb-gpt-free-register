@@ -415,6 +415,132 @@ class TokenRefreshPublicAssetTests(_TempFiles):
         self.assertEqual(second._ws.commands[-1]["method"], "Fetch.continueRequest")
         self.assertEqual(second.snapshot()["misses"], 1)
 
+    def test_verified_memory_reuse_avoids_disk_decode_and_request_lookup_queue(self):
+        client = self.client(policy="token_refresh")
+        self.assertTrue(client._store.put(URL, PUBLIC, BODY, 321))
+        with patch.object(client._store, "_read_verified", side_effect=AssertionError("不应重复读盘")), patch.object(
+            cache_module.base64, "b64decode", side_effect=AssertionError("不应重复解码")
+        ), patch.object(cache_module.base64, "b64encode", side_effect=AssertionError("不应重复编码")):
+            for i in range(45):
+                self.event(client, "Fetch.requestPaused", requestId=f"fetch-{i}", networkId=f"net-{i}",
+                           resourceType="Script", request={"method": "GET", "url": URL, "headers": {}})
+                command = client._ws.commands[-1]
+                self.assertEqual(command["method"], "Fetch.fulfillRequest")
+                client._event({"id": command["id"], "result": {}})
+        self.assertEqual(client.snapshot()["hits"], 45)
+        self.assertEqual(client.snapshot().get("lookup_timeouts", 0), 0)
+        self.assertTrue(client._lookup_queue.empty())
+        self.assertEqual(client._request_budget, .1)
+
+    def test_memory_entry_expires_and_detects_replaced_deleted_or_modified_file(self):
+        store = self.store(policy="token_refresh")
+        path = self.directory / (store.key(URL) + ".asset")
+        self.assertTrue(store.put(URL, PUBLIC, BODY))
+        expires = store.get_memory(URL)["expires_at"]
+        with patch.object(cache_module.time, "time", return_value=expires + 1):
+            self.assertIsNone(store.get_memory(URL))
+        self.assertEqual(store._memory_bytes, 0)
+        for action in ("replace", "delete", "modify"):
+            with self.subTest(action=action):
+                self.assertTrue(store.put(URL, PUBLIC, BODY))
+                if action == "replace":
+                    replacement = self.directory / "replacement.tmp"
+                    replacement.write_bytes(path.read_bytes())
+                    replacement.replace(path)
+                elif action == "delete":
+                    path.unlink()
+                else:
+                    original = path.stat()
+                    text = path.read_text()
+                    path.write_text(text.replace("public, max-age=3600", "public, max-age=3601"))
+                    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+                self.assertIsNone(store.get_memory(URL))
+                self.assertEqual(store._memory_bytes, 0)
+
+    def test_memory_limit_counts_body_and_encoded_copy(self):
+        store = self.store(policy="token_refresh", max_total_bytes=4096)
+        body = b"x" * 900
+        second_url = URL.replace("1234abcd", "2234abcd")
+        self.assertTrue(store.put(URL, PUBLIC, body))
+        self.assertTrue(store.put(second_url, PUBLIC, body))
+        self.assertLessEqual(store._memory_bytes, 4096)
+        self.assertEqual(store._memory_bytes, len(body) + len(base64.b64encode(body)))
+        self.assertEqual(len(store._memory), 1)
+        self.assertIsNone(store.get_memory(URL))
+        self.assertEqual(store.get_memory(second_url)["body"], body)
+
+    def test_batched_prewarm_continues_beyond_32_and_never_imports_strict_entries(self):
+        store = self.store(policy="token_refresh", max_entries=80)
+        urls = [URL.replace("1234abcd", f"{i:08x}") for i in range(48)]
+        for url in urls:
+            self.assertTrue(store.put(url, PUBLIC, BODY))
+        strict = self.store(max_entries=80)
+        self.assertTrue(strict.put(URL, PUBLIC, BODY))
+        warmed = self.store(policy="token_refresh", max_entries=80)
+        warmed.prewarm(budget=1, max_items=32)
+        self.assertEqual(len(warmed._memory), 32)
+        warmed.refresh()
+        warmed.prewarm(budget=1, max_items=32)
+        self.assertEqual(len(warmed._memory), 48)
+        self.assertIsNone(warmed.get_memory(URL))
+        for url in urls:
+            self.assertEqual(warmed.get_memory(url)["body"], BODY)
+        with patch.object(strict, "_read_verified", side_effect=AssertionError("严格策略不预热")):
+            strict.prewarm(budget=1, max_items=80)
+            self.assertIsNone(strict.get_memory(URL))
+            self.assertEqual(strict.get(URL)["body"], BODY)
+        self.assertEqual(strict._memory_bytes, 0)
+
+    def test_prewarm_stops_at_budget_and_reads_largest_resource_first(self):
+        store = self.store(policy="token_refresh")
+        larger_url = URL.replace("1234abcd", "2234abcd")
+        self.assertTrue(store.put(URL, PUBLIC, BODY))
+        self.assertTrue(store.put(larger_url, PUBLIC, BODY * 20))
+        warmed = self.store(policy="token_refresh")
+        with patch.object(cache_module.time, "monotonic", side_effect=[0, 0, .5]):
+            warmed.prewarm(budget=.4, max_items=32)
+        self.assertEqual(len(warmed._memory), 1)
+        self.assertEqual(warmed.get_memory(larger_url)["body"], BODY * 20)
+        self.assertIsNone(warmed.get_memory(URL))
+
+    def test_native_events_cannot_override_pending_or_confirmed_local_replay(self):
+        client = self.client(policy="token_refresh")
+        self.assertTrue(client._store.put(URL, PUBLIC, BODY))
+        self.event(client, "Fetch.requestPaused", requestId="fetch-1", networkId="net-1", resourceType="Script",
+                   request={"method": "GET", "url": URL, "headers": {}})
+        command = client._ws.commands[-1]
+        self.event(client, "Network.requestServedFromCache", requestId="net-1")
+        self.assertEqual(client.request_source("net-1"), "unknown")
+        client._event({"id": command["id"], "result": {}})
+        self.event(client, "Network.responseReceived", requestId="net-1", type="Script",
+                   response={"url": URL, "status": 200, "headers": PUBLIC, "fromDiskCache": True})
+        self.assertEqual(client.request_source("net-1"), "local")
+        self.assertEqual(client.snapshot()["native_hits"], 0)
+        self.assertEqual(client.snapshot()["hits"], 1)
+        strict = self.client()
+        strict._source("net-1", "local")
+        self.event(strict, "Network.requestServedFromCache", requestId="net-1")
+        self.assertEqual(strict.request_source("net-1"), "native")
+
+    def test_native_event_does_not_hide_failed_or_unconfirmed_fulfill(self):
+        for action in ("error", "timeout"):
+            with self.subTest(action=action):
+                client = self.client(policy="token_refresh")
+                self.assertTrue(client._store.put(URL, PUBLIC, BODY))
+                self.event(client, "Fetch.requestPaused", requestId="fetch-1", networkId="net-1", resourceType="Script",
+                           request={"method": "GET", "url": URL, "headers": {}})
+                command = client._ws.commands[-1]
+                self.event(client, "Network.requestServedFromCache", requestId="net-1")
+                if action == "error":
+                    client._event({"id": command["id"], "error": {"message": "测试拒绝"}})
+                    self.assertEqual(client.request_source("net-1"), "network")
+                else:
+                    tag, _ = client._pending[command["id"]]
+                    client._pending[command["id"]] = tag, 0
+                    client._expire_commands()
+                    self.assertEqual(client.request_source("net-1"), "unknown")
+                self.assertEqual(client.snapshot()["hits"], 0)
+
     def test_token_refresh_allows_pure_hash_css_and_strict_does_not(self):
         url = "https://chatgpt.com/cdn/assets/2b5003e1cbf1.css"
         self.assertIsNone(_asset_type(url))

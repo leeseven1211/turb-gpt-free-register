@@ -631,6 +631,8 @@ class _SummaryOnlyCDPSession:
         self.cache_local_request_count = 0
         self.cache_native_request_count = 0
         self.cache_local_served_bytes = 0
+        self.public_asset_cache = None
+        self._pending_cache_accounting: list[dict[str, Any]] = []
         # 与现有 CDP 消费者共享同一条事件流，仅向认证回执分发白名单元数据。
         self.submission_observer = None
         self.auth_diagnostic_observer = None
@@ -705,12 +707,59 @@ class _SummaryOnlyCDPSession:
         resource_type = str(item.get("resource_type") or "other").strip().lower() or "other"
         self.resource_type_requests[resource_type] += 1
         self.resource_type_bytes[resource_type] += upload_bytes + download_bytes
-        self.diagnostics.record_resource(item, upload_bytes, download_bytes)
+        cache = self.public_asset_cache
+        pending_accounting = (
+            getattr(cache, "policy", None) == "token_refresh"
+            and cache_source in {"network", "unknown", "native"}
+            and _int_value(item.get("status")) == 200
+            and isinstance(item.get("target_id"), str) and bool(item.get("target_id"))
+            and isinstance(item.get("request_id"), str) and bool(item.get("request_id"))
+            and len(self._pending_cache_accounting) < 4096
+        )
+        if pending_accounting:
+            from core.browser.asset_cache import _asset_type
+
+            pending_accounting = _asset_type(str(item.get("url") or ""), policy="token_refresh") is not None
+        if pending_accounting:
+            # 两条 CDP 连接可能先报告资源完成、后确认本地回放。这里只保留静态
+            # 资源的计量身份和数值，最终按原 target/request 核验，不保存头或正文。
+            self._pending_cache_accounting.append({
+                "cache": cache, "target_id": item["target_id"], "request_id": item["request_id"],
+                "upload_bytes": upload_bytes, "download_bytes": download_bytes,
+                "encoded_bytes": _int_value(item.get("encoded_data_length")),
+                "resource_type": resource_type, "source": cache_source,
+                "diagnostic": {key: item[key] for key in (
+                    "url", "resource_type", "status", "cache_source", "_data_saver_blocked",
+                ) if key in item},
+            })
+        else:
+            self.diagnostics.record_resource(item, upload_bytes, download_bytes)
         status = _int_value(item.get("status"))
         if not blocked_by_data_saver and (item.get("failure") or status >= 400):
             self.failed_count += 1
         if item.get("response_body_omitted") == "target_closed" and not item.get("failure"):
             self.unfinished_count += 1
+
+    def finalize_cache_accounting(self) -> None:
+        """采集停止后只扣除已确认的 AT 本地回放，未决请求保留原计量。"""
+        pending, self._pending_cache_accounting = self._pending_cache_accounting, []
+        for item in pending:
+            try:
+                source = item["cache"].request_source(item["request_id"], target_id=item["target_id"])
+            except Exception:
+                source = "unknown"
+            if source == "local":
+                self.upload_bytes -= item["upload_bytes"]
+                self.download_bytes -= item["download_bytes"]
+                self.resource_type_bytes[item["resource_type"]] -= item["upload_bytes"] + item["download_bytes"]
+                self.cache_local_request_count += 1
+                self.cache_local_served_bytes += item["encoded_bytes"]
+                if item["source"] == "unknown":
+                    self.unknown_count -= 1
+                elif item["source"] == "native":
+                    self.cache_native_request_count -= 1
+            else:
+                self.diagnostics.record_resource(item["diagnostic"], item["upload_bytes"], item["download_bytes"])
 
     def record(self, event: Mapping[str, Any]) -> None:
         item = event if isinstance(event, Mapping) else {}
@@ -815,6 +864,7 @@ class RoxyTrafficCapture:
     def set_public_asset_cache(self, cache: Any) -> None:
         """本地回放与匿名填充分别计量，避免把 CDP 本地传输算成代理下载。"""
         self.public_asset_cache = cache
+        self.session.public_asset_cache = cache
         if self.collector is not None:
             self.collector.public_asset_cache = cache
 
@@ -838,6 +888,7 @@ class RoxyTrafficCapture:
                 self.session.unknown_count += 1
                 logger.warning("[浏览器流量] Roxy CDP 采集停止异常：%s", type(exc).__name__)
         try:
+            self.session.finalize_cache_accounting()
             if self.unavailable_reason and self.proxy_relay is None:
                 record_unavailable(
                     summary_key=self.summary_key,
