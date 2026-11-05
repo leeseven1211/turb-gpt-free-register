@@ -3007,23 +3007,34 @@ def submit_registration(
 
 
 def _account_for_job(job: dict) -> dict | None:
+    email = str(job.get("email") or "").strip()
+    if _attempt_id_for_job(job) is not None:
+        from core.storage.registration.account_links import registration_account_link
+
+        attempt, read_failed = _read_linked_attempt_for_job(job)
+        root_id = _root_job_id_for_job(job)
+        root = job if root_id == int(job.get("id") or 0) else db.get_job(root_id)
+        link = registration_account_link(job, root, attempt) if not read_failed else None
+        if link is None:
+            return None
+        email, linked_account_id = link
+        if linked_account_id is not None:
+            account = db.get_account(linked_account_id)
+            return account if account and str(account.get("email") or "").strip().casefold() == email else None
+        # 有 Attempt 的任务只采用显式账号归属；同邮箱的其他注册不能替它建关联。
+        return None
     account_id = job.get("account_id")
     if account_id is not None:
         try:
             account = db.get_account(int(account_id))
-            if account is not None:
+            if account is not None and (
+                not str(job.get("email") or "").strip()
+                or str(account.get("email") or "").strip().casefold() == str(job["email"]).strip().casefold()
+            ):
                 return account
         except (TypeError, ValueError):
             pass
-    email = str(job.get("email") or "").strip()
-    if not email and _attempt_id_for_job(job) is not None:
-        attempt, read_failed = _read_linked_attempt_for_job(job)
-        if not read_failed and attempt:
-            email = _registration_identity_email(job, job, attempt)
-            if email and attempt.get("account_id") is not None:
-                account = db.get_account(int(attempt["account_id"]))
-                if account and str(account.get("email") or "").strip().casefold() == email:
-                    return account
+        return None
     batch_id = str(job.get("batch_id") or "").strip()
     if batch_id and email:
         try:

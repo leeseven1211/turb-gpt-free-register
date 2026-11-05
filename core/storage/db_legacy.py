@@ -4199,12 +4199,50 @@ def get_successful_retries_for_jobs(jobs: list[dict]) -> dict[int, dict]:
 
 
 def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
-    """按 account_id / email 批量关联账号；最多两次 SQL，不做逐任务查找。"""
+    """先核验显式注册归属，再批量关联账号；查询次数不随任务数增长。"""
     rows = [row for row in (jobs or []) if row.get("id") is not None]
     if not rows:
         return {}
-    account_ids = sorted({int(row["account_id"]) for row in rows if row.get("account_id") is not None})
-    emails = sorted({str(row.get("email") or "").strip().lower() for row in rows if str(row.get("email") or "").strip()})
+    from core.storage.registration.account_links import registration_account_link
+
+    linked = [row for row in rows if row.get("attempt_id") is not None]
+    attempts = {}
+    roots = {int(row["id"]): row for row in rows}
+    if linked:
+        from core.storage import registration
+
+        root_ids = sorted({int(row.get("root_job_id") or row["id"]) for row in linked})
+        attempts = registration.get_attempts_for_root_jobs(root_ids)
+        missing_roots = [value for value in root_ids if value not in roots]
+        if missing_roots:
+            roots.update({int(row["id"]): row for row in record_store.list_rows(
+                record_store.JOBS, where="id = ANY(%s)", params=(missing_roots,),
+            )})
+    identities = {}
+    for row in rows:
+        if row.get("attempt_id") is not None:
+            root_id = int(row.get("root_job_id") or row["id"])
+            identity = registration_account_link(row, roots.get(root_id), attempts.get(root_id))
+            if identity is None or identity[1] is None:
+                continue
+        else:
+            identity = (str(row.get("email") or "").strip().casefold(), row.get("account_id"))
+        identities[int(row["id"])] = identity
+    account_ids = sorted({int(value[1]) for value in identities.values() if value[1] is not None})
+    emails = sorted({value[0] for value in identities.values() if value[0] and value[1] is None})
+    fallback_batches = sorted({str(row.get("batch_id")) for row in rows
+                               if str(row.get("batch_id") or "").strip() and int(row["id"]) in identities
+                               and identities[int(row["id"])][1] is None})
+    duplicate_emails = set()
+    if fallback_batches and emails:
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT batch_id, lower(btrim(email)) FROM {postgres_store.qualified(record_store.JOBS.name)} "
+                "WHERE batch_id = ANY(%s) AND lower(btrim(email)) = ANY(%s) "
+                "GROUP BY batch_id, lower(btrim(email)) HAVING COUNT(*) > 1",
+                (fallback_batches, emails),
+            )
+            duplicate_emails = {(row[0], row[1]) for row in cur.fetchall()}
     accounts: list[dict] = []
     # 列表重试投影只需要身份/凭据状态，不需要套餐响应原文；这些 JSONB
     # 字段单条约 5–15 KB，50 条任务就会多读几百 KB。
@@ -4242,10 +4280,17 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
     by_email = {str(account.get("email") or "").strip().lower(): account for account in decorated}
     out: dict[int, dict] = {}
     for row in rows:
-        account = by_id.get(int(row["account_id"])) if row.get("account_id") is not None else None
-        if account is None:
-            account = by_email.get(str(row.get("email") or "").strip().lower())
-        if account is not None:
+        identity = identities.get(int(row["id"]))
+        if identity is None:
+            continue
+        email, account_id = identity
+        if account_id is not None:
+            account = by_id.get(int(account_id))
+        elif (str(row.get("batch_id") or ""), email) not in duplicate_emails:
+            account = by_email.get(email)
+        else:
+            account = None
+        if account is not None and (not email or str(account.get("email") or "").strip().casefold() == email):
             out[int(row["id"])] = account
     return out
 

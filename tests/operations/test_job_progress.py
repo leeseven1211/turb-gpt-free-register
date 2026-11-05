@@ -430,6 +430,7 @@ class JobProgressTests(PostgresTestCase):
             }, False)),
             patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
             patch.object(registration_service, "get_executor", return_value=executor),
+            patch.object(registration_service, "_enqueue_job") as enqueue,
         ):
             result = registration_service.retry_job(21)
 
@@ -439,7 +440,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(kwargs["batch_index"], 7)
         self.assertEqual(kwargs["batch_size"], 10)
         self.assertEqual(kwargs["batch_workers"], 5)
-        executor.submit.assert_called_once()
+        enqueue.assert_called_once_with(22, account_task_id=None)
 
     def test_service_retry_registration_preserves_source_email(self):
         source = {
@@ -461,6 +462,7 @@ class JobProgressTests(PostgresTestCase):
             patch.object(registration_service, "_account_for_job", return_value=None),
             patch.object(db, "create_retry_job", return_value=(retry_row, True)) as create_retry,
             patch.object(registration_service, "get_executor", return_value=executor),
+            patch.object(registration_service, "_enqueue_job") as enqueue,
         ):
             result = registration_service.retry_job(31)
 
@@ -469,7 +471,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(kwargs["job_type"], "registration")
         self.assertEqual(kwargs["email"], "held@example.com")
         self.assertIsNone(kwargs["account_id"])
-        executor.submit.assert_called_once()
+        enqueue.assert_called_once_with(32, account_task_id=None)
 
     def test_new_domain_email_is_reserved_for_original_retry_chain(self):
         email = "retry-domain@example.test"
