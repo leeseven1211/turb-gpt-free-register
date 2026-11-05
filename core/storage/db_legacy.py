@@ -3530,13 +3530,26 @@ def transition_job_status(
     return changed
 
 
-def claim_job_for_execution(job_id: int, *, started_at: str | None = None) -> bool:
-    """原子领取排队任务；停止/取消先落库时，工作线程不得再启动。"""
+def claim_job_for_execution(
+    job_id: int, *, started_at: str | None = None,
+    execution_id: str | None = None, conn=None,
+) -> bool:
+    """原子领取排队任务；准入调用在同一事务中写入执行身份。"""
+    if conn is not None:
+        changes = {"status": "running", "started_at": started_at or _registration_now()}
+        if execution_id is not None:
+            changes["execution_id"] = str(execution_id)
+        # 准入锁内不能再开连接同步投影；获准 worker 启动后统一刷新读模型。
+        return record_store.claim_row(
+            record_store.JOBS, int(job_id), changes=changes,
+            guard='"status" = %s', guard_params=("pending",), conn=conn,
+        )
     return transition_job_status(
         job_id,
         ("pending",),
         "running",
         started_at=started_at or _registration_now(),
+        **({"execution_id": str(execution_id)} if execution_id is not None else {}),
     )
 
 
@@ -3941,15 +3954,21 @@ def recover_interrupted_registration_jobs(
     placeholders = ", ".join("%s" for _ in active_states)
     excluded_accounts = sorted({int(item) for item in (excluded_account_ids or ())})
     excluded_sources = sorted({str(item).strip() for item in (excluded_source_ids or ()) if str(item).strip()})
+    from core.operations.concurrency import active_execution_keys, admission_transaction
     where_parts = [f'"status" IN ({placeholders})']
     where_params: list[Any] = list(active_states)
     if excluded_accounts:
         where_parts.append('("account_id" IS NULL OR "account_id" <> ALL(%s))')
         where_params.append(excluded_accounts)
-    if excluded_sources:
-        where_parts.append('"id"::text <> ALL(%s)')
-        where_params.append(excluded_sources)
-    with record_store.transaction() as conn:
+    # 恢复与新准入使用同一短事务锁，防止排除快照之后刚获准的任务被收口。
+    with admission_transaction() as conn:
+        active_keys = active_execution_keys(prefix="registration_job:", conn=conn)
+        excluded_sources = sorted(set(excluded_sources) | {
+            key.removeprefix("registration_job:") for key in active_keys
+        })
+        if excluded_sources:
+            where_parts.append('"id"::text <> ALL(%s)')
+            where_params.append(excluded_sources)
         rows = record_store.list_rows(
             record_store.JOBS,
             where=" AND ".join(where_parts),

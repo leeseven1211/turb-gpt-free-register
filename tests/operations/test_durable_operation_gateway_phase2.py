@@ -59,6 +59,12 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         self.task_log_tempdir.cleanup()
 
     def _register(self, task_type, handler, **kwargs):
+        from core.operations.concurrency import register_admission_alias, resolve_admission_class, ConcurrencyPolicyError
+
+        try:
+            resolve_admission_class(task_type)
+        except ConcurrencyPolicyError:
+            register_admission_alias(task_type, "maintenance_check")
         task_gateway.register_operation_handler(task_type, handler, **kwargs)
         self.handler_types.add(task_type)
 
@@ -848,7 +854,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
 
         self._register("synthetic_deactivated_fence", handler)
         result = task_gateway._execute_operation_handler("synthetic_deactivated_fence", run_id)
-        self.assertEqual("not_claimed", result["status"])
+        self.assertEqual("deactivated", result["status"])
         self.assertFalse(called.is_set())
         self.assertEqual("deactivated", operation.get_run(run_id)["status"])
 

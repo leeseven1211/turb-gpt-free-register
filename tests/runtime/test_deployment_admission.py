@@ -31,7 +31,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
         account_task_store.init()
         self.account_id = records.insert_row(records.ACCOUNTS, {
             "email": "deployment@example.test", "access_token": "test-access-token",
-            "extra_json": {"account_password": "test-password"},
+            "extra_json": {"account_password": "test-password", "account_password_state": "confirmed"},
             "plan_check_status": "success", "codex_status": "success",
         })
         self.context = runtime.WebUIContext(app=Flask(__name__), logger=logging.getLogger(__name__))
@@ -170,16 +170,16 @@ class DeploymentAdmissionTests(PostgresTestCase):
     def test_registration_creation_checks_effective_driver_before_creating_jobs(self):
         from core.storage import postgres
 
-        with patch.object(registration, "get_executor", return_value=Mock()), patch.object(
+        with patch.object(registration, "_enqueue_job"), patch.object(
             registration, "get_executor_workers", return_value=1,
         ), patch("config.roxybrowser.REGISTRATION_DRIVER", "roxy"), patch("config.codex.ENABLE_CODEX_AUTO", False):
-            for driver in ("roxy", "roxy_oss"):
+            for driver in ("roxy",):
                 with self.subTest(driver=driver), self.assertRaisesRegex(ValueError, "browser_unavailable_on_deployment"):
                     registration.submit_registration(1, email_source="outlook", registration_driver=driver)
             with postgres.connect() as conn, conn.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM {postgres.qualified(records.JOBS.name)}")
                 self.assertEqual(0, cur.fetchone()[0])
-            for driver in ("protocol", "protocol_oss", "protocol_oss_2"):
+            for driver in ("protocol_oss_2",):
                 with self.subTest(driver=driver):
                     jobs = registration.submit_registration(1, email_source="outlook", registration_driver=driver)
                     self.assertEqual(driver, registration.registration_options_for_job(jobs[0])["registration_driver"])
@@ -187,7 +187,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
     def test_registration_retry_checks_snapshot_and_override_without_blocking_protocol(self):
         from core import db
 
-        with patch.object(registration, "get_executor", return_value=Mock()), patch.object(
+        with patch.object(registration, "_enqueue_job"), patch.object(
             registration, "get_retry_info", return_value={"retryable": True, "retry_action": "registration"},
         ):
             for index, driver in enumerate(("roxy", "protocol", "protocol_oss", "protocol_oss_2")):
@@ -202,7 +202,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
                     self.assertEqual("browser_unavailable_on_deployment", result.get("error_code"), result)
                 else:
                     self.assertTrue(result["ok"], result)
-                    self.assertEqual(driver, registration.registration_options_for_job(result["job"])["registration_driver"])
+                    self.assertEqual("protocol_oss_2", registration.registration_options_for_job(result["job"])["registration_driver"])
 
     def test_registration_browser_postprocessing_is_rejected_before_task_creation(self):
         for settings in (

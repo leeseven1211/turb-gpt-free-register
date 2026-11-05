@@ -2427,7 +2427,7 @@ async function uploadSelectedCodexSub2() {
   const btn = $('#btnUploadSelectedCodexSub2V2');
   const old = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '上传中…';
+  btn.textContent = '提交上传…';
   try {
     const r = await api('/api/accounts/codex/upload-sub2-bulk', {
       method:'POST',
@@ -2435,13 +2435,19 @@ async function uploadSelectedCodexSub2() {
       body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped_count || 0) + (r.failed_count || 0);
-    showToast(skipped ? `已上传 ${r.uploaded_count || 0} 个，跳过/失败 ${skipped} 个` : `已上传 ${r.uploaded_count || 0} 个`);
-    await pollAccountPlanStatuses();
+    if (r.accepted) {
+      showToast(`手动上传已入队 ${r.queued_count || 0} 个${skipped ? `，跳过/未入队 ${skipped} 个` : ''}，最终结果在任务回执中更新`);
+      trackAcceptedOperationsV2(r.queued || [], '手动上传');
+    } else {
+      showToast(skipped ? `已上传 ${r.uploaded_count || 0} 个，跳过/失败 ${skipped} 个` : `已上传 ${r.uploaded_count || 0} 个`);
+      await pollAccountPlanStatuses();
+    }
   } catch(err) {
     showToast('批量上传 sub2 失败: ' + err.message);
     updateAccountSelectionUi();
   } finally {
     btn.textContent = old;
+    btn.disabled = false;
   }
 }
 

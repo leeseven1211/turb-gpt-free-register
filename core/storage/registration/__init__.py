@@ -1166,7 +1166,13 @@ def recover_interrupted_runs(
     if excluded_sources:
         where_parts.extend(("rr.id::text <> ALL(%s)", "COALESCE(rr.job_id::text, '') <> ALL(%s)"))
         where_params.extend((excluded_sources, excluded_sources))
-    with _connect() as conn, conn.cursor() as cur:
+    from core.operations.concurrency import active_execution_ids, admission_transaction
+
+    with admission_transaction() as conn, conn.cursor() as cur:
+        active_executions = sorted(active_execution_ids(conn=conn))
+        if active_executions:
+            where_parts.append("COALESCE(rr.execution_id, '') <> ALL(%s)")
+            where_params.append(active_executions)
         cur.execute(
             f"""
             SELECT rr.*

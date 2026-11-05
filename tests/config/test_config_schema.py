@@ -401,8 +401,8 @@ class ConfigSchemaTests(unittest.TestCase):
             if field.module
         }.issubset(reloadable))
 
-    def test_shared_account_concurrency_accepts_positive_integers_without_fixed_upper_bound(self):
-        key = "ACCOUNT_BATCH_WORKERS"
+    def test_global_concurrency_accepts_positive_integers_without_fixed_upper_bound(self):
+        key = "GLOBAL_TASK_WORKERS"
         for workers in (1, 50, 51, 100, 1000, 1000000):
             with self.subTest(workers=workers):
                 self.assertEqual({key: workers}, validate_config_updates({key: workers}))
@@ -668,9 +668,9 @@ class ConfigSchemaTests(unittest.TestCase):
             config, "reload_all", side_effect=RuntimeError("simulated reload failure")
         ), patch.dict(os.environ, {"UNRELATED_THREAD_ENV": "keep"}, clear=True):
             with self.assertRaises(RuntimeError):
-                config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 4})
+                config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 4})
             self.assertFalse(path.exists())
-            self.assertNotIn("ACCOUNT_BATCH_WORKERS", os.environ)
+            self.assertNotIn("ACCOUNT_PLAN_CHECK_WORKERS", os.environ)
             self.assertEqual("keep", os.environ["UNRELATED_THREAD_ENV"])
 
     def test_enum_none_survives_save_reload_and_metadata(self):

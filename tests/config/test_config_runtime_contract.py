@@ -41,14 +41,13 @@ RUNTIME_RANGES = (
 
 
 @pytest.mark.parametrize("workers", (1, 20, 32, 50, 51, 100, 1000))
-def test_saved_shared_account_budget_reaches_executor_without_lower_clamp(workers):
-    from core.operations.executor import AccountOperationExecutor
+def test_independent_type_budget_is_projected_without_lower_clamp(workers):
+    from config.concurrency import policy_values
 
-    saved = schema.validate_config_updates({"ACCOUNT_BATCH_WORKERS": workers})
-    with patch.object(codex_config, "ACCOUNT_BATCH_WORKERS", saved["ACCOUNT_BATCH_WORKERS"]):
-        executor = AccountOperationExecutor()
-        assert executor.workers() == workers
-        assert executor.available_slots() == workers
+    saved = schema.validate_config_updates({"ACCOUNT_PLAN_CHECK_WORKERS": workers})
+    policy = policy_values(saved)
+    assert policy["ACCOUNT_PLAN_CHECK_WORKERS"] == workers
+    assert policy["GLOBAL_TASK_WORKERS"] == 3
 
 
 @pytest.mark.parametrize("workers", (100, 1000))

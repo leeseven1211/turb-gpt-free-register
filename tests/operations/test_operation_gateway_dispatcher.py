@@ -1,11 +1,48 @@
 from __future__ import annotations
 
 import unittest
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
+from cryptography.fernet import Fernet
+from tests.support_pg import PostgresTestCase
 
 
-class OperationGatewayDispatcherTests(unittest.TestCase):
+class OperationGatewayDispatcherTests(PostgresTestCase):
+    def setUp(self):
+        super().setUp()
+        from config.concurrency import policy_values
+        from core.operations import task_gateway, concurrency
+        from core.storage import runtime_config
+
+        key = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode()})
+        key.start()
+        self.addCleanup(key.stop)
+        values = policy_values({})
+        values.update(GLOBAL_TASK_WORKERS=10, EXTRACT_LINK_WORKERS=10, MAINTENANCE_CHECK_WORKERS=10,
+                      EXTRACT_LINK_LEGACY_CONCURRENCY=10, EXTRACT_LINK_HUANGUANG_CONCURRENCY=10)
+        runtime_config.write_values({key: str(value) for key, value in values.items()}, activate=True, source="test")
+        for name in ("maintenance_test", "maintenance_capacity_test", "maintenance_capacity_reject_test", "maintenance_deferred_test"):
+            concurrency.register_admission_alias(name, "maintenance_check")
+        self.contexts = []
+        original = task_gateway.admit_operation_run
+
+        def admit(run, capacity_handler=None):
+            implementation = task_gateway._operation()
+            if isinstance(implementation, SimpleNamespace):
+                implementation.claim_run = lambda *_args, **_kwargs: dict(run)
+                if not hasattr(implementation, "requeue_claimed_run"):
+                    implementation.requeue_claimed_run = lambda *_args, **_kwargs: dict(run)
+            result = original(run, capacity_handler)
+            if result.context:
+                self.contexts.append(result.context)
+            return result
+
+        admission = patch.object(task_gateway, "admit_operation_run", side_effect=admit)
+        admission.start()
+        self.addCleanup(admission.stop)
+        self.addCleanup(lambda: [concurrency.release_execution(context) for context in self.contexts])
+
     def tearDown(self):
         from core.operations import task_gateway
 
@@ -190,6 +227,7 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
             patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
             patch.object(task_gateway, "_executor", return_value=Executor()),
             patch.object(task_gateway, "_extract_executor", return_value=Executor()),
+            patch.object(task_gateway, "_DISPATCH_HANDLERS", {}),
         ):
             previous = task_gateway._run_handler_snapshot()[0].get("extract_link")
             previous_capacity = task_gateway._run_handler_snapshot()[1].get("extract_link")
@@ -223,6 +261,7 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
             self.fail("延期执行不能写入终态")
 
         operation = SimpleNamespace(claim_run=lambda *_args, **_kwargs: queued,
+            get_run=lambda *_args: queued,
             is_run_cancel_requested=lambda *_args: False, requeue_claimed_run=requeue,
             finish_run=fail_terminal)
 
@@ -282,7 +321,9 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
                 task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
                     dispatch_capacity_key=lambda _run: {"huanguang": 10, "batch:1": 10},
                     dispatch_capacity_limit=lambda _key: 10)
-                self.assertEqual(10, task_gateway.dispatch_registered_once(limit=64))
+                # 持久公平游标可能让刚登记的另一队列等下一轮，随后补齐空闲容量。
+                dispatched = sum(task_gateway.dispatch_registered_once(limit=64) for _ in range(3))
+                self.assertEqual(10, dispatched)
                 self.assertEqual(2, sum(run_id < 7490 for run_id in submitted))
                 self.assertEqual(8, sum(run_id >= 7490 for run_id in submitted))
         finally:
@@ -299,26 +340,16 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
     def test_legacy_continuation_capacity_preserves_initial_slots(self):
         from core.operations import task_gateway
 
-        continuation = {"task_type": "extract_link", "data": {
+        continuation = {"id": 7501, "task_type": "extract_link", "data": {
             "provider_id": "legacy", "extract_poll_continuation": True}}
-        initial = {"task_type": "extract_link", "data": {"provider_id": "legacy"}}
-        capacity = (lambda _run: {"legacy": 10, "batch:legacy": 10}, lambda _key: 10)
-        tokens = []
-        try:
-            for _ in range(2):
-                accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
-                self.assertTrue(accepted)
-                tokens.append(token)
-            accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
-            if accepted:
-                tokens.append(token)
-            self.assertFalse(accepted)
-            accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", initial, capacity)
-            self.assertTrue(accepted)
-            tokens.append(token)
-        finally:
-            for token in tokens:
-                task_gateway._release_dispatch_capacity(token)
+        initial = {"id": 7504, "task_type": "extract_link", "data": {"provider_id": "legacy"}}
+        capacity = (lambda _run: {"legacy": 10}, lambda _key: 10)
+        with patch.object(task_gateway, "_operation", return_value=SimpleNamespace()):
+            self.assertTrue(task_gateway.admit_operation_run(continuation, capacity))
+            self.assertTrue(task_gateway.admit_operation_run({**continuation, "id": 7502}, capacity))
+            denied = task_gateway.admit_operation_run({**continuation, "id": 7503}, capacity)
+            self.assertIn("provider_capacity", denied.blocked_by)
+            self.assertTrue(task_gateway.admit_operation_run(initial, capacity))
 
     def test_single_slot_rotates_initial_and_legacy_continuation(self):
         from core.operations import task_gateway
@@ -350,7 +381,8 @@ class OperationGatewayDispatcherTests(unittest.TestCase):
         try:
             with (patch.object(task_gateway, "_operation", return_value=SimpleNamespace(list_dispatchable_runs=list_runs)),
                   patch.object(task_gateway, "_executor", return_value=Executor()),
-                  patch.object(task_gateway, "_extract_executor", return_value=Executor())):
+                  patch.object(task_gateway, "_extract_executor", return_value=Executor()),
+                  patch.object(task_gateway, "_DISPATCH_HANDLERS", {})):
                 task_gateway.register_dispatch_handler("extract_link", lambda _run_id: None,
                     dispatch_capacity_key=lambda _run: "legacy", dispatch_capacity_limit=lambda _key: 1)
                 for _ in range(4):

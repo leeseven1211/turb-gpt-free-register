@@ -2288,6 +2288,25 @@ def run_worker(
     """旧同步入口的兼容委托；业务执行统一由 Codex operation 协调器完成。"""
     from core.codex import operation_service as codex_operation_service
     from core import operation_task_store
+    from core.operations import concurrency
+
+    parent = concurrency.current_execution()
+    if parent is not None:
+        if not concurrency.validate_execution(parent):
+            raise concurrency.ConcurrencyPolicyError("permit_owner_lost", "Codex 内联调用缺少有效父许可")
+        # 原注册/Codex 同步步骤保持调用顺序，不能持父槽入队后再等子槽。
+        current = parent.claimed_run
+        expected_email = str(current.get("email_snapshot") or current.get("email") or "").strip().casefold()
+        expected_account = int(current.get("account_id") or 0)
+        account = db.get_account_by_email(email) or {}
+        if ((expected_email and expected_email != str(email).strip().casefold())
+                or (expected_account and expected_account != int(account.get("id") or 0))
+                or (not expected_email and not expected_account)):
+            raise concurrency.ConcurrencyPolicyError("concurrency_policy_invalid", "Codex 内联调用与父许可账号不一致")
+        return _run_worker_legacy(
+            email, batch_label=batch_label, clear_log=clear_log, target_log_path=target_log_path,
+            task_id=task_id, task_trigger=task_trigger,
+        )
 
     queued = codex_operation_service.submit(email, trigger=task_trigger)
     if not queued.get("accepted"):

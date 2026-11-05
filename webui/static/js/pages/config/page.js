@@ -19,6 +19,10 @@ const CONFIG_SENTINEL_MAINTENANCE_V2 = {
   snapshot: null, loading: false, posting: false, visible: false,
   request: 0, timer: null, observer: null, error: '', retryAction: 'status',
 };
+const CONFIG_CONCURRENCY_V2 = {
+  snapshot: null, preview: null, error: '', loading: false,
+  request: 0, visible: false, timer: null, observer: null,
+};
 const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
   extraction: {key: 'EXTRACT_LINK_HUANGUANG_CDK', label: '幻光提链 CDK', request: 0, inflight: null, loading: false, text: ''},
   payment: {key: 'EXTRACT_LINK_HUANGUANG_PAYMENT_CDK', label: '幻光支付扫码 CDK', request: 0, inflight: null, loading: false, text: ''},
@@ -32,7 +36,7 @@ const CONFIG_MENU_DOMAINS_V2 = {
   '浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏'],
   '服务集成': ['Codex'],
   '提链': ['提链'],
-  '系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试'],
+  '系统与维护': ['并发控制', '通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试'],
 };
 const CONFIG_DOMAIN_ALIASES_V2 = {
   '注册设置': '注册主链路',
@@ -218,6 +222,7 @@ function configGroups() {
   const groups = {};
   const seen = new Set();
   CONFIG.forEach(f => {
+    if (f.hidden) return;
     if (seen.has(f.key)) return;
     seen.add(f.key);
     const isPlanBusiness = CONFIG_PLAN_BUSINESS_KEYS_V2.has(f.key);
@@ -584,6 +589,7 @@ function configSectionIntro(name) {
   if (name === '浏览器') return '维护浏览器连接、账号环境、地区画像、省流量和人工节奏。';
   if (name === '服务集成') return '维护 CPA、sub2api 等外部服务连接。';
   if (name === '系统与维护') return '维护并发、自动任务、诊断日志、任务保留和访问设置。';
+  if (name === '并发控制') return '管理当前部署的全局业务执行上限与各独立任务类型上限；本地与 Oracle 分别生效。';
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
   if (name === '注册主链路') return '配置注册主流程、注册国家、密码/验证码模式，以及注册后可选能力。';
@@ -642,6 +648,8 @@ function renderConfigSectionHead(name, meta = '') {
     ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
       ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain === '注册与账号' && menu === '注册与账号' ? '查询套餐' : domain)}</button>`).join('')}
     </div>` : ''}
+    ${['注册主链路', '账号补全', 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
+      ? '<p class="config-section-v2-subhelp">本业务同时受全局与独立任务类型上限约束。<button type="button" class="config-concurrency-link-v2" data-concurrency-open>前往并发控制</button></p>' : ''}
   `;
 }
 function registrationDriverChoices() {
@@ -1947,6 +1955,9 @@ async function querySentinelMaintenanceV2(action = 'status') {
       ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'} : {});
     if (request !== state.request) return;
     if (!result?.ok) throw new Error('sentinel_status_unavailable');
+    if (check && result.accepted && result.task_id) {
+      trackAcceptedOperationsV2([result], 'Sentinel 检查');
+    }
     const previous = state.snapshot;
     state.snapshot = {
       ...result,
@@ -2016,6 +2027,11 @@ async function querySub2ApiAutomationV2(button) {
     if (button.dataset.sub2apiAutomation === 'check') {
       const result = await api('/api/sub2api/automation/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
       if (!result.ok) throw new Error(result.error || '巡检未完成');
+      if (result.accepted) {
+        status.textContent = `异常扫描已入队 · 任务 #${result.task_id}，最终结果在任务回执中更新。`;
+        trackAcceptedOperationsV2([result], 'Sub2API 异常扫描');
+        return;
+      }
       const summary = result.result || {};
       const labels = {
         account_busy: '账号忙碌', cooldown: '冷却中', account_archived: '账号已归档', account_deactivated: '账号已停用',
@@ -2099,6 +2115,257 @@ function renderScheduledConfigSectionV2(fields) {
   `;
 }
 
+function concurrencyFieldV2(field) {
+  return field?.group === '并发控制' && field.key !== 'CONCURRENCY_POLICY_REVISION';
+}
+
+function concurrencyFieldErrorV2(value) {
+  const text = String(value ?? '').trim();
+  return /^\d+$/.test(text) && /[1-9]/.test(text) ? '' : '请填写不小于 1 的整数；暂停请使用任务暂停或取消。';
+}
+
+function concurrencyWaitTextV2(reason) {
+  const code = typeof reason === 'string' ? reason : reason?.code || reason?.reason || '';
+  const count = typeof reason === 'object' && reason?.occupied != null && reason?.limit != null
+    ? `（${reason.occupied}/${reason.limit}）` : '';
+  const labels = {
+    global_capacity: '等待全局空位', type_capacity: '等待本类空位',
+    batch_capacity: '等待当前批次空位', provider_capacity: '等待平台空位',
+    account_busy: '账号正由其他任务使用', remote_order_capacity: '等待远端订单名额',
+    not_due: '等待下次平台查询', concurrency_policy_migration_required: '等待确认并发迁移策略',
+    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行所有者待核验',
+    execution_active: '上一执行仍在退出或清理', fairness_turn: '等待公平调度轮次',
+  };
+  return labels[code] ? labels[code] + count : `等待原因待核验（${code || '缺少原因代码'}）`;
+}
+
+function concurrencyTypeV2(key) {
+  return (CONFIG_CONCURRENCY_V2.snapshot?.types || []).find(item => item.config_key === key || item.key === key);
+}
+
+function renderConcurrencyFieldV2(field, global = false) {
+  const id = `concurrency-${field.key}`;
+  const value = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, field.key)
+    ? CONFIG_PENDING_UPDATES[field.key] : field.value;
+  const error = CONFIG_FIELD_ERRORS_V2[field.key] || '';
+  return `<div class="config-concurrency-row-v2${global ? ' config-concurrency-row-v2--global' : ''}" data-config-setting="${attrEsc(field.key)}">
+    <div class="config-concurrency-copy-v2"><label for="${id}">${esc(field.label)}</label>
+      <p id="${id}-help" class="hint">${esc(field.help || '')}</p>
+      ${global ? '' : `<p class="hint" data-concurrency-effective="${attrEsc(field.key)}"></p>`}
+    </div>
+    <div class="config-setting-control-v2"><input id="${id}" type="number" inputmode="numeric" min="1" step="1" required data-key="${attrEsc(field.key)}" value="${attrEsc(value)}" aria-describedby="${id}-help ${id}-error" aria-invalid="${!!error}">
+      <p id="${id}-error" class="config-field-error-v2" role="alert"${error ? '' : ' hidden'}>${esc(error)}</p>
+    </div>
+    ${global ? '' : `<div class="config-concurrency-row-state-v2" data-concurrency-type="${attrEsc(field.key)}">
+      <span data-concurrency-count>占用 — · 排队 —</span>
+      <details data-concurrency-reasons hidden><summary data-concurrency-primary>等待原因</summary><p class="hint" data-concurrency-reason-list></p></details>
+      <button type="button" class="btn" data-concurrency-tasks="${attrEsc(field.key)}" aria-label="${field.key.startsWith('REGISTRATION_') ? '查看注册任务' : `定位${attrEsc(field.label)}任务`}">${field.key.startsWith('REGISTRATION_') ? '查看注册任务' : '定位任务'}</button>
+    </div>`}
+  </div>`;
+}
+
+function renderConcurrencyErrorsV2() {
+  const errors = Object.entries(CONFIG_FIELD_ERRORS_V2).filter(([key]) => concurrencyFieldV2(configSchemaField(key)));
+  return `<div id="configConcurrencyErrorsV2" class="config-concurrency-errors-v2" tabindex="-1" role="alert"${errors.length ? '' : ' hidden'}>
+    <strong>请检查 ${errors.length} 项并发设置，草稿已保留</strong>
+    <ul>${errors.map(([key, reason]) => `<li><button type="button" data-concurrency-error-key="${attrEsc(key)}">${esc(configSchemaField(key)?.label || key)}：${esc(reason)}</button></li>`).join('')}</ul>
+  </div>`;
+}
+
+function renderConcurrencyConfigSectionV2(fields) {
+  const global = fields.find(field => field.key === 'GLOBAL_TASK_WORKERS');
+  const types = fields.filter(field => concurrencyFieldV2(field) && field.key !== 'GLOBAL_TASK_WORKERS');
+  return `<section class="config-section-v2" id="${configGroupSlug('并发控制')}" data-config-section="并发控制">
+    ${renderConfigSectionHead('并发控制', configSectionIntro('并发控制'))}
+    ${renderConcurrencyErrorsV2()}
+    <div class="config-concurrency-toolbar-v2"><p class="hint" data-concurrency-scope>正在读取部署范围与策略版本…</p>
+      <button type="button" class="btn" data-concurrency-refresh>刷新状态</button></div>
+    <div class="config-concurrency-migration-v2" data-concurrency-migration hidden>
+      <strong data-concurrency-migration-title>请先确认迁移策略</strong><p class="hint" data-concurrency-migration-notes></p>
+      <button type="button" class="btn" data-concurrency-use-preview>将迁移建议填入草稿</button>
+      <p class="hint">填入草稿后请核对全局和各类型上限，再点击保存；预览与填入草稿均不会修改运行配置。</p>
+    </div>
+    <div class="config-concurrency-summary-v2" role="status" aria-live="polite" aria-atomic="true" data-concurrency-summary>正在读取当前占用…</div>
+    <p class="hint config-concurrency-status-error-v2" data-concurrency-error hidden></p>
+    ${global ? renderConcurrencyFieldV2(global, true) : ''}
+    <div class="config-setting-group-v2"><div class="config-setting-group-head-v2">各独立任务类型</div>
+      <p class="config-section-v2-subhelp">各类型上限是上限，不预留配额，合计可以超过全局。内部同步刷新 AT、查套餐与后处理归属巡检、提链或注册父任务，复用父任务许可；独立子任务按实际动作重新排队。</p>
+      <div class="config-concurrency-types-v2">${types.map(field => renderConcurrencyFieldV2(field)).join('')}</div>
+    </div>
+    <details class="config-concurrency-details-v2" data-concurrency-details><summary>业务附加限制与计量说明</summary>
+      <p class="hint">注册批次保留 1–16，提链批次与平台保留 1–50；它们与全局、类型限制同时生效。XXSYUN 未结束订单名额在远端等待时仍占用，本地查询间隔不占执行槽。调试保留、停止清理和已预约执行仍计入占用。</p>
+      <p class="hint">账号补全等待独立子任务时不重复占全局槽；HME 合并扫描按一个扫描 Run 计数；邮箱导入按实际远端交接调用计数。Sub2API 远端账号并发属性在服务集成中维护。</p>
+      <div data-concurrency-details-status class="hint"></div>
+      <button type="button" class="btn" data-concurrency-load-details>查看当前平台、批次与订单限制</button>
+    </details>
+    ${renderConfigSaveActions()}
+  </section>`;
+}
+
+function concurrencyIsVisibleV2() {
+  const tab = document.getElementById('tab-config');
+  return !!document.querySelector('#configSectionsV2 [data-config-section="并发控制"]')
+    && !!tab && !tab.classList.contains('hidden') && !document.hidden;
+}
+
+function updateConcurrencyStatusV2() {
+  const root = document.querySelector('#configSectionsV2 [data-config-section="并发控制"]');
+  if (!root) return;
+  const state = CONFIG_CONCURRENCY_V2;
+  const snapshot = state.snapshot;
+  const set = (selector, value) => { const node = root.querySelector(selector); if (node && node.textContent !== value) node.textContent = value; };
+  const error = root.querySelector('[data-concurrency-error]');
+  if (error) { error.hidden = !state.error; error.textContent = state.error; }
+  const refresh = root.querySelector('[data-concurrency-refresh]');
+  if (refresh) { refresh.disabled = state.loading; refresh.textContent = state.loading ? '刷新中…' : '刷新状态'; }
+  const preview = state.preview;
+  const migration = root.querySelector('[data-concurrency-migration]');
+  if (migration) {
+    const required = preview?.migration_required || snapshot?.migration_required;
+    migration.hidden = !required;
+    const button = migration.querySelector('[data-concurrency-use-preview]');
+    if (button) button.disabled = !preview;
+    set('[data-concurrency-migration-notes]', preview ? `历史账号池上限：${preview.legacy_account_workers ?? '未记录'}。${(preview.notes || []).join(' ')}` : '新策略尚未完整保存。请刷新预览后确认全局上限；新任务会保留排队。');
+  }
+  if (!snapshot) return;
+  const global = snapshot.global || {};
+  const scope = typeof snapshot.scope === 'object' ? snapshot.scope.label || snapshot.scope.name || snapshot.scope.schema || '当前部署' : snapshot.scope || '当前部署';
+  const observed = snapshot.observed_at && typeof formatDateTime === 'function' ? formatDateTime(snapshot.observed_at) : snapshot.observed_at || '—';
+  set('[data-concurrency-scope]', `部署范围 ${scope} · 策略版本 ${snapshot.policy_revision ?? '—'} · 观察时间 ${observed}`);
+  set('[data-concurrency-summary]', `当前占用 ${global.occupied ?? 0} / ${global.limit ?? '—'}${global.draining ? '，等待现有任务结束' : ''}；预约 ${global.reserved ?? 0} · 执行 ${global.executing ?? 0} · 清理 ${global.cleaning ?? 0} · 调试保留 ${global.debug_hold ?? 0}；排队 ${snapshot.queued ?? (snapshot.types || []).reduce((sum, item) => sum + Number(item.queued || 0), 0)} · 远端等待 ${snapshot.remote_waiting ?? '—'}`);
+  root.querySelectorAll('[data-concurrency-type]').forEach(row => {
+    const type = concurrencyTypeV2(row.dataset.concurrencyType);
+    row.querySelector('[data-concurrency-count]').textContent = type ? `占用 ${type.occupied ?? 0} / ${type.limit ?? '—'} · 排队 ${type.queued ?? 0}${type.draining ? ' · 等待现有任务结束' : ''}` : '占用 — · 排队 —';
+    const reasons = type?.blocked_by || [];
+    const details = row.querySelector('[data-concurrency-reasons]');
+    details.hidden = !reasons.length;
+    row.querySelector('[data-concurrency-primary]').textContent = reasons.length ? concurrencyWaitTextV2(reasons[0]) : '暂无容量等待';
+    row.querySelector('[data-concurrency-reason-list]').textContent = reasons.map(concurrencyWaitTextV2).join('；');
+  });
+  root.querySelectorAll('[data-concurrency-effective]').forEach(node => {
+    const value = configFieldValueV2(node.dataset.concurrencyEffective);
+    node.textContent = Number(value) > Number(global.limit) ? `当前实际最多受全局 ${global.limit} 限制；保存后的类型值 ${value} 仍会保留。` : '';
+  });
+  const detailParts = [];
+  for (const [key, label] of [['providers', '平台'], ['batches', '批次'], ['remote_orders', '远端订单']]) {
+    for (const item of snapshot[key] || []) detailParts.push(`${label} ${item.label || item.key || item.id || item.batch_id || '当前'}：${item.occupied ?? item.active ?? 0} / ${item.limit ?? '—'}`);
+  }
+  set('[data-concurrency-details-status]', detailParts.join('；') || '附加限制按需读取，任务仍需同时满足账号与邮箱资源约束。');
+}
+
+function scheduleConcurrencyStatusV2() {
+  const state = CONFIG_CONCURRENCY_V2;
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  if (!state.visible || !concurrencyIsVisibleV2() || state.loading) return;
+  state.timer = setTimeout(() => { state.timer = null; queryConcurrencyStatusV2(); }, 3000);
+}
+
+async function queryConcurrencyStatusV2({details = false} = {}) {
+  const state = CONFIG_CONCURRENCY_V2;
+  if (!state.visible || !concurrencyIsVisibleV2() || state.loading) return;
+  const request = ++state.request;
+  state.loading = true;
+  state.error = '';
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  updateConcurrencyStatusV2();
+  try {
+    const calls = [api(`/api/operations/concurrency${details ? '?details=1' : ''}`)];
+    if (!state.preview) calls.push(api('/api/config/concurrency-preview'));
+    const results = await Promise.allSettled(calls);
+    if (request !== state.request || !state.visible) return;
+    const status = results[0];
+    if (status.status === 'fulfilled' && status.value?.ok !== false) state.snapshot = status.value;
+    else {
+      const error = status.reason || status.value;
+      state.error = `状态读取失败（${error?.error_code || error?.code || 'scheduler_store_unavailable'}），请重试；显示的数据为上次观察结果。`;
+    }
+    if (results[1]?.status === 'fulfilled') state.preview = results[1].value;
+    else if (results[1]) state.error += ' 迁移预览暂不可用，请刷新重试。';
+  } finally {
+    if (request === state.request) {
+      state.loading = false;
+      updateConcurrencyStatusV2();
+      scheduleConcurrencyStatusV2();
+    }
+  }
+}
+
+function syncConcurrencyStatusV2() {
+  const state = CONFIG_CONCURRENCY_V2;
+  const visible = concurrencyIsVisibleV2();
+  const entered = visible && !state.visible;
+  state.visible = visible;
+  if (!visible) {
+    if (state.timer !== null) clearTimeout(state.timer);
+    state.timer = null;
+    if (state.loading) { state.request += 1; state.loading = false; }
+    return;
+  }
+  updateConcurrencyStatusV2();
+  if (entered) queryConcurrencyStatusV2();
+}
+
+function bindConcurrencyStatusV2() {
+  const state = CONFIG_CONCURRENCY_V2;
+  const tab = document.getElementById('tab-config');
+  if (tab && !state.observer) {
+    state.observer = new MutationObserver(syncConcurrencyStatusV2);
+    state.observer.observe(tab, {attributes: true, attributeFilter: ['class', 'hidden']});
+    document.addEventListener('visibilitychange', syncConcurrencyStatusV2);
+    tab.addEventListener('focusout', event => {
+      const input = event.target.closest('[data-key]');
+      if (!input || !concurrencyFieldV2(configSchemaField(input.dataset.key))) return;
+      validateConcurrencyInputV2(input);
+    });
+  }
+  syncConcurrencyStatusV2();
+}
+
+function validateConcurrencyInputV2(input) {
+  const key = input.dataset.key;
+  const reason = concurrencyFieldErrorV2(input.value);
+  if (reason) CONFIG_FIELD_ERRORS_V2[key] = reason;
+  else delete CONFIG_FIELD_ERRORS_V2[key];
+  input.setAttribute('aria-invalid', String(!!reason));
+  const error = document.getElementById(`concurrency-${key}-error`);
+  if (error) { error.hidden = !reason; error.textContent = reason; }
+  return reason;
+}
+
+function useConcurrencyPreviewV2() {
+  const values = CONFIG_CONCURRENCY_V2.preview?.proposed_values;
+  if (!values) return;
+  for (const [key, value] of Object.entries(values)) {
+    if (!Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)) setPendingConfigValue(key, value, {force: true});
+  }
+  renderConfigLayoutV2();
+  showToast('迁移建议已填入草稿；核对全局和各类型上限后点击保存。');
+}
+
+function locateConcurrencyTasksV2(configKey) {
+  const type = concurrencyTypeV2(configKey);
+  if (configKey.startsWith('REGISTRATION_')) {
+    const register = document.getElementById('tab-register');
+    if (register) register.dataset.moduleView = 'tasks';
+    activateTab('register');
+    document.getElementById('btnResetJobFiltersV2')?.click();
+    document.getElementById('jobsPanelV2')?.scrollIntoView({block: 'start', behavior: 'auto'});
+    showToast('已打开注册任务列表，可在注册协议列查看 Roxy 与 Proto2。');
+    return;
+  }
+  activateTab('tasks');
+  document.getElementById('btnResetAccountTaskFiltersV2')?.click();
+  const filter = document.getElementById('accountTaskTypeFilterV2');
+  if (filter && type) {
+    const value = (type.task_types?.length ? [...new Set(type.task_types)] : [type.key]).join(',');
+    if (!Array.from(filter.options || []).some(option => option.value === value)) filter.add(new Option(type.label || value, value));
+    filter.value = value;
+    filter.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+}
+
 function renderConfigSectionV2(name, fields) {
   const byDomain = configDomainGroupsV2(fields);
   const domains = configMenuDomainNamesV2(name, fields);
@@ -2116,6 +2383,7 @@ function renderConfigDomainSectionV2(name, fields) {
   if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
   if (name === '注册调试') return renderRegistrationDebugSectionV2(fields);
   if (name === '定时任务') return renderScheduledConfigSectionV2(fields);
+  if (name === '并发控制') return renderConcurrencyConfigSectionV2(fields);
   if (name === 'WebUI 授权') {
     return `
       <section class="config-section-v2" id="${esc(slug)}" data-config-section="${esc(name)}">
@@ -2196,6 +2464,7 @@ function renderConfigLayoutV2() {
     nav.innerHTML = '<div class="muted" style="padding:8px 12px;font-size:13px;">暂无分组</div>';
     sections.innerHTML = '';
     syncSentinelMaintenanceV2();
+    syncConcurrencyStatusV2();
     const count = document.getElementById('configNavCountV2');
     if (count) count.textContent = '0';
     updateConfigSaveUi();
@@ -2217,6 +2486,7 @@ function renderConfigLayoutV2() {
   bindConfigMultiSelectsV2();
   updateConfigSaveUi();
   syncSentinelMaintenanceV2();
+  syncConcurrencyStatusV2();
 }
 
 function resetPendingConfigUpdates() {
@@ -2262,6 +2532,7 @@ function openConfigGroup(name) {
 }
 function bindConfigLayoutV2() {
   bindSentinelMaintenanceV2();
+  bindConcurrencyStatusV2();
   const nav = document.getElementById('configNavV2');
   const search = document.getElementById('configNavSearchV2');
   if (search && !search.dataset.bound) {
@@ -2439,6 +2710,7 @@ async function saveRoxyWorkspaceSelection() {
 
 function readConfigElementValue(el, f) {
   if (!f) return undefined;
+  if (f.group === '并发控制' && f.type === 'int') return String(el.value ?? '').trim();
   if (f.key === 'PROXY_POOL_WAIT_TIMEOUT' || f.key === 'SMS_MAX_PRICE') {
     const root = el.closest?.('[data-config-composite-key]');
     const mode = root?.querySelector('[data-composite-mode]')?.value || 'continuous';
@@ -2473,7 +2745,6 @@ function readConfigElementValue(el, f) {
 function trackConfigFieldChange(e) {
   const el = e.target.closest('[data-key], [data-wait-seconds-key], [data-price-key]');
   if (!el || !el.closest('#tab-config')) return;
-  clearConfigFieldErrorsV2();
   const key = el.dataset.key || el.dataset.waitSecondsKey || el.dataset.priceKey;
   if (el.dataset.extractProviderSelection === 'true') {
     applyExtractLinkProviderSelectionV2(el.value);
@@ -2481,6 +2752,7 @@ function trackConfigFieldChange(e) {
   }
   const f = CONFIG.find(x => x.key === key);
   if (!f) return;
+  if (!concurrencyFieldV2(f)) clearConfigFieldErrorsV2();
   el.closest('.config-setting-row-v2')?.querySelector('.config-field-error-v2')?.remove();
   const composite = el.closest('[data-config-composite-key]');
   if (composite) {
@@ -2504,11 +2776,17 @@ function trackConfigFieldChange(e) {
   const explicitSecretClear = f.secret && el.dataset.secretClear === 'true' && String(el.value || '').trim() === '';
   const syncKeys = String(el.dataset.syncKeys || '').split(',').map(key => key.trim()).filter(Boolean);
   [f.key, ...syncKeys].filter((key, index, all) => all.indexOf(key) === index).forEach(key => {
-    if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value, {force: explicitSecretClear && key === f.key});
+    const migrationDraft = concurrencyFieldV2(f) && CONFIG_CONCURRENCY_V2.preview?.migration_required
+      && Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, 'CONCURRENCY_POLICY_REVISION');
+    if (CONFIG.some(item => item.key === key)) setPendingConfigValue(key, value, {force: (explicitSecretClear && key === f.key) || migrationDraft});
   });
   const status = el.closest('.config-field-v2, .config-setting-row-v2')?.querySelector('.config-field-status-v2');
   if (status) status.outerHTML = renderConfigFieldStatusV2(f);
   renderConfigOverviewCards();
+  if (concurrencyFieldV2(f)) {
+    if (CONFIG_FIELD_ERRORS_V2[f.key]) validateConcurrencyInputV2(el);
+    updateConcurrencyStatusV2();
+  }
   if (f.key === 'REGISTRATION_AUTH_MODE' || f.key === 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED'
     || f.key === 'EMAIL_SOURCE' || f.key === 'ICLOUD_HME_INBOX_MODE'
     || f.key === 'ICLOUD_HME_BUTLER_BRIDGE_ENABLED'
@@ -2526,6 +2804,17 @@ async function saveConfigUpdates(triggerBtn) {
   }
   updateConfigSaveUi('saving');
   try {
+    const concurrencyErrors = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (!concurrencyFieldV2(configSchemaField(key))) continue;
+      const reason = concurrencyFieldErrorV2(value);
+      if (reason) concurrencyErrors[key] = reason;
+    }
+    if (Object.keys(concurrencyErrors).length) {
+      const error = new Error('请检查并发设置');
+      error.fields = concurrencyErrors;
+      throw error;
+    }
     for (const [key, mode] of Object.entries(CONFIG_COMPOSITE_MODES_V2)) {
       if (!Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, key)) continue;
       const value = CONFIG_PENDING_UPDATES[key];
@@ -2554,6 +2843,10 @@ async function saveConfigUpdates(triggerBtn) {
       }
     });
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
+    if (Object.keys(updates).some(key => concurrencyFieldV2(configSchemaField(key)))) {
+      CONFIG_CONCURRENCY_V2.preview = null;
+      CONFIG_CONCURRENCY_V2.visible = false;
+    }
     Object.keys(updates).forEach(resetHuanguangQuotaForKeyV2);
     Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
     Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
@@ -2575,12 +2868,15 @@ async function saveConfigUpdates(triggerBtn) {
       Object.assign(CONFIG_FIELD_ERRORS_V2, e.fields);
       const field = CONFIG.find(item => item.key === errors[0][0]);
       if (field) {
-        CONFIG_NAV_QUERY_V2 = field.key;
+        const concurrency = concurrencyFieldV2(field);
+        CONFIG_NAV_QUERY_V2 = concurrency ? '' : field.key;
         const search = document.getElementById('configNavSearchV2');
-        if (search) search.value = field.key;
-        selectConfigSearchDestinationV2(configFieldMenuV2(field));
+        if (search) search.value = CONFIG_NAV_QUERY_V2;
+        if (concurrency) setConfigDestinationV2('并发控制');
+        else selectConfigSearchDestinationV2(configFieldMenuV2(field));
         renderConfigLayoutV2();
-        document.querySelector(`#tab-config [data-key="${field.key}"]`)?.focus();
+        if (concurrency) document.getElementById('configConcurrencyErrorsV2')?.focus();
+        else document.querySelector(`#tab-config [data-key="${field.key}"]`)?.focus();
       }
     }
     updateConfigSaveUi(errors.length ? 'validation_error' : 'error');
@@ -2588,6 +2884,21 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
+  const concurrencyButton = e.target.closest('[data-concurrency-refresh], [data-concurrency-load-details], [data-concurrency-use-preview], [data-concurrency-open], [data-concurrency-error-key], [data-concurrency-tasks]');
+  if (concurrencyButton) {
+    e.preventDefault();
+    if (concurrencyButton.hasAttribute('data-concurrency-open')) return openConfigGroup('并发控制');
+    if (concurrencyButton.hasAttribute('data-concurrency-use-preview')) return useConcurrencyPreviewV2();
+    if (concurrencyButton.dataset.concurrencyErrorKey) {
+      const input = document.getElementById(`concurrency-${concurrencyButton.dataset.concurrencyErrorKey}`);
+      input?.focus();
+      input?.scrollIntoView({block: 'center', behavior: 'auto'});
+      return;
+    }
+    if (concurrencyButton.dataset.concurrencyTasks) return locateConcurrencyTasksV2(concurrencyButton.dataset.concurrencyTasks);
+    if (concurrencyButton.hasAttribute('data-concurrency-refresh')) CONFIG_CONCURRENCY_V2.preview = null;
+    return queryConcurrencyStatusV2({details: concurrencyButton.hasAttribute('data-concurrency-load-details')});
+  }
   const sentinelButton = e.target.closest('[data-sentinel-maintenance-action]');
   if (sentinelButton) {
     e.preventDefault();

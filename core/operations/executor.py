@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""注册后的账号操作与提链任务使用独立的并发执行池。"""
+"""业务线程承载；业务容量唯一由 PostgreSQL 执行许可裁决。"""
 from __future__ import annotations
 
 import threading
@@ -53,23 +53,27 @@ def operation_log_context(context: Any, *, stage: str = "runtime"):
 
 
 def configured_workers() -> int:
-    """Return the current common account-operation worker setting."""
-    from config import codex as cfg
+    """本地承载容量跟随全局策略，不再存在账号任务公共隐藏预算。"""
+    from config import concurrency as cfg
+    from core.storage import postgres
+
+    if postgres.enabled():
+        from core.operations.concurrency import _policy
+
+        with postgres.connect() as conn:
+            values, _revision, _migration_required = _policy(conn)
+        return values["GLOBAL_TASK_WORKERS"]
 
     try:
-        value = int(getattr(cfg, "ACCOUNT_BATCH_WORKERS", 3) or 3)
+        value = int(getattr(cfg, "GLOBAL_TASK_WORKERS", 3) or 3)
     except (TypeError, ValueError):
         value = 3
     return max(_MIN_WORKERS, value)
 
 
 def configured_extract_workers() -> int:
-    """按各平台上限计算提链池容量，实际运行仍受平台及批次限制。"""
-    from core.extract_link.service import _provider_dispatch_capacity_limit
-
-    return sum(_provider_dispatch_capacity_limit(provider) for provider in (
-        "legacy", "lumen_flow", "huanguang", "anguang",
-    ))
+    """提链保留线程隔离，与账号、注册共用数据库业务预算。"""
+    return configured_workers()
 
 
 class AccountOperationExecutor:
@@ -97,7 +101,8 @@ class AccountOperationExecutor:
         self._active = 0
 
     def _refresh_budget_locked(self, requested: int | None = None) -> int:
-        value = self.workers() if requested is None else int(requested)
+        # 配置读取可能访问 PostgreSQL，必须由调用方在 condition 锁外完成。
+        value = (self._budget_limit or _MIN_WORKERS) if requested is None else int(requested)
         value = max(_MIN_WORKERS, value)
         if self._budget_limit != value:
             self._budget_limit = value
@@ -215,16 +220,18 @@ class AccountOperationExecutor:
 
     def available_slots(self) -> int:
         """Return slots not already accepted by any pool generation."""
+        requested = self.workers()
         with self._condition:
-            limit = self._refresh_budget_locked()
+            limit = self._refresh_budget_locked(requested)
             return max(0, limit - self._accepted)
 
     def status(self) -> dict[str, int | None]:
         """Expose non-sensitive runtime counters for health/readiness views."""
+        requested = self.workers()
         with self._condition:
-            limit = self._refresh_budget_locked()
+            limit = self._refresh_budget_locked(requested)
             return {
-                "configured_workers": self.workers(),
+                "configured_workers": requested,
                 "budget": limit,
                 "accepted": self._accepted,
                 "active": self._active,

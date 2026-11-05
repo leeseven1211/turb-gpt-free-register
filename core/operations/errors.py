@@ -2116,6 +2116,97 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     return _specific_error_cause({"cause_code": code}) if code else None
 
 
+_SUB2API_ERROR_DETAILS = {
+    "sub2api_timeout": ("transport", "SUB2-NET-001", "Sub2API 请求超时"),
+    "sub2api_connection_failed": ("transport", "SUB2-NET-002", "Sub2API 连接失败"),
+    "sub2api_request_failed": ("transport", "SUB2-NET-003", "Sub2API 网络请求失败"),
+    "sub2api_auth_rejected": ("auth", "SUB2-AUTH-001", "Sub2API 管理接口鉴权失败或权限不足"),
+    "sub2api_http_error": ("http", "SUB2-HTTP-001", "Sub2API 管理接口返回 HTTP 错误"),
+    "sub2api_upload_rejected": ("remote_rejected", "SUB2-REMOTE-001", "Sub2API 拒绝导入凭证"),
+    "sub2api_operation_rejected": ("remote_rejected", "SUB2-REMOTE-002", "Sub2API 拒绝执行操作"),
+    "sub2api_config_invalid": ("configuration", "SUB2-CONFIG-001", "Sub2API 目标或上传配置无效"),
+    "sub2api_backend_changed": ("configuration", "SUB2-CONFIG-002", "Sub2API 后端已变化，原目标保留"),
+    "sub2api_credential_invalid": ("credential", "SUB2-CRED-001", "本地 Codex 凭证缺失或格式无效"),
+    "sub2api_credential_missing": ("credential", "SUB2-CRED-002", "本地 Codex 凭证已不存在"),
+    "sub2api_credential_identity_missing": ("identity", "SUB2-ID-001", "Codex 凭证缺少有效身份"),
+    "sub2api_credential_identity_mismatch": ("identity", "SUB2-ID-002", "本地 Codex 凭证身份不匹配"),
+    "sub2api_account_identity_mismatch": ("identity", "SUB2-ID-003", "Sub2API 远端账号身份不匹配"),
+    "sub2api_account_ambiguous": ("identity", "SUB2-ID-004", "Sub2API 同一邮箱存在多个远端账号"),
+    "sub2api_account_missing": ("contract", "SUB2-CONTRACT-001", "Sub2API 目标账号未找到"),
+    "sub2api_account_id_invalid": ("contract", "SUB2-CONTRACT-002", "Sub2API 返回账号 ID 无效"),
+    "sub2api_import_result_invalid": ("contract", "SUB2-CONTRACT-003", "Sub2API 导入回执无法唯一确认成功账号"),
+    "sub2api_response_invalid": ("contract", "SUB2-CONTRACT-004", "Sub2API 响应格式无效"),
+    "sub2api_pagination_limit": ("contract", "SUB2-CONTRACT-005", "Sub2API 分页读取达到保护上限"),
+    "sub2api_sync_unconfirmed": ("confirmation", "SUB2-CONFIRM-001", "Sub2API 凭证更新或调度启用尚未确认"),
+    "sub2api_account_deactivated": ("local_policy", "SUB2-POLICY-001", "关联账号已确认停用，手动上传未执行"),
+    "sub2api_target_archived": ("local_policy", "SUB2-POLICY-002", "关联账号或凭证已归档"),
+    "sub2api_oauth_incomplete": ("credential", "SUB2-CRED-003", "账号尚未完成 Codex OAuth"),
+    "sub2api_credential_reauthorization_required": ("credential", "SUB2-CRED-004", "当前 Codex 凭证需要重新授权"),
+    "sub2api_credential_generation_changed": ("local_policy", "SUB2-POLICY-003", "本地凭证代际已更新，原上传回执保留"),
+    "sub2api_manual_local_writeback_failed": ("local_writeback", "SUB2-LOCAL-001", "手动上传后的本地写回未完成"),
+    "sub2api_manual_execution_failed": ("local_execution", "SUB2-LOCAL-002", "手动上传本地执行异常，具体阶段已保留"),
+    "sub2api_client_error": ("local_execution", "SUB2-LOCAL-003", "Sub2API 客户端处理异常，尚无远端根因证据"),
+    "sub2api_sync_execution_error": ("local_execution", "SUB2-LOCAL-004", "Sub2API 补传执行异常，具体阶段已保留"),
+    "sub2api_sync_failed": ("confirmation", "SUB2-CONFIRM-002", "Sub2API 同步未完成，原失败阶段保留"),
+}
+
+
+def _sub2api_error_projection(raw: str, *, error_code: str, stage: str, summary: dict) -> dict | None:
+    code = str(summary.get("error_code") or error_code or "")
+    detail = _SUB2API_ERROR_DETAILS.get(code)
+    if detail is None:
+        return None
+    category, display, message = detail
+    projection = _error_projection(
+        f"external.sub2api.{category}", "sub2api", "Sub2API", message,
+        stage=str(summary.get("stage") or stage or "upload"), error_code=code,
+        raw=raw, summary=message, display_code=display,
+    )
+    projection.update(cause_code=code, cause_display_code=display, cause_summary=message)
+    return projection
+
+
+_CONCURRENCY_ERROR_DETAILS = {
+    "concurrency_policy_invalid": ("configuration", "CFG-CONC-001", "并发策略数值或执行范围无效"),
+    "concurrency_policy_missing": ("configuration", "CFG-CONC-002", "任务类型尚未登记并发策略"),
+    "scheduler_store_unavailable": ("system", "SYS-CONC-001", "调度存储暂不可用，任务保留排队"),
+    "executor_submit_failed": ("system", "SYS-CONC-002", "执行器未接收任务，原队列已保留"),
+    "permit_owner_lost": ("system", "SYS-CONC-003", "执行许可归属已变化，旧执行停止写回并等待核验"),
+}
+_CONCURRENCY_WAIT_REASONS = {
+    "global_capacity": "等待部署全局执行空位",
+    "type_capacity": "等待本任务类型执行空位",
+    "batch_capacity": "等待当前批次执行空位",
+    "provider_capacity": "等待当前平台执行空位",
+    "account_busy": "账号正由其他任务使用",
+    "execution_active": "上一次执行仍在退出或清理",
+    "resource_capacity": "等待业务资源执行空位",
+    "remote_order_capacity": "等待远端订单名额",
+    "fairness_turn": "等待其他可运行任务轮转",
+    "not_due": "等待下次计划执行时间",
+    "concurrency_policy_migration_required": "等待显式确认并保存部署并发策略",
+}
+
+
+def _concurrency_error_projection(raw, error_code, summary, stage):
+    candidates = [str(error_code or ""), str(summary.get("error_code") or ""),
+                  str(summary.get("cause_code") or ""), raw.partition(":")[0]]
+    for name in (*_CONCURRENCY_ERROR_DETAILS, *_CONCURRENCY_WAIT_REASONS):
+        if name in candidates or re.search(rf"(?<![a-z_]){re.escape(name)}(?![a-z_])", raw.lower()):
+            if name in _CONCURRENCY_WAIT_REASONS:
+                result = _error_projection(
+                    "task.pending", "system", "并发调度", "等待执行",
+                    stage=stage, error_code=name, raw=raw,
+                    summary=_CONCURRENCY_WAIT_REASONS[name], display_code="TASK-CONC-WAIT",
+                )
+                result["is_error"] = False
+                return result
+            source, display_code, message = _CONCURRENCY_ERROR_DETAILS[name]
+            return _error_projection(name, source, "并发调度", "策略错误" if source == "configuration" else "执行协调异常",
+                               stage=stage, error_code=name, raw=raw, summary=message, display_code=display_code)
+    return None
+
+
 def classify_task_error(
     message: Any,
     *,
@@ -2128,6 +2219,9 @@ def classify_task_error(
     """具体原因优先展示；回执缺失只约束后续操作，不充当通用主错误。"""
     raw = str(message or "").strip()
     summary_data = result_summary if isinstance(result_summary, dict) else {}
+    concurrency_projection = _concurrency_error_projection(raw, error_code, summary_data, stage)
+    if concurrency_projection is not None:
+        return concurrency_projection
     reconcile_required = (
         str(task_status or "").strip().lower() == "request_unknown"
         or str(error_code or "").strip().lower() == "request_unknown"
@@ -2138,6 +2232,12 @@ def classify_task_error(
             "禁止直接重试", "远端结果待确认", "结果待核验",
         ))
     )
+    sub2api_projection = _sub2api_error_projection(raw, error_code=error_code, stage=stage, summary=summary_data)
+    if sub2api_projection is not None:
+        if reconcile_required:
+            sub2api_projection.update(reconcile_required=True, retryability="manual_only",
+                                     remote_state_impact="unknown", next_action="manual_reconcile")
+        return sub2api_projection
     recovery_projection = _password_recovery_error_projection(
         raw, stage=stage, error_code=error_code, summary=summary_data,
     )

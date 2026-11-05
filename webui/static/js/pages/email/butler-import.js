@@ -10,7 +10,7 @@ const BUTLER_IMPORT_STATE = {
 const butlerImportElement = id => document.getElementById(id);
 const butlerImportRunning = () => ['pending', 'queued', 'running', 'processing'].includes(BUTLER_IMPORT_STATE.batch?.status);
 const butlerImportSucceeded = status => ['completed', 'succeeded', 'done'].includes(status);
-const butlerImportRevision = batch => JSON.stringify([batch.updated_at, batch.status, batch.imported, batch.pending, batch.submitting, batch.unknown, batch.failed, batch.error_code]);
+const butlerImportRevision = batch => JSON.stringify([batch.updated_at, batch.status, batch.imported, batch.pending, batch.submitting, batch.unknown, batch.failed, batch.error_code, batch.blocked_by]);
 
 function butlerImportError(message = '') {
   const element = butlerImportElement('butlerImportError');
@@ -232,8 +232,10 @@ function renderButlerImportBatch() {
   const title = butlerImportElement('butlerImportStatusTitle');
   if (title) title.textContent = BUTLER_IMPORT_STATE.resumePending ? '正在恢复原批次' : labels[batch.status] || '等待确认';
   const hint = butlerImportElement('butlerImportStatusHint');
+  const waitingLabels = {global_capacity: '等待全局业务空位', type_capacity: '等待邮箱导入空位', batch_capacity: '等待当前导入批次空位', fairness_turn: '等待其他类型或批次轮转', scheduler_store_unavailable: '等待数据库恢复后继续准入', concurrency_policy_migration_required: '等待保存部署并发策略', concurrency_policy_invalid: '等待修正并发策略', concurrency_policy_missing: '等待补齐邮箱导入并发策略'};
+  const waitingReasons = (Array.isArray(batch.blocked_by) ? batch.blocked_by : []).map(code => waitingLabels[code] || `等待准入（${code}）`);
   if (hint) hint.textContent = butlerImportRunning() || BUTLER_IMPORT_STATE.resumePending
-    ? '可以关闭窗口，导入会在后台继续。右下角可随时查看进度，刷新页面也能恢复。'
+    ? `${waitingReasons.length ? `${waitingReasons.join('；')}。` : ''}可以关闭窗口，导入会在后台继续。右下角可随时查看进度，刷新页面也能恢复。`
     : batch.can_retry ? '可继续原批次处理剩余邮箱，已导入的邮箱会保留。'
       : '已导入的邮箱已加入本地库存，可以关闭窗口或新建导入。';
   const bar = butlerImportElement('butlerImportProgressBar');

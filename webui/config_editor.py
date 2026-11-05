@@ -13,6 +13,7 @@
 运行时配置 API 的事实来源。
 """
 import ast
+import logging
 import os
 import re
 import threading
@@ -199,7 +200,21 @@ def get_config() -> list[dict]:
     from config.env_loader import load_env
 
     load_env(override=True)
-    return _deployment_metadata(effective_config_metadata())
+    fields = _deployment_metadata(effective_config_metadata())
+    for field in fields:
+        if field["key"] == "ACCOUNT_BATCH_WORKERS":
+            field.update(readonly=True, reason="仅供并发策略迁移预览，不再接受旧键写入。")
+        if field["key"] == "CONCURRENCY_POLICY_REVISION":
+            field["hidden"] = True
+    return fields
+
+
+def get_concurrency_migration_preview() -> dict:
+    """读取权威配置后生成迁移建议，响应仅包含并发字段。"""
+    from config import runtime
+    from config.concurrency import migration_preview
+
+    return migration_preview(runtime.load_values(force=True))
 
 
 def _deployment_metadata(fields: list[dict]) -> list[dict]:
@@ -415,6 +430,16 @@ def update_config(updates: dict) -> dict:
                 load_env(override=True)
                 environment_expected = dict(os.environ)
                 normalized = validate_config_updates(updates)
+                from config.concurrency import POLICY_KEYS, WORKER_KEYS
+                if set(normalized).intersection(POLICY_KEYS):
+                    current_values = runtime.load_values(force=True)
+                    if current_values is not None and "CONCURRENCY_POLICY_REVISION" not in current_values:
+                        missing = [key for key in POLICY_KEYS if key not in normalized]
+                        if missing:
+                            raise ConfigValidationError({
+                                ("GLOBAL_TASK_WORKERS" if key == "CONCURRENCY_POLICY_REVISION" else key):
+                                    "首次启用请预览并一次保存完整并发策略；草稿已保留。" for key in missing
+                            }, code="concurrency_policy_migration_required")
                 if "REGISTRATION_COUNTRY" not in normalized and _REGISTRATION_COUNTRY_MIGRATION_KEYS.intersection(normalized):
                     current_country = resolve_field(CONFIG_SCHEMA["REGISTRATION_COUNTRY"], os.environ)
                     if current_country.source_key != "REGISTRATION_COUNTRY":
@@ -448,6 +473,12 @@ def update_config(updates: dict) -> dict:
             raise
 
     updated = list(normalized)
+    if set(updated).intersection(WORKER_KEYS):
+        try:
+            from core.operations.task_gateway import notify_dispatch
+            notify_dispatch()
+        except Exception:
+            logging.getLogger(__name__).exception("并发配置已保存，调度唤醒失败，等待下次轮询更新")
     return {
         "updated": updated,
         "ignored": [],

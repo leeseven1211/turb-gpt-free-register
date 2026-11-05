@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import tempfile
-import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
+from cryptography.fernet import Fernet
 
 from core import account_task_store
 from core.operations import run_log, task_gateway
@@ -13,29 +14,33 @@ from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
 
 
-class AnguangDispatchCapacityTests(unittest.TestCase):
+class AnguangDispatchCapacityTests(PostgresTestCase):
     def test_pending_polls_reserve_slots_for_initial_submissions(self):
-        continuation = {"task_type": "extract_link", "data": {
-            "provider_id": "anguang", "extract_poll_continuation": True,
-        }}
-        initial = {"task_type": "extract_link", "data": {"provider_id": "anguang"}}
-        capacity = (lambda _run: {"anguang": 10, "batch:anguang": 10}, lambda _key: 10)
-        tokens = []
-        with patch.dict(task_gateway._DISPATCH_CAPACITY_COUNTS, {}, clear=True):
+        from config.concurrency import policy_values
+        from core.operations import concurrency
+        from core.storage import runtime_config
+
+        values = policy_values({})
+        values.update(GLOBAL_TASK_WORKERS=10, EXTRACT_LINK_WORKERS=10, EXTRACT_LINK_ANGUANG_CONCURRENCY=10)
+        contexts = []
+        with patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode()}):
+            runtime_config.write_values({key: str(value) for key, value in values.items()}, activate=True, source="test")
+            tasks = [operation.create_runtime_task(task_type="extract_link", account_id=None, email="", data={
+                "provider_id": "anguang", "extract_poll_continuation": index < 3,
+            }) for index in range(4)]
             try:
-                for _ in range(2):
-                    accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
-                    self.assertTrue(accepted)
-                    tokens.append(token)
-                accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", continuation, capacity)
-                tokens.append(token)
-                self.assertFalse(accepted)
-                accepted, token = task_gateway._reserve_dispatch_capacity("extract_link", initial, capacity)
-                tokens.append(token)
-                self.assertTrue(accepted)
+                for task in tasks[:2]:
+                    admitted = task_gateway.admit_operation_run(operation.get_run(task["run"]["id"]))
+                    self.assertTrue(admitted)
+                    contexts.append(admitted.context)
+                denied = task_gateway.admit_operation_run(operation.get_run(tasks[2]["run"]["id"]))
+                self.assertIn("provider_capacity", denied.blocked_by)
+                initial = task_gateway.admit_operation_run(operation.get_run(tasks[3]["run"]["id"]))
+                self.assertTrue(initial)
+                contexts.append(initial.context)
             finally:
-                for token in tokens:
-                    task_gateway._release_dispatch_capacity(token)
+                for context in contexts:
+                    concurrency.release_execution(context)
 
 
 class AnguangDispatchStorageTests(PostgresTestCase):

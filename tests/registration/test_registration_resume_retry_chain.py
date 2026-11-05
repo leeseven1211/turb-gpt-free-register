@@ -77,7 +77,7 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
              patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
              patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
-             patch.object(svc, 'get_executor', return_value=executor):
+             patch.object(svc, '_enqueue_job', new=executor):
             single = client.post('/api/operations/9/retry')
             bulk = client.post('/api/operations/bulk', json={'action': 'retry', 'task_ids': [9]})
         self.assertEqual(single.status_code, 200)
@@ -160,14 +160,14 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
              patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
              patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
-             patch.object(svc, 'get_executor', return_value=executor):
+             patch.object(svc, '_enqueue_job', new=executor):
             result = svc.retry_job(22, registration_driver='roxy')
         self.assertTrue(result['ok'])
         self.assertEqual(result['retry_action'], 'registration_resume')
         self.assertEqual(create.call_args.args, (22,))
         self.assertEqual(create.call_args.kwargs['email'], root['email'])
         self.assertEqual(create.call_args.kwargs['account_id'], 44)
-        executor.submit.assert_called_once()
+        executor.assert_called_once()
 
     def test_terminal_job_with_active_worker_cannot_create_or_enqueue_retry(self):
         root, child, account, attempt = facts()
@@ -181,13 +181,13 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
              patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
              patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
-             patch.object(svc, 'get_executor', return_value=executor):
+             patch.object(svc, '_enqueue_job', new=executor):
             result = svc.retry_job(22, registration_driver='roxy')
         self.assertFalse(result['ok'])
         self.assertEqual(result['status'], 409)
         self.assertIn('原任务仍在收口', result['error'])
         create.assert_not_called()
-        executor.submit.assert_not_called()
+        executor.assert_not_called()
 
     def test_deactivated_terminal_worker_allows_existing_identity_retry(self):
         from core.registration import debug as registration_debug
@@ -205,7 +205,7 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
              patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
              patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
-             patch.object(svc, 'get_executor', return_value=executor):
+             patch.object(svc, '_enqueue_job', new=executor):
             svc._deactivate_job(22)
             result = svc.retry_job(22, registration_driver='roxy')
         self.assertTrue(result['ok'])
@@ -213,7 +213,7 @@ class ResumeRetryChainTests(unittest.TestCase):
         self.assertEqual(create.call_args.args, (22,))
         self.assertEqual(create.call_args.kwargs['email'], root['email'])
         self.assertEqual(create.call_args.kwargs['account_id'], 44)
-        executor.submit.assert_called_once_with(svc._run_one_job, 23, '/tmp/resume-test.log')
+        executor.assert_called_once_with(23, account_task_id=None)
 
     def test_running_job_without_local_worker_still_cannot_retry(self):
         _, child, account, _ = facts()
@@ -224,12 +224,12 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_account_for_job', return_value=account), \
              patch.object(svc, '_enrich_account_registration_state', side_effect=lambda x: x), \
              patch.object(svc.db, 'create_retry_job') as create, \
-             patch.object(svc, 'get_executor', return_value=executor):
+             patch.object(svc, '_enqueue_job', new=executor):
             result = svc.retry_job(22)
         self.assertFalse(result['ok'])
         self.assertEqual(result['status'], 409)
         create.assert_not_called()
-        executor.submit.assert_not_called()
+        executor.assert_not_called()
 
     def test_task_center_hides_rejected_actions_and_preserves_unrelated_tasks(self):
         task = {'id': 9, 'task_type': 'registration_resume', 'source_system': 'registration_chains',

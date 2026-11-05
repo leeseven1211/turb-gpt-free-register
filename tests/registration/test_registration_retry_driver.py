@@ -84,7 +84,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             }))
             stack.enter_context(patch.object(registration_service, "_read_linked_attempt_for_job", return_value=(attempt, False)))
             create_retry = stack.enter_context(patch.object(db, "create_retry_job", return_value=(child, created)))
-            stack.enter_context(patch.object(registration_service, "get_executor", return_value=executor))
+            stack.enter_context(patch.object(registration_service, "_enqueue_job", new=executor))
             stack.enter_context(patch.object(registration_service.codex_retry_service, "reserve", return_value=True))
             stack.enter_context(patch.object(registration_service.codex_retry_service, "release"))
             stack.enter_context(patch.object(registration_service.account_task_store, "create_task", return_value=77))
@@ -111,7 +111,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
             "proxy_country": "US",
         })
         self.assertEqual(source, original)
-        executor.submit.assert_called_once()
+        executor.assert_called_once()
 
     def test_open_source_resume_keeps_frozen_driver_and_password_mode(self):
         for driver in ("protocol_oss", "protocol_oss_2", "roxy_oss"):
@@ -136,7 +136,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertEqual(snapshot["registration_driver"], "roxy" if driver == "roxy_oss" else "protocol_oss_2")
                 self.assertTrue(snapshot["password_enabled"])
                 self.assertEqual(snapshot["password_mode"], "password")
-                executor.submit.assert_called_once()
+                executor.assert_called_once()
 
     def test_roxy_resume_rejects_non_resume_and_unverified_identity(self):
         for changed, action in (
@@ -160,7 +160,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["status"], 409)
                 self.assertIsNone(create_call)
-                executor.submit.assert_not_called()
+                executor.assert_not_called()
 
     def test_roxy_registration_retry_keeps_original_identity_and_new_snapshot_only(self):
         source, _account, attempt = self._facts()
@@ -181,7 +181,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertEqual(create_call.kwargs["data"]["config_snapshot"]["registration_driver"], "roxy")
         self.assertEqual(source, original)
         self.assertIs(result["job"]["debug_enabled"], True)
-        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_one_job)
+        executor.assert_called_once_with(22, account_task_id=None)
 
     def test_roxy_twofa_retry_freezes_browser_mode_without_changing_original_snapshot(self):
         source, account, attempt = self._facts()
@@ -202,7 +202,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertEqual(create_call.kwargs["email"], "pending@example.test")
         self.assertEqual(source, original)
         self.assertIs(result["job"]["debug_enabled"], True)
-        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_twofa_retry_job)
+        executor.assert_called_once_with(22, account_task_id=77)
 
     def test_twofa_retry_without_override_keeps_original_modes(self):
         source, account, attempt = self._facts()
@@ -234,7 +234,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                     self.assertTrue(result["reused"])
                 else:
                     self.assertEqual(result["status"], 409)
-                executor.submit.assert_not_called()
+                executor.assert_not_called()
 
     def test_roxy_resume_does_not_reuse_active_protocol_child(self):
         source, account, attempt = self._facts()
@@ -250,7 +250,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], 409)
         self.assertIsNotNone(create_call)
-        executor.submit.assert_not_called()
+        executor.assert_not_called()
 
     def test_roxy_resume_reuses_active_same_driver_without_resubmission(self):
         source, account, attempt = self._facts()
@@ -260,7 +260,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["reused"])
         self.assertEqual(result["job"]["id"], 22)
-        executor.submit.assert_not_called()
+        executor.assert_not_called()
 
     def test_single_job_retry_api_passes_roxy_choice(self):
         client = create_app(auth_code="test-auth").test_client()
@@ -291,13 +291,13 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         original = copy.deepcopy(source)
         submitted_jobs = []
         executor = Mock()
-        executor.submit.side_effect = lambda run, job_id, log_file: submitted_jobs.append(copy.deepcopy(db.get_job(job_id)))
+        executor.side_effect = lambda job_id, **_kwargs: submitted_jobs.append(copy.deepcopy(db.get_job(job_id)))
         result, _, executor = self._retry(source, account, attempt, debug_enabled=True, executor=executor)
         self.assertTrue(result["ok"])
         self.assertEqual(source, original)
         self.assertIs(result["job"]["debug_enabled"], True)
         self.assertTrue(result["job"]["debug_policy"]["hold_on_failure"])
-        executor.submit.assert_called_once()
+        executor.assert_called_once()
         self.assertIs(submitted_jobs[0]["debug_enabled"], True)
 
     def test_missing_debug_option_still_inherits_source_capture(self):
@@ -306,7 +306,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
         result, _, executor = self._retry(source, account, attempt)
         self.assertTrue(result["ok"])
         self.assertIs(result["job"]["debug_enabled"], True)
-        executor.submit.assert_called_once()
+        executor.assert_called_once()
 
     def test_explicit_debug_off_overrides_inherited_capture(self):
         source, account, attempt = self._facts()
@@ -333,7 +333,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertEqual(result["job"]["status"], "failed")
                 self.assertTrue(result["job"]["completed_at"])
                 self.assertEqual(source, original)
-                executor.submit.assert_not_called()
+                executor.assert_not_called()
 
     def test_debug_retry_does_not_reuse_an_active_run_without_capture(self):
         source, account, attempt = self._facts()
@@ -341,7 +341,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                  "config_snapshot": {"registration_driver": "roxy"}}
         result, _, executor = self._retry(source, account, attempt, child=child, debug_enabled=True)
         self.assertEqual(result["status"], 409)
-        executor.submit.assert_not_called()
+        executor.assert_not_called()
 
     def test_retry_debug_flag_is_strict_and_passes_to_service(self):
         client = create_app(auth_code="test-auth").test_client()
@@ -415,7 +415,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                                          driver_choice=None, debug_enabled=True)
         self.assertTrue(result["ok"], result)
         self.assertIs(result["job"]["debug_enabled"], True)
-        self.assertEqual(executor.submit.call_args.args[0], registration_service._run_twofa_retry_job)
+        executor.assert_called_once_with(22, account_task_id=77)
 
     def test_debug_request_does_not_block_native_codex_or_plan_retry(self):
         for action in ("codex", "plan_check"):
@@ -434,7 +434,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertTrue(result["ok"], result)
                 self.assertIs(result["debug_enabled"], False)
                 self.assertTrue(result["debug_warning"])
-                executor.submit.assert_not_called()
+                executor.assert_not_called()
 
     def test_proxy_country_override_changes_only_new_roxy_child(self):
         for action in ("registration", "registration_resume", "twofa"):
@@ -456,7 +456,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertEqual(create_call.kwargs["email"], source["email"])
                 self.assertEqual(source, original_source)
                 self.assertEqual(attempt, original_attempt)
-                executor.submit.assert_called_once()
+                executor.assert_called_once()
 
     def test_proxy_country_override_rejects_invalid_values_before_storage(self):
         for country in ("", "  ", "ZZ", "Japan", 1, True, [], {}):
@@ -478,7 +478,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                 self.assertFalse(result["ok"], result)
                 self.assertEqual(result["status"], 409)
                 self.assertIsNone(create_call)
-                executor.submit.assert_not_called()
+                executor.assert_not_called()
 
     def test_proxy_country_override_only_reuses_matching_active_job(self):
         for status in ("pending", "running"):
@@ -501,7 +501,7 @@ class RegistrationRetryDriverTests(unittest.TestCase):
                     else:
                         self.assertEqual(result["status"], 409)
                     self.assertEqual(active, original)
-                    executor.submit.assert_not_called()
+                    executor.assert_not_called()
 
     def test_retry_without_proxy_override_preserves_historical_snapshot(self):
         source, account, attempt = self._facts()

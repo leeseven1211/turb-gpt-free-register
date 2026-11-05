@@ -44,7 +44,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def test_merges_email_and_repairs_multiple_remote_ids_with_one_refresh(self):
         self.remote.append({**self.remote[0], "id": 8})
-        result = self.monitor.run_once()
+        result = self.monitor._run_once()
         self.refresh.assert_called_once_with("monitor.json", trigger="sub2api_monitor")
         repair = self.store.get_repair("test-backend", 42)
         self.assertEqual(repair["stage"], "refresh_wait")
@@ -55,30 +55,30 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def test_busy_and_persisted_cooldown_do_not_submit(self):
         self.active.return_value = {"id": 99, "status": "running"}
-        self.assertEqual(self.monitor.run_once()["reasons"]["account_busy"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["account_busy"], 1)
         self.active.return_value = None
         self.store.save_repair("test-backend", 42, stage="cooldown", next_attempt_at=1200)
-        self.assertEqual(self.monitor.run_once()["reasons"]["cooldown"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["cooldown"], 1)
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_restart_keeps_refresh_wait_then_syncs_new_generation_to_original_ids(self):
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.monitor = importlib.reload(self.monitor)
-        self.assertEqual(self.monitor.run_once()["reasons"]["repair_in_progress"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["repair_in_progress"], 1)
         self.refresh.assert_called_once()
         self.content["access_token"] = "renewed-access"
         self.remote = []
-        result = self.monitor.run_once()
+        result = self.monitor._run_once()
         self.sync.assert_called_once_with("monitor.json", remote_account_ids=[7], trigger="sub2api_monitor", expected_backend="test-backend")
         self.assertEqual(result["sync_queued"], 1)
         self.assertEqual(self.store.get_repair("test-backend", 42)["stage"], "sync_wait")
 
     def test_failed_sync_is_retried_before_scan_and_never_relogs(self):
         self.remote[0]["credentials"]["access_token"] = "older-access"
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.sync.return_value = {"accepted": True, "pending": True, "items": [{"status": "failed"}]}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.assertEqual(self.drain.call_count, 2)
         self.assertEqual(self.store.get_repair("test-backend", 42)["stage"], "sync_wait")
         self.refresh.assert_not_called()
@@ -86,32 +86,32 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def test_deactivated_and_archived_accounts_never_refresh(self):
         self.account["account_status"] = "deactivated"
-        self.assertEqual(self.monitor.run_once()["reasons"]["account_deactivated"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["account_deactivated"], 1)
         self.account.pop("account_status")
         self.account["archived"] = True
-        self.assertEqual(self.monitor.run_once()["reasons"]["account_archived"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["account_archived"], 1)
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_explicit_refresh_reauth_reuses_existing_oauth_entry(self):
         self.refresh.return_value = {"accepted": False, "error_code": "reauth_required"}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.oauth.assert_called_once_with(42, trigger="sub2api_monitor", remote_account_ids=[7], backend_identity="test-backend")
         self.assertEqual(self.store.get_repair("test-backend", 42)["stage"], "reauth_wait")
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.oauth.assert_called_once()
 
     def test_completed_refresh_reauth_failure_advances_once_after_restart(self):
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.oauth.assert_called_once()
         self.assertEqual(self.store.get_repair("test-backend", 42)["run_id"], 21)
 
     def test_missing_automatic_login_material_has_retryable_reason(self):
         self.account["extra_json"] = {}
         self.refresh.return_value = {"accepted": False, "error_code": "reauth_required"}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.oauth.assert_not_called()
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "automatic_login_material_missing")
         self.assertGreater(self.store.get_repair("test-backend", 42)["next_attempt_at"], 1000)
@@ -119,29 +119,29 @@ class Sub2ApiMonitorTests(PostgresTestCase):
     def test_unrecognized_error_only_syncs_once_without_login(self):
         self.remote[0]["error_message"] = "unexpected upstream state"
         self.sync.return_value = {"accepted": True, "pending": False, "items": [{"status": "success"}]}
-        self.assertEqual(self.monitor.run_once()["reasons"]["unrecognized_remote_error"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["unrecognized_remote_error"], 1)
         with patch("core.integrations.sub2api.monitor._now", return_value=1400):
-            self.monitor.run_once()
+            self.monitor._run_once()
         self.sync.assert_called_once()
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_remote_rate_limit_is_cooldown_and_refresh_unknown_is_not_replayed(self):
         self.remote[0]["error_message"] = "HTTP 429 too many requests"
-        self.assertEqual(self.monitor.run_once()["reasons"]["remote_transient_error"], 1)
+        self.assertEqual(self.monitor._run_once()["reasons"]["remote_transient_error"], 1)
         self.refresh.assert_not_called()
         self.remote[0]["error_message"] = "401 unauthorized"
         with patch("core.integrations.sub2api.monitor._now", return_value=1400):
             self.refresh.return_value = {"accepted": False, "error_code": "needs_reconciliation"}
-            self.monitor.run_once()
+            self.monitor._run_once()
         with patch("core.integrations.sub2api.monitor._now", return_value=1800):
-            self.monitor.run_once()
+            self.monitor._run_once()
         self.refresh.assert_called_once()
         self.oauth.assert_not_called()
 
     def test_disabled_monitor_still_drains_failed_uploads_and_status_is_safe(self):
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_ENABLED", False):
-            result = self.monitor.run_once()
+            result = self.monitor._run_once()
         self.drain.assert_called_once()
         self.fetch.assert_not_called()
         self.assertFalse(result["enabled"])
@@ -149,7 +149,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def test_missing_remote_id_never_uses_a_general_upload(self):
         self.remote[0].pop("id")
-        result = self.monitor.run_once()
+        result = self.monitor._run_once()
         self.assertEqual(result["reasons"].get("remote_account_id_missing"), 1)
         self.sync.assert_not_called()
         self.refresh.assert_not_called()
@@ -157,7 +157,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
     def test_known_enabled_mfa_without_saved_secret_cannot_start_automatic_oauth(self):
         self.account["twofa_status"] = "success"
         self.refresh.return_value = {"accepted": False, "error_code": "reauth_required"}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.oauth.assert_not_called()
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "automatic_login_material_missing")
 
@@ -169,18 +169,18 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.patch("db.get_account_by_email", side_effect=lambda email: self.account if email == self.account["email"] else second)
         self.store.save_repair("test-backend", 42, stage="cooldown", next_attempt_at=1500)
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_MAX_PER_CYCLE", 1):
-            self.monitor.run_once()
+            self.monitor._run_once()
         self.refresh.assert_called_once()
 
     def test_comma_separated_group_filter_is_parsed_before_remote_scan(self):
         with patch.object(self.monitor._cfg, "SUB2API_UPLOAD_GROUP_IDS", "2,5"):
-            self.monitor.run_once()
+            self.monitor._run_once()
         self.fetch.assert_called_once_with(group_ids=[2, 5], expected_backend="test-backend")
 
     def test_backend_change_between_identity_and_scan_never_binds_foreign_ids(self):
         self.fetch.side_effect = self.monitor.client.Sub2ApiSyncError(
             "configuration", "sub2api_backend_changed", "模拟扫描前切换后端")
-        result = self.monitor.run_once()
+        result = self.monitor._run_once()
         self.fetch.assert_called_once_with(group_ids=[3], expected_backend="test-backend")
         self.assertEqual(1, result["reasons"].get("remote_scan_failed"))
         self.assertEqual([], self.store.list_repairs("test-backend", active_only=False))
@@ -191,34 +191,34 @@ class Sub2ApiMonitorTests(PostgresTestCase):
     def test_new_remote_target_receives_existing_generation_without_new_login(self):
         self.remote[0]["error_message"] = "unexpected upstream state"
         self.sync.return_value = {"accepted": True, "pending": False, "items": [{"status": "success"}]}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.remote.append({**self.remote[0], "id": 8})
         with patch("core.integrations.sub2api.monitor._now", return_value=1400):
-            self.monitor.run_once()
+            self.monitor._run_once()
         self.assertEqual(self.sync.call_count, 2)
         self.assertEqual(self.sync.call_args.kwargs["remote_account_ids"], [7, 8])
         self.oauth.assert_not_called()
 
     def test_refresh_unknown_survives_restart_without_new_refresh_or_oauth(self):
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.run.return_value = {"id": 11, "status": "request_unknown", "result_summary": {"error_code": "request_unknown", "error": "token endpoint HTTP 503"}}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.monitor = importlib.reload(self.monitor)
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "needs_reconciliation")
         self.refresh.assert_called_once()
         self.oauth.assert_not_called()
 
     def test_cancelled_oauth_sync_receipt_precedes_changed_credential_generation(self):
         self.refresh.return_value = {"accepted": False, "error_code": "reauth_required"}
-        self.monitor.run_once(force=True)
+        self.monitor._run_once(force=True)
         self.content["access_token"] = "reauthorized-but-sync-stopped"
         self.run.return_value = {"id": 21, "status": "success", "result_summary": {
             "sub2api_sync": {"status": "cancelled", "error_code": "sub2api_sync_cancelled"},
         }}
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.monitor = importlib.reload(self.monitor)
-        self.monitor.run_once()
+        self.monitor._run_once()
         final = self.store.get_repair("test-backend", 42)
         self.assertEqual("waiting_manual", final["stage"])
         self.assertEqual("sub2api_sync_cancelled", final["last_code"])
@@ -260,7 +260,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
             email=self.email, trigger="sub2api_monitor", dispatch=False)
 
     def test_manual_refresh_chain_finishes_multiple_targets_without_enabling_new_scans(self):
-        self.monitor.run_once(force=True)
+        self.monitor._run_once(force=True)
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.assertTrue(repair.get("manual_requested"))
         self.assertTrue(self.monitor._periodic_enabled())
@@ -268,7 +268,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         codex.save_codex_credential_record(self.filename, self.content)
         operation.finish_run(repair["run_id"], status="success")
         self.monitor = importlib.reload(self.monitor)
-        continued = self.monitor.run_once()
+        continued = self.monitor._run_once()
         self.assertTrue(self.store.list_jobs(filename=self.filename), continued)
         with patch.object(self.monitor.jobs.client, "update_and_enable_configured_account", side_effect=lambda auth, remote_id, **kw: {
             "uploaded": True, "enabled": True, "sub2api_account_id": remote_id,
@@ -277,12 +277,12 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
                 for job in self.store.list_jobs(filename=self.filename):
                     if job["status"] == "queued":
                         task_gateway._execute_operation_handler("sub2api_sync", job["run_id"])
-                self.monitor.run_once()
+                self.monitor._run_once()
         self.assertEqual({71, 72}, {call.args[1] for call in update.call_args_list})
         self.assertEqual(["success", "success"], [row["status"] for row in self.store.list_jobs(filename=self.filename)])
         self.assertFalse(self.store.get_repair("manual-backend", self.account_id).get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.scan.assert_called_once()
         self.refresh.assert_called_once()
         self.oauth.assert_not_called()
@@ -291,21 +291,21 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.store.save_repair("manual-backend", self.account_id, stage="refresh_wait", run_id=123,
             remote_account_ids=[71], source_generation="old-generation")
         self.assertFalse(self.monitor._periodic_enabled())
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.scan.assert_not_called()
         self.refresh.assert_not_called()
         self.assertEqual([], self.store.list_jobs(filename=self.filename))
 
     def test_manual_chain_stops_at_unknown_refresh_result_without_new_scan(self):
-        self.monitor.run_once(force=True)
+        self.monitor._run_once(force=True)
         repair = self.store.get_repair("manual-backend", self.account_id)
         operation.finish_run(repair["run_id"], status="attention_required", result_summary={"error_code": "request_unknown"})
-        self.monitor.run_once()
+        self.monitor._run_once()
         final = self.store.get_repair("manual-backend", self.account_id)
         self.assertEqual("waiting_manual", final["stage"])
         self.assertFalse(final.get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.scan.assert_called_once()
         self.refresh.assert_called_once()
         self.oauth.assert_not_called()
@@ -316,30 +316,30 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.oauth.side_effect = lambda account_id, **kwargs: task_gateway.submit_durable_operation(
             task_type="codex_retry", account_id=account_id, email=self.email, dispatch=False)
         with patch.object(self.monitor, "_automatic_login_ready", return_value=True):
-            self.monitor.run_once(force=True)
+            self.monitor._run_once(force=True)
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.assertEqual("reauth_wait", repair["stage"])
         self.assertTrue(repair["manual_requested"])
         self.content["access_token"] = "reauthorized-access"
         codex.save_codex_credential_record(self.filename, self.content)
         operation.finish_run(repair["run_id"], status="success")
-        self.monitor.run_once()
+        self.monitor._run_once()
         self.assertEqual({71, 72}, {job["remote_account_id"] for job in self.store.list_jobs(filename=self.filename)})
         self.oauth.assert_called_once()
         self.scan.assert_called_once()
 
     def test_manual_sync_failure_stops_continuation_without_enabling_retries(self):
-        self.monitor.run_once(force=True)
+        self.monitor._run_once(force=True)
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.content["access_token"] = "refreshed-access"
         codex.save_codex_credential_record(self.filename, self.content)
         operation.finish_run(repair["run_id"], status="success")
-        self.monitor.run_once()
+        self.monitor._run_once()
         job = next(row for row in self.store.list_jobs(filename=self.filename) if row["status"] == "queued")
         with patch.object(self.monitor.jobs.client, "update_and_enable_configured_account", side_effect=
                           self.monitor.jobs.client.Sub2ApiSyncError("upload", "sub2api_timeout", "模拟超时")):
             task_gateway._execute_operation_handler("sub2api_sync", job["run_id"])
-        self.monitor.run_once()
+        self.monitor._run_once()
         final = self.store.get_repair("manual-backend", self.account_id)
         self.assertFalse(final["manual_requested"])
         self.assertEqual("waiting_manual", final["stage"])

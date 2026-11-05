@@ -7,10 +7,7 @@ Web、注册恢复、批量操作和 CLI 都只创建 operation task/run；执�
 from __future__ import annotations
 
 import logging
-import os
 import threading
-import uuid
-from concurrent.futures import Future
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Iterable
@@ -415,38 +412,19 @@ def _forget_dispatched(run_id: int) -> None:
 
 
 def _dispatch(run_id: int) -> bool:
-    """Submit one durable run once per process; DB claim remains authoritative."""
-    run_id = int(run_id)
-    if not task_gateway.reserve_dispatch(run_id):
+    """任务已持久入队；仅唤醒统一调度，禁止直接提交绕过准入。"""
+    if int(run_id) <= 0:
         return False
-    with _DISPATCH_LOCK:
-        if run_id in _DISPATCHED_RUNS:
-            task_gateway.release_dispatch(run_id)
-            return False
-        _DISPATCHED_RUNS.add(run_id)
-    try:
-        future = _EXECUTOR.submit(_execute_run, run_id)
-    except Exception:
-        _forget_dispatched(run_id)
-        raise
-    # Real Futures release the process-local de-duplication marker when the
-    # work ends.  A mocked/compatible submit result is not allowed to poison a
-    # later test or caller forever.
-    if isinstance(future, Future):
-        future.add_done_callback(lambda _completed: _forget_dispatched(run_id))
-    else:
-        _forget_dispatched(run_id)
+    start_dispatcher()
+    task_gateway.notify_dispatch()
     return True
 
 
 def _dispatch_bulk(run_ids: list[int], workers: int | None = None) -> None:
-    """Submit every run to the common account-operation pool.
-
-    ``workers`` remains accepted for compatibility with older callers, but
-    ACCOUNT_BATCH_WORKERS is authoritative.
-    """
-    for run_id in run_ids:
-        _dispatch(int(run_id))
+    """整批保留数据库队列，不向线程池压入未获许可的任务。"""
+    if run_ids:
+        start_dispatcher()
+        task_gateway.notify_dispatch()
 
 
 def _dispatch_queued_once(*, scan_limit: int | None = None) -> int:
@@ -825,10 +803,30 @@ def resume_queued(*, limit: int | None = None) -> int:
 
 
 def _execute_run(run_id: int) -> dict:
-    execution_id = uuid.uuid4().hex
-    run = operation_task_store.claim_run(run_id, execution_id=execution_id, worker_pid=os.getpid())
-    if not run:
-        return {"status": "not_claimed", "run_id": run_id}
+    from core.operations import concurrency
+
+    execution = concurrency.current_execution()
+    if execution is None:
+        run = operation_task_store.get_run(int(run_id))
+        if not run:
+            return {"status": "not_claimed", "run_id": run_id}
+        admission = task_gateway.admit_operation_run(run)
+        if not admission.admitted:
+            return {"status": "queued", "run_id": run_id, "blocked_by": list(admission.blocked_by)}
+        return task_gateway.execute_admitted(admission.context, lambda: _execute_run(run_id))
+    if int(execution.claimed_run.get("id") or 0) != int(run_id) or not concurrency.validate_execution(execution):
+        return {"status": "fenced", "run_id": run_id, "reason": "permit_owner_lost"}
+    if execution.claimed_run.get("_deactivated_before_execution"):
+        operation_task_store.finish_run(run_id, status="deactivated", message="账号已确认停用，队列任务未执行",
+                                        execution_id=execution.execution_id,
+                                        result_summary={"status": "deactivated", "reason": "account_deactivated_before_execution"})
+        return {"status": "deactivated", "run_id": run_id}
+    return _execute_claimed_run(run_id, execution)
+
+
+def _execute_claimed_run(run_id: int, execution) -> dict:
+    execution_id = execution.execution_id
+    run = execution.claimed_run
     current = operation_task_store.get_run(run_id) or run
     email = str(current.get("email_snapshot") or "")
     account_id = int(current.get("account_id") or 0)
@@ -1379,6 +1377,12 @@ def _execute_run(run_id: int) -> dict:
         _finish_fenced(final_status, error=message, summary=final_summary)
         return {"status": final_status, "ok": False, "message": message, "run_id": run_id}
     finally:
+        try:
+            from core.operations.concurrency import set_execution_state
+
+            set_execution_state(execution, "cleaning")
+        except Exception:
+            logger.exception("Codex 清理状态暂未同步，许可继续保留：run_id=%s", run_id)
         if file_handler is not None:
             try:
                 root_logger.removeHandler(file_handler)

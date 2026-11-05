@@ -10,6 +10,163 @@
   overflow: visible;
 }
 
+#tab-config .config-concurrency-toolbar-v2,
+#tab-config .config-concurrency-row-state-v2 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+#tab-config .config-concurrency-toolbar-v2 {
+  justify-content: space-between;
+  padding: 12px 20px 4px;
+}
+
+#tab-config .config-concurrency-summary-v2,
+#tab-config .config-concurrency-migration-v2,
+#tab-config .config-concurrency-errors-v2,
+#tab-config .config-concurrency-details-v2 {
+  margin: 12px 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--ui-color-border, #d9e2ec);
+  border-radius: 10px;
+  background: var(--ui-color-surface-subtle, #f8fafc);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+#tab-config .config-concurrency-summary-v2 {
+  font-variant-numeric: tabular-nums;
+}
+
+#tab-config .config-concurrency-migration-v2 {
+  border-color: var(--amber, #b7791f);
+}
+
+#tab-config .config-concurrency-errors-v2 {
+  border-color: var(--red, #b42318);
+  color: var(--red, #b42318);
+}
+
+#tab-config .config-concurrency-errors-v2 ul {
+  padding-left: 20px;
+  margin: 6px 0 0;
+}
+
+#tab-config .config-concurrency-errors-v2 button,
+#tab-config .config-concurrency-link-v2 {
+  border: 0;
+  padding: 6px 2px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+#tab-config .config-concurrency-row-v2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(92px, 120px) minmax(160px, .65fr);
+  align-items: start;
+  gap: 12px 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--ui-color-border, #d9e2ec);
+}
+
+#tab-config .config-concurrency-row-v2--global {
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 180px);
+  margin: 12px 20px;
+  padding: 12px 0;
+  border-top: 0;
+}
+
+#tab-config .config-concurrency-copy-v2,
+#tab-config .config-concurrency-row-v2 .config-setting-control-v2 {
+  min-width: 0;
+}
+
+#tab-config .config-concurrency-copy-v2 label {
+  font-weight: 600;
+}
+
+#tab-config .config-concurrency-copy-v2 .hint {
+  margin: 5px 0 0;
+  line-height: 1.55;
+}
+
+#tab-config .config-concurrency-row-state-v2 {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+#tab-config .config-concurrency-row-state-v2 details {
+  width: 100%;
+}
+
+#tab-config .config-concurrency-row-state-v2 summary,
+#tab-config .config-concurrency-details-v2 > summary {
+  cursor: pointer;
+  min-height: 28px;
+}
+
+#tab-config .config-concurrency-row-state-v2 .btn,
+#tab-config .config-concurrency-toolbar-v2 .btn,
+#tab-config .config-concurrency-migration-v2 .btn,
+#tab-config .config-concurrency-details-v2 .btn {
+  min-height: 36px;
+}
+
+#tab-config .config-concurrency-row-v2 [aria-invalid="true"] {
+  border-color: var(--red, #b42318);
+}
+
+#tab-config .config-concurrency-row-v2 :focus-visible,
+#tab-config .config-concurrency-errors-v2:focus,
+#tab-config .config-concurrency-errors-v2 button:focus-visible {
+  outline: 2px solid var(--ui-color-primary, #2563eb);
+  outline-offset: 3px;
+}
+
+#tab-config .config-concurrency-status-error-v2 {
+  margin: 10px 20px;
+  color: var(--red, #b42318);
+}
+
+#tab-config [data-config-section="并发控制"] [hidden] {
+  display: none !important;
+}
+
+@media (max-width: 900px) {
+  #tab-config .config-concurrency-row-v2 {
+    grid-template-columns: minmax(0, 1fr) minmax(92px, 120px);
+  }
+
+  #tab-config .config-concurrency-row-state-v2 {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 480px) {
+  #tab-config .config-concurrency-row-v2,
+  #tab-config .config-concurrency-row-v2--global {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #tab-config .config-concurrency-row-v2 input {
+    font-size: 16px;
+  }
+
+  #tab-config .config-concurrency-row-state-v2 .btn,
+  #tab-config .config-concurrency-toolbar-v2 .btn,
+  #tab-config .config-concurrency-migration-v2 .btn,
+  #tab-config .config-concurrency-details-v2 .btn {
+    min-height: 44px;
+  }
+}
+
 #tab-config .config-section-v2-body {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;

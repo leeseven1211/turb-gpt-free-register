@@ -10,17 +10,19 @@ from core.extract_link import service as extract_link_service
 
 
 class ExtractConcurrencyLimitTests(unittest.TestCase):
-    def test_extract_pool_capacity_tracks_platform_limits_not_account_workers(self):
+    def test_extract_carrier_reads_global_limit_without_hidden_account_budget(self):
         from core.operations.executor import configured_extract_workers
 
         with (
             patch("config.codex.ACCOUNT_BATCH_WORKERS", 1),
+            patch("config.concurrency.GLOBAL_TASK_WORKERS", 7),
+            patch("core.storage.postgres.enabled", return_value=False),
             patch.object(extract_link_service, "_provider_dispatch_capacity_limit",
                          side_effect=lambda provider: {"legacy": 4, "lumen_flow": 7, "huanguang": 11, "anguang": 3}[provider]),
         ):
-            self.assertEqual(25, configured_extract_workers())
+            self.assertEqual(7, configured_extract_workers())
 
-    def test_dispatch_pools_do_not_block_each_other(self):
+    def test_separate_carriers_still_call_shared_admission(self):
         from core.operations import task_gateway
 
         class Pool:
@@ -57,8 +59,11 @@ class ExtractConcurrencyLimitTests(unittest.TestCase):
                     patch.dict(task_gateway._DISPATCH_HANDLERS, handlers, clear=True),
                     patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True),
                     patch.object(task_gateway, "_RUN_DISPATCHED", set()),
+                    patch("core.operations.concurrency.order_dispatch_candidates", side_effect=lambda rows: rows),
+                    patch.object(task_gateway, "admit_operation_run", side_effect=lambda run, *_args: SimpleNamespace(
+                        admitted=True, context=SimpleNamespace(claimed_run=run))),
                 ):
-                    self.assertEqual(len(expected), task_gateway.dispatch_registered_once(limit=1))
+                    self.assertEqual(len(expected), task_gateway.dispatch_registered_once(limit=10))
                     self.assertEqual(set(expected), set(account_pool.submitted + extract_pool.submitted))
 
     def test_batch_default_accepts_fifty_and_clamps_larger_values(self):

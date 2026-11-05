@@ -5,9 +5,107 @@ let accountTaskMetadataQuery = '';
 let accountTaskListSignature = '';
 let accountTaskRecentBatchCount = 0;
 const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
-Object.assign(ACCOUNT_TASK_TYPE_LABELS, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次'});
+Object.assign(ACCOUNT_TASK_TYPE_LABELS, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次',
+  sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描'});
 const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
 const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;
+const OPERATION_RECEIPTS_V2 = {items: new Map(), timer: null, loading: false, cursor: 0, observer: null, error: ''};
+const OPERATION_RECEIPT_TERMINAL_V2 = new Set(['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'attention_required', 'deactivated', 'unsupported']);
+
+function operationReceiptsVisibleV2() {
+  const tab = document.getElementById('tab-accounts');
+  return !!tab && !tab.classList.contains('hidden') && tab.dataset.moduleView === 'tasks' && !document.hidden;
+}
+
+function operationReceiptStateLabelV2(status) {
+  return ({queued: '排队', running: '执行中', stopping: '停止清理中', cancelling: '停止清理中',
+    success: '成功', partial_success: '部分成功', failed: '失败', cancelled: '已取消', stopped: '已停止',
+    interrupted: '已中断', attention_required: '结果待确认', deactivated: '已停用', unsupported: '不支持'})[status] || '等待状态更新';
+}
+
+function renderOperationReceiptsV2() {
+  const panel = document.getElementById('operationReceiptsV2');
+  if (!panel) return;
+  const state = OPERATION_RECEIPTS_V2;
+  const items = [...state.items.values()];
+  panel.hidden = !items.length;
+  if (!items.length) return;
+  const done = items.filter(item => OPERATION_RECEIPT_TERMINAL_V2.has(item.status));
+  const success = done.filter(item => item.status === 'success').length;
+  const failed = done.length - success;
+  panel.innerHTML = `<div class="config-tool-panel-v2"><strong>本次提交的任务回执</strong>
+    <p role="status" aria-live="polite">共 ${items.length} 项 · 等待/执行 ${items.length - done.length} · 成功 ${success} · 失败或待处理 ${failed}${state.error ? `；${esc(state.error)}` : ''}</p>
+    <details${done.length === items.length ? ' open' : ''}><summary>查看任务与最终结果</summary>
+      ${items.map(item => `<p><button type="button" class="btn" data-operation-receipt-task="${item.task_id}" data-operation-receipt-run="${item.run_id || ''}">${esc(item.label)} #${item.task_id} · ${operationReceiptStateLabelV2(item.status)}</button>${item.message ? ` <span>${esc(item.message)}</span>` : ''}</p>`).join('')}
+    </details><button type="button" class="btn" data-operation-receipt-refresh>刷新回执</button></div>`;
+}
+
+function scheduleOperationReceiptsV2() {
+  const state = OPERATION_RECEIPTS_V2;
+  if (state.timer !== null) clearTimeout(state.timer);
+  state.timer = null;
+  if (!operationReceiptsVisibleV2() || state.loading || ![...state.items.values()].some(item => !OPERATION_RECEIPT_TERMINAL_V2.has(item.status))) return;
+  state.timer = setTimeout(() => { state.timer = null; refreshOperationReceiptsV2(); }, 2000);
+}
+
+async function refreshOperationReceiptsV2() {
+  const state = OPERATION_RECEIPTS_V2;
+  if (state.loading || !operationReceiptsVisibleV2()) return;
+  const pending = [...state.items.values()].filter(item => !OPERATION_RECEIPT_TERMINAL_V2.has(item.status));
+  if (!pending.length) { renderOperationReceiptsV2(); return; }
+  const start = state.cursor % pending.length;
+  const selected = [...pending.slice(start), ...pending.slice(0, start)].slice(0, 20);
+  state.cursor = start + selected.length;
+  state.loading = true;
+  state.error = '';
+  try {
+    const results = await Promise.allSettled(selected.map(item => api(`/api/operations/${item.task_id}?include_events=0`)));
+    results.forEach((result, index) => {
+      const item = selected[index];
+      if (result.status !== 'fulfilled' || result.value?.ok === false) {
+        state.error = '部分回执暂未读到，任务仍保留，请稍后刷新';
+        return;
+      }
+      const task = result.value.task || {};
+      const run = (task.runs || []).find(run => Number(run.id) === Number(item.run_id)) || task;
+      item.status = run.status || task.status || 'queued';
+      const summary = run.result_summary || task.result_summary || {};
+      item.message = run.error_message || task.error_message || (OPERATION_RECEIPT_TERMINAL_V2.has(item.status) ? summary.message || (item.status === 'success' ? '已确认完成' : '可打开任务查看分类原因与日志') : '');
+    });
+  } finally {
+    state.loading = false;
+    renderOperationReceiptsV2();
+    scheduleOperationReceiptsV2();
+  }
+}
+
+function trackAcceptedOperationsV2(references, label = '任务') {
+  const state = OPERATION_RECEIPTS_V2;
+  for (const item of references || []) {
+    if (!item?.accepted || !Number(item.task_id)) continue;
+    const key = `${item.task_id}:${item.run_id || ''}`;
+    state.items.set(key, {task_id: Number(item.task_id), run_id: Number(item.run_id) || null,
+      label, status: item.status || 'queued', message: ''});
+  }
+  const tab = document.getElementById('tab-accounts');
+  if (tab && !state.observer) {
+    const sync = () => { renderOperationReceiptsV2(); if (operationReceiptsVisibleV2()) refreshOperationReceiptsV2(); else scheduleOperationReceiptsV2(); };
+    state.observer = new MutationObserver(sync);
+    state.observer.observe(tab, {attributes: true, attributeFilter: ['class', 'data-module-view']});
+    document.addEventListener('visibilitychange', sync);
+    document.getElementById('operationReceiptsV2')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-operation-receipt-task], [data-operation-receipt-refresh]');
+      if (!button) return;
+      if (button.dataset.operationReceiptTask) openAccountTaskLog(Number(button.dataset.operationReceiptTask), Number(button.dataset.operationReceiptRun) || null);
+      else refreshOperationReceiptsV2();
+    });
+  }
+  const filter = document.getElementById('accountTaskTypeFilterV2');
+  if (filter) filter.value = '';
+  activateTab('tasks');
+  renderOperationReceiptsV2();
+  refreshOperationReceiptsV2();
+}
 function formatTaskDuration(ms) {
   if (ms == null || ms === '') return '-';
   const value = Number(ms);
@@ -29,9 +127,33 @@ function accountTaskErrorDisplayTitle(info, raw = '') {
   return cause && !String(title).includes(cause)
     ? `${title} · ${info.cause_display_code ? `${info.cause_display_code} · ` : ''}${cause}` : title;
 }
+function accountTaskAdmissionReasons(task) {
+  if (Array.isArray(task?.admission_wait_reasons) && task.admission_wait_reasons.length) return task.admission_wait_reasons;
+  return task?.admission_wait_reason ? [{code: task.admission_wait_reason}] : [];
+}
+function accountTaskAdmissionReasonText(reason) {
+  const code = typeof reason === 'string' ? reason : reason?.code;
+  const labels = {
+    global_capacity: '等待全局空位', type_capacity: '等待本类空位',
+    batch_capacity: '等待当前批次空位', provider_capacity: '等待平台空位',
+    account_busy: '账号正由其他任务使用', remote_order_capacity: '等待远端订单名额',
+    not_due: '等待下次平台查询', execution_active: '上一执行仍在退出或清理',
+    fairness_turn: '等待公平调度轮次', concurrency_policy_migration_required: '等待确认并发迁移策略',
+    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行所有者待核验',
+  };
+  const counts = reason?.occupied != null && reason?.limit != null ? `（${reason.occupied}/${reason.limit}）` : '';
+  return labels[code] ? labels[code] + counts : `等待原因待核验（${code || '缺少原因代码'}）`;
+}
+function accountTaskAdmissionWaitMarkup(task) {
+  const reasons = accountTaskAdmissionReasons(task);
+  if (task?.status !== 'queued' || !reasons.length) return '';
+  if (reasons.length === 1) return `<div class="sub-cell">${esc(accountTaskAdmissionReasonText(reasons[0]))}</div>`;
+  return `<details class="sub-cell"><summary>${esc(accountTaskAdmissionReasonText(reasons[0]))}</summary><div>${reasons.map(reason => esc(accountTaskAdmissionReasonText(reason))).join('<br>')}</div></details>`;
+}
 function accountTaskResultText(task, compact = false) {
   const status = String(task.status || '');
-  if (status === 'queued') return '等待执行';
+  if (status === 'queued') return accountTaskAdmissionReasons(task).length
+    ? accountTaskAdmissionReasonText(accountTaskAdmissionReasons(task)[0]) : '等待执行';
   if (status === 'running') return '执行中';
   const result = task.result_summary || {};
   if (task.task_type === 'extract_link') {
@@ -109,6 +231,8 @@ function accountTaskResultText(task, compact = false) {
     if (!result.ok) return 'OAuth Token 刷新失败';
     return result.sub2_sync === 'failed' ? 'Token 已刷新 · sub2 同步失败' : 'OAuth Token 已刷新';
   }
+  if (task.task_type === 'sub2api_manual_upload') return result.ok ? '手动上传 Sub2API 已完成' : result.error_code || result.message || '手动上传失败，请查看任务日志';
+  if (task.task_type === 'sub2api_scan') return result.ok ? 'Sub2API 异常扫描已完成' : result.error_code || result.message || '扫描未完成，请查看任务日志';
   return Object.keys(result).length ? JSON.stringify(result) : '-';
 }
 function normalizeAccountTaskStage(stage) {
@@ -504,7 +628,7 @@ function renderAccountTasks() {
       <td>#${esc(task.id)}</td>
       <td title="${esc(task.task_type || '')}">${esc(facetLabel('task_type', task.task_type))}</td>
       <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
-      <td title="${esc(task.status || '')}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : ''}</td>
+      <td title="${esc(task.status || '')}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : accountTaskAdmissionWaitMarkup(task)}</td>
       <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
       <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
@@ -898,7 +1022,10 @@ async function pollAccountTaskLog() {
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
     renderAccountTaskSelectedRunError(selectedRun.id ? selectedRun : task);
-    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}`}`;
+    const waitReasons = accountTaskAdmissionReasons(selectedRun.id ? selectedRun : task);
+    const waitText = (selectedRun.status || task.status) === 'queued' && waitReasons.length
+      ? ` · ${waitReasons.map(accountTaskAdmissionReasonText).join('；')}` : '';
+    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}${waitText}`}`;
     await pollAccountTaskProgress();
     if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
@@ -1115,7 +1242,14 @@ async function bulkAccountTasks(action) {
   }
 }
 function updateAccountTaskFilters(facets = {}) {
-  syncFacetSelect('accountTaskTypeFilterV2', facets.task_type, {
+  const selectedType = document.getElementById('accountTaskTypeFilterV2')?.value || '';
+  const selectedTypes = selectedType.split(',').filter(Boolean);
+  const types = [...(facets.task_type || [])];
+  if (selectedTypes.length > 1) {
+    types.push({value: selectedType, label: '并发分类中的全部任务类型',
+      count: Math.max(1, types.filter(item => selectedTypes.includes(item.value)).reduce((sum, item) => sum + Number(item.count || 0), 0))});
+  }
+  syncFacetSelect('accountTaskTypeFilterV2', types, {
     group: 'task_type',
     values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'email_change', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'sub2api_sync', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link', 'account_inspection', 'account_inspection_batch'],
   });

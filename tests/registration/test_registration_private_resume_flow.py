@@ -60,7 +60,7 @@ class PrivatePasswordResumeFlowTests(PostgresTestCase):
             self.assertTrue(listing["items"][0].get("retryable"), listing["items"][0].get("retry_reason"))
             progress_row = next(row for row in listing["progress_rows"] if row["id"] == source_id)
             self.assertTrue(progress_row.get("retryable"))
-            with patch.object(service, "get_executor", return_value=Mock()), \
+            with patch.object(service, "_enqueue_job"), \
                  patch.object(service, "is_job_worker_active", return_value=False):
                 result = service.retry_job(source_id)
             self.assertTrue(result["ok"], result)

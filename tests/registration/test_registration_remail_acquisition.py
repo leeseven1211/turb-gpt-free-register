@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """注册根任务到重跑 Run 的 Remail 领取身份契约。"""
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,7 +15,8 @@ class RegistrationRemailAcquisitionTests(unittest.TestCase):
         import main
 
         lease = SimpleNamespace(proxy_url="http://proxy.invalid", lease_id="lease-test")
-        with patch("core.proxy.provider.acquire_registration_proxy", return_value=lease), \
+        with patch("core.registration.admission.cli_execution", return_value=nullcontext()), \
+             patch("core.proxy.provider.acquire_registration_proxy", return_value=lease), \
              patch("core.proxy.provider.release_proxy"), \
              patch.object(main, "prepare_registration_inputs", return_value=(
                  "one@example.test", "Test User", "1990-01-01",

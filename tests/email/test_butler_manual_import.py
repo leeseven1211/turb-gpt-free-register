@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from cryptography.fernet import Fernet
 
 from core.storage import records as record_store, postgres as postgres_store
 from tests.support_pg import PostgresTestCase
@@ -20,6 +21,15 @@ class ButlerManualImportTests(PostgresTestCase):
         from core.email.email_butler import manual_import as service
         from config import email as config
         self.service = service
+        encryption = patch.dict(os.environ, {'TURB_CONFIG_ENCRYPTION_KEY': Fernet.generate_key().decode()})
+        encryption.start()
+        self.addCleanup(encryption.stop)
+        from config.concurrency import policy_values
+        from core.storage import runtime_config
+
+        policy = policy_values({})
+        policy.update(GLOBAL_TASK_WORKERS=4, EMAIL_IMPORT_WORKERS=4)
+        runtime_config.write_values({key: str(value) for key, value in policy.items()}, activate=True, source='test')
         record_store.init()
         self.calls = []
         self.addresses = ['parent@icloud.com', 'parent+child@icloud.com']
@@ -56,6 +66,10 @@ class ButlerManualImportTests(PostgresTestCase):
                     'total_available': len(self.addresses), 'returned': len(self.addresses),
                     'candidates': [self.candidate(email) for email in self.addresses]}
         if path == '/mailboxes/import-batch':
+            from core.operations import concurrency
+
+            self.assertEqual('email_import', concurrency.current_execution().task_type)
+            self.assertEqual(1, concurrency.get_concurrency_status()['global']['occupied'])
             results = []
             for item in kwargs['json']['items']:
                 email = item['requested_email']
@@ -305,6 +319,9 @@ class ButlerManualImportTests(PostgresTestCase):
             worker = pool.submit(self.service._run_batch, batch['batch_id'])
             try:
                 self.assertTrue(four_started.wait(2), '慢地址占用时，其他地址也应开始交接')
+                from core.operations import concurrency
+
+                self.assertEqual(4, concurrency.get_concurrency_status()['global']['occupied'])
                 release_fast.set()
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
@@ -319,6 +336,99 @@ class ButlerManualImportTests(PostgresTestCase):
                 release_slow.set()
                 worker.result(timeout=5)
         self.assertEqual(self.service.get(batch['batch_id'])['imported'], 8)
+
+    def test_global_one_blocks_preflight_and_handoff_without_marking_items_submitting(self):
+        from config.concurrency import policy_values
+        from core.operations import concurrency
+        from core.storage import runtime_config
+
+        policy = policy_values({})
+        policy.update(GLOBAL_TASK_WORKERS=1, EMAIL_IMPORT_WORKERS=4)
+        runtime_config.write_values({key: str(value) for key, value in policy.items()}, activate=True, source='test')
+        batch, _ = self.create()
+        blocker = concurrency.try_admit_and_claim(
+            execution_key='butler-test-blocker', task_type='live_check', claim=lambda _conn, execution_id: {'execution_id': execution_id},
+        ).context
+        waiting = threading.Event()
+        original = concurrency.try_admit_and_claim
+
+        def observe(**kwargs):
+            result = original(**kwargs)
+            if 'global_capacity' in result.blocked_by:
+                waiting.set()
+            return result
+
+        self.calls.clear()
+        with patch.object(concurrency, 'try_admit_and_claim', side_effect=observe), ThreadPoolExecutor(max_workers=1) as pool:
+            worker = pool.submit(self.service._run_batch, batch['batch_id'])
+            try:
+                self.assertTrue(waiting.wait(5))
+                self.assertEqual(['pending', 'pending'], [item['status'] for item in self.items(batch)])
+                self.assertEqual([], self.calls)
+            finally:
+                concurrency.release_execution(blocker)
+            worker.result(timeout=20)
+        self.assertEqual(2, self.service.get(batch['batch_id'])['imported'])
+        self.assertEqual(0, concurrency.get_concurrency_status()['global']['occupied'])
+
+    def test_multiple_waiting_batches_do_not_hold_connections_in_a_single_connection_pool(self):
+        from config.concurrency import policy_values
+        from core.operations import concurrency
+        from core.storage import runtime_config
+
+        policy = policy_values({})
+        policy.update(GLOBAL_TASK_WORKERS=1, EMAIL_IMPORT_WORKERS=4)
+        runtime_config.write_values({key: str(value) for key, value in policy.items()}, activate=True, source='test')
+        batches = []
+        for index in range(3):
+            self.addresses = [f'parent+isolated{index}@icloud.com']
+            batches.append(self.create()[0])
+        blocker = concurrency.try_admit_and_claim(
+            execution_key='small-pool-blocker', task_type='live_check', claim=lambda _conn, execution_id: {'execution_id': execution_id},
+        ).context
+        postgres_store.close_pools()
+        try:
+            with patch.dict(os.environ, {'TURB_DB_POOL_MAX': '1'}), ThreadPoolExecutor(max_workers=3) as pool:
+                futures = [pool.submit(self.service._run_batch, batch['batch_id']) for batch in batches]
+                try:
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        from core.storage.email import butler_manual_imports
+
+                        if all(butler_manual_imports.batch(batch['batch_id']).get('concurrency_blocked_by') for batch in batches):
+                            break
+                        threading.Event().wait(0.05)
+                    self.assertEqual(1, concurrency.get_concurrency_status()['global']['occupied'])
+                    self.assertTrue(all(item['status'] == 'pending' for batch in batches for item in self.items(batch)))
+                finally:
+                    concurrency.release_execution(blocker)
+                for future in futures:
+                    future.result(timeout=30)
+                self.assertEqual([1, 1, 1], [self.service.get(batch['batch_id'])['imported'] for batch in batches])
+                self.assertEqual(0, concurrency.get_concurrency_status()['global']['occupied'])
+        finally:
+            postgres_store.close_pools()
+
+    def test_owner_claim_store_outage_retries_original_batch_without_new_handoff_intent(self):
+        from psycopg_pool import PoolTimeout
+
+        batch, _ = self.create()
+        original_items = [(item['id'], item['acquisition_id']) for item in self.items(batch)]
+        original_claim = self.service._claim_batch_owner
+        claims = 0
+
+        def recover(batch_id):
+            nonlocal claims
+            claims += 1
+            if claims == 1:
+                raise PoolTimeout('测试协调者首次连接暂断')
+            return original_claim(batch_id)
+
+        with patch.object(self.service, '_claim_batch_owner', side_effect=recover):
+            self.service._run_batch(batch['batch_id'])
+        self.assertEqual(2, claims)
+        self.assertEqual(original_items, [(item['id'], item['acquisition_id']) for item in self.items(batch)])
+        self.assertEqual(2, self.service.get(batch['batch_id'])['imported'])
 
     def test_error_counts_explain_failed_and_unconfirmed_handoffs_without_addresses(self):
         batch, _ = self.create()

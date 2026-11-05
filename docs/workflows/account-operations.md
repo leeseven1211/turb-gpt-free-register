@@ -25,7 +25,7 @@ operation_batches（可选批次）
 WebUI accounts / operations / codex 路由
   -> 对应领域 service
   -> core.operations.task_gateway 或原生 operation service
-  -> 持久化 task/run，dispatcher 条件认领 queued run
+  -> 持久化 task/run，dispatcher 在共享并发准入事务中认领 queued run
   -> handler 运行并通过 TaskReporter/operation context 写阶段
   -> 写入终态、释放或标记待对账资源
 ```
@@ -33,6 +33,14 @@ WebUI accounts / operations / codex 路由
 覆盖范围包括查活、套餐查询、刷新 AT、账号补全、2FA、封号邮件扫描、提链和 Codex
 相关任务。每个 service 决定自己的可执行条件、配置快照和远端确认方式；WebUI 只提交
 请求、显示服务端投影的状态和允许的后续动作。
+
+### 全局与独立类型准入
+
+同一数据库/schema 的 WebUI、CLI、手动、批量、定时和重跑入口共享 `GLOBAL_TASK_WORKERS`，各独立动作另受自己的类型上限约束；批次、平台与账号资源限制同时生效。`ACCOUNT_BATCH_WORKERS` 仅保留迁移预览参考，不再充当账号公共预算。类型上限不预留配额，合计可超过全局；配置键与默认值见 [README 并发控制](../../README.md#全局与任务类型并发)。
+
+容量不足只保留 queued，不写业务失败、不消耗重试次数。服务端通过 `admission_wait_reason` 与 `admission_wait_reasons` 返回完整等待原因，任务中心显示全局/类型/批次/平台、账号占用、查询未到期与公平轮次。巡检、提链和注册内部同步步骤复用父任务许可；独立子任务另行排队，直接执行业务的旧账号补全按多步骤账号配置计数。
+
+账号页与 Codex 页手动上传 Sub2API 使用 `sub2api_manual_upload`，共享 `SUB2API_SYNC_WORKERS`，只执行原手动上传步骤，不自动清错或启用远端调度。接口 202 表示持久入队，返回 task/run 引用；任务回执继续显示最终成功、失败或结果待确认，不把 accepted 当上传成功。任务只保存凭据存储引用、代际与后端摘要；执行前重新核验原身份及后端，Token 不进入普通任务 data。
 
 ## 3. 兼容投影仍在运行
 
@@ -55,8 +63,11 @@ WebUI accounts / operations / codex 路由
 task/run、账号检查点、邮箱来源和事件证据，按服务端给出的 `next_actions` 继续、对账或
 人工处理；不得把它们降级为普通失败后直接创建新账号。
 
-`webui.runtime.start_runtime()` 在进程启动时初始化 handler 与 dispatcher、收口无法安全
-继续的活跃 run，并重新派发可恢复的 queued 工作。恢复过程不覆盖历史执行记录。
+`webui.runtime.start_runtime()` 先核验执行许可与 owner，再初始化业务 handler 并恢复 queued 工作，最后启动 dispatcher。许可、Run 心跳与账号 lease 关联同一 execution ID；心跳过期先标为待核验，只有确认原 owner 退出后才回收，不能仅按 TTL 重复启动仍存活的执行。数据库不可用时停止新准入并报告 `scheduler_store_unavailable`，不退回内存无限执行。
+
+停止请求、提前终态与清理退出分别记录；worker 退出且必要清理完成后才幂等释放许可。持久延期返回后释放本地槽，下次查询重新申请；远端订单名额与邮箱成功/结果未知事实不随许可释放而回收。下调上限不抢占现有任务，等待其自然退出。
+
+已有部署先预览并明确全局与各类型数值，一次保存完整策略及 `CONCURRENCY_POLICY_REVISION=1`。缺迁移标记时任务等待确认策略；切换版本前先停止旧派发并排空旧 worker，本地与 Oracle 分别迁移，不能让旧旁路与新准入混跑。
 
 ## 5. 账号解封后恢复
 

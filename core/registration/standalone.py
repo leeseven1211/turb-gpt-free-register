@@ -5,7 +5,6 @@ import os
 import logging
 import socket
 import sys
-import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -18,8 +17,30 @@ def run_registration_in_context(
     entrypoint: str = "protocol_cli",
     driver_name: str = "protocol_oss_2",
 ):
-    """复用已有上下文，或为 CLI 建立并收口独立 Attempt/Run。"""
+    """验证父许可，或在独立入口先统一准入，再绑定注册事实。"""
+    from core.operations import concurrency
+    from core.registration import admission, service
+
+    facts = service.registration_fact_context()
+    complete = all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id"))
+    if any(facts.values()) and not complete:
+        raise RuntimeError("注册执行上下文不完整，拒绝创建第二条任务链")
+    parent = concurrency.current_execution()
+    if complete:
+        if parent is None or parent.execution_id != facts["execution_id"] or not concurrency.validate_execution(parent):
+            raise RuntimeError("注册执行上下文缺少有效的并发许可")
+    with admission.standalone_execution(
+        email=kwargs["email"], driver=driver_name, entrypoint=entrypoint,
+    ):
+        return _run_registration_with_facts(
+            driver, kwargs, entrypoint=entrypoint, driver_name=driver_name,
+        )
+
+
+def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, driver_name: str):
+    """已有执行许可下复用上下文，或建立并收口独立 Attempt/Run。"""
     from core.registration import service as service
+    from core.operations.concurrency import current_execution
     from core.storage import registration
     from core.storage.registration import standalone as registration_standalone
 
@@ -37,11 +58,15 @@ def run_registration_in_context(
         kwargs["email"], email_source=kwargs.get("email_source"),
         entrypoint=source, driver=persisted_driver,
     )
-    execution = str(uuid.uuid4())
+    permit = current_execution()
+    if permit is None:
+        raise RuntimeError("独立注册未取得并发许可")
+    execution = permit.execution_id
     run = registration.start_run(
         int(attempt["id"]), action_type="registration_resume" if attempt.get("checkpoint") != "created" else "registration",
         execution_id=execution, worker_pid=os.getpid(), initial_status="running",
-        data={"entrypoint": source, "worker_host": socket.gethostname(), "driver": persisted_driver},
+        data={"entrypoint": source, "worker_host": socket.gethostname(), "driver": persisted_driver,
+              "execution_key": permit.execution_key},
         started_at=datetime.now(timezone.utc),
     )
     if run.get("execution_id") != execution or run.get("status") != "running":
@@ -116,6 +141,9 @@ def run_registration_in_context(
         status = "stopped"
         raise
     finally:
+        from core.registration.admission import mark_execution_state
+
+        mark_execution_state("cleaning")
         driver_raised = sys.exc_info()[0] is not None
         try:
             if status in {"interrupted", "stopped"}:

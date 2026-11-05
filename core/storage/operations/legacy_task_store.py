@@ -487,6 +487,9 @@ def recover_interrupted(
 ) -> int:
     """收口未迁移任务，但保留与 active durable Run 关联的账号行。"""
     init()
+    from core.storage.operations import permits
+
+    permits.ensure_tables()
     now = _now()
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
@@ -503,6 +506,15 @@ def recover_interrupted(
         where_parts.append("id::text <> ALL(%s)")
         where_params.append(excluded_sources)
     with _connect() as conn, conn.cursor() as cur:
+        permits.admission_lock(conn)
+        # 存活或归属待核验的执行仍可能在清理，不能根据旧任务状态提前重跑。
+        cur.execute(f"""SELECT DISTINCT metadata->>'parent_source_id' AS source_id
+            FROM {_table('operation_execution_permits')} p
+            WHERE p.released_at IS NULL AND metadata->>'parent_source_system'='account_action_tasks'""")
+        active_sources = [str(row["source_id"]) for row in cur.fetchall()]
+        if active_sources:
+            where_parts.append("id::text <> ALL(%s)")
+            where_params.append(active_sources)
         cur.execute(
             f"SELECT id, batch_id, started_at FROM {tasks} WHERE {' AND '.join(where_parts)}",
             tuple(where_params),

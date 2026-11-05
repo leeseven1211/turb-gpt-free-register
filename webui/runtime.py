@@ -504,7 +504,7 @@ def _run_account_completion_worker(
                 child_source_system=child_source_system,
                 child_source_id=str(child_source_id),
                 dependency_type="account_completion",
-                payload=payload,
+                payload={**payload, **({"parent_run_id": context.run_id} if context is not None else {})},
             )
             if dependency.get("status") == "ready":
                 task_gateway.notify_dependency_ready(dependency)
@@ -1469,6 +1469,20 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
         if parent_system == _RUNTIME_SOURCE_SYSTEM:
             parent_task_id = int(parent_id)
             parent = operation_task_store.get_task(parent_task_id, include_events=False) or {}
+            expected_run = int(payload.get("parent_run_id") or 0) or None
+            if expected_run is None:
+                previous_runs = [row for row in parent.get("runs") or [] if isinstance(row, Mapping)]
+                if len(previous_runs) == 1:
+                    expected_run = int(previous_runs[0].get("id") or 0) or None
+                elif len(previous_runs) > 1:
+                    # 历史依赖没有记录执行代际，多个 Run 时不能猜测并覆盖或再启动新代。
+                    operation_task_store.complete_task_dependency(dependency_id, success=True)
+                    logger.info("历史补全依赖执行代际无法唯一确认，保留当前任务：dependency_id=%s parent_task_id=%s",
+                                dependency_id, parent_task_id)
+                    return
+            if expected_run is not None and int(parent.get("last_run_id") or 0) != expected_run:
+                operation_task_store.complete_task_dependency(dependency_id, success=True)
+                return
             if str(parent.get("status") or "").lower() in {"cancelled", "cancelling", "stopped"}:
                 operation_task_store.complete_task_dependency(dependency_id, success=True)
                 return
@@ -1478,6 +1492,7 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
                     parent_source_id=parent_id,
                     child_status=child_status or "unknown",
                     child_result=claimed.get("child_result") if isinstance(claimed.get("child_result"), dict) else {},
+                    **({"expected_parent_run_id": expected_run} if expected_run is not None else {}),
                 )
                 if updated is None:
                     raise LookupError("补全父任务不存在")
@@ -1499,7 +1514,11 @@ def _handle_ready_completion_dependency(dependency: dict) -> None:
                     "retry_action": "dependency_resume",
                     "continuation_payload": continuation_payload,
                 },
+                **({"expected_previous_run_id": expected_run} if expected_run is not None else {}),
             )
+            if run.get("dependency_stale"):
+                operation_task_store.complete_task_dependency(dependency_id, success=True)
+                return
             task_gateway.notify_dispatch()
             operation_task_store.complete_task_dependency(dependency_id, success=True)
             logger.info(
@@ -1612,10 +1631,28 @@ def _submit_ready_completion_dependency(dependency: dict):
     dependency_id = int(dependency.get("id") or 0)
     if not dependency_id:
         return None
+    from core.operations import concurrency
+
+    admission = dependency.get("_execution_context")
+    if admission is None:
+        # 兼容调用入口也须持真实账号配置许可，旧回调可能直接执行后续业务。
+        result = concurrency.try_admit_and_claim(
+            execution_key=f"operation_dependency:{dependency_id}", task_type="account_setup_retry",
+            claim=lambda conn, execution_id: dict(dependency),
+            metadata={key: dependency.get(key) for key in ("parent_source_system", "parent_source_id")},
+            extra_scopes=[{"kind": "account", "key": f"{int(dependency['payload']['account_id'])}:openai_interactive", "limit": 1}]
+            if isinstance(dependency.get("payload"), Mapping) and dependency["payload"].get("account_id") else [],
+        )
+        if not result.admitted:
+            operation_task_store.complete_task_dependency(dependency_id, success=False,
+                                                         error="等待业务执行许可")
+            account_task_store.notify_dependency_ready(dependency)
+            return None
+        admission = result.context
     try:
         future = _ACCOUNT_EXECUTOR.try_submit(
-            _handle_ready_completion_dependency,
-            dict(dependency),
+            task_gateway.execute_admitted, admission,
+            lambda: _handle_ready_completion_dependency({key: value for key, value in dependency.items() if key != "_execution_context"}),
         )
     except Exception as exc:
         logger.exception("补全依赖提交到共享 executor 失败：dependency_id=%s", dependency_id)
@@ -1625,6 +1662,7 @@ def _submit_ready_completion_dependency(dependency: dict):
             error=f"{type(exc).__name__}: {exc}",
         )
         account_task_store.notify_dependency_ready(dependency)
+        concurrency.release_execution(admission, reason="executor_submit_failed")
         return None
     if future is None:
         operation_task_store.complete_task_dependency(
@@ -1633,6 +1671,9 @@ def _submit_ready_completion_dependency(dependency: dict):
             error="账号操作共享并发预算已满",
         )
         account_task_store.notify_dependency_ready(dependency)
+        concurrency.release_execution(admission, reason="executor_submit_failed")
+    elif hasattr(future, "add_done_callback"):
+        future.add_done_callback(lambda completed: concurrency.release_execution(admission, reason="submission_cancelled") if completed.cancelled() else None)
     return future
 
 
@@ -1988,6 +2029,11 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             return False
 
         operation_task_store.init()
+        from core.operations import concurrency
+
+        recovered_permits = concurrency.recover_execution_permits()
+        active_logger.info("执行许可恢复核验：已释放=%s，存活=%s，待核验=%s",
+                           recovered_permits["released"], recovered_permits["alive"], recovered_permits["unverified"])
         from core.email.email_butler import manual_import as butler_manual_import
         recovered_imports = butler_manual_import.reconcile_interrupted()
         if recovered_imports:
@@ -2000,6 +2046,13 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         except Exception:
             active_logger.exception("独立代理池启动失败；代理任务将在领取时返回明确错误")
         _register_runtime_handlers()
+        from core.maintenance import sentinel
+        from core.integrations.sub2api import monitor as sub2api_monitor
+        from core.integrations.sub2api import manual_upload
+
+        sentinel.register_handler()
+        sub2api_monitor.register_handler()
+        manual_upload.register_handler()
         recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
         if recovered_operation_runs:
             active_logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)
@@ -2065,6 +2118,9 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         else:
             active_logger.info("无法安全读取 durable 账号操作行级排除项，跳过兼容账号任务恢复")
         operation_task_store.start_projection_worker()
+        from core.registration import service as registration_service
+
+        registration_service.start_dispatcher()
         account_task_store.start_dispatcher()
         account_task_store.set_dependency_ready_handler(_submit_ready_completion_dependency)
         account_task_store.start_dependency_dispatcher()

@@ -25,12 +25,13 @@ from typing import Any, Iterable, Mapping
 class ConfigValidationError(ValueError):
     """候选配置不符合 schema 时抛出的稳定异常。"""
 
-    def __init__(self, errors: Mapping[str, str] | str):
+    def __init__(self, errors: Mapping[str, str] | str, *, code: str = "config_validation_error"):
         if isinstance(errors, str):
             normalized = {"__config__": errors}
         else:
             normalized = {str(key): str(value) for key, value in errors.items()}
         self.errors = MappingProxyType(dict(normalized))
+        self.code = code
         message = "; ".join(f"{key}: {value}" for key, value in normalized.items())
         super().__init__(message or "配置校验失败")
 
@@ -152,7 +153,32 @@ def _options(*items: tuple[str, str] | str) -> tuple[ConfigOption, ...]:
 
 
 # 默认值集中在这里。配置模块只保留兼容常量名，并通过 schema_default() 取值。
+CONCURRENCY_WORKER_DEFAULTS = {
+    "GLOBAL_TASK_WORKERS": 3,
+    "REGISTRATION_ROXY_WORKERS": 3,
+    "REGISTRATION_PROTO2_WORKERS": 3,
+    "ACCOUNT_LIVE_CHECK_WORKERS": 3,
+    "ACCOUNT_TOKEN_REFRESH_WORKERS": 3,
+    "ACCOUNT_PLAN_CHECK_WORKERS": 3,
+    "ACCOUNT_DEACTIVATION_MAIL_WORKERS": 3,
+    "ACCOUNT_PASSWORD_SETUP_WORKERS": 3,
+    "ACCOUNT_PASSWORD_CHANGE_WORKERS": 3,
+    "ACCOUNT_TWOFA_SETUP_WORKERS": 3,
+    "ACCOUNT_TWOFA_CHANGE_WORKERS": 3,
+    "ACCOUNT_SETUP_WORKERS": 3,
+    "ACCOUNT_EMAIL_CHANGE_WORKERS": 3,
+    "ACCOUNT_INSPECTION_WORKERS": 3,
+    "CODEX_OAUTH_WORKERS": 3,
+    "CODEX_TOKEN_REFRESH_WORKERS": 3,
+    "SUB2API_SYNC_WORKERS": 3,
+    "EXTRACT_LINK_WORKERS": 3,
+    "EMAIL_IMPORT_WORKERS": 1,
+    "SUB2API_SCAN_WORKERS": 1,
+    "MAINTENANCE_CHECK_WORKERS": 1,
+}
 _DEFAULTS: dict[str, Any] = {
+    **CONCURRENCY_WORKER_DEFAULTS,
+    "CONCURRENCY_POLICY_REVISION": 1,
     "ACCOUNT_BATCH_WORKERS": 3,
     "EMAIL_BUTLER_RISK_SCAN_ENABLED": True,
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": 21600,
@@ -518,10 +544,37 @@ _DEFAULTS: dict[str, Any] = {
 
 
 _FIELD_DEFINITIONS = [
+    # ---- 并发控制 ----
+    *({"key": key, "file": "concurrency.py", "type": "int", "group": "并发控制",
+       "label": label, "help": help_text}
+      for key, label, help_text in (
+          ("GLOBAL_TASK_WORKERS", "全局业务并发上限", "同一部署全部受管业务执行的合计上限；不限制调度、心跳、代理供给等支撑线程。填写不小于 1 的整数，无固定上限。"),
+          ("REGISTRATION_ROXY_WORKERS", "Roxy 注册", "Roxy 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。"),
+          ("REGISTRATION_PROTO2_WORKERS", "Proto2 注册", "protocol_oss_2 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。"),
+          ("ACCOUNT_LIVE_CHECK_WORKERS", "查活", "独立查活任务上限。"),
+          ("ACCOUNT_TOKEN_REFRESH_WORKERS", "刷新 AT", "独立刷新 AT 任务上限；巡检、提链和注册内部同步刷新归属其父任务。"),
+          ("ACCOUNT_PLAN_CHECK_WORKERS", "查套餐", "独立查套餐任务上限；巡检、提链和注册内部同步查询归属其父任务。"),
+          ("ACCOUNT_DEACTIVATION_MAIL_WORKERS", "查封号邮件", "独立封号邮件扫描上限；HME 合并扫描按一个扫描 Run 计数，覆盖账号数单独展示。"),
+          ("ACCOUNT_PASSWORD_SETUP_WORKERS", "补密码", "独立补密码任务上限。"),
+          ("ACCOUNT_PASSWORD_CHANGE_WORKERS", "改密码", "独立改密码任务上限。"),
+          ("ACCOUNT_TWOFA_SETUP_WORKERS", "补 2FA", "仅执行补 2FA 的独立任务归属此类型；包含补密码、套餐和 2FA 的历史注册补跑归多步骤账号配置。"),
+          ("ACCOUNT_TWOFA_CHANGE_WORKERS", "改 2FA", "独立改 2FA 任务上限。"),
+          ("ACCOUNT_SETUP_WORKERS", "多步骤账号配置", "尚在直接执行业务的账号配置占用此类型；独立子任务分别按实际动作计数，父流程等待时不重复计数。"),
+          ("ACCOUNT_EMAIL_CHANGE_WORKERS", "换绑邮箱", "独立换绑邮箱任务上限；挂起后创建的独立 AT 子任务另行排队。"),
+          ("ACCOUNT_INSPECTION_WORKERS", "一键巡检", "按单账号巡检 Run 计数；内部同步查活、刷新和查套餐复用巡检许可，每轮账号数限制继续生效。"),
+          ("CODEX_OAUTH_WORKERS", "Codex 授权", "独立 Codex OAuth 任务上限；注册页仅补 Codex 也归属此类型。"),
+          ("CODEX_TOKEN_REFRESH_WORKERS", "刷新 Codex Token", "独立 Codex Token 刷新任务上限。"),
+          ("SUB2API_SYNC_WORKERS", "Sub2API 上传与同步", "Turb 本地上传与同步执行上限；与上传到远端账号的调度属性 SUB2API_UPLOAD_CONCURRENCY 分开。"),
+          ("EXTRACT_LINK_WORKERS", "提链任务", "提链及同 Run 支付阶段的执行上限；同时受批次、平台和未结束远端订单名额约束。"),
+          ("EMAIL_IMPORT_WORKERS", "邮箱导入", "按实际远端交接调用计数；一次最多 25 地址的批量交接算一份执行，兼容并行调用分别计数。"),
+          ("SUB2API_SCAN_WORKERS", "Sub2API 异常扫描", "独立远端扫描执行上限；扫描发现的修复任务另行排队。"),
+          ("MAINTENANCE_CHECK_WORKERS", "手动维护检查", "用户主动发起的 Sentinel 等外部维护检查上限。"),
+      )),
+    {"key": "CONCURRENCY_POLICY_REVISION", "file": "concurrency.py", "type": "int", "group": "并发控制", "label": "并发策略版本", "help": "完整保存迁移策略时一并落地；用于识别已确认的新策略，不代表历史全局并发。"},
     # ---- 通用配置 ----
     {
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
-        "label": "账号操作并发数", "help": "账号补全、补密码、补 2FA、查套餐、查活、刷新 AT、查封号邮件和 Codex 共用的并发数，填写不小于 1 的整数，由用户自行控制，无固定上限；默认 3，注册和提链并发另行设置",
+        "label": "旧账号操作并发数（迁移参考）", "help": "只读保留历史账号池上限，供迁移预览参考；新策略使用全局与独立任务类型上限，此值不再构成账号公共预算。",
     },
     # ---- 定时任务 ----
     {
@@ -1655,7 +1708,7 @@ _FIELD_DEFINITIONS = [
     },
     {"key": "SUB2API_UPLOAD_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "目标分组 ID", "help": "多个分组用逗号分隔；留空保留远端分组，巡检检查全部分组"},
     {"key": "SUB2API_UPLOAD_PROXY_ID", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号代理 ID", "help": "填写 Sub2API 中的代理 ID；留空保留原代理"},
-    {"key": "SUB2API_UPLOAD_CONCURRENCY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号并发数", "help": "正整数；留空保留已有账号配置，新账号采用后端默认值"},
+    {"key": "SUB2API_UPLOAD_CONCURRENCY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "远端账号调度并发属性", "help": "这是上传到 Sub2API 账号的远端调度属性，不控制 Turb 本地上传 worker；本地上传上限在并发控制的 Sub2API 上传与同步中维护。正整数；留空保留已有账号配置，新账号采用后端默认值。"},
     {"key": "SUB2API_UPLOAD_PRIORITY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号优先级", "help": "不小于 0 的整数；留空保留原配置"},
     {"key": "SUB2API_UPLOAD_LOAD_FACTOR", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号负载因子", "help": "大于 0 的整数；留空保留原配置"},
     {"key": "SUB2API_UPLOAD_MODELS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号允许模型", "help": "每行一个或逗号分隔；填写后更新模型映射，留空保留原映射"},
@@ -1943,6 +1996,8 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES": (1, 10000),
     "BROWSER_JS_COVERAGE_MAX_ENTRIES": (1, 10000),
     "ACCOUNT_BATCH_WORKERS": (1, None),
+    **{key: (1, None) for key in CONCURRENCY_WORKER_DEFAULTS},
+    "CONCURRENCY_POLICY_REVISION": (1, 1),
     "EXTRACT_LINK_BATCH_WORKERS": (1, 50),
     "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS": (900, 604800),
     "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS": (5, 3600),
@@ -2584,6 +2639,10 @@ def validate_config_updates(updates: Mapping[str, Any]) -> dict[str, Any]:
     """一次性校验候选配置；任何字段失败都不返回部分结果。"""
     if not isinstance(updates, Mapping) or not updates:
         raise ConfigValidationError("无更新内容")
+    if "ACCOUNT_BATCH_WORKERS" in updates:
+        raise ConfigValidationError({
+            "ACCOUNT_BATCH_WORKERS": "旧账号公共并发已迁移为全局与独立任务类型上限；请在「系统与维护 → 并发控制」预览并保存新策略。",
+        }, code="concurrency_config_migrated")
     errors: dict[str, str] = {}
     normalized: dict[str, Any] = {}
     for raw_key, value in updates.items():

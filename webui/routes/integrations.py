@@ -56,6 +56,10 @@ def create_integrations_blueprint(context: WebUIContext):
         from core.integrations.sub2api import monitor
         try:
             result = monitor.run_once(force=True)
+            if result.get("accepted"):
+                return jsonify({"ok": True, "accepted": True, "status": result.get("status") or "queued",
+                                "task_id": result.get("task_id"), "run_id": result.get("run_id"),
+                                "message": "Sub2API 异常巡检已入队"}), 202
             reasons = result.get("reasons") or {}
             for code, message in (
                 ("backend_not_configured", "尚未配置 sub2api，请先保存服务地址和鉴权配置"),

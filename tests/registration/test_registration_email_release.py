@@ -108,7 +108,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ) as update_progress, patch.object(
             svc.db, "finish_job_progress"
         ) as finish_progress, patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(
             svc.db, "update_account_registration_proxy"
         ), patch.object(
@@ -389,14 +389,14 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc, "get_retry_info", return_value={"retryable": True, "retry_action": "registration"}
         ), patch.object(svc, "_account_for_job", return_value=None), patch.object(
             svc.db, "create_retry_job", return_value=(retry_job, True)
-        ) as create_retry, patch.object(svc, "get_executor", return_value=executor):
+        ) as create_retry, patch.object(svc, "_enqueue_job", new=executor):
             result = svc.retry_job(31)
 
         self.assertTrue(result["ok"])
         self.assertEqual(create_retry.call_args.kwargs["job_type"], "registration")
         self.assertEqual(create_retry.call_args.kwargs["email"], "held@icloud.com")
         self.assertIsNone(create_retry.call_args.kwargs["account_id"])
-        executor.submit.assert_called_once_with(svc._run_one_job, 32, "/tmp/retry.log")
+        executor.assert_called_once_with(32, account_task_id=None)
 
     def test_normal_registration_retry_uses_root_email_source(self):
         source = {
@@ -421,7 +421,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc, "get_retry_info", return_value={"retryable": True, "retry_action": "registration"}
         ), patch.object(svc, "_account_for_job", return_value=None), patch.object(
             svc.db, "create_retry_job", return_value=(retry_job, True)
-        ) as create_retry, patch.object(svc, "get_executor", return_value=executor):
+        ) as create_retry, patch.object(svc, "_enqueue_job", new=executor):
             result = svc.retry_job(32)
 
         self.assertTrue(result["ok"])
@@ -484,12 +484,12 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
             svc, "get_retry_info", return_value={"retryable": True, "retry_action": "registration"}
         ), patch.object(svc, "_account_for_job", return_value=None), patch.object(
             svc.db, "create_retry_job", return_value=(retry_row, True)
-        ) as create_retry, patch.object(svc, "get_executor", return_value=executor):
+        ) as create_retry, patch.object(svc, "_enqueue_job", new=executor):
             result = svc.retry_job(31)
 
         self.assertTrue(result["ok"])
         self.assertIsNone(create_retry.call_args.kwargs["email"])
-        executor.submit.assert_called_once_with(svc._run_one_job, 32, "/tmp/retry.log")
+        executor.assert_called_once_with(32, account_task_id=None)
 
     def test_retry_child_reuses_stored_email_without_acquiring_another(self):
         job = {
@@ -526,7 +526,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_account_for_job", return_value=None
         ), patch(
@@ -593,7 +593,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_account_for_job", return_value=None
         ), patch.object(
@@ -656,7 +656,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job") as update_job, patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_prepare_registration_args"
         ) as prepare_args, patch(
@@ -708,7 +708,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job") as update_job, patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_account_for_job", return_value=None
         ), patch(
@@ -770,7 +770,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job") as update_job, patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(
             svc, "_prepare_registration_args"
         ) as prepare_args, patch.object(
@@ -867,7 +867,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ) as update_progress, patch.object(svc.db, "finish_job_progress"), patch.object(
             svc.db, "begin_job_route_attempt"
         ) as begin_route_attempt, patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch.object(
             svc, "_prepare_registration_args", return_value=("alias@icloud.com", "Test", "1990-01-01")
         ) as prepare_args, patch.object(
@@ -985,7 +985,7 @@ class RegistrationEmailReleaseTests(unittest.TestCase):
         ), patch.object(svc.db, "update_job"), patch.object(
             svc.db, "update_job_progress"
         ), patch.object(svc.db, "finish_job_progress"), patch.object(
-            svc.db, "claim_job_for_execution", return_value=True
+            svc, "_claim_job_for_worker", return_value=True
         ), patch.object(svc.db, "update_account_registration_proxy"), patch(
             "core.email.provider.restore_email_context", return_value="icloud_hide"
         ) as restore_email, patch.object(

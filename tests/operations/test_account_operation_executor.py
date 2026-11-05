@@ -6,6 +6,11 @@ from unittest.mock import MagicMock, call, patch
 
 
 class AccountOperationExecutorTests(unittest.TestCase):
+    def setUp(self):
+        # 这个文件只测线程承载；数据库策略与跨进程预算由许可存储测试验证。
+        self.no_db = patch("core.storage.postgres.enabled", return_value=False)
+        self.no_db.start()
+        self.addCleanup(self.no_db.stop)
     def test_account_operation_services_share_the_common_executor(self):
         from core.operations import executor as account_operation_executor
         from core.codex import operation_service as codex_operation_service, token_refresh_service as codex_token_refresh_service
@@ -31,10 +36,10 @@ class AccountOperationExecutorTests(unittest.TestCase):
         self.assertFalse(hasattr(deactivation_mail_service, "_EXECUTOR"))
         self.assertFalse(hasattr(extract_link_service, "_EXECUTOR"))
 
-    def test_common_executor_reads_account_batch_workers(self):
+    def test_common_executor_reads_global_carrier_limit(self):
         from core.operations import executor as account_operation_executor
 
-        with patch("config.codex.ACCOUNT_BATCH_WORKERS", 7):
+        with patch("config.concurrency.GLOBAL_TASK_WORKERS", 7), patch("config.codex.ACCOUNT_BATCH_WORKERS", 1):
             self.assertEqual(7, account_operation_executor.configured_workers())
 
     def test_common_executor_preserves_configured_budget_above_fifty(self):
@@ -42,7 +47,7 @@ class AccountOperationExecutorTests(unittest.TestCase):
 
         operation_executor = AccountOperationExecutor()
         for configured, expected in ((50, 50), (51, 51), (100, 100), (1000, 1000)):
-            with self.subTest(configured=configured), patch("config.codex.ACCOUNT_BATCH_WORKERS", configured):
+            with self.subTest(configured=configured), patch("config.concurrency.GLOBAL_TASK_WORKERS", configured):
                 self.assertEqual(expected, configured_workers())
                 self.assertEqual(expected, operation_executor.available_slots())
                 self.assertEqual(expected, operation_executor.status()["budget"])
@@ -59,7 +64,7 @@ class AccountOperationExecutorTests(unittest.TestCase):
             release.wait(5)
 
         try:
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 100):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 100):
                 future = operation_executor.try_submit(work)
                 self.assertIsNotNone(future)
                 self.assertTrue(entered.wait(1))
@@ -91,7 +96,7 @@ class AccountOperationExecutorTests(unittest.TestCase):
             release.wait(5)
 
         try:
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 50):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 50):
                 futures = [operation_executor.try_submit(work) for _ in range(50)]
                 self.assertTrue(all(future is not None for future in futures))
                 with started:
@@ -114,11 +119,11 @@ class AccountOperationExecutorTests(unittest.TestCase):
         second_pool = MagicMock()
         with (
             patch("core.operations.executor.ThreadPoolExecutor", side_effect=[first_pool, second_pool]) as pool,
-            patch("config.codex.ACCOUNT_BATCH_WORKERS", 2),
+            patch("config.concurrency.GLOBAL_TASK_WORKERS", 2),
         ):
             operation_executor = AccountOperationExecutor()
             operation_executor.submit(lambda: None)
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 5):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 5):
                 operation_executor.submit(lambda: None)
             operation_executor.shutdown()
 
@@ -154,10 +159,10 @@ class AccountOperationExecutorTests(unittest.TestCase):
 
         operation_executor = AccountOperationExecutor()
         try:
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 2):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 2):
                 first = [operation_executor.submit(work) for _ in range(2)]
                 self.assertTrue(entered.wait(1))
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 4):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 4):
                 second = [operation_executor.submit(work) for _ in range(4)]
                 time.sleep(0.1)
                 self.assertLessEqual(operation_executor.status()["active"], 4)
@@ -181,7 +186,7 @@ class AccountOperationExecutorTests(unittest.TestCase):
             release.wait(2)
 
         try:
-            with patch("config.codex.ACCOUNT_BATCH_WORKERS", 1):
+            with patch("config.concurrency.GLOBAL_TASK_WORKERS", 1):
                 first = operation_executor.try_submit(work)
                 self.assertIsNotNone(first)
                 self.assertTrue(entered.wait(1))
@@ -192,14 +197,17 @@ class AccountOperationExecutorTests(unittest.TestCase):
             release.set()
             operation_executor.shutdown()
 
-    def test_codex_bulk_dispatch_submits_each_run_to_common_pool(self):
+    def test_codex_bulk_dispatch_only_wakes_the_durable_scheduler(self):
         from core.codex import operation_service as codex_operation_service
 
-        with patch.object(codex_operation_service._EXECUTOR, "submit") as submit:
+        with patch.object(codex_operation_service._EXECUTOR, "submit") as submit, patch.object(
+            codex_operation_service, "start_dispatcher"
+        ) as start, patch.object(codex_operation_service.task_gateway, "notify_dispatch") as notify:
             codex_operation_service._dispatch_bulk([11, 12, 13], workers=99)
 
-        self.assertEqual(3, submit.call_count)
-        self.assertEqual([11, 12, 13], [call.args[1] for call in submit.call_args_list])
+        submit.assert_not_called()
+        start.assert_called_once()
+        notify.assert_called_once()
 
     def test_plan_check_keeps_registration_trigger_on_the_registration_pool(self):
         from core.accounts.plans import service as plan_check_service

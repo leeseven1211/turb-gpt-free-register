@@ -27,6 +27,12 @@ class WebUIRuntimeTests(unittest.TestCase):
         dependency_write = patch.object(runtime.operation_task_store, "register_task_dependency")
         dependency_write.start()
         self.addCleanup(dependency_write.stop)
+        permit_recovery = patch("core.operations.concurrency.recover_execution_permits", return_value={"released": 0, "alive": 0, "unverified": 0})
+        permit_recovery.start()
+        self.addCleanup(permit_recovery.stop)
+        registration_dispatch = patch("core.registration.service.start_dispatcher")
+        registration_dispatch.start()
+        self.addCleanup(registration_dispatch.stop)
 
     def tearDown(self):
         runtime._runtime_started = False
@@ -584,7 +590,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(861, result["task_id"])
-        self.assertEqual(["refresh_at", "plan_check", "twofa"], submit.call_args.kwargs["data"]["planned_steps"])
+        self.assertEqual(["refresh_at", "password", "plan_check", "twofa"], submit.call_args.kwargs["data"]["planned_steps"])
         retry_job.assert_not_called()
 
     def test_completion_blocks_only_when_same_account_registration_is_active(self):
@@ -844,16 +850,23 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
 
     def test_ready_dependency_submission_uses_shared_budget_without_claiming(self):
+        from core.operations.concurrency import ExecutionContext
+
         dependency = {"id": 901, "status": "running", "payload": {}}
+        execution = ExecutionContext("fixture-permit", "fixture-execution", "operation_dependency:901", "account_setup_retry", dependency)
+        claimed = {**dependency, "_execution_context": execution}
         with (
             patch.object(runtime._ACCOUNT_EXECUTOR, "try_submit", return_value=object()) as submit,
             patch.object(runtime.operation_task_store, "claim_task_dependency") as claim,
         ):
-            result = runtime._submit_ready_completion_dependency(dependency)
+            result = runtime._submit_ready_completion_dependency(claimed)
 
         self.assertIsNotNone(result)
         claim.assert_not_called()
-        submit.assert_called_once_with(runtime._handle_ready_completion_dependency, dependency)
+        self.assertEqual(1, submit.call_count)
+        self.assertIs(runtime.task_gateway.execute_admitted, submit.call_args.args[0])
+        self.assertIs(execution, submit.call_args.args[1])
+        self.assertTrue(callable(submit.call_args.args[2]))
 
     def test_busy_ready_dependency_returns_to_durable_queue_without_timer(self):
         dependency = {"id": 902, "status": "running", "payload": {}}

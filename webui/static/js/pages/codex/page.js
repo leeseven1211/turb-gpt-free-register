@@ -494,10 +494,15 @@ async function codexUploadSub2(filenames = null) {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({filenames: selected}),
     });
-    (r.uploaded || []).forEach(item => CODEX_SELECTED.delete(item.filename));
+    (r.accepted ? r.queued || [] : r.uploaded || []).forEach(item => CODEX_SELECTED.delete(item.filename));
     const issues = Number(r.failed_count || 0) + Number(r.skipped_count || 0);
-    showToast(issues ? `已上传 ${r.uploaded_count || 0} 个，${issues} 个未完成` : `已上传 ${r.uploaded_count || 0} 个到 sub2api`);
-    await loadCodex();
+    if (r.accepted) {
+      showToast(`手动上传已入队 ${r.queued_count || 0} 个${issues ? `，${issues} 个未入队` : ''}，最终结果在任务回执中更新`);
+      trackAcceptedOperationsV2(r.queued || [], '手动上传');
+    } else {
+      showToast(issues ? `已上传 ${r.uploaded_count || 0} 个，${issues} 个未完成` : `已上传 ${r.uploaded_count || 0} 个到 sub2api`);
+      await loadCodex();
+    }
   } catch(err) {
     showToast('上传 sub2api 失败: ' + err.message);
   } finally {

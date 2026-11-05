@@ -294,6 +294,16 @@ python tools/migrations/migrate_collections_to_tables.py --verify    # 逐字段
 
 ## 运行配置与启动配置
 
+### 执行许可与配置一致性
+
+`operation_execution_permits` 保存全局受管执行及 owner、execution ID、预约/执行/清理/调试状态，`operation_execution_permit_scopes` 保存对应全局、类型、批次与平台计数，`operation_execution_requests` 保存未准入请求与等待原因，`operation_execution_dispatch_cursor` 保存跨进程公平轮次。业务 task/run 继续由原表拥有，不另建第二份业务状态。
+
+准入、容量检查、必要账号检查、Run 认领及许可创建在同一连接事务完成；取消与认领竞争同一状态，提交 worker 失败按 execution ID 回滚。配置保存先取得公共准入锁，再取得配置写锁，准入在锁内从运行配置表读取已提交的新键及 revision，不依赖进程缓存。配置提交成功后唤醒调度；通知丢失由 revision 轮询补位。
+
+许可释放按 permit ID + execution ID 幂等裁决，任务字段先到终态不能提前释放清理中的许可。owner 心跳过期先待核验，结合主机与进程启动身份确认退出后回收；PID 重用或 TTL 单独不能证明可重跑。Run 恢复、提链续查与注册恢复使用同一 owner 判据，存活不明时保留许可并自动复查，数据库断连停止新准入。远端未知结果仍保留原回执，执行许可不替代邮箱、支付订单或账号事实。
+
+`CONCURRENCY_POLICY_REVISION=1` 与完整新策略同事务保存，旧 `ACCOUNT_BATCH_WORKERS` 仅供预览，不无声推导历史全局。既有运行配置已激活但缺该标记时显示迁移待确认并保留 queued；新空库使用 schema 建议默认值。迁移预览为只读接口，具体配置与切换步骤见 [README 并发控制](../../README.md#全局与任务类型并发)。
+
 运行配置使用独立的 `runtime_config_values`、`runtime_config_meta`、`runtime_config_history` 表。values 保存原始字符串的 Fernet 密文，meta 保存启用标志及递增版本，history 保存变更前后密文与操作来源。所有显式值都加密，包括代理地址、普通字段和不在可编辑 schema 中的历史密钥；数据库中不保存主密钥。默认值仍由 `config/schema.py` 定义，不复制一套数据库默认值。
 
 `.env` 保留数据库连接与生产保护、WebUI 登录和 Session 密钥、`TURB_MAIL_CONSUMER_ID` 稳定身份，以及 `TURB_CONFIG_ENCRYPTION_KEY`。schema、连接池大小、本机 Node 路径和已存在的特殊隔离配置按需保留。启动脚本的 HOST/PORT 等从进程环境或 CLI 读取，不能仅写 `.env`。TASK_RUN_LOG_ROOT 必须在模块导入前由服务环境指定。

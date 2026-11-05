@@ -7,6 +7,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from collections import Counter
 from typing import Any
 
@@ -19,6 +20,7 @@ from core.integrations.sub2api import client, jobs
 from core.runtime import scheduler_state
 from core.storage import sub2api as repair_store
 from core.storage.operations import runtime as operation_runtime_store
+from core.operations import task_gateway
 
 _TASK = "sub2api_monitor"
 _THREAD_LOCK = threading.Lock()
@@ -334,7 +336,33 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         _reason(summary, "refresh_queue_failed")
 
 
+def register_handler() -> None:
+    """启动时恢复已排队扫描，注册本身不读取远端。"""
+    task_gateway.register_operation_handler("sub2api_scan", _handle_scan, config_allowlist=())
+
+
+def _handle_scan(context):
+    context.checkpoint()
+    result = _run_once(force=bool((context.run.get("data") or {}).get("force")))
+    reasons = result.get("reasons") or {}
+    if any(reasons.get(code) for code in ("backend_not_configured", "local_state_unavailable", "remote_scan_failed")):
+        return task_gateway.OperationResult.failed("Sub2API 异常扫描未完成", result)
+    return task_gateway.OperationResult.success(result, message="Sub2API 异常扫描完成，修复任务分别入队")
+
+
 def run_once(*, force: bool = False) -> dict:
+    """手动与定时扫描统一持久入队，子任务等待不占用扫描许可。"""
+    register_handler()
+    result = task_gateway.submit_durable_operation(
+        task_type="sub2api_scan", account_id=None, email="",
+        trigger="manual" if force else "scheduled",
+        source_id=f"sub2api-scan:{uuid.uuid4().hex}", data={"force": bool(force)},
+        resource_family="sub2api_scan",
+    )
+    return {"ok": bool(result.get("accepted")), **result}
+
+
+def _run_once(*, force: bool = False) -> dict:
     """先补传，再归并远端异常并推进持久阶段；返回不含身份或凭据的计数。"""
     summary = {"enabled": _enabled(), "remote_errors": 0, "accounts": 0, "processed": 0,
                "refresh_queued": 0, "reauth_queued": 0, "sync_queued": 0, "reasons": {}}
@@ -433,6 +461,7 @@ def status() -> dict:
 def start_periodic_monitor() -> bool:
     """启动可热加载开关的周期生产者；不在此线程执行远端修复请求。"""
     global _THREAD
+    register_handler()
     with _THREAD_LOCK:
         if _THREAD and _THREAD.is_alive():
             return False

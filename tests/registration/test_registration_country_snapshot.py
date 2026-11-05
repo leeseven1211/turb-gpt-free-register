@@ -19,7 +19,7 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
         created.append((row, kwargs))
         return row
 
-    with patch.object(service, "get_executor", return_value=executor), \
+    with patch.object(service, "_enqueue_job", new=executor), \
             patch.object(service, "get_executor_workers", return_value=2), \
             patch.object(service.db, "create_job", side_effect=create_job), \
             patch.object(service.db, "get_job", return_value=None), \
@@ -29,7 +29,7 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
     assert snapshot.call_count == 1
     assert [item[1]["data"]["config_snapshot"]["proxy_country"] for item in created] == ["JP", "JP"]
     assert [item["id"] for item in queued] == [1, 2]
-    assert executor.submit.call_count == 2
+    assert executor.call_count == 2
 
 
 @pytest.mark.parametrize("driver,password_enabled,password_mode", [
@@ -45,7 +45,7 @@ def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch(dri
         created.append((row, kwargs))
         return row
 
-    with patch.object(service, "get_executor", return_value=executor), \
+    with patch.object(service, "_enqueue_job", new=executor), \
             patch.object(service, "get_executor_workers", return_value=2), \
             patch.object(service.db, "create_job", side_effect=create_job), \
             patch.object(service.db, "get_job", return_value=None), \

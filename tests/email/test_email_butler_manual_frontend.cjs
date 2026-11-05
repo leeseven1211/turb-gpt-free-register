@@ -104,7 +104,7 @@ test('导入清除旧的空库存缓存，刷新注册来源后新库存立即�
   context.applyFeatureGates = () => {};
   vm.runInContext(`const API_CACHE = new Map(); let CAPABILITIES = {}; let REGISTRATION_EMAIL_SOURCES = [];\n${cacheSource}\n${capabilitiesSource}\n${jobs.slice(0, jobs.indexOf('async function startRegistrationFromInputs'))}`, context);
   await context.loadRegistrationEmailSources();
-  assert.match(element('regEmailSourceV2').innerHTML, /value="email_butler" disabled/);
+  assert.doesNotMatch(element('regEmailSourceV2').innerHTML, /value="email_butler"/);
   view.setImportSourceV2('email_butler');
   element('importTextV2').value = 'one@icloud.com';
   await view.doImportOutlook();

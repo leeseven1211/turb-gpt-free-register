@@ -43,8 +43,6 @@ _DISPATCH_CAPACITY_HANDLERS: dict[
     str,
     tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]],
 ] = {}
-_DISPATCH_CAPACITY_COUNTS: dict[tuple[str, str], int] = {}
-_DISPATCH_CAPACITY_LOCK = threading.RLock()
 _OPERATION_HANDLERS: dict[str, Callable[[OperationHandlerContext], Any]] = {}
 _OPERATION_ACTIONS: dict[str, dict[str, Callable[[Mapping[str, Any]], Any]]] = {}
 _OPERATION_ACTION_SOURCES: dict[str, tuple[str, ...] | None] = {}
@@ -676,6 +674,9 @@ def register_operation_handler(
     name = str(task_type or "").strip()
     if not name:
         raise ValueError("task_type 不能为空")
+    from core.operations.concurrency import resolve_admission_class
+
+    resolve_admission_class(name)
     if not callable(handler):
         raise TypeError("operation handler 必须可调用")
     with _DISPATCH_HANDLER_LOCK:
@@ -1126,13 +1127,27 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
         handler = _OPERATION_HANDLERS.get(str(task_type))
     if handler is None:
         return {"status": "not_registered", "run_id": int(run_id)}
-    execution_id = uuid.uuid4().hex
-    claimed = _operation().claim_run(
-        int(run_id), execution_id=execution_id, worker_pid=os.getpid(),
-    )
-    if not claimed:
-        return {"status": "not_claimed", "run_id": int(run_id)}
+    from core.operations import concurrency
+
+    execution = concurrency.current_execution()
+    if execution is None:
+        run = _operation().get_run(int(run_id))
+        if not run:
+            return {"status": "not_claimed", "run_id": int(run_id)}
+        admitted = admit_operation_run(run)
+        if not admitted.admitted:
+            return {"status": "queued", "run_id": int(run_id), "blocked_by": list(admitted.blocked_by)}
+        return execute_admitted(admitted.context, lambda: _execute_operation_handler(task_type, run_id))
+    if int(execution.claimed_run.get("id") or 0) != int(run_id) or not concurrency.validate_execution(execution):
+        return {"status": "fenced", "run_id": int(run_id), "reason": "permit_owner_lost"}
+    execution_id = execution.execution_id
+    claimed = execution.claimed_run
     context = OperationHandlerContext(claimed, execution_id=execution_id)
+    if claimed.get("_deactivated_before_execution"):
+        result = OperationResult("deactivated", {"status": "deactivated", "reason": "account_deactivated_before_execution"},
+                                 "账号已确认停用，队列任务未执行")
+        context.finish(result)
+        return _operation_handler_result_payload(context, result)
     from core.operations.executor import operation_log_context
     from core.storage.email.address_allocations import OtpLeaseBusy
 
@@ -1245,6 +1260,10 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 context.finish(result)
             return _operation_handler_result_payload(context, result)
         finally:
+            try:
+                concurrency.set_execution_state(execution, "cleaning")
+            except Exception:
+                logger.exception("执行清理状态暂未同步，许可继续保留：run_id=%s", run_id)
             context.release_lease()
 
 def init() -> None:
@@ -1345,11 +1364,24 @@ def _dependency_tick() -> int:
         for candidate in candidates:
             # This is the only claim site in the process. A second process can
             # race safely because the SQL update is a ready->running CAS.
-            claimed = _operation().claim_task_dependency(
-                int(candidate.get("id") or 0), initialize=False,
+            from core.operations import concurrency
+
+            dependency_id = int(candidate.get("id") or 0)
+            payload = candidate.get("payload") if isinstance(candidate.get("payload"), Mapping) else {}
+            account_id = payload.get("account_id")
+            admission = concurrency.try_admit_and_claim(
+                execution_key=f"operation_dependency:{dependency_id}", task_type="account_setup_retry",
+                claim=lambda conn, execution_id, dependency_id=dependency_id: _operation().claim_task_dependency(
+                    dependency_id, initialize=False, conn=conn,
+                ),
+                metadata={key: candidate.get(key) for key in ("parent_source_system", "parent_source_id")},
+                extra_scopes=[{"kind": "account", "key": f"{int(account_id)}:openai_interactive", "limit": 1}]
+                if account_id else [],
             )
-            if not claimed:
+            if not admission.admitted:
                 continue
+            claimed = dict(admission.context.claimed_run)
+            claimed["_execution_context"] = admission.context
             claimed_count += 1
             try:
                 # The callback is a non-blocking executor submission boundary.
@@ -1371,6 +1403,8 @@ def _dependency_tick() -> int:
                     logger.exception(
                         "父任务依赖失败状态写回失败：dependency_id=%s", claimed.get("id"),
                     )
+                finally:
+                    concurrency.release_execution(admission.context, reason="executor_submit_failed")
     except Exception:
         logger.exception("持久父任务依赖 dispatcher 轮询失败")
     return claimed_count
@@ -1478,6 +1512,9 @@ def register_dispatch_handler(
     name = str(task_type or "").strip()
     if not name:
         raise ValueError("task_type 不能为空")
+    from core.operations.concurrency import resolve_admission_class
+
+    resolve_admission_class(name)
     if not callable(handler):
         raise TypeError("task handler 必须可调用")
     if (dispatch_capacity_key is None) != (dispatch_capacity_limit is None):
@@ -1540,84 +1577,99 @@ def _run_handler_snapshot() -> tuple[
         return dict(_DISPATCH_HANDLERS), dict(_DISPATCH_CAPACITY_HANDLERS)
 
 
-def _reserve_dispatch_capacity(
-    task_type: str,
-    run: Mapping[str, Any],
-    handler: tuple[Callable[[Mapping[str, Any]], Any], Callable[[Any], Any]] | None,
-) -> tuple[bool, tuple[tuple[str, str], ...] | None]:
-    """在占用执行池 worker 前，一次预约平台和批次等全部容量维度。
-
-    旧 key 回调仍可返回字符串；多个门限使用 key 到 limit 的映射。
-    """
-    if handler is None:
-        return True, None
-    key_fn, limit_fn = handler
-    try:
-        raw_key = key_fn(run)
-        if isinstance(raw_key, Mapping):
-            requirements = {str(key).strip(): max(0, int(value)) for key, value in raw_key.items()}
-        else:
-            key = "" if raw_key is None else str(raw_key).strip()
-            requirements = {key: max(0, int(limit_fn(key)))}
-        if not requirements or any(not key for key in requirements):
-            raise ValueError("容量 key 不能为空")
-        if _is_extract_continuation(run):
-            provider_id = run["data"]["provider_id"]
-            requirements[f"{provider_id}:continuation"] = min(2, min(requirements.values()))
-    except (TypeError, ValueError, KeyError):
-        logger.warning("durable operation 容量配置无效：task_type=%s", task_type)
-        return False, None
-    except Exception:
-        logger.exception("读取 durable operation 容量配置失败：task_type=%s", task_type)
-        return False, None
-    tokens = tuple((task_type, key) for key in requirements)
-    with _DISPATCH_CAPACITY_LOCK:
-        if any(_DISPATCH_CAPACITY_COUNTS.get(token, 0) >= requirements[token[1]] for token in tokens):
-            return False, None
-        for token in tokens:
-            _DISPATCH_CAPACITY_COUNTS[token] = _DISPATCH_CAPACITY_COUNTS.get(token, 0) + 1
-    return True, tokens
-
-
-def _release_dispatch_capacity(tokens: tuple[tuple[str, str], ...] | None) -> None:
-    if tokens is None:
-        return
-    with _DISPATCH_CAPACITY_LOCK:
-        for token in tokens:
-            active = _DISPATCH_CAPACITY_COUNTS.get(token, 0)
-            if active <= 1:
-                _DISPATCH_CAPACITY_COUNTS.pop(token, None)
-            else:
-                _DISPATCH_CAPACITY_COUNTS[token] = active - 1
-
-
 def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
     data = run.get("data")
     return bool(
         str(run.get("task_type") or "") == "extract_link"
         and isinstance(data, Mapping)
-        and data.get("provider_id") in {"huanguang", "legacy", "anguang"}
-        and data.get("extract_poll_continuation") is True
+        and (run.get("dispatch_lane") == "continuation"
+             or (data.get("provider_id") in {"huanguang", "legacy", "anguang"}
+                 and data.get("extract_poll_continuation") is True))
     )
 
 
+def admit_operation_run(run: Mapping[str, Any], capacity_handler=None):
+    """同事务取得多维许可并认领 Run；worker 只接收已认领上下文。"""
+    from core.operations import concurrency
+
+    task_type = str(run.get("task_type") or "")
+    classification = concurrency.resolve_admission_class(run)
+    data = run.get("data") if isinstance(run.get("data"), Mapping) else {}
+    batch_key = f"operation:{run['batch_id']}" if run.get("batch_id") else None
+    batch_limit = run.get("batch_workers")
+    provider = str(data.get("provider_id") or "legacy") if task_type == "extract_link" else None
+    provider_limit = None
+    extra_scopes = []
+    if run.get("account_id"):
+        extra_scopes.append({"kind": "account", "key": f"{int(run['account_id'])}:{run.get('resource_family') or 'openai_interactive'}", "limit": 1})
+    if capacity_handler is None:
+        with _DISPATCH_HANDLER_LOCK:
+            capacity_handler = _DISPATCH_CAPACITY_HANDLERS.get(task_type)
+    if capacity_handler is not None:
+        key_fn, limit_fn = capacity_handler
+        raw = key_fn(run)
+        requirements = raw if isinstance(raw, Mapping) else {str(raw): limit_fn(raw)}
+        for key, value in requirements.items():
+            if str(key).startswith("batch:"):
+                batch_limit = int(value)
+            elif task_type == "extract_link" and str(key) == provider:
+                provider_limit = int(value)
+            else:
+                extra_scopes.append({"kind": "resource", "key": f"{task_type}:{key}", "limit": int(value)})
+    if _is_extract_continuation(run):
+        # 平台上限在同连接读取当前策略；续查独立最多两项，不能缓存旧平台值形成隐藏门限。
+        extra_scopes.append({"kind": "continuation", "key": str(provider), "limit": 2})
+    run_id = int(run["id"])
+    return concurrency.try_admit_and_claim(
+        execution_key=f"operation_run:{run_id}", task_type=classification.key, run_id=run_id,
+        claim=lambda conn, execution_id: _operation().claim_run(
+            run_id, execution_id=execution_id, worker_pid=os.getpid(), conn=conn,
+        ),
+        batch_key=batch_key, batch_limit=int(batch_limit) if batch_limit is not None else None,
+        provider_key=provider, provider_limit=provider_limit, extra_scopes=extra_scopes,
+        metadata={"dispatch_lane": "continuation" if _is_extract_continuation(run) else "new"},
+    )
+
+
+def execute_admitted(execution, callback: Callable[[], Any]):
+    from core.operations import concurrency
+
+    try:
+        with concurrency.execution_scope(execution):
+            return callback()
+    finally:
+        concurrency.release_execution(execution)
+        notify_dispatch()
+
+
+def rollback_admission(execution, *, reason: str = "executor_submit_failed") -> None:
+    """只撤回本代尚未开始的认领；失败不消耗业务重试次数。"""
+    from core.operations import concurrency
+
+    try:
+        run_id = int(execution.claimed_run.get("id") or 0)
+        if run_id:
+            _operation().requeue_claimed_run(run_id, execution_id=execution.execution_id,
+                                            reason=reason, delay_seconds=0)
+    finally:
+        concurrency.release_execution(execution, reason=reason)
+        notify_dispatch()
+
+
 def dispatch_registered_once(*, limit: int | None = None) -> int:
-    """分别调度提链和其他账号操作，避免任一队列占满另一类扫描窗口。"""
+    """所有类型共享持久公平游标与数据库业务预算，线程承载保留领域隔离。"""
     handlers, capacity_handlers = _run_handler_snapshot()
-    submitted = 0
-    for extraction in (False, True):
-        group = {name: handler for name, handler in handlers.items()
-                 if (name == "extract_link") == extraction}
-        if not group:
-            continue
-        pool = _extract_executor() if extraction else _executor()
-        submitted += _dispatch_registered_group(group, capacity_handlers, pool, limit=limit)
-    return submitted
+    if not handlers:
+        return 0
+    return _dispatch_registered_group(handlers, capacity_handlers, None, limit=limit)
 
 
 def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int | None = None) -> int:
     global _PREFER_EXTRACT_CONTINUATIONS
-    slots = pool.available_slots()
+    slots = pool.available_slots() if pool is not None else (
+        (_executor().available_slots() if any(name != "extract_link" for name in handlers) else 0)
+        + (_extract_executor().available_slots() if "extract_link" in handlers else 0)
+    )
     if slots <= 0:
         return 0
     source_systems: set[str] = set()
@@ -1646,6 +1698,9 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             runs = _operation().list_queued_runs(limit=scan_limit)
         except AttributeError:
             runs = []
+    from core.operations.concurrency import order_dispatch_candidates
+
+    runs = order_dispatch_candidates(runs)
     submitted = 0
     for run in runs:
         if submitted >= slots:
@@ -1660,24 +1715,33 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             continue
         if not reserve_dispatch(int(run["id"])):
             continue
-        capacity_reserved, capacity_token = _reserve_dispatch_capacity(
-            task_type,
-            run,
-            capacity_handlers.get(task_type),
-        )
-        if not capacity_reserved:
+        selected_pool = pool if pool is not None else _extract_executor() if task_type == "extract_link" else _executor()
+        if selected_pool.available_slots() <= 0:
             release_dispatch(int(run["id"]))
             continue
         try:
-            future = pool.try_submit(handler, int(run["id"]))
+            admission = admit_operation_run(run, capacity_handlers.get(task_type))
         except Exception:
             release_dispatch(int(run["id"]))
-            _release_dispatch_capacity(capacity_token)
+            logger.exception("业务准入失败，任务保留排队：run_id=%s", run.get("id"))
+            continue
+        if not admission.admitted:
+            release_dispatch(int(run["id"]))
+            continue
+        execution = admission.context
+        try:
+            future = selected_pool.try_submit(
+                lambda run_id, execution=execution, handler=handler: execute_admitted(execution, lambda: handler(run_id)),
+                int(run["id"]),
+            )
+        except Exception:
+            release_dispatch(int(run["id"]))
+            rollback_admission(execution)
             logger.exception("提交 durable operation 失败：run_id=%s", run.get("id"))
             continue
         if future is None:
             release_dispatch(int(run["id"]))
-            _release_dispatch_capacity(capacity_token)
+            rollback_admission(execution)
             break
         submitted += 1
         data = run.get("data")
@@ -1685,15 +1749,18 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             with _RUN_DISPATCH_LOCK:
                 _PREFER_EXTRACT_CONTINUATIONS = not _is_extract_continuation(run)
         try:
-            future.add_done_callback(
-                lambda _completed, run_id=int(run["id"]), token=capacity_token: (
-                    release_dispatch(run_id),
-                    _release_dispatch_capacity(token),
-                )
-            )
+            def completed(_completed, *, run_id=int(run["id"]), execution=execution):
+                from core.operations import concurrency
+
+                release_dispatch(run_id)
+                if _completed is not None and _completed.cancelled():
+                    rollback_admission(execution, reason="submission_cancelled")
+                else:
+                    concurrency.release_execution(execution)
+
+            future.add_done_callback(completed)
         except Exception:
             release_dispatch(int(run["id"]))
-            _release_dispatch_capacity(capacity_token)
     return submitted
 
 
@@ -1738,8 +1805,12 @@ def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
 
 def _run_dispatch_loop() -> None:
     while not _RUN_DISPATCH_STOP.is_set():
-        _recover_stale_runtime_runs_if_due()
-        submitted = dispatch_registered_once()
+        try:
+            _recover_stale_runtime_runs_if_due()
+            submitted = dispatch_registered_once()
+        except Exception:
+            submitted = 0
+            logger.exception("scheduler_store_unavailable：本轮暂停新准入，保留持久队列")
         if submitted:
             continue
         _RUN_DISPATCH_WAKE.wait(_RUN_DISPATCH_INTERVAL_SECONDS)

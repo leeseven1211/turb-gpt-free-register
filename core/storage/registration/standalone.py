@@ -30,6 +30,17 @@ def _recover_exited_cli_run(cur, raw_attempt, *, entrypoint: str = "protocol_cli
     )
     for run in cur.fetchall():
         data = dict(registration._decode(run.get("data")) or {})
+        from core.operations.concurrency import current_execution, has_active_execution
+
+        execution_key = str(data.get("execution_key") or "")
+        current = current_execution()
+        replaces_recovered_owner = bool(
+            current is not None and current.execution_key == execution_key
+            and current.execution_id != run.get("execution_id")
+        )
+        if execution_key and not replaces_recovered_owner and has_active_execution(execution_key, conn=cur.connection):
+            # 许可仍在清理或核验中时，不能仅依据旧 PID 改写执行身份。
+            continue
         if (run.get("job_id") is not None or data.get("entrypoint") != entrypoint
                 or data.get("worker_host") != socket.gethostname()
                 or not _local_pid_exited(run.get("worker_pid"))):

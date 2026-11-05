@@ -3,6 +3,7 @@
 import sys
 import argparse
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -109,11 +110,12 @@ def run_registration(
     existing_password: str | None = None,
     existing_totp_secret: str | None = None,
     email_source: str | None = None,
+    registration_options: dict | None = None,
 ):
     """兼容入口：转发到 core.registration.dispatcher。"""
     from core.registration.service import require_registration_deployment
 
-    require_registration_deployment()
+    require_registration_deployment(registration_options)
     kwargs = dict(
         email=email,
         name=name,
@@ -125,6 +127,8 @@ def run_registration(
     )
     if email_source is not None:
         kwargs["email_source"] = email_source
+    if registration_options is not None:
+        kwargs["registration_options"] = registration_options
     return _run_registration(**kwargs)
 
 
@@ -132,7 +136,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="ChatGPT 协议注册 CLI")
     parser.add_argument("-n", "--count", type=int, default=1, help="连续注册数量，默认 1")
-    parser.add_argument("--workers", type=int, default=1, help="并发注册线程数，默认 1（串行）")
+    parser.add_argument("--workers", type=int, default=1, help="本批次并发上限，仍受部署全局及驱动上限限制，默认 1")
     parser.add_argument("--delay", type=float, default=0, help="每次注册结束后的间隔秒数")
     parser.add_argument("--continue-on-fail", action="store_true", help="单个账号失败后继续注册下一个")
     parser.add_argument("--email-source", default=None, help="本批明确使用的邮箱来源，例如 remail")
@@ -234,6 +238,44 @@ def run_one_batch_item(
     batch_workers: int = 1,
     email_source: str | None = None,
     acquisition_id_prefix: str | None = None,
+    *,
+    execution_context=None,
+    registration_options: dict | None = None,
+) -> dict:
+    """领取任何代理和邮箱之前先取得本部署共享许可。"""
+    from core.registration import admission, service
+
+    try:
+        snapshot = registration_options if registration_options is not None else service.registration_config_snapshot()
+        service.require_registration_deployment(snapshot)
+        driver = str(snapshot["registration_driver"])
+        with admission.cli_execution(
+            batch_id=batch_id or f"single:{time.time_ns()}", index=index + 1,
+            batch_workers=batch_workers, driver=driver, context=execution_context,
+        ):
+            return _run_one_batch_item(
+                index, total, batch_id, batch_workers, email_source, acquisition_id_prefix,
+                registration_options=snapshot,
+            )
+    except Exception as exc:
+        if execution_context is not None and not execution_context.released:
+            from core.operations.concurrency import release_execution
+
+            release_execution(execution_context, reason="registration_admission_failed")
+        logger.error("[批量] 第 %s 个注册准入失败：%s: %s", index + 1, type(exc).__name__, exc)
+        return {"success": False, "error": str(exc),
+                "error_code": getattr(exc, "error_code", None) or getattr(exc, "code", None) or "registration_admission_failed"}
+
+
+def _run_one_batch_item(
+    index: int,
+    total: int,
+    batch_id: str | None = None,
+    batch_workers: int = 1,
+    email_source: str | None = None,
+    acquisition_id_prefix: str | None = None,
+    *,
+    registration_options: dict | None = None,
 ) -> dict:
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
@@ -244,7 +286,7 @@ def run_one_batch_item(
         sms_provider.set_sms_batch_context(batch_id)
     try:
         from core.registration.service import require_registration_deployment
-        require_registration_deployment()
+        require_registration_deployment(registration_options)
         from core.proxy.provider import acquire_registration_proxy
 
         proxy_lease = acquire_registration_proxy(
@@ -267,6 +309,7 @@ def run_one_batch_item(
             birthday=birthday,
             proxy=proxy_lease.proxy_url,
             email_source=email_source,
+            registration_options=registration_options,
         )
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
@@ -292,9 +335,15 @@ def run_serial_batch(count: int, delay: float, continue_on_fail: bool,
     """按原有串行方式执行批量注册。"""
     results = []
     batch_id = f"cli:{time.time_ns()}"
+    from core.registration.service import registration_config_snapshot
+
+    snapshot = registration_config_snapshot()
     try:
         for index in range(count):
-            result = run_one_batch_item(index, count, batch_id, 1, email_source, acquisition_id_prefix)
+            result = run_one_batch_item(
+                index, count, batch_id, 1, email_source, acquisition_id_prefix,
+                registration_options=snapshot,
+            )
             results.append(result)
             if not _is_success(result) and not continue_on_fail:
                 logger.error("[批量] 当前账号失败，已停止。需要继续跑可加 --continue-on-fail")
@@ -329,15 +378,35 @@ def run_parallel_batch(
     future_to_index = {}
     next_index = 0
     stop_submitting = False
+    from core.operations import concurrency
+    from core.registration import admission
+    from core.registration.service import registration_config_snapshot, require_registration_deployment
+
+    snapshot = registration_config_snapshot()
+    require_registration_deployment(snapshot)
 
     def submit_next(executor: ThreadPoolExecutor) -> bool:
         nonlocal next_index
         if stop_submitting or next_index >= count:
             return False
-        future = executor.submit(
-            run_one_batch_item, next_index, count, batch_id, workers,
-            email_source, acquisition_id_prefix,
+        admitted = admission.try_admit_cli(
+            batch_id=batch_id, index=next_index + 1, batch_workers=workers,
+            driver=str(snapshot["registration_driver"]),
         )
+        if admitted.context is None:
+            if "concurrency_policy_migration_required" in admitted.blocked_by:
+                raise RuntimeError("concurrency_policy_migration_required：请先保存部署并发策略")
+            return False
+        try:
+            future = executor.submit(
+                run_one_batch_item, next_index, count, batch_id, workers,
+                email_source, acquisition_id_prefix,
+                execution_context=admitted.context, registration_options=snapshot,
+            )
+        except Exception:
+            concurrency.release_execution(admitted.context, reason="executor_submit_failed")
+            logger.exception("[批量] executor_submit_failed：保留当前注册候选，下一轮继续")
+            return False
         future_to_index[future] = next_index
         next_index += 1
         if delay > 0 and next_index < count:
@@ -346,11 +415,13 @@ def run_parallel_batch(
 
     try:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reg-cli") as executor:
-            while len(future_to_index) < workers and submit_next(executor):
-                pass
-
-            while future_to_index:
-                done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
+            while future_to_index or (not stop_submitting and next_index < count):
+                while len(future_to_index) < workers and submit_next(executor):
+                    pass
+                if not future_to_index:
+                    threading.Event().wait(0.25)
+                    continue
+                done, _ = wait(future_to_index, timeout=0.25, return_when=FIRST_COMPLETED)
                 for future in done:
                     index = future_to_index.pop(future)
                     try:
@@ -365,8 +436,6 @@ def run_parallel_batch(
                         stop_submitting = True
                         logger.error("[批量] 当前账号失败，已停止提交新任务。已开始的任务会继续跑完。")
 
-                while len(future_to_index) < workers and submit_next(executor):
-                    pass
     finally:
         if count > 1:
             from core.proxy.provider import discard_registration_proxy_batch

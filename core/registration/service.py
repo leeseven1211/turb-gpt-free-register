@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 注册任务服务层：
-    - 线程池并发执行 run_registration
-    - 每个任务在 data/registration_jobs.json 里有一条记录
-    - 每个任务的日志写到 data/logs/<job_uuid>.log，便于 Web UI 实时尾巴
+    - PostgreSQL 保存排队任务，获准后才执行 run_registration
+    - 所有入口共用部署、驱动和批次许可
+    - 每个任务保留独立的 Run 日志
 
 使用：
     submit_registration(email_source="outlook", count=5)
-    → 创建 5 个任务，丢入线程池，立即返回 [job_dict, ...]
+    → 持久化 5 个任务并唤醒调度，立即返回 [job_dict, ...]
 """
 import json
 import logging
@@ -15,7 +15,6 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,22 +23,28 @@ from core.codex import retry_service as codex_retry_service
 from core import db
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway as account_task_store
+from core.operations.executor import AccountOperationExecutor
 from core.registration.postprocess import summarize_postprocess, decide_recovery
 from core.registration.driver_selection import normalize_registration_driver
+from core.registration.admission import mark_execution_state
 from core.email.remail.client import RemailOrderUncertain
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
 logger = logging.getLogger('core.registration_service')
 
-# 全局线程池，最大并发数（WebUI 每次提交时可按最新 workers 重建）
+# workers 只保留批次默认值，执行承载与业务许可分别管理。
 _DEFAULT_MAX_WORKERS = 4
 _MIN_MAX_WORKERS = 1
 _MAX_MAX_WORKERS = 16
-_executor: ThreadPoolExecutor | None = None
+_executor: AccountOperationExecutor | None = None
 _executor_workers = _DEFAULT_MAX_WORKERS
-_executor_generation = 0
-_retired_executors: list[ThreadPoolExecutor] = []
 _executor_lock = threading.RLock()
+_DISPATCH_LOCK = threading.RLock()
+_DISPATCH_STOP = threading.Event()
+_DISPATCH_WAKE = threading.Event()
+_DISPATCH_THREAD: threading.Thread | None = None
+_DISPATCHING_JOBS: set[int] = set()
+_DISPATCH_INTERVAL = 0.5
 
 _STOP_EVENTS: dict[int, threading.Event] = {}
 _ACTIVE_JOBS: set[int] = set()
@@ -359,6 +364,7 @@ def _activate_job(job_id: int) -> None:
 
 
 def _deactivate_job(job_id: int) -> None:
+    mark_execution_state("cleaning")
     try:
         from core.registration import debug as registration_debug
 
@@ -1657,53 +1663,153 @@ def _normalize_workers(max_workers: int | None) -> int:
     return max(_MIN_MAX_WORKERS, min(_MAX_MAX_WORKERS, value))
 
 
-def get_executor(max_workers: int | None = None) -> ThreadPoolExecutor:
-    """返回注册线程池。
+def _registration_worker_capacity() -> int:
+    from core.operations.executor import configured_workers
 
-    旧逻辑只在首次创建线程池时使用 max_workers，后续 WebUI 改线程数再提交仍会复用
-    上一次的池。这里改成：每次传入的 max_workers 和当前池不一致时，立即创建新池供
-    新提交任务使用；旧池不接收新任务，但会继续把已经排队/运行的任务跑完。
-    """
-    global _executor, _executor_workers, _executor_generation
-    requested_workers = _normalize_workers(max_workers) if max_workers is not None else _executor_workers
+    return configured_workers()
+
+
+def get_executor(max_workers: int | None = None) -> AccountOperationExecutor:
+    """返回按需承载已获准任务的执行器；批次 workers 不再重建业务预算。"""
+    global _executor, _executor_workers
     with _executor_lock:
-        if _executor is None or requested_workers != _executor_workers:
-            old_executor = _executor
-            if old_executor is not None:
-                # 不取消旧池里已提交的任务，只是不再往旧池追加新任务。
-                old_executor.shutdown(wait=False, cancel_futures=False)
-                _retired_executors.append(old_executor)
-                logger.info(
-                    "[Service] 注册线程池 workers 从 %s 切换为 %s；旧池继续处理已排队任务",
-                    _executor_workers,
-                    requested_workers,
-                )
-            _executor_workers = requested_workers
-            _executor_generation += 1
-            _executor = ThreadPoolExecutor(
-                max_workers=requested_workers,
-                thread_name_prefix=f"reg-worker-{_executor_generation}",
+        if max_workers is not None:
+            _executor_workers = _normalize_workers(max_workers)
+        if _executor is None:
+            _executor = AccountOperationExecutor(
+                _registration_worker_capacity, thread_name_prefix="reg-worker",
             )
     return _executor
 
 
 def get_executor_workers() -> int:
-    """当前新提交注册任务会使用的线程数。"""
+    """新批次请求的默认并发数；实际执行仍受共享许可限制。"""
     with _executor_lock:
         return _executor_workers
 
 
 def shutdown_executor(wait: bool = True) -> None:
     global _executor
+    stop_dispatcher()
     with _executor_lock:
-        executors = []
-        if _executor is not None:
-            executors.append(_executor)
-            _executor = None
-        executors.extend(_retired_executors)
-        _retired_executors.clear()
-    for ex in executors:
-        ex.shutdown(wait=wait, cancel_futures=False)
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=wait)
+
+
+def _claim_job_for_worker(job_id: int) -> bool:
+    from core.registration.admission import verify_job_execution
+
+    return verify_job_execution(job_id)
+
+
+def _execute_queued_job(job: dict) -> None:
+    """本地 worker 已可用才申请许可，满额时保留原数据库队列。"""
+    from core.registration import admission
+
+    job_id = int(job["id"])
+
+    def execute():
+        current = db.get_job(job_id) or job
+        job_type = str(current.get("job_type") or "registration")
+        if job_type in {"codex_retry", "twofa_retry"}:
+            worker = _run_codex_retry_job if job_type == "codex_retry" else _run_twofa_retry_job
+            return worker(
+                job_id, current["log_file"], str(current.get("email") or ""),
+                int(current["account_id"]), current.get("registration_account_task_id"),
+            )
+        return _run_one_job(job_id, current["log_file"])
+
+    admission.run_job(job_id, execute)
+
+
+def dispatch_pending_once() -> int:
+    """只提交空闲 worker 数量的候选；业务队列始终以 PostgreSQL 为准。"""
+    from core.registration.admission import pending_jobs
+
+    pool = get_executor()
+    if pool.available_slots() <= 0:
+        return 0
+    jobs = pending_jobs()
+    submitted = 0
+    for job in jobs:
+        job_id = int(job["id"])
+        with _DISPATCH_LOCK:
+            if job_id in _DISPATCHING_JOBS:
+                continue
+            _DISPATCHING_JOBS.add(job_id)
+        try:
+            future = pool.try_submit(_execute_queued_job, job)
+        except Exception:
+            with _DISPATCH_LOCK:
+                _DISPATCHING_JOBS.discard(job_id)
+            logger.exception("[Service] executor_submit_failed：注册任务 #%s 保留排队", job_id)
+            continue
+        if future is None:
+            with _DISPATCH_LOCK:
+                _DISPATCHING_JOBS.discard(job_id)
+            break
+        submitted += 1
+
+        def finished(completed, source_id=job_id):
+            with _DISPATCH_LOCK:
+                _DISPATCHING_JOBS.discard(source_id)
+            try:
+                completed.result()
+            except Exception:
+                logger.exception("[Service] 注册调度异常：任务 #%s", source_id)
+
+        future.add_done_callback(finished)
+    return submitted
+
+
+def notify_dispatch() -> None:
+    _DISPATCH_WAKE.set()
+
+
+def _enqueue_job(job_id: int, *, account_task_id: int | None = None) -> None:
+    """持久保存依赖关系后开放派发，避免其他进程读到尚未完成的入队。"""
+    if not db._patch_job(int(job_id), {
+        "registration_dispatch_ready": True,
+        "registration_account_task_id": account_task_id,
+    }):
+        raise RuntimeError("注册任务入队记录不存在")
+    start_dispatcher()
+    notify_dispatch()
+
+
+def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
+    """恢复阶段结束后启动扫描；不为历史 interrupted 任务创建新注册。"""
+    global _DISPATCH_THREAD, _DISPATCH_INTERVAL
+    with _DISPATCH_LOCK:
+        if _DISPATCH_THREAD is not None and _DISPATCH_THREAD.is_alive():
+            notify_dispatch()
+            return False
+        _DISPATCH_INTERVAL = max(0.05, float(interval_seconds))
+        _DISPATCH_STOP.clear()
+
+        def loop():
+            while not _DISPATCH_STOP.is_set():
+                _DISPATCH_WAKE.clear()
+                try:
+                    dispatch_pending_once()
+                except Exception:
+                    logger.exception("[Service] scheduler_store_unavailable：暂停本轮注册准入")
+                _DISPATCH_WAKE.wait(_DISPATCH_INTERVAL)
+
+        _DISPATCH_THREAD = threading.Thread(target=loop, name="registration-dispatcher", daemon=True)
+        _DISPATCH_THREAD.start()
+        return True
+
+
+def stop_dispatcher(*, timeout: float = 2.0) -> bool:
+    _DISPATCH_STOP.set()
+    _DISPATCH_WAKE.set()
+    with _DISPATCH_LOCK:
+        thread = _DISPATCH_THREAD
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=max(0, timeout))
+    return thread is None or not thread.is_alive()
 
 
 # ============================================================
@@ -1795,10 +1901,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
         return
 
     try:
-        claimed = db.claim_job_for_execution(
-            job_id,
-            started_at=_now_iso(),
-        )
+        claimed = _claim_job_for_worker(job_id)
     except Exception:
         _deactivate_job(job_id)
         raise
@@ -2500,6 +2603,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             completed_at=_now_iso(),
         )
     finally:
+        mark_execution_state("cleaning")
         final_job = db.get_job(job_id) or {}
         final_status = str(final_job.get("status") or "failed").strip().lower()
         if final_status not in {"queued", "running", "success", "partial_success", "failed", "stopped", "cancelled", "interrupted", "request_unknown", "manual_reconcile"}:
@@ -2562,10 +2666,7 @@ def _run_codex_retry_job(
         return
 
     try:
-        claimed = db.claim_job_for_execution(
-            job_id,
-            started_at=_now_iso(),
-        )
+        claimed = _claim_job_for_worker(job_id)
     except Exception:
         _deactivate_job(job_id)
         raise
@@ -2645,6 +2746,7 @@ def _run_codex_retry_job(
         codex_retry_service.release(email)
         logger.exception("[Job %s] Codex 补跑异常", job_id)
     finally:
+        mark_execution_state("cleaning")
         final_job = db.get_job(job_id) or {}
         final_status = str(final_job.get("status") or "failed").strip().lower()
         if final_status in {"queued", "running"} or final_status not in {
@@ -2684,10 +2786,7 @@ def _run_twofa_retry_job(
         return
 
     try:
-        claimed = db.claim_job_for_execution(
-            job_id,
-            started_at=_now_iso(),
-        )
+        claimed = _claim_job_for_worker(job_id)
     except Exception:
         _deactivate_job(job_id)
         raise
@@ -2782,6 +2881,7 @@ def _run_twofa_retry_job(
         codex_retry_service.release(email)
         logger.exception("[Job %s] 账号配置重试异常", job_id)
     finally:
+        mark_execution_state("cleaning")
         final_job = db.get_job(job_id) or {}
         final_status = str(final_job.get("status") or "failed").strip().lower()
         if final_status in {"queued", "running"} or final_status not in {
@@ -2809,7 +2909,7 @@ def submit_registration(
     registration_driver: str | None = None,
 ) -> list[dict]:
     """
-    创建 N 个注册任务并提交到线程池。
+    创建 N 个持久排队任务，执行器只在共享许可允许时启动。
     email_source 会写入每个任务，任务执行时严格使用该来源，不跨平台兜底。
 
     Returns:
@@ -2827,8 +2927,7 @@ def submit_registration(
     from core.email.provider import validate_email_source
     email_source = validate_email_source(email_source)
 
-    # 创建/切换线程池和提交本批任务必须整体串行化：否则另一请求在本批提交中途
-    # 切换 workers 并 shutdown 旧池，会导致后续 submit 报 cannot schedule new futures after shutdown。
+    # 批次快照与请求并发一起冻结；不把整批任务压入线程池等待。
     with _executor_lock:
         # 同一批任务共享入队瞬间的国家快照；即使配置在提交循环期间热加载，
         # 也不能让同一批排队任务分裂到不同的默认国家。
@@ -2836,7 +2935,7 @@ def submit_registration(
         if selected_driver is not None:
             _apply_registration_driver_snapshot(registration_snapshot, selected_driver)
         require_registration_deployment(registration_snapshot)
-        executor = get_executor(max_workers=workers)
+        get_executor(max_workers=workers)
         effective_workers = get_executor_workers()
         batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         jobs = []
@@ -2847,7 +2946,7 @@ def submit_registration(
                 batch_index=index + 1,
                 batch_size=count,
                 batch_workers=effective_workers,
-                data={"config_snapshot": dict(registration_snapshot)},
+                data={"config_snapshot": dict(registration_snapshot), "registration_dispatch_ready": False},
             )
             if debug_enabled:
                 from core.registration.debug import patch_job
@@ -2862,16 +2961,7 @@ def submit_registration(
                     },
                 )
                 job = db.get_job(int(job["id"])) or job
-            try:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
-            except Exception as exc:
-                db.update_job(
-                    int(job["id"]),
-                    status="failed",
-                    error=f"队列提交失败：{type(exc).__name__}: {exc}"[:500],
-                    completed_at=_now_iso(),
-                )
-                logger.exception("[Service] 注册任务 #%s 提交线程池失败", job["id"])
+            _enqueue_job(int(job["id"]))
             jobs.append(db.get_job(int(job["id"])) or job)
     logger.info(
         "[Service] 已提交 %s 个注册任务，源=%s，driver=%s，workers=%s，debug=%s",
@@ -3833,7 +3923,9 @@ def retry_job(
         batch_id = str(root_job.get("batch_id") or source.get("batch_id") or "") or None
         batch_index = int(root_job.get("batch_index") or source.get("batch_index") or 1)
         batch_size = int(root_job.get("batch_size") or source.get("batch_size") or 1)
-    if workers is None:
+        # 同一批次的重跑沿用原额度，不能借入口 workers 覆盖历史批次限制。
+        workers = max(1, int(root_job.get("batch_workers") or source.get("batch_workers") or 1))
+    elif workers is None:
         workers = max(1, int(root_job.get("batch_workers") or source.get("batch_workers") or 1))
     source_email = str(source.get("email") or "").strip()
     root_email = str(root_job.get("email") or "").strip()
@@ -3966,7 +4058,7 @@ def retry_job(
             batch_index=batch_index,
             batch_size=batch_size,
             batch_workers=workers,
-            data={"config_snapshot": retry_snapshot},
+            data={"config_snapshot": retry_snapshot, "registration_dispatch_ready": False},
         )
     except LookupError as exc:
         if reserved_account_action:
@@ -4050,28 +4142,8 @@ def retry_job(
             )
         if action == "codex":
             db.update_account_codex_status(email, "retrying", None)
-        with _executor_lock:
-            executor = get_executor(max_workers=workers)
-            if action == "codex":
-                executor.submit(
-                    _run_codex_retry_job,
-                    job["id"],
-                    job["log_file"],
-                    email,
-                    int(account_id),
-                    account_task_id,
-                )
-            elif action == "twofa":
-                executor.submit(
-                    _run_twofa_retry_job,
-                    job["id"],
-                    job["log_file"],
-                    email,
-                    int(account_id),
-                    account_task_id,
-                )
-            else:
-                executor.submit(_run_one_job, job["id"], job["log_file"])
+        get_executor(max_workers=workers)
+        _enqueue_job(int(job["id"]), account_task_id=account_task_id)
     except Exception as exc:
         if reserved_account_action:
             codex_retry_service.release(email)

@@ -805,6 +805,9 @@ def init() -> None:
                 )
                 """
             )
+        from core.storage.operations import permits
+
+        permits.ensure_tables()
         _READY_KEY = ready_key
 
 
@@ -2882,7 +2885,11 @@ def _operation_task_where(
             where.append(expression)
             params.extend(values)
 
-    add("task_type", "t.task_type=%s", str(task_type)) if task_type else None
+    if task_type:
+        # 并发分类可涵盖多个真实任务类型，保持单值兼容且始终参数化查询。
+        selected_types = list(dict.fromkeys(part.strip() for part in str(task_type).split(",") if part.strip()))[:20]
+        if selected_types:
+            add("task_type", "t.task_type = ANY(%s)", selected_types)
     # ``r`` is the current run selected by the list query below.  Filtering on
     # it keeps a logical task out of terminal facets while a retry is active.
     add("status", "COALESCE(r.effective_status, t.status)=%s", str(status)) if status else None
@@ -3116,6 +3123,7 @@ def list_tasks(
                 }
                 for row in cur.fetchall()
             ]
+        _attach_admission_wait(items, conn=conn)
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size,
             **({"facets": facets} if include_facets else {})}
 
@@ -3245,6 +3253,9 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
         "parent": parent,
         "flow": flow_for(result.get("task_type"), _select_current_run(runs)),
     })
+    with _connect() as conn:
+        _attach_admission_wait(runs, conn=conn, run_rows=True)
+        _attach_admission_wait([result], conn=conn)
     return result
 
 
@@ -3710,16 +3721,18 @@ def list_ready_task_dependencies(*, limit: int = 100, initialize: bool = True) -
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
 
-def claim_task_dependency(dependency_id: int, *, initialize: bool = True) -> dict | None:
+def claim_task_dependency(dependency_id: int, *, initialize: bool = True, conn=None) -> dict | None:
     """Atomically claim one ready handoff so restart/reconcile cannot double-run it."""
-    if initialize:
+    if initialize and conn is None:
         init()
-    with _connect() as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             UPDATE {_table('operation_task_dependencies')}
             SET status='ready', next_attempt_at=NULL, updated_at=now()
             WHERE status='running' AND updated_at < now() - interval '15 minutes'
+              AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p
+                WHERE p.execution_key='operation_dependency:' || id::text AND p.released_at IS NULL)
             """
         )
         cur.execute(
@@ -3739,8 +3752,12 @@ def claim_task_dependency(dependency_id: int, *, initialize: bool = True) -> dic
 def recover_stale_task_dependencies(*, stale_after_seconds: int = 15 * 60) -> int:
     """Return abandoned dependency claims to the ready queue after restart."""
     init()
+    from core.storage.operations import permits
+
+    permits.recover_execution_permits()
     age = max(1, int(stale_after_seconds))
     with _connect() as conn, conn.cursor() as cur:
+        permits.admission_lock(conn)
         cur.execute(
             f"""
             UPDATE {_table('operation_task_dependencies')}
@@ -3748,6 +3765,8 @@ def recover_stale_task_dependencies(*, stale_after_seconds: int = 15 * 60) -> in
                 last_error=COALESCE(last_error, 'dispatcher claim timed out')
             WHERE status='running'
               AND updated_at < now() - (%s * interval '1 second')
+              AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p
+                WHERE p.execution_key='operation_dependency:' || id::text AND p.released_at IS NULL)
             """,
             (age,),
         )
@@ -3787,6 +3806,7 @@ def apply_task_dependency_result(
     parent_source_id: str,
     child_status: str,
     child_result: dict | None = None,
+    expected_parent_run_id: int | None = None,
 ) -> dict | None:
     """Persist a dependency failure/unknown outcome on its parent task.
 
@@ -3815,7 +3835,7 @@ def apply_task_dependency_result(
     with _connect() as conn, conn.cursor() as cur:
         if parent_system == "webui_runtime" and parent_id.isdigit():
             cur.execute(
-                f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE",
+                f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s",
                 (int(parent_id),),
             )
         else:
@@ -3823,7 +3843,6 @@ def apply_task_dependency_result(
                 f"""
                 SELECT * FROM {_table('operation_tasks')}
                 WHERE source_system=%s AND source_id=%s
-                FOR UPDATE
                 """,
                 (parent_system, parent_id),
             )
@@ -3832,11 +3851,21 @@ def apply_task_dependency_result(
             return None
         parent = dict(parent)
         parent_task_id = int(parent["id"])
+        observed_run_id = int(parent.get("last_run_id") or 0)
+        if expected_parent_run_id is not None and observed_run_id != int(expected_parent_run_id):
+            return {**(_row(parent) or {}), "dependency_stale": True}
+        # 与准入/终态写回保持 Run→Task 顺序；读取任务身份本身不先持任务行锁。
         cur.execute(
             f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
-            (int(parent.get("last_run_id") or 0),),
+            (observed_run_id,),
         )
         parent_run = cur.fetchone()
+        cur.execute(f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (parent_task_id,))
+        locked_parent = cur.fetchone()
+        if not locked_parent:
+            return None
+        if int(locked_parent.get("last_run_id") or 0) != observed_run_id:
+            return {**(_row(dict(locked_parent)) or {}), "dependency_stale": True}
         parent_summary = _decode(parent_run.get("result_summary")) if parent_run else {}
         parent_summary = dict(parent_summary) if isinstance(parent_summary, dict) else {}
         parent_summary.update({
@@ -3906,11 +3935,18 @@ def apply_task_dependency_result(
 def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int | None = None) -> dict | None:
     """Advance a native parent from child states while holding one DB transaction."""
     cur.execute(
-        f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE",
+        f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s",
         (int(parent_task_id),),
     )
     parent = cur.fetchone()
     if not parent:
+        return None
+    observed_run_id = int(parent.get("last_run_id") or 0)
+    if observed_run_id:
+        cur.execute(f"SELECT id FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE", (observed_run_id,))
+    cur.execute(f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (int(parent_task_id),))
+    parent = cur.fetchone()
+    if not parent or int(parent.get("last_run_id") or 0) != observed_run_id:
         return None
     if str(parent.get("task_type") or "") == "account_inspection_batch":
         # 巡检批次用定长聚合摘要，避免每个账号完成都重写全部子任务 JSON。
@@ -3925,7 +3961,6 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
         LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id
         WHERE t.parent_task_id=%s
         ORDER BY t.id
-        FOR UPDATE OF t
         """,
         (int(parent_task_id),),
     )
@@ -4333,7 +4368,8 @@ def _remote_write_checkpoint(data: Any) -> dict:
     return {}
 
 
-def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dict | None = None) -> dict:
+def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dict | None = None,
+                       expected_previous_run_id: int | None = None) -> dict:
     """在同一逻辑任务下新建 attempt；不会制造第二条逻辑任务。"""
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -4344,6 +4380,8 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
         task = cur.fetchone()
         if not task:
             raise LookupError("任务不存在")
+        if expected_previous_run_id is not None and int(task.get("last_run_id") or 0) != int(expected_previous_run_id):
+            return {"id": task.get("last_run_id"), "task_id": int(task_id), "dependency_stale": True}
         if str(task.get("source_system") or "") in {"registration_jobs", "account_action_tasks"}:
             raise ValueError("历史兼容任务需先迁移为原生任务后再重跑")
         task_status = str(task.get("status") or "").strip().lower()
@@ -4523,7 +4561,39 @@ def get_run(run_id: int) -> dict | None:
             (int(run_id),),
         )
         raw = cur.fetchone()
-        return _row(dict(raw)) if raw else None
+        result = _row(dict(raw)) if raw else None
+        if result is not None:
+            _attach_admission_wait([result], conn=conn, run_rows=True)
+        return result
+
+
+def _attach_admission_wait(rows: list[dict], *, conn, run_rows: bool = False) -> None:
+    """等待原因来自准入器事实，不让前端推测任务失败或容量状态。"""
+    from core.storage.operations import permits
+
+    keys = {}
+    for row in rows:
+        if str(row.get("status") or "") not in {"queued", "pending"}:
+            continue
+        if row.get("source_system") == "registration_jobs":
+            key = f"registration_job:{row.get('source_id')}"
+        else:
+            run_id = row.get("id") if run_rows else row.get("last_run_id")
+            if not run_id:
+                continue
+            key = f"operation_run:{run_id}"
+        keys[key] = row
+    details = permits.wait_details(list(keys), conn=conn)
+    for key, row in keys.items():
+        reasons = details.get(key) or []
+        if not reasons and row.get("next_attempt_at"):
+            try:
+                if _legacy_timestamp(row["next_attempt_at"]) > _now():
+                    reasons = [{"code": "not_due"}]
+            except (TypeError, ValueError):
+                pass
+        row["admission_wait_reasons"] = reasons
+        row["admission_wait_reason"] = reasons[0]["code"] if reasons else None
 
 
 def list_interrupted_runtime_runs(
@@ -4910,46 +4980,68 @@ def list_dispatchable_runs(
         clauses.append("t.source_system = ANY(%s)")
         params.append(source_values)
     scan_limit = max(1, min(5000, int(limit or 500)))
-    continuation = """(t.task_type='extract_link'
-        AND r.data->>'provider_id' IN ('huanguang', 'legacy', 'anguang')
-        AND r.data->'extract_poll_continuation'='true'::jsonb)"""
+    continuation = f"""(t.task_type='extract_link' AND (
+        (r.data->>'provider_id' IN ('huanguang', 'legacy', 'anguang')
+         AND r.data->'extract_poll_continuation'='true'::jsonb)
+        OR (r.data->>'payment_source'='xxsyun'
+            AND r.data->>'workbench_action' IN ('sync_status','payment_sync')
+            AND EXISTS (SELECT 1 FROM {_table('extract_link_payment_orders')} payment
+                WHERE payment.task_id=r.task_id AND payment.payment_provider='xxsyun'
+                AND NULLIF(payment.remote_order_id,'') IS NOT NULL))))"""
     base_query = f"""
         SELECT r.*, t.email_snapshot, t.task_type, t.source_system,
-               {_extract_batch_workers_sql()} AS batch_workers
+               CASE WHEN t.task_type='account_inspection' THEN (
+                   SELECT CASE WHEN parent.data->>'workers' ~ '^[1-9][0-9]*$'
+                       THEN (parent.data->>'workers')::integer END
+                   FROM {_table('operation_tasks')} parent WHERE parent.id=t.parent_task_id
+               ) ELSE {_extract_batch_workers_sql()} END AS batch_workers,
+               CASE WHEN {continuation} THEN 'continuation' ELSE 'new' END AS dispatch_lane
         FROM {_table('operation_runs')} r
         JOIN {_table('operation_tasks')} t ON t.id=r.task_id
         LEFT JOIN {_table('operation_batches')} b ON b.id=r.batch_id
         WHERE {' AND '.join(clauses)}
     """
-    # 两类各取有限候选，超过一整页的旧续查不能遮住新任务。
+    # 先覆盖类型、批次、平台和新任务/续查分组，再扩展每组候选。
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            WITH candidates AS (
-                ({base_query} AND COALESCE({continuation}, false)
-                 ORDER BY r.next_attempt_at ASC NULLS FIRST, r.created_at, r.id LIMIT %s)
-                UNION ALL
-                ({base_query} AND NOT COALESCE({continuation}, false)
-                 ORDER BY r.created_at, r.id LIMIT %s)
-            ), ranked AS (
+            WITH cursor_state AS (
+                SELECT batches FROM {_table('operation_execution_dispatch_cursor')} WHERE id=1
+            ), candidates AS ({base_query}), ranked AS (
                 SELECT candidates.*, ROW_NUMBER() OVER (
-                    PARTITION BY COALESCE(task_type='extract_link'
-                        AND data->>'provider_id' IN ('huanguang', 'legacy', 'anguang')
-                        AND data->'extract_poll_continuation'='true'::jsonb, false)
-                    ORDER BY CASE WHEN task_type='extract_link' AND data->>'provider_id' IN ('huanguang', 'legacy', 'anguang')
-                        AND data->'extract_poll_continuation'='true'::jsonb THEN next_attempt_at END
-                        ASC NULLS FIRST, created_at, id
+                    PARTITION BY task_type, COALESCE(batch_id,0),
+                        CASE WHEN task_type='extract_link' THEN data->>'provider_id' ELSE '' END,
+                        dispatch_lane
+                    ORDER BY next_attempt_at ASC NULLS FIRST, created_at, id
                 ) AS dispatch_position
                 FROM candidates
+            ), lane_ranked AS (
+                SELECT ranked.*, ROW_NUMBER() OVER (
+                    PARTITION BY task_type, CASE WHEN task_type='extract_link' THEN data->>'provider_id' ELSE '' END, dispatch_lane
+                    ORDER BY dispatch_position,
+                        ((CASE WHEN batch_id IS NULL THEN '' ELSE 'operation:' || batch_id::text END)
+                            > COALESCE((SELECT batches->>ranked.task_type FROM cursor_state),'')) DESC,
+                        CASE WHEN batch_id IS NULL THEN '' ELSE 'operation:' || batch_id::text END, created_at, id
+                ) AS lane_position FROM ranked
+            ), provider_ranked AS (
+                SELECT lane_ranked.*, ROW_NUMBER() OVER (
+                    PARTITION BY task_type, CASE WHEN task_type='extract_link' THEN data->>'provider_id' ELSE '' END
+                    ORDER BY lane_position, ((dispatch_lane='continuation') = %s) DESC,
+                        dispatch_position, created_at, id
+                ) AS provider_position FROM lane_ranked
+            ), type_ranked AS (
+                SELECT ranked.*, ROW_NUMBER() OVER (
+                    PARTITION BY task_type ORDER BY provider_position, dispatch_position,
+                        ((dispatch_lane='continuation') = %s) DESC, created_at, id
+                ) AS type_position FROM provider_ranked ranked
             )
-            SELECT * FROM ranked
-            ORDER BY dispatch_position,
-                (COALESCE(task_type='extract_link' AND data->>'provider_id' IN ('huanguang', 'legacy', 'anguang')
-                 AND data->'extract_poll_continuation'='true'::jsonb, false) = %s) DESC,
+            SELECT * FROM type_ranked
+            ORDER BY type_position, dispatch_position,
+                ((dispatch_lane='continuation') = %s) DESC,
                 created_at, id
             LIMIT %s
             """,
-            (*params, scan_limit, *params, scan_limit, bool(prioritize_continuations), scan_limit),
+            (*params, bool(prioritize_continuations), bool(prioritize_continuations), bool(prioritize_continuations), scan_limit),
         )
         return [_row(dict(row)) or {} for row in cur.fetchall()]
 
@@ -5137,6 +5229,8 @@ def _requeue_stale_extract_continuations(cur, stale_seconds: int) -> list[dict]:
                 ))
           )
           AND run.status='running' AND run.cancel_requested_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p
+              WHERE p.run_id=run.id AND p.released_at IS NULL)
           AND (run.heartbeat_at IS NULL OR run.heartbeat_at < now() - (%s * interval '1 second'))
           AND NOT EXISTS (
               SELECT 1 FROM {_table('account_operation_leases')} lease
@@ -5184,9 +5278,13 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
     account lease 的行才属于可恢复的孤儿执行。
     """
     init()
+    from core.storage.operations import permits
+
+    permits.recover_execution_permits()
     stale_seconds = max(1, min(7 * 24 * 60 * 60, int(stale_after_seconds or 0)))
     ready_dependencies: list[dict] = []
     with _connect() as conn, conn.cursor() as cur:
+        permits.admission_lock(conn)
         requeued_continuations = _requeue_stale_extract_continuations(cur, stale_seconds)
         cur.execute(
             f"""
@@ -5242,6 +5340,8 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
             WHERE run.task_id=task.id
               AND run.source_system NOT IN ('registration_jobs', 'account_action_tasks')
               AND run.status IN ('running', 'cancelling', 'settling')
+              AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p
+                  WHERE p.run_id=run.id AND p.released_at IS NULL)
               AND (run.heartbeat_at IS NULL OR run.heartbeat_at < now() - (%s * interval '1 second'))
               AND NOT EXISTS (
                   SELECT 1 FROM {_table('account_operation_leases')} lease
@@ -5474,12 +5574,14 @@ def set_runtime_batch_skipped(batch_id: int, skipped: list[dict]) -> None:
         _refresh_batches(cur, [int(batch_id)])
 
 
-def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None:
+def claim_run(run_id: int, *, execution_id: str, worker_pid: int, conn=None) -> dict | None:
     """仅一个进程能把 queued attempt 原子认领为 running。"""
-    init()
+    if conn is None:
+        init()
+    external_connection = conn is not None
     blocked_before_execution = False
     result: dict | None = None
-    with _connect() as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT * FROM {_table('operation_runs')}
@@ -5493,6 +5595,18 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
         if not run or not _claim_extract_batch_capacity(conn, cur, run):
             return None
         account_id = int(run.get("account_id") or 0)
+        if account_id:
+            # 准入事务内核验账号互斥，不能认领后才在 worker 中等待账号资源。
+            cur.execute(f"""SELECT lease.run_id FROM {_table('account_operation_leases')} lease
+                WHERE lease.account_id=%s AND lease.resource_family=%s AND lease.run_id<>%s
+                  AND (lease.expires_at > now() OR EXISTS (
+                      SELECT 1 FROM {_table('operation_execution_permits')} p
+                      WHERE p.run_id=lease.run_id AND p.released_at IS NULL))""",
+                        (account_id, str(run.get("resource_family") or "openai_interactive"), int(run_id)))
+            if cur.fetchone():
+                from core.storage.operations.permits import ClaimUnavailable
+
+                raise ClaimUnavailable("account_busy")
         account = (
             record_store.get_row(
                 record_store.ACCOUNTS,
@@ -5522,6 +5636,12 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
                 (int(run["task_id"]),),
             )
             blocked_before_execution = True
+            if external_connection:
+                cur.execute(f"""SELECT r.*,t.task_type,t.email_snapshot,t.trigger,t.parent_task_id
+                    FROM {_table('operation_runs')} r JOIN {_table('operation_tasks')} t ON t.id=r.task_id
+                    WHERE r.id=%s""", (int(run_id),))
+                result = _row(dict(cur.fetchone())) or {}
+                result["_deactivated_before_execution"] = True
         else:
             cur.execute(
                 f"""
@@ -5568,6 +5688,8 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int) -> dict | None
                 (int(run_id),),
             )
             result = _row(dict(cur.fetchone())) or {}
+    if external_connection:
+        return result
     if blocked_before_execution:
         _finish_deactivated_before_execution(
             int(run_id),
@@ -6202,7 +6324,9 @@ def acquire_account_lease(
         if _account_is_deactivated(account):
             raise OperationAccountDeactivated("账号已确认停用，禁止申请任务 lease")
         cur.execute(
-            f"DELETE FROM {_table('account_operation_leases')} WHERE expires_at < now()",
+            f"""DELETE FROM {_table('account_operation_leases')} lease WHERE expires_at < now()
+                AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p
+                    WHERE p.run_id=lease.run_id AND p.released_at IS NULL)""",
         )
         cur.execute(
             f"""

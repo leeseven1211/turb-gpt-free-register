@@ -378,7 +378,8 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         }.issubset(config_editor.RESTART_REQUIRED_KEYS))
         self.assertNotIn("PLAN_CHECK_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
         self.assertNotIn("ACCOUNT_BATCH_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
-        self.assertNotIn("EXTRACT_LINK_WORKERS", {item["key"] for item in config_editor.EDITABLE_FIELDS})
+        self.assertNotIn("EXTRACT_LINK_WORKERS", config_editor.RESTART_REQUIRED_KEYS)
+        self.assertEqual("并发控制", config_schema.CONFIG_SCHEMA["EXTRACT_LINK_WORKERS"].group)
         result = config_editor.update_config({})
         self.assertEqual([], result["restart_required"])
 

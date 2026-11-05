@@ -43,6 +43,29 @@ def create_config_blueprint(context: WebUIContext):
     def api_config_get():
         return jsonify(config_editor.get_config())
 
+    @bp.get("/api/config/concurrency-preview")
+    def api_concurrency_preview():
+        """只读预览；仅完整保存新策略时才落地迁移标记。"""
+        try:
+            return jsonify({"ok": True, **config_editor.get_concurrency_migration_preview()})
+        except Exception:
+            logger.exception("并发迁移预览读取失败")
+            return jsonify({"ok": False, "error_code": "scheduler_store_unavailable", "code": "scheduler_store_unavailable",
+                            "error": "并发配置存储暂不可用，请稍后重试。"}), 503
+
+    @bp.get("/api/operations/concurrency")
+    def api_concurrency_status():
+        from core.operations.concurrency import (
+            ConcurrencyPolicyError, ConcurrencyStoreUnavailable, get_concurrency_status,
+        )
+
+        details = str(request.args.get("details") or "").lower() in {"1", "true"}
+        try:
+            return jsonify({"ok": True, **get_concurrency_status(include_details=details)})
+        except (ConcurrencyPolicyError, ConcurrencyStoreUnavailable) as exc:
+            return jsonify({"ok": False, "error_code": exc.code, "code": exc.code,
+                            "error": "并发策略或状态暂不可用，请按错误代码检查后重试。"}), 503
+
     @bp.get("/api/maintenance/sentinel")
     def api_sentinel_maintenance():
         from core.maintenance.sentinel import get_service
@@ -84,7 +107,9 @@ def create_config_blueprint(context: WebUIContext):
         """
         snapshot = config_editor.get_config_snapshot().as_dict()
         return jsonify({
-            "account_batch_workers": snapshot.get("ACCOUNT_BATCH_WORKERS", 3),
+            # 旧字段保留响应兼容；仅作为批量界面的展示默认，不构成账号公共预算。
+            "account_batch_workers": snapshot.get("GLOBAL_TASK_WORKERS", 3),
+            "global_task_workers": snapshot.get("GLOBAL_TASK_WORKERS", 3),
             "account_live_check_driver": snapshot.get("ACCOUNT_LIVE_CHECK_DRIVER", ""),
             "config_revision": config_revision(),
         })
@@ -112,6 +137,8 @@ def create_config_blueprint(context: WebUIContext):
             return jsonify({
                 "ok": False,
                 "error": "配置校验失败",
+                "error_code": exc.code,
+                "code": exc.code,
                 "fields": dict(exc.errors),
             }), 400
         except Exception as exc:

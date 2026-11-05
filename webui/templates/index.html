@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261030-layout-v2') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261030-layout-v2') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261030-layout-v2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261105-concurrency-control') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
     #accountsPanelV2 > #accountRegistrationRetryResultV2 { flex-wrap: wrap; overflow: visible; align-items: center; }
@@ -630,6 +630,7 @@
       </div>
     </div>
     <section class="account-tasks-panel" id="accountTasksPanel" aria-label="统一任务中心">
+      <div id="operationReceiptsV2" hidden></div>
       <div class="account-tasks-command-deck">
       <div class="jobs-toolbar-v2 list-action-toolbar account-tasks-toolbar">
         <span class="list-selection-hint" id="accountTaskSelectedHintV2">选择任务后批量操作</span>
@@ -1139,14 +1140,14 @@
 <script src="{{ url_for('static', filename='js/shared/common.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261103-at-v3-registration-retry') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261105-concurrency-control') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261105-concurrency-control') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-butler-unlimited') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261103-sentinel-maintenance') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261105-concurrency-control') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261105-concurrency-control') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

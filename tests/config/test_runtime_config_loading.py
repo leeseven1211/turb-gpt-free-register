@@ -50,8 +50,8 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / ".env"
-        self.path.write_text('WEBUI_AUTH_CODE="bootstrap-code"\nACCOUNT_BATCH_WORKERS="2"\n', encoding="utf-8")
-        self.repository = _Repository({"ACCOUNT_BATCH_WORKERS": "6", "PROXY_POOL": "[]"})
+        self.path.write_text('WEBUI_AUTH_CODE="bootstrap-code"\nACCOUNT_PLAN_CHECK_WORKERS="2"\n', encoding="utf-8")
+        self.repository = _Repository({"ACCOUNT_PLAN_CHECK_WORKERS": "6", "PROXY_POOL": "[]", "CONCURRENCY_POLICY_REVISION": "1"})
         for context in (
             patch.object(env_loader, "_ENV_PATH", self.path),
             patch.object(runtime, "_repository", return_value=self.repository),
@@ -72,14 +72,14 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.assertFalse(self.runtime.is_bootstrap_key("UNKNOWN_LEGACY_RUNTIME_KEY"))
 
     def test_database_values_override_stale_environment_and_absence_restores_default(self):
-        os.environ["ACCOUNT_BATCH_WORKERS"] = "3"
+        os.environ["ACCOUNT_PLAN_CHECK_WORKERS"] = "3"
         os.environ["SMS_API_KEY"] = "stale-environment-secret"
         self.runtime.load_values(force=True)
-        self.assertEqual("6", os.environ["ACCOUNT_BATCH_WORKERS"])
+        self.assertEqual("6", os.environ["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertNotIn("SMS_API_KEY", os.environ)
         self.assertEqual([], schema.resolve_config()["PROXY_POOL"].value)
-        self.assertEqual("database", schema.resolve_config()["ACCOUNT_BATCH_WORKERS"].source)
-        self.assertEqual("env", schema.resolve_config({"ACCOUNT_BATCH_WORKERS": "3"})["ACCOUNT_BATCH_WORKERS"].source)
+        self.assertEqual("database", schema.resolve_config()["ACCOUNT_PLAN_CHECK_WORKERS"].source)
+        self.assertEqual("env", schema.resolve_config({"ACCOUNT_PLAN_CHECK_WORKERS": "3"})["ACCOUNT_PLAN_CHECK_WORKERS"].source)
 
     def test_active_database_read_failure_never_falls_back_to_file(self):
         self.runtime.load_values(force=True)
@@ -97,7 +97,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.repository.values = None
         self.runtime.reset_cache()
         with self.assertRaisesRegex(RuntimeError, "迁移"):
-            self.runtime.write_persisted_values({"ACCOUNT_BATCH_WORKERS": "5"})
+            self.runtime.write_persisted_values({"ACCOUNT_PLAN_CHECK_WORKERS": "5"})
         self.assertIsNone(self.repository.values)
 
     def test_missing_active_metadata_with_master_key_never_loads_legacy_values(self):
@@ -135,16 +135,16 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         config.reload_all()
         before_file = self.path.read_bytes()
         old_snapshot = schema.non_sensitive_snapshot()
-        result = config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 7})
-        self.assertEqual("7", self.repository.values["ACCOUNT_BATCH_WORKERS"])
+        result = config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7})
+        self.assertEqual("7", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual(before_file, self.path.read_bytes())
-        self.assertEqual(6, old_snapshot["ACCOUNT_BATCH_WORKERS"])
-        self.assertEqual(7, schema.non_sensitive_snapshot()["ACCOUNT_BATCH_WORKERS"])
+        self.assertEqual(6, old_snapshot["ACCOUNT_PLAN_CHECK_WORKERS"])
+        self.assertEqual(7, schema.non_sensitive_snapshot()["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual([], result["env_updated"])
-        self.assertEqual(["ACCOUNT_BATCH_WORKERS"], result["database_updated"])
+        self.assertEqual(["ACCOUNT_PLAN_CHECK_WORKERS"], result["database_updated"])
         metadata = {item["key"]: item for item in schema.effective_config_metadata()}
-        self.assertEqual("database", metadata["ACCOUNT_BATCH_WORKERS"]["storage"])
-        self.assertEqual("database", metadata["ACCOUNT_BATCH_WORKERS"]["source"])
+        self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["storage"])
+        self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["source"])
 
     def test_commit_failure_restores_database_environment_modules_snapshot_and_bootstrap(self):
         self.runtime.load_values(force=True)
@@ -154,11 +154,11 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         old_file = self.path.read_bytes()
         self.repository.commit_error = True
         with self.assertRaisesRegex(RuntimeError, "提交失败"):
-            config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 7, "WEBUI_AUTH_CODE": "new-code"})
-        self.assertEqual("6", self.repository.values["ACCOUNT_BATCH_WORKERS"])
+            config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7, "WEBUI_AUTH_CODE": "new-code"})
+        self.assertEqual("6", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual(old_environment, dict(os.environ))
         self.assertEqual(old_file, self.path.read_bytes())
-        self.assertEqual(6, config.ACCOUNT_BATCH_WORKERS)
+        self.assertEqual(6, config.ACCOUNT_PLAN_CHECK_WORKERS)
         self.assertIs(old_snapshot, schema.non_sensitive_snapshot())
 
     def test_reload_failure_rolls_back_staged_database_values(self):
@@ -166,9 +166,9 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         before_file = self.path.read_bytes()
         with patch.object(config, "reload_all", side_effect=RuntimeError("测试重载失败")):
             with self.assertRaisesRegex(RuntimeError, "重载失败"):
-                config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 7})
-        self.assertEqual("6", self.repository.values["ACCOUNT_BATCH_WORKERS"])
-        self.assertEqual("6", os.environ["ACCOUNT_BATCH_WORKERS"])
+                config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7})
+        self.assertEqual("6", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
+        self.assertEqual("6", os.environ["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual(before_file, self.path.read_bytes())
 
     def test_validation_refreshes_values_after_acquiring_database_lock(self):
@@ -177,21 +177,21 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
 
         @contextmanager
         def concurrent_commit_before_lock():
-            self.repository.values["ACCOUNT_BATCH_WORKERS"] = "9"
+            self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"] = "9"
             with original_transaction() as conn:
                 yield conn
 
         original_validate = config_editor.validate_config_updates
 
         def validate_latest(updates):
-            self.assertEqual("9", os.environ["ACCOUNT_BATCH_WORKERS"])
+            self.assertEqual("9", os.environ["ACCOUNT_PLAN_CHECK_WORKERS"])
             return original_validate(updates)
 
         with patch.object(self.repository, "transaction", concurrent_commit_before_lock), patch.object(
             config_editor, "validate_config_updates", side_effect=validate_latest
         ):
             config_editor.update_config({"REGISTER_NAME": "fixture-name"})
-        self.assertEqual("9", self.repository.values["ACCOUNT_BATCH_WORKERS"])
+        self.assertEqual("9", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
 
     def test_snapshot_readers_only_see_committed_values_during_commit_gate(self):
         self.runtime.load_values(force=True)
@@ -215,9 +215,9 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
                         self.repository.values = before
                         raise
 
-                target = int(before["ACCOUNT_BATCH_WORKERS"]) + 1
+                target = int(before["ACCOUNT_PLAN_CHECK_WORKERS"]) + 1
                 with patch.object(self.repository, "transaction", gated_transaction), ThreadPoolExecutor(max_workers=2) as executor:
-                    saved = executor.submit(config_editor.update_config, {"ACCOUNT_BATCH_WORKERS": target})
+                    saved = executor.submit(config_editor.update_config, {"ACCOUNT_PLAN_CHECK_WORKERS": target})
                     reader_started, reader_done = threading.Event(), threading.Event()
 
                     def concurrent_read():
@@ -233,7 +233,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
                         self.assertTrue(reader_started.wait(5))
                         self.assertFalse(reader_done.wait(.1), "候选重载期间其他线程不能投影旧数据库环境")
                         self.assertIs(old_snapshot, schema.non_sensitive_snapshot())
-                        self.assertEqual(int(before["ACCOUNT_BATCH_WORKERS"]), schema.non_sensitive_snapshot()["ACCOUNT_BATCH_WORKERS"])
+                        self.assertEqual(int(before["ACCOUNT_PLAN_CHECK_WORKERS"]), schema.non_sensitive_snapshot()["ACCOUNT_PLAN_CHECK_WORKERS"])
                     finally:
                         release_commit.set()
                     if fail:
@@ -242,7 +242,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
                         self.assertIs(old_snapshot, schema.non_sensitive_snapshot())
                     else:
                         saved.result(timeout=5)
-                        self.assertEqual(target, schema.non_sensitive_snapshot()["ACCOUNT_BATCH_WORKERS"])
+                        self.assertEqual(target, schema.non_sensitive_snapshot()["ACCOUNT_PLAN_CHECK_WORKERS"])
                     self.assertEqual(self.repository.values, reader.result(timeout=5))
 
 
@@ -283,14 +283,15 @@ NODE_EXECUTABLE="/path/with\\t tab"
         }):
             try:
                 repository.write_values({
-                    "ACCOUNT_BATCH_WORKERS": "6", "PROXY_POOL": "[]",
+                    "ACCOUNT_PLAN_CHECK_WORKERS": "6", "PROXY_POOL": "[]",
+                    "CONCURRENCY_POLICY_REVISION": "1",
                     "UNKNOWN_LEGACY_RUNTIME_KEY": "original-value",
                 }, activate=True, source="test")
                 path = Path(directory) / ".env"
                 path.write_text(
                     'WEBUI_AUTH_CODE="temporary-login"\n'
                     f'TURB_DB_SCHEMA="{selected_schema}"\nTURB_CONFIG_ENCRYPTION_KEY="{key}"\n'
-                    'ACCOUNT_BATCH_WORKERS="2"\nSMS_API_KEY="stale-file-value"\n', encoding="utf-8",
+                    'ACCOUNT_PLAN_CHECK_WORKERS="2"\nSMS_API_KEY="stale-file-value"\n', encoding="utf-8",
                 )
                 script = r'''
 import importlib.util
@@ -307,8 +308,8 @@ sys.modules["config.env_loader"] = loader
 loader_spec.loader.exec_module(loader)
 loader._ENV_PATH = path
 spec.loader.exec_module(package)
-from config import codex
-assert codex.ACCOUNT_BATCH_WORKERS == 6
+from config import concurrency
+assert concurrency.ACCOUNT_PLAN_CHECK_WORKERS == 6
 assert "SMS_API_KEY" not in os.environ
 assert os.environ["UNKNOWN_LEGACY_RUNTIME_KEY"] == "original-value"
 assert os.environ["WEBUI_AUTH_CODE"] == "temporary-login"
@@ -319,16 +320,16 @@ from core.storage import runtime_config as runtime_config_store
 app = create_app()
 before_file = path.read_bytes()
 old_snapshot = schema.non_sensitive_snapshot()
-saved = config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 7})
-assert saved["database_updated"] == ["ACCOUNT_BATCH_WORKERS"]
-assert runtime_config_store.read_values()["ACCOUNT_BATCH_WORKERS"] == "7"
-assert package.ACCOUNT_BATCH_WORKERS == 7
-assert old_snapshot["ACCOUNT_BATCH_WORKERS"] == 6
-assert schema.non_sensitive_snapshot().sources["ACCOUNT_BATCH_WORKERS"] == "database"
+saved = config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7})
+assert saved["database_updated"] == ["ACCOUNT_PLAN_CHECK_WORKERS"]
+assert runtime_config_store.read_values()["ACCOUNT_PLAN_CHECK_WORKERS"] == "7"
+assert package.ACCOUNT_PLAN_CHECK_WORKERS == 7
+assert old_snapshot["ACCOUNT_PLAN_CHECK_WORKERS"] == 6
+assert schema.non_sensitive_snapshot().sources["ACCOUNT_PLAN_CHECK_WORKERS"] == "database"
 assert path.read_bytes() == before_file
 print("controlled_startup_and_save_ok")
 '''
-                child_environment = {**os.environ, "PYTHON_DOTENV_DISABLED": "0", "ACCOUNT_BATCH_WORKERS": "3"}
+                child_environment = {**os.environ, "PYTHON_DOTENV_DISABLED": "0", "ACCOUNT_PLAN_CHECK_WORKERS": "3"}
                 diagnostic_wrapper = "try:\n" + "\n".join("    " + line for line in script.splitlines()) + '''
 except BaseException as error:
     import traceback

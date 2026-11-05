@@ -73,8 +73,8 @@ class PoolConfigMigrationTests(unittest.TestCase):
 
     def test_unconfigured_proxy_does_not_block_unrelated_config_updates(self):
         with patch.dict(os.environ, {"PYTHON_DOTENV_DISABLED": "1"}, clear=True):
-            result = schema.validate_config_updates({"ACCOUNT_BATCH_WORKERS": 4})
-        self.assertEqual(result, {"ACCOUNT_BATCH_WORKERS": 4})
+            result = schema.validate_config_updates({"ACCOUNT_PLAN_CHECK_WORKERS": 4})
+        self.assertEqual(result, {"ACCOUNT_PLAN_CHECK_WORKERS": 4})
 
     def test_manual_addresses_require_protocol_host_and_port_without_echoing_credentials(self):
         self.assertFalse(schema.resolve_config({"PROXY_POOL": "[]"})["PROXY_POOL"].configured)

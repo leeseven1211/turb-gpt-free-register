@@ -1265,16 +1265,22 @@ class RegistrationDebugSession:
             self.hold_until,
         )
 
-        while datetime.now().astimezone() < deadline:
-            if self._release_event.wait(timeout=1.0):
-                break
-            try:
-                from core.registration.service import is_stop_requested
-                if is_stop_requested(self.job_id):
-                    self.release_action = "stop"
+        from core.registration.admission import mark_execution_state
+
+        mark_execution_state("debug_hold")
+        try:
+            while datetime.now().astimezone() < deadline:
+                if self._release_event.wait(timeout=1.0):
                     break
-            except Exception:
-                pass
+                try:
+                    from core.registration.service import is_stop_requested
+                    if is_stop_requested(self.job_id):
+                        self.release_action = "stop"
+                        break
+                except Exception:
+                    pass
+        finally:
+            mark_execution_state("cleaning")
 
         if self.release_action == "stop":
             state = "stopped"

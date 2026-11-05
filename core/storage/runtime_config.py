@@ -133,6 +133,10 @@ def _require_transaction(conn) -> None:
 
 def _lock(conn) -> None:
     _require_transaction(conn)
+    from core.storage.operations.permits import admission_lock
+
+    # 配置变更与业务准入共用首锁，确保新准入只使用最新提交的整套策略。
+    admission_lock(conn)
     # schema 之间相互独立；与当前运行配置的所有写入进程共用同一把事务锁。
     key = f"{_LOCK_NAME}:{postgres_store.schema_name()}"
     with conn.cursor() as cur:

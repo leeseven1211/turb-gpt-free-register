@@ -9,7 +9,7 @@ from flask import Flask
 
 from webui.auth import init_auth, register_auth_routes
 from webui.routes.config import create_config_blueprint
-from tests.auth.test_sentinel_maintenance import DeferredExecutor, LOADER, SDK, service
+from tests.auth.test_sentinel_maintenance import DeferredExecutor, LOADER, SDK, service, isolated_maintenance_database  # noqa: F401
 
 
 def client():

@@ -472,9 +472,9 @@ def export_configured_accounts() -> list[dict[str, Any]]:
     return [item for item in accounts if isinstance(item, dict)]
 
 
-def upload_configured_codex_oauth_credential(auth_json: dict[str, Any]) -> dict[str, Any]:
+def upload_configured_codex_oauth_credential(auth_json: dict[str, Any], *, checkpoint: Callable[[], None] | None = None, expected_backend: str | None = None) -> dict[str, Any]:
     """使用当前配置同步 OAuth 凭证，保留未显式配置的远端参数。"""
-    return _configured_upload(auth_json, checkpoint=None, enable=False)
+    return _configured_upload(auth_json, checkpoint=checkpoint, enable=False, expected_backend=expected_backend)
 
 
 def upload_codex_oauth_credential(

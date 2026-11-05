@@ -8,11 +8,57 @@ import subprocess
 import sys
 import threading
 import time
+import os
 from pathlib import Path
 
 import pytest
 
 from core.auth.protocol.sentinel_assets import SentinelAssetManager
+from core.storage import postgres
+from tests.support_pg import database_available, drop_schema, temporary_schema_name
+
+
+@pytest.fixture(autouse=True)
+def isolated_maintenance_database(monkeypatch):
+    """维护队列使用独立 schema，候选下载与子进程均为离线替身。"""
+    if not database_available():
+        pytest.skip("需要本机 PostgreSQL 测试库")
+    previous = os.environ.get("TURB_DB_SCHEMA")
+    schema = temporary_schema_name("sentinel_maintenance")
+    monkeypatch.setenv("TURB_DB_SCHEMA", schema)
+    postgres.reset_cache()
+    postgres.ensure_schema()
+    from core.storage import records
+    from core import account_task_store
+    from core.storage.operations import permits, store
+
+    records.reset_ready()
+    records.init()
+    account_task_store.init()
+    store.init()
+    permits.ensure_tables()
+    # 后续测试会替换 subprocess.Popen；先固定真实 owner 身份，避免把 ps 核验
+    # 也误送进下载用的子进程替身。
+    permits.current_owner()
+    try:
+        yield
+    finally:
+        from core.maintenance import sentinel
+
+        for instance in sentinel._SERVICE_INSTANCES.values():
+            for thread in instance._worker_threads:
+                thread.join(timeout=10)
+                assert not thread.is_alive(), "维护测试必须等待真实 worker 收口后才能删除隔离 schema"
+            if instance._pending_lease is not None:
+                instance._pending_lease.close()
+                instance._pending_lease = None
+        sentinel._SERVICE_INSTANCES.clear()
+        drop_schema(schema)
+        if previous is None:
+            os.environ.pop("TURB_DB_SCHEMA", None)
+        else:
+            os.environ["TURB_DB_SCHEMA"] = previous
+        postgres.reset_cache()
 
 
 VERSION = "20260810913b"
@@ -239,16 +285,16 @@ def test_default_executor_runs_a_daemon_and_recovers_after_unexpected_failure(tm
     assert "private-token" not in json.dumps(result)
 
 
-def test_executor_start_failure_does_not_leave_check_running(tmp_path):
+def test_executor_start_failure_keeps_the_durable_check_queued(tmp_path):
     def broken_executor(callback):
         raise RuntimeError("private-token")
 
     maintenance = service(tmp_path / "cache", executor=broken_executor)
     result = maintenance.start_check()
-    assert result["running"] is False
-    assert result["started"] is False
-    assert result["last_status"] == "failed"
-    assert result["error_code"] == "worker_start_failed"
+    assert result["running"] is True
+    assert result["started"] is True
+    assert result["status"] == "queued"
+    assert result["blocked_by"] == ["executor_submit_failed"]
     assert "private-token" not in json.dumps(result)
 
 
@@ -283,7 +329,8 @@ def test_worker_start_failure_does_not_wait_for_the_asset_download_lock(tmp_path
         before = time.monotonic()
         result = maintenance.start_check()
         assert time.monotonic() - before < 0.25
-    assert result["error_code"] == "worker_start_failed"
+    assert result["status"] == "queued"
+    assert result["blocked_by"] == ["executor_submit_failed"]
 
 
 def _wait_until_check_finishes(maintenance, timeout=2):

@@ -234,7 +234,7 @@ def create_jobs_blueprint(context: WebUIContext):
         if count < 1:
             return jsonify({"ok": False, "error": "count 需至少为 1"}), 400
 
-        # workers 控制本次新提交任务使用的线程池；若和上次不同，服务层会为新任务切换到新池。
+        # workers 是本批次的附加上限，实际启动还受部署全局和注册驱动额度约束。
         try:
             workers = max(1, min(16, int(data.get("workers", 3))))
         except (TypeError, ValueError):

@@ -63,7 +63,7 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
              patch.object(svc, "_read_linked_attempt_for_job", return_value=(attempt, False)), \
              patch.object(svc.db, "get_successful_retry_for_job", return_value=None), \
              patch.object(svc.db, "create_retry_job", return_value=({"id": 23, "log_file": "/tmp/retry-empty-root.log"}, True)) as create, \
-             patch.object(svc, "get_executor", return_value=Mock()):
+             patch.object(svc, "_enqueue_job"):
             result = svc.retry_job(21)
         self.assertTrue(result["ok"], result)
         self.assertEqual(create.call_args.kwargs["email"], original_email)
@@ -300,7 +300,7 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
              patch.object(svc, "_account_for_job", return_value=None), \
              patch.object(svc, "_read_linked_attempt_for_job", return_value=(attempt, False)), \
              patch.object(svc.db, "create_retry_job", return_value=({"id": 22, "log_file": "/tmp/test-registration-retry.log"}, True)) as create, \
-             patch.object(svc, "get_executor", return_value=Mock()):
+             patch.object(svc, "_enqueue_job"):
             single = client.post("/api/operations/9/retry")
             bulk = client.post("/api/operations/bulk", json={"action": "retry", "task_ids": [9]})
         self.assertEqual(single.status_code, 200)

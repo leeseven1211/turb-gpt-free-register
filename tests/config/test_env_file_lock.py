@@ -34,7 +34,7 @@ class EnvFileLockTests(unittest.TestCase):
         self.directory = Path(tempfile.mkdtemp(prefix="turb-env-lock-"))
         self.addCleanup(self._clean_directory)
         self.path = self.directory / ".env"
-        self.path.write_text('ACCOUNT_BATCH_WORKERS="2"\nBASE_VALUE="keep"\n', encoding="utf-8")
+        self.path.write_text('ACCOUNT_PLAN_CHECK_WORKERS="2"\nBASE_VALUE="keep"\n', encoding="utf-8")
         for context in (
             patch.object(env_loader, "_ENV_PATH", self.path),
             patch.object(config_schema, "_PUBLISHED_SNAPSHOT", None),
@@ -53,7 +53,7 @@ class EnvFileLockTests(unittest.TestCase):
 
     def assert_original_config_and_profile_exist(self, value):
         saved = env_loader.read_env_file()
-        self.assertEqual(saved["ACCOUNT_BATCH_WORKERS"], "2")
+        self.assertEqual(saved["ACCOUNT_PLAN_CHECK_WORKERS"], "2")
         self.assertEqual(saved["BASE_VALUE"], "keep")
         self.assertEqual(saved[_PROFILE_KEY], value)
 
@@ -72,7 +72,7 @@ class EnvFileLockTests(unittest.TestCase):
             finally:
                 writer_done.set()
         with patch.object(config, "reload_all", side_effect=fail_reload), ThreadPoolExecutor(max_workers=2) as executor:
-            failed_save = executor.submit(config_editor.update_config, {"ACCOUNT_BATCH_WORKERS": 4})
+            failed_save = executor.submit(config_editor.update_config, {"ACCOUNT_PLAN_CHECK_WORKERS": 4})
             self.assertTrue(in_reload.wait(5))
             profile_save = executor.submit(save_profile)
             self.assertTrue(writer_started.wait(5))
@@ -104,7 +104,7 @@ class EnvFileLockTests(unittest.TestCase):
         try:
             with patch.object(config, "reload_all", side_effect=fail_reload_with_competing_process):
                 with self.assertRaisesRegex(RuntimeError, "跨进程配置热加载失败"):
-                    config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 4})
+                    config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 4})
             stdout, stderr = processes[0].communicate(timeout=10)
             self.assertEqual(processes[0].returncode, 0, stderr)
             self.assertEqual(stdout.strip(), "saved")

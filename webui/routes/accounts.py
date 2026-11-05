@@ -138,66 +138,6 @@ def create_accounts_blueprint(context: WebUIContext):
             return _join_sub2_url(api_base, "/api/v1/admin/accounts/import/codex-session")
         # 兼容旧配置：之前 SUB2API_API_URL 是完整上传接口 URL。
         return str(getattr(sub2api_cfg, "SUB2API_API_URL", "") or "").strip()
-    def _codex_oauth_auth_for_account(acc: dict) -> tuple[str, str]:
-        """读取账号可导入 sub2api 的 Codex OAuth JSON。"""
-        email = str(acc.get("email") or "").strip().lower()
-        if db.account_is_deactivated(acc):
-            raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
-        if (acc.get("codex_status") or "") != "success":
-            raise RuntimeError("该账号尚未完成 Codex OAuth")
-        match = next((
-            item for item in db.list_codex_accounts(archived="all")
-            if str(item.get("email") or "").strip().lower() == email
-        ), None)
-        if not match:
-            raise RuntimeError("Codex 状态已通过，但本地未找到对应 OAuth JSON")
-        return db.read_codex_credential(str(match.get("filename") or ""))
-    def _upload_codex_auth_to_sub2(auth_json: dict, filename: str) -> dict:
-        """把一份已解析的 Codex OAuth JSON 上传到 sub2api。"""
-        email = str(auth_json.get("email") or "").strip()
-        if email:
-            linked_account = db.get_account_by_email(email)
-            if db.account_is_deactivated(linked_account):
-                raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
-        from core.integrations.sub2api.client import upload_configured_codex_oauth_credential
-
-        result = upload_configured_codex_oauth_credential(auth_json)
-        result["filename"] = filename
-        db.mark_codex_exported(filename)
-        db.mark_codex_sub2_uploaded(filename)
-        return result
-    def _upload_codex_filename_to_sub2(filename: str) -> dict:
-        """按 Codex 凭证文件名上传到 sub2api。"""
-        import json as _json
-
-        row = next((
-            item for item in db.list_codex_accounts(archived="all")
-            if str(item.get("filename") or "") == str(filename or "")
-        ), None)
-        if row and (
-            str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
-            or db.account_is_deactivated(db.get_account_by_email(str(row.get("email") or "").strip()))
-        ):
-            raise RuntimeError("关联账号已停用，禁止上传 OAuth 凭证")
-        if row and codex_token_refresh_service.refresh_error_requires_reauth(row.get("oauth_refresh_error")):
-            raise RuntimeError("当前 Codex 凭证需重新授权后才能上传")
-        text, actual_filename = db.read_codex_credential(filename)
-        try:
-            auth_json = _json.loads(text)
-        except Exception as exc:
-            raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
-        return _upload_codex_auth_to_sub2(auth_json, actual_filename)
-    def _upload_account_codex_to_sub2(acc: dict) -> dict:
-        """把账号的 Codex OAuth JSON 上传到 sub2api。"""
-        import json as _json
-
-        text, filename = _codex_oauth_auth_for_account(acc)
-        try:
-            auth_json = _json.loads(text)
-        except Exception as exc:
-            raise RuntimeError(f"Codex 凭证 JSON 无效: {exc}") from exc
-        return _upload_codex_auth_to_sub2(auth_json, filename)
-
     def _account_secret_value_for_api(acc_id: int, acc: dict, field: str) -> str:
         """读取账号敏感字段；完整 ChatGPT session 只在复制时按需读取。"""
         if field == "chatgpt_session":
@@ -1455,7 +1395,8 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.post("/api/accounts/<int:acc_id>/codex/upload-sub2")
     def api_account_codex_upload_sub2(acc_id: int):
-        """上传单账号的 Codex OAuth 凭证到 sub2api。"""
+        """持久入队单账号手动上传，远端结果通过任务引用查询。"""
+        from core.integrations.sub2api import manual_upload
         unavailable = _feature_unavailable("sub2_upload")
         if unavailable:
             return unavailable
@@ -1463,10 +1404,14 @@ def create_accounts_blueprint(context: WebUIContext):
         if not acc:
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         try:
-            result = _upload_account_codex_to_sub2(acc)
+            result = manual_upload.queue_account(acc)
         except Exception as exc:
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
-        return jsonify({"ok": True, "account_id": acc_id, "email": acc.get("email"), "result": result})
+            return jsonify({"ok": False, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"),
+                            "error": str(exc) if isinstance(exc, (manual_upload.ManualUploadError, ValueError)) else "手动上传入队失败，请查看服务日志"}), 400
+        if not result.get("accepted"):
+            return jsonify({"ok": False, **result}), 409 if result.get("busy") else 400
+        return jsonify({"ok": True, **result, "account_id": acc_id, "email": acc.get("email"),
+                        "message": "手动上传已入队，请在任务中心查看最终结果"}), 202
 
     @bp.post("/api/accounts/codex/upload-sub2-bulk")
     def api_accounts_codex_upload_sub2_bulk():
@@ -1481,7 +1426,9 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多提交 500 个账号"}), 400
 
-        uploaded, failed, skipped = [], [], []
+        from core.integrations.sub2api import manual_upload
+
+        queued, failed, skipped = [], [], []
         seen = set()
         for raw in ids:
             try:
@@ -1501,24 +1448,28 @@ def create_accounts_blueprint(context: WebUIContext):
                 skipped.append({"id": acc_id, "email": email, "reason": "尚未完成 Codex OAuth"})
                 continue
             try:
-                result = _upload_account_codex_to_sub2(acc)
-                uploaded.append({
+                result = manual_upload.queue_account(acc)
+                if not result.get("accepted"):
+                    skipped.append({"id": acc_id, "email": email, "reason": result.get("error") or "账号任务暂不可入队",
+                                    "task_id": result.get("task_id"), "run_id": result.get("run_id")})
+                    continue
+                queued.append({
                     "id": acc_id,
                     "email": email,
-                    "url": result.get("url"),
-                    "status_code": result.get("status_code"),
+                    **result,
                 })
             except Exception as exc:
-                failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
+                failed.append({"id": acc_id, "email": email, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"),
+                               "error": str(exc) if isinstance(exc, (manual_upload.ManualUploadError, ValueError)) else "手动上传入队失败，请查看服务日志"})
         return jsonify({
             "ok": True,
-            "uploaded": uploaded,
-            "uploaded_count": len(uploaded),
+            "accepted": True, "status": "queued", "queued": queued, "queued_count": len(queued),
+            "uploaded": [], "uploaded_count": 0,
             "failed": failed,
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
-        })
+        }), 202
 
     @bp.post("/api/codex/upload-sub2-bulk")
     def api_codex_upload_sub2_bulk():
@@ -1533,7 +1484,9 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多提交 500 个凭证"}), 400
 
-        uploaded, failed, skipped = [], [], []
+        from core.integrations.sub2api import manual_upload
+
+        queued, failed, skipped = [], [], []
         seen = set()
         for raw in filenames:
             filename = str(raw or "").strip() if isinstance(raw, str) else ""
@@ -1544,23 +1497,24 @@ def create_accounts_blueprint(context: WebUIContext):
                 continue
             seen.add(filename)
             try:
-                result = _upload_codex_filename_to_sub2(filename)
-                uploaded.append({
-                    "filename": result.get("filename") or filename,
-                    "url": result.get("url"),
-                    "status_code": result.get("status_code"),
-                })
+                result = manual_upload.queue_filename(filename)
+                if not result.get("accepted"):
+                    skipped.append({"filename": filename, "reason": result.get("error") or "凭证任务暂不可入队",
+                                    "task_id": result.get("task_id"), "run_id": result.get("run_id")})
+                    continue
+                queued.append({"filename": result.get("filename") or filename, **result})
             except Exception as exc:
-                failed.append({"filename": filename, "error": f"{type(exc).__name__}: {exc}"})
+                failed.append({"filename": filename, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"),
+                               "error": str(exc) if isinstance(exc, (manual_upload.ManualUploadError, ValueError)) else "手动上传入队失败，请查看服务日志"})
         return jsonify({
             "ok": True,
-            "uploaded": uploaded,
-            "uploaded_count": len(uploaded),
+            "accepted": True, "status": "queued", "queued": queued, "queued_count": len(queued),
+            "uploaded": [], "uploaded_count": 0,
             "failed": failed,
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
-        })
+        }), 202
 
     @bp.post("/api/accounts/download-cpa-bulk")
     def api_accounts_download_cpa_bulk():

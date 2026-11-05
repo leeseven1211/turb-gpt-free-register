@@ -12,7 +12,8 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -21,9 +22,12 @@ from core.storage import postgres as postgres_store, records as record_store
 from core.email.email_butler import inventory_handoff as handoff
 from core.storage.email import butler_manual_imports as store
 from core.storage.email import local_imports as imports
+from core.operations import concurrency
+from core.storage.operations.permits import current_owner
 
 logger = logging.getLogger('core.butler_manual_import')
 _ITEM_STATES = ('pending', 'submitting', 'unknown', 'imported', 'skipped', 'failed')
+_FINISHED_BATCH_EXECUTIONS: set[str] = set()
 _HANDOFF_BATCH_SIZE = 25
 
 
@@ -196,6 +200,7 @@ def _public(row, *, conn=None):
             **counts, 'counts': counts,
             'completed': counts['imported'] + counts['skipped'] + counts['failed'] + counts['unknown'],
             'can_retry': bool(counts['pending'] or counts['submitting'] or counts['unknown']),
+            'blocked_by': list(row.get('concurrency_blocked_by') or []),
             'error_counts': error_counts, 'error_code': row.get('error_code'),
             'created_at': row.get('created_at'), 'updated_at': row.get('updated_at')}
 
@@ -223,29 +228,76 @@ def reconcile_interrupted():
     recovered = 0
     rows = record_store.list_rows(record_store.EMAIL_BUTLER_IMPORT_BATCHES, where='status = %s', params=('running',))
     for row in rows:
-        lock_key = 'butler-manual-import:' + row['batch_id']
-        with postgres_store.connect() as lock_conn:
-            with lock_conn.cursor() as cur:
-                cur.execute('SELECT pg_try_advisory_lock(hashtextextended(%s, 0))', (lock_key,))
-                acquired = cur.fetchone()[0]
-            lock_conn.commit()
-            if not acquired:
+        if _batch_owner_active(row):
+            continue
+        with concurrency.admission_transaction() as conn:
+            record_store.advisory_xact_lock(conn, 'butler-manual-import:' + row['batch_id'])
+            current = store.batch(row['batch_id'], conn=conn)
+            active = concurrency.active_execution_keys(prefix=f"butler-import:{row['batch_id']}:", conn=conn)
+            if (active or current.get('worker_execution_id') != row.get('worker_execution_id')
+                    or current['status'] != 'running'):
                 continue
-            try:
-                current = store.batch(row['batch_id'])
-                if current['status'] == 'running':
-                    states = [item['status'] for item in store.items(row['batch_id'])]
-                    complete = all(state in {'imported', 'skipped'} for state in states)
-                    record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, current['id'],
-                                           {'status': 'completed' if complete else 'partial',
-                                            'error_code': None if complete else 'import_interrupted'})
-                    recovered += 1
-            finally:
-                lock_conn.rollback()
-                with lock_conn.cursor() as cur:
-                    cur.execute('SELECT pg_advisory_unlock(hashtextextended(%s, 0))', (lock_key,))
-                lock_conn.commit()
+            states = [item['status'] for item in store.items(row['batch_id'], conn=conn)]
+            complete = all(state in {'imported', 'skipped'} for state in states)
+            record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, current['id'],
+                                   {'status': 'completed' if complete else 'partial',
+                                    'worker_owner': None, 'worker_execution_id': None,
+                                    'error_code': None if complete else 'import_interrupted'}, conn=conn)
+            recovered += 1
     return recovered
+
+
+def _batch_owner_active(batch):
+    execution_id = str(batch.get('worker_execution_id') or '')
+    if execution_id in _FINISHED_BATCH_EXECUTIONS:
+        return False
+    owner = batch.get('worker_owner')
+    return bool(owner and concurrency.owner_liveness(owner) != 'exited')
+
+
+def _claim_batch_owner(batch_id):
+    """短事务固定协调者身份，等待业务许可时不借用数据库连接。"""
+    previous = store.batch(batch_id)
+    if _batch_owner_active(previous):
+        return None
+    owner = {**current_owner(), 'thread_id': threading.get_ident()}
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, 'butler-manual-import:' + batch_id)
+        batch = store.batch(batch_id, conn=conn)
+        if batch.get('worker_execution_id') != previous.get('worker_execution_id'):
+            return None
+        execution_id = uuid.uuid4().hex
+        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
+                               {'worker_owner': owner, 'worker_execution_id': execution_id}, conn=conn)
+        batch.update(worker_owner=owner, worker_execution_id=execution_id)
+        return batch
+
+
+def _release_batch_owner(batch):
+    execution_id = str(batch['worker_execution_id'])
+    _FINISHED_BATCH_EXECUTIONS.add(execution_id)
+
+    def release():
+        with record_store.transaction() as conn:
+            record_store.advisory_xact_lock(conn, 'butler-manual-import:' + batch['batch_id'])
+            record_store.claim_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
+                changes={'worker_owner': None, 'worker_execution_id': None},
+                guard="data->>'worker_execution_id' = %s", guard_params=(execution_id,), conn=conn)
+
+    try:
+        release()
+        _FINISHED_BATCH_EXECUTIONS.discard(execution_id)
+    except Exception:
+        def retry_release():
+            while True:
+                try:
+                    release()
+                    _FINISHED_BATCH_EXECUTIONS.discard(execution_id)
+                    return
+                except Exception:
+                    threading.Event().wait(1)
+
+        threading.Thread(target=retry_release, name='butler-owner-release', daemon=True).start()
 
 
 def _patch_item(item_id, changes, *, conn=None):
@@ -258,6 +310,10 @@ def _batch_error_code(error):
 
     if isinstance(error, PostgresError):
         return 'import_storage_unavailable'
+    if isinstance(error, concurrency.ConcurrencyStoreUnavailable):
+        return 'scheduler_store_unavailable'
+    if isinstance(error, concurrency.ConcurrencyPolicyError):
+        return error.code
     if isinstance(error, RemoteError):
         return 'butler_remote_unavailable'
     code = str(getattr(error, 'code', '') or str(error).partition(':')[0])
@@ -268,10 +324,10 @@ def _batch_error_code(error):
     return 'import_internal_error'
 
 
-def _prepare_item(item):
+def _prepare_item(item, *, conn=None):
     """先持久化原交接意图，远端等待期间不占用业务连接。"""
     address = item['address_norm']
-    with record_store.transaction() as conn:
+    with (nullcontext(conn) if conn is not None else record_store.transaction()) as conn:
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
         existing = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, conn=conn)
         if existing and (existing.get('butler_handoff') or {}).get('acquisition_id') == item['acquisition_id']:
@@ -311,88 +367,162 @@ def _record_item_error(item, error_code, *, rejected=False):
     _patch_item(item['id'], {'status': 'failed' if definite else 'unknown', 'error_code': error_code})
 
 
+def _wait_import_execution(batch, suffix, claim):
+    """容量不足仅等待，不提交远端、不改变重试计数或交接意图。"""
+    key = f"butler-import:{batch['batch_id']}:{suffix}"
+    last_reasons = None
+    while True:
+        try:
+            admitted = concurrency.try_admit_and_claim(
+                execution_key=key, task_type='email_import', claim=claim,
+                batch_key=f"butler-import:{batch['batch_id']}", batch_limit=4,
+                metadata={'source_system': 'email_butler_import_batches', 'source_id': batch['batch_id']},
+            )
+        except (concurrency.ConcurrencyStoreUnavailable, concurrency.ConcurrencyPolicyError) as error:
+            admitted = concurrency.AdmissionResult(blocked_by=(error.code,))
+        if admitted.context is not None:
+            if last_reasons:
+                try:
+                    record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'], {'concurrency_blocked_by': []})
+                except Exception:
+                    logger.warning('Butler 已获准执行，等待原因暂未清除')
+            return admitted.context
+        if 'not_claimable' in admitted.blocked_by:
+            return None
+        reasons = list(admitted.blocked_by)
+        if reasons != last_reasons:
+            try:
+                record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'], {'concurrency_blocked_by': reasons})
+                last_reasons = reasons
+            except Exception:
+                # 数据库失联时保持原执行意图，恢复连接后继续等待同一许可。
+                pass
+        # 导入没有取消入口；存储状态仍是 pending，进程停止后按原批次显式继续。
+        threading.Event().wait(0.25)
+
+
+def _import_preflight(batch, connection):
+    context = _wait_import_execution(batch, 'preflight', lambda _conn, execution_id: {'execution_id': execution_id})
+    try:
+        with concurrency.execution_scope(context):
+            return _request('GET', '/me', connection)
+    finally:
+        concurrency.release_execution(context, reason='worker_exit')
+
+
 def _process_item(batch, item, profile, connection=None):
-    if not _prepare_item(item):
+    context = _wait_import_execution(
+        batch, f"item:{item['id']}",
+        lambda conn, execution_id: {'execution_id': execution_id, 'item_id': item['id'],
+                                     'prepared': _prepare_item(item, conn=conn)},
+    )
+    if context is None:
         return
     try:
-        receipt = handoff.handoff_selected(item['candidate'], profile,
-            ownership=item['ownership'], client_id=batch['client_id'], connection=connection)
-        _finish_item(item, profile, receipt)
-    except Exception as exc:
-        code = getattr(exc, 'status_code', None)
-        definite = (item['status'] == 'pending' and isinstance(code, int)
-                    and 400 <= code < 500 and code not in {408, 425, 429})
-        _record_item_error(item, 'handoff_rejected' if definite else 'handoff_unconfirmed', rejected=definite)
+        with concurrency.execution_scope(context):
+            if not context.claimed_run['prepared']:
+                return
+            try:
+                receipt = handoff.handoff_selected(item['candidate'], profile,
+                    ownership=item['ownership'], client_id=batch['client_id'], connection=connection)
+                _finish_item(item, profile, receipt)
+            except Exception as exc:
+                code = getattr(exc, 'status_code', None)
+                definite = (item['status'] == 'pending' and isinstance(code, int)
+                            and 400 <= code < 500 and code not in {408, 425, 429})
+                _record_item_error(item, 'handoff_rejected' if definite else 'handoff_unconfirmed', rejected=definite)
+    finally:
+        concurrency.release_execution(context, reason='worker_exit')
 
 
 def _process_chunk(batch, items, profile, connection):
     started = time.monotonic()
-    prepared = [item for item in items if _prepare_item(item)]
-    if not prepared:
+    prepared = []
+
+    def claim(conn, execution_id):
+        prepared[:] = [item for item in items if _prepare_item(item, conn=conn)]
+        return {'execution_id': execution_id, 'items': [item['id'] for item in prepared]}
+
+    suffix = 'chunk:' + hashlib.sha256(','.join(str(item['id']) for item in items).encode()).hexdigest()
+    context = _wait_import_execution(batch, suffix, claim)
+    if context is None:
         return
-    prepared_at = time.monotonic()
-    results = handoff.handoff_selected_batch(prepared, profile, client_id=batch['client_id'], connection=connection)
-    received_at = time.monotonic()
-    for item in prepared:
-        outcome = results[item['acquisition_id']]
-        if 'receipt' in outcome:
-            try:
-                _finish_item(item, profile, outcome['receipt'])
-            except Exception as exc:
-                _record_item_error(item, _batch_error_code(exc))
-        else:
-            _record_item_error(item, outcome['error_code'], rejected=outcome['outcome'] == 'failed')
-    logger.info('Butler 批量交接：数量=%s，准备=%.3fs，远端=%.3fs，写入=%.3fs',
-                len(prepared), prepared_at - started, received_at - prepared_at, time.monotonic() - received_at)
+    try:
+        with concurrency.execution_scope(context):
+            if not prepared:
+                return
+            prepared_at = time.monotonic()
+            results = handoff.handoff_selected_batch(prepared, profile, client_id=batch['client_id'], connection=connection)
+            received_at = time.monotonic()
+            for item in prepared:
+                outcome = results[item['acquisition_id']]
+                if 'receipt' in outcome:
+                    try:
+                        _finish_item(item, profile, outcome['receipt'])
+                    except Exception as exc:
+                        _record_item_error(item, _batch_error_code(exc))
+                else:
+                    _record_item_error(item, outcome['error_code'], rejected=outcome['outcome'] == 'failed')
+            logger.info('Butler 批量交接：数量=%s，准备=%.3fs，远端=%.3fs，写入=%.3fs',
+                        len(prepared), prepared_at - started, received_at - prepared_at, time.monotonic() - received_at)
+    finally:
+        concurrency.release_execution(context, reason='worker_exit')
 
 
 def _run_batch(batch_id):
-    # Session ownership spans HTTP and each per-address transaction. Unlock
-    # explicitly before returning the pooled connection to another caller.
-    lock_key = 'butler-manual-import:' + batch_id
-    with postgres_store.connect() as lock_conn:
-        with lock_conn.cursor() as cur:
-            cur.execute('SELECT pg_try_advisory_lock(hashtextextended(%s, 0))', (lock_key,))
-            acquired = cur.fetchone()[0]
-        lock_conn.commit()
-        if not acquired:
-            return
-        batch = None
+    from psycopg import Error as PostgresError
+    from psycopg_pool import PoolTimeout
+
+    while True:
         try:
-            batch = store.batch(batch_id)
-            remaining = [item for item in store.items(batch_id) if item['status'] in {'pending', 'submitting', 'unknown'}]
-            if remaining:
-                profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(batch['profile_id']))
-                if not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
-                    raise ValueError('fixed_route_unavailable')
-                from core.email.derivation import _profile_credentials
-                connection = _profile_credentials(profile)
-                who = _request('GET', '/me', connection)
-                handoff.verify_client(who, client_id=batch['client_id'])
-                record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                                       {'status': 'running', 'error_code': None})
-                if 'mailboxes.import_batch.v1' in (who.get('capabilities') or []):
-                    for offset in range(0, len(remaining), _HANDOFF_BATCH_SIZE):
-                        _process_chunk(batch, remaining[offset:offset + _HANDOFF_BATCH_SIZE], profile, connection)
-                else:
-                    # 旧 Butler 保留原并发契约；单次远端等待不持有业务连接。
-                    workers = min(4, max(1, int(os.getenv('TURB_DB_POOL_MAX') or 12)))
-                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='butler-handoff') as executor:
-                        futures = [executor.submit(_process_item, batch, item, profile, connection) for item in remaining]
-                        for future in futures:
-                            future.result()
-            states = [item['status'] for item in store.items(batch_id)]
-            complete = all(state in {'imported', 'skipped'} for state in states)
+            batch = _claim_batch_owner(batch_id)
+            break
+        except (PostgresError, PoolTimeout, concurrency.ConcurrencyStoreUnavailable):
+            # 刚创建的持久批次不能因领取 owner 时短暂失联留下无人执行的 running。
+            logger.warning('Butler 等待数据库恢复后领取原批次协调权')
+            threading.Event().wait(1)
+    if batch is None:
+        return
+    try:
+        remaining = [item for item in store.items(batch_id) if item['status'] in {'pending', 'submitting', 'unknown'}]
+        if remaining:
+            profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(batch['profile_id']))
+            if not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
+                raise ValueError('fixed_route_unavailable')
+            from core.email.derivation import _profile_credentials
+            connection = _profile_credentials(profile)
+            who = _import_preflight(batch, connection)
+            handoff.verify_client(who, client_id=batch['client_id'])
             record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                                   {'status': 'completed' if complete else 'partial', 'error_code': None})
-        except Exception as exc:
-            error_code = _batch_error_code(exc)
-            if batch:
-                record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                                       {'status': 'partial', 'error_code': error_code})
-            logger.warning('Butler 手动导入已暂停，原批次已保留：%s（%s）', error_code, type(exc).__name__)
-        finally:
-            lock_conn.rollback()
-            with lock_conn.cursor() as cur:
-                cur.execute('SELECT pg_advisory_unlock(hashtextextended(%s, 0))', (lock_key,))
-            lock_conn.commit()
+                                   {'status': 'running', 'error_code': None})
+            if 'mailboxes.import_batch.v1' in (who.get('capabilities') or []):
+                for offset in range(0, len(remaining), _HANDOFF_BATCH_SIZE):
+                    _process_chunk(batch, remaining[offset:offset + _HANDOFF_BATCH_SIZE], profile, connection)
+            else:
+                workers = min(4, max(1, int(os.getenv('TURB_DB_POOL_MAX') or 12)))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='butler-handoff') as executor:
+                    candidates = iter(remaining)
+                    futures = set()
+                    exhausted = False
+                    while futures or not exhausted:
+                        while len(futures) < workers and not exhausted:
+                            item = next(candidates, None)
+                            if item is None:
+                                exhausted = True
+                                break
+                            futures.add(executor.submit(_process_item, batch, item, profile, connection))
+                        if futures:
+                            completed, futures = wait(futures, return_when=FIRST_COMPLETED)
+                            for future in completed:
+                                future.result()
+        states = [item['status'] for item in store.items(batch_id)]
+        complete = all(state in {'imported', 'skipped'} for state in states)
+        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
+                               {'status': 'completed' if complete else 'partial', 'error_code': None})
+    except Exception as exc:
+        error_code = _batch_error_code(exc)
+        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
+                               {'status': 'partial', 'error_code': error_code})
+        logger.warning('Butler 手动导入已暂停，原批次已保留：%s（%s）', error_code, type(exc).__name__)
+    finally:
+        _release_batch_owner(batch)

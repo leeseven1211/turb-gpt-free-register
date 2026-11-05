@@ -19,7 +19,7 @@ class RegistrationCodexClosureTests(unittest.TestCase):
                 stack.enter_context(patch.object(registration_service, name))
             stack.enter_context(patch.object(registration_service, "is_stop_requested", return_value=False))
             stack.enter_context(patch.object(registration_service.db, "get_job", side_effect=lambda _: dict(job)))
-            stack.enter_context(patch.object(registration_service.db, "claim_job_for_execution", return_value=True))
+            stack.enter_context(patch.object(registration_service, "_claim_job_for_worker", return_value=True))
             stack.enter_context(patch.object(registration_service.db, "update_job", side_effect=lambda _, **values: job.update(values)))
             stage = stack.enter_context(patch.object(registration_service.db, "update_job_progress"))
             finish = stack.enter_context(patch.object(registration_service.db, "finish_job_progress"))
@@ -124,10 +124,16 @@ class BrowserRetryNotificationTests(unittest.TestCase):
 class CodexCancellationStageTests(unittest.TestCase):
     def _run(self, phase, *, exception_type=OperationCancelled):
         service = codex_operation_service
-        run = {"id": 96, "task_id": 97, "account_id": 98, "email_snapshot": "fixture@example.test", "data": {"config_snapshot": {"oauth_driver": "roxy"}}}
+        run = {"id": 96, "task_id": 97, "account_id": 98, "task_type": "codex_retry", "email_snapshot": "fixture@example.test", "data": {"config_snapshot": {"oauth_driver": "roxy"}}}
+        from core.operations import concurrency
+
+        execution = concurrency.ExecutionContext("fixture-permit", "fixture-execution", "operation_run:96", "codex_retry", run)
         route = Mock(provider="fixture", region="fixture", mode="direct", proxy_url=None)
         route.public_dict.return_value = {"network_route": "fixture"}
         with ExitStack() as stack:
+            stack.enter_context(patch.object(concurrency, "current_execution", return_value=execution))
+            stack.enter_context(patch.object(concurrency, "validate_execution", return_value=True))
+            stack.enter_context(patch.object(concurrency, "set_execution_state", return_value=True))
             for name, value in (
                 ("claim_run", run), ("get_run", run), ("acquire_account_lease", "fixture-lease"),
                 ("register_resource", {"id": 99}), ("record_remote_intent", {}),

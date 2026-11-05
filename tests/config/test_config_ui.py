@@ -352,7 +352,7 @@ for (const field of [
         self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号']", CONFIG_JS)
         self.assertIn("'邮箱与验证码': ['邮箱 / OTP', '接码平台']", CONFIG_JS)
         self.assertIn("'浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏']", CONFIG_JS)
-        self.assertIn("'系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", CONFIG_JS)
+        self.assertIn("'系统与维护': ['并发控制', '通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", CONFIG_JS)
         self.assertIn('data-config-domain-v2', CONFIG_JS)
         self.assertIn("if (name === '注册主链路')", CONFIG_JS)
         self.assertIn("if (name === '账号补全')", CONFIG_JS)

@@ -4,6 +4,8 @@ import errno
 import socket
 
 from core.registration import service as service
+from core.operations import concurrency
+from core.registration import admission
 from core.registration.standalone import run_protocol_in_context
 from core.storage import registration
 from core.storage.registration import standalone as registration_standalone
@@ -99,7 +101,7 @@ class ProtocolStandaloneTests(PostgresTestCase):
     def test_active_run_cannot_be_stolen(self):
         attempt = registration_standalone.prepare_attempt(self.email)
         run = registration.start_run(attempt["id"], execution_id="other-execution", initial_status="running")
-        with patch("core.registration.standalone.uuid.uuid4", return_value="new-execution"), self.assertRaisesRegex(RuntimeError, "活动执行"):
+        with self.assertRaisesRegex(RuntimeError, "活动执行"):
             run_protocol_in_context(lambda **kwargs: self.fail("不应调用驱动"), {"email": self.email})
         self.assertEqual(registration.get_run(run["id"])["status"], "running")
 
@@ -137,12 +139,21 @@ class ProtocolStandaloneTests(PostgresTestCase):
         self.assertEqual(seen_sources, ["remail"])
 
     def test_existing_complete_context_does_not_create_another_attempt(self):
-        for key, value in {"attempt_id": 11, "run_id": 12, "execution_id": "fixture", "job_id": 13}.items():
+        context = admission.try_admit_cli(batch_id="parent-context", index=1, batch_workers=1, driver="protocol_oss_2").context
+        self.assertIsNotNone(context)
+        self.addCleanup(concurrency.release_execution, context)
+        for key, value in {"attempt_id": 11, "run_id": 12, "execution_id": context.execution_id, "job_id": 13}.items():
             setattr(service._THREAD_CTX, key, value)
         expected = {"registration_success": True}
-        with patch.object(registration_standalone, "prepare_attempt") as prepare:
+        with concurrency.execution_scope(context), patch.object(registration_standalone, "prepare_attempt") as prepare:
             self.assertIs(run_protocol_in_context(lambda **kwargs: expected, {"email": self.email}), expected)
         prepare.assert_not_called()
+
+    def test_complete_legacy_facts_without_a_valid_permit_cannot_bypass_admission(self):
+        for key, value in {"attempt_id": 11, "run_id": 12, "execution_id": "expired", "job_id": 13}.items():
+            setattr(service._THREAD_CTX, key, value)
+        with self.assertRaisesRegex(RuntimeError, "有效的并发许可"):
+            run_protocol_in_context(lambda **_kwargs: self.fail("不应绕过共享许可"), {"email": self.email})
 
     def test_roxy_cli_without_context_persists_driver_identity_and_unknown_run(self):
         from core.registration import dispatcher

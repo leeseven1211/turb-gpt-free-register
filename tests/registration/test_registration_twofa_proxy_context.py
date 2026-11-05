@@ -30,7 +30,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
                          "_bind_progress_route_context", "_persist_job_progress", "_finish_registration_run"):
                 stack.enter_context(patch.object(registration_service, name))
             stack.enter_context(patch.object(registration_service.db, "get_job", side_effect=lambda _id: dict(job)))
-            stack.enter_context(patch.object(registration_service.db, "claim_job_for_execution", return_value=True))
+            stack.enter_context(patch.object(registration_service, "_claim_job_for_worker", return_value=True))
             stack.enter_context(patch.object(registration_service.db, "finish_job_progress"))
             stack.enter_context(patch.object(registration_service.db, "update_job", side_effect=lambda _id, **fields: job.update(fields)))
             stack.enter_context(patch.object(registration_service, "is_stop_requested", return_value=False))

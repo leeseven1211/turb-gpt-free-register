@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+from cryptography.fernet import Fernet
 
 from core import account_task_store
 from core.extract_link import service as extract_link_service
@@ -510,6 +511,19 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                                  batch_workers=(1, 2), tasks_per_batch=2, expected_indices=None):
         from core.operations.executor import AccountOperationExecutor
         from core.operations import task_gateway
+        from core.operations import concurrency
+        from core.storage import runtime_config
+        from config.concurrency import policy_values
+
+        if not hasattr(self, "_concurrency_test_key"):
+            self._concurrency_test_key = Fernet.generate_key().decode()
+        encryption = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": self._concurrency_test_key})
+        encryption.start()
+        self.addCleanup(encryption.stop)
+        values = policy_values({})
+        values.update(GLOBAL_TASK_WORKERS=shared_workers, EXTRACT_LINK_WORKERS=shared_workers,
+                      EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY=provider_limit)
+        runtime_config.write_values({key: str(value) for key, value in values.items()}, activate=True, source="test")
 
         batches = [operation.create_runtime_batch(batch_type="extract_link", title="并发调度", requested_count=tasks_per_batch,
                    data={"workbench_batch": True, "workers": workers}) for workers in batch_workers]
@@ -522,14 +536,15 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         errors = []
         def handler(run_id):
             try:
-                run = operation.claim_run(run_id, execution_id=str(run_id), worker_pid=os.getpid())
+                context = concurrency.current_execution()
+                run = context.claimed_run if context else None
                 if not run:
                     return
                 with started:
                     active.append(run_id)
                     started.notify_all()
                 release.wait(timeout=10)
-                operation.finish_run(run_id, status="success", execution_id=str(run_id))
+                operation.finish_run(run_id, status="success", execution_id=context.execution_id)
             except Exception as exc:
                 errors.append(exc)
         try:
@@ -538,7 +553,6 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                 patch.object(task_gateway, "_extract_executor", return_value=executor),
                 patch.dict(task_gateway._DISPATCH_HANDLERS, {}, clear=True),
                 patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True),
-                patch.dict(task_gateway._DISPATCH_CAPACITY_COUNTS, {}, clear=True),
                 patch.object(extract_link_service, "_provider_dispatch_capacity_limit", return_value=provider_limit),
             ):
                 task_gateway.register_dispatch_handler("extract_link", handler,
