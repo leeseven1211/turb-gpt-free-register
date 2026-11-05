@@ -5,6 +5,41 @@ from core.operations.errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_preflight_partial_response_timeout_keeps_transport_cause(self):
+        for kind in ("runtime_exception", "transport_error"):
+            with self.subTest(kind=kind):
+                info = classify_task_error(
+                    "network_preflight_failed", task_type="token_refresh", error_code="network_preflight_failed",
+                    result_summary={"cause_code": "network_preflight_failed", "auth_diagnostics": {
+                        "operation": "network_preflight", "failure_kind": kind, "exception_type": "Timeout",
+                        "http_status": 200, "response_observed": True,
+                    }},
+                )
+                self.assertEqual("network_preflight_transport_timeout", info["code"])
+                self.assertEqual("NET-PREFLIGHT-001", info["display_code"])
+                self.assertEqual("认证线路预检请求超时", info["summary"])
+
+    def test_roxy_at_network_facts_keep_specific_cause_and_unknown_receipt(self):
+        for marker, suffix, kind, message in (
+            ("ERR_SSL_PROTOCOL_ERROR", "035", "tls", "TLS 握手失败"),
+            ("ERR_HTTP2_PING_FAILED", "003", "connection", "HTTP/2 连接中断"),
+            ("ERR_TUNNEL_CONNECTION_FAILED", "097", "proxy", "代理隧道连接失败"),
+            ("ERR_NAME_NOT_RESOLVED", "006", "dns", "域名解析失败"),
+        ):
+            with self.subTest(marker=marker):
+                summary = {"cause_code": "roxy_login_failed", "outcome": "request_unknown",
+                           "auth_diagnostics": {"operation": "roxy_login", "failure_kind": "transport_error",
+                                                "network_error": marker}}
+                info = classify_task_error(
+                    "Roxy 登录未完成", task_type="token_refresh", stage="authenticate",
+                    error_code="request_unknown", result_summary=summary, task_status="attention_required",
+                )
+                self.assertEqual(f"roxy_at_transport_{kind}", info["code"])
+                self.assertEqual(f"NET-ROXY-AT-{suffix}", info["display_code"])
+                self.assertIn(message, info["summary"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("request_unknown", summary["outcome"])
+
     def test_auth_page_errors_display_the_page_reason_without_changing_receipt(self):
         cases = (
             ("auth_operation_timeout", "AUTH-PAGE-TIMEOUT", "认证页面操作超时"),

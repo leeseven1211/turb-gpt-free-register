@@ -585,6 +585,73 @@ test('敏感字段默认留空不清除，并提供显式清除入口', () => {
   assert.equal(view.read({dataset: {}, value: 'NA'}, {key: 'PROXY_POOL_DEFAULT_COUNTRY', type: 'str'}), 'NA');
 });
 
+test('AT 刷新国家使用单选并在刷新策略中保留跟随注册国家选项', () => {
+  const country = field('ACCOUNT_AT_REFRESH_COUNTRY', '账号补全', {
+    label: 'AT 刷新国家', value: '', country_codes: ['JP', 'NA', 'US'],
+    country_names: {JP: '日本', NA: '纳米比亚', US: '美国'},
+  });
+  const fields = [
+    field('ACCOUNT_AT_REFRESH_DRIVER', '账号补全', {value: 'protocol_v2'}),
+    country,
+    field('OPENAI_PROTOCOL_VERSION', '账号补全', {value: 'v2'}),
+  ];
+  const {view} = createConfigView(fields);
+  const control = view.control(country);
+  assert.match(control, /<select data-key="ACCOUNT_AT_REFRESH_COUNTRY" aria-label="AT 刷新国家">/);
+  assert.match(control, /<option value="" selected>跟随注册国家<\/option>/);
+  assert.match(control, /<option value="JP">日本 · JP<\/option>/);
+  assert.match(control, /<option value="NA">纳米比亚 · NA<\/option>/);
+  assert.ok(control.indexOf('value=""') < control.indexOf('value="JP"'));
+  const markup = view.renderDomain('账号补全', fields);
+  const strategy = markup.indexOf('刷新 AT 策略');
+  assert.ok(strategy >= 0);
+  assert.ok(markup.indexOf('data-key="ACCOUNT_AT_REFRESH_COUNTRY"') > strategy);
+  assert.ok(markup.indexOf('data-key="ACCOUNT_AT_REFRESH_COUNTRY"') < markup.indexOf('data-key="OPENAI_PROTOCOL_VERSION"'));
+  view.setPending(country.key, 'NA');
+  assert.match(view.control(country), /<option value="NA" selected>纳米比亚 · NA<\/option>/);
+});
+
+test('AT 刷新国家支持 NA 并将明确清空保存为跟随注册国家', async () => {
+  const country = field('ACCOUNT_AT_REFRESH_COUNTRY', '账号补全', {
+    value: 'JP', country_codes: ['JP', 'NA'],
+  });
+  const {view, context} = createConfigView([country]);
+  context.isPlaceholderEmpty = value => ['', 'na'].includes(String(value).toLowerCase());
+  assert.equal(view.read({dataset: {}, value: 'NA'}, country), 'NA');
+  const input = value => ({
+    value, type: 'select-one', dataset: {key: country.key},
+    closest(selector) {
+      if (selector.includes('[data-key]')) return this;
+      if (selector === '#tab-config') return {};
+      return null;
+    },
+  });
+  view.track({target: input('NA')});
+  assert.equal(view.pending[country.key], 'NA');
+  view.track({target: input('')});
+  assert.equal(Object.hasOwn(view.pending, country.key), true);
+  assert.equal(view.pending[country.key], '');
+  assert.match(view.control(country), /<option value="" selected>跟随注册国家<\/option>/);
+  let payload;
+  context.api = async (url, options) => {
+    assert.equal(url, '/api/config');
+    payload = JSON.parse(options.body);
+    return {reloaded: true};
+  };
+  await view.save();
+  assert.deepEqual(payload.updates, {ACCOUNT_AT_REFRESH_COUNTRY: ''});
+});
+
+test('任务用池说明分别呈现查活和 AT 独立国家规则', () => {
+  const {view} = createConfigView();
+  view.destination('代理与网络', '代理与网络');
+  const markup = view.renderDomain('代理与网络', []);
+  assert.match(markup, /<span>查活<\/span>/);
+  assert.match(markup, /<span>刷新 AT<\/span>/);
+  assert.match(markup, /优先使用独立的 AT 刷新国家；留空时跟随账号注册国家/);
+  assert.doesNotMatch(markup, /查活 \/ 刷新 AT/);
+});
+
 test('等待和价格上限保留原配置类型并支持显式模式', () => {
   const {view} = createConfigView([
     field('PROXY_POOL_WAIT_TIMEOUT', '代理与网络', {type: 'int', value: 45}),

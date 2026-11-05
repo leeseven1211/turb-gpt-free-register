@@ -600,6 +600,11 @@ class ProxyRouteInvariantTests(unittest.TestCase):
     def test_force_refresh_uses_roxy_after_protocol_login_failure(self):
         from core.accounts.liveness import service as live_check_service
 
+        route = SimpleNamespace(
+            proxy_url="http://fixture-roxy-route.example:8080",
+            public_dict=lambda: {"network_route": "proxy", "proxy_provider": "manual", "proxy_region": "JP"},
+            release=MagicMock(),
+        )
         refreshed = {
             "ok": True,
             "status": "live",
@@ -619,6 +624,7 @@ class ProxyRouteInvariantTests(unittest.TestCase):
             ),
             patch.object(live_check_service, "_append_log"),
             patch.object(live_check_service._QUEUE_SLOTS, "release"),
+            patch("core.proxy.account_routes.acquire_account_proxy", return_value=route) as acquire,
             patch("core.accounts.liveness.roxy.flow.available", return_value=True),
             patch("core.accounts.liveness.roxy.flow.refresh_access_token", return_value=refreshed) as roxy_refresh,
         ):
@@ -635,7 +641,9 @@ class ProxyRouteInvariantTests(unittest.TestCase):
         self.assertTrue(result["fallback_used"])
         self.assertEqual("roxy_browser", result["auth_method"])
         self.assertEqual("browser_roxy", result["live_check_driver"])
-        roxy_refresh.assert_called_once_with("first@example.com", proxy=None)
+        roxy_refresh.assert_called_once_with("first@example.com", proxy=route.proxy_url)
+        acquire.assert_called_once()
+        route.release.assert_called_once_with(reason="live-check-85")
         self.assertEqual("fresh-token", updated.call_args.args[1]["access_token"])
 
     def test_roxy_fallback_rotates_automatic_route_after_protocol_failure(self):
