@@ -212,6 +212,65 @@ class TaskPreflightReportingTests(unittest.TestCase):
                 snapshot = self._progress(scenario.events, task_type="token_refresh", status="deactivated")
                 self.assertEqual("mfa_challenge", snapshot["failure"]["stage"])
 
+    def test_callback_failure_preserves_completed_email_and_mfa(self):
+        with self._scenario(live_check_service, native=False) as scenario:
+            live_check_service._report_protocol_v2_refresh(live_check_service.TaskReporter(901), {
+                "ok": False, "auth_method": "email_otp", "password_auth_status": "skipped",
+                "error": "oauth_callback_failed", "live_check_driver": "protocol_v2",
+                "challenge_chain": ["email_otp", "totp"], "email_otp_status": "success", "mfa_status": "success",
+                "auth_diagnostics": {"operation": "oauth_callback", "failure_kind": "transport_error", "curl_error_code": 18},
+            })
+            self.assertEqual(["authenticate"], self._states(scenario.events, "failed"))
+            self.assertIn("email_otp", self._states(scenario.events, "success"))
+            self.assertIn("mfa_challenge", self._states(scenario.events, "success"))
+            snapshot = self._progress(scenario.events, task_type="token_refresh", status="failed")
+            self.assertEqual("authenticate", snapshot["failure"]["stage"])
+
+    def test_session_failure_reports_token_without_overwriting_authentication(self):
+        with self._scenario(live_check_service, native=False) as scenario:
+            live_check_service._report_protocol_v2_refresh(live_check_service.TaskReporter(901), {
+                "ok": False, "auth_method": "password", "password_auth_status": "verified",
+                "error": "session_fetch_failed", "live_check_driver": "protocol_v2",
+                "challenge_chain": ["password", "totp"], "email_otp_status": "skipped", "mfa_status": "success",
+                "auth_diagnostics": {"operation": "session_fetch", "failure_kind": "http_error", "http_status": 503},
+            })
+            self.assertEqual(["token"], self._states(scenario.events, "failed"))
+            self.assertIn("authenticate", self._states(scenario.events, "success"))
+            self.assertIn("mfa_challenge", self._states(scenario.events, "success"))
+
+    def test_callback_diagnostics_keep_safe_reason_without_private_url(self):
+        diagnostic = live_check_service._safe_refresh_auth_diagnostics({
+            "operation": "oauth_callback", "failure_kind": "rejected", "curl_error_code": 18,
+            "auth_error": {"code": "OAuthCallback", "message": "private-state"},
+            "target_host": "chatgpt.com", "target_path": "/api/auth/callback/openai",
+            "redirect_hop": 2, "retry_attempt": 1, "url": "https://chatgpt.com/?code=private",
+        })
+        self.assertEqual({"code": "OAuthCallback"}, diagnostic["auth_error"])
+        self.assertEqual(18, diagnostic["curl_error_code"])
+        self.assertEqual(2, diagnostic["redirect_hop"])
+        self.assertNotIn("private", str(diagnostic))
+
+    def test_recovery_is_enabled_for_at_refresh_and_excluded_from_completion_login(self):
+        for completion_auth in (False, True):
+            for proxy in (None, "http://fixture.invalid:8080"):
+                with self.subTest(completion_auth=completion_auth, proxy=proxy), self._scenario(live_check_service, native=False) as scenario:
+                    with patch.object(live_check_service, "_resolve_refresh_driver", return_value="protocol_v2"), patch(
+                        "core.accounts.liveness.protocol.v2.refresh_access_token", return_value={
+                            "ok": True, "status": "live", "access_token": "fixture-at",
+                            "session": {"account": {"planType": "free"}}, "live_check_driver": "protocol_v2",
+                            "auth_method": "password", "password_auth_status": "verified",
+                        },
+                    ) as refresh:
+                        result = self._run(live_check_service, scenario, force_refresh=True, completion_auth=completion_auth, proxy=proxy)
+                    self.assertTrue(result["ok"])
+                    refresh.assert_called_once()
+                    if completion_auth:
+                        self.assertNotIn("callback_recovery", refresh.call_args.kwargs)
+                        self.assertNotIn("callback_checkpoint", refresh.call_args.kwargs)
+                    else:
+                        self.assertTrue(refresh.call_args.kwargs["callback_recovery"])
+                        self.assertTrue(callable(refresh.call_args.kwargs["callback_checkpoint"]))
+
     def test_password_rejected_email_fallback_mfa_failure_keeps_password_rejection(self):
         with self._scenario(live_check_service, native=False) as scenario:
             live_check_service._report_protocol_v2_refresh(

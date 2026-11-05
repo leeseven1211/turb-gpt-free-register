@@ -1187,6 +1187,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_invalid": ("MAIL-OTP-004", "邮箱验证码未通过验证"),
     "network_preflight_failed": ("NET-ROUTE-001", "认证线路预检失败"),
     "oauth_callback_failed": ("AUTH-CALLBACK-001", "OAuth 回调未完成"),
+    "oauth_callback_rejected": ("AUTH-CALLBACK-002", "OAuth 回调返回认证错误，未建立有效会话"),
     "password_missing": ("AUTH-PWD-001", "本地缺少账号密码"),
     "password_rejected": ("AUTH-PWD-002", "账号密码被拒绝"),
     "password_change_required": ("AUTH-PWD-RESET", "OpenAI 要求修改密码后重新登录"),
@@ -1253,6 +1254,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "identity_mismatch": ("AUTH-IDENTITY-001", "认证返回的账号身份与目标账号不一致"),
     "identity_unconfirmed": ("AUTH-IDENTITY-002", "认证响应缺少可核验的账号身份"),
     "account_reference_mismatch": ("AUTH-IDENTITY-003", "本地账号与刷新目标邮箱不一致"),
+    "session_identity_mismatch": ("AUTH-IDENTITY-004", "认证后的 Session 身份与目标账号不一致"),
     "access_token_expired": ("AUTH-SESSION-003", "认证返回的 AT 已过期，未确认为刷新成功"),
     "auth_context_ambiguous": ("AUTH-PAGE-AMBIGUOUS", "认证 Cookie 上下文存在冲突，无法确认当前挑战"),
     "workspace_ambiguous": ("AUTH-WORKSPACE-001", "存在多个工作区，无法确认目标工作区"),
@@ -1434,11 +1436,98 @@ def registration_diagnostic_cause_code(value: object) -> str:
     return "protocol_failure_evidence_missing"
 
 
+_AT_CALLBACK_CAUSE_CODES = frozenset({
+    "oauth_callback_failed", "oauth_callback_rejected", "session_fetch_failed", "session_invalid_response",
+    "access_token_missing", "session_identity_mismatch", "access_token_expired",
+    "auth_redirect_invalid", "auth_redirect_limit",
+})
+
+
+def _at_callback_diagnostic_cause(
+    diagnostics: dict[str, Any], *, operation: str, failure_kind: str, code: str,
+) -> dict[str, str] | None:
+    """回调与 Session 读取分别显示根因，不从网络异常推断凭据或账号状态。"""
+    label, network_prefix, http_prefix = {
+        "oauth_callback": ("OAuth 回调", "NET-CALLBACK", "OA-CALLBACK"),
+        "session_fetch": ("认证后的 Session 读取", "NET-SESSION-READ", "OA-SESSION"),
+    }[operation]
+    if operation == "oauth_callback" and (failure_kind == "rejected" or code == "oauth_callback_rejected"):
+        display, message = _CAUSE_DETAILS["oauth_callback_rejected"]
+        auth_error = diagnostics.get("auth_error")
+        auth_code = auth_error.get("code") if isinstance(auth_error, dict) else None
+        if isinstance(auth_code, str) and auth_code in {
+            "OAuthCallback", "OAuthSignin", "Configuration", "AccessDenied", "invalid_state", "invalid_grant",
+        }:
+            message += f"（回调错误码：{auth_code}）"
+        return {"cause_code": "oauth_callback_rejected", "cause_display_code": display, "cause_summary": message}
+    semantic_code = {
+        "invalid_response": "session_invalid_response" if operation == "session_fetch" else "auth_redirect_invalid",
+        "missing_token": "access_token_missing",
+        "identity_mismatch": "session_identity_mismatch",
+        "token_expired": "access_token_expired",
+        "redirect_invalid": "auth_redirect_invalid",
+        "redirect_limit": "auth_redirect_limit",
+    }.get(failure_kind)
+    if semantic_code is None and code in _AT_CALLBACK_CAUSE_CODES - {"oauth_callback_failed", "session_fetch_failed"}:
+        semantic_code = code
+    if semantic_code:
+        display, message = _CAUSE_DETAILS[semantic_code]
+        if semantic_code == "access_token_missing":
+            message = "认证后的 Session 响应缺少 AT，登录态尚未建立"
+        return {"cause_code": semantic_code, "cause_display_code": display, "cause_summary": message}
+
+    curl_code = diagnostics.get("curl_error_code")
+    curl_code = curl_code if isinstance(curl_code, int) and not isinstance(curl_code, bool) else None
+    transport = {
+        5: ("proxy_dns", "005", "代理域名解析失败"),
+        6: ("dns", "006", "目标域名解析失败"),
+        7: ("connect", "007", "连接建立失败"),
+        18: ("partial_response", "018", "响应传输截断"),
+        28: ("timeout", "001", "请求超时"),
+        35: ("tls", "002", " TLS 握手失败"),
+        52: ("empty_response", "052", "连接关闭且未收到有效响应"),
+        55: ("send", "055", "请求发送中断"),
+        56: ("connection", "003", "连接中断"),
+        60: ("certificate", "004", " TLS 证书校验失败"),
+        97: ("proxy", "097", "代理隧道连接失败"),
+    }.get(curl_code)
+    if transport is None:
+        exception_type = str(diagnostics.get("exception_type") or "").strip()
+        transport = {
+            "Timeout": ("timeout", "001", "请求超时"),
+            "ReadTimeout": ("timeout", "001", "请求超时"),
+            "ConnectTimeout": ("timeout", "001", "请求超时"),
+            "TimeoutError": ("timeout", "001", "请求超时"),
+            "SSLCertVerificationError": ("certificate", "004", " TLS 证书校验失败"),
+            "SSLError": ("tls", "002", " TLS 握手失败"),
+            "ProxyError": ("proxy", "097", "代理隧道连接失败"),
+            "ConnectionError": ("connection", "003", "连接中断"),
+            "ConnectionResetError": ("connection", "003", "连接中断"),
+            "ConnectionAbortedError": ("connection", "003", "连接中断"),
+            "IncompleteRead": ("partial_response", "018", "响应传输截断"),
+            "ChunkedEncodingError": ("partial_response", "018", "响应传输截断"),
+        }.get(exception_type)
+    if transport:
+        suffix, display, message = transport
+        return {"cause_code": f"{operation}_transport_{suffix}",
+                "cause_display_code": f"{network_prefix}-{display}", "cause_summary": label + message}
+    status = diagnostics.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 400 <= status <= 599:
+        return {"cause_code": f"{operation}_http_error", "cause_display_code": f"{http_prefix}-{status}",
+                "cause_summary": f"{label}请求返回 HTTP {status}"}
+    if failure_kind == "transport_error":
+        return {"cause_code": f"{operation}_transport_error", "cause_display_code": f"{network_prefix}-000",
+                "cause_summary": f"{label}网络请求失败"}
+    return None
+
+
 def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> dict[str, str] | None:
     """同一诊断来源内的请求操作和网络细项一起解析，避免跨请求拼接根因。"""
     operation = str(diagnostics.get("cause_operation") or diagnostics.get("operation") or "").strip()
     failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
     exception_type = str(diagnostics.get("exception_type") or "").strip()
+    if operation in {"oauth_callback", "session_fetch"}:
+        return _at_callback_diagnostic_cause(diagnostics, operation=operation, failure_kind=failure_kind, code=code)
     if not operation and code == "password_sentinel_failed":
         operation = "password_sentinel"
     request_template = {
@@ -2004,7 +2093,8 @@ def classify_task_error(
     if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
         cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_"))
-                          or str(error_code) in _BUTLER_RECIPIENT_CAUSES):
+                          or str(error_code) in _BUTLER_RECIPIENT_CAUSES
+                          or str(error_code) in _AT_CALLBACK_CAUSE_CODES):
         cause = _specific_error_cause({"cause_code": error_code})
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
         str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"

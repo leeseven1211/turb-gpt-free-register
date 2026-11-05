@@ -416,6 +416,7 @@ def check_account_liveness(
     on_remote_request_started: Callable[[], None] | None = None,
     on_authenticated=None,
     on_network_failure=None,
+    callback_handler=None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
@@ -506,8 +507,12 @@ def check_account_liveness(
         if "about-you" in str(continue_url) or page_type in {"about_you", "about-you"}:
             raise RuntimeError(f"该邮箱登录后进入资料页，疑似不是完整已注册账号: page_type={page_type}, continue_url={continue_url}")
 
-        follow_oauth_callback(session, str(continue_url), referer="https://auth.openai.com/email-verification")
-        session_info = fetch_session(session)
+        if callable(callback_handler):
+            # AT v2 显式注入恢复能力，其他调用方继续使用既有回调。
+            session_info = callback_handler(session, str(continue_url), referer="https://auth.openai.com/email-verification")
+        else:
+            follow_oauth_callback(session, str(continue_url), referer="https://auth.openai.com/email-verification")
+            session_info = fetch_session(session)
         access_token = str(session_info.get("accessToken") or "")
         if not access_token:
             raise RuntimeError("重新登录后未拿到 accessToken")
@@ -531,6 +536,12 @@ def check_account_liveness(
         logger.warning("[查活] 已废号：%s %s", email, code)
         return {"ok": False, "status": "deactivated", "checked_at": checked_at, "error": code}
     except Exception as exc:
+        if callable(callback_handler):
+            from core.accounts.liveness.protocol.v2 import ProtocolV2AuthError, _reraise_control
+
+            _reraise_control(exc)
+            if isinstance(exc, ProtocolV2AuthError):
+                raise
         if callable(on_network_failure):
             on_network_failure(exc)
         code = detect_account_unusable_text(str(exc))

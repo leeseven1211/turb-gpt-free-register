@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Callable
@@ -34,6 +35,49 @@ from core.auth.challenge import auth_result_for_operation
 from core.network.response_diagnostics import auth_error_from_body, safe_response_headers
 
 logger = logging.getLogger('core.protocol_v2_liveness')
+
+# 只由 AT 刷新入口启用；共享登录能力的补密码及其他协议沿用原行为。
+_AT_CALLBACK_CONTEXT: ContextVar[dict | None] = ContextVar("at_callback_recovery", default=None)
+
+
+def _record_completed(session, challenge: str) -> None:
+    context = _AT_CALLBACK_CONTEXT.get()
+    if context is None:
+        return
+    if context.get("session") != id(session):
+        context.update(session=id(session), challenge_chain=[])
+    chain = context["challenge_chain"]
+    if challenge not in chain:
+        chain.append(challenge)
+
+
+def _callback_facts(context: dict | None) -> dict:
+    if context is None:
+        return {}
+    chain = list(context.get("challenge_chain") or [])
+    return {
+        "challenge_chain": chain,
+        "email_otp_status": "success" if "email_otp" in chain else "skipped",
+        "mfa_status": "success" if "totp" in chain else "skipped",
+        **({"password_auth_status": "verified"} if "password" in chain else {}),
+    }
+
+
+def _reraise_control(exception: BaseException) -> None:
+    """保留经过兼容辅助函数包装的取消与执行租约失效信号。"""
+    from core.auth.state_machine import CancellationRequested
+    from core.operations.runtime import OperationAccountDeactivated, OperationCancelled
+    from core.operations.task_gateway import OperationLeaseLost
+
+    pending, visited = [exception], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, (OperationCancelled, OperationLeaseLost, CancellationRequested, OperationAccountDeactivated)):
+            raise current
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
 _PASSWORD_PATH = "https://auth.openai.com/log-in/password"
 _MFA_PATH = "https://auth.openai.com/mfa-challenge"
@@ -384,6 +428,23 @@ def _is_email_otp(result: dict | None, continue_url: str = "") -> bool:
 
 
 def _follow_and_fetch(session, continue_url: str, *, referer: str) -> dict:
+    context = _AT_CALLBACK_CONTEXT.get()
+    if context is not None:
+        from core.accounts.liveness.protocol.callback import CallbackRecoveryError, complete_callback
+
+        try:
+            return complete_callback(
+                session, continue_url, referer=referer,
+                email=context["email"], checkpoint=context.get("checkpoint"),
+            )
+        except CallbackRecoveryError as exc:
+            error = ProtocolV2AuthError(
+                exc.code, category=exc.category, retryable=exc.retryable,
+                roxy_fallback_allowed=False,
+                response_observed=bool(exc.diagnostics.get("response_observed")),
+            )
+            error.diagnostics = dict(exc.diagnostics)
+            raise error from exc
     if not continue_url:
         raise ProtocolV2AuthError("auth_page_unknown", category="response", roxy_fallback_allowed=True)
     try:
@@ -427,6 +488,7 @@ def _complete_mfa(session, result: dict, continue_url: str, secret: str) -> tupl
         raise ProtocolV2AuthError("mfa_factor_missing", category="response", roxy_fallback_allowed=False)
     _mfa_issue_challenge(session, factor_id)
     mfa_result = _mfa_verify(session, factor_id, _totp_code(secret))
+    _record_completed(session, "totp")
     mfa_continue_url = _extract_continue_url(mfa_result) or continue_url
     session_info = _follow_and_fetch(
         session,
@@ -439,6 +501,7 @@ def _complete_mfa(session, result: dict, continue_url: str, secret: str) -> tupl
 def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: str) -> tuple[dict, str]:
     try:
         result = _validate_with_retry(session, email, after_ts)
+        _record_completed(session, "email_otp")
         continue_url = _extract_continue_url(result)
         if _is_mfa(result, continue_url):
             # The email OTP response may itself hand off to MFA.  The caller
@@ -619,6 +682,10 @@ def _refresh_with_password(
         # The v2 adapter does not invent a different no-password flow.  Keep
         # the established email/re-auth implementation as a compatibility
         # adapter and label the result so the task UI remains truthful.
+        def complete_email_callback(session, url, *, referer):
+            _record_completed(session, "email_otp")
+            return _follow_and_fetch(session, url, referer=referer)
+
         result = check_account_liveness(
             email,
             proxy=proxy,
@@ -627,6 +694,7 @@ def _refresh_with_password(
             on_remote_request_started=on_remote_request_started,
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
             **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
+            **({"callback_handler": complete_email_callback} if _AT_CALLBACK_CONTEXT.get() is not None else {}),
         )
         result.setdefault("auth_method", "legacy_email_otp")
         result.setdefault("live_check_driver", "protocol_v2")
@@ -743,6 +811,7 @@ def _refresh_with_password(
         try:
             auth_method = "password"
             password_result = _password_verify(session, password)
+            _record_completed(session, "password")
         except ProtocolV2AuthError as exc:
             if exc.code != "password_rejected":
                 raise
@@ -824,6 +893,12 @@ def _refresh_with_password(
                         ("http_status", "http_status"),
                         ("response_observed", "response_observed"),
                         ("exception_type", "exception_type"),
+                        ("curl_error_code", "curl_error_code"),
+                        ("redirect_hop", "redirect_hop"),
+                        ("retry_attempt", "retry_attempt"),
+                        ("target_host", "target_host"),
+                        ("target_path", "target_path"),
+                        ("auth_error", "auth_error"),
                     ):
                         if key in inner:
                             error.diagnostics[target] = inner[key]
@@ -976,6 +1051,8 @@ def refresh_access_token(
     on_authenticated=None,
     allow_password_email_fallback: bool | None = None,
     on_network_failure=None,
+    callback_recovery: bool = False,
+    callback_checkpoint=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -989,19 +1066,32 @@ def refresh_access_token(
         if callable(on_remote_request_started):
             on_remote_request_started()
 
+    context = {"email": email, "checkpoint": callback_checkpoint, "challenge_chain": []} if callback_recovery else None
+    marker = _AT_CALLBACK_CONTEXT.set(context)
     try:
-        result = _refresh_with_password(
-            email,
-            proxy,
-            proxy_supplier=proxy_supplier,
-            identity=identity,
-            context_recorder=context_recorder,
-            on_remote_request_started=mark_remote_request_started,
-            **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
-            **({"allow_password_email_fallback": allow_password_email_fallback}
-               if allow_password_email_fallback is not None else {}),
-            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
-        )
+        try:
+            result = _refresh_with_password(
+                email,
+                proxy,
+                proxy_supplier=proxy_supplier,
+                identity=identity,
+                context_recorder=context_recorder,
+                on_remote_request_started=mark_remote_request_started,
+                **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
+                **({"allow_password_email_fallback": allow_password_email_fallback}
+                   if allow_password_email_fallback is not None else {}),
+                **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
+            )
+        finally:
+            _AT_CALLBACK_CONTEXT.reset(marker)
+        facts = _callback_facts(context)
+        if not result.get("ok"):
+            for key in ("mfa_status", "email_otp_status"):
+                if facts.get(key) == "skipped":
+                    facts.pop(key)
+        result.update(facts)
+        if context is not None:
+            result["auth"] = auth_result_for_operation(result, auth_method=str(result.get("auth_method") or "protocol_v2")).as_dict()
         result.setdefault("remote_request_started", remote_request_started)
         result.setdefault(
             "auth",
@@ -1044,6 +1134,8 @@ def refresh_access_token(
             ).as_dict(),
         }
     except ProtocolV2AuthError as exc:
+        if context is not None:
+            _reraise_control(exc)
         if callable(on_network_failure):
             on_network_failure(exc)
         status = "deactivated" if exc.code == "account_deactivated" else "failed"
@@ -1059,6 +1151,13 @@ def refresh_access_token(
             "remote_request_started": remote_request_started,
             "live_check_driver": "protocol_v2",
         }
+        facts = _callback_facts(context)
+        # 仅覆盖确有成功回执的挑战；未通过的挑战仍按原失败位置投影。
+        if facts.get("email_otp_status") != "success":
+            facts.pop("email_otp_status", None)
+        if facts.get("mfa_status") != "success":
+            facts.pop("mfa_status", None)
+        result.update(facts)
         if exc.mutation_submitted is not None:
             result["mutation_submitted"] = exc.mutation_submitted
         if exc.action_dispatched is not None:
@@ -1080,6 +1179,8 @@ def refresh_access_token(
             result["password_auth_status"] = "rejected"
         return result
     except Exception as exc:
+        if context is not None:
+            _reraise_control(exc)
         if callable(on_network_failure):
             on_network_failure(exc)
         logger.warning("[查活][Protocol v2] 认证未完成：%s", type(exc).__name__)

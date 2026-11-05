@@ -162,7 +162,7 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "mfa_code_missing", "mfa_factor_missing", "mfa_issue_challenge_failed",
     "mfa_issue_challenge_invalid_response", "mfa_rejected", "mfa_secret_invalid",
     "mfa_secret_missing", "mfa_verify_failed", "mfa_verify_invalid_response",
-    "network_preflight_failed", "oauth_callback_failed", "password_missing",
+    "network_preflight_failed", "oauth_callback_failed", "oauth_callback_rejected", "password_missing",
     "password_rejected", "password_rejected_email_fallback_failed",
     "password_result_unknown", "password_sentinel_failed", "password_change_required", "password_page_error",
     "auth_operation_timeout", "auth_context_missing",
@@ -187,18 +187,19 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "session_fetch_failed", "session_invalid_response",
     "email_otp_validate_failed", "email_otp_validate_invalid_response",
     "workspace_select_failed", "workspace_select_invalid_response",
-    "access_token_expired", "auth_context_ambiguous",
+    "access_token_expired", "auth_context_ambiguous", "session_identity_mismatch",
 })
 _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
     "email_otp", "email_otp_send", "email_otp_validate", "workspace_select", "mfa_issue_challenge", "mfa_verify",
     "network_preflight", "password_email_fallback", "password_verify", "password_sentinel", "password_login",
-    "protocol_v2_auth", "protocol_v3_auth", "session_reuse",
+    "protocol_v2_auth", "protocol_v3_auth", "session_reuse", "oauth_callback", "session_fetch",
     "roxy_open", "roxy_driver", "roxy_navigation", "roxy_login", "roxy_email_otp", "roxy_session", "roxy_callback",
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
     "fallback_failed", "http_error", "imap_error", "invalid_code", "manual_timeout",
     "no_mail", "otp_error", "rejected", "runtime_exception", "transport_error",
-    "unconfirmed",
+    "unconfirmed", "invalid_response", "missing_token", "identity_mismatch", "token_expired",
+    "redirect_invalid", "redirect_limit",
 })
 
 
@@ -223,6 +224,14 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
     headers = safe_response_headers(value.get("response_headers"))
     if auth_error:
         safe["auth_error"] = auth_error
+    diagnostic_operation = value.get("cause_operation") or value.get("operation")
+    diagnostic_kind = value.get("cause_failure_kind") or value.get("failure_kind")
+    if diagnostic_operation == "oauth_callback" and diagnostic_kind == "rejected":
+        raw_error = value.get("auth_error")
+        if isinstance(raw_error, dict) and raw_error.get("code") in {
+            "OAuthCallback", "OAuthSignin", "Configuration", "AccessDenied", "invalid_state", "invalid_grant",
+        }:
+            safe["auth_error"] = {"code": raw_error["code"]}
     if headers:
         safe["response_headers"] = headers
     for key in ("operation", "cause_operation"):
@@ -245,8 +254,20 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
     if isinstance(value.get("response_observed"), bool):
         safe["response_observed"] = value["response_observed"]
     curl_code = value.get("curl_error_code")
-    if isinstance(curl_code, int) and not isinstance(curl_code, bool) and curl_code in {28, 35, 56, 60}:
+    callback_diagnostic = diagnostic_operation in {"oauth_callback", "session_fetch"}
+    if (isinstance(curl_code, int) and not isinstance(curl_code, bool)
+            and (1 <= curl_code <= 999 if callback_diagnostic else curl_code in {28, 35, 56, 60})):
         safe["curl_error_code"] = curl_code
+    if callback_diagnostic:
+        for key, maximum in (("redirect_hop", 12), ("retry_attempt", 1)):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool) and 0 <= number <= maximum:
+                safe[key] = number
+        if value.get("target_host") in {"auth.openai.com", "chatgpt.com"}:
+            safe["target_host"] = value["target_host"]
+        path = str(value.get("target_path") or "")
+        if re.fullmatch(r"/[A-Za-z0-9_./-]{0,199}", path):
+            safe["target_path"] = path
     return safe or None
 
 
@@ -734,8 +755,8 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     uses_mfa = "mfa" in auth_method or mfa_failed
     mfa_status = "success" if uses_mfa and result.get("ok") else "skipped" if not uses_mfa else "failed"
     email_status = "success" if uses_email and (result.get("ok") or mfa_failed) else "skipped" if not uses_email else "failed"
-    if result.get("live_check_driver") == "protocol_v3":
-        # v3 保留逐步回执；后续工作区/Session 失败不能覆盖已通过的验证码。
+    if result.get("live_check_driver") == "protocol_v3" or result.get("challenge_chain"):
+        # 已确认挑战的成功回执不能被后续回调或 Session 失败覆盖。
         if result.get("mfa_status") in {"success", "failed", "skipped"}:
             mfa_status = result["mfa_status"]
         if result.get("email_otp_status") in {"success", "failed", "skipped"}:
@@ -795,6 +816,15 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
     if result.get("ok"):
         reporter.stage("authenticate", "success", "账号认证已完成", detail={"auth_method": auth_method, "fallback_used": bool(result.get("fallback_used"))})
         reporter.stage("token", "success", "最新 AT 已获取并保存")
+    elif operation in {"oauth_callback", "session_fetch"}:
+        reporter.stage(
+            "authenticate", "failed" if operation == "oauth_callback" else "success",
+            "OAuth 回调未完成" if operation == "oauth_callback" else "账号认证已完成，正在确认 Session",
+            level="ERROR" if operation == "oauth_callback" else "INFO",
+            detail={"auth_diagnostics": diagnostics},
+        )
+        if operation == "session_fetch":
+            reporter.stage("token", "failed", "认证后的 Session 未取得有效 AT", level="ERROR", detail={"auth_diagnostics": diagnostics})
 
 
 def _browser_live_check_probe(
@@ -1357,6 +1387,8 @@ def _run_live_check(
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
                         **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
+                        **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
+                           if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
                         **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
@@ -1399,6 +1431,8 @@ def _run_live_check(
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
                         **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
+                        **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
+                           if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
                         **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
                     ),
                     driver_name=selected_refresh_driver,
@@ -1659,6 +1693,9 @@ def _run_live_check(
                 "debug_browser_kept": bool(result.get("debug_browser_kept")),
                 "auth_diagnostics": _safe_refresh_auth_diagnostics(result.get("auth_diagnostics")),
                 "auth_facts": result.get("auth_facts"),
+                "challenge_chain": result.get("challenge_chain"),
+                "email_otp_status": result.get("email_otp_status"),
+                "mfa_status": result.get("mfa_status"),
                 "fingerprint": result.get("fingerprint"),
                 "token_expired": result.get("token_expired"),
                 "needs_live_check": result.get("needs_live_check"),
