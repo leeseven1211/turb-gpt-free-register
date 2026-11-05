@@ -301,6 +301,178 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("注册请求被拒绝（HTTP 400）", info["summary"])
         self.assertEqual("manual_reconcile", info["next_action"])
 
+    def test_at_otp_butler_causes_keep_the_driver_code_and_receipt_state(self):
+        cases = (
+            ("inbound_code_timeout", "no_mail", 408, "MAIL-OTP-002", "未收到新的验证码邮件"),
+            ("source_authentication_failed", "mailbox_error", 408, "MAIL-SOURCE-002", "验证码邮件的 OpenAI 来源认证失败或矛盾"),
+            ("source_untrusted", "mailbox_error", 408, "MAIL-SOURCE-001", "验证码邮件缺少可信 OpenAI 来源证据"),
+            ("recipient_ambiguous", "mailbox_error", 408, "MAIL-RECIPIENT-003", "验证码邮件存在同母地址收件歧义"),
+            ("recipient_mismatch", "mailbox_error", 408, "MAIL-RECIPIENT-004", "验证码邮件的完整收件地址不匹配"),
+            ("mailbox_mismatch", "mailbox_error", 408, "MAIL-RECIPIENT-005", "验证码邮件的最终收件箱不匹配或未配置"),
+            ("invalid_key", "mailbox_error", 401, "MAIL-BUTLER-AUTH-001", "Email Butler API Key 校验失败"),
+            ("service_not_authorized", "mailbox_error", 403, "MAIL-BUTLER-AUTH-002", "Email Butler 客户端无权使用 OpenAI 服务"),
+            ("inbound_storage_error", "mailbox_error", 502, "MAIL-BUTLER-STORAGE-001", "Email Butler 入站存储查询失败"),
+            ("inbound_request_failed", "mailbox_error", None, "MAIL-BUTLER-REQUEST-001", "Email Butler 入站取码请求失败"),
+        )
+        for mailbox_code, kind, status, display, message in cases:
+            with self.subTest(mailbox_code=mailbox_code):
+                summary = {
+                    "cause_code": "email_otp_failed", "outcome": "request_unknown",
+                    "auth_diagnostics": {"operation": "email_otp", "failure_kind": kind,
+                                         "mailbox_error_code": mailbox_code, "http_status": status,
+                                         "exception_type": "EmailButlerClientError"},
+                }
+                info = classify_task_error(
+                    "email_otp_failed", task_type="token_refresh", error_code="email_otp_failed",
+                    result_summary=summary, task_status="attention_required",
+                )
+                self.assertEqual("email_otp_failed", info["code"])
+                self.assertEqual("email_otp_failed", info["error_code"])
+                self.assertEqual(display, info["display_code"])
+                self.assertEqual(message, info["summary"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("manual_reconcile", info["next_action"])
+                self.assertEqual("request_unknown", summary["outcome"])
+                self.assertEqual(mailbox_code, summary["auth_diagnostics"]["mailbox_error_code"])
+
+    def test_at_otp_no_mail_does_not_hide_a_butler_service_failure(self):
+        for status, expected in ((None, "MAIL-OTP-002"), (408, "MAIL-OTP-002"),
+                                 (503, "MAIL-OTP-READ"), (524, "MAIL-OTP-READ"),
+                                 (True, "MAIL-OTP-READ")):
+            with self.subTest(status=status):
+                info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+                    "cause_code": "email_otp_failed", "auth_diagnostics": {
+                        "operation": "email_otp", "failure_kind": "no_mail",
+                        "mailbox_error_code": "inbound_code_timeout", "http_status": status,
+                        "exception_type": "EmailButlerClientError", "transport_exception_type": "ReadTimeout",
+                    },
+                })
+                self.assertEqual(expected, info["display_code"])
+                self.assertEqual("email_otp_failed", info["code"])
+        source = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+            "cause_code": "email_otp_failed", "auth_diagnostics": {
+                "operation": "email_otp", "failure_kind": "no_mail", "http_status": 408,
+                "mailbox_error_code": "source_authentication_failed",
+            },
+        })
+        self.assertEqual("MAIL-SOURCE-002", source["display_code"])
+
+    def test_at_otp_transport_keeps_mailbox_send_and_validate_requests_distinct(self):
+        for operation, prefix, label in (
+            ("email_otp", "NET-MAILBOX", "验证码收件服务请求"),
+            ("email_otp_send", "NET-OTP-SEND", "OpenAI 验证码发送请求"),
+            ("email_otp_validate", "NET-OTP-VALIDATE", "OpenAI 验证码提交请求"),
+        ):
+            for detail, suffix, message in (
+                ({"exception_type": "ConnectionError"}, "003", "连接中断"),
+                ({"exception_type": "EmailButlerClientError", "transport_exception_type": "ReadTimeout"}, "001", "超时"),
+                ({"exception_type": "EmailButlerClientError", "transport_exception_type": "SSLError"}, "002", " TLS 握手失败"),
+                ({"curl_error_code": 60, "exception_type": "ConnectionError"}, "004", " TLS 证书校验失败"),
+                ({"curl_error_code": 97}, "097", "代理隧道连接失败"),
+                ({"curl_error_code": True, "exception_type": ["ConnectionError"]}, "000", "失败"),
+            ):
+                with self.subTest(operation=operation, detail=detail):
+                    info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+                        "cause_code": "email_otp_failed", "auth_diagnostics": {
+                            "operation": operation, "failure_kind": "transport_error", **detail,
+                        },
+                    })
+                    self.assertEqual("email_otp_failed", info["code"])
+                    self.assertEqual(f"{prefix}-{suffix}", info["display_code"])
+                    self.assertEqual(label + message, info["summary"])
+
+    def test_at_otp_transport_requires_a_confirmed_failure_kind(self):
+        for kind, expected in (("otp_error", "MAIL-OTP-001"), ("mailbox_error", "MAIL-OTP-READ")):
+            with self.subTest(kind=kind):
+                info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+                    "cause_code": "email_otp_failed", "auth_diagnostics": {
+                        "operation": "email_otp", "failure_kind": kind,
+                        "exception_type": "ConnectionError", "transport_exception_type": "ReadTimeout",
+                        "curl_error_code": 56,
+                    },
+                })
+                self.assertEqual(expected, info["display_code"])
+                self.assertNotIn("发送", info["summary"])
+        for diagnostics in (
+            {"operation": "email_otp", "exception_type": "ConnectionError"},
+            {"failure_kind": "transport_error", "exception_type": "ConnectionError"},
+            {"operation": "password_verify", "mailbox_error_code": "source_authentication_failed"},
+        ):
+            with self.subTest(diagnostics=diagnostics):
+                info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+                    "cause_code": "email_otp_failed", "auth_diagnostics": diagnostics,
+                })
+                self.assertEqual("MAIL-OTP-001", info["display_code"])
+
+    def test_at_initial_send_and_v3_validate_failures_keep_their_business_codes(self):
+        cases = (
+            ("email_otp_send_failed", "email_otp_send", "transport_error", {"exception_type": "ConnectionRefusedError"},
+             "NET-OTP-SEND-007", "OpenAI 验证码发送请求连接建立失败"),
+            ("email_otp_send_failed", "email_otp_send", "transport_error", {"exception_type": "ProxyConnectionError"},
+             "NET-OTP-SEND-097", "OpenAI 验证码发送请求代理隧道连接失败"),
+            ("email_otp_validate_failed", "email_otp_validate", "transport_error", {"exception_type": "BrokenPipeError"},
+             "NET-OTP-VALIDATE-055", "OpenAI 验证码提交请求发送中断"),
+            ("email_otp_validate_failed", "email_otp_validate", "http_error", {"http_status": 400},
+             "OA-OTP-VALIDATE-400", "OpenAI 验证码提交请求返回 HTTP 400"),
+            ("protocol_network_error", "email_otp_validate", "http_error", {"http_status": 503},
+             "OA-OTP-VALIDATE-503", "OpenAI 验证码提交请求返回 HTTP 503"),
+            ("email_otp_send_failed", "email_otp_send", "http_error", {"http_status": 429},
+             "OA-OTP-SEND-429", "OpenAI 验证码发送请求返回 HTTP 429"),
+            ("email_otp_send_failed", "email_otp_send", "rejected", {"http_status": 403},
+             "MAIL-SEND-002", "验证码发送请求被拒绝"),
+            ("email_otp_send_failed", "email_otp_send", "unconfirmed", {},
+             "MAIL-SEND-003", "验证码发送结果未获确认"),
+        )
+        for code, operation, kind, extra, display, message in cases:
+            with self.subTest(code=code, operation=operation, kind=kind):
+                info = classify_task_error(code, task_type="token_refresh", error_code=code, result_summary={
+                    "cause_code": code, "auth_diagnostics": {
+                        "operation": operation, "failure_kind": kind, **extra,
+                    },
+                })
+                self.assertEqual(code, info["code"])
+                self.assertEqual(code, info["error_code"])
+                self.assertEqual(display, info["display_code"])
+                self.assertEqual(message, info["summary"])
+
+        for code, operation in (("password_rejected", "email_otp_send"),
+                                ("protocol_network_error", "workspace_select")):
+            with self.subTest(code=code, operation=operation):
+                info = classify_task_error(code, task_type="token_refresh", result_summary={
+                    "cause_code": code, "auth_diagnostics": {
+                        "operation": operation, "failure_kind": "transport_error", "exception_type": "ConnectionError",
+                    },
+                })
+                self.assertEqual(code, info["code"])
+                self.assertFalse(info["display_code"].startswith("NET-OTP-"))
+
+    def test_at_otp_fallback_uses_one_diagnostic_request_without_replacing_the_driver_code(self):
+        for key in ("auth_diagnostics", "cause_diagnostics"):
+            for cause_operation, kind, extra, expected in (
+                ("email_otp", "mailbox_error", {"mailbox_error_code": "source_untrusted"}, "MAIL-SOURCE-001"),
+                ("email_otp_send", "transport_error", {"exception_type": "ConnectionError"}, "NET-OTP-SEND-003"),
+            ):
+                with self.subTest(key=key, cause_operation=cause_operation):
+                    info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+                        "cause_code": "email_otp_failed", key: {
+                            "operation": "password_email_fallback", "failure_kind": "fallback_failed",
+                            "cause_operation": cause_operation, "cause_failure_kind": kind, **extra,
+                        },
+                    })
+                    self.assertEqual("email_otp_failed", info["code"])
+                    self.assertEqual(expected, info["display_code"])
+
+    def test_at_otp_unknown_mailbox_code_is_not_exposed_or_guessed(self):
+        info = classify_task_error("email_otp_failed", task_type="token_refresh", result_summary={
+            "cause_code": "email_otp_failed", "auth_diagnostics": {
+                "operation": "email_otp", "failure_kind": "mailbox_error",
+                "mailbox_error_code": "private@example.test", "http_status": 401,
+            },
+        })
+        self.assertEqual("MAIL-OTP-READ", info["display_code"])
+        self.assertNotIn("private@example.test", str(info))
+        self.assertNotIn("Key", info["summary"])
+
     def test_sentinel_transport_diagnostics_identify_specific_primary_failure(self):
         cases = (
             (28, "Timeout", "password_sentinel_transport_timeout", "NET-SENTINEL-001", "密码认证前置检查请求超时"),

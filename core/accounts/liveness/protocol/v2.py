@@ -28,6 +28,7 @@ from config.browser import IMPERSONATE, resolve_impersonate
 from core.auth.email_guard import serialize_email_auth
 from core.accounts.export import fetch_session, follow_oauth_callback
 from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry, _validate_with_retry, check_account_liveness
+from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
 from core.auth.protocol.openai_auth import AccountUnusableError, AuthorizeRouteRejectedError, build_sentinel_header, detect_account_unusable_response_body, detect_account_unusable_text, EmailOtpSendError, follow_authorize, request_sentinel_token, send_email_otp
 from core.accounts.credentials import account_email_is_invalid, get_account_login_credentials
 from core.auth.fingerprint import build_safe_fingerprint_summary
@@ -518,16 +519,12 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
             category="email",
             roxy_fallback_allowed=False,
         )
-        error.diagnostics = {
-            "operation": "email_otp",
-            "failure_kind": {
-                "ForwardIMAPNoMailTimeout": "no_mail",
-                "ForwardIMAPError": "imap_error",
-                "TimeoutError": "manual_timeout",
-                "EmailOtpInvalidError": "invalid_code",
-            }.get(type(exc).__name__, "otp_error"),
-            "exception_type": type(exc).__name__[:80],
-        }
+        error.diagnostics = otp_failure_diagnostics(exc)
+        logger.warning(
+            "[查活][Protocol v2] 邮箱验证码阶段失败：operation=%s failure_kind=%s mailbox_error_code=%s exception_type=%s",
+            error.diagnostics["operation"], error.diagnostics["failure_kind"],
+            error.diagnostics.get("mailbox_error_code", "-"), error.diagnostics["exception_type"],
+        )
         raise error from exc
 
 
@@ -894,6 +891,8 @@ def _refresh_with_password(
                         ("response_observed", "response_observed"),
                         ("exception_type", "exception_type"),
                         ("curl_error_code", "curl_error_code"),
+                        ("mailbox_error_code", "mailbox_error_code"),
+                        ("transport_exception_type", "transport_exception_type"),
                         ("redirect_hop", "redirect_hop"),
                         ("retry_attempt", "retry_attempt"),
                         ("target_host", "target_host"),

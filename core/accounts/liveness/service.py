@@ -197,7 +197,7 @@ _SAFE_AUTH_DIAGNOSTIC_OPERATIONS = frozenset({
 })
 _SAFE_AUTH_FAILURE_KINDS = frozenset({
     "fallback_failed", "http_error", "imap_error", "invalid_code", "manual_timeout",
-    "no_mail", "otp_error", "rejected", "runtime_exception", "transport_error",
+    "no_mail", "mailbox_error", "otp_error", "rejected", "runtime_exception", "transport_error",
     "unconfirmed", "invalid_response", "missing_token", "identity_mismatch", "token_expired",
     "redirect_invalid", "redirect_limit",
 })
@@ -219,6 +219,7 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
         return None
     safe: dict = {}
     from core.network.response_diagnostics import safe_auth_error, safe_response_headers
+    from core.accounts.liveness.protocol.otp_diagnostics import MAILBOX_ERROR_CODES, OTP_OPERATIONS, TRANSPORT_EXCEPTION_TYPES
 
     auth_error = safe_auth_error(value.get("auth_error"))
     headers = safe_response_headers(value.get("response_headers"))
@@ -248,6 +249,13 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
     exception_type = str(value.get("exception_type") or "").strip()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", exception_type):
         safe["exception_type"] = exception_type
+    if diagnostic_operation in OTP_OPERATIONS:
+        mailbox_code = value.get("mailbox_error_code")
+        if isinstance(mailbox_code, str) and mailbox_code in MAILBOX_ERROR_CODES:
+            safe["mailbox_error_code"] = mailbox_code
+        transport_type = value.get("transport_exception_type")
+        if isinstance(transport_type, str) and transport_type in TRANSPORT_EXCEPTION_TYPES:
+            safe["transport_exception_type"] = transport_type
     status = value.get("http_status")
     if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
         safe["http_status"] = status
@@ -255,8 +263,9 @@ def _safe_refresh_auth_diagnostics(value: object) -> dict | None:
         safe["response_observed"] = value["response_observed"]
     curl_code = value.get("curl_error_code")
     callback_diagnostic = diagnostic_operation in {"oauth_callback", "session_fetch"}
+    curl_codes = {5, 6, 7, 18, 28, 35, 52, 55, 56, 60, 97} if diagnostic_operation in OTP_OPERATIONS else {28, 35, 56, 60}
     if (isinstance(curl_code, int) and not isinstance(curl_code, bool)
-            and (1 <= curl_code <= 999 if callback_diagnostic else curl_code in {28, 35, 56, 60})):
+            and (1 <= curl_code <= 999 if callback_diagnostic else curl_code in curl_codes)):
         safe["curl_error_code"] = curl_code
     if callback_diagnostic:
         for key, maximum in (("redirect_hop", 12), ("retry_attempt", 1)):

@@ -17,6 +17,7 @@ from urllib.parse import unquote, urljoin, urlparse
 from core.accounts.credentials import account_email_is_invalid, get_account_login_credentials
 from core.accounts.plans.client import token_claims
 from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry
+from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
 from core.accounts.liveness.protocol.v2 import (
     ProtocolV2AuthError, _mfa_issue_challenge, _mfa_verify, _password_verify,
     _post_json, _totp_code,
@@ -379,8 +380,10 @@ def _authenticate(session, initial_url, *, email, target, password, secret, prog
                 code = wait_for_otp(email, after_ts=requested_at)
             except (OperationCancelled, OperationLeaseLost):
                 raise
-            except Exception:
-                raise _error("email_otp_failed", category="email") from None
+            except Exception as exc:
+                error = _error("email_otp_failed", category="email")
+                error.diagnostics = otp_failure_diagnostics(exc)
+                raise error from None
             payload = _post_json(session, _AUTH + "/api/accounts/email-otp/validate", headers=session.get_auth_headers(referer=_AUTH + "/email-verification"), payload={"code": code}, operation="email_otp_validate")
             methods.append("email_otp")
         elif stage == "mfa":

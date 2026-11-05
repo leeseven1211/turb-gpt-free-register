@@ -1521,11 +1521,95 @@ def _at_callback_diagnostic_cause(
     return None
 
 
+def _email_otp_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> dict[str, str] | None:
+    """按同一次取码、发码或提交请求的证据展示细因，保留驱动原始错误码。"""
+    if code not in {"email_otp_failed", "email_otp_send_failed", "email_otp_validate_failed", "protocol_network_error"}:
+        return None
+    operation = str(diagnostics.get("cause_operation") or diagnostics.get("operation") or "").strip()
+    failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
+    request = {
+        "email_otp": ("验证码收件服务请求", "NET-MAILBOX", "MAIL-OTP-HTTP"),
+        "email_otp_send": ("OpenAI 验证码发送请求", "NET-OTP-SEND", "OA-OTP-SEND"),
+        "email_otp_validate": ("OpenAI 验证码提交请求", "NET-OTP-VALIDATE", "OA-OTP-VALIDATE"),
+    }.get(operation)
+    if request is None:
+        return None
+
+    def cause(display_code: str, message: str) -> dict[str, str]:
+        return {"cause_code": code, "cause_display_code": display_code, "cause_summary": message}
+
+    if operation == "email_otp":
+        mailbox_code = diagnostics.get("mailbox_error_code")
+        if isinstance(mailbox_code, str):
+            if mailbox_code in _BUTLER_RECIPIENT_CAUSES and mailbox_code != "inbound_code_timeout":
+                return cause(*_BUTLER_RECIPIENT_CAUSES[mailbox_code])
+            mailbox_detail = {
+                "invalid_key": ("MAIL-BUTLER-AUTH-001", "Email Butler API Key 校验失败"),
+                "service_not_authorized": ("MAIL-BUTLER-AUTH-002", "Email Butler 客户端无权使用 OpenAI 服务"),
+                "inbound_storage_error": ("MAIL-BUTLER-STORAGE-001", "Email Butler 入站存储查询失败"),
+                "inbound_request_failed": ("MAIL-BUTLER-REQUEST-001", "Email Butler 入站取码请求失败"),
+            }.get(mailbox_code)
+            if mailbox_detail:
+                return cause(*mailbox_detail)
+        if mailbox_code == "inbound_code_timeout" or failure_kind == "no_mail":
+            status = diagnostics.get("http_status")
+            if status is None or (type(status) is int and status == 408):
+                return cause("MAIL-OTP-002", "未收到新的验证码邮件")
+            return cause(*_CAUSE_DETAILS["email_otp_mailbox_failed"])
+        if failure_kind == "mailbox_error":
+            return cause(*_CAUSE_DETAILS["email_otp_mailbox_failed"])
+
+    if operation == "email_otp_send":
+        send_code = {"rejected": "email_otp_send_rejected", "unconfirmed": "email_otp_send_unconfirmed"}.get(failure_kind)
+        if send_code:
+            return cause(*_CAUSE_DETAILS[send_code])
+    if failure_kind == "http_error":
+        status = diagnostics.get("http_status")
+        if type(status) is int and 400 <= status <= 599:
+            return cause(f"{request[2]}-{status}", f"{request[0]}返回 HTTP {status}")
+
+    # 旧记录中的网络类名不能证明异常发生在哪个请求，只在明确传输失败时采用。
+    if failure_kind != "transport_error":
+        return None
+    curl_code = diagnostics.get("curl_error_code")
+    curl_code = curl_code if type(curl_code) is int else None
+    transport = {
+        5: ("005", "代理域名解析失败"),
+        6: ("006", "目标域名解析失败"),
+        7: ("007", "连接建立失败"),
+        18: ("018", "响应传输截断"),
+        28: ("001", "超时"),
+        35: ("002", " TLS 握手失败"),
+        52: ("052", "连接关闭且未收到有效响应"),
+        55: ("055", "发送中断"),
+        56: ("003", "连接中断"),
+        60: ("004", " TLS 证书校验失败"),
+        97: ("097", "代理隧道连接失败"),
+    }.get(curl_code)
+    if transport is None:
+        exception_type = diagnostics.get("transport_exception_type") or diagnostics.get("exception_type")
+        transport = {
+            "Timeout": ("001", "超时"), "ReadTimeout": ("001", "超时"),
+            "ConnectTimeout": ("001", "超时"), "TimeoutError": ("001", "超时"),
+            "SSLCertVerificationError": ("004", " TLS 证书校验失败"),
+            "SSLError": ("002", " TLS 握手失败"), "ProxyError": ("097", "代理隧道连接失败"),
+            "ProxyConnectionError": ("097", "代理隧道连接失败"), "ConnectionRefusedError": ("007", "连接建立失败"),
+            "ConnectionError": ("003", "连接中断"), "ConnectionResetError": ("003", "连接中断"),
+            "ConnectionAbortedError": ("003", "连接中断"), "BrokenPipeError": ("055", "发送中断"),
+            "IncompleteRead": ("018", "响应传输截断"), "ChunkedEncodingError": ("018", "响应传输截断"),
+        }.get(exception_type) if isinstance(exception_type, str) else None
+    suffix, message = transport or ("000", "失败")
+    return cause(f"{request[1]}-{suffix}", request[0] + message)
+
+
 def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> dict[str, str] | None:
     """同一诊断来源内的请求操作和网络细项一起解析，避免跨请求拼接根因。"""
     operation = str(diagnostics.get("cause_operation") or diagnostics.get("operation") or "").strip()
     failure_kind = str(diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind") or "").strip()
     exception_type = str(diagnostics.get("exception_type") or "").strip()
+    email_cause = _email_otp_diagnostic_cause(diagnostics, code=code)
+    if email_cause is not None:
+        return email_cause
     if operation in {"oauth_callback", "session_fetch"}:
         return _at_callback_diagnostic_cause(diagnostics, operation=operation, failure_kind=failure_kind, code=code)
     if not operation and code == "password_sentinel_failed":

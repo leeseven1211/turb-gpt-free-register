@@ -16,6 +16,7 @@ from core.auth.protocol.openai_auth import follow_authorize, network_preflight, 
 from core.accounts.export import follow_oauth_callback, fetch_session
 from core.email.provider import wait_for_otp
 from core.accounts.credentials import account_email_is_invalid
+from core.accounts.liveness.protocol.otp_diagnostics import mark_otp_failure
 from core.auth.humanize import delay as human_delay
 
 logger = logging.getLogger('core.account_liveness')
@@ -368,6 +369,7 @@ def _validate_with_retry(
     current_otp = None
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
+        otp_operation = "email_otp"
         try:
             if current_otp is None:
                 logger.info("[查活] 等待登录 OTP：%s（第 %s/%s 次）", email, attempt, max_otp_attempts)
@@ -378,27 +380,35 @@ def _validate_with_retry(
                     # 未指定来源时遵循全局配置，并由取码器解析账号保存的邮箱来源。
                     force_service=True if email_source else None,
                 )
+            otp_operation = "email_otp_validate"
             result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
             return result
         except EmailOtpInvalidError as exc:
+            mark_otp_failure(exc, otp_operation)
             last_exc = exc
             if attempt >= max_otp_attempts:
                 break
             logger.warning("[查活] OTP 无效/过期，重新发送后再取：%s", str(exc)[:180])
-            send_email_otp(session)
+            try:
+                send_email_otp(session)
+            except Exception as send_exc:
+                mark_otp_failure(send_exc, "email_otp_send")
+                raise
             # 以“重新发送请求完成后”为新基准，避免刚刚失败的上一封旧码再次被 after 容忍窗口命中。
             otp_after_ts = time.time()
             current_otp = None
             time.sleep(1)
         except Exception as exc:
+            mark_otp_failure(exc, otp_operation)
             # 提交 OTP 后的网络抖动（连接断开/超时/代理波动）：同一会话重发验证码再验证一次。
             if attempt >= max_otp_attempts or not _is_retryable_network_error(exc):
                 raise
             last_exc = exc
-            logger.warning("[查活] OTP 验证网络抖动，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
+            logger.warning("[查活] 邮箱验证码阶段失败，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
             try:
                 send_email_otp(session)
-            except Exception:
+            except Exception as send_exc:
+                mark_otp_failure(send_exc, "email_otp_send")
                 raise
             otp_after_ts = time.time()
             current_otp = None
