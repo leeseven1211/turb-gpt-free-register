@@ -859,6 +859,10 @@ _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'candidate_login_fact_invalid': ('FLOW-PWD-REC-027', '候选密码认证的持久化提交事实不匹配，请保留候选并核对同 Run 提交记录'),
     'recovery_intent_conflict': ('FLOW-PWD-REC-028', '存在另一种密码操作的待确认候选，请继续原操作'),
     'password_add_context_invalid': ('FLOW-PWD-REC-029', '添加密码回执与当前补密码候选不匹配'),
+    'password_login_confirmation_not_prepared': ('FLOW-PWD-REC-030', '上次密码候选已提交，不能用原密码登录结果确认候选'),
+    'password_login_confirmation_mismatch': ('FLOW-PWD-REC-031', '本轮验证的原密码与检查点保存值不匹配'),
+    'password_login_confirmation_unverified': ('FLOW-PWD-REC-032', '密码确认缺少本轮密码验证证据'),
+    'session_context_invalid': ('FLOW-PWD-REC-033', '密码恢复会话或 Token 与目标账号身份无法对应'),
 }
 _PASSWORD_RECOVERY_UNKNOWN_CAUSES = {
     'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),
@@ -1227,6 +1231,17 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_setup_otp_unavailable": ("MAIL-PWD-SETUP-003", "补密码未取得本轮邮箱验证码"),
     "password_setup_request_unknown": ("AUTH-PWD-SETUP-009", "添加密码请求已发出，远端响应未确认"),
     "password_setup_response_invalid": ("AUTH-PWD-SETUP-010", "补密码接口响应格式无法确认"),
+    "password_setup_mfa_rejected": ("AUTH-PWD-SETUP-MFA-001", "补密码 2FA 验证未通过"),
+    "password_setup_mfa_factor_missing": ("AUTH-PWD-SETUP-MFA-002", "补密码重新验证缺少有效的 2FA 挑战"),
+    "password_setup_mfa_secret_invalid": ("CFG-PWD-SETUP-MFA-001", "补密码使用的 2FA 密钥格式无效"),
+    "password_setup_otp_send_unconfirmed": ("MAIL-PWD-SETUP-004", "补密码验证码发送未返回有效的验证页面"),
+    "password_setup_previous_result_unknown": ("AUTH-PWD-SETUP-011", "原密码已验证，上次密码提交结果仍待核验"),
+    "password_setup_password_reset_required": ("AUTH-PWD-SETUP-RESET", "远端要求重置密码，原密码当前无法用于登录"),
+    "password_setup_password_rejected": ("AUTH-PWD-SETUP-012", "补密码登录时原密码被拒绝"),
+    "password_setup_email_otp_failed": ("MAIL-PWD-SETUP-005", "补密码登录邮箱验证码验证未完成"),
+    "password_setup_oauth_callback_failed": ("AUTH-PWD-SETUP-CALLBACK", "补密码登录回调未完成，尚未取得新会话"),
+    "password_setup_access_token_missing": ("AUTH-PWD-SETUP-013", "补密码登录未取得有效 Token"),
+    "password_setup_protocol_network_error": ("NET-PWD-SETUP-003", "补密码登录网络请求未完成"),
     "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),
     "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后的登录态未确认"),
     "profile_auth_error": ("FLOW-PROFILE-003", "资料阶段进入认证错误页"),
@@ -1487,6 +1502,10 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
                           if isinstance(value := summary.get(key), dict)]
     diagnostics = diagnostic_sources[0] if diagnostic_sources else {}
     code = str(summary.get("cause_code") or "").strip()
+    if not code:
+        setup_code = str(summary.get("error_code") or "").strip()
+        if setup_code.startswith("password_setup_") and setup_code in _CAUSE_DETAILS:
+            code = setup_code
     if code in _OTP_PAGE_NETWORK_CAUSES:
         # OTP 页面已有明确传输细因时，不拼接其他认证请求的旧诊断。
         display_code, cause_summary = _OTP_PAGE_NETWORK_CAUSES[code]
@@ -1743,6 +1762,7 @@ def _cause_error_projection(
     display_code = cause["cause_display_code"]
     source, source_label = (
         ("user", "用户操作") if display_code.startswith("USR-")
+        else ("configuration", "配置错误") if display_code.startswith("CFG-")
         else ("internal", "内部错误") if display_code.startswith("SYS-")
         else ("external", "网络 / 上游服务") if display_code.startswith("NET-")
         else ("external", "邮箱 / 验证码服务") if display_code.startswith("MAIL-")

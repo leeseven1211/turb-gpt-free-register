@@ -394,6 +394,7 @@ def get_password_recovery(recovery_id: int, **owner) -> PrivateCheckpoint:
 
 def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict,
                                    verified_password: str | None = None, auth_method: str = "",
+                                   password_auth_status: str = "",
                                    **owner) -> PrivateCheckpoint | None:
     """保存认证会话；明确验证原密码时，原子确认原值并结束未提交的补密码候选。"""
     from core.accounts.plans.client import token_claims
@@ -401,7 +402,24 @@ def save_password_recovery_session(recovery_id: int, *, access_token: str, sessi
     identity = _owner(owner)
     if identity.purpose != "manual" or not str(access_token or "").strip() or not isinstance(session_info, dict):
         raise PasswordRecoveryError("session_context_invalid")
-    claims = token_claims(access_token)
+    user = session_info.get("user")
+    account_info = session_info.get("account") or {}
+    # 沿用会话身份核验规则：邮箱和本次 Token 必须来自同一个完整认证会话。
+    # Token 中的可选身份声明只用于拒绝冲突，不能代替会话邮箱。
+    if (not isinstance(user, dict) or not isinstance(account_info, dict)
+            or str(user.get("email") or "").strip().casefold() != identity.email
+            or str(session_info.get("accessToken") or "").strip() != str(access_token).strip()):
+        raise PasswordRecoveryError("session_context_invalid")
+    try:
+        claims = token_claims(access_token)
+    except (TypeError, ValueError, AttributeError):
+        raise PasswordRecoveryError("session_context_invalid") from None
+    if ((claims.get("email") and str(claims["email"]).strip().casefold() != identity.email)
+            or (claims.get("user_id") and str(claims["user_id"]) != str(user.get("id") or ""))
+            or (claims.get("account_id") and str(claims["account_id"]) != str(account_info.get("id") or ""))):
+        raise PasswordRecoveryError("session_context_invalid")
+    if verified_password is not None and password_auth_status != "verified":
+        raise PasswordRecoveryError("password_login_confirmation_unverified")
     cipher, key = _cipher() if verified_password is not None else (None, None)
     init()
     with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:

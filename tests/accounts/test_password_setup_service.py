@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import base64
 import json
 import os
 import uuid
@@ -13,6 +14,18 @@ from core.storage import postgres as pg, records as records
 from core.storage.accounts import password_recovery as store
 from core.storage.operations import store as operations
 from tests.support_pg import PostgresTestCase
+
+
+def matching_session(email, token="fresh-token"):
+    return {"accessToken": token, "user": {"email": email, "id": "fixture-user"},
+            "account": {"id": "fixture-account"}, "expires": "2099-01-01"}
+
+
+def identity_token(*, email=None, user_id=None, account_id=None):
+    payload = {"https://api.openai.com/profile": {"email": email},
+               "https://api.openai.com/auth": {"chatgpt_user_id": user_id, "chatgpt_account_id": account_id}}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"fixture.{encoded}.signature"
 
 
 class PasswordSetupFixture:
@@ -76,8 +89,8 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
         self.existing_password()
         cp = self.prepare()
         confirmed = store.save_password_recovery_session(cp.recovery_id, **self.owner,
-            access_token="fresh-token", session_info={"expires": "2099-01-01"},
-            verified_password="Existing-pass-42", auth_method="password_mfa_totp")
+            access_token="fresh-token", session_info=matching_session(self.email),
+            verified_password="Existing-pass-42", auth_method="password_mfa_totp", password_auth_status="verified")
         self.assertEqual("confirmed", confirmed.state)
         self.assertEqual("Existing-pass-42", confirmed.password)
         self.assertNotEqual(cp.password, confirmed.password)
@@ -98,7 +111,8 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
         cp = self.prepare()
         with self.assertRaisesRegex(store.PasswordRecoveryError, "password_login_confirmation_mismatch"):
             store.save_password_recovery_session(cp.recovery_id, **self.owner,
-                access_token="fresh-token", session_info={}, verified_password=cp.password)
+                access_token="fresh-token", session_info=matching_session(self.email),
+                verified_password=cp.password, password_auth_status="verified")
         self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
         self.assertEqual(cp.password, store.resume_password_recovery(**self.owner).password)
 
@@ -108,7 +122,8 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
         cp = self.transition(cp, "unknown")
         with self.assertRaisesRegex(store.PasswordRecoveryError, "password_login_confirmation_not_prepared"):
             store.save_password_recovery_session(cp.recovery_id, **self.owner,
-                access_token="fresh-token", session_info={}, verified_password="Existing-pass-42")
+                access_token="fresh-token", session_info=matching_session(self.email),
+                verified_password="Existing-pass-42", password_auth_status="verified")
         pending = store.resume_password_recovery(**self.owner)
         self.assertEqual("unknown", pending.state)
         self.assertEqual(cp.password, pending.password)
@@ -124,12 +139,73 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
         with patch.object(records, "patch_row", side_effect=fail_session):
             with self.assertRaisesRegex(RuntimeError, "fixture session persistence failed"):
                 store.save_password_recovery_session(cp.recovery_id, **self.owner,
-                    access_token="fresh-token", session_info={}, verified_password="Existing-pass-42")
+                    access_token="fresh-token", session_info=matching_session(self.email),
+                    verified_password="Existing-pass-42", password_auth_status="verified")
         account = records.get_row(records.ACCOUNTS, self.account_id)
         self.assertEqual("old-token", account["access_token"])
         self.assertNotEqual("verified", account.get("last_password_auth_status"))
         self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
         self.assertEqual(cp.password, store.resume_password_recovery(**self.owner).password)
+
+    def test_original_password_confirmation_requires_matching_session_and_token(self):
+        self.existing_password()
+        cp = self.prepare()
+        invalid_sessions = (
+            {},
+            {"accessToken": "fresh-token"},
+            {"accessToken": "fresh-token", "user": {}},
+            matching_session("other@example.test"),
+            matching_session(self.email, "different-token"),
+            {"user": {"email": self.email}},
+        )
+        for info in invalid_sessions:
+            with self.subTest(kind=tuple(info)):
+                with self.assertRaisesRegex(store.PasswordRecoveryError, "session_context_invalid"):
+                    store.save_password_recovery_session(cp.recovery_id, **self.owner,
+                        access_token="fresh-token", session_info=info, verified_password="Existing-pass-42",
+                        password_auth_status="verified")
+                account = records.get_row(records.ACCOUNTS, self.account_id)
+                self.assertEqual("old-token", account["access_token"])
+                self.assertNotEqual("verified", account.get("last_password_auth_status"))
+                self.assertNotEqual("confirmed", self.extra().get("account_password_state"))
+                self.assertEqual(cp.password, store.resume_password_recovery(**self.owner).password)
+                self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
+
+    def test_token_identity_claim_conflicts_cannot_confirm_original_password(self):
+        self.existing_password()
+        cp = self.prepare()
+        for claims in ({"email": "other@example.test"}, {"user_id": "different-user"},
+                       {"account_id": "different-account"}):
+            with self.subTest(field=next(iter(claims))):
+                token = identity_token(**claims)
+                with self.assertRaisesRegex(store.PasswordRecoveryError, "session_context_invalid"):
+                    store.save_password_recovery_session(cp.recovery_id, **self.owner,
+                        access_token=token, session_info=matching_session(self.email, token),
+                        verified_password="Existing-pass-42", password_auth_status="verified")
+                self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+                self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
+
+    def test_original_password_confirmation_requires_current_password_verification(self):
+        self.existing_password()
+        cp = self.prepare()
+        for status in ("", "skipped", "accepted", "rejected", "unknown"):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(store.PasswordRecoveryError, "password_login_confirmation_unverified"):
+                    store.save_password_recovery_session(cp.recovery_id, **self.owner,
+                        access_token="fresh-token", session_info=matching_session(self.email),
+                        verified_password="Existing-pass-42", password_auth_status=status)
+                self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
+                self.assertNotEqual("confirmed", self.extra().get("account_password_state"))
+
+    def test_optional_token_identity_claims_do_not_block_a_matching_session(self):
+        self.existing_password()
+        cp = self.prepare()
+        token = identity_token()
+        confirmed = store.save_password_recovery_session(cp.recovery_id, **self.owner,
+            access_token=token, session_info=matching_session(self.email.upper(), token),
+            verified_password="Existing-pass-42", password_auth_status="verified")
+        self.assertEqual("confirmed", confirmed.state)
+        self.assertEqual("confirmed", self.extra()["account_password_state"])
 
     def test_setup_candidate_is_private_until_explicit_add_confirmation(self):
         cp = self.prepare()
@@ -208,14 +284,15 @@ class PasswordSetupStoreTests(PasswordSetupFixture, PostgresTestCase):
             cur.execute(f"UPDATE {pg.qualified('operation_runs')} SET execution_id='replacement' WHERE id=%s",
                         (self.owner["operation_run_id"],))
         with self.assertRaisesRegex(store.PasswordRecoveryError, "operation_execution_mismatch"):
-            save_session(cp.recovery_id, **self.owner, access_token="stale-token", session_info={})
+            save_session(cp.recovery_id, **self.owner, access_token="stale-token",
+                         session_info=matching_session(self.email, "stale-token"))
         self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
 
     def test_session_write_keeps_unrelated_fields_without_confirming_password(self):
         cp = self.prepare()
         save_session = getattr(store, "save_password_recovery_session", None)
         self.assertTrue(callable(save_session), "协议会话应在执行围栏事务内保存")
-        save_session(cp.recovery_id, **self.owner, access_token="fresh-token", session_info={"expires": "2099-01-01"})
+        save_session(cp.recovery_id, **self.owner, access_token="fresh-token", session_info=matching_session(self.email))
         account = records.get_row(records.ACCOUNTS, self.account_id)
         self.assertEqual("fresh-token", account["access_token"])
         self.assertEqual("mail-only-password", account["password"])
@@ -235,7 +312,7 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
     def run_service(self, add, *, login=None, checkpoint=None, report=None):
         def authenticated(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
-                "session": {"accessToken": "fresh-token", "expires": "2099-01-01"}}, object())
+                "session": matching_session(email)}, object())
         with patch.object(self.service, "refresh_access_token", side_effect=login or authenticated), \
                 patch.object(self.service, "add_password", side_effect=add):
             return self.service.run_protocol_password_setup(self.email, proxy=None, checkpoint=checkpoint, report=report,
@@ -268,7 +345,8 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         })
         def login(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
-                "password_auth_status": "verified", "auth_method": "password_mfa_totp", "session": {}}, object())
+                "password_auth_status": "verified", "auth_method": "password_mfa_totp",
+                "session": matching_session(email)}, object())
         def forbidden(*args, **kwargs):
             self.fail("已验证原密码不应再调用添加密码")
         events = []
@@ -298,7 +376,8 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
                 called = []
                 def login(email, **kwargs):
                     return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
-                        "password_auth_status": status, "auth_method": "password_mfa_totp", "session": {}}, object())
+                        "password_auth_status": status, "auth_method": "password_mfa_totp",
+                        "session": matching_session(email)}, object())
                 def add(_session, _email, _password, **kwargs):
                     called.append(True)
                     kwargs["on_dispatched"]()
@@ -320,6 +399,68 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         self.assertEqual("password_setup_session_missing", result["error_code"])
         self.assertNotEqual("confirmed", self.extra().get("account_password_state"))
 
+    def test_verified_password_with_unbound_or_wrong_identity_never_confirms_or_adds(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Existing-pass-42", "account_password_state": "candidate"}),
+        })
+        pending = self.prepare()
+        invalid_sessions = ({}, matching_session("other@example.test"),
+                            matching_session(self.email, "different-token"),
+                            {"accessToken": "fresh-token", "user": {}},
+                            {"user": {"email": self.email}})
+        for info in invalid_sessions:
+            with self.subTest(kind=tuple(info)):
+                def login(email, **kwargs):
+                    return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
+                        "password_auth_status": "verified", "session": info}, object())
+                result = self.run_service(lambda *a, **k: self.fail("身份不匹配不得添加密码"), login=login)
+                self.assertFalse(result["ok"])
+                self.assertFalse(result["password_verified"])
+                self.assertFalse(result["password_added"])
+                self.assertEqual("password_recovery_session_context_invalid", result["error_code"])
+                self.assertEqual("candidate", self.extra()["account_password_state"])
+                self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+                self.assertEqual(pending.password, store.resume_password_recovery(**self.owner).password)
+                self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
+
+    def test_email_only_session_with_wrong_identity_does_not_submit_add_password(self):
+        def login(email, **kwargs):
+            return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
+                "password_auth_status": "skipped", "session": matching_session("other@example.test")}, object())
+        result = self.run_service(lambda *a, **k: self.fail("异账号会话不可添加密码"), login=login)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["password_added"])
+        self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+
+    def test_authentication_callback_without_success_does_not_confirm_or_add(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Existing-pass-42"}),
+        })
+        def login(email, **kwargs):
+            return kwargs["on_authenticated"]({"ok": False, "access_token": "fresh-token",
+                "password_auth_status": "verified", "session": matching_session(email)}, object())
+        result = self.run_service(lambda *a, **k: self.fail("认证未完成不可添加密码"), login=login)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["password_verified"])
+        self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+
+    def test_unmatched_session_preserves_an_earlier_unknown_password_submission(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Existing-pass-42", "account_password_state": "candidate"}),
+        })
+        pending = self.transition(self.transition(self.prepare(), "started"), "unknown")
+        def login(email, **kwargs):
+            return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
+                "password_auth_status": "verified", "session": {}}, object())
+        result = self.run_service(lambda *a, **k: self.fail("会话未对应不得重复添加密码"), login=login)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["password_verified"])
+        self.assertEqual("unknown", result["remote_receipt_state"])
+        self.assertEqual("password_recovery_session_context_invalid", result["error_code"])
+        resumed = store.resume_password_recovery(**self.owner)
+        self.assertEqual((pending.password, "unknown"), (resumed.password, resumed.state))
+        self.assertEqual("old-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+
     def test_verified_password_is_exposed_to_account_list_without_secrets(self):
         from webui.app import create_app
         records.patch_row(records.ACCOUNTS, self.account_id, {
@@ -327,7 +468,8 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         })
         def login(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
-                "password_auth_status": "verified", "auth_method": "password_mfa_totp", "session": {}}, object())
+                "password_auth_status": "verified", "auth_method": "password_mfa_totp",
+                "session": matching_session(email)}, object())
         self.assertTrue(self.run_service(lambda *a, **k: self.fail("不得添加已有密码"), login=login)["ok"])
         client = create_app(auth_code="fixture-auth").test_client()
         response = client.get("/api/accounts?paged=1", headers={"X-Auth-Code": "fixture-auth"})
@@ -345,7 +487,7 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         cp = self.transition(self.transition(self.prepare(), "started"), "unknown")
         def login(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
-                "password_auth_status": "verified", "session": {}}, object())
+                "password_auth_status": "verified", "session": matching_session(email)}, object())
         result = self.run_service(lambda *a, **k: self.fail("不得重复添加未决密码"), login=login)
         self.assertEqual("unknown", result["remote_receipt_state"])
         self.assertEqual(cp.password, store.resume_password_recovery(**self.owner).password)

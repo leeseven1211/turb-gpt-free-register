@@ -722,17 +722,20 @@ class TaskErrorClassificationTests(unittest.TestCase):
             "password_entry_page_not_hydrated": (
                 "workflow.password_entry_not_hydrated",
                 "密码入口页面未加载",
+                "retry_registration",
             ),
             "password_entry_not_offered": (
-                "workflow.password_entry_not_offered",
-                "当前流程未提供密码入口",
+                "password_entry_not_offered",
+                "认证下一步未提供可识别入口",
+                "inspect_failure",
             ),
             "password_entry_recovery_exhausted": (
                 "workflow.password_entry_recovery_exhausted",
                 "密码入口页面恢复已用尽",
+                "retry_registration",
             ),
         }
-        for message, (code, label) in cases.items():
+        for message, (code, label, next_action) in cases.items():
             with self.subTest(message=message):
                 info = classify_task_error(
                     f"RuntimeError: 密码注册模式失败：{message}; https://auth.openai.com/email-verification",
@@ -740,7 +743,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 )
                 self.assertEqual(code, info["code"])
                 self.assertEqual(label, info["kind_label"])
-                self.assertEqual("retry_registration", info["next_action"])
+                self.assertEqual(next_action, info["next_action"])
 
     def test_imap_otp_timeout_is_email_service_error(self):
         info = classify_task_error("Gmail IMAP 等待验证码超时；尚未收到新的 OpenAI 验证码邮件")
@@ -1356,7 +1359,7 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
             (
                 "registration_failed: RuntimeError: 无法切换到创建密码页：create_account_password_navigation_timeout",
                 "external.openai", "password_entry_navigation_timeout", "FLOW-PWD-005",
-                "创建密码页跳转超时", False,
+                "密码入口导航超时", False,
             ),
         )
         for task_type in ("registration", "registration_resume"):

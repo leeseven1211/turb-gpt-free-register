@@ -114,11 +114,14 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             session_info = auth.get("session")
             if not token:
                 raise ProtocolPasswordSetupError("password_setup_session_missing", "登录后未取得有效会话")
+            if auth.get("ok") is not True:
+                raise ProtocolPasswordSetupError("password_setup_auth_failed", "登录尚未完成有效会话确认")
             password_verified = auth.get("ok") is True and auth.get("password_auth_status") == "verified" and bool(cp.old_password)
             pending_submission = password_verified and cp.state in {"started", "unknown"}
             saved = recovery.save_password_recovery_session(cp.recovery_id, **owner, access_token=token,
                 session_info=session_info if isinstance(session_info, dict) else {},
-                **({"verified_password": cp.old_password, "auth_method": str(auth.get("auth_method") or "")}
+                **({"verified_password": cp.old_password, "auth_method": str(auth.get("auth_method") or ""),
+                    "password_auth_status": str(auth.get("password_auth_status") or "")}
                    if password_verified and not pending_submission else {}))
             if password_verified and not pending_submission:
                 cp = saved
@@ -216,9 +219,14 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                       receipt="unknown" if exc.request_unknown else "rejected")
     except recovery.PasswordRecoveryError as exc:
         mark_unknown()
-        close_stage("failed", "密码检查点或执行租约校验未通过")
-        return result(False, "密码检查点或执行租约校验未通过，请重新运行账号任务",
-                      error=f"password_recovery_{exc.code}", receipt="unknown" if dispatched else "none")
+        message = {
+            "session_context_invalid": "登录会话或 Token 尚未与目标邮箱对应，已保留恢复候选",
+            "password_login_confirmation_unverified": "缺少本轮密码验证证据，已保留恢复候选",
+        }.get(exc.code, "密码检查点或执行租约校验未通过，请重新运行账号任务")
+        close_stage("failed", message)
+        return result(False, message,
+                      error=f"password_recovery_{exc.code}",
+                      receipt="unknown" if dispatched or cp is not None and cp.state in {"started", "unknown"} else "none")
     except Exception as exc:
         mark_unknown()
         if checkpoint_error is exc:
