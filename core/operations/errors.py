@@ -2199,6 +2199,7 @@ _CONCURRENCY_ERROR_DETAILS = {
     "permit_owner_lost": ("system", "SYS-CONC-003", "执行许可归属已变化，旧执行停止写回并等待核验"),
 }
 _CONCURRENCY_WAIT_REASONS = {
+    "executor_capacity": "等待当前业务执行承载空位",
     "global_capacity": "等待部署全局执行空位",
     "type_capacity": "等待本任务类型执行空位",
     "batch_capacity": "等待当前批次执行空位",

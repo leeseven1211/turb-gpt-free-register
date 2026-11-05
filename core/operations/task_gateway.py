@@ -1588,8 +1588,7 @@ def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
     )
 
 
-def admit_operation_run(run: Mapping[str, Any], capacity_handler=None):
-    """同事务取得多维许可并认领 Run；worker 只接收已认领上下文。"""
+def _operation_admission_arguments(run: Mapping[str, Any], capacity_handler=None) -> dict:
     from core.operations import concurrency
 
     task_type = str(run.get("task_type") or "")
@@ -1620,15 +1619,29 @@ def admit_operation_run(run: Mapping[str, Any], capacity_handler=None):
         # 平台上限在同连接读取当前策略；续查独立最多两项，不能缓存旧平台值形成隐藏门限。
         extra_scopes.append({"kind": "continuation", "key": str(provider), "limit": 2})
     run_id = int(run["id"])
-    return concurrency.try_admit_and_claim(
+    return dict(
         execution_key=f"operation_run:{run_id}", task_type=classification.key, run_id=run_id,
-        claim=lambda conn, execution_id: _operation().claim_run(
-            run_id, execution_id=execution_id, worker_pid=os.getpid(), conn=conn,
-        ),
         batch_key=batch_key, batch_limit=int(batch_limit) if batch_limit is not None else None,
         provider_key=provider, provider_limit=provider_limit, extra_scopes=extra_scopes,
         metadata={"dispatch_lane": "continuation" if _is_extract_continuation(run) else "new"},
     )
+
+
+def admit_operation_run(run: Mapping[str, Any], capacity_handler=None):
+    """同事务取得多维许可并认领 Run；worker 只接收已认领上下文。"""
+    from core.operations import concurrency
+
+    return concurrency.try_admit_and_claim(
+        **_operation_admission_arguments(run,capacity_handler),
+        claim=lambda conn,execution_id: _operation().claim_run(
+            int(run["id"]),execution_id=execution_id,worker_pid=os.getpid(),conn=conn),
+    )
+
+
+def observe_operation_run(run: Mapping[str, Any], capacity_handler=None):
+    from core.operations import concurrency
+
+    return concurrency.observe_waiting(**_operation_admission_arguments(run,capacity_handler))
 
 
 def execute_admitted(execution, callback: Callable[[], Any]):
@@ -1670,8 +1683,6 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
         (_executor().available_slots() if any(name != "extract_link" for name in handlers) else 0)
         + (_extract_executor().available_slots() if "extract_link" in handlers else 0)
     )
-    if slots <= 0:
-        return 0
     source_systems: set[str] = set()
     accepts_all_sources = False
     for _handler, allowed_sources in handlers.values():
@@ -1682,7 +1693,7 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
     if not accepts_all_sources and not source_systems:
         return 0
     requested_limit = int(limit or (_RUN_DISPATCH_BATCH_SIZE * 2))
-    scan_limit = max(slots, min(5000, requested_limit))
+    scan_limit = max(1,slots,min(5000,requested_limit))
     with _RUN_DISPATCH_LOCK:
         prefer_continuations = _PREFER_EXTRACT_CONTINUATIONS
     try:
@@ -1703,8 +1714,6 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
     runs = order_dispatch_candidates(runs)
     submitted = 0
     for run in runs:
-        if submitted >= slots:
-            break
         task_type = str(run.get("task_type") or "")
         entry = handlers.get(task_type)
         if entry is None:
@@ -1713,11 +1722,16 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
         source_system = str(run.get("source_system") or "")
         if allowed_sources is not None and source_system not in allowed_sources:
             continue
-        if not reserve_dispatch(int(run["id"])):
-            continue
         selected_pool = pool if pool is not None else _extract_executor() if task_type == "extract_link" else _executor()
         if selected_pool.available_slots() <= 0:
-            release_dispatch(int(run["id"]))
+            try:
+                observe_operation_run(run,capacity_handlers.get(task_type))
+            except Exception:
+                logger.exception("等待原因观察暂不可用，任务继续排队：run_id=%s",run.get("id"))
+            continue
+        if submitted >= slots:
+            continue
+        if not reserve_dispatch(int(run["id"])):
             continue
         try:
             admission = admit_operation_run(run, capacity_handlers.get(task_type))

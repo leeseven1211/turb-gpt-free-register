@@ -176,5 +176,7 @@ test('等待原因包含服务端容量证据，证据缺失时明确待核验',
   assert.equal(view.waitText('account_busy'), '账号正由其他任务使用');
   assert.equal(view.waitText('not_due'), '等待下次平台查询');
   assert.equal(view.waitText('fairness_turn'), '等待公平调度轮次');
+  assert.equal(view.waitText('executor_capacity'), '等待执行承载空位');
+  assert.equal(view.waitText('resource_capacity'), '等待业务资源空位');
   assert.match(view.waitText('future_reason'), /等待原因待核验（future_reason）/);
 });

@@ -155,18 +155,7 @@ def _policy(conn) -> tuple[dict[str, int], int, bool]:
     return values, runtime_config.current_revision(conn=conn), raw is not None and "CONCURRENCY_POLICY_REVISION" not in raw
 
 
-def try_admit_and_claim(*, execution_key: str, task_type: str,
-                        claim: Callable[[Any, str], Mapping | None], execution_id: str | None = None,
-                        batch_key: str | None = None, batch_limit: int | None = None,
-                        provider_key: str | None = None, provider_limit: int | None = None,
-                        run_id: int | None = None, metadata: Mapping | None = None,
-                        extra_scopes: list[dict] | None = None) -> AdmissionResult:
-    classification = resolve_admission_class(task_type)
-    execution_id = str(execution_id or uuid.uuid4().hex)
-    if not execution_key or not callable(claim):
-        raise ConcurrencyPolicyError("concurrency_policy_invalid", "准入缺少稳定执行身份或原子认领函数")
-    owner = permits.current_owner()
-
+def _scope_policy(classification, *, batch_key=None,batch_limit=None,provider_key=None,provider_limit=None,extra_scopes=None):
     def policy(conn):
         values, revision, migration_required = _policy(conn)
         scopes = [{"kind": "global", "key": "deployment", "limit": values["GLOBAL_TASK_WORKERS"]},
@@ -182,6 +171,42 @@ def try_admit_and_claim(*, execution_key: str, task_type: str,
         if any(isinstance(scope["limit"], bool) or int(scope["limit"]) < 1 for scope in scopes):
             raise ConcurrencyPolicyError("concurrency_policy_invalid", "并发上限必须是正整数")
         return scopes, revision, ["concurrency_policy_migration_required"] if migration_required else []
+    return policy
+
+
+def observe_waiting(*, execution_key: str, task_type: str,
+                    batch_key: str | None = None,batch_limit: int | None = None,
+                    provider_key: str | None = None,provider_limit: int | None = None,
+                    run_id: int | None = None,metadata: Mapping | None = None,
+                    extra_scopes: list[dict] | None = None) -> AdmissionResult:
+    """承载已满时核验数据库实际容量，业务与公平调度事实均不变。"""
+    classification = resolve_admission_class(task_type)
+    try:
+        result = permits.observe_waiting(
+            execution_key=execution_key,task_type=classification.key,batch_key=str(batch_key or ""),metadata=dict(metadata or {}),
+            policy=_scope_policy(classification,batch_key=batch_key,batch_limit=batch_limit,
+                                 provider_key=provider_key,provider_limit=provider_limit,extra_scopes=extra_scopes),
+        )
+    except ConcurrencyPolicyError:
+        raise
+    except Exception as exc:
+        raise ConcurrencyStoreUnavailable("等待原因存储不可用，任务继续排队") from exc
+    return AdmissionResult(blocked_by=tuple(result["blocked_by"]))
+
+
+def try_admit_and_claim(*, execution_key: str, task_type: str,
+                        claim: Callable[[Any, str], Mapping | None], execution_id: str | None = None,
+                        batch_key: str | None = None, batch_limit: int | None = None,
+                        provider_key: str | None = None, provider_limit: int | None = None,
+                        run_id: int | None = None, metadata: Mapping | None = None,
+                        extra_scopes: list[dict] | None = None) -> AdmissionResult:
+    classification = resolve_admission_class(task_type)
+    execution_id = str(execution_id or uuid.uuid4().hex)
+    if not execution_key or not callable(claim):
+        raise ConcurrencyPolicyError("concurrency_policy_invalid", "准入缺少稳定执行身份或原子认领函数")
+    owner = permits.current_owner()
+    policy = _scope_policy(classification,batch_key=batch_key,batch_limit=batch_limit,
+                            provider_key=provider_key,provider_limit=provider_limit,extra_scopes=extra_scopes)
 
     try:
         result = permits.try_admit(execution_key=str(execution_key), task_type=classification.key,
@@ -314,6 +339,22 @@ def get_concurrency_status(*, include_details: bool = False) -> dict[str, Any]:
             values, revision, migration_required = _policy(conn)
         active, scopes, requests = permits.status_rows()
         queued_by_type, unknown_types, scheduled = _queued_counts()
+        counts = {}
+        for scope in scopes:
+            key = (scope["scope_kind"], scope["scope_key"])
+            counts[key] = counts.get(key, 0) + int(scope["units"])
+        capacity_codes = {"global_capacity", "type_capacity", "batch_capacity", "provider_capacity", "account_busy", "resource_capacity"}
+        for request in requests:
+            # 释放或策略上调后，展示不得继续沿用已消退的容量标签。
+            current_scopes = [dict(scope) for scope in request["scopes"]]
+            for scope in current_scopes:
+                if scope["kind"] == "global":
+                    scope["limit"] = values["GLOBAL_TASK_WORKERS"]
+                elif scope["kind"] == "type" and scope["key"] in POLICIES:
+                    scope["limit"] = values[POLICIES[scope["key"]].config_key]
+            actual = set(permits._capacity_reasons(current_scopes, counts))
+            request["blocked_by"] = [code for code in request["blocked_by"] if code not in capacity_codes or code in actual
+                                     or (code == "account_busy" and not request["observed_only"])]
     except ConcurrencyPolicyError:
         raise
     except Exception as exc:

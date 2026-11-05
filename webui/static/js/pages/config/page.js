@@ -2134,6 +2134,7 @@ function concurrencyWaitTextV2(reason) {
   const count = typeof reason === 'object' && reason?.occupied != null && reason?.limit != null
     ? `（${reason.occupied}/${reason.limit}）` : '';
   const labels = {
+    executor_capacity: '等待执行承载空位', resource_capacity: '等待业务资源空位',
     global_capacity: '等待全局空位', type_capacity: '等待本类空位',
     batch_capacity: '等待当前批次空位', provider_capacity: '等待平台空位',
     account_busy: '账号正由其他任务使用', remote_order_capacity: '等待远端订单名额',

@@ -28,6 +28,8 @@ test('原因仅用于排队展示，执行或业务失败保留原状态', () =>
     assert.equal(context.accountTaskAdmissionWaitMarkup({status, admission_wait_reason: 'type_capacity'}), '');
   }
   assert.match(context.accountTaskAdmissionWaitMarkup({status: 'queued', admission_wait_reason: 'not_due'}), /等待下次平台查询/);
+  assert.match(context.accountTaskAdmissionWaitMarkup({status: 'queued', admission_wait_reason: 'executor_capacity'}), /等待执行承载空位/);
+  assert.match(context.accountTaskAdmissionWaitMarkup({status: 'queued', admission_wait_reason: 'resource_capacity'}), /等待业务资源空位/);
 });
 
 test('新增原因保留证据并待核验，输出转义', () => {

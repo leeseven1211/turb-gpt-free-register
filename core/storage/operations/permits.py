@@ -72,10 +72,12 @@ def ensure_tables() -> None:
             cur.execute(f"""CREATE TABLE IF NOT EXISTS {postgres.qualified('operation_execution_requests')} (
                 execution_key TEXT PRIMARY KEY, task_type TEXT NOT NULL, batch_key TEXT NOT NULL DEFAULT '',
                 dispatch_lane TEXT NOT NULL DEFAULT 'new',
+                observed_only BOOLEAN NOT NULL DEFAULT FALSE,
                 scopes JSONB NOT NULL DEFAULT '[]', blocked_by JSONB NOT NULL DEFAULT '[]',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(), seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )""")
             cur.execute(f"ALTER TABLE {postgres.qualified('operation_execution_requests')} ADD COLUMN IF NOT EXISTS dispatch_lane TEXT NOT NULL DEFAULT 'new'")
+            cur.execute(f"ALTER TABLE {postgres.qualified('operation_execution_requests')} ADD COLUMN IF NOT EXISTS observed_only BOOLEAN NOT NULL DEFAULT FALSE")
             cur.execute(f"""CREATE TABLE IF NOT EXISTS {postgres.qualified('operation_execution_dispatch_cursor')} (
                 id SMALLINT PRIMARY KEY CHECK (id=1), task_type TEXT NOT NULL DEFAULT '',
                 batches JSONB NOT NULL DEFAULT '{{}}', lanes JSONB NOT NULL DEFAULT '{{}}'
@@ -151,6 +153,39 @@ class ClaimUnavailable(Exception):
         super().__init__(self.code)
 
 
+def _record_request(cur, *, execution_key, task_type, batch_key, scopes, metadata, reasons=(), observed_only=False):
+    cur.execute(f"""INSERT INTO {postgres.qualified('operation_execution_requests')}
+        (execution_key,task_type,batch_key,scopes,dispatch_lane,blocked_by,observed_only)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s)
+        ON CONFLICT (execution_key) DO UPDATE SET task_type=EXCLUDED.task_type,
+            batch_key=EXCLUDED.batch_key,scopes=EXCLUDED.scopes,
+            dispatch_lane=EXCLUDED.dispatch_lane,blocked_by=EXCLUDED.blocked_by,
+            observed_only=EXCLUDED.observed_only,seen_at=now()
+        WHERE {postgres.qualified('operation_execution_requests')}.observed_only IS TRUE
+           OR EXCLUDED.observed_only IS FALSE""",
+                (execution_key,task_type,batch_key,json.dumps(scopes),str(metadata.get("dispatch_lane") or "new"),
+                 json.dumps(list(dict.fromkeys(reasons))),bool(observed_only)))
+
+
+def observe_waiting(*, execution_key: str, task_type: str, batch_key: str, metadata: Mapping,
+                    policy: Callable[[Any], tuple[list[dict], int, list[str]]]) -> dict:
+    """仅记录此刻确认的容量等待，不认领、不预约，也不参与公平候选。"""
+    ensure_tables()
+    with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        admission_lock(conn)
+        scopes, _revision, policy_blocks = policy(conn)
+        reasons = list(policy_blocks) + _capacity_reasons(scopes, occupied(cur))
+        cur.execute(f"SELECT 1 FROM {postgres.qualified('operation_execution_permits')} WHERE execution_key=%s AND released_at IS NULL", (execution_key,))
+        if cur.fetchone():
+            cur.execute(f"DELETE FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=%s AND observed_only IS TRUE", (execution_key,))
+            return {"blocked_by": ["execution_active"]}
+        if not reasons:
+            reasons.append("executor_capacity")
+        _record_request(cur,execution_key=execution_key,task_type=task_type,batch_key=batch_key,
+                        scopes=scopes,metadata=metadata,reasons=reasons,observed_only=True)
+        return {"blocked_by": list(dict.fromkeys(reasons))}
+
+
 def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: int | None,
               batch_key: str, owner: Mapping[str, Any], metadata: Mapping[str, Any],
               policy: Callable[[Any], tuple[list[dict], int, list[str]]],
@@ -161,12 +196,8 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
         admission_lock(conn)
         cur.execute(f"INSERT INTO {postgres.qualified('operation_execution_dispatch_cursor')} (id) VALUES (1) ON CONFLICT DO NOTHING")
         scopes, revision, policy_blocks = policy(conn)
-        cur.execute(f"""INSERT INTO {postgres.qualified('operation_execution_requests')}
-            (execution_key, task_type, batch_key, scopes,dispatch_lane) VALUES (%s,%s,%s,%s::jsonb,%s)
-            ON CONFLICT (execution_key) DO UPDATE SET task_type=EXCLUDED.task_type,
-                batch_key=EXCLUDED.batch_key, scopes=EXCLUDED.scopes,
-                dispatch_lane=EXCLUDED.dispatch_lane, seen_at=now()""",
-                    (execution_key, task_type, batch_key, json.dumps(scopes), str(metadata.get("dispatch_lane") or "new")))
+        _record_request(cur,execution_key=execution_key,task_type=task_type,batch_key=batch_key,
+                        scopes=scopes,metadata=metadata)
         counts = occupied(cur)
         reasons = list(policy_blocks) + _capacity_reasons(scopes, counts)
         cur.execute(f"SELECT 1 FROM {postgres.qualified('operation_execution_permits')} WHERE execution_key=%s AND released_at IS NULL", (execution_key,))
@@ -178,7 +209,7 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
             # 失去调度器的候选仅退出公平竞争，绝不据此回收活动许可。
             cur.execute(f"""SELECT execution_key,task_type,batch_key,scopes,dispatch_lane,blocked_by
                 FROM {postgres.qualified('operation_execution_requests')} request
-                WHERE seen_at > now() - interval '5 seconds' AND NOT EXISTS (
+                WHERE seen_at > now() - interval '5 seconds' AND observed_only IS FALSE AND NOT EXISTS (
                     SELECT 1 FROM {postgres.qualified('operation_execution_permits')} active
                     WHERE active.execution_key=request.execution_key AND active.released_at IS NULL)
                 ORDER BY created_at,execution_key""")
@@ -314,7 +345,14 @@ def status_rows() -> tuple[list[dict], list[dict], list[dict]]:
         permits = list(cur.fetchall())
         cur.execute(f"SELECT s.* FROM {postgres.qualified('operation_execution_permit_scopes')} s JOIN {postgres.qualified('operation_execution_permits')} p ON p.permit_id=s.permit_id WHERE p.released_at IS NULL")
         scopes = list(cur.fetchall())
-        cur.execute(f"SELECT * FROM {postgres.qualified('operation_execution_requests')} WHERE seen_at > now() - interval '30 seconds'")
+        cur.execute("SELECT to_regclass(%s) AS relation", (postgres.qualified("operation_runs"),))
+        queue_filter = ""
+        if cur.fetchone()["relation"] is not None:
+            queue_filter = f"""AND (execution_key NOT LIKE 'operation_run:%%' OR EXISTS (
+                SELECT 1 FROM {postgres.qualified('operation_runs')} run
+                WHERE execution_key='operation_run:' || run.id::text
+                  AND run.status='queued' AND run.cancel_requested_at IS NULL))"""
+        cur.execute(f"SELECT * FROM {postgres.qualified('operation_execution_requests')} WHERE seen_at > now() - interval '30 seconds' {queue_filter}")
         requests = list(cur.fetchall())
         return permits, scopes, requests
 
@@ -324,11 +362,12 @@ def wait_details(execution_keys: list[str], *, conn) -> dict[str, list[dict]]:
         return {}
     result = {}
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(f"SELECT execution_key, scopes, blocked_by FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=ANY(%s)", (execution_keys,))
+        cur.execute(f"SELECT execution_key,scopes,blocked_by,observed_only FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=ANY(%s)", (execution_keys,))
         rows = list(cur.fetchall())
         counts = occupied(cur)
     codes = {"global": "global_capacity", "type": "type_capacity", "batch": "batch_capacity",
-             "provider": "provider_capacity", "continuation": "provider_capacity", "account": "account_busy"}
+             "provider": "provider_capacity", "continuation": "provider_capacity", "account": "account_busy",
+             "resource": "resource_capacity", "registration_attempt": "resource_capacity"}
     for row in rows:
         details = []
         for code in row["blocked_by"]:
@@ -336,7 +375,7 @@ def wait_details(execution_keys: list[str], *, conn) -> dict[str, list[dict]]:
                         and counts.get((scope["kind"], scope["key"]), 0) >= int(scope["limit"])]
             details.extend({"code": code, "scope_kind": scope["kind"], "scope_key": scope["key"],
                             "limit": scope["limit"], "occupied": counts.get((scope["kind"], scope["key"]), 0)} for scope in matching)
-            if not matching:
+            if not matching and (code not in set(codes.values()) or (code == "account_busy" and not row["observed_only"])):
                 details.append({"code": code})
         result[row["execution_key"]] = details
     return result
