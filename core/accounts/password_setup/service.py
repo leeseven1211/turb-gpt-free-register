@@ -6,8 +6,9 @@ from dataclasses import replace
 
 from core import db
 from core.accounts.credentials import get_account_totp_secret_candidate
-from core.accounts.liveness.protocol.v2 import refresh_access_token
+from core.accounts.password_setup.auth import refresh_access_token
 from core.accounts.password_setup.protocol import ProtocolPasswordSetupError, add_password
+from core.accounts.password_setup.session import cache_authenticated_session, try_reuse_session
 from core.auth.browser.auth_context import (
     AuthExecutionContext, CancellationRequested, current_execution_context, execution_context,
 )
@@ -35,6 +36,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
     dispatched = False
     confirmed = False
     existing_password_valid = False
+    session_reused = False
     callback_error = None
     checkpoint_error = None
     active_stage = "login"
@@ -45,6 +47,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                 "mutation_submitted": dispatched, "action_dispatched": dispatched,
                 "remote_receipt_state": receipt, "password_added": confirmed and not existing_password_valid,
                 "password_verified": existing_password_valid,
+                "session_reused": session_reused,
                 **({"request_unknown": True, "outcome": "request_unknown"} if receipt == "unknown" else {})}
 
     def check():
@@ -62,7 +65,8 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         check()
         active_stage = stage
         if report is not None:
-            report(stage=stage, state=state, message=message, detail={"driver": "protocol"})
+            report(stage=stage, state=state, message=message,
+                   detail={"driver": "protocol", "session_reused": session_reused})
 
     def close_stage(state: str, message: str):
         try:
@@ -106,7 +110,7 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                 pass
 
     def authenticated(auth: dict, session):
-        nonlocal callback_error, cp, confirmed, existing_password_valid
+        nonlocal callback_error, cp, confirmed, existing_password_valid, session_reused
         try:
             check()
             cp = validate_owner()
@@ -126,7 +130,10 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             if password_verified and not pending_submission:
                 cp = saved
                 existing_password_valid = confirmed = True
-            emit("login", "纯协议登录已完成，新会话已保存", state="success")
+            session_reused = auth.get("session_reused") is True
+            cache_authenticated_session(session, session_info, account_id=int(account["id"]), email=email)
+            emit("login", "已有会话校验通过，已复用登录状态" if session_reused
+                 else "纯协议登录已完成，新会话已保存", state="success")
             if pending_submission:
                 raise ProtocolPasswordSetupError("password_setup_previous_result_unknown",
                     "原密码验证已通过，但上次密码提交结果仍需核验", True)
@@ -158,7 +165,6 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             operation_lease_token=fence["lease_token"], attempt_id=None,
             registration_run_id=None, registration_execution_id=None)
         cp = recovery.prepare_password_recovery(**owner, candidate_factory=_generate_password, intent="password_add")
-        emit("login", "正在通过纯协议登录，准备添加账号密码")
         parent = current_execution_context()
 
         def probe():
@@ -180,6 +186,23 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                 on_network_failure(error)
 
         with execution_context(auth_context):
+            emit("login", "正在校验已有会话，准备添加账号密码")
+            with try_reuse_session(account, email, proxy=proxy, checkpoint=check,
+                                   proxy_supplier=proxy_supplier) as reused:
+                if reused is not None:
+                    auth_result = authenticated(*reused)
+                    if checkpoint_error is not None:
+                        raise checkpoint_error
+                    if callback_error is None:
+                        return auth_result
+                    if (isinstance(callback_error, ProtocolPasswordSetupError)
+                            and callback_error.code == "password_setup_session_expired" and not dispatched):
+                        callback_error = None
+                        session_reused = False
+                        emit("login", "已有会话无法进入添加密码流程，正在重新登录")
+                    else:
+                        raise callback_error
+            emit("login", "正在通过纯协议登录，准备添加账号密码")
             auth_result = refresh_access_token(email, proxy=proxy, on_authenticated=authenticated,
                 allow_password_email_fallback=True,
                 **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),

@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import uuid
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -309,16 +310,163 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         except ModuleNotFoundError:
             self.fail("尚未实现纯协议补密码服务")
 
-    def run_service(self, add, *, login=None, checkpoint=None, report=None, **routing):
+    def run_service(self, add, *, login=None, checkpoint=None, report=None, reuse=None, **routing):
         def authenticated(email, **kwargs):
             return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
                 "session": matching_session(email)}, object())
         with patch.object(self.service, "refresh_access_token", side_effect=login or authenticated), \
-                patch.object(self.service, "add_password", side_effect=add):
+                patch.object(self.service, "add_password", side_effect=add), \
+                patch.object(self.service, "try_reuse_session", return_value=nullcontext(reuse)), \
+                patch.object(self.service, "cache_authenticated_session"):
             return self.service.run_protocol_password_setup(self.email, proxy=None, checkpoint=checkpoint, report=report,
                 execution_fence={"run_id": self.owner["operation_run_id"],
                     "execution_id": self.owner["operation_execution_id"], "lease_token": self.owner["operation_lease_token"]},
                 **routing)
+
+    def reusable_session(self):
+        return ({"ok": True, "access_token": "fresh-token", "session": matching_session(self.email),
+                 "session_reused": True, "auth_method": "session_cookie", "password_auth_status": "skipped"}, object())
+
+    def test_reused_session_adds_password_without_login_or_password_verification(self):
+        events = []
+        reused = self.reusable_session()
+
+        def add(session, email, password, **kwargs):
+            self.assertIs(session, reused[1])
+            self.assertEqual("fresh-token", records.get_row(records.ACCOUNTS, self.account_id)["access_token"])
+            self.assertEqual(password, store.resume_password_recovery(**self.owner).password)
+            kwargs["on_dispatched"]()
+            kwargs["on_confirmed"]()
+
+        result = self.run_service(add, reuse=reused,
+            login=lambda *a, **k: self.fail("已有会话有效时不应重新登录"),
+            report=lambda **event: events.append(event))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["session_reused"])
+        self.assertTrue(result["password_added"])
+        self.assertFalse(result["password_verified"])
+        self.assertEqual("accepted", records.get_row(records.ACCOUNTS, self.account_id)["last_password_auth_status"])
+        self.assertIn("已有会话校验通过", next(e["message"] for e in events if e["state"] == "success"))
+
+    def test_reused_session_rejected_before_dispatch_logs_in_and_keeps_same_candidate(self):
+        candidates = []
+
+        def add(_session, _email, password, **kwargs):
+            candidates.append(password)
+            if len(candidates) == 1:
+                raise self.service.ProtocolPasswordSetupError("password_setup_session_expired", "已有认证会话已失效")
+            kwargs["on_dispatched"]()
+            kwargs["on_confirmed"]()
+
+        result = self.run_service(add, reuse=self.reusable_session())
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["session_reused"])
+        self.assertEqual(2, len(candidates))
+        self.assertEqual(candidates[0], candidates[1])
+
+    def test_reused_session_unknown_submission_keeps_candidate_without_second_login(self):
+        def add(_session, _email, password, **kwargs):
+            kwargs["on_dispatched"]()
+            raise self.service.ProtocolPasswordSetupError("password_setup_request_unknown", "密码提交回执未知", True)
+
+        result = self.run_service(add, reuse=self.reusable_session(),
+            login=lambda *a, **k: self.fail("提交结果未知时不得在本轮自动重新登录并重复提交"))
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["session_reused"])
+        self.assertTrue(result["mutation_submitted"])
+        self.assertEqual("unknown", result["remote_receipt_state"])
+        self.assertEqual("unknown", store.resume_password_recovery(**self.owner).state)
+
+    def test_saved_original_password_is_verified_when_no_session_can_be_reused(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Existing-pass-42"}),
+        })
+
+        def login(email, **kwargs):
+            return kwargs["on_authenticated"]({"ok": True, "access_token": "fresh-token",
+                "password_auth_status": "verified", "auth_method": "password",
+                "session": matching_session(email)}, object())
+
+        result = self.run_service(lambda *a, **k: self.fail("原密码已验证，不应调用添加密码"),
+            login=login)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["password_verified"])
+        self.assertFalse(result["session_reused"])
+
+    def test_valid_session_takes_priority_over_a_saved_candidate_password(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Unverified-pass-42", "account_password_state": "candidate"}),
+        })
+        previous = self.prepare()
+
+        def add(_session, _email, password, **kwargs):
+            self.assertEqual(previous.password, password)
+            kwargs["on_dispatched"]()
+            kwargs["on_confirmed"]()
+
+        result = self.run_service(add, reuse=self.reusable_session(),
+            login=lambda *a, **k: self.fail("有效会话不应因本地已有候选密码而重新登录"))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["session_reused"])
+        self.assertTrue(result["password_added"])
+        self.assertFalse(result["password_verified"])
+        self.assertEqual(previous.password, self.extra()["account_password"])
+
+    def test_saved_session_token_is_loaded_privately_when_account_read_model_omits_it(self):
+        from http.cookiejar import CookieJar
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from core.accounts.password_setup import session as session_reuse
+
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "chatgpt_session": json.dumps({**matching_session(self.email), "sessionToken": "fixture-saved-session"}),
+            "extra_json": json.dumps({"account_password": "Unverified-pass-42", "account_password_state": "candidate"}),
+        })
+        self.assertNotIn("chatgpt_session", self.service.db.get_account_by_email(self.email))
+        client = SimpleNamespace(device_id="fixture-device", browser_profile={
+            "screen_width": 1920, "screen_height": 1080, "device_pixel_ratio": 1,
+            "hardware_concurrency": 8, "device_memory": 8, "js_heap_size_limit": 4096000000},
+            session=SimpleNamespace(cookies=CookieJar(), close=Mock()),
+            get_nextauth_headers=lambda **kwargs: {},
+            get=Mock(return_value=SimpleNamespace(status_code=200, json=lambda: matching_session(self.email))))
+
+        def add(_session, _email, _password, **kwargs):
+            self.assertEqual("fixture-saved-session", next(cookie.value for cookie in client.session.cookies
+                if cookie.name == "__Secure-next-auth.session-token"))
+            kwargs["on_dispatched"]()
+            kwargs["on_confirmed"]()
+
+        with patch.object(session_reuse.protocol_sessions, "load_session", return_value=None), \
+                patch.object(session_reuse, "BrowserSession", return_value=client), \
+                patch.object(self.service, "refresh_access_token", side_effect=AssertionError("有效会话不得重新登录")), \
+                patch.object(self.service, "add_password", side_effect=add):
+            result = self.service.run_protocol_password_setup(self.email, proxy="",
+                execution_fence={"run_id": self.owner["operation_run_id"],
+                    "execution_id": self.owner["operation_execution_id"], "lease_token": self.owner["operation_lease_token"]})
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["session_reused"])
+        self.assertTrue(result["password_added"])
+        self.assertFalse(result["password_verified"])
+        client.get.assert_called_once()
+        client.session.close.assert_called_once_with()
+
+    def test_remote_already_set_after_session_reuse_does_not_verify_saved_password(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps({"account_password": "Unverified-pass-42", "account_password_state": "candidate"}),
+        })
+
+        def add(_session, _email, _password, **kwargs):
+            kwargs["on_dispatched"]()
+            raise self.service.ProtocolPasswordSetupError("password_setup_already_set", "远端账号已设置密码")
+
+        result = self.run_service(add, reuse=self.reusable_session(),
+            login=lambda *a, **k: self.fail("远端明确已有密码不应在本轮再次登录"))
+        self.assertFalse(result["ok"])
+        self.assertEqual("password_setup_already_set", result["error_code"])
+        self.assertTrue(result["session_reused"])
+        self.assertFalse(result["password_verified"])
+        self.assertEqual("Unverified-pass-42", self.extra()["account_password"])
+        self.assertEqual("candidate", self.extra()["account_password_state"])
 
     def test_service_passes_route_callbacks_and_keeps_unknown_password_checkpoint(self):
         from unittest.mock import Mock
