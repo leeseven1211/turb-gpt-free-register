@@ -5,6 +5,7 @@ import copy
 import ast
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -249,3 +250,51 @@ def test_prepare_manifest_and_atomic_switch_are_recoverable(tmp_path):
     (first / "app.py").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(ReleaseError):
         check_release(first, expected_release_id="r1")
+
+
+def test_release_keeps_account_modules_without_copying_private_account_data(tmp_path):
+    """发布包须能导入账号领域，同时排除同名数据目录及嵌套私有文件。"""
+    source = _git_source(tmp_path)
+    files = {
+        "core/__init__.py": "",
+        "core/accounts/__init__.py": "",
+        "core/accounts/search.py": "REGISTRATION_DRIVERS = ('roxy',)\n",
+        "core/storage/__init__.py": "",
+        "core/storage/accounts/__init__.py": "",
+        "core/storage/accounts/data.py": "VALUE = 1\n",
+        "tests/accounts/test_search.py": "def test_search(): pass\n",
+        "tests/accounts/test_search.cjs": "console.log('ok');\n",
+        "webui/static/js/pages/accounts/page.js": "const value = 1;\n",
+        "accounts/private.py": "PRIVATE = True\n",
+        "core/accounts/private.json": '{"private": true}\n',
+        "core/storage/accounts/private.json": '{"private": true}\n',
+        "core/accounts/logs/private.py": "PRIVATE = True\n",
+        "core/accounts/.env": "PRIVATE_TOKEN=test-only\n",
+        "core/accounts/__pycache__/private.py": "PRIVATE = True\n",
+    }
+    for relative, content in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=release-test", "-c", "user.email=release-test@example.invalid",
+         "commit", "-qm", "test: 添加账号源码与私有文件样本"],
+        cwd=source, check=True,
+    )
+    release = prepare_release(source, tmp_path / "releases", "account-modules")
+    assert check_release(release)["ok"] is True
+    assert (release / "tests/accounts/test_search.py").is_file()
+    assert (release / "tests/accounts/test_search.cjs").is_file()
+    assert (release / "webui/static/js/pages/accounts/page.js").is_file()
+    for relative in files:
+        if "private" in relative or relative.endswith(".env"):
+            assert not (release / relative).exists()
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from core.accounts.search import REGISTRATION_DRIVERS; "
+         "from core.storage.accounts.data import VALUE; "
+         "assert REGISTRATION_DRIVERS == ('roxy',) and VALUE == 1"],
+        cwd=release, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr

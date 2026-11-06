@@ -38,6 +38,12 @@ PRIVATE_DIRS = frozenset(
     }
 )
 PRIVATE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".jsonl")
+ACCOUNT_SOURCE_SUFFIXES = {
+    ("core", "accounts"): {".py"},
+    ("core", "storage", "accounts"): {".py"},
+    ("tests", "accounts"): {".py", ".cjs"},
+    ("webui", "static", "js", "pages", "accounts"): {".js"},
+}
 LOCK_NAMES = ("requirements.txt", "requirements-dev.txt")
 
 
@@ -63,8 +69,15 @@ def _is_private_path(relative: Path | PurePosixPath) -> bool:
     name = parts[-1]
     if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
         return True
-    if any(part in PRIVATE_DIRS for part in parts):
-        return True
+    for index, part in enumerate(parts):
+        # 账号领域源码与测试目录不是运行时账号导出目录。
+        source_suffixes = ACCOUNT_SOURCE_SUFFIXES.get(parts[:index + 1])
+        if part == "accounts" and source_suffixes is not None:
+            if relative.suffix not in source_suffixes:
+                return True
+            continue
+        if part in PRIVATE_DIRS:
+            return True
     return name.endswith(PRIVATE_SUFFIXES)
 
 
