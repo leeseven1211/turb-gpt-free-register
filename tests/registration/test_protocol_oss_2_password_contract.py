@@ -1,4 +1,4 @@
-"""协议二强制密码与真实认证控制流回归，历史密码只作候选。"""
+"""协议二按本轮密码入口和 Token 确认证据恢复，历史密码只作候选。"""
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -38,7 +38,7 @@ def _finish_with_callback(transport):
     transport.otp_payload = {"page": {"type": "external_url"}, "continue_url": CALLBACK}
 
 
-def test_password_acceptance_without_token_stays_a_candidate_and_retry_creates_it_again(upstream):
+def test_real_password_entry_retry_reuses_the_saved_candidate(upstream):
     session, transport, wait = upstream
     wait.side_effect = TimeoutError("离线邮箱验证码超时")
     with pytest.raises(ProtocolOssRequestUnknown):
@@ -65,7 +65,7 @@ def test_password_acceptance_without_token_stays_a_candidate_and_retry_creates_i
 
 
 @pytest.mark.parametrize("historical_state", ["prepared", "started", "confirmed"])
-def test_email_landing_recreates_required_password_with_original_candidate(upstream, historical_state):
+def test_otp_only_token_does_not_promote_any_historical_candidate(upstream, historical_state):
     session, transport, _ = upstream
     _finish_with_callback(transport)
     with (
@@ -78,12 +78,12 @@ def test_email_landing_recreates_required_password_with_original_candidate(upstr
     ):
         result = run_flow(session, existing_password="original-password")
     assert result["access_token"] == "fixture-at"
-    assert result["password_validated"] is True
-    assert result["password_state"] == "confirmed"
+    assert result["password_validated"] is False
+    assert result["password_state"] == "candidate"
     assert result["registration_password"] == "original-password"
-    assert _count(transport, "/user/register") == 1
+    assert _count(transport, "/user/register") == 0
     assert _count(transport, "/password/verify") == 0
-    assert [row["password"] for row in transport.checkpoints] == ["original-password", "original-password"]
+    assert transport.checkpoints == []
 
 
 def test_real_login_password_landing_keeps_its_page_type_and_verifies_candidate(upstream):
@@ -110,13 +110,13 @@ def test_current_create_link_selects_creation_and_reuses_saved_candidate(upstrea
         result = run_flow(session, existing_password=saved_password)
     created = next(kwargs["json"]["password"] for _, url, kwargs in transport.requests if url.endswith("/user/register"))
     assert created == (saved_password or transport.checkpoints[0]["password"])
-    assert sum(method == "GET" and url == CREATE_PAGE for method, url, _ in transport.requests) == 1
+    assert sum(method == "GET" and url == CREATE_PAGE + "?source=otp" for method, url, _ in transport.requests) == 1
     assert result["password_validated"] is True
     assert result["password_state"] == "confirmed"
     assert _count(transport, "/password/verify") == 0
 
 
-def test_static_login_link_cannot_skip_required_registration_password(upstream):
+def test_current_login_link_has_priority_when_a_candidate_exists(upstream):
     session, transport, _ = upstream
     html = '<a href="/create-account/password">创建密码</a><a href="/log-in/password">使用密码登录</a>'
     with (
@@ -124,13 +124,13 @@ def test_static_login_link_cannot_skip_required_registration_password(upstream):
         patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE, html)),
     ):
         result = run_flow(session, existing_password="original-password")
-    assert not any(method == "GET" and url == LOGIN_PAGE for method, url, _ in transport.requests)
-    assert _count(transport, "/password/verify") == 0
-    assert _count(transport, "/user/register") == 1
+    assert any(method == "GET" and url == LOGIN_PAGE for method, url, _ in transport.requests)
+    assert _count(transport, "/password/verify") == 1
+    assert _count(transport, "/user/register") == 0
     assert result["password_validated"] is True
 
 
-def test_login_link_without_a_known_password_still_creates_required_password(upstream):
+def test_login_link_without_a_known_password_continues_otp(upstream):
     session, transport, _ = upstream
     _finish_with_callback(transport)
     with (
@@ -139,9 +139,9 @@ def test_login_link_without_a_known_password_still_creates_required_password(ups
     ):
         result = run_flow(session)
     assert _count(transport, "/password/verify") == 0
-    assert _count(transport, "/user/register") == 1
-    assert result["password_validated"] is True
-    assert result["registration_password"]
+    assert _count(transport, "/user/register") == 0
+    assert result["password_validated"] is False
+    assert result["registration_password"] is None
 
 
 @pytest.mark.parametrize("html", [
@@ -155,7 +155,7 @@ def test_login_link_without_a_known_password_still_creates_required_password(ups
     '<form action="/create-account/password"><button>创建密码</button></form>',
     '<script type="application/json">{"passwordPath":"/create-account/password"}</script>',
 ])
-def test_html_link_shape_cannot_disable_required_password(upstream, html):
+def test_unavailable_or_external_password_links_do_not_create_password(upstream, html):
     session, transport, _ = upstream
     _finish_with_callback(transport)
     with (
@@ -163,26 +163,25 @@ def test_html_link_shape_cannot_disable_required_password(upstream, html):
         patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE, html)),
     ):
         result = run_flow(session, existing_password="original-password")
-    assert _count(transport, "/user/register") == 1
+    assert _count(transport, "/user/register") == 0
     assert _count(transport, "/password/verify") == 0
-    assert result["password_validated"] is True
+    assert result["password_validated"] is False
 
 
-def test_required_password_navigation_failure_is_not_replaced_by_otp_success(upstream):
+def test_password_link_redirect_is_classified_before_sending_a_password(upstream):
     session, transport, _ = upstream
     _finish_with_callback(transport)
     transport.navigation_redirects[CREATE_PAGE] = EMAIL_PAGE
     with (
         patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
         patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE, '<a href="/create-account/password">创建密码</a>')),
-        pytest.raises(ProtocolOssRequestUnknown) as raised,
     ):
-        run_flow(session, existing_password="original-password")
+        result = run_flow(session, existing_password="original-password")
     assert _count(transport, "/user/register") == 0
-    assert raised.value.cause_code == "password_entry_navigation_failed"
+    assert result["password_validated"] is False
 
 
-def test_authorize_document_login_link_does_not_change_registration_requirement(upstream):
+def test_authorize_document_is_read_once_to_select_its_real_password_link(upstream):
     session, transport, _ = upstream
     authorize = "https://auth.openai.com/authorize"
     transport.navigation_redirects[authorize] = EMAIL_PAGE
@@ -195,8 +194,8 @@ def test_authorize_document_login_link_does_not_change_registration_requirement(
     navigations = [kwargs for method, url, kwargs in transport.requests if method == "GET" and url == authorize]
     assert len(navigations) == 1
     assert not navigations[0].get("stream")
-    assert _count(transport, "/password/verify") == 0
-    assert _count(transport, "/user/register") == 1
+    assert _count(transport, "/password/verify") == 1
+    assert _count(transport, "/user/register") == 0
     assert result["password_validated"] is True
 
 
@@ -259,7 +258,7 @@ def test_password_entry_failure_has_a_fixed_cause_and_preserves_candidate(upstre
     request = transport.request
 
     def fail_entry(method, url, **kwargs):
-        if method == "GET" and url == CREATE_PAGE:
+        if method == "GET" and url == LOGIN_PAGE:
             raise failure
         return request(method, url, **kwargs)
 
@@ -360,20 +359,26 @@ def test_new_http_session_drops_previous_password_confirmation(upstream, evidenc
 
 
 @pytest.mark.parametrize("landing", [EMAIL_PAGE, "https://auth.openai.com/about-you"])
-def test_required_password_runs_before_profile_without_a_static_link(upstream, landing):
+@pytest.mark.parametrize("saved_password", [None, "original-password"])
+def test_otp_or_profile_landing_without_a_password_link_does_not_force_creation(upstream, landing, saved_password):
     session, transport, _ = upstream
     with (
         patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
         patch.object(AuthFlow, "auth_oauth_init", _landing(landing)),
     ):
-        result = run_flow(session)
-    urls = [url for _method, url, _kwargs in transport.requests]
-    assert urls.index("https://auth.openai.com/api/accounts/user/register") < urls.index("https://auth.openai.com/api/accounts/create_account")
-    assert result["password_validated"] is True
-    assert result["remote_identity"] == "new"
+        result = run_flow(session, existing_password=saved_password)
+    assert not any(method == "GET" and url == CREATE_PAGE for method, url, _ in transport.requests)
+    assert _count(transport, "/user/register") == 0
+    assert _count(transport, "/password/verify") == 0
+    assert _count(transport, "/create_account") == 1
+    assert result["access_token"] == "fixture-at"
+    assert result["password_validated"] is False
+    assert result["password_state"] == "candidate"
+    assert result["registration_password"] == saved_password
+    assert transport.checkpoints == []
 
 
-def test_passwordless_signup_response_still_creates_required_password(upstream):
+def test_passwordless_signup_response_continues_otp_without_creating_password(upstream):
     session, transport, _ = upstream
     with (
         patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
@@ -384,17 +389,21 @@ def test_passwordless_signup_response_still_creates_required_password(upstream):
         }),
     ):
         result = run_flow(session)
-    assert _count(transport, "/user/register") == 1
-    assert result["password_validated"] is True
+    assert _count(transport, "/user/register") == 0
+    assert _count(transport, "/email-otp/send") == 0
+    assert _count(transport, "/email-otp/validate") == 1
+    assert _count(transport, "/create_account") == 1
+    assert result["access_token"] == "fixture-at"
+    assert result["password_validated"] is False
     assert result["remote_identity"] == "new"
 
 
-def test_fixed_create_navigation_redirecting_to_login_verifies_original_candidate(upstream):
+def test_real_create_link_redirecting_to_login_verifies_original_candidate(upstream):
     session, transport, _ = upstream
     transport.navigation_redirects[CREATE_PAGE] = LOGIN_PAGE
     with (
         patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
-        patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE)),
+        patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE, '<a href="/create-account/password">创建密码</a>')),
     ):
         result = run_flow(session, existing_password="original-password")
     assert _count(transport, "/user/register") == 0
@@ -404,41 +413,27 @@ def test_fixed_create_navigation_redirecting_to_login_verifies_original_candidat
     assert transport.checkpoints == []
 
 
-def test_otp_after_original_login_can_require_password_creation_then_profile(upstream):
+@pytest.mark.parametrize("continuation", [
+    {"page": {"type": "about_you"}, "continue_url": "/about-you"},
+    {"page": {"type": "external_url"}, "continue_url": CALLBACK},
+])
+def test_original_candidate_otp_continues_profile_or_callback_without_password_creation(upstream, continuation):
     session, transport, _ = upstream
-    transport.otp_payloads = [
-        {"page": {"type": "create_account_password"}, "continue_url": "/create-account/password"},
-        {"page": {"type": "about_you"}, "continue_url": "/about-you"},
-    ]
-
-    def existing(flow, *_args, **_kwargs):
-        flow._is_existing_account = True
-        flow._existing_page_type = "email_otp_verification"
-        return False
-
-    with patch.object(AuthFlow, "signup", existing):
+    transport.otp_payload = continuation
+    with (
+        patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
+        patch.object(AuthFlow, "auth_oauth_init", _landing(EMAIL_PAGE)),
+    ):
         result = run_flow(session, existing_password="original-password")
-    urls = [url for _method, url, _kwargs in transport.requests]
-    assert urls.index("https://auth.openai.com/api/accounts/email-otp/validate") < urls.index("https://auth.openai.com/api/accounts/user/register")
-    assert _count(transport, "/email-otp/validate") == 2
-    assert _count(transport, "/user/register") == 1
+    assert _count(transport, "/email-otp/validate") == 1
+    assert _count(transport, "/create_account") == (1 if continuation["continue_url"] == "/about-you" else 0)
+    assert _count(transport, "/user/register") == 0
+    assert not any(method == "GET" and url == CREATE_PAGE for method, url, _ in transport.requests)
+    assert result["access_token"] == "fixture-at"
     assert result["registration_password"] == "original-password"
-    assert result["password_validated"] is True
-    assert result["remote_identity"] == "new"
-
-
-def test_repeated_password_step_reuses_same_new_candidate(upstream):
-    session, transport, _ = upstream
-    transport.otp_payloads = [
-        {"page": {"type": "create_account_password"}, "continue_url": "/create-account/password"},
-        {"page": {"type": "about_you"}, "continue_url": "/about-you"},
-    ]
-    result = run_flow(session)
-    passwords = [kwargs["json"]["password"] for _method, url, kwargs in transport.requests if url.endswith("/user/register")]
-    assert len(passwords) == 2
-    assert len(set(passwords)) == 1
-    assert result["registration_password"] == passwords[0]
-    assert sum(row["state"] == "prepared" for row in transport.checkpoints) == 1
+    assert result["password_state"] == "candidate"
+    assert result["password_validated"] is False
+    assert transport.checkpoints == []
 
 
 @pytest.mark.parametrize("status", [400, 500])
@@ -508,36 +503,6 @@ def test_all_empty_session_responses_have_specific_retryable_cause(upstream):
     with pytest.raises(ProtocolOssRequestUnknown) as raised:
         run_flow(session)
     assert raised.value.cause_code == "registration_session_invalid_response"
-
-
-@pytest.mark.parametrize("payload", [
-    {"page": {"type": "security_challenge"}, "continue_url": "/security-challenge"},
-    {"page": {"type": "external_url"}, "continue_url": "https://other.example/create-account/password"},
-])
-def test_unknown_or_external_continuation_is_classified_and_preserves_original_attempt(upstream, payload):
-    session, transport, _ = upstream
-    transport.otp_payload = payload
-    with pytest.raises(ProtocolOssRequestUnknown) as raised:
-        run_flow(session, existing_password="original-password")
-    assert raised.value.cause_code == "registration_auth_state_unrecognized"
-    assert transport.checkpoints[0]["password"] == "original-password"
-    assert not _count(transport, "/create_account")
-
-
-def test_unrecognized_signup_page_is_classified_without_claiming_an_existing_identity(upstream):
-    session, transport, _ = upstream
-    with (
-        patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
-        patch.object(AuthFlow, "auth_oauth_init", _landing("https://auth.openai.com/security-challenge")),
-        patch.object(AuthFlow, "authorize_continue", return_value={
-            "page": {"type": "security_challenge"}, "continue_url": "/security-challenge",
-        }),
-        pytest.raises(RuntimeError) as raised,
-    ):
-        run_flow(session)
-    assert raised.value.cause_code == "registration_auth_state_unrecognized"
-    assert not _count(transport, "/user/register")
-    assert not _count(transport, "/email-otp/send")
 
 
 def test_protocol_login_signup_without_registration_flag_keeps_original_dispatch():

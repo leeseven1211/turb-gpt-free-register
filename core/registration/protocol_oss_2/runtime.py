@@ -198,7 +198,7 @@ def run_upstream_protocol(
     from core.email.provider import wait_for_otp
     from config import email as email_cfg
     from core.registration.checkpoints import save_protocol_password_checkpoint
-    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow, RegistrationStateError
+    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
@@ -276,7 +276,10 @@ def run_upstream_protocol(
 
     class LocalAuthFlow(AuthFlow):
         def register_password(self, address):
-            return observed_action("password_submit", super().register_password, address)
+            accepted = observed_action("password_submit", super().register_password, address)
+            if not accepted:
+                progress("password", "failed", "上游未接受密码注册，继续通过原邮箱验证")
+            return accepted
 
         def _random_password(self):
             if self.result.password or existing_password:
@@ -363,7 +366,7 @@ def run_upstream_protocol(
             # 本地没有原密码时，由上游邮箱认证分支处理；不提交推测密码。
             password = str(self.result.password or existing_password or "")
             if not password:
-                raise RegistrationStateError("registration_password_unconfirmed")
+                raise RuntimeError("已有账号需要原密码，请使用原任务重跑补全凭据")
             return password, True
 
     token = _CONTEXT.set(context)
@@ -412,8 +415,6 @@ def run_upstream_protocol(
         if str(session_info.get("accessToken") or "").strip() != access_token:
             raise ProtocolSessionIdentityError("本轮 Token 与已核验的登录会话不一致，已保留候选密码")
         password_validated = bool(context["password_register_accepted"] or context["password_verified"])
-        if getattr(flow, "_registration_password_required", False) and not password_validated:
-            raise RegistrationStateError("registration_password_unconfirmed")
         if context["password_register_accepted"]:
             progress("password", "success", "本轮密码创建及认证已完成，已取得 Token")
         elif context["password_verified"]:
@@ -431,7 +432,7 @@ def run_upstream_protocol(
             "registration_password": result.password or existing_password or None,
             "password_validated": password_validated,
             "password_state": "confirmed" if password_validated else "candidate",
-            "remote_identity": "new" if getattr(flow, "_registration_new_identity", False) or not flow._is_existing_account else "existing",
+            "remote_identity": "existing" if flow._is_existing_account else "new",
             "challenge_chain": (["password"] if password_validated else []) + ["email_otp"],
         }
     except _VendorCancelled as exc:

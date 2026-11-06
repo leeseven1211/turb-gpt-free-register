@@ -52,20 +52,6 @@ class PasswordEntryError(RuntimeError):
         super().__init__(descriptions[self.cause_code])
 
 
-class RegistrationStateError(RuntimeError):
-    """注册未完成时保留固定原因码，原任务仍可按原身份重跑。"""
-
-    def __init__(self, cause_code: str, *, http_status: int | None = None):
-        descriptions = {
-            "registration_password_create_rejected": "远端未接受本轮必需的注册密码，原候选已保留",
-            "registration_password_unconfirmed": "本轮尚未完成必需的密码创建或验证，原任务可重跑",
-            "registration_auth_state_unrecognized": "认证返回的后续步骤尚未支持，已保留原任务和认证事实",
-        }
-        self.cause_code = cause_code
-        self.http_status = http_status
-        super().__init__(descriptions[cause_code])
-
-
 def _password_navigation_failure(exc: Exception) -> PasswordEntryError:
     timed_out = isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
     return PasswordEntryError("password_entry_navigation_timeout" if timed_out else "password_entry_navigation_failed")
@@ -2669,8 +2655,6 @@ class AuthFlow:
             return ""
         if page_type in {"create_account_password", "about_you"}:
             return "new"
-        if page_type == "email_otp_verification" and getattr(self, "_registration_password_required", False):
-            return "new"
         return "existing"
 
     def _apply_signup_verdict(self, verdict: str, page_type: str = "") -> bool:
@@ -2685,24 +2669,6 @@ class AuthFlow:
         self._existing_page_type = page_type or "email_otp_verification"
         return False
 
-    def _open_required_registration_password(self, referer: str) -> str:
-        """主动进入既定密码入口；远端明确转登录时复用原候选验证。"""
-        target = "https://auth.openai.com/create-account/password"
-        headers = self._navigation_headers()
-        headers.update({"Referer": referer or "https://auth.openai.com/create-account", "sec-fetch-site": "same-origin"})
-        try:
-            response = self.session.get(target, headers=headers, timeout=15, stream=True, allow_redirects=True)
-        except Exception as exc:
-            raise _password_navigation_failure(exc) from exc
-        landed = str(getattr(response, "url", "") or target)
-        page_type = self._landing_page_type(landed)
-        if response.status_code >= 400 or page_type not in {"create_account_password", "login_password"}:
-            raise PasswordEntryError("password_entry_navigation_failed")
-        self._new_document_navigation()
-        self._authorize_landing_url = landed
-        self._password_create_page_ready = page_type == "create_account_password"
-        return landed
-
     def signup(self, email: str, sentinel_token: str = "", landing_url: str = "",
                intent: str = "signup", sentinel_provider=None) -> bool:
         """优先使用当前文档的密码入口，再按真实落点或认证响应继续。
@@ -2712,11 +2678,7 @@ class AuthFlow:
         """
         landing = (landing_url or "").strip()
         if landing:
-            if (getattr(self, "_registration_password_required", False)
-                    and self._landing_page_type(landing) in {"email_otp_verification", "about_you"}):
-                landing = self._open_required_registration_password(landing)
-            elif not getattr(self, "_registration_password_required", False):
-                landing = self._prefer_current_password_entry(landing, getattr(self, "_authorize_landing_html", ""))
+            landing = self._prefer_current_password_entry(landing, getattr(self, "_authorize_landing_html", ""))
             verdict = self._classify_authorize_landing(landing, intent=intent)
             if verdict:
                 is_new = self._apply_signup_verdict(verdict, page_type=self._landing_page_type(landing))
@@ -2770,19 +2732,6 @@ class AuthFlow:
             payload = (page.get("payload") or {}) if isinstance(page, dict) else {}
             continue_url = (data.get("continue_url") or "").strip()
 
-            if getattr(self, "_registration_password_required", False):
-                actual_type = self._registration_continuation_type(data)
-                if actual_type in {"create_account_password", "email_otp_verification", "about_you"}:
-                    if actual_type != "create_account_password":
-                        opened = self._open_required_registration_password(continue_url)
-                        actual_type = self._landing_page_type(opened)
-                        if actual_type == "login_password":
-                            return self._apply_signup_verdict("existing", page_type=actual_type)
-                    return self._apply_signup_verdict("new", page_type=actual_type)
-                if actual_type == "login_password":
-                    return self._apply_signup_verdict("existing", page_type=actual_type)
-                raise RegistrationStateError("registration_auth_state_unrecognized")
-
             # 新账号标准分支
             if page_type == "create_account_password" or "/create-account/password" in continue_url:
                 self._is_existing_account = False
@@ -2834,76 +2783,6 @@ class AuthFlow:
             return False
         except (AttributeError, TypeError, ValueError) as exc:
             raise PasswordEntryError("password_entry_not_offered") from exc
-
-    def _registration_continuation_type(self, payload: dict) -> str:
-        """注册只按明确响应和可信路径继续，不把未知状态猜成已有账号。"""
-        page = payload.get("page") if isinstance(payload, dict) else None
-        page_type = str(page.get("type") or "") if isinstance(page, dict) else ""
-        next_url = str(payload.get("continue_url") or "") if isinstance(payload, dict) else ""
-        if next_url and self._is_chatgpt_callback_url(next_url):
-            return "callback"
-        path_type = self._landing_page_type(next_url)
-        if path_type:
-            return path_type
-        try:
-            parsed = urlparse(urljoin("https://auth.openai.com/", next_url))
-            if (next_url and (parsed.scheme != "https" or parsed.hostname != "auth.openai.com"
-                              or parsed.port not in {None, 443} or parsed.username or parsed.password)):
-                return ""
-            if (next_url and parsed.scheme == "https" and parsed.hostname == "auth.openai.com"
-                    and parsed.port in {None, 443} and not parsed.username and not parsed.password
-                    and (parsed.path in {"/authorize", "/oauth/authorize", "/api/accounts/authorize"}
-                         or parsed.path.startswith(("/sign-in-with-chatgpt/", "/workspace")))):
-                return "authorization"
-        except (TypeError, ValueError):
-            return ""
-        aliases = {
-            "create_account_password": "create_account_password", "login_password": "login_password",
-            "email_otp_verification": "email_otp_verification", "email_otp_send": "email_otp_verification",
-            "about_you": "about_you",
-        }
-        return aliases.get(page_type, "")
-
-    def _complete_registration_continuation(self, payload: dict, mail_provider, auth_url: str, otp_timeout: int) -> str:
-        """有界完成 OTP 后明确要求的密码、邮箱验证和资料步骤。"""
-        current = payload
-        for _step in range(4):
-            state = self._registration_continuation_type(current)
-            if state == "about_you" and not self._registration_password_completed:
-                # 原任务 OTP 后到资料页也不能跳过本轮必需的密码确认。
-                state = "create_account_password"
-            if state in {"callback", "authorization"}:
-                return self._normalize_continue_url(str(current["continue_url"]))
-            if state == "about_you":
-                try:
-                    continued = self.create_account()
-                    self._registration_new_identity = True
-                    return continued
-                except Exception as exc:
-                    if self._is_registration_disallowed_error(exc):
-                        recovered = self._reauthorize_for_session(auth_url)
-                        if recovered:
-                            self._is_existing_account = True
-                            return recovered
-                    raise
-            if state in {"create_account_password", "email_otp_verification"}:
-                if state == "create_account_password":
-                    self._password_create_page_ready = False
-                    if not self.register_password(self.result.email):
-                        raise RegistrationStateError("registration_password_create_rejected")
-                issued_after = time.time()
-                self.send_otp()
-                code = mail_provider.wait_for_otp(self.result.email, timeout=otp_timeout, issued_after=issued_after)
-                current = self.verify_otp(code)
-                continue
-            if state == "login_password":
-                password, real = self._resolve_login_password(self.result.email)
-                if not real:
-                    raise RegistrationStateError("registration_password_unconfirmed")
-                current = self.login_password_verify(password)
-                continue
-            raise RegistrationStateError("registration_auth_state_unrecognized")
-        raise RegistrationStateError("registration_auth_state_unrecognized")
 
     # ── Step 6.5: 注册密码 ──
     def register_password(self, email: str) -> bool:
@@ -2991,11 +2870,8 @@ class AuthFlow:
         self._trace_http("register_password", resp)
         if resp.status_code != 200:
             logger.warning(f"密码注册返回 {resp.status_code}: {resp.text[:200]}")
-            if getattr(self, "_registration_password_required", False):
-                raise RegistrationStateError("registration_password_create_rejected", http_status=resp.status_code)
             return False
         self.after_password_submit(email, password)
-        self._registration_password_completed = True
         logger.info("密码创建请求已接受，等待邮箱验证和 Token 确认")
         # 请求被接受只保存候选值；完整认证结束前不能宣告密码已经生效。
         if self._on_password is not None:
@@ -3209,7 +3085,6 @@ class AuthFlow:
         if resp.status_code != 200:
             body = (resp.text or "")[:260]
             raise RuntimeError(f"密码登录失败: {resp.status_code} - {body}")
-        self._registration_password_completed = True
         try:
             return resp.json()
         except Exception:
@@ -4034,9 +3909,6 @@ class AuthFlow:
     # ── 完整注册流程 ──
     def run_register(self, mail_provider: MailProvider) -> AuthResult:
         """执行完整注册流程"""
-        self._registration_password_required = True
-        self._registration_password_completed = False
-        self._registration_new_identity = False
         # 检查网络
         if not self.check_proxy():
             logger.warning("网络预检查未通过，继续尝试注册链路以获取精确错误...")
@@ -4101,8 +3973,10 @@ class AuthFlow:
                     f"OpenAI 静默拒绝发 OTP (识别 {email} 为已有账号, {pool_tag} 池 fast-fail)"
                 )
 
-        # 新注册和原候选续跑始终执行密码，不以页面是否包含静态链接作为条件。
-        if is_new or self._existing_email_verification_mode == "passwordless_signup":
+        # 本轮页面明确提供创建密码入口才发送注册请求；只有 OTP 时沿原认证继续。
+        if self._existing_page_type == "about_you":
+            continue_url = self.create_account()
+        elif is_new:
             # 新账号：注册密码 → 主动重新发码 → 验证 OTP → 创建账户
             password_registered = self.register_password(email)
             if password_registered:
@@ -4120,7 +3994,12 @@ class AuthFlow:
                     logger.warning(f"密码注册后主动发码失败，回退 resend: {e}")
                     self.kickoff_otp_delivery("post_register_password_send_failed")
             else:
-                raise RegistrationStateError("registration_password_create_rejected")
+                logger.warning("注册密码失败，回退到已有账号 OTP 路径")
+                self.fetch_client_auth_session_dump("post_register_password_failed_new")
+                # 密码注册失败时 fallback 主动发码
+                if not self.kickoff_otp_delivery("register_password_failed_fallback"):
+                    self.send_otp()
+                otp_sent_at = time.time()
 
             try:
                 otp_timeout = max(10, int(self._get_env("OTP_TIMEOUT", "60")))
@@ -4151,7 +4030,22 @@ class AuthFlow:
                 else:
                     raise
 
-            continue_url = self._complete_registration_continuation(verify_result, mail_provider, auth_url, otp_timeout)
+            otp_continue_url = str((verify_result or {}).get("continue_url") or "")
+            if self._is_chatgpt_callback_url(otp_continue_url):
+                # 原账号 OTP 登录已经完成认证，不再向失效认证会话提交建号资料。
+                continue_url = otp_continue_url
+            else:
+                try:
+                    continue_url = self.create_account()
+                except Exception as e:
+                    # registration_disallowed 时尝试 reauthorize 兜底获取 session。
+                    if self._is_registration_disallowed_error(e):
+                        logger.warning("create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
+                        continue_url = self._reauthorize_for_session(auth_url) or ""
+                        if not continue_url:
+                            raise
+                    else:
+                        raise
         else:
             # 已有账号：直接发 OTP → 验证 → 获取 session
             mode = (self._existing_email_verification_mode or "").lower()
@@ -4299,11 +4193,24 @@ class AuthFlow:
                         self._handle_add_phone_verification(continue_url=continue_url)
                     )
 
-            # 已有账号 OTP 后仍可能要求创建密码或资料，按实际响应继续。
-            if continue_url and self._landing_page_type(continue_url) in {"create_account_password", "about_you"}:
-                continue_url = self._complete_registration_continuation(
-                    {"continue_url": continue_url}, mail_provider, auth_url, otp_timeout,
-                )
+            # 某些已有账号在 OTP 后会进入 about-you，需要补一次 create_account
+            if continue_url and "/about-you" in continue_url:
+                try:
+                    continue_url = self.create_account()
+                except Exception as e:
+                    if self._is_registration_disallowed_error(e):
+                        logger.warning("about-you create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
+                        continue_url = self._reauthorize_for_session(auth_url) or ""
+                        if continue_url:
+                            logger.info("reauthorize 兜底成功，继续后续 session 获取")
+                            # 下游会走 follow_redirect_chain + get_auth_session
+                            pass
+                        else:
+                            raise
+                    else:
+                        logger.warning(f"已有账号 about-you 创建信息失败，回退 reauthorize: {e}")
+                        continue_url = ""
+
             # 若 otp 响应未给可用 continue_url，则回退到 reauthorize
             if not continue_url:
                 # auth.openai.com 的 session cookie 已设置，直接拿 code
@@ -4390,9 +4297,6 @@ class AuthFlow:
                 raise RuntimeError("流程完成但未获取 refresh_token/access_token")
         elif not self.result.is_valid():
             raise RuntimeError("注册完成但未获取有效凭证")
-
-        if not self._registration_password_completed:
-            raise RegistrationStateError("registration_password_unconfirmed")
 
         logger.info("注册流程完成!")
         return self.result
