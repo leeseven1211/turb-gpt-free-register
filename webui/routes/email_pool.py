@@ -460,8 +460,6 @@ def create_email_pool_blueprint(context: WebUIContext):
         if source == "all":
             source = "outlook"
         current = _pool_row_for_source(email, source)
-        if status == "available" and local_email_imports.pool_mutation_protected(current):
-            return jsonify({"ok": False, "error": "已使用、已保留或结果未知的邮箱不能重新变为可用"}), 409
         if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
             return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
         if source == "email_butler":
@@ -517,9 +515,6 @@ def create_email_pool_blueprint(context: WebUIContext):
             seen.add(key)
             try:
                 current = _pool_row_for_source(email, item_source)
-                if status == "available" and local_email_imports.pool_mutation_protected(current):
-                    skipped.append({"email": email, "source": item_source, "reason": "已使用、已保留或结果未知的邮箱不能重新变为可用"})
-                    continue
                 if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
                     skipped.append({"email": email, "source": item_source, "reason": "换绑后邮箱不能恢复为可用"})
                     continue

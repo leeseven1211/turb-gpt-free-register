@@ -135,7 +135,7 @@ def get_butler_email(email: str) -> dict | None:
 
 
 def pool_mutation_protected(row: dict | None, *, conn=None) -> bool:
-    """Used or uncertain identity history survives UI reset/delete/reimport flows."""
+    """删除邮箱资源时保留已有使用、占用或结果未知的身份历史。"""
     if row is None:
         return False
     if (str(row.get('status') or '').lower() in {
@@ -169,10 +169,12 @@ def set_butler_status(email: str, *, status: str, note=None) -> bool:
         if row is None:
             return False
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
-        if status == 'available' and pool_mutation_protected(row, conn=conn):
-            raise ValueError('已使用、已保留或结果未知的邮箱不能重新变为可用')
+        if status == 'available' and str(row.get('status') or '').strip().lower() == 'replaced':
+            raise ValueError('换绑后邮箱不能恢复为可用')
         changes = {'status': status}
-        if status != 'available':
+        if status == 'available':
+            changes['used_at'] = None
+        else:
             changes['used_at'] = row.get('used_at') or datetime.now().isoformat(timespec='seconds')
         if note is not None:
             changes['note'] = note

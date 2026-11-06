@@ -110,26 +110,119 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
 
-    def test_butler_unknown_cannot_be_reset_to_available_or_deleted_for_reimport(self):
+    def test_butler_unknown_can_be_manually_reset_without_losing_claim_or_delete_protection(self):
+        from core.email import inventory as local_email_inventory
+
         self.assertEqual(self.post('/api/outlook/import', {'source': 'email_butler', 'text': 'kept@icloud.com'}).status_code, 200)
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', 'kept@icloud.com')
-        record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {'status': 'request_unknown'})
-        changed = self.post('/api/outlook/status', {'source': 'email_butler', 'email': row['email'], 'status': 'available'})
-        self.assertEqual(changed.status_code, 409)
+        local_email_inventory.claim('email_butler', owner_kind='test', owner_id='manual-reset',
+                                    acquisition_id='manual-reset')
+        claim = record_store.get_row_by(record_store.LOCAL_EMAIL_CLAIMS, 'address_norm', row['email'])
+        record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {
+            'status': 'request_unknown', 'used_at': '2026-11-01T00:00:00',
+        })
         deleted = self.post('/api/outlook/delete', {'source': 'email_butler', 'email': row['email']})
         self.assertFalse(deleted.get_json()['deleted'])
-        self.assertEqual(record_store.get_row(record_store.EMAIL_BUTLER_POOL, row['id'])['status'], 'request_unknown')
-        self.assertEqual(self.post('/api/outlook/status', {'source': 'email_butler', 'email': row['email'], 'status': 'failed'}).status_code, 200)
-        bypass = self.post('/api/outlook/status', {'source': 'email_butler', 'email': row['email'], 'status': 'available'})
-        self.assertEqual(bypass.status_code, 409)
+        changed = self.post('/api/outlook/status', {'source': 'email_butler', 'email': row['email'], 'status': 'available'})
+        self.assertEqual(changed.status_code, 200)
+        restored = record_store.get_row(record_store.EMAIL_BUTLER_POOL, row['id'])
+        self.assertEqual(restored['status'], 'available')
+        self.assertIsNone(restored['used_at'])
+        self.assertEqual(record_store.get_row(record_store.LOCAL_EMAIL_CLAIMS, claim['id']), claim)
+        deleted = self.post('/api/outlook/delete', {'source': 'email_butler', 'email': row['email']})
+        self.assertFalse(deleted.get_json()['deleted'])
+        self.assertIsNone(local_email_inventory.claim('email_butler', owner_kind='test', owner_id='another',
+                                                    acquisition_id='another'))
 
-    def test_legacy_used_resource_is_retained_by_status_and_bulk_delete_routes(self):
+    def test_legacy_used_resource_can_be_manually_reset_while_bulk_delete_stays_protected(self):
         record_store.insert_row(record_store.GENERIC_API_POOL, {'email': 'legacy@example.test', 'status': 'used'})
-        changed = self.post('/api/outlook/status', {'source': 'generic_api', 'email': 'legacy@example.test', 'status': 'available'})
-        self.assertEqual(changed.status_code, 409)
         deleted = self.post('/api/outlook/delete-bulk', {'items': [{'source': 'generic_api', 'email': 'legacy@example.test'}]}).get_json()
         self.assertEqual(deleted['deleted_count'], 0)
         self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'used')
+        changed = self.post('/api/outlook/status', {'source': 'generic_api', 'email': 'legacy@example.test', 'status': 'available'})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'available')
+
+    def test_manual_status_routes_reset_historical_states_for_every_source(self):
+        cases = (
+            ('outlook', record_store.OUTLOOK_POOL, 'used', '2026-11-01T00:00:00'),
+            ('generic_api', record_store.GENERIC_API_POOL, 'failed', '2026-11-01T00:00:00'),
+            ('cloudflare_domain', record_store.DOMAIN_POOL, 'reserved', None),
+            ('icloud_hide', record_store.ICLOUD_HIDE_POOL, 'request_unknown', None),
+            ('email_butler', record_store.EMAIL_BUTLER_POOL, 'request_unknown', '2026-11-01T00:00:00'),
+        )
+        for bulk in (False, True):
+            for source, table, status, used_at in cases:
+                with self.subTest(bulk=bulk, source=source, status=status):
+                    address = f'manual-{int(bulk)}-{source}@example.test'
+                    row_id = record_store.insert_row(table, {'email': address, 'status': status, 'used_at': used_at})
+                    item = {'source': source, 'email': address}
+                    if bulk:
+                        response = self.post('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.get_json()['updated_count'], 1)
+                        self.assertEqual(response.get_json()['skipped'], [])
+                    else:
+                        response = self.post('/api/outlook/status', {**item, 'status': 'available'})
+                        self.assertEqual(response.status_code, 200)
+                    restored = record_store.get_row(table, row_id)
+                    self.assertEqual(restored['status'], 'available')
+                    self.assertIsNone(restored['used_at'])
+
+    def test_manual_status_routes_reset_icloud_parent_with_registered_child(self):
+        from core.storage.email import address_allocations as allocations
+
+        profile = allocations.create_inbox_profile(
+            inbox_key='manual-reset-parent', connector='forward_imap', credential_ref='env:TEST_PROFILE_PASSWORD',
+            inbox_locator={'host': 'imap.example.test', 'username': 'inbox@example.test'},
+        )
+        parent_id = record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {
+            'email': 'parent@icloud.test', 'status': 'used', 'used_at': '2026-11-01T00:00:00',
+            'account_id': 'apple-test', 'remote_active': True,
+        })
+        child = allocations.allocate_address(source='icloud_hide', acquisition_id='registered-child',
+            owner_kind='test', owner_id='registered-child', inbox_profile_id=profile['id'])
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            'email': child['address'], 'email_source': 'icloud_hide', 'email_allocation_id': child['id'],
+        })
+        allocations.mark_allocation_state(child['id'], 'used', account_id=account_id)
+        for bulk in (False, True):
+            with self.subTest(bulk=bulk):
+                record_store.patch_row(record_store.ICLOUD_HIDE_POOL, parent_id, {
+                    'status': 'used', 'used_at': '2026-11-01T00:00:00',
+                })
+                item = {'source': 'icloud_hide', 'email': 'parent@icloud.test'}
+                endpoint = '/api/outlook/status-bulk' if bulk else '/api/outlook/status'
+                body = {'items': [item], 'status': 'available'} if bulk else {**item, 'status': 'available'}
+                response = self.post(endpoint, body)
+                self.assertEqual(response.status_code, 200)
+                if bulk:
+                    self.assertEqual(response.get_json()['updated_count'], 1)
+                parent = record_store.get_row(record_store.ICLOUD_HIDE_POOL, parent_id)
+                self.assertEqual(parent['status'], 'available')
+                self.assertIsNone(parent['used_at'])
+                self.assertEqual(allocations.get_allocation(child['id'])['state'], 'used')
+                self.assertEqual(allocations.get_allocation(child['id'])['account_id'], account_id)
+                self.assertEqual(record_store.get_row(record_store.ACCOUNTS, account_id)['email'], child['address'])
+
+    def test_manual_status_routes_still_reject_replaced_for_every_source(self):
+        cases = (
+            ('outlook', record_store.OUTLOOK_POOL), ('generic_api', record_store.GENERIC_API_POOL),
+            ('cloudflare_domain', record_store.DOMAIN_POOL), ('icloud_hide', record_store.ICLOUD_HIDE_POOL),
+            ('email_butler', record_store.EMAIL_BUTLER_POOL),
+        )
+        for source, table in cases:
+            with self.subTest(source=source):
+                address = f'replaced-{source}@example.test'
+                row_id = record_store.insert_row(table, {'email': address, 'status': 'replaced'})
+                item = {'source': source, 'email': address}
+                response = self.post('/api/outlook/status', {**item, 'status': 'available'})
+                self.assertEqual(response.status_code, 409)
+                response = self.post('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()['updated_count'], 0)
+                self.assertEqual(len(response.get_json()['skipped']), 1)
+                self.assertEqual(record_store.get_row(table, row_id)['status'], 'replaced')
 
     def test_parallel_imports_cannot_create_two_local_resources_for_one_address(self):
         first_locked, second_attempted, second_locked = Event(), Event(), Event()
