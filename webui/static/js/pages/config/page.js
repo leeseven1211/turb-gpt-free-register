@@ -685,8 +685,6 @@ function renderConfigSectionHead(name, meta = '') {
     ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
       ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain === '注册与账号' && menu === '注册与账号' ? '查询套餐' : domain)}</button>`).join('')}
     </div>` : ''}
-    ${['注册主链路', '账号补全', ...Object.keys(CONFIG_ACCOUNT_ACTION_SECTIONS_V2), 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
-      ? '<p class="config-section-v2-subhelp">本业务同时受全局与独立任务类型上限约束。<button type="button" class="config-concurrency-link-v2" data-concurrency-open>前往并发控制</button></p>' : ''}
   `;
 }
 function registrationDriverChoices() {
@@ -845,7 +843,6 @@ function renderAccountCompletionSectionV2(fields) {
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('账号补全'))}" data-config-section="账号补全">
       ${renderConfigSectionHead('账号补全', configSectionIntro('账号补全'))}
-      <div class="config-section-v2-subhelp">这里选择组合补全的项目；各动作的执行参数在对应分类中调整。</div>
       ${renderConfigSettingGroupV2('补全项目', completion)}
       ${renderConfigSettingGroupV2('账号处理策略', strategies, renderAccountCompletionRowV2)}
       ${renderConfigSettingGroupV2('其他账号参数', extra, renderAccountCompletionRowV2)}
@@ -906,7 +903,6 @@ function renderPlanBusinessSectionV2(fields) {
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('注册与账号'))}" data-config-section="注册与账号">
       ${renderConfigSectionHead('注册与账号', configSectionIntro('注册与账号'))}
-      <div class="config-section-v2-subhelp">套餐查询只描述业务国家、支付方式和请求节奏；线路由代理池按国家需求统一领取。</div>
       ${renderConfigSettingGroupV2('查询套餐', fields)}
       ${renderConfigSaveActions()}
     </section>
@@ -1703,7 +1699,6 @@ function renderExtractLinkSectionV2(fields) {
       <div class="config-subtabs-v2" role="group" aria-label="提链配置分类">
         ${sections.map(section => `<button type="button" data-extract-link-tab="${attrEsc(section)}" class="${section === active ? 'active' : ''}" aria-pressed="${section === active}">${esc(section)}</button>`).join('')}
       </div>
-      ${selectedProvider?.value === 'anguang' ? '<p class="config-section-v2-subhelp">仅支持 UPI 自动支付；平台必自动扫码，不能关闭。SUCCEEDED 只表示出链，scan.completed 表示扫码完成；Plus 由本地独立核对。必须单独配置一条虫 Key，普通扫码 Key 不受理，不迁移或复制普通扫码配置。</p>' : ''}
       ${body}
       ${renderConfigSaveActions()}
     </section>
@@ -1743,18 +1738,12 @@ function renderProxyTaskPoolSummaryV2() {
     ['补密码 / 2FA / 换绑 / Codex', '账号历史国家；缺失时使用池默认国家', '独占租约'],
   ];
   return `<div class="config-proxy-pool-summary-v2" aria-label="任务用池规则">
-    <p class="config-section-v2-subhelp">业务任务只提交用途、目标国家和时间预算；任务不选择供应商或手动代理。</p>
     <div class="config-proxy-pool-table-v2"><div class="config-proxy-pool-head-v2"><span>任务</span><span>国家需求</span><span>领取规则</span></div>${rows.map(row => `<div class="config-proxy-pool-row-v2">${row.map(cell => `<span>${esc(cell)}</span>`).join('')}</div>`).join('')}</div>
-    <div class="config-section-v2-subhelp">代理来源、默认国家和库存策略请在相邻小节维护；切换来源不会打断已发放租约。</div>
   </div>`;
 }
 
 function renderConfigLegacyProxyFieldsV2(fields) {
-  return `<div class="config-legacy-list-v2"><p class="config-section-v2-subhelp">这些值只为读取旧任务快照和兼容迁移保留。新任务不会使用它们选择供应商，也不能在这里编辑。</p>${fields.map(field => `<div class="config-legacy-row-v2"><span>${esc(field.label || field.key)}</span><code>${esc(field.key)}</code><span>兼容保留</span></div>`).join('')}</div>`;
-}
-
-function renderEmailSourceManagerV2() {
-  return `<p class="config-section-v2-subhelp">此顺序仅作为 CLI 默认值。WebUI 从所有本地池中明确选择来源；历史收码配置始终保留。邮箱创建、购买和库存管理请在邮箱服务中完成。</p>`;
+  return `<div class="config-legacy-list-v2">${fields.map(field => `<div class="config-legacy-row-v2"><span>${esc(field.label || field.key)}</span><code>${esc(field.key)}</code><span>兼容保留</span></div>`).join('')}</div>`;
 }
 
 function proxySourceV2() {
@@ -1812,9 +1801,6 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
     : `${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
        ${inputs.length ? `<div class="config-section-v2-body">${inputs.map(renderConfigPlainFieldV2).join('')}</div>` : ''}`;
   let extra = '';
-  if (name === '邮箱 / OTP' && active === '通用邮箱 / OTP') {
-    extra = renderEmailSourceManagerV2();
-  }
   if (name === '邮箱 / OTP' && active === 'Email Butler') {
     extra = renderEmailButlerToolsV2();
   }
@@ -1834,7 +1820,6 @@ function renderSectionedConfigSectionV2(name, fields, sectionForKey, preferred, 
           </button>
         `).join('')}
       </div>
-      ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
       ${body}
       ${extra}
       ${renderConfigSaveActions()}
@@ -2122,7 +2107,6 @@ function renderCodexSectionV2(fields) {
           </button>
         `).join('')}
       </div>
-      ${current.help ? `<p class="config-section-v2-subhelp">${esc(current.help)}</p>` : ''}
       ${switches.length ? `<div class="config-switches-v2">${switches.map(f => renderFeatureSwitchField(f, { withIcon: false })).join('')}</div>` : ''}
       ${orderedInputs.length ? `<div class="config-section-v2-body">${orderedInputs.map(renderCodexFieldV2).join('')}</div>` : ''}
       ${active === 'sub2api' ? renderSub2ApiAutomationToolsV2() : ''}
@@ -2920,10 +2904,9 @@ async function saveConfigUpdates(triggerBtn) {
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
-  const concurrencyButton = e.target.closest('[data-concurrency-refresh], [data-concurrency-load-details], [data-concurrency-use-preview], [data-concurrency-open], [data-concurrency-error-key], [data-concurrency-tasks]');
+  const concurrencyButton = e.target.closest('[data-concurrency-refresh], [data-concurrency-load-details], [data-concurrency-use-preview], [data-concurrency-error-key], [data-concurrency-tasks]');
   if (concurrencyButton) {
     e.preventDefault();
-    if (concurrencyButton.hasAttribute('data-concurrency-open')) return openConfigGroup('并发控制');
     if (concurrencyButton.hasAttribute('data-concurrency-use-preview')) return useConcurrencyPreviewV2();
     if (concurrencyButton.dataset.concurrencyErrorKey) {
       const input = document.getElementById(`concurrency-${concurrencyButton.dataset.concurrencyErrorKey}`);

@@ -59,16 +59,12 @@ test('暗光配置分类能通过Key搜索定位，显示独立密钥且不修�
   assert.equal(JSON.stringify(view.pending), '{}');
 });
 
-test('暗光分类解释平台自动扫码及三种结果的独立含义', () => {
+test('暗光分类直接显示配置项，不附加菜单说明', () => {
   const view = configView();
   view.open();
   const html = view.render();
-  assert.match(html, /平台必自动扫码，不能关闭/);
-  assert.match(html, /SUCCEEDED[^<]*只.*出链/);
-  assert.match(html, /scan\.completed[^<]*扫码完成/);
-  assert.match(html, /Plus[^<]*独立核对/);
-  assert.match(html, /一条虫 Key/);
-  assert.match(html, /普通扫码 Key/);
+  assert.doesNotMatch(html, /config-section-v2-subhelp/);
+  assert.match(html, /data-key="EXTRACT_LINK_ANGUANG_API_KEY"/);
 });
 
 function workbenchView() {

@@ -55,8 +55,7 @@
   margin: 6px 0 0;
 }
 
-#tab-config .config-concurrency-errors-v2 button,
-#tab-config .config-concurrency-link-v2 {
+#tab-config .config-concurrency-errors-v2 button {
   border: 0;
   padding: 6px 2px;
   background: transparent;
