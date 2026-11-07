@@ -483,7 +483,7 @@ function renderOutlook() {
         ${r.remote_label ? `<small class="pool-remote">${esc(r.remote_label)}</small>` : ''}
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
-      <td class="col-status">${r.status === 'pending_sync' ? '<span class="pill warn">等待服务标签同步</span>' : pill(r.status)}${r.service_tags && r.service_tags.includes('openai') ? `<small>openai · ${r.service_fact_permanent === false ? '等待确认' : '永久'}</small>` : ''}</td>
+      <td class="col-status">${r.status === 'pending_sync' ? '<span class="pill warn">等待服务标签同步</span>' : pill(r.status)}</td>
       <td class="col-usage">${_poolUsageCell(r)}</td>
       <td class="col-credentials">${_poolCredentialsCell(r)}</td>
       <td class="col-time">${_poolActivityCell(r)}</td>
