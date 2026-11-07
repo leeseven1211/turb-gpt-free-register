@@ -405,7 +405,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             'invalid_import_domain': '请检查域名筛选。',
             'invalid_import_group': '请检查分组筛选。',
             'butler_configuration_required': '请先配置 Butler 连接与最终转发收件箱。',
-            'handoff_contract_unsupported': '当前 Butler 连接不支持永久归属或精确收件，请检查连接配置。',
+            'handoff_contract_unsupported': '当前 Butler 连接不支持所需的领取和收码方式，请检查连接配置。',
             'import_preview_not_found': '预览不存在，请重新预览。',
             'import_preview_expired': '预览已过期，请重新预览。',
             'import_preview_empty': '本次预览没有可导入的邮箱。',
@@ -524,7 +524,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             source = "outlook"
         current = _pool_row_for_source(email, source)
         if _pool_import_pending(current):
-            return jsonify({'ok': False, 'error': '导入仍在同步服务标签，请重试原同步记录',
+            return jsonify({'ok': False, 'error': '邮箱导入尚未完成，请稍后再试',
                 'error_code': 'service_fact_sync_pending'}), 409
         if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
             return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
@@ -583,7 +583,7 @@ def create_email_pool_blueprint(context: WebUIContext):
                 current = _pool_row_for_source(email, item_source)
                 if _pool_import_pending(current):
                     skipped.append({'email': email, 'source': item_source,
-                        'reason': '导入仍在同步服务标签，请重试原同步记录', 'error_code': 'service_fact_sync_pending'})
+                        'reason': '邮箱导入尚未完成，请稍后再试', 'error_code': 'service_fact_sync_pending'})
                     continue
                 if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
                     skipped.append({"email": email, "source": item_source, "reason": "换绑后邮箱不能恢复为可用"})

@@ -250,7 +250,7 @@ function poolLabel(src) {
 }
 const POOL_USAGE_LABELS = {
   available: '待领取',
-  pending_sync: '等待标签同步',
+  pending_sync: '导入处理中',
   tombstone: '本地已删除',
   used_unbound: '已领取未绑定',
   bound: '已绑定账号',
@@ -483,7 +483,7 @@ function renderOutlook() {
         ${r.remote_label ? `<small class="pool-remote">${esc(r.remote_label)}</small>` : ''}
       </td>
       <td class="col-source">${esc(poolLabel(r.source))}</td>
-      <td class="col-status">${r.status === 'pending_sync' ? '<span class="pill warn">等待服务标签同步</span>' : pill(r.status)}</td>
+      <td class="col-status">${r.status === 'pending_sync' ? '<span class="pill warn">导入处理中</span>' : pill(r.status)}</td>
       <td class="col-usage">${_poolUsageCell(r)}</td>
       <td class="col-credentials">${_poolCredentialsCell(r)}</td>
       <td class="col-time">${_poolActivityCell(r)}</td>
@@ -593,8 +593,7 @@ async function onOutlookBodyClick(e) {
       const result = await api('/api/outlook/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, source}) });
       if (!result.deleted) { showToast(result.reason || '邮箱未删除'); return; }
       OUTLOOK_SELECTED.delete(`${source}|${email}`);
-      showToast(result.sync && ['pending','sending','blocked'].includes(result.sync.state) ? '本地已删除，远端退号状态见服务同步记录；永久标签保留' : '本地已删除，永久标签保留');
-      loadEmailServiceSync();
+      showToast('本地已删除');
     } else {
       const noteMap = {failed:'手动标记失败', available:'手动恢复可用', disabled:'手动停用'};
       await api('/api/outlook/status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, status: poolAct, source, note: noteMap[poolAct] || '手动修改状态'}) });
@@ -840,7 +839,7 @@ async function doImportOutlook() {
     }
     const r = await api('/api/outlook/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(outlookImportPayloadV2(text, source)) });
     const extra = r.invalid || r.extra_fields ? `；无效 ${r.invalid || 0} 行，忽略多余字段 ${r.extra_fields || 0} 个` : '';
-    const msg = `邮箱导入：解析 ${r.parsed} 行，已接收 ${r.inserted}，跳过 ${r.skipped}，本次涉及待同步 ${r.pending_sync_count || 0} 个${extra}`;
+    const msg = `邮箱导入：解析 ${r.parsed} 行，已接收 ${r.inserted}，跳过 ${r.skipped}${extra}`;
     if (resultEl) resultEl.innerHTML = `<div class="banner info">${esc(msg)}</div>`;
     if (textEl) textEl.value = '';
     clearOutlookImportPreview();
@@ -854,7 +853,6 @@ async function doImportOutlook() {
     await loadRegistrationEmailSources();
     loadOutlook(); loadMailResources(); loadSummary();
     showToast(msg);
-    loadEmailServiceSync();
     setTimeout(closeOutlookImportModal, 600);
   } catch(e) {
     if (resultEl) resultEl.innerHTML = `<div class="banner warn">${esc(e.message)}</div>`;
@@ -911,38 +909,10 @@ async function deleteSelectedOutlook() {
     });
     (r.deleted || []).forEach(item => OUTLOOK_SELECTED.delete(`${item.source}|${item.email}`));
     const skippedCount = (r.skipped || []).length;
-    showToast(`本地已删除 ${r.deleted_count || 0} 个，跳过 ${skippedCount} 个；远端待同步 ${r.pending_sync_count || 0} 个、需处理 ${r.blocked_sync_count || 0} 个，永久标签保留`);
-    loadEmailServiceSync();
+    showToast(`本地已删除 ${r.deleted_count || 0} 个，跳过 ${skippedCount} 个`);
     loadOutlook(); loadSummary();
   } catch(err) {
     showToast('批量删除失败: ' + err.message);
     updateOutlookSelectionUi();
   }
 }
-
-// 服务同步状态保留在页面中，失败可按原意图重试。
-async function loadEmailServiceSync() {
-  const node = document.getElementById('emailServiceSyncList');
-  if (!node) return;
-  try {
-    const result = await api('/api/email-service-sync');
-    const counts = result.summary || {};
-    const stateLabel = {pending:'等待同步',sending:'同步中',blocked:'同步失败',delivered:'已同步'};
-    const rows = result.items || [];
-    const summary = document.getElementById('emailServiceSyncSummary');
-    if (summary) summary.textContent = `服务同步记录：待处理 ${Number(counts.pending || 0) + Number(counts.sending || 0)}，需处理 ${counts.blocked || 0}，已同步 ${counts.delivered || 0}；删除保留永久 openai 标签`;
-    node.innerHTML = rows.length ? rows.map(item => `<div class="banner ${item.state === 'blocked' ? 'warn' : 'info'}"><span>${esc(item.email)} · ${item.kind === 'return' ? '退号' : '导入'} · ${esc(stateLabel[item.state] || item.state)}${item.error_code ? ' · ' + esc(item.error_code) : ''}</span> ${['pending', 'blocked'].includes(item.state) ? `<button type="button" class="jobs-tb-btn" data-service-sync-retry data-source="${esc(item.source)}" data-email="${esc(item.email)}" data-kind="${esc(item.kind)}">重试同步</button>` : ''}</div>`).join('') : '<p>暂无同步记录。导入后的永久 openai 标签不随退号或删除清除。</p>';
-  } catch (error) { node.textContent = `服务同步状态读取失败：${error.message}`; }
-}
-document.addEventListener('click', async event => {
-  const button = event.target.closest('[data-service-sync-retry]');
-  if (!button) return;
-  button.disabled = true;
-  try {
-    await api('/api/email-service-sync/retry', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({source:button.dataset.source,email:button.dataset.email,kind:button.dataset.kind})});
-    await loadEmailServiceSync();
-    loadOutlook();
-  } catch (error) { showToast('同步重试失败：' + error.message); button.disabled = false; }
-});
-document.getElementById('btnRefreshEmailServiceSync')?.addEventListener('click', loadEmailServiceSync);
-loadEmailServiceSync();
