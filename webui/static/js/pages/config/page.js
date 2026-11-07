@@ -30,7 +30,7 @@ const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
 // 菜单集中定义；schema 的 group 继续表示配置所属领域。导航菜单是页面导航契约，
 // 底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
 const CONFIG_MENU_DOMAINS_V2 = {
-  '注册与账号': ['注册主链路', '账号补全', '注册与账号', '刷新 AT', '补密码', '补 2FA'],
+  '注册与账号': ['注册主链路', '账号补全', '注册与账号', '查活', '刷新 AT', '补密码', '补 2FA', '邮箱换绑'],
   '代理与网络': ['代理与网络'],
   '邮箱与验证码': ['邮箱 / OTP', '接码平台'],
   '浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏'],
@@ -81,6 +81,9 @@ const CONFIG_PLAN_BUSINESS_KEYS_V2 = new Set([
   'PLAN_CHECK_REGISTRATION_RECHECK_DELAY', 'PLAN_CHECK_MIN_INTERVAL', 'PLAN_CHECK_JITTER',
 ]);
 const CONFIG_ACCOUNT_ACTION_SECTIONS_V2 = {
+  '查活': [
+    ['查活策略', ['ACCOUNT_LIVE_CHECK_DRIVER', 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED']],
+  ],
   '刷新 AT': [
     ['刷新 AT 策略', [
       'ACCOUNT_AT_REFRESH_DRIVER', 'ACCOUNT_AT_REFRESH_COUNTRY', 'OPENAI_PROTOCOL_VERSION',
@@ -101,6 +104,9 @@ const CONFIG_ACCOUNT_ACTION_SECTIONS_V2 = {
       'ACCOUNT_2FA_DRIVER', 'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED', 'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
     ]],
     ['2FA 重认证参数', ['TWOFA_REAUTH_MAX_ATTEMPTS', 'TWOFA_REAUTH_RETRY_DELAY']],
+  ],
+  '邮箱换绑': [
+    ['邮箱换绑策略', ['ACCOUNT_EMAIL_CHANGE_ENABLED', 'ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS']],
   ],
 };
 const CONFIG_FIELD_UI_GROUP_OVERRIDES_V2 = new Map([
@@ -619,10 +625,12 @@ function configSectionIntro(name) {
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
   if (name === '注册主链路') return '配置注册主流程、注册国家、密码/验证码模式，以及注册后可选能力。';
-  if (name === '账号补全') return '选择“补全账号”包含的项目，维护查活与账号操作的通用策略；各功能参数在对应分类中维护。';
+  if (name === '账号补全') return '选择“补全账号”包含的项目，维护账号操作的通用策略；各功能参数在对应分类中维护。';
+  if (name === '查活') return '配置普通查活的执行驱动与浏览器能力，只在线验证已有 AT。';
   if (name === '刷新 AT') return '配置 AT 刷新驱动、国家、网络恢复、协议认证和自动刷新任务。';
   if (name === '补密码') return '配置账号补密码的执行驱动与邮箱重置策略。';
   if (name === '补 2FA') return '配置账号补充 2FA 的执行驱动、浏览器兜底与重认证参数。';
+  if (name === '邮箱换绑') return '配置协议邮箱换绑开关与账号年龄要求。';
   if (name === '注册调试') return '配置注册失败诊断、现场保留和抓包存储，不改变正常注册流程。';
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
   if (name === 'Codex') return '配置 Codex 授权地址来源、CPA 与 sub2api；Token 自动刷新归入系统设置的定时任务。';
@@ -677,7 +685,7 @@ function renderConfigSectionHead(name, meta = '') {
     ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
       ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain === '注册与账号' && menu === '注册与账号' ? '查询套餐' : domain)}</button>`).join('')}
     </div>` : ''}
-    ${['注册主链路', '账号补全', '刷新 AT', '补密码', '补 2FA', 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
+    ${['注册主链路', '账号补全', ...Object.keys(CONFIG_ACCOUNT_ACTION_SECTIONS_V2), 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
       ? '<p class="config-section-v2-subhelp">本业务同时受全局与独立任务类型上限约束。<button type="button" class="config-concurrency-link-v2" data-concurrency-open>前往并发控制</button></p>' : ''}
   `;
 }
@@ -825,8 +833,6 @@ function renderAccountCompletionSectionV2(fields) {
     'ACCOUNT_COMPLETION_REFRESH_AT_ENABLED',
   ];
   const strategyKeys = [
-    'ACCOUNT_LIVE_CHECK_DRIVER',
-    'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
     'ACCOUNT_AUTH_V2_ENABLED',
     'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
     'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
@@ -839,7 +845,7 @@ function renderAccountCompletionSectionV2(fields) {
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('账号补全'))}" data-config-section="账号补全">
       ${renderConfigSectionHead('账号补全', configSectionIntro('账号补全'))}
-      <div class="config-section-v2-subhelp">这里选择组合补全的项目；执行参数分别在“查询套餐”“刷新 AT”“补密码”“补 2FA”中调整。</div>
+      <div class="config-section-v2-subhelp">这里选择组合补全的项目；各动作的执行参数在对应分类中调整。</div>
       ${renderConfigSettingGroupV2('补全项目', completion)}
       ${renderConfigSettingGroupV2('账号处理策略', strategies, renderAccountCompletionRowV2)}
       ${renderConfigSettingGroupV2('其他账号参数', extra, renderAccountCompletionRowV2)}

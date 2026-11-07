@@ -349,7 +349,7 @@ for (const field of [
 
     def test_config_domains_are_merged_into_menus_without_changing_schema_groups(self):
         self.assertIn("const group = configMenuGroupV2(rawGroup);", CONFIG_JS)
-        self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号', '刷新 AT', '补密码', '补 2FA']", CONFIG_JS)
+        self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号', '查活', '刷新 AT', '补密码', '补 2FA', '邮箱换绑']", CONFIG_JS)
         self.assertIn("'邮箱与验证码': ['邮箱 / OTP', '接码平台']", CONFIG_JS)
         self.assertIn("'浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏']", CONFIG_JS)
         self.assertIn("'系统与维护': ['并发控制', '通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", CONFIG_JS)
