@@ -55,16 +55,20 @@ def _fixed_butler_profile(conn, *, _connection=None) -> dict:
 
 
 def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
-                     _handoffs=None, _manual_item_id=None, _conn=None) -> tuple[int, int]:
+                     _handoffs=None, _manual_item_id=None, _conn=None, _as_registered=False) -> tuple[int, int]:
     """Insert only never-seen full addresses, with one cross-source lock per address."""
     from core.email.inventory import TABLES, import_conflict
     from core.email.resource_lifetime import normalize_expiry
+    from core.email.email_butler import service_facts
 
     if source not in {'outlook', 'generic_api', 'email_butler'}:
         raise ValueError('不支持的手动邮箱导入来源')
     inserted = skipped = 0
     profile = _fixed_profile
     with (nullcontext(_conn) if _conn is not None else record_store.transaction()) as conn:
+        if _as_registered:
+            from core.storage.email.validity import lock_email_validity
+            lock_email_validity(conn, shared=True)
         # 同一批事务会持有所有地址锁；各来源使用相同顺序，避免相反输入批次互等。
         for raw in sorted(records, key=lambda item: str(item.get('email') or '').strip().lower()):
             email = str(raw.get('email') or '').strip().lower()
@@ -77,8 +81,18 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
             if source == 'generic_api' and not code_url:
                 skipped += 1
                 continue
-            lifetime = normalize_expiry(raw.get('expires_at'), reject_expired=True)
+            if _as_registered and source == 'outlook' and not all(str(raw.get(key) or raw.get(alias) or '').strip()
+                    for key, alias in (('password', 'password'), ('client_id', 'clientId'), ('refresh_token', 'refreshToken'))):
+                skipped += 1
+                continue
+            lifetime = {} if _as_registered else normalize_expiry(raw.get('expires_at'), reject_expired=True)
+            existing = (record_store.get_row_by(TABLES[source], 'email', email, lower=True, conn=conn, for_update=True)
+                        if _as_registered else None)
             record_store.advisory_xact_lock(conn, 'registered-account:' + email)
+            if _as_registered:
+                if existing and _stage_existing_registered(conn, source, existing, raw):
+                    inserted += 1
+                    continue
             if import_conflict(email, conn=conn):
                 skipped += 1
                 continue
@@ -90,11 +104,9 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
             if reserved:
                 skipped += 1
                 continue
-            # 导入本地池即登记归属服务：这些号是给 OpenAI 注册用的，带上 openai 标签，
-            # 后续按服务退号时只删标签、不删邮箱素材。
+            # 永久标签与成功次数独立，退号不会清除导入事实。
             service_tags = raw.get('service_tags')
-            if not isinstance(service_tags, list) or not service_tags:
-                service_tags = ['openai']
+            service_tags = service_facts.permanent_tags(service_tags if isinstance(service_tags, list) else [])
             payload = {'email': email, 'status': 'available', 'used_at': None, 'note': None,
                        'service_tags': [str(tag).strip() for tag in service_tags if str(tag).strip()],
                        'imported_at': datetime.now().isoformat(timespec='seconds'), **lifetime}
@@ -114,6 +126,8 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
                     raise ValueError('handoff_identity_mismatch: 未确认完整交接身份')
                 payload.update(butler_handoff=handoff, identity_id=handoff['identity_id'],
                                parent_email=handoff['parent_email'])
+                service_facts.validate_fact(handoff.get('service_fact'), expected_address=email)
+                payload.update(service_sync_state='delivered', service_fact_permanent=True)
             elif source == 'generic_api':
                 payload.update(code_url=code_url)
             else:
@@ -121,13 +135,49 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
                     client_id=str(raw.get('client_id') or raw.get('clientId') or '').strip(),
                     refresh_token=str(raw.get('refresh_token') or raw.get('refreshToken') or '').strip())
             if source != 'email_butler':
-                payload.update(access_token=str(raw.get('access_token') or '').strip(),
-                               totp_secret=str(raw.get('totp_secret') or '').strip())
-            if record_store.insert_row_if_absent(TABLES[source], 'email', payload, conn=conn) is None:
+                payload.update(access_token=str(raw.get('access_token') or raw.get('token') or '').strip(),
+                               totp_secret=str(raw.get('totp_secret') or raw.get('totp') or '').strip())
+            if _as_registered:
+                payload['registered_expires_at'] = raw.get('expires_at')
+                payload.update({key: raw[key] for key in ('user_id', 'user_name', 'plan_type', 'device_id',
+                    'proxy_used', 'codex_status', 'codex_error') if key in raw})
+            pool_id = record_store.insert_row_if_absent(TABLES[source], 'email', payload, conn=conn)
+            if pool_id is None:
                 skipped += 1
             else:
+                if source != 'email_butler':
+                    service_facts.enqueue_import(source, {**payload, 'id': pool_id}, conn=conn,
+                                                 as_registered=_as_registered)
                 inserted += 1
     return inserted, skipped
+
+
+def _stage_existing_registered(conn, source, row, raw):
+    """兼容把已有素材导入为账号，仍等待永久事实且不覆盖运行中的任务。"""
+    from core.email.email_butler import service_facts
+    address = str(row['email']).strip().lower()
+    if row.get('status') in {'pending_sync', 'replaced', 'tombstone', 'request_unknown', 'reserved', 'running'}:
+        return False
+    for table, field in ((record_store.ACCOUNTS, 'email'),
+                         (record_store.EMAIL_ADDRESS_ALLOCATIONS, 'address_norm'),
+                         (record_store.LOCAL_EMAIL_CLAIMS, 'address_norm')):
+        if record_store.get_row_by(table, field, address, lower=True, conn=conn):
+            return False
+    changes = {'access_token': str(raw.get('access_token') or raw.get('token') or '').strip(),
+               'totp_secret': str(raw.get('totp_secret') or raw.get('totp') or '').strip()}
+    changes['registered_expires_at'] = raw.get('expires_at')
+    changes.update({key: raw[key] for key in ('user_id', 'user_name', 'plan_type', 'device_id',
+        'proxy_used', 'codex_status', 'codex_error') if key in raw})
+    if source == 'generic_api':
+        changes['code_url'] = str(raw.get('code_url') or raw.get('url') or '').strip()
+    else:
+        changes.update(password=str(raw.get('password') or '').strip(),
+                       client_id=str(raw.get('client_id') or raw.get('clientId') or '').strip(),
+                       refresh_token=str(raw.get('refresh_token') or raw.get('refreshToken') or '').strip())
+    record_store.patch_row(record_store.OUTLOOK_POOL if source == 'outlook' else record_store.GENERIC_API_POOL,
+                           row['id'], changes, conn=conn)
+    service_facts.enqueue_import(source, {**row, **changes}, conn=conn, as_registered=True)
+    return True
 
 
 def get_butler_email(email: str) -> dict | None:
@@ -168,6 +218,8 @@ def set_butler_status(email: str, *, status: str, note=None) -> bool:
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, lower=True, conn=conn, for_update=True)
         if row is None:
             return False
+        if row.get('status') == 'pending_sync':
+            raise ValueError('service_fact_sync_pending: 导入服务事实尚未确认，请重试同步')
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
         if status == 'available' and str(row.get('status') or '').strip().lower() == 'replaced':
             raise ValueError('换绑后邮箱不能恢复为可用')
@@ -189,14 +241,12 @@ def delete_butler_email(email: str) -> bool:
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
         if not row or pool_mutation_protected(row, conn=conn):
             return False
-        changed = record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {'status': 'tombstone'}, conn=conn)
-    if changed:
-        try:
-            from core.email.email_butler.client import return_account as _butler_return
-
-            _butler_return(address)
-        except Exception as exc:  # noqa: BLE001 - 退号失败不能回滚本地删除
-            logger.warning("[EmailButler] 退号异常，本地删除已完成: %s %s", address, str(exc)[:160])
+        from core.email.email_butler import service_facts
+        event = service_facts.enqueue_return('email_butler', row, conn=conn)
+        changed = record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {
+            'status': 'tombstone', 'service_tags': service_facts.permanent_tags(row.get('service_tags')),
+            'return_sync_state': (event or {}).get('state', 'not_required'),
+        }, conn=conn)
     return changed
 
 

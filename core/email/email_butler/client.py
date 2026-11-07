@@ -387,7 +387,7 @@ def restore_local_account(email_or_row) -> EmailButlerAccount | None:
         account = EmailButlerAccount(email=address, mailbox_id="", provider="icloud_hme",
             mailbox_email=mailbox, recipient_mode=_RECIPIENT_MODE, strict_family=True,
             api_base=connection["api_base"], api_key=connection["api_key"],
-            acquisition_id=str(row.get("local_acquisition_id") or ""),
+            acquisition_id=original_handoff_acquisition(address, row=row, profile=profile),
             identity_type=str(row.get("identity_type") or ("plus_tag" if "+" in address.partition("@")[0] else "primary")),
             parent_email=str(row.get("parent_email") or ""), identity_id=str(row.get("identity_id") or ""))
     else:
@@ -398,6 +398,18 @@ def restore_local_account(email_or_row) -> EmailButlerAccount | None:
         account = _mailbox_account(mailbox, api_base=connection["api_base"], api_key=connection["api_key"])
     _CONTEXT_CACHE[address] = account
     return account
+
+
+def original_handoff_acquisition(address: str, *, row=None, profile=None) -> str:
+    """读取远端原归属，不把本地任务 acquisition 当作 Butler 的交接编号。"""
+    if row and _cache_key(row.get('email')) == _cache_key(address):
+        acquisition = (row.get('butler_handoff') or {}).get('acquisition_id')
+        if acquisition:
+            return str(acquisition)
+    identity = (profile or {}).get('butler_identity') or {}
+    if _cache_key(identity.get('email')) == _cache_key(address):
+        return str(identity.get('acquisition_id') or '')
+    return ''
 
 
 def pick_local_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None) -> EmailButlerAccount:
@@ -749,6 +761,7 @@ def fetch_inbound_otp(
     mailbox_email: str | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
+    acquisition_id: str = '',
 ) -> str:
     """Wait on Email Butler's PG-backed forwarded-mail cache.
 
@@ -805,6 +818,8 @@ def fetch_inbound_otp(
         chunk_index += 1
         try:
             request_data = {"email": target, "since": since, "timeout_seconds": chunk_seconds}
+            if acquisition_id:
+                request_data.update(acquisition_id=acquisition_id, service='openai')
             if strict:
                 request_data.update(recipient_mode=_RECIPIENT_MODE, strict_family=bool(strict_family), mailbox_email=mailbox)
             payload = _request(
@@ -903,6 +918,7 @@ def fetch_latest_otp(
             email, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval, settle_seconds=settle_seconds,
             require_recipient_evidence=True, strict_family=True, mailbox_email=account.mailbox_email,
             api_base=account.api_base, api_key=account.api_key,
+            acquisition_id=account.acquisition_id,
         )
 
     wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)

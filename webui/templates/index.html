@@ -799,6 +799,11 @@
         </div>
       </div>
       <div class="column-filter-summary" data-filter-summary="outlook" hidden></div>
+      <details class="card" id="emailServiceSyncPanel">
+        <summary id="emailServiceSyncSummary">服务同步记录</summary>
+        <button type="button" class="jobs-tb-btn" id="btnRefreshEmailServiceSync">刷新同步状态</button>
+        <div id="emailServiceSyncList" role="status" aria-live="polite" aria-atomic="true"></div>
+      </details>
       <div class="outlook-table-v2-wrap">
         <table class="outlook-table-v2" data-resizable-table="outlook">
           <colgroup>

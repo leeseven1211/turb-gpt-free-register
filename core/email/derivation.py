@@ -247,7 +247,8 @@ def _profile_credentials(profile: dict) -> dict:
     return {
         **dict(profile.get("inbox_locator") or {}), "connector": profile["connector"], secret_field: password,
         "id": profile["id"], "inbox_key": profile["inbox_key"], "revision": profile["revision"],
-        **({"require_recipient_evidence": True} if profile["connector"] == "forward_butler" else {}),
+        **({"require_recipient_evidence": True, 'butler_identity': dict(profile.get('butler_identity') or {})}
+           if profile["connector"] == "forward_butler" else {}),
     }
 
 

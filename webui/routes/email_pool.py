@@ -62,6 +62,33 @@ def _pool_row_for_source(email: str, source: str) -> dict | None:
     return db.get_outlook_by_email(email)
 
 
+_EMAIL_SYNC_SOURCES = frozenset({'outlook', 'generic_api', 'cloudflare_domain', 'icloud_hide', 'email_butler'})
+_EMAIL_SYNC_STATES = frozenset({'pending', 'sending', 'delivered', 'blocked', 'not_required'})
+
+
+def _public_email_sync(value: dict | None) -> dict:
+    """同步回执只公开展示字段，连接、凭据和原始请求始终留在服务端。"""
+    value = value if isinstance(value, dict) else {}
+    state = value.get('state')
+    return {
+        'state': state if state in _EMAIL_SYNC_STATES else 'not_required',
+        'kind': value.get('kind') if value.get('kind') in {'import', 'return'} else '',
+        'error_code': str(value.get('error_code') or '')[:120],
+        'permanent': value.get('permanent') is True,
+    }
+
+
+def _email_sync_status(source: str, email: str) -> dict:
+    from core.email.email_butler import service_facts
+
+    return _public_email_sync(service_facts.sync_status(source, email))
+
+
+def _pool_import_pending(row: dict | None) -> bool:
+    return bool(row and (row.get('status') == 'pending_sync'
+        or row.get('service_sync_state') in {'pending', 'sending', 'blocked'}))
+
+
 def _parse_email_pool_import(text: str, source: str, *, include_account_fields: bool = False, expires_at=None) -> dict:
     """Parse only the fields that belong to an email resource.
 
@@ -137,6 +164,39 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
 def create_email_pool_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("email_pool", __name__)
     logger = context.logger
+
+    @bp.get('/api/email-service-sync')
+    def api_email_service_sync():
+        """读取导入和退号同步进度；已删除邮箱仍可查看原同步结果。"""
+        from core.email.email_butler import service_facts
+
+        limit = request.args.get('limit', default=100, type=int)
+        if limit is None or not 1 <= limit <= 200:
+            return jsonify({'ok': False, 'error': '数量须为 1 至 200', 'error_code': 'invalid_sync_limit'}), 400
+        counts = service_facts.summary()
+        items = []
+        for row in service_facts.list_sync(limit=limit):
+            if not isinstance(row, dict):
+                continue
+            items.append({**_public_email_sync(row), 'source': str(row.get('source') or ''),
+                'email': str(row.get('email') or ''), 'updated_at': str(row.get('updated_at') or '')})
+        return jsonify({'ok': True, 'summary': {key: int(counts.get(key) or 0)
+            for key in ('pending', 'sending', 'delivered', 'blocked')}, 'items': items})
+
+    @bp.post('/api/email-service-sync/retry')
+    def api_email_service_sync_retry():
+        """只重试原持久同步意图，不重新申请或导入邮箱。"""
+        from core.email.email_butler import service_facts
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'ok': False, 'error': '请求格式无效', 'error_code': 'invalid_sync_request'}), 400
+        source, email, kind = (str(data.get(key) or '').strip() for key in ('source', 'email', 'kind'))
+        if source not in _EMAIL_SYNC_SOURCES or '@' not in email or kind not in {'import', 'return'}:
+            return jsonify({'ok': False, 'error': '邮箱来源、地址或同步类型无效', 'error_code': 'invalid_sync_request'}), 400
+        if not service_facts.retry(source, email, kind):
+            return jsonify({'ok': False, 'error': '没有可重试的原同步记录', 'error_code': 'sync_event_not_retryable'}), 409
+        return jsonify({'ok': True, 'sync': _email_sync_status(source, email)}), 202
 
 
     @bp.get("/api/outlook")
@@ -437,11 +497,14 @@ def create_email_pool_blueprint(context: WebUIContext):
                 inserted, skipped = db.import_outlook_accounts(records)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+        from core.email.email_butler import service_facts
         return jsonify({
             "ok": True,
             "inserted": inserted,
             "skipped": skipped,
             "parsed": len(records),
+            'accepted_count': inserted,
+            'pending_sync_count': service_facts.pending_count(source, [item['email'] for item in records]),
             "as_registered": as_registered,
             "invalid": len(parsed["errors"]),
             "invalid_rows": parsed['errors'][:100],
@@ -460,6 +523,9 @@ def create_email_pool_blueprint(context: WebUIContext):
         if source == "all":
             source = "outlook"
         current = _pool_row_for_source(email, source)
+        if _pool_import_pending(current):
+            return jsonify({'ok': False, 'error': '导入仍在同步服务标签，请重试原同步记录',
+                'error_code': 'service_fact_sync_pending'}), 409
         if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
             return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
         if source == "email_butler":
@@ -515,6 +581,10 @@ def create_email_pool_blueprint(context: WebUIContext):
             seen.add(key)
             try:
                 current = _pool_row_for_source(email, item_source)
+                if _pool_import_pending(current):
+                    skipped.append({'email': email, 'source': item_source,
+                        'reason': '导入仍在同步服务标签，请重试原同步记录', 'error_code': 'service_fact_sync_pending'})
+                    continue
                 if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
                     skipped.append({"email": email, "source": item_source, "reason": "换绑后邮箱不能恢复为可用"})
                     continue
@@ -552,7 +622,8 @@ def create_email_pool_blueprint(context: WebUIContext):
         if source == "all":
             source = "outlook"
         if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
-            return jsonify({"ok": True, "deleted": False, "reason": "邮箱已有使用或未知结果历史，保留完整身份，不能删除后重新导入"})
+            return jsonify({"ok": True, "deleted": False, "local_deleted": False,
+                "reason": "邮箱已有使用或未知结果历史，保留完整身份，不能删除后重新导入"})
         deleted = (
             local_email_imports.delete_butler_email(email)
             if source == "email_butler"
@@ -564,7 +635,9 @@ def create_email_pool_blueprint(context: WebUIContext):
             if source == "icloud_hide"
             else db.delete_outlook(email)
         )
-        return jsonify({"ok": True, "deleted": deleted})
+        return jsonify({"ok": True, "deleted": deleted, "local_deleted": deleted,
+            "sync": _email_sync_status(source, email) if deleted else None,
+            "reason": "" if deleted else "邮箱不存在或当前状态不允许删除"})
 
     @bp.post("/api/outlook/delete-bulk")
     def api_outlook_delete_bulk():
@@ -577,7 +650,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         if len(emails) > 5000:
             return jsonify({"ok": False, "error": "单次最多删除 5000 个邮箱"}), 400
 
-        deleted: list[str] = []
+        deleted: list[dict] = []
         skipped: list[dict] = []
         seen: set[str] = set()
         for raw_item in emails:
@@ -611,7 +684,8 @@ def create_email_pool_blueprint(context: WebUIContext):
                 else db.delete_outlook(email)
             )
             if deleted_ok:
-                deleted.append({"email": email, "source": item_source})
+                deleted.append({"email": email, "source": item_source, "local_deleted": True,
+                    "sync": _email_sync_status(item_source, email)})
             else:
                 skipped.append({"email": email, "reason": "邮箱不存在"})
 
@@ -619,6 +693,8 @@ def create_email_pool_blueprint(context: WebUIContext):
             "ok": True,
             "deleted": deleted,
             "deleted_count": len(deleted),
+            "pending_sync_count": sum(item['sync']['state'] in {'pending', 'sending'} for item in deleted),
+            "blocked_sync_count": sum(item['sync']['state'] == 'blocked' for item in deleted),
             "skipped": skipped,
         })
 

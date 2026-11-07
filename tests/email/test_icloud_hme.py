@@ -13,13 +13,21 @@ from tests.support_pg import PostgresTestCase
 
 class ICloudHidePoolTests(PostgresTestCase):
     def setUp(self):
-        pass
+        from tests.support_email_service_facts import confirmed_service_facts
+        self.facts = confirmed_service_facts()
+        self.acknowledge = self.facts.__enter__()
+        self.addCleanup(self.facts.__exit__, None, None, None)
+
+    def sync_aliases(self, *args, **kwargs):
+        result = db.sync_icloud_hide_aliases(*args, **kwargs)
+        self.acknowledge()
+        return result
 
     def tearDown(self):
         pass
 
     def test_sync_claim_and_release_unconsumed(self):
-        result = db.sync_icloud_hide_aliases([
+        result = self.sync_aliases([
             {
                 "email": "one@example.com",
                 "anonymousId": "anon-1",
@@ -41,8 +49,8 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(db.get_icloud_hide_email_by_email("one@example.com")["status"], "available")
 
     def test_claim_can_restrict_to_multiple_accounts(self):
-        db.sync_icloud_hide_aliases([{"email": "a@example.com", "active": True}], "acc-a")
-        db.sync_icloud_hide_aliases([{"email": "b@example.com", "active": True}], "acc-b")
+        self.sync_aliases([{"email": "a@example.com", "active": True}], "acc-a")
+        self.sync_aliases([{"email": "b@example.com", "active": True}], "acc-b")
 
         claimed = db.claim_next_icloud_hide_email(account_ids=["acc-b"])
 
@@ -50,7 +58,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(db.get_icloud_hide_email_by_email("a@example.com")["status"], "available")
 
     def test_claim_excludes_alias_already_seen_in_same_registration_batch(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "old@example.com", "active": True},
             {"email": "fresh@example.com", "active": True},
         ], "acc-a")
@@ -67,7 +75,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual(db.get_icloud_hide_email_by_email("old@example.com")["status"], "available")
 
     def test_atomic_claim_excludes_pre_claim_table_registration_job(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "old@example.com", "active": True},
             {"email": "fresh@example.com", "active": True},
         ], "acc-a")
@@ -88,7 +96,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         )
 
     def test_batch_claim_is_durable_in_same_transaction_as_pool_claim(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "one@example.com", "active": True},
         ], "acc-a")
 
@@ -112,7 +120,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         ))
 
     def test_batch_claim_failure_rolls_back_pool_claim(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "one@example.com", "active": True},
         ], "acc-a")
 
@@ -133,7 +141,7 @@ class ICloudHidePoolTests(PostgresTestCase):
     def test_batch_claim_retries_postgres_deadlock(self):
         from psycopg.errors import DeadlockDetected
 
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "one@example.com", "active": True},
         ], "acc-a")
 
@@ -155,7 +163,7 @@ class ICloudHidePoolTests(PostgresTestCase):
         sleep.assert_called_once_with(0.05)
 
     def test_concurrent_batch_claims_receive_distinct_aliases(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "one@example.com", "active": True},
             {"email": "two@example.com", "active": True},
         ], "acc-a")
@@ -183,11 +191,11 @@ class ICloudHidePoolTests(PostgresTestCase):
         self.assertEqual({row["job_id"] for row in claims}, {17, 18})
 
     def test_summary_is_grouped_by_account(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "a1@example.com", "active": True},
             {"email": "a2@example.com", "active": True},
         ], "acc-a")
-        db.sync_icloud_hide_aliases([{"email": "b1@example.com", "active": False}], "acc-b")
+        self.sync_aliases([{"email": "b1@example.com", "active": False}], "acc-b")
         db.claim_next_icloud_hide_email("acc-a")
 
         grouped = {row["account_id"]: row for row in db.icloud_hide_email_pool_summary_by_account()}
@@ -198,19 +206,19 @@ class ICloudHidePoolTests(PostgresTestCase):
 
     def test_registered_alias_is_not_released(self):
         rs.insert_row(rs.ACCOUNTS, {"email": "bound@example.com"})
-        db.sync_icloud_hide_aliases([{"email": "bound@example.com", "active": True}], "acc-1")
+        self.sync_aliases([{"email": "bound@example.com", "active": True}], "acc-1")
         self.assertEqual(db.get_icloud_hide_email_by_email("bound@example.com")["status"], "used")
         self.assertFalse(db.release_unconsumed_icloud_hide_email("bound@example.com"))
 
     def test_full_sync_disables_missing_alias_but_partial_sync_does_not(self):
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "keep@example.com", "active": True},
             {"email": "missing@example.com", "active": True},
         ], "acc-1")
-        db.sync_icloud_hide_aliases([{"email": "new@example.com", "active": True}], "acc-1", full_snapshot=False)
+        self.sync_aliases([{"email": "new@example.com", "active": True}], "acc-1", full_snapshot=False)
         self.assertEqual(db.get_icloud_hide_email_by_email("missing@example.com")["status"], "available")
 
-        db.sync_icloud_hide_aliases([
+        self.sync_aliases([
             {"email": "keep@example.com", "active": True},
             {"email": "new@example.com", "active": True},
         ], "acc-1")
@@ -225,7 +233,7 @@ class ICloudHidePoolTests(PostgresTestCase):
             "account_id": "acc-1",
             "remote_active": True,
         })
-        db.sync_icloud_hide_aliases([{"email": "relay@example.com", "active": True}], "acc-1")
+        self.sync_aliases([{"email": "relay@example.com", "active": True}], "acc-1")
 
         saved_row = db.get_icloud_hide_email_by_email("relay@example.com")
         self.assertEqual(saved_row["status"], "available")

@@ -311,7 +311,7 @@ cp 用于注册的邮箱.txt.example /tmp/outlook-import.txt
 email----password----clientId----refreshToken
 ```
 
-也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后只写入 PostgreSQL 的 `email_pool_outlook`，不会保存或改写源文件，也不会创建注册账号或写入 ChatGPT / Codex Token。命令行可使用 `tools/maintenance/import_outlook_pool.py --file PATH`。
+也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后将资源与永久服务事实同步意图一起写入 PostgreSQL。Outlook 和通用 API 先显示 `pending_sync`，后台收到 Email Butler 的永久 `openai` 事实回执后才成为可用库存，不保存或改写源文件，也不创建注册账号。命令行可使用 `tools/maintenance/import_outlook_pool.py --file PATH`；接收成功不代表同步完成，可在邮箱页的「服务同步记录」查看结果。
 
 #### 通用 API 邮箱
 
@@ -414,9 +414,11 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 
 导入时显示实际批次数量、进度条及已导入／待处理／交接中／已跳过／待确认／失败统计。点击 **关闭，后台继续** 后无需等待，页面右下角和原导入入口都可查看进度；刷新页面自动读取原批次，不重复发起导入。成功完成后右下角提示自动收起，刷新后也不再弹出；邮箱页原导入入口仍可查看完成结果。库存展示首次更新后最多每 15 秒刷新一次，批次结束时补刷；页面刷新不阻塞进度查询。服务重启后，中断批次明确显示可继续；点击 **继续原批次** 恢复原地址及归属，成功项保留，不换邮箱补足。**粘贴导入** 继续支持手工地址、Outlook 四段和通用 API 资源。其他 Butler provider 需要各自完整的长期收件合同后才可使用按钮导入。
 
-Butler 手动导入会先解析已有完整身份，再登记永久交接归属，避免同一地址分配给其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱资源与取码](docs/workflows/email-resources.md)。
+Butler 手动导入通过原完整地址与稳定 acquisition 进行精确交接，验证身份、固定收件路径及永久服务事实回执，避免同一地址分配给同服务的其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱资源与取码](docs/workflows/email-resources.md)。
 
 本地领取在同一 PostgreSQL 事务中锁定库存、保存稳定 acquisition/owner，并绑定任务完整地址；并发和重跑保持原邮箱。重复导入不会重置已有使用、保留或未知状态。Butler 收码继续使用完整目标地址、最终邮箱、时间窗口和原始收件证据；Key 只保存版本化引用。历史远端领取意图保留恢复路径，结果未知时禁止换号。
+
+成功导入的完整地址永久带有 `openai` 标签，母地址与 plus 子地址分别记录。标签只表示已为 OpenAI 导入或使用，不增加注册成功次数。Butler 的新 OpenAI 申请排除这些地址，其他服务按自己的事实和归属判断；Turb 已导入库存及原任务重跑继续使用原身份。HME 交接要求 `service_facts.permanent.v1` 能力并校验永久事实回执；其他来源通过持久队列同步，失败重试原证据和固定连接。删除只结束可退回的归属，保留永久标签；邮箱页区分本地删除与远端待同步、已完成或失败原因。详细规则见[邮箱资源与取码](docs/workflows/email-resources.md)。
 
 HME 结果与持久回执队列在同一 PG 事务保存，后台以稳定 `operation_id`、原固定连接及凭据引用报告；网络超时不影响本地注册成功。远端临时读租约保持原 TTL 并自然到期，永久库存交接归属不释放。`release_account` 名称为历史接口兼容，不表示 HME 会撤销远端归属。未知结果保留上下文且不上报成功，晚到失败不能覆盖成功。
 

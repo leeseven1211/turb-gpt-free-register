@@ -11,7 +11,7 @@ def test_replaced_email_status_is_labeled_and_not_restorable_in_ui():
 
     assert "replaced:'换绑后邮箱'" in common_js
     assert "replaced: '换绑后邮箱'" in email_js
-    assert "r.status !== 'replaced'" in email_js
+    assert "!['replaced', 'pending_sync'].includes(r.status)" in email_js
 
 
 def test_local_inventory_stays_visible_when_registration_source_is_disabled():

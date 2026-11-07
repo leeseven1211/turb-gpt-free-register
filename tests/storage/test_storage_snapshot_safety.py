@@ -305,10 +305,11 @@ class ConcurrentWriteTests(PostgresTestCase):
             "access_token": "token-for-test",
         }
 
-        self.assertEqual(
-            db.import_registered_email_accounts([record, record], "outlook"),
-            (1, 1),
-        )
+        from tests.support_email_service_facts import confirmed_service_facts
+        with confirmed_service_facts() as acknowledge:
+            self.assertEqual(db.import_registered_email_accounts([record, record], "outlook"), (1, 1))
+            self.assertIsNone(rs.get_row_by(rs.ACCOUNTS, "email", record["email"]))
+            acknowledge()
         account = rs.get_row_by(rs.ACCOUNTS, "email", record["email"], lower=True)
         pool = rs.get_row_by(rs.OUTLOOK_POOL, "email", record["email"], lower=True)
         self.assertIsNotNone(account)

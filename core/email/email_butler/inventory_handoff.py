@@ -12,7 +12,7 @@ import uuid
 
 
 def verify_client(who: dict, *, client_id: str = '') -> str:
-    required = {'mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1'}
+    required = {'mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1', 'service_facts.permanent.v1'}
     policy = who.get('policy') or {}
     if (not required.issubset(set(who.get('capabilities') or []))
             or not who.get('id') or not policy.get('consumer') or policy.get('service') != 'openai'
@@ -60,10 +60,14 @@ def handoff_selected(candidate: dict, profile: dict, *, ownership: dict, client_
         'requested_email': original['email'], 'provider': 'icloud_hme', **ownership},
         api_base=connection['api_base'], api_key=connection['api_key'])
     received = validate_candidate(payload.get('mailbox'), mailbox=connection['mailbox_email'])
+    from core.email.email_butler.service_facts import validate_fact
+    fact = validate_fact((payload.get('mailbox') or {}).get('service_fact'), expected_address=original['email'])
+    if (payload.get('mailbox') or {}).get('service') != 'openai':
+        raise ValueError('service_fact_receipt_mismatch: Butler 交接服务不一致')
     if received != original or not (payload.get('mailbox') or {}).get('lease_id'):
         raise ValueError('handoff_identity_mismatch: Butler 交接未确认原固定身份')
     return {**ownership, 'client_id': client_id, 'identity_id': original['identity_id'],
-            'parent_email': original['parent_email'], 'state': 'issued', 'version': 1}
+            'parent_email': original['parent_email'], 'state': 'issued', 'version': 1, 'service': 'openai', 'service_fact': fact}
 
 
 def _batch_handoff_error(code: str, detail: str, *, status_code: int | None = None) -> dict:
@@ -178,6 +182,10 @@ def handoff_selected_batch(items: list[dict], profile: dict, *, client_id: str,
         try:
             received = validate_candidate(result.get('mailbox'), mailbox=connection['mailbox_email'])
             mailbox = result['mailbox']
+            from core.email.email_butler.service_facts import validate_fact
+            fact = validate_fact(mailbox.get('service_fact'), expected_address=original['email'])
+            if mailbox.get('service') != 'openai':
+                raise ValueError('service_fact_receipt_mismatch: Butler 交接服务不一致')
             if (received != original or not isinstance(mailbox.get('lease_id'), str)
                     or not mailbox['lease_id'].strip()
                     or any(key in source and source[key] != value
@@ -189,7 +197,8 @@ def handoff_selected_batch(items: list[dict], profile: dict, *, client_id: str,
             continue
         output[acquisition_id] = {'receipt': {
             **ownership, 'client_id': client_id, 'identity_id': original['identity_id'],
-            'parent_email': original['parent_email'], 'state': 'issued', 'version': 1}}
+            'parent_email': original['parent_email'], 'state': 'issued', 'version': 1,
+            'service': 'openai', 'service_fact': fact}}
     return output
 
 
@@ -209,11 +218,9 @@ def _consumer_instance() -> str:
 
 
 def handoff_for_import(email: str, profile: dict, *, conn=None) -> dict:
-    """Bind one exact known HME identity to this deployment before local import.
+    """按完整地址精确交接；原 acquisition 供结果报告与固定连接读取。
 
-    No lease token is saved: OTP uses the original fixed read profile, and the
-    permanent acquisition is kept solely as the result-report ownership proof.
-    A committed remote handoff survives a rolled-back local import by design.
+    不保存短期 lease Token。远端已提交但本地回滚时继续同一次交接。
     """
     from core.email.email_butler import client as client
     from core.email.derivation import _profile_credentials
@@ -242,24 +249,27 @@ def handoff_for_import(email: str, profile: dict, *, conn=None) -> dict:
 
     try:
         who = client._request('GET', '/me', **parameters)
-        required = {'mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1'}
+        required = {'mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1', 'service_facts.permanent.v1'}
         policy = who.get('policy') or {}
         if (not required.issubset(set(who.get('capabilities') or []))
                 or not who.get('id') or not policy.get('consumer') or policy.get('service') != 'openai'):
             raise ValueError('handoff_contract_unsupported: Butler 需要持久归属、严格收件及 OpenAI 消费策略')
-        # Resolve-only is intentionally sent without any acquisition fields.
-        original = verified(client._request('POST', '/mailboxes', json={
-            'requested_email': address, 'provider': 'icloud_hme'}, **parameters))
+        # 精确地址直接重放稳定交接，避免预览被本次交接已经写入的永久标签阻断。
         instance = _consumer_instance()
         digest = hashlib.sha256(f"{instance}:{connection['api_base']}:{who['id']}:{address}".encode()).hexdigest()
         ownership = {'owner_kind': 'local_inventory', 'owner_id': instance,
                      'acquisition_id': 'turb-import:' + digest}
         received = verified(client._request('POST', '/mailboxes', json={
             'requested_email': address, 'provider': 'icloud_hme', **ownership}, **parameters))
-        if received['identity_id'] != original['identity_id'] or not received.get('lease_id'):
-            raise ValueError('handoff_identity_mismatch: Butler 交接身份发生变化')
+        if not received.get('lease_id'):
+            raise ValueError('handoff_identity_mismatch: Butler 未确认原交接读取归属')
+        from core.email.email_butler.service_facts import validate_fact
+        fact = validate_fact(received.get('service_fact'), expected_address=address)
+        if received.get('service') != 'openai':
+            raise ValueError('service_fact_receipt_mismatch: Butler 交接服务不一致')
         return {**ownership, 'client_id': str(who['id']), 'identity_id': received['identity_id'],
-                'parent_email': received['parent_email'], 'state': 'issued', 'version': 1}
+                'parent_email': received['parent_email'], 'state': 'issued', 'version': 1,
+                'service': 'openai', 'service_fact': fact}
     except ValueError:
         raise
     except Exception:

@@ -13,6 +13,7 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -2464,6 +2465,8 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     row = _pool_row_by_email(spec, email)
     if row is None:
         return False
+    if row.get('status') == 'pending_sync':
+        return False
     if status == "available" and str(row.get("status") or "").strip().lower() == "replaced":
         return False
     changes = dict(extra or {})
@@ -2476,21 +2479,6 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     if changed and kind:
         compat_export.schedule(kind)
     return changed
-
-
-def _return_butler_identity(email: str) -> None:
-    """本地池删除后同步退号：释放 butler 租约并删除 openai 标签；失败只记日志。"""
-    address = str(email or "").strip()
-    if "@" not in address:
-        return
-    try:
-        from core.email.email_butler.client import return_account as _butler_return
-
-        result = _butler_return(address)
-        if not result.get("ok"):
-            logger.info("[EmailButler] 退号未生效，本地删除已完成: %s %s", address, result.get("reason") or "")
-    except Exception as exc:  # noqa: BLE001 - 退号失败不能回滚本地删除
-        logger.warning("[EmailButler] 退号异常，本地删除已完成: %s %s", address, str(exc)[:160])
 
 
 def _delete_pool_email(spec, email: str) -> bool:
@@ -2515,13 +2503,14 @@ def _delete_pool_email(spec, email: str) -> bool:
                 }, conn=conn)
                 changed = bool(updated) or changed
             else:
+                from core.email.email_butler import service_facts
+                if source:
+                    service_facts.enqueue_return(source, parent, conn=conn)
                 rows = record_store.delete_rows_where_returning(spec, where="id = %s", params=(int(parent["id"]),), conn=conn)
                 changed = bool(rows) or changed
     kind = _POOL_EXPORT_KINDS.get(spec.name)
     if changed and kind:
         compat_export.schedule(kind)
-    if changed:
-        _return_butler_identity(str(email or "").strip())
     return bool(changed)
 
 
@@ -2582,7 +2571,8 @@ def import_outlook_accounts(records: list[dict]) -> tuple[int, int]:
     return import_resources(records, source="outlook")
 
 
-def import_registered_email_accounts(records: list[dict], source: str | None) -> tuple[int, int]:
+def import_registered_email_accounts(records: list[dict], source: str | None, *,
+                                     _service_fact_confirmed=False, _conn=None) -> tuple[int, int]:
     """
     把邮箱素材直接导入为“已注册成功账号”，用于跳过注册、直接在账号页补跑 Codex 授权。
 
@@ -2590,17 +2580,20 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
       - outlook: records 元素 {email,password,client_id,refresh_token[,access_token,totp_secret]}
       - generic_api: records 元素 {email,code_url[,access_token,totp_secret]}
 
-    返回 (新增账号数, 跳过数)。已存在账号会跳过；邮箱池中已存在的素材会复用并标记 used。
+    返回 (已接收数, 跳过数)。中央永久事实确认前保留 pending_sync；确认后才新增账号并标记 used。
     """
     source = (source or "").strip().lower()
     if source not in ("outlook", "generic_api"):
         raise ValueError("source 必须显式传入 outlook / generic_api")
+    if not _service_fact_confirmed:
+        from core.storage.email.local_imports import import_resources
+        return import_resources(records, source=source, _as_registered=True)
 
     record_store.init()
     inserted = skipped = 0
     accounts_changed = outlook_changed = generic_changed = False
     import_note = "导入为已注册账号，用于 Codex 授权"
-    with record_store.transaction() as conn:
+    with (nullcontext(_conn) if _conn is not None else record_store.transaction()) as conn:
         from core.storage.email.validity import facts_for_address, lock_email_validity
 
         lock_email_validity(conn, shared=True)
@@ -4629,6 +4622,9 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                     record_store.ICLOUD_HIDE_POOL, payload, conn=conn,
                 )
                 row = {**payload, "id": row_id}
+                from core.email.email_butler import service_facts
+                service_facts.enqueue_import('icloud_hide', row, conn=conn, final_status=status)
+                row['status'] = 'pending_sync'
                 inserted += 1
             else:
                 updated += 1
@@ -4643,7 +4639,7 @@ def sync_icloud_hide_aliases(aliases: list[dict], account_id: str, *, full_snaps
                 "synced_at": now,
             }
             remove_data_keys: tuple[str, ...] = ()
-            if registered:
+            if registered and row.get('status') != 'pending_sync':
                 changes.update({
                     "status": "used",
                     "used_at": row.get("used_at") or now,

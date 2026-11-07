@@ -923,7 +923,7 @@ def list_email_pool(request: PageRequest) -> dict:
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     from_sql = f" FROM ({pool}) p LEFT JOIN {accounts} a ON LOWER(a.email) = LOWER(p.email)"
     safe_pool_data = (
-        "p.data - ARRAY['password','client_id','refresh_token','access_token','totp_secret',"
+        "p.data - ARRAY['password','client_id','refresh_token','access_token','totp_secret','proxy_used',"
         "'code_url','copy_line','account_copy_line','original_line','api_key','api_base',"
         "'credential_ref','inbox_profile_id','inbox_locator','mailbox','mailbox_id','lease_id',"
         "'local_inbox_profile_id','local_acquisition_id','local_owner_kind','local_owner_id','butler_handoff']::text[] "
@@ -953,7 +953,7 @@ def list_email_pool(request: PageRequest) -> dict:
         )
         facets = _facet_dict(cur.fetchall())
     sensitive = {
-        "password", "client_id", "refresh_token", "access_token", "totp_secret",
+        "password", "client_id", "refresh_token", "access_token", "totp_secret", "proxy_used",
         "code_url", "copy_line", "account_copy_line", "original_line",
         "api_key", "api_base", "credential_ref", "inbox_profile_id", "inbox_locator", "mailbox", "mailbox_id", "lease_id",
         "local_inbox_profile_id", "local_acquisition_id", "local_owner_kind", "local_owner_id", "butler_handoff",

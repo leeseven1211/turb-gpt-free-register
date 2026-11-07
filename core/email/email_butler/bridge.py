@@ -35,7 +35,7 @@ def fixed_context(email: str):
     return butler.EmailButlerAccount(email=address, mailbox_id='', provider='icloud_hme',
         mailbox_email=connection['mailbox_email'], api_base=connection['api_base'], api_key=connection['api_key'],
         recipient_mode='forwarded_exact_v1', strict_family=True,
-        acquisition_id=str((parent or {}).get('local_acquisition_id') or ''))
+        acquisition_id=butler.original_handoff_acquisition(address, row=parent, profile=profile))
 
 
 def restore_context(email: str, *, purpose: str = "historical-hme", profile: dict | None = None):
@@ -77,7 +77,8 @@ def restore_context(email: str, *, purpose: str = "historical-hme", profile: dic
     if not connection["mailbox_email"].partition("@")[2]:
         raise butler.EmailButlerClientError("mailbox_mismatch: 历史 HME 桥接缺少最终收件箱")
     return butler.EmailButlerAccount(email=address, mailbox_id="", provider="icloud_hme",
-        recipient_mode="forwarded_exact_v1", strict_family=True, **connection)
+        recipient_mode="forwarded_exact_v1", strict_family=True,
+        acquisition_id=butler.original_handoff_acquisition(address, profile=profile), **connection)
 
 
 def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_id=None, job_id=None):
@@ -104,7 +105,6 @@ def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_i
     account = fixed_context(row["email"])
     if not account:
         raise butler.EmailButlerIntentLocked('email_derivation_profile_unavailable: 本地 HME 未固定 Butler 收件配置，请重新导入')
-    account.acquisition_id = str(row.get("local_acquisition_id") or "")
     butler._CONTEXT_CACHE[str(account.email).lower()] = account
     return account
 
@@ -112,7 +112,8 @@ def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None, batch_i
 def fetch_otp(email: str, *, after_ts: float | None = None, profile: dict | None = None, **kwargs) -> str:
     context = restore_context(email, profile=profile)
     return butler.fetch_inbound_otp(email, after_ts=after_ts, require_recipient_evidence=True, strict_family=True,
-        mailbox_email=context.mailbox_email, api_base=context.api_base, api_key=context.api_key, **kwargs)
+        mailbox_email=context.mailbox_email, api_base=context.api_base, api_key=context.api_key,
+        acquisition_id=context.acquisition_id, **kwargs)
 
 
 def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:

@@ -462,6 +462,20 @@ EMAIL_OTP_REQUESTS = TableSpec(
     partial_unique=((("address_key",), "state = 'active'"),),
 )
 
+# 导入事实和退号意图与本地变更一起提交，远端回执不依赖进程内存。
+EMAIL_SERVICE_SYNC = TableSpec(
+    name="email_service_sync",
+    promoted={
+        "event_key": "TEXT NOT NULL", "kind": "TEXT NOT NULL", "address_norm": "TEXT NOT NULL",
+        "source": "TEXT NOT NULL", "pool_id": "BIGINT", "state": "TEXT NOT NULL",
+        "attempts": "INTEGER NOT NULL DEFAULT 0", "next_attempt_at": "TIMESTAMPTZ",
+        "lease_owner": "TEXT", "lease_until": "TIMESTAMPTZ", "delivered_at": "TIMESTAMPTZ",
+        "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("event_key",),
+    indexes=(("state", "next_attempt_at"), ("address_norm", "kind"), ("lease_until",)),
+)
+
 CODEX_CREDENTIALS = TableSpec(
     name="codex_credentials",
     promoted={
@@ -621,6 +635,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     EMAIL_BUTLER_IMPORT_ITEMS,
     EMAIL_INBOX_PROFILES,
     EMAIL_USAGE_REPORTS,
+    EMAIL_SERVICE_SYNC,
     EMAIL_OTP_REQUESTS,
     CODEX_CREDENTIALS,
     CODEX_CALLBACK_RECEIPTS,

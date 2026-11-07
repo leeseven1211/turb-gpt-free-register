@@ -40,7 +40,8 @@ class ButlerManualImportTests(PostgresTestCase):
         for target in [
             patch.multiple(config, EMAIL_BUTLER_API_BASE='https://original.example/v1',
                            EMAIL_BUTLER_API_KEY='fixture-secret', ICLOUD_HME_FORWARD_IMAP_EMAIL='final@example.test'),
-            patch('core.email.derivation._save_profile_secret', side_effect=lambda k, v: os.environ.__setitem__(k, v)),
+            patch('core.email.derivation._save_profile_secret',
+                  side_effect=lambda k, v: runtime_config.write_values({k: v}, source='test')),
             patch('core.email.email_butler.inventory_handoff._consumer_instance', return_value='fixture-instance'),
             patch('core.email.email_butler.client._request', side_effect=self.remote),
             patch.object(service, '_launch'),
@@ -58,7 +59,7 @@ class ButlerManualImportTests(PostgresTestCase):
         self.calls.append((method, path, kwargs))
         if path == '/me':
             return {'code': 200, 'id': 'fixture-client', 'policy': {'consumer': 'turb', 'service': 'openai'},
-                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1']
+                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1', 'service_facts.permanent.v1']
                     + (['mailboxes.import_batch.v1'] if self.bulk_supported else [])}
         if path == '/mailboxes/import-candidates':
             self.assertEqual(method, 'GET')
@@ -79,7 +80,7 @@ class ButlerManualImportTests(PostgresTestCase):
                 if email == self.reject_address:
                     result.update(code=409, error_code='acquisition_conflict')
                 else:
-                    mailbox = {**self.candidate(email), 'lease_id': 'ephemeral-read-lease'}
+                    mailbox = {**self.candidate(email), 'lease_id': 'ephemeral-read-lease', 'service': 'openai', 'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': email}}
                     if self.wrong_identity:
                         mailbox['identity_id'] = 'replacement-identity'
                     result.update(code=200, mailbox=mailbox)
@@ -95,6 +96,7 @@ class ButlerManualImportTests(PostgresTestCase):
             raise EmailButlerClientError('private rejection', status_code=409)
         item = self.candidate(email)
         item['lease_id'] = 'ephemeral-read-lease'
+        item.update(service='openai', service_fact={'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': email})
         if self.wrong_identity:
             item['identity_id'] = 'replacement-identity'
         return {'code': 200, 'mailbox': item}
@@ -597,7 +599,8 @@ class ButlerManualImportTests(PostgresTestCase):
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_IMPORT_BATCHES, 'batch_id', batch['batch_id'])
         profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, row['profile_id'])
         self.assertEqual(profile['inbox_locator']['api_base'], 'https://original.example/v1')
-        self.assertEqual(os.environ[profile['credential_ref']], 'fixture-secret')
+        from core.storage import runtime_config
+        self.assertEqual(runtime_config.read_values()[profile['credential_ref']], 'fixture-secret')
 
     def test_domain_filter_normalizes_the_supported_at_prefix(self):
         result = self.service.preview({'count': 1, 'domain': '@ICLOUD.COM'})

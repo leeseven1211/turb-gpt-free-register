@@ -18,6 +18,9 @@ class WebUIRuntimeTests(unittest.TestCase):
         usage_worker = patch("core.email.email_butler.usage_reports.start_worker")
         self.usage_worker = usage_worker.start()
         self.addCleanup(usage_worker.stop)
+        service_sync_worker = patch('core.email.email_butler.service_facts.start_worker')
+        self.service_sync_worker = service_sync_worker.start()
+        self.addCleanup(service_sync_worker.stop)
         butler_recovery = patch('core.email.email_butler.manual_import.reconcile_interrupted', return_value=1)
         self.butler_recovery = butler_recovery.start()
         self.addCleanup(butler_recovery.stop)
@@ -189,6 +192,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(init_operations.call_count, 1)
         start_proxy_pool.assert_called_once_with(prewarm=True)
         self.usage_worker.assert_called_once_with()
+        self.service_sync_worker.assert_called_once_with()
         self.butler_recovery.assert_called_once_with()
 
     def test_runtime_status_is_read_only_and_contains_release_health_components(self):
@@ -200,6 +204,7 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.account_task_store, "dependency_dispatcher_status", return_value={"alive": True}),
             patch.object(runtime.operation_task_store, "projection_worker_status", return_value={"alive": True}),
             patch("core.email.email_butler.usage_reports.worker_status", return_value={"alive": True, "counts": {"pending": 2}}),
+            patch('core.email.email_butler.service_facts.worker_status', return_value={'alive': True, 'counts': {'pending': 3}}),
         ):
             status = runtime.runtime_status()
 
@@ -208,6 +213,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertEqual({"available": 2}, status["executor"])
         self.assertEqual({"alive": True}, status["dependency_dispatcher"])
         self.assertEqual({"alive": True, "counts": {"pending": 2}}, status["email_usage_reports"])
+        self.assertEqual({'alive': True, 'counts': {'pending': 3}}, status['email_service_sync'])
         self.assertNotIn("email", status)
 
     def test_runtime_consumes_c_snapshot_uppercase_values_with_revision(self):

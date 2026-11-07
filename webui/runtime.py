@@ -2037,6 +2037,11 @@ def runtime_status() -> dict[str, Any]:
         usage_reports_status = email_usage_reports.worker_status()
     except Exception as exc:
         usage_reports_status = {"error": type(exc).__name__}
+    try:
+        from core.email.email_butler import service_facts
+        service_sync_status = service_facts.worker_status()
+    except Exception as exc:
+        service_sync_status = {"error": type(exc).__name__}
     return {
         "ready": started,
         "started": started,
@@ -2047,6 +2052,7 @@ def runtime_status() -> dict[str, Any]:
         "dependency_dispatcher": dependency_dispatcher_status,
         "projection_worker": projection_status,
         "email_usage_reports": usage_reports_status,
+        "email_service_sync": service_sync_status,
     }
 
 
@@ -2231,6 +2237,11 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
             email_usage_reports.start_worker()
         except Exception as exc:
             active_logger.warning("HME 结果后台队列暂不可用 (%s)", type(exc).__name__)
+        try:
+            from core.email.email_butler import service_facts
+            service_facts.start_worker()
+        except Exception as exc:
+            active_logger.warning("邮箱服务事实同步队列暂不可用 (%s)", type(exc).__name__)
         _runtime_started = True
         _runtime_started_at = time.time()
         return True

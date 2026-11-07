@@ -23,7 +23,7 @@ def main() -> int:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     postgres_store.require_ready()
     inserted, skipped = import_outlook_from_file(args.file)
-    print(f"inserted={inserted} skipped={skipped}")
+    print(f"已接收待同步={inserted} 已跳过={skipped}；永久标签同步完成后才可领取，请在 WebUI 查看同步状态。")
     return 0
 
 

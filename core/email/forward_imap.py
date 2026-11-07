@@ -851,7 +851,7 @@ def fetch_latest_otp(
     strict_family = bool(profile.get("strict_family"))
     require_evidence = bool("+" in target.partition("@")[0] or strict_family or profile.get("require_recipient_evidence"))
     if require_evidence or connector == "forward_butler":
-        from core.email.email_butler.client import fetch_inbound_otp
+        from core.email.email_butler.client import fetch_inbound_otp, original_handoff_acquisition
 
         pinned = connector == "forward_butler"
         try:
@@ -862,6 +862,7 @@ def fetch_latest_otp(
                 mailbox_email=profile.get("mailbox_email") if pinned else getattr(_email_cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", ""),
                 api_base=str(profile.get("api_base") or "") if pinned else None,
                 api_key=str(profile.get("api_key") or "") if pinned else None,
+                acquisition_id=original_handoff_acquisition(target, profile=profile) if pinned else '',
             )
         except WAIT_INTERRUPTED:
             raise

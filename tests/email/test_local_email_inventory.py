@@ -231,7 +231,7 @@ class LocalEmailInventoryTests(PostgresTestCase):
             with patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://changed.example/v1', EMAIL_BUTLER_API_KEY='changed'):
                 restored = bridge.restore_context(account.email)
             self.assertEqual(restored.api_base, 'https://fixed.example/v1')
-            self.assertEqual(restored.acquisition_id, 'pinned')
+            self.assertEqual(restored.acquisition_id, 'fixture:pinned@icloud.com')
 
     def test_hme_fixed_route_survives_cache_loss_bridge_off_and_sidecar_mode(self):
         from config import email as cfg

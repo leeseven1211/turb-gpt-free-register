@@ -16,13 +16,14 @@ class ButlerInventoryHandoffTests(unittest.TestCase):
         if path == '/me':
             return {'code': 200, 'id': 'stable-client',
                     'policy': {'consumer': 'turb', 'service': 'openai'},
-                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1']}
+                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1', 'service_facts.permanent.v1']}
         return {'code': 200, 'mailbox': {
             'email': 'parent+tag@icloud.com', 'provider': 'icloud_hme',
             'mailbox_email': 'final@example.test', 'identity_type': 'plus_alias',
             'identity_id': 'fixed-identity', 'parent_email': 'parent@icloud.com',
             'recipient_mode': 'forwarded_exact_v1', 'strict_family': True,
-            'lease_id': 'fixed-lease',
+            'lease_id': 'fixed-lease', 'service': 'openai',
+            'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': 'parent+tag@icloud.com'},
         }}
 
     def invoke(self, request=None):
@@ -102,7 +103,7 @@ class ButlerInventoryBatchHandoffTests(unittest.TestCase):
     def result(self, item):
         return {'requested_email': item['address_norm'], 'acquisition_id': item['acquisition_id'],
                 'code': 200, 'mailbox': {**item['candidate'], **item['ownership'],
-                                         'lease_id': 'fixed-lease'}}
+                                         'lease_id': 'fixed-lease', 'service': 'openai', 'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': item['address_norm']}}}
 
     def invoke(self, results=None, *, error=None, items=None, provided_connection=False,
                response_payload=...):
@@ -131,7 +132,7 @@ class ButlerInventoryBatchHandoffTests(unittest.TestCase):
             'owner_kind': 'local_inventory', 'owner_id': 'local-instance',
             'acquisition_id': 'fixed-first', 'client_id': 'stable-client',
             'identity_id': 'identity-first', 'parent_email': 'parent@icloud.com',
-            'state': 'issued', 'version': 1})
+            'state': 'issued', 'version': 1, 'service': 'openai', 'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': 'parent+first@icloud.com'}})
         self.assertEqual(output['fixed-second']['receipt']['identity_id'], 'identity-second')
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[0][:2], ('POST', '/mailboxes/import-batch'))

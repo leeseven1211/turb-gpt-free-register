@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, current_thread
@@ -39,10 +40,20 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.config_patch = patch.multiple('config.email', EMAIL_BUTLER_API_BASE='https://butler.example.test/v1',
             EMAIL_BUTLER_API_KEY='test-fixed-key', ICLOUD_HME_FORWARD_IMAP_EMAIL='forward@example.test')
         self.config_patch.start()
+        self.env_values_patch = patch.dict(os.environ)
+        self.env_values_patch.start()
+        self.addCleanup(self.env_values_patch.stop)
+        self.secret_patch = patch('core.email.derivation._save_profile_secret', side_effect=lambda k, v: os.environ.__setitem__(k, v))
+        self.secret_patch.start()
+        self.addCleanup(self.secret_patch.stop)
+        self.consumer_patch = patch('core.email.email_butler.inventory_handoff._consumer_instance', return_value='test-instance')
+        self.consumer_patch.start()
+        self.addCleanup(self.consumer_patch.stop)
         self.addCleanup(self.config_patch.stop)
         self.handoff_patch = patch('core.email.email_butler.inventory_handoff.handoff_for_import',
             side_effect=lambda email, profile, **kwargs: {
                 'version': 1, 'state': 'issued', 'owner_kind': 'local_inventory',
+                'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': email},
                 'owner_id': 'test-instance', 'acquisition_id': 'test-handoff:' + email,
                 'identity_id': 'identity:' + email,
                 'parent_email': email.partition('@')[0].split('+', 1)[0] + '@icloud.com',

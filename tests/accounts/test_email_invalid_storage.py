@@ -211,8 +211,11 @@ class EmailInvalidStorageTests(PostgresTestCase):
                 email = source + "-import@example.test"
                 self.seed(spec, [{"email": email, "status": "used", "email_invalid": True,
                                   "email_invalid_reason": "母邮箱不可用", "email_invalid_source": "manual"}])
-                result = db.import_registered_email_accounts([{"email": email, **material}], source)
-                self.assertEqual(result, (1, 0))
+                from tests.support_email_service_facts import confirmed_service_facts
+                with confirmed_service_facts() as acknowledge:
+                    result = db.import_registered_email_accounts([{"email": email, **material}], source)
+                    self.assertEqual(result, (1, 0))
+                    acknowledge()
                 self.assertIs(db.get_account_by_email(email)["email_invalid"], True)
                 self.assertEqual(db.get_account_by_email(email)["email_invalid_reason"], "母邮箱不可用")
 

@@ -96,10 +96,13 @@ class EmailResourceLifetimeStoreTests(PostgresTestCase):
 
     def test_same_intent_and_restore_reject_expiry_but_keep_claim_and_occupancy(self):
         from core.email import inventory as inventory, provider as email_provider
-        local_email_imports.import_resources([{
-            'email': 'held@example.test', 'code_url': 'https://fixture.example.test/code',
-            'expires_at': '2099-01-01T00:00:00Z',
-        }], source='generic_api')
+        from tests.support_email_service_facts import confirmed_service_facts
+        with confirmed_service_facts() as acknowledge:
+            local_email_imports.import_resources([{
+                'email': 'held@example.test', 'code_url': 'https://fixture.example.test/code',
+                'expires_at': '2099-01-01T00:00:00Z',
+            }], source='generic_api')
+            acknowledge()
         original = inventory.claim('generic_api', owner_kind='test', owner_id='held', acquisition_id='held')
         record_store.patch_row(record_store.GENERIC_API_POOL, original['id'],
             {'expires_at': '2000-01-01T00:00:00Z', 'expires_at_epoch': 946684800.0})

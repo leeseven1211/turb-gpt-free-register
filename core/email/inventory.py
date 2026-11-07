@@ -66,6 +66,8 @@ def import_conflict(address: str, *, conn=None) -> str:
             return 'email_address_allocated'
         if record_store.get_row_by(record_store.LOCAL_EMAIL_CLAIMS, 'address_norm', address, conn=current):
             return 'local_email_claimed'
+        if record_store.get_row_by(record_store.EMAIL_SERVICE_SYNC, 'address_norm', address, conn=current):
+            return 'local_email_imported_before'
         table = postgres_store.qualified(record_store.EMAIL_BUTLER_CLAIM_INTENTS.name)
         with current.cursor() as cursor:
             cursor.execute(f"SELECT 1 FROM {table} WHERE lower(COALESCE(address_norm, data->'mailbox'->>'email', '')) = %s AND status NOT IN ('prepared', 'rejected') LIMIT 1", (address,))
@@ -87,6 +89,7 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     email = f'lower({alias}.email)'
     conditions = [f"{alias}.status = 'available'", f'{alias}.registered_account_id IS NULL',
         f"NULLIF(BTRIM({alias}.used_at), '') IS NULL",
+        f"COALESCE({alias}.data->>'service_sync_state', 'delivered') = 'delivered'",
         f"lower(COALESCE({alias}.data->>'email_invalid', 'false')) NOT IN ('true', '1', 'yes')",
         f"lower(COALESCE({alias}.data->>'remote_active', 'true')) NOT IN ('false', '0', 'no')",
         f"lower(COALESCE({alias}.data->>'archived', 'false')) NOT IN ('true', '1', 'yes')",
