@@ -585,7 +585,7 @@ test('敏感字段默认留空不清除，并提供显式清除入口', () => {
   assert.equal(view.read({dataset: {}, value: 'NA'}, {key: 'PROXY_POOL_DEFAULT_COUNTRY', type: 'str'}), 'NA');
 });
 
-test('AT 刷新国家使用单选并在刷新策略中保留跟随注册国家选项', () => {
+test('AT 刷新国家使用单选并在独立刷新菜单保留跟随注册国家选项', () => {
   const country = field('ACCOUNT_AT_REFRESH_COUNTRY', '账号补全', {
     label: 'AT 刷新国家', value: '', country_codes: ['JP', 'NA', 'US'],
     country_names: {JP: '日本', NA: '纳米比亚', US: '美国'},
@@ -602,7 +602,8 @@ test('AT 刷新国家使用单选并在刷新策略中保留跟随注册国家�
   assert.match(control, /<option value="JP">日本 · JP<\/option>/);
   assert.match(control, /<option value="NA">纳米比亚 · NA<\/option>/);
   assert.ok(control.indexOf('value=""') < control.indexOf('value="JP"'));
-  const markup = view.renderDomain('账号补全', fields);
+  const projected = view.groups()['注册与账号'];
+  const markup = view.renderDomain('刷新 AT', projected.filter(field => field.group === '刷新 AT'));
   const strategy = markup.indexOf('刷新 AT 策略');
   assert.ok(strategy >= 0);
   assert.ok(markup.indexOf('data-key="ACCOUNT_AT_REFRESH_COUNTRY"') > strategy);

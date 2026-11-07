@@ -30,7 +30,7 @@ const CONFIG_HUANGUANG_CDK_QUOTAS_V2 = {
 // 菜单集中定义；schema 的 group 继续表示配置所属领域。导航菜单是页面导航契约，
 // 底层领域仍保留，便于旧入口、搜索和兼容快照继续工作。
 const CONFIG_MENU_DOMAINS_V2 = {
-  '注册与账号': ['注册主链路', '账号补全', '注册与账号'],
+  '注册与账号': ['注册主链路', '账号补全', '注册与账号', '刷新 AT', '补密码', '补 2FA'],
   '代理与网络': ['代理与网络'],
   '邮箱与验证码': ['邮箱 / OTP', '接码平台'],
   '浏览器': ['RoxyBrowser', '浏览器画像', '人工节奏'],
@@ -75,15 +75,41 @@ const CONFIG_PROXY_FEATURES_V2 = [
   ['Codex OAuth', ['ACCOUNT_CODEX_PROXY_MODE']],
 ];
 const CONFIG_PLAN_BUSINESS_KEYS_V2 = new Set([
+  'ACCOUNT_PLAN_CHECK_DRIVER',
   'PLAN_CHECK_PAYMENT_METHODS_ENABLED', 'PLAN_CHECK_COUNTRIES', 'PLAN_CHECK_COUNTRY_WAIT_TIMEOUT',
   'PLAN_CHECK_TIMEOUT', 'PLAN_CHECK_MAX_ATTEMPTS', 'PLAN_CHECK_RETRY_DELAY',
   'PLAN_CHECK_REGISTRATION_RECHECK_DELAY', 'PLAN_CHECK_MIN_INTERVAL', 'PLAN_CHECK_JITTER',
 ]);
+const CONFIG_ACCOUNT_ACTION_SECTIONS_V2 = {
+  '刷新 AT': [
+    ['刷新 AT 策略', [
+      'ACCOUNT_AT_REFRESH_DRIVER', 'ACCOUNT_AT_REFRESH_COUNTRY', 'OPENAI_PROTOCOL_VERSION',
+      'ACCOUNT_AT_REFRESH_NETWORK_RETRIES', 'ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS',
+      'LIVE_CHECK_ROXY_FALLBACK_ENABLED', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',
+    ]],
+    ['协议认证策略', ['ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK', 'ACCOUNT_AUTH_PROFILE_MODE']],
+    ['自动刷新', [
+      'AT_AUTO_REFRESH_ENABLED', 'AT_REFRESH_SCAN_INTERVAL_SECONDS', 'AT_REFRESH_BEFORE_HOURS',
+      'AT_REFRESH_INITIAL_DELAY_SECONDS', 'AT_REFRESH_MAX_PER_CYCLE',
+    ]],
+  ],
+  '补密码': [
+    ['密码补全策略', ['ACCOUNT_PASSWORD_DRIVER', 'ACCOUNT_PASSWORD_RESET_ENABLED']],
+  ],
+  '补 2FA': [
+    ['2FA 补全策略', [
+      'ACCOUNT_2FA_DRIVER', 'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED', 'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
+    ]],
+    ['2FA 重认证参数', ['TWOFA_REAUTH_MAX_ATTEMPTS', 'TWOFA_REAUTH_RETRY_DELAY']],
+  ],
+};
 const CONFIG_FIELD_UI_GROUP_OVERRIDES_V2 = new Map([
   ['REGISTRATION_PROXY_RETRIES', '注册主链路'],
   ['REGISTRATION_PROXY_RETRY_DELAY', '注册主链路'],
   ['ACCOUNT_ACTION_PROXY_RETRIES', '账号补全'],
   ['ACCOUNT_ACTION_PROXY_RETRY_DELAY', '账号补全'],
+  ...Object.entries(CONFIG_ACCOUNT_ACTION_SECTIONS_V2).flatMap(([domain, sections]) =>
+    sections.flatMap(([, keys]) => keys.map(key => [key, domain]))),
 ]);
 
 function configFieldUiGroupV2(field) {
@@ -593,7 +619,10 @@ function configSectionIntro(name) {
   if (name === 'WebUI 授权') return '配置网站登录授权码与 Session 签名密钥。';
   if (name === '通用配置') return '账号批量操作等跨页面的通用运行参数。';
   if (name === '注册主链路') return '配置注册主流程、注册国家、密码/验证码模式，以及注册后可选能力。';
-  if (name === '账号补全') return '配置“补全账号”处理哪些缺失能力，以及账号操作使用的执行策略。';
+  if (name === '账号补全') return '选择“补全账号”包含的项目，维护查活与账号操作的通用策略；各功能参数在对应分类中维护。';
+  if (name === '刷新 AT') return '配置 AT 刷新驱动、国家、网络恢复、协议认证和自动刷新任务。';
+  if (name === '补密码') return '配置账号补密码的执行驱动与邮箱重置策略。';
+  if (name === '补 2FA') return '配置账号补充 2FA 的执行驱动、浏览器兜底与重认证参数。';
   if (name === '注册调试') return '配置注册失败诊断、现场保留和抓包存储，不改变正常注册流程。';
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
   if (name === 'Codex') return '配置 Codex 授权地址来源、CPA 与 sub2api；Token 自动刷新归入系统设置的定时任务。';
@@ -648,7 +677,7 @@ function renderConfigSectionHead(name, meta = '') {
     ${domains.length > 1 ? `<div class="config-subtabs-v2" role="group" aria-label="${attrEsc(title)}分类">
       ${domains.map(domain => `<button type="button" data-config-domain-v2="${attrEsc(domain)}" class="${domain === name ? 'active' : ''}" aria-pressed="${domain === name}">${esc(domain === '注册与账号' && menu === '注册与账号' ? '查询套餐' : domain)}</button>`).join('')}
     </div>` : ''}
-    ${['注册主链路', '账号补全', 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
+    ${['注册主链路', '账号补全', '刷新 AT', '补密码', '补 2FA', 'Codex', '提链', '邮箱 / OTP', '定时任务'].includes(name)
       ? '<p class="config-section-v2-subhelp">本业务同时受全局与独立任务类型上限约束。<button type="button" class="config-concurrency-link-v2" data-concurrency-open>前往并发控制</button></p>' : ''}
   `;
 }
@@ -794,45 +823,39 @@ function renderAccountCompletionSectionV2(fields) {
     'ACCOUNT_COMPLETION_2FA_ENABLED',
     'ACCOUNT_COMPLETION_CODEX_ENABLED',
     'ACCOUNT_COMPLETION_REFRESH_AT_ENABLED',
-    'ACCOUNT_PASSWORD_RESET_ENABLED',
   ];
   const strategyKeys = [
-    'ACCOUNT_PASSWORD_DRIVER',
-    'ACCOUNT_PLAN_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_DRIVER',
     'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED',
     'ACCOUNT_AUTH_V2_ENABLED',
-    'ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK',
-    'ACCOUNT_AUTH_PROFILE_MODE',
     'ACCOUNT_AUTH_RAW_CONTEXT_ENABLED',
     'ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS',
-    'ACCOUNT_2FA_DRIVER',
-    'ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED',
-    'ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED',
     'ACCOUNT_CODEX_DRIVER',
-  ];
-  const refreshKeys = [
-    'ACCOUNT_AT_REFRESH_DRIVER',
-    'ACCOUNT_AT_REFRESH_COUNTRY',
-    'ACCOUNT_AT_REFRESH_NETWORK_RETRIES',
-    'ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS',
-    'OPENAI_PROTOCOL_VERSION',
-    'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',
-    'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
   ];
   const completion = orderedConfigFieldsV2(fields, completionKeys);
   const strategies = orderedConfigFieldsV2(fields, strategyKeys);
-  const refresh = orderedConfigFieldsV2(fields, refreshKeys);
-  const known = new Set([...completionKeys, ...strategyKeys, ...refreshKeys]);
+  const known = new Set([...completionKeys, ...strategyKeys]);
   const extra = fields.filter(f => !known.has(f.key));
   return `
     <section class="config-section-v2" id="${esc(configGroupSlug('账号补全'))}" data-config-section="账号补全">
       ${renderConfigSectionHead('账号补全', configSectionIntro('账号补全'))}
-      <div class="config-section-v2-subhelp">先选择需要补全的能力，再在下方调整对应的执行策略。</div>
+      <div class="config-section-v2-subhelp">这里选择组合补全的项目；执行参数分别在“查询套餐”“刷新 AT”“补密码”“补 2FA”中调整。</div>
       ${renderConfigSettingGroupV2('补全项目', completion)}
       ${renderConfigSettingGroupV2('账号处理策略', strategies, renderAccountCompletionRowV2)}
-      ${renderConfigSettingGroupV2('刷新 AT 策略', refresh)}
       ${renderConfigSettingGroupV2('其他账号参数', extra, renderAccountCompletionRowV2)}
+      ${renderConfigSaveActions()}
+    </section>
+  `;
+}
+
+function renderAccountActionSectionV2(name, fields) {
+  const sections = CONFIG_ACCOUNT_ACTION_SECTIONS_V2[name];
+  const known = new Set(sections.flatMap(([, keys]) => keys));
+  return `
+    <section class="config-section-v2" id="${esc(configGroupSlug(name))}" data-config-section="${attrEsc(name)}">
+      ${renderConfigSectionHead(name, configSectionIntro(name))}
+      ${sections.map(([title, keys]) => renderConfigSettingGroupV2(title, orderedConfigFieldsV2(fields, keys))).join('')}
+      ${renderConfigSettingGroupV2('其他参数', fields.filter(field => !known.has(field.key)))}
       ${renderConfigSaveActions()}
     </section>
   `;
@@ -2387,6 +2410,7 @@ function renderConfigDomainSectionV2(name, fields) {
   if (name === '注册与账号') return renderPlanBusinessSectionV2(fields);
   if (name === '注册主链路') return renderRegistrationMainSectionV2(fields);
   if (name === '账号补全') return renderAccountCompletionSectionV2(fields);
+  if (Object.prototype.hasOwnProperty.call(CONFIG_ACCOUNT_ACTION_SECTIONS_V2, name)) return renderAccountActionSectionV2(name, fields);
   if (name === '注册调试') return renderRegistrationDebugSectionV2(fields);
   if (name === '定时任务') return renderScheduledConfigSectionV2(fields);
   if (name === '并发控制') return renderConcurrencyConfigSectionV2(fields);
