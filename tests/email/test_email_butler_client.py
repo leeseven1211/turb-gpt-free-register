@@ -1,256 +1,161 @@
 # -*- coding: utf-8 -*-
+"""公共入口使用 v2，并保留诊断分类、固定身份和未知请求保护。"""
+from contextlib import ExitStack
+from datetime import datetime, timezone
 import unittest
 from unittest.mock import Mock, patch
 
-from core.email.email_butler import client as client
+from core.email.email_butler import client, lease_bindings, v2
 
 
 class EmailButlerClientTests(unittest.TestCase):
-    def test_scan_maps_only_safe_signal_fields(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {
-            "code": 200,
-            "checked_at": "2026-08-10T00:00:00Z",
-            "signal": {
-                "detected": True,
-                "received_at": "2026-08-09T00:00:00Z",
-                "subject": "OpenAI Account Deactivated",
-                "from": "noreply@openai.com",
-                "message_id": "m-1",
-                "confidence": "high",
-                "body": "must not be returned",
-            },
-        }
-        with patch.object(client.requests, "request", return_value=response), patch.object(
-            client._email_cfg, "EMAIL_BUTLER_API_BASE", "http://127.0.0.1:8788/v1"
-        ), patch.object(client._email_cfg, "EMAIL_BUTLER_API_KEY", "secret"):
-            result = client.scan_openai_deactivation("a@example.com")
-        self.assertTrue(result["detected"])
-        self.assertNotIn("body", result)
-        self.assertEqual(result["confidence"], "high")
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.dict(client._CONTEXT_CACHE, {}, clear=True))
+        self.stack.enter_context(patch.multiple(client._email_cfg,
+            EMAIL_BUTLER_API_BASE='https://butler.example/v2', EMAIL_BUTLER_API_KEY='fixture-key'))
+        self.binding = {'lease_id': 'lse_original', 'client_id': 'client-original',
+                        'credential_ref': 'fixed-reference', 'api_base': 'https://butler.example/v2'}
+        self.resolve = self.stack.enter_context(patch.object(lease_bindings, 'resolve', return_value=self.binding))
+        self.stack.enter_context(patch('core.auth.email_guard.current_session', return_value=None))
+        self.stack.enter_context(patch('core.auth.email_guard.observe_candidate'))
+        self.clock = 0.0
+        self.stack.enter_context(patch.object(client.time, 'monotonic', side_effect=lambda: self.clock))
+        self.stack.enter_context(patch.object(client, 'bounded_sleep', side_effect=self.sleep))
 
-    def test_scan_retries_one_transient_connection_error(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {
-            "code": 200,
-            "checked_at": "2026-08-10T00:00:00Z",
-            "signal": {"detected": False},
-        }
-        with patch.object(
-            client._email_cfg,
-            "EMAIL_BUTLER_API_BASE",
-            "http://example.test/v1",
-            create=True,
-        ), patch.object(
-            client._email_cfg,
-            "EMAIL_BUTLER_API_KEY",
-            "test-key",
-            create=True,
-        ), patch.object(
-            client.requests,
-            "request",
-            side_effect=[client.requests.ConnectionError("TLS closed"), response],
-        ) as request_mock, patch.object(client.time, "sleep") as sleep_mock:
-            result = client.scan_openai_deactivation("a@example.com")
+    def sleep(self, seconds):
+        self.clock += seconds
 
-        self.assertFalse(result["detected"])
-        self.assertEqual(request_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(0.5)
+    def matched(self):
+        return {'lease_id': 'lse_original', 'service': 'openai', 'status': 'matched',
+                'verification_code': '654321', 'code_id': 'code_delivery',
+                'received_at': datetime.fromtimestamp(105, timezone.utc).isoformat()}
 
-    def test_connection_requires_signal_capability(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {
-            "code": 200,
-            "capabilities": ["mailboxes.create", "mailboxes.messages", "mailboxes.release"],
-        }
-        with patch.object(client.requests, "request", return_value=response):
-            with self.assertRaises(client.EmailButlerClientError):
-                client.test_connection(api_base="http://example.test/v1", api_key="secret")
+    def fetch(self, **kwargs):
+        return client.fetch_inbound_otp('alias@icloud.com', after_ts=100.0, **kwargs)
 
-    def test_restore_context_requests_exact_email(self):
-        with patch.object(client, "_request", return_value={
-            "mailbox": {
-                "id": "mb-1",
-                "email": "restore@example.com",
-                "lease_id": "lease-1",
-            }
-        }) as request_mock:
-            account = client.restore_account_context("restore@example.com")
-        self.assertEqual(account.mailbox_id, "mb-1")
-        request_mock.assert_called_once_with(
-            "POST",
-            "/mailboxes",
-            json={"requested_email": "restore@example.com", "purpose": "live-check"},
-        )
+    def test_scan_returns_explicit_unsupported_without_inventing_signal_fields(self):
+        with patch.object(v2.requests, 'request') as request:
+            with self.assertRaises(client.EmailButlerClientError) as caught:
+                client.scan_openai_deactivation('a@example.com')
+        self.assertEqual(caught.exception.error_code, 'signal_scan_unsupported')
+        request.assert_not_called()
 
-    def test_fetch_inbound_otp_uses_single_pg_wait_request_without_lease(self):
-        with patch.object(
-            client,
-            "_request",
-            return_value={"code": 200, "verification_code": "654321"},
-        ) as request_mock:
-            otp = client.fetch_inbound_otp(
-                "alias@icloud.com",
-                after_ts=100.0,
-                max_wait=15,
-                poll_interval=1,
-                settle_seconds=0,
-            )
+    def test_scan_bulk_preserves_each_address_failure_without_repeating_retired_requests(self):
+        with patch.object(v2.requests, 'request') as request:
+            results = client.scan_openai_deactivation_bulk(['a@example.test', 'b@example.test'], mailbox_email='final@example.test')
+        self.assertEqual(set(results), {'a@example.test', 'b@example.test'})
+        self.assertTrue(all(not value['ok'] and value['error_code'] == 'signal_scan_unsupported' for value in results.values()))
+        request.assert_not_called()
 
-        self.assertEqual(otp, "654321")
-        args, kwargs = request_mock.call_args
-        self.assertEqual(args, ("POST", "/inbound/code"))
-        self.assertEqual(kwargs["json"]["email"], "alias@icloud.com")
-        self.assertEqual(kwargs["json"]["timeout_seconds"], 15)
-        self.assertEqual(kwargs["timeout"], 25)
-        self.assertTrue(kwargs["retry_connection_error"])
-        self.assertIsNone(client.get_account_context("alias@icloud.com"))
+    def test_connection_reports_real_v2_permissions_without_requiring_retired_signal_capability(self):
+        who = {'client_id': 'client-original', 'allowed_services': ['openai'],
+               'permissions': ['codes.read'], 'limits': {'wait_seconds': 20}}
+        with patch.object(v2, 'me', return_value=who):
+            result = client.test_connection()
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['api_version'], 2)
+        self.assertIn('leases.read', result['missing_permissions'])
+        self.assertNotIn('signals.scan', result['missing_permissions'])
 
-    def test_inbound_wait_retries_one_transient_connection_error(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {"code": 200, "verification_code": "123456"}
-        # fetch_inbound_otp 不接受 api_base，只能从配置读；显式给出，避免这个用例
-        # 依赖开发机 .env 里恰好配了 EMAIL_BUTLER_API_BASE。
-        with patch.object(
-            client._email_cfg, "EMAIL_BUTLER_API_BASE", "http://example.test/v1", create=True
-        ), patch.object(
-            client._email_cfg, "EMAIL_BUTLER_API_KEY", "test-key", create=True
-        ), patch.object(
-            client.requests,
-            "request",
-            side_effect=[client.requests.ConnectionError("TLS closed"), response],
-        ) as request_mock, patch.object(client.time, "sleep") as sleep_mock:
-            otp = client.fetch_inbound_otp(
-                "alias@icloud.com",
-                after_ts=100.0,
-                max_wait=15,
-            )
+    def test_restore_context_restores_exact_existing_identity_without_claim(self):
+        original = client.EmailButlerAccount(email='restore@example.com', mailbox_id='',
+            lease_id='lse_original', api_base='https://fixed.example/v2', api_key='fixture-key')
+        with patch.object(client, 'restore_local_account', return_value=original) as restore, patch.object(v2, 'create_lease') as create:
+            account = client.restore_account_context('restore@example.com')
+        self.assertIs(account, original)
+        restore.assert_called_once_with('restore@example.com')
+        create.assert_not_called()
 
-        self.assertEqual(otp, "123456")
-        self.assertEqual(request_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(0.5)
+    def test_fetch_inbound_otp_uses_original_v2_lease_and_exact_challenge_time(self):
+        with patch.object(v2, 'code', return_value=self.matched()) as request:
+            otp = self.fetch(max_wait=15, poll_interval=1, settle_seconds=0)
+        self.assertEqual(otp, '654321')
+        self.assertEqual(request.call_args.args, ('lse_original',))
+        self.assertEqual(request.call_args.kwargs['since'], '1970-01-01T00:01:40Z')
+        self.assertEqual(request.call_args.kwargs['wait_seconds'], 15)
+        self.assertEqual(client.get_account_context('alias@icloud.com').lease_id, 'lse_original')
 
-    def test_inbound_wait_continues_after_gateway_524(self):
-        with patch.object(
-            client,
-            "_request",
-            side_effect=[
-                client.EmailButlerClientError(
-                    "Email Butler 请求失败 (/inbound/code): HTTP 524; None"
-                ),
-                {"code": 200, "verification_code": "246810"},
-            ],
-        ) as request_mock, patch.object(client.time, "sleep"):
-            otp = client.fetch_inbound_otp(
-                "alias@icloud.com",
-                after_ts=100.0,
-                max_wait=160,
-                poll_interval=1,
-            )
+    def test_inbound_wait_continues_after_transient_connection_error_on_same_lease(self):
+        with patch.object(v2, 'code', side_effect=[v2.ButlerV2Error('butler_transport_connection', retryable=True), self.matched()]) as request:
+            self.assertEqual(self.fetch(max_wait=15), '654321')
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual({call.args[0] for call in request.call_args_list}, {'lse_original'})
+        self.assertEqual(self.resolve.call_count, 1)
 
-        self.assertEqual(otp, "246810")
-        self.assertEqual(request_mock.call_count, 2)
-        for request_call in request_mock.call_args_list:
-            self.assertLessEqual(
-                request_call.kwargs["json"]["timeout_seconds"],
-                client._INBOUND_WAIT_CHUNK_SECONDS,
-            )
-            self.assertLessEqual(
-                request_call.kwargs["timeout"],
-                client._INBOUND_WAIT_CHUNK_SECONDS + 10,
-            )
+    def test_inbound_wait_continues_after_gateway_524_with_bounded_chunks(self):
+        with patch.object(v2, 'code', side_effect=[v2.ButlerV2Error('butler_http_524', status_code=524, retryable=True), self.matched()]) as request:
+            self.assertEqual(self.fetch(max_wait=160), '654321')
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(all(call.kwargs['wait_seconds'] <= 20 for call in request.call_args_list))
 
     def test_inbound_wait_does_not_retry_auth_error(self):
-        with patch.object(
-            client,
-            "_request",
-            side_effect=client.EmailButlerClientError(
-                "Email Butler API Key 非法、已停用或已轮换"
-            ),
-        ) as request_mock:
-            with self.assertRaises(client.EmailButlerClientError):
-                client.fetch_inbound_otp(
-                    "alias@icloud.com",
-                    after_ts=100.0,
-                    max_wait=160,
-                )
+        with patch.object(v2, 'code', side_effect=v2.ButlerV2Error('invalid_api_key', status_code=401)) as request:
+            with self.assertRaises(client.EmailButlerClientError) as caught:
+                self.fetch(max_wait=160)
+        self.assertEqual(caught.exception.error_code, 'invalid_api_key')
+        request.assert_called_once()
 
-        request_mock.assert_called_once()
-
-    def test_inbound_wait_uses_local_probe_after_remote_miss(self):
-        with patch.object(client, "_request", return_value={"code": 200}) as request_mock:
-            otp = client.fetch_inbound_otp(
-                "alias@icloud.com",
-                after_ts=100.0,
-                max_wait=160,
-                local_probe=lambda: "135790",
-            )
-
-        self.assertEqual(otp, "135790")
-        request_mock.assert_called_once()
+    def test_inbound_wait_does_not_bypass_v2_authorization_with_local_probe(self):
+        probe = Mock(return_value='135790')
+        def pending(_lease_id, **kwargs):
+            self.clock += kwargs['wait_seconds']
+            return {'lease_id': 'lse_original', 'service': 'openai', 'status': 'pending'}
+        with patch.object(v2, 'code', side_effect=pending):
+            with self.assertRaises(client.EmailButlerClientError) as caught:
+                self.fetch(max_wait=2, local_probe=probe)
+        self.assertEqual(caught.exception.error_code, 'inbound_code_timeout')
+        probe.assert_not_called()
 
     def test_inbound_wait_preserves_no_mail_and_api_failure_as_different_diagnostics(self):
-        cases = [
-            ({"code": 200}, "inbound_code_timeout"),
-            (client.EmailButlerClientError("HTTP 408", status_code=408, error_code="inbound_code_timeout"), "inbound_code_timeout"),
-            (client.EmailButlerClientError("HTTP 524", status_code=524), "inbound_request_failed"),
-            (client.EmailButlerClientError("HTTP 524", status_code=524, error_code="inbound_code_timeout"), "inbound_request_failed"),
-            (client.EmailButlerClientError("ConnectionError: 连接中断"), "inbound_request_failed"),
-        ]
+        cases = [(None, 'inbound_code_timeout'),
+                 (v2.ButlerV2Error('butler_transport_timeout', retryable=True), 'butler_transport_timeout'),
+                 (v2.ButlerV2Error('provider_unavailable', status_code=502, retryable=True), 'provider_unavailable')]
         for outcome, expected in cases:
-            with self.subTest(expected=expected, outcome=type(outcome).__name__):
-                effect = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
-                with (
-                    patch.object(client, "_request", **effect),
-                    patch.object(client.time, "monotonic", side_effect=[0, 0, 0, 1, 1]),
-                    self.assertRaises(client.EmailButlerClientError) as caught,
-                ):
-                    client.fetch_inbound_otp("alias@icloud.com", after_ts=100, max_wait=1)
-                self.assertEqual(caught.exception.error_code, expected)
-                self.assertIsNone(caught.exception.status_code)
-                self.assertFalse(caught.exception.definite_rejection)
-                self.assertNotIsInstance(caught.exception, TimeoutError)
+            self.clock = 0
+            def result(_lease_id, **kwargs):
+                self.clock += kwargs['wait_seconds']
+                if outcome:
+                    raise outcome
+                return {'lease_id': 'lse_original', 'service': 'openai', 'status': 'pending'}
+            with self.subTest(expected=expected), patch.object(v2, 'code', side_effect=result):
+                with self.assertRaises(client.EmailButlerClientError) as caught:
+                    self.fetch(max_wait=1)
+            self.assertEqual(caught.exception.error_code, expected)
+            self.assertFalse(caught.exception.definite_rejection)
+            self.assertNotIsInstance(caught.exception, TimeoutError)
 
     def test_recipient_receipt_errors_keep_the_actual_local_validation_cause(self):
         from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
         from core.operations.errors import registration_diagnostic_cause_code
-
-        match = {"email": "alias+one@icloud.com", "strict_family": False, "mailbox_email": "inbox@example.test"}
-        payload = {"recipient_mode": "forwarded_exact_v1", "recipient_match": match}
-        cases = [
-            ({}, "recipient_contract_unsupported"),
-            ({**payload, "recipient_match": {**match, "email": "other@icloud.com"}}, "recipient_mismatch"),
-            ({**payload, "recipient_match": {**match, "mailbox_email": "other@example.test"}}, "mailbox_mismatch"),
-            (payload, "recipient_evidence_missing"),
-        ]
+        match = {'email': 'alias+one@icloud.com', 'strict_family': False, 'mailbox_email': 'inbox@example.test'}
+        payload = {'recipient_mode': 'forwarded_exact_v1', 'recipient_match': match}
+        cases = [({}, 'recipient_contract_unsupported'),
+                 ({**payload, 'recipient_match': {**match, 'email': 'other@icloud.com'}}, 'recipient_mismatch'),
+                 ({**payload, 'recipient_match': {**match, 'mailbox_email': 'other@example.test'}}, 'mailbox_mismatch'),
+                 (payload, 'recipient_evidence_missing')]
         for receipt, expected in cases:
             with self.subTest(expected=expected), self.assertRaises(client.EmailButlerClientError) as caught:
-                client._validate_recipient_receipt(receipt, "alias+one@icloud.com", False, "inbox@example.test")
+                client._validate_recipient_receipt(receipt, 'alias+one@icloud.com', False, 'inbox@example.test')
             diagnostics = RegistrationFailureDiagnostics()
-            diagnostics.progress("email_otp", "running")
+            diagnostics.progress('email_otp', 'running')
             self.assertEqual(registration_diagnostic_cause_code(diagnostics.failure(caught.exception)), expected)
 
-    def test_non_idempotent_request_does_not_retry_connection_error(self):
-        with patch.object(
-            client.requests,
-            "request",
-            side_effect=client.requests.ConnectionError("TLS closed"),
-        ) as request_mock:
-            with self.assertRaises(client.EmailButlerClientError):
-                client._request(
-                    "POST",
-                    "/mailboxes",
-                    json={"purpose": "registration"},
-                    api_base="http://example.test/v1",
-                    api_key="secret",
-                )
+    def test_retired_non_idempotent_request_is_blocked_without_http_or_reallocation(self):
+        with patch.object(v2.requests, 'request') as request:
+            with self.assertRaises(client.EmailButlerClientError) as caught:
+                client._request('POST', '/mailboxes', json={'purpose': 'registration'},
+                                api_base='http://example.test/v1', api_key='secret')
+        self.assertEqual(caught.exception.error_code, 'api_version_retired')
+        request.assert_not_called()
 
-        request_mock.assert_called_once()
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_non_idempotent_v2_failure_preserves_original_intent_without_retry(self):
+        with patch.object(v2.requests, 'request', side_effect=v2.requests.ConnectionError('private endpoint')) as request:
+            with self.assertRaises(v2.ButlerV2Error) as caught:
+                v2.create_lease(api_base='https://butler.example/v2', api_key='fixture-key',
+                                external_ref='original-intent', idempotency_key='original-key')
+        request.assert_called_once()
+        self.assertTrue(caught.exception.request_unknown)
+        self.assertNotIn('private endpoint', str(caught.exception))

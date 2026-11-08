@@ -1,78 +1,54 @@
 # 邮箱资源与取码
 
-Turb 负责导入、领取、取码和使用结果；Email Butler 及其邮箱服务负责邮箱创建、母号、别名生成、同步和投递维护。新注册只使用已导入的本地库存，空库存由用户手动补充。
+Turb 负责本地导入、领取、取码与使用事实；Email Butler 负责来源、别名、投递和服务租约。注册只使用本地已导入库存，空库存由用户手动补充。
 
 ## 本地库存与导入
 
-五个本地池为 `outlook`、`generic_api`、`cloudflare_domain`、`icloud_hide` 和 `email_butler`。统计与原子领取共用可用性条件，已注册、已使用、无效、过期、归档或结果未知的身份不能作为新库存领取。邮箱域名不决定收码方式，来源和固定收件连接才决定实际路由。
+五个本地来源为 `outlook`、`generic_api`、`cloudflare_domain`、`icloud_hide` 和 `email_butler`。统计与领取共用资格条件；已有账号、历史领取、无效、过期、归档、已使用及结果未知的地址不能作为新库存。母地址与 plus 地址分别登记。
 
-| 来源 | 导入格式与条件 |
+| 来源 | 导入方式 |
 | --- | --- |
 | Outlook | `email----password----clientId----refreshToken` |
-| 通用 API | `email----code_url`；可加第三段绝对有效期，或在导入时指定批次有效期 |
-| 域名邮箱、iCloud 隐藏邮箱 | 保留既有本地池和历史身份；当前统一粘贴导入不接受这两个来源，新增 HME 素材通过 Butler 入口导入 |
-| Butler 导入邮箱 | 当前支持 `icloud_hme`，每行一个完整 `@icloud.com` 母地址或 plus 子地址；需确认永久库存交接及固定 Butler profile |
+| 通用 API | `email----code_url`，可附带绝对有效期 |
+| 域名邮箱、iCloud 隐藏邮箱 | 保留原本地库存和历史路由；新增素材通过对应邮箱服务维护 |
+| Butler | 人工选择 HME、Outlook / Hotmail、Cloudflare、mail.com 或全部来源及数量，确认后由 v2 分配长期 OpenAI 租约；粘贴已有完整地址只恢复本人有效长期租约 |
 
-有效期使用带时区的 ISO8601，单行值优先于批次值；省略时沿旧格式处理，不猜测供应商期限。统计、领取、恢复和每轮取码共用有效期规则。过期保留原占用，不自动换号。
+有效期使用带时区的 ISO8601；过期保留原占用，不自动换号。普通素材导入在本地事务保存永久 `openai` 历史标签与证据，状态为 `local_only`。v2 没有外部素材永久事实写接口，不等待退役接口，也不把本地证据写成远端送达。旧待同步导入由 worker 恢复为本地完成。
 
-Butler 普通账号导出缺少永久归属及固定读取授权，不能直接当作 HME 库存导入。其他 provider 可使用明确的 Outlook 或通用 API 材料；不能因域名相同就伪装成 HME 转发路由。
+## Butler v2 导入与恢复
 
-当前统一粘贴导入接受 Outlook、通用 API 和 Butler HME，预览及导入单次最多 5000 行。「从 Butler 导入」候选入口的数量为正整数，不设每批上限，库存不足时按实际可用数量处理；通过 `limit=0` 查询全部合格候选，先冻结候选、解析完整身份，再按每组最多 25 项交接并登记归属。失败或超时后继续原批次、原候选和原请求身份；已成功项保留，不重新生成一批邮箱。导入窗口重新打开会恢复原批次，可继续检查未完成项。
+API 根地址为 `https://email-butler.leeseven.com/v2`。预览仅 GET 可用量，不冻结具体地址、不占远端库存，也不保证确认时容量仍相同。不支持旧身份类型、域名、分组筛选。
 
-所有成功导入的完整地址都永久追加 `openai` 标签，保留原有其他标签，母地址与 plus 地址分别登记。永久标签用于排除 Butler 的新 OpenAI 申请；其他服务按自己的事实和租约判断。标签不表示注册成功，不调用成功报告或增加成功次数。
+确认导入后，先在 PostgreSQL 保存原批次及每项的 `Idempotency-Key`、`external_ref`，再请求 `POST /leases`，显式 `service=openai`、`ttl_seconds=null`。远端成功、本地失败时保留原回执；超时、进程重启、批次部分完成均继续原项。超过 Butler 幂等结果保留期，只能按原 `external_ref` 查询，不能再提交可能分配新地址的请求。本地冲突保留租约和未确认项，不自动退租。
 
-HME 导入在远端交接事务中登记永久事实，Turb 校验 `service_facts.permanent.v1` 能力及原地址对应的事实回执。Outlook、通用 API 和旧 iCloud 同步入口先把资源保存为 `pending_sync`，同事务保存 `email_service_sync` 事件。后台只发送完整地址与业务证据，中央确认后才发布本地库存。兼容「导入为已注册账号」也在确认后才创建账号；等待期间不能通过状态编辑绕过。已存在库存和原任务重跑不增加在线事实查询。
+`email_inbox_profiles` 保存固定连接及版本化 `credential_ref`，`email_butler_lease_bindings` 保存完整地址、服务、稳定客户端与 `lease_id` 的映射。旧 profile 不覆盖；已知旧入口在访问时规范为 v2。恢复不按域名猜路由，不改 owner 或 acquisition，不申请替代邮箱。
 
-## 稳定身份与永久交接
+原 Key 必须保留稳定 client，授权 `openai`。读取需要 `leases.read`、`codes.read`；新长期租约需要 `leases.create`、`leases.long_term`；显式退租需要 `leases.release`；限时续租需要 `leases.renew`。连接测试显示认证与缺少权限。新长期租约不依赖客户端保存最终物理收件箱。
 
-领取在 PostgreSQL 事务内保存 acquisition、owner、完整地址及任务关联。重跑恢复原地址；跨来源导入、已注册账号、历史分配、本地领取和未决远端意图共同参与去重。这些身份事实不随重新导入、手动重置状态或删除展示记录清除。
+## OTP 与身份隔离
 
-邮箱列表的单条与批量「标记未使用」允许主动将已使用、已保留或结果未知的本地池记录改为 `available`，同时清空 `used_at`；当前为 `replaced` 的换绑后邮箱、`pending_sync` 的待同步导入仍不能直接恢复。操作只更新选中完整地址的本地状态，母邮箱与 plus 子邮箱分别处理。已有账号、领取、分配和远端意图记录继续参与自动领取资格判断，不因手动状态修改而删除。
+取码定位 `/leases/{id}/code`；先核对原地址、服务、客户端和租约状态，再使用挑战 `since` 和稳定事件 `code_id`。单次等待最长 20 秒，按原总预算分段；`pending` 继续等待，`ambiguous` 明确多候选，不任取最新邮件。OpenAI 仍只接受六位数字及不早于挑战的真实接收时间。
 
-Butler HME 导入使用稳定消费者 `TURB_MAIL_CONSUMER_ID` 和原请求身份，交接到本地库存后远端归属持续保留，短读租约过期不解除归属。远端已交接、本地事务失败时，只能恢复同一次交接，不能回收或换领。恢复环境和回滚时必须保留原消费者、owner 和 acquisition。
+服务端按来源验证完整收件人与可信发件域；Turb 保存 v2 租约授权和事件回执，不伪造旧 MIME 收件证据。错误地址、服务、客户端、过期或已退租租约均拒绝，不降级到其他路由。显式历史 IMAP profile 和独立 Outlook、通用 API 继续按自己的契约读取。
 
-固定 Butler HME 的新领取要求有效交接证明；旧 claim 的恢复和已使用邮箱的固定读取仍按历史上下文处理。直接固定 IMAP profile 沿自己的连接和凭据契约，不套用 Butler 交接。
+`email_otp_requests` 保留同一完整地址的独占认证、发码代次、候选、提交状态与递增 fence。旧执行不能覆盖新事实，未知结果保留原意图。原密码、Roxy、proto2 注册步骤均不因邮箱服务升级而更改。
 
-子邮箱在 Butler 手动生成，额度与后缀由对应类型策略决定。Turb 不自动补号、生成或同步新库存；已存在母子身份、累计生成历史和使用状态不能被新的策略覆盖。
+## 使用结果、删除与巡检
 
-## 固定收件连接与严格 OTP
+使用结果和成功防回退证据在原 PostgreSQL 事务记录为 `local_only`，v2 没有业务结果上报接口。历史 delivered 回执保留；旧未送达报告保留原证据并转为本地记录。失败和未知不能覆盖成功。
 
-`email_inbox_profiles` 保存实际收件身份、连接器、版本和 `credential_ref`。已绑定地址优先读取该 profile，不根据当前全局 Gmail/Butler 配置猜测路由；历史 `EMAIL_DERIVATION_IMAP_SECRET_*`、`EMAIL_DERIVATION_BUTLER_SECRET_*` 的凭据引用必须保留。
+任务结束不等于退租。成功、结果未知以及仍需后续 OTP 的账号保留长期读取权。符合原删除规则的未使用邮箱，先同事务保存本地删除和原退租意图，后台定位原 `lease_id` 退租；超时沿原意图继续。旧合并迁移仅能确认读取、不能确认原释放操作时，显示 `lease_original_mapping_required`，不能结束后来的新租约。
 
-| 项目 | 要求 |
-| --- | --- |
-| Butler 能力 | 严格转发收件要求 `inbound.recipient_evidence.v1` |
-| 身份与模式 | `forwarded_exact_v1`、完整目标地址和适用的 `strict_family` |
-| 收件证据 | 实际最终 mailbox、完整母/子地址证据、可信消息来源 |
-| 时间 | 按挑战的 `after_ts` 及消息真实到达时间筛选，不用邮件正文猜收件时间 |
-| 消息身份 | 保存稳定消息 ID、cursor、候选及提交状态，防止旧码和重复候选串用 |
+本地永久导入历史不随删除或退租消失；Butler 当前服务标签由其有效租约派生，退租后移除。来源故障不自动退租。旧后台事件保留原 operation、固定凭据及代际 fence，进程重启恢复，不伪造远端成功。
 
-母地址、plus 子地址和同母兄弟地址严格隔离，错误最终邮箱、缺少收件证据、旧邮件或不匹配的结构化候选都应明确拒绝。严格路径失败不降级到 IMAP 或正文正则绕过验证；显式绑定的历史 IMAP profile 则按自己的连接器执行。
+v2 公开 API 没有封号邮件扫描。Butler 路由返回 `signal_scan_unsupported`，不报告阴性或猜测账号状态，自动巡检跳过该能力；独立 IMAP 等来源继续按原规则扫描。
 
-通用 API 的结构化收件人和时间存在时必须匹配；拒绝的候选不能再经全文正则接受。纯文本接口保持兼容，但不据此宣称具备结构化收件证明。TLS、请求时限、验证码筛选和提交 fence 各有独立边界，取到验证码不表示认证已完成。
+## 维护与验证
 
-`email_otp_requests` 协调同一完整地址的认证租约与递增 fence，保留 challenge、发码代次和候选事实。旧执行不能覆盖新事实；未知提交保留原记录，不能先清空再重新领取。
+- 空库存检查所选本地池和导入批次，不在注册时远端补号或切换来源。
+- 导入未确认继续原批次；保留原幂等键、回执及远端归属。
+- 取码失败检查原 client、权限、完整地址、固定 profile、租约状态和挑战时间。
+- 旧租约读取失败不将邮箱重新投入库存；过期与已退租分别分类。
+- 配置与数据库连同主密钥、消费者身份成套备份；见[部署与维护](../deployment/operations.md)。旧 v1 永久事实工具属于历史迁移，不再用于现网 v2 写入。
 
-## 使用结果与恢复
-
-使用结果和持久回执在同一 PostgreSQL 事务保存，后台按原 operation、原连接及原凭据引用报告 Butler。断网不撤销已经确认的注册成功；晚到失败不能覆盖成功；未知结果不报告成功，也不把整个上游邮箱永久停用。
-
-新注册不使用旧普通 Butler lease 路径。历史租约、付费邮箱订单和旧子地址只按原意图恢复：Remail 查询原订单或复用已保存凭据，不能因 prepared/rejected 或传输异常重新购买。
-
-邮箱失效和 OpenAI 账号封禁是不同事实。已有账号的封号邮件扫描根据读取连接判断能力，本地新库存为零不代表不能扫描；单个 profile 失败也不能抹去其他地址的结果。邮件列表、正文和 OTP 查询均必须保持原身份隔离。
-
-## 删除与同步恢复
-
-允许删除的本地记录与原退号意图同事务保存；后台只使用原 Butler 地址、凭据引用和 acquisition，超时继续原意图，不重新申请。已使用、结果未知及已有账号的删除保护保持。永久 `openai` 标签不随退号、删除、归档或旧回执清除。没有远端归属的普通素材只删除本地展示记录，导入事实同步仍会完成。
-
-邮箱页「服务同步记录」展示导入与退号的等待、发送中、已同步和阻塞状态，可重试原记录。`GET /api/email-service-sync` 返回脱敏状态与计数，`POST /api/email-service-sync/retry` 接受 `source`、完整 `email` 和 `kind`（`import`/`return`）。后台进程重启后恢复未完成项；过期发送租约可重领，旧发送者回执不能覆盖新发送者。缺少原连接或凭据时显示具体错误，不用当前默认连接猜测历史归属。
-
-## 维护与排查
-
-- 空库存：查看所选本地池与导入批次，不查询远端容量或自动换来源。
-- 导入未确认：检查原批次和交接回执，继续原请求，不换号或删除归属。
-- 取码失败：核对完整目标、固定 profile、凭据版本、最终 mailbox、能力与时间证据。
-- 已用邮箱读取失败：保留原账号和历史身份，修复对应连接，不重新开放库存。
-- 配置迁移：连同主密钥、消费者身份和数据库成套备份，步骤见[部署与维护](../deployment/operations.md)。
-
-代码入口为 [inventory.py](../../core/email/inventory.py)、[provider.py](../../core/email/provider.py)、[Butler client.py](../../core/email/email_butler/client.py)、[bridge.py](../../core/email/email_butler/bridge.py) 和 [邮箱仓储](../../core/storage/email/__init__.py)。按[功能地图](../architecture/functional-map.md)选择本地库存、导入恢复、收件隔离和任务资源测试，使用[独立测试库](../development/release-verification.md)验证。
+代码入口：[v2 传输](../../core/email/email_butler/v2.py)、[原租约映射](../../core/email/email_butler/lease_bindings.py)、[人工导入](../../core/email/email_butler/manual_import_v2.py)、[库存资格](../../core/email/inventory.py)。使用[隔离测试库](../development/release-verification.md)验证；真实邮件投递与注册需要单独验收。

@@ -37,19 +37,19 @@ def test_control_signal_escapes_provider_generic_retry_then_restores_original_er
 
 
 def test_email_butler_shortens_only_explicit_cooperative_long_poll():
-    calls = []
-
-    def request(*_args, **kwargs):
-        calls.append(kwargs["json"])
-        return {"verification_code": "123456"}
-
-    with patch.object(client, "_request", side_effect=request):
+    from core.email.email_butler import v2, lease_bindings
+    binding = {'lease_id': 'lse_original', 'client_id': 'client-fixture',
+        'email': 'unit@example.test', 'service': 'openai', 'api_base': 'https://fixture.test/v2'}
+    result = {'lease_id': 'lse_original', 'service': 'openai', 'status': 'matched',
+        'verification_code': '123456', 'code_id': 'code_fixture', 'received_at': '1970-01-01T00:02:04Z'}
+    with patch.object(lease_bindings, 'resolve', return_value=binding), patch.object(v2, 'code', return_value=result) as code, \
+            patch.multiple(client._email_cfg, EMAIL_BUTLER_API_BASE='https://fixture.test/v2', EMAIL_BUTLER_API_KEY='fixture'):
         with mailbox_wait.use_cooperative_wait(lambda: None):
-            assert client.fetch_inbound_otp("unit@example.test", after_ts=123.0, max_wait=240) == "123456"
-        assert client.fetch_inbound_otp("unit@example.test", after_ts=123.0, max_wait=240) == "123456"
-    assert calls[0]["timeout_seconds"] == 1
-    assert calls[1]["timeout_seconds"] == 75
-    assert calls[0]["since"] == calls[1]["since"]
+            assert client.fetch_inbound_otp('unit@example.test', after_ts=123, max_wait=240) == '123456'
+        assert client.fetch_inbound_otp('unit@example.test', after_ts=123, max_wait=240) == '123456'
+    assert code.call_args_list[0].kwargs['wait_seconds'] == 1
+    assert code.call_args_list[1].kwargs['wait_seconds'] == 20
+    assert code.call_args_list[0].kwargs['since'] == code.call_args_list[1].kwargs['since']
 
 
 def test_provider_checks_page_before_returning_candidate_without_new_generation():

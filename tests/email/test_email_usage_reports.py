@@ -1,4 +1,4 @@
-"""HME result outbox uses only isolated PostgreSQL and fixture connections."""
+"""隔离 PostgreSQL 验证 v2 本地使用证据和历史报告归档。"""
 import importlib
 import importlib.util
 import os
@@ -79,64 +79,54 @@ class EmailUsageReportsTests(PostgresTestCase):
         self.enqueue("used")
         self.assertIsNone(self.enqueue("retired"))
         self.assertEqual([(r["result"], r["state"]) for r in self.rows()],
-            [("provider_error", "superseded"), ("ok", "pending")])
+            [("provider_error", "superseded"), ("ok", "local_only")])
 
-    def test_retry_survives_connection_change_and_uses_same_operation(self):
-        self.enqueue()
-        with patch.object(butler, "_request", side_effect=butler.EmailButlerClientError("https://secret@bad.test otp=123456")):
+    def test_legacy_retry_preserves_original_operation_without_remote_request(self):
+        event = self.enqueue()
+        record_store.patch_row(record_store.EMAIL_USAGE_REPORTS, event['id'], {'state': 'pending'})
+        with patch.object(butler, "_request") as request:
             self.assertTrue(self.reports().dispatch_once())
-        failed = self.rows()[0]
-        self.assertEqual(failed["state"], "pending")
-        self.assertNotIn("123456", str(failed))
-        record_store.patch_row(record_store.EMAIL_USAGE_REPORTS, failed["id"], {"next_attempt_at": None})
-        with patch.object(butler, "_request", return_value={"code": 200}) as request:
-            self.assertTrue(self.reports().dispatch_once())
-        self.assertEqual(request.call_args.kwargs["api_base"], "https://fixed.example/v1")
-        self.assertEqual(request.call_args.kwargs["api_key"], "fixture-only")
-        self.assertEqual(request.call_args.kwargs["json"]["operation_id"], failed["operation_id"])
-        self.assertEqual(self.rows()[0]["state"], "delivered")
+        request.assert_not_called()
+        archived = self.rows()[0]
+        self.assertEqual(archived['state'], 'local_only')
+        self.assertEqual(archived['api_base'], 'https://fixed.example/v1')
+        self.assertEqual(archived['operation_id'], event['operation_id'])
+        self.assertEqual(archived['payload'], event['payload'])
+        self.assertIsNone(archived.get('delivered_at'))
 
-    def test_worker_cannot_send_same_event_concurrently(self):
-        self.enqueue()
-        started, finish = threading.Event(), threading.Event()
-        def send(*args, **kwargs):
-            started.set()
-            self.assertTrue(finish.wait(10))
-            return {"code": 200}
-        with patch.object(butler, "_request", side_effect=send) as request, ThreadPoolExecutor(2) as pool:
-            first = pool.submit(self.reports().dispatch_once)
-            self.assertTrue(started.wait(10))
-            second = pool.submit(self.reports().dispatch_once)
-            try:
-                self.assertFalse(second.result(timeout=10))
-            finally:
-                finish.set()
-            self.assertTrue(first.result(timeout=10))
-        self.assertEqual(request.call_count, 1)
+    def test_concurrent_workers_archive_original_event_once_without_sending(self):
+        event = self.enqueue()
+        record_store.patch_row(record_store.EMAIL_USAGE_REPORTS, event['id'], {'state': 'pending'})
+        with patch.object(butler, "_request") as request, ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(self.reports().dispatch_once) for _ in range(2)]
+            self.assertEqual(sum(bool(future.result(timeout=10)) for future in futures), 1)
+        request.assert_not_called()
+        self.assertEqual(self.rows()[0]['state'], 'local_only')
 
     def test_expired_lease_is_recovered_and_stale_completion_is_fenced(self):
         reports = self.reports()
-        self.enqueue()
+        event = self.enqueue()
+        record_store.patch_row(record_store.EMAIL_USAGE_REPORTS, event['id'], {'state': 'pending'})
         original = reports._claim_next()
         with record_store.transaction() as conn, conn.cursor() as cur:
             cur.execute(f"UPDATE {postgres_store.qualified(record_store.EMAIL_USAGE_REPORTS.name)} SET lease_until = NOW() - INTERVAL '1 second'")
         takeover = reports._claim_next()
         self.assertEqual(original["operation_id"], takeover["operation_id"])
         self.assertNotEqual(original["lease_owner"], takeover["lease_owner"])
-        reports._finish(original, delivered=True)
+        reports._finish(original, local_only=True)
         self.assertEqual(self.rows()[0]["state"], "sending")
-        reports._finish(takeover, delivered=True)
-        self.assertEqual(self.rows()[0]["state"], "delivered")
+        reports._finish(takeover, local_only=True)
+        self.assertEqual(self.rows()[0]["state"], "local_only")
 
-    def test_definite_auth_failure_blocks_without_leaking_details(self):
-        self.enqueue()
-        error = butler.EmailButlerClientError("secret-key https://bad.test otp=123456")
-        error.status_code = 401
-        with patch.object(butler, "_request", side_effect=error):
+    def test_legacy_auth_block_is_archived_without_leaking_details(self):
+        event = self.enqueue()
+        record_store.patch_row(record_store.EMAIL_USAGE_REPORTS, event['id'], {'state': 'blocked', 'last_error': 'http_401'})
+        with patch.object(butler, "_request") as request:
             self.reports().dispatch_once()
-        self.assertEqual(self.rows()[0]["state"], "blocked")
+        request.assert_not_called()
+        self.assertEqual(self.rows()[0]["state"], "local_only")
         status = self.reports().worker_status()
-        self.assertEqual(status["counts"]["blocked"], 1)
+        self.assertEqual(status["counts"]["local_only"], 1)
         for private in (ADDRESS, "fixed.example", "secret-key", "123456", "USAGE_FIXTURE_KEY"):
             self.assertNotIn(private, str(status))
 
@@ -164,15 +154,14 @@ class EmailUsageReportsTests(PostgresTestCase):
         self.assertEqual(record_store.get_row(record_store.EMAIL_ADDRESS_ALLOCATIONS, allocation_id)["state"], "used")
         self.assertEqual(len(self.rows()), 1)
 
-    def test_legacy_ordinary_lease_remains_one_shot_without_outbox(self):
+    def test_ordinary_task_result_does_not_release_remote_read_permission(self):
         self.reports()
         account = butler.EmailButlerAccount("legacy@example.test", "legacy-id", provider="outlook",
             api_base="https://fixed.example/v1", api_key="fixture-only")
         with patch.dict(butler._CONTEXT_CACHE, {account.email: account}, clear=True), patch.object(
-                butler, "_request", side_effect=butler.EmailButlerClientError("offline")) as request:
-            with self.assertRaises(butler.EmailButlerClientError):
-                butler.release_account(account.email, status="failed")
-        request.assert_called_once()
+                butler, "_request") as request:
+            butler.release_account(account.email, status="failed")
+        request.assert_not_called()
         self.assertEqual(self.rows(), [])
 
     def test_management_helpers_fail_closed_without_network(self):
@@ -205,7 +194,7 @@ class EmailUsageReportsTests(PostgresTestCase):
         with patch.dict(butler._CONTEXT_CACHE, {}, clear=True), patch.object(butler, "_request") as request:
             butler.release_account(ADDRESS, status="used")
         request.assert_not_called()
-        self.assertEqual(self.rows()[0]["state"], "pending")
+        self.assertEqual(self.rows()[0]["state"], "local_only")
 
     def test_inflight_success_prevents_concurrent_local_failure_downgrade(self):
         from core.email.inventory import record_outcome

@@ -1,4 +1,4 @@
-"""Explicit imports; Butler transfers ownership of the exact existing identity."""
+"""导入本地素材与 Butler 已确认租约，完整地址保持独立。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,7 +6,6 @@ from contextlib import nullcontext
 import hashlib
 import logging
 import re
-from urllib.parse import urlsplit
 
 from core.storage import records as record_store
 
@@ -17,9 +16,9 @@ _ADDRESS = re.compile(r'[^\s<>@,;]+@[^\s<>@,;]+\Z')
 
 def butler_forward_address(value) -> str:
     address = str(value or '').strip().lower()
-    if (not _ADDRESS.fullmatch(address) or address.rpartition('@')[2] != 'icloud.com'
-            or len(address) > 254 or len(address.partition('@')[0]) > 64):
-        raise ValueError('Email Butler 单列导入仅支持完整 iCloud HME 转发地址；其他邮箱请使用 Outlook 或通用 API 导入')
+    if (not _ADDRESS.fullmatch(address) or len(address) > 254
+            or len(address.partition('@')[0]) > 64):
+        raise ValueError('butler_address_invalid: 请填写完整邮箱地址')
     return address
 
 
@@ -33,25 +32,62 @@ def _fixed_butler_profile(conn, *, _connection=None) -> dict:
         'api_key': getattr(config, 'EMAIL_BUTLER_API_KEY', ''),
         'mailbox_email': getattr(config, 'ICLOUD_HME_FORWARD_IMAP_EMAIL', ''),
     }
-    base = str(selected.get('api_base') or '').strip().rstrip('/')
+    from core.email.email_butler import v2
+
+    base = v2.normalize_base(str(selected.get('api_base') or ''))
     key = str(selected.get('api_key') or '').strip()
-    mailbox = str(selected.get('mailbox_email') or '').strip().lower()
-    try:
-        parsed = urlsplit(base)
-        valid = (parsed.scheme in {'http', 'https'} and parsed.hostname and not parsed.username
-                 and not parsed.password and not parsed.query and not parsed.fragment
-                 and parsed.path.rstrip('/').endswith('/v1'))
-    except ValueError:
-        valid = False
-    if not valid or not key or not _ADDRESS.fullmatch(mailbox):
-        raise ValueError('导入前请完整配置 Email Butler /v1 地址、API Key 和固定最终转发收件箱')
-    identity = hashlib.sha256(f'butler-local:{base}:{mailbox}'.encode()).hexdigest()
+    if not key:
+        raise ValueError('butler_configuration_required: 导入前请配置 Email Butler 地址和 API Key')
+    identity = hashlib.sha256(f'butler-v2:{base}'.encode()).hexdigest()
     version = hashlib.sha256(f'{identity}:{key}'.encode()).hexdigest()
     reference = 'EMAIL_DERIVATION_BUTLER_SECRET_' + version[:20].upper()
     _save_profile_secret(reference, key)
-    return create_inbox_profile(inbox_key='butler-local:' + identity, connector='forward_butler',
-        credential_ref=reference, inbox_locator={'api_base': base, 'mailbox_email': mailbox},
-        data={'require_recipient_evidence': True}, conn=conn)
+    return create_inbox_profile(inbox_key='butler-v2:' + identity, connector='forward_butler',
+        credential_ref=reference, inbox_locator={'api_base': base, 'api_version': 2},
+        data={'api_version': 2, 'require_recipient_evidence': False}, conn=conn)
+
+
+def _existing_v2_handoff(email, profile, *, conn=None, client_id='', acquisition_id='', connection=None):
+    """粘贴只恢复本人已有租约，不为给定地址随机申请替代邮箱。"""
+    from core.email.derivation import _profile_credentials
+    from core.email.email_butler import lease_bindings
+
+    connection = _profile_credentials(profile) if connection is None else connection
+    binding = lease_bindings.resolve(email, api_base=connection['api_base'], api_key=connection['api_key'],
+        credential_ref=profile['credential_ref'], client_id=client_id, acquisition_id=acquisition_id, conn=conn)
+    if (str(binding.get('email') or binding.get('address_norm') or '').strip().lower() != email
+            or binding.get('status') != 'active' or binding.get('service') != 'openai'
+            or client_id and binding.get('client_id') != client_id):
+        raise ValueError('handoff_identity_mismatch: 原租约地址、状态、服务或客户端不一致')
+    original_ref = acquisition_id or binding.get('acquisition_id') or 'turb-lease:' + binding['lease_id']
+    verified_refs = set(binding.get('verified_acquisition_refs') or [])
+    exact_ref = (original_ref in verified_refs or binding.get('acquisition_id') == original_ref
+                 and binding.get('original_ref_verified'))
+    receipt = {'version': 2, 'state': 'issued', 'owner_kind': 'local_inventory',
+            'owner_id': binding['client_id'], 'client_id': binding['client_id'],
+            'acquisition_id': original_ref, 'original_ref_verified': bool(exact_ref),
+            'verified_acquisition_refs': sorted(verified_refs),
+            'lease_id': binding['lease_id'], 'email': email, 'provider': binding['provider'],
+            'service': 'openai', 'expires_at': binding.get('expires_at')}
+    _v2_handoff_payload(email, receipt)
+    return receipt
+
+
+def _v2_handoff_payload(email, handoff):
+    """本地发布必须取得原完整地址的有效长期租约回执。"""
+    provider = handoff.get('provider')
+    if (handoff.get('state') != 'issued' or handoff.get('service') != 'openai'
+            or str(handoff.get('email') or '').strip().lower() != email
+            or provider not in {'icloud_hme', 'outlook_graph', 'cloudflare', 'mailcom'}
+            or not all(str(handoff.get(key) or '').strip() for key in
+                       ('lease_id', 'client_id', 'acquisition_id'))
+            or handoff.get('expires_at') is not None):
+        raise ValueError('handoff_identity_mismatch: 未确认完整邮箱的长期 OpenAI 租约')
+    return {'provider': provider, 'butler_handoff': handoff, 'api_version': 2,
+            'lease_id': handoff['lease_id'], 'service': 'openai',
+            'identity_type': 'plus_alias' if '+' in email.partition('@')[0] else 'primary',
+            'service_sync_state': 'local_only', 'service_fact_permanent': False, 'service_fact_scope': 'local'}
+
 
 
 def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
@@ -113,21 +149,25 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
             if source == 'email_butler':
                 if profile is None:
                     profile = _fixed_butler_profile(conn)
-                payload.update(inbox_profile_id=profile['id'], provider='icloud_hme',
-                    identity_type='plus_alias' if '+' in email.partition('@')[0] else 'primary',
-                    mailbox_email=profile['inbox_locator']['mailbox_email'],
-                    recipient_mode='forwarded_exact_v1', strict_family=True)
                 from core.email.email_butler.inventory_handoff import handoff_for_import
                 handoff = (_handoffs[email] if _handoffs is not None
                            else handoff_for_import(email, profile, conn=conn))
-                if (_handoffs is not None and (handoff.get('state') != 'issued'
-                        or handoff.get('owner_kind') != 'local_inventory' or handoff.get('version') != 1
-                        or not all(handoff.get(key) for key in ('acquisition_id', 'owner_id', 'identity_id')))):
-                    raise ValueError('handoff_identity_mismatch: 未确认完整交接身份')
-                payload.update(butler_handoff=handoff, identity_id=handoff['identity_id'],
-                               parent_email=handoff['parent_email'])
-                service_facts.validate_fact(handoff.get('service_fact'), expected_address=email)
-                payload.update(service_sync_state='delivered', service_fact_permanent=True)
+                payload['inbox_profile_id'] = profile['id']
+                if handoff.get('version') == 2:
+                    payload.update(_v2_handoff_payload(email, handoff))
+                else:
+                    # 仅兼容已持久保存的旧回执，不再调用退役接口领取地址。
+                    if (handoff.get('state') != 'issued' or handoff.get('owner_kind') != 'local_inventory'
+                            or handoff.get('version') != 1 or not all(handoff.get(key) for key in
+                            ('acquisition_id', 'owner_id', 'identity_id'))):
+                        raise ValueError('handoff_identity_mismatch: 未确认完整交接身份')
+                    payload.update(butler_handoff=handoff, identity_id=handoff['identity_id'],
+                        parent_email=handoff['parent_email'], provider='icloud_hme',
+                        identity_type='plus_alias' if '+' in email.partition('@')[0] else 'primary',
+                        mailbox_email=profile['inbox_locator'].get('mailbox_email', ''),
+                        recipient_mode='forwarded_exact_v1', strict_family=True)
+                    service_facts.validate_fact(handoff.get('service_fact'), expected_address=email)
+                    payload.update(service_sync_state='delivered', service_fact_permanent=True)
             elif source == 'generic_api':
                 payload.update(code_url=code_url)
             else:

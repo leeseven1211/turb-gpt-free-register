@@ -22,7 +22,7 @@ function restoreButlerImport() {
     const saved = JSON.parse(localStorage.getItem(BUTLER_IMPORT_STORAGE_KEY) || 'null');
     if (!saved || typeof saved.request_id !== 'string' || typeof saved.preview_token !== 'string') return;
     BUTLER_IMPORT_STATE.request = {request_id: saved.request_id, preview_token: saved.preview_token, filters: saved.filters};
-    const fields = {provider: 'butlerImportProvider', identity_type: 'butlerImportIdentity', count: 'butlerImportCount', domain: 'butlerImportDomain', group: 'butlerImportGroup'};
+    const fields = {provider: 'butlerImportProvider', count: 'butlerImportCount'};
     for (const [key, id] of Object.entries(fields)) {
       const input = butlerImportElement(id);
       if (input && saved.filters && saved.filters[key] !== undefined) input.value = String(saved.filters[key]);
@@ -54,7 +54,7 @@ function butlerImportCanReset() {
 function renderButlerImportControls() {
   const state = BUTLER_IMPORT_STATE;
   const locked = !!state.request || state.storageError;
-  for (const id of ['butlerImportProvider', 'butlerImportIdentity', 'butlerImportCount', 'butlerImportDomain', 'butlerImportGroup']) {
+  for (const id of ['butlerImportProvider', 'butlerImportCount']) {
     const input = butlerImportElement(id);
     if (input) input.disabled = locked;
   }
@@ -95,7 +95,7 @@ function renderButlerImportControls() {
     if (hint) hint.textContent = '可以关闭窗口，已保存原请求；重新打开后可恢复结果。';
   }
   const description = butlerImportElement('butlerImportDescription');
-  if (description) description.textContent = state.request ? '导入进度会自动保存，可随时关闭窗口。' : '从 Butler 已有库存补充邮箱，自动查询当前可用数量。';
+  if (description) description.textContent = state.request ? '导入进度会自动保存，可随时关闭窗口。' : '从 Butler 分配长期租用的邮箱，加入本地库存后使用。';
   const pageStatus = butlerImportElement('butlerImportPageStatus');
   if (pageStatus) {
     pageStatus.hidden = !state.request || !!modal?.open || butlerImportSucceeded(state.batch?.status);
@@ -111,12 +111,8 @@ function renderButlerImportControls() {
 
 function butlerImportFilters() {
   const value = id => String(butlerImportElement(id)?.value || '').trim();
-  const filters = {
-    provider: value('butlerImportProvider'), identity_type: value('butlerImportIdentity'),
-    count: Number(value('butlerImportCount')), domain: value('butlerImportDomain'), group: value('butlerImportGroup'),
-  };
-  if (filters.provider !== 'icloud_hme') throw new Error('当前仅支持从 Butler 导入 iCloud HME');
-  if (!['all', 'primary', 'plus_alias'].includes(filters.identity_type)) throw new Error('请选择母邮箱、子邮箱或全部');
+  const filters = {provider: value('butlerImportProvider'), count: Number(value('butlerImportCount'))};
+  if (!['icloud_hme', 'outlook_graph', 'cloudflare', 'mailcom', 'auto'].includes(filters.provider)) throw new Error('请选择支持的邮箱来源');
   if (!Number.isSafeInteger(filters.count) || filters.count < 1) {
     throw new Error('数量须为大于0的整数');
   }
@@ -143,12 +139,11 @@ async function loadButlerImportOptions() {
   try {
     const data = await api('/api/email-butler/import-options');
     if (data.ok === false) throw new Error(data.error || '无法读取导入选项');
-    for (const [key, id] of [['domains', 'butlerImportDomains'], ['groups', 'butlerImportGroups']]) {
-      const list = butlerImportElement(id);
-      if (list) list.innerHTML = (data[key] || []).map(item => {
-        const value = typeof item === 'string' ? item : item.value || item.name || '';
-        return `<option value="${esc(value)}"></option>`;
-      }).join('');
+    const providers = butlerImportElement('butlerImportProvider');
+    if (providers && Array.isArray(data.providers) && data.providers.length) {
+      const selected = providers.value;
+      providers.innerHTML = data.providers.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
+      if (data.providers.some(item => item.value === selected)) providers.value = selected;
     }
   } catch (error) { butlerImportError(`读取导入选项失败：${error.message}`); }
 }
@@ -168,7 +163,7 @@ async function openButlerImportModal() {
     await loadButlerImportOptions();
     if (!BUTLER_IMPORT_STATE.storageError) await previewButlerImport();
   }
-  const target = BUTLER_IMPORT_STATE.request ? butlerImportElement('btnCloseButlerImport') : butlerImportElement('butlerImportIdentity');
+  const target = BUTLER_IMPORT_STATE.request ? butlerImportElement('btnCloseButlerImport') : butlerImportElement('butlerImportProvider');
   if (modal.open) target?.focus();
 }
 
@@ -198,7 +193,7 @@ async function previewButlerImport() {
     if (version !== state.previewVersion || JSON.stringify(filters) !== JSON.stringify(butlerImportFilters())) return;
     if (data.ok === false || !data.preview_token) throw new Error(data.error || '可用数量查询未返回有效结果，请刷新数量');
     state.preview = {...data, filters};
-    butlerImportElement('butlerImportPreview').textContent = `当前可用 ${Number(data.available || 0)} 个 · 本次可导入 ${Number(data.selected || 0)} 个。已排除本地已有或占用的邮箱，查询不占用库存。`;
+    butlerImportElement('butlerImportPreview').textContent = `当前可用 ${Number(data.available || 0)} 个 · 本次可导入 ${Number(data.selected || 0)} 个。查询不占用库存；确认后由 Butler 分配地址，导入时再核对本地占用。`;
     if (!Number(data.selected || 0)) butlerImportError('当前筛选下没有可导入邮箱，请调整条件或在 Butler 补充库存后刷新数量。');
   } catch (error) { if (version === state.previewVersion) butlerImportError(`查询可用数量失败：${error.message}`); }
   finally {
@@ -241,14 +236,28 @@ function renderButlerImportBatch() {
   const bar = butlerImportElement('butlerImportProgressBar');
   if (bar) { bar.max = Math.max(total, 1); bar.value = Math.min(processed, total); }
   const stats = butlerImportElement('butlerImportStats');
-  if (stats) stats.innerHTML = [['已导入', imported], ['待处理', Number(batch.pending || 0)], ['交接中', Number(batch.submitting || 0)], ['已跳过', skipped], ['待确认', unknown], ['失败', failed]]
+  if (stats) stats.innerHTML = [['已导入', imported], ['待处理', Number(batch.pending || 0)], ['租用中', Number(batch.submitting || 0)], ['已跳过', skipped], ['待确认', unknown], ['失败', failed]]
     .map(([label, count]) => `<div class="butler-import-stat"><strong>${count}</strong>${label}</div>`).join('');
   const progress = butlerImportElement('butlerImportProgress');
   if (progress) progress.textContent = `已处理 ${processed} / ${total} 个，本次请求 ${Number(batch.requested || 0)} 个。`;
   const reasons = butlerImportElement('butlerImportReasons');
   const errorLabels = {local_email_conflict: '本地已有或被其他任务占用', handoff_rejected: 'Butler 拒绝交接', handoff_unconfirmed: '远端交接结果待确认，可继续原批次核实', import_interrupted: '服务重启导致中断，可继续原批次', original_route_unavailable: '原 Butler 连接或收件配置不可用', fixed_route_unavailable: '原固定收件配置不可用', butler_remote_unavailable: '无法连接 Butler，稍后可继续原批次', handoff_contract_unsupported: 'Butler 消费身份或交接能力不匹配', import_storage_unavailable: '本地数据库暂时不可用，可继续原批次', import_internal_error: '本地导入处理异常，可继续原批次'};
   Object.assign(errorLabels, {
-    handoff_timeout: 'Butler 交接响应超时，可继续原批次核实',
+    handoff_timeout: 'Butler 响应超时，可继续原批次核实',
+    permission_denied: '当前 Key 缺少操作权限，请检查 Butler 授权',
+    service_not_allowed: '当前 Key 无权使用 OpenAI 服务',
+    no_inventory: 'Butler 当前没有符合条件的可租邮箱',
+    lease_expired: '原租约已到期，请核对原租约',
+    lease_released: '原租约已退租，不能重新随机分配替代地址',
+    lease_revoked: '原租约已被收回，请核对 Butler 租约记录',
+    lease_not_found: '未找到本人原租约，请检查迁移映射',
+    idempotency_conflict: '原请求编号与内容冲突，已保留原意图',
+    idempotency_result_expired: '原请求回执已过期，须核对原租约后恢复',
+    request_unknown: '远端结果待确认，继续原批次恢复同一请求',
+    request_timeout: 'Butler 请求超时，继续原批次恢复同一请求',
+    transport_error: 'Butler 连接异常，继续原批次恢复同一请求',
+    butler_availability_invalid: 'Butler 可用数量响应无效',
+    butler_filter_unsupported: '当前 API 仅支持邮箱来源和数量',
     handoff_rate_limited: 'Butler 请求受限，稍后可继续原批次',
     handoff_remote_unavailable: 'Butler 服务暂时不可用，可继续原批次',
     handoff_identity_mismatch: 'Butler 回执与原邮箱身份不一致，可继续原批次核实',
@@ -383,7 +392,7 @@ function resetButlerImport() {
   butlerImportElement('butlerImportBatchId').textContent = '';
   invalidateButlerImportPreview();
   void previewButlerImport();
-  butlerImportElement('butlerImportIdentity')?.focus();
+  butlerImportElement('butlerImportProvider')?.focus();
 }
 
 function bindButlerImport() {
@@ -399,7 +408,7 @@ function bindButlerImport() {
   on('btnRetryButlerImport', 'click', retryButlerImport);
   on('btnNewButlerImport', 'click', resetButlerImport);
   on('butlerImportModal', 'cancel', event => { event.preventDefault(); closeButlerImportModal(); });
-  for (const id of ['butlerImportProvider', 'butlerImportIdentity', 'butlerImportCount', 'butlerImportDomain', 'butlerImportGroup']) {
+  for (const id of ['butlerImportProvider', 'butlerImportCount']) {
     on(id, 'input', queueButlerImportPreview);
     on(id, 'change', queueButlerImportPreview);
   }

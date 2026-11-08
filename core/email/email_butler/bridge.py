@@ -33,7 +33,10 @@ def fixed_context(email: str):
         raise butler.EmailButlerClientError('email_derivation_profile_unavailable: 原 HME 固定收件配置不可用')
     connection = email_derivation._profile_credentials(profile)
     return butler.EmailButlerAccount(email=address, mailbox_id='', provider='icloud_hme',
-        mailbox_email=connection['mailbox_email'], api_base=connection['api_base'], api_key=connection['api_key'],
+        mailbox_email=connection.get('mailbox_email', ''), api_base=connection['api_base'], api_key=connection['api_key'],
+        credential_ref=profile['credential_ref'],
+        lease_id=str(((parent or {}).get('butler_handoff') or {}).get('lease_id') or ''),
+        client_id=str(((parent or {}).get('butler_handoff') or {}).get('client_id') or ''),
         recipient_mode='forwarded_exact_v1', strict_family=True,
         acquisition_id=butler.original_handoff_acquisition(address, row=parent, profile=profile))
 
@@ -70,12 +73,10 @@ def restore_context(email: str, *, purpose: str = "historical-hme", profile: dic
         from core.email.derivation import _profile_credentials
 
         credentials = _profile_credentials(profile)
-        connection = {name: credentials[name] for name in ("api_base", "api_key", "mailbox_email")}
+        connection = {name: credentials.get(name, "") for name in ("api_base", "api_key", "mailbox_email", "credential_ref")}
     else:
         connection = {"api_base": butler._api_base(), "api_key": butler._api_key(),
             "mailbox_email": str(getattr(cfg, "ICLOUD_HME_FORWARD_IMAP_EMAIL", "") or "").strip().lower()}
-    if not connection["mailbox_email"].partition("@")[2]:
-        raise butler.EmailButlerClientError("mailbox_mismatch: 历史 HME 桥接缺少最终收件箱")
     return butler.EmailButlerAccount(email=address, mailbox_id="", provider="icloud_hme",
         recipient_mode="forwarded_exact_v1", strict_family=True,
         acquisition_id=butler.original_handoff_acquisition(address, profile=profile), **connection)
@@ -113,7 +114,8 @@ def fetch_otp(email: str, *, after_ts: float | None = None, profile: dict | None
     context = restore_context(email, profile=profile)
     return butler.fetch_inbound_otp(email, after_ts=after_ts, require_recipient_evidence=True, strict_family=True,
         mailbox_email=context.mailbox_email, api_base=context.api_base, api_key=context.api_key,
-        acquisition_id=context.acquisition_id, **kwargs)
+        acquisition_id=context.acquisition_id, lease_id=context.lease_id,
+        client_id=context.client_id, credential_ref=context.credential_ref, **kwargs)
 
 
 def inbox_profiles_for_addresses(addresses: list[str]) -> dict[str, dict]:

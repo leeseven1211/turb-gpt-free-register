@@ -18,7 +18,7 @@ USE_EMAIL_SERVICE = schema_default("USE_EMAIL_SERVICE")
 #   "outlook"           — 外购 Outlook 账号池 + mail.chatai.codes 远端取信
 #   "cloudflare_domain" — Cloudflare 域名邮箱（转发到 QQ 邮箱），通过 IMAP 取信
 #   "cloudflare" — Cloudflare Worker 临时邮箱（cloudflare_temp_email），API 创建并取码
-#   "email_butler" — Email Butler 通用 /v1 Mail API（租用 + 收信 + 释放）
+#   "email_butler" — Email Butler v2 租约 API（人工导入长期租约 + 收码 + 显式退租）
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
@@ -66,7 +66,7 @@ OTP_SETTLE_SECONDS = 5
 
 
 # ============================================================
-# Email Butler 通用 Mail API（/v1）
+# Email Butler 通用租约 API（/v2）
 # ============================================================
 
 EMAIL_BUTLER_API_BASE = schema_default("EMAIL_BUTLER_API_BASE")

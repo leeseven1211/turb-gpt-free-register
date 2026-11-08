@@ -317,7 +317,7 @@ function emailConfigSectionForKey(key) {
   if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
-  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', '已导入邮箱的固定收码连接、结果上报与封号信号配置'];
+  if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', '已导入邮箱的租约连接与取码权限'];
   if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
   if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', '历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入'];
@@ -1833,7 +1833,7 @@ function renderEmailButlerToolsV2() {
     <div class="config-tool-panel-v2 roxy-workspace-box">
       <div>
         <b>Email Butler 连接</b>
-        <div class="hint">使用当前表单中的 /v1 URL 与 API Key 验证固定收码连接和账号状态，不会领取或生成邮箱。</div>
+        <div class="hint">验证当前连接、OpenAI 服务和租用、收码权限，不会领取邮箱。</div>
       </div>
       <div class="action-cell">
         <button class="btn primary" type="button" id="btnTestEmailButlerV2">测试连接</button>
@@ -1854,7 +1854,7 @@ async function testEmailButlerV2() {
   const status = $('#emailButlerStatusV2');
   if (!btn || !status) return;
   btn.disabled = true;
-  status.textContent = '正在调用 Email Butler /v1/me...';
+  status.textContent = '正在检测 Email Butler 连接与权限…';
   try {
     const r = await api('/api/email-butler/test-connection', {
       method:'POST',
@@ -1865,8 +1865,11 @@ async function testEmailButlerV2() {
       }),
     });
     const policy = [r.consumer, r.service].filter(Boolean).join(' / ') || '未绑定策略';
-    status.innerHTML = `✅ 连接成功：${esc(r.name || 'Email Butler')} · ${esc(policy)} · ${Number((r.capabilities || []).length)} 项能力`;
-    showToast('Email Butler 连接成功');
+    const missing = r.missing_permissions || [];
+    status.textContent = missing.length
+      ? `连接成功，权限尚未齐全：${missing.join('、')}。请在 Butler 为原客户端补充权限。`
+      : `连接成功：${r.name || 'Email Butler'} · ${policy}`;
+    showToast(missing.length ? '连接成功，请补充所需权限' : 'Email Butler 连接成功');
   } catch(e) {
     status.innerHTML = `<span style="color:var(--red);">连接失败：${esc(e.message)}</span>`;
   } finally {

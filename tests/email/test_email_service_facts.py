@@ -1,11 +1,9 @@
-"""永久服务事实同步在隔离 PostgreSQL 中验证，不触及生产邮箱或真实接口。"""
+"""在隔离 PostgreSQL 验证本地永久事实及 v2 退租，不触及真实接口。"""
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import os
 from threading import Event, current_thread
 from unittest.mock import patch
-
-import requests
 
 from core import db
 from core.email import inventory
@@ -43,20 +41,18 @@ class EmailServiceFactsTests(PostgresTestCase):
             'evidence_id': item['evidence_id'], 'service': 'openai', 'ever_imported': True, 'permanent': True}]}
 
     def deliver(self):
-        with patch.object(client, '_request', side_effect=self.receipt) as request:
+        with patch.object(client, '_request') as request:
             self.assertTrue(sync.dispatch_once())
+        request.assert_not_called()
         return request
 
-    def test_new_import_is_pending_until_central_ack_and_does_not_report_success(self):
+    def test_new_import_is_local_and_does_not_report_remote_success(self):
         row = self.stage(service_tags=['anthropic'])
-        self.assertEqual(row['status'], 'pending_sync')
+        self.assertEqual(row['status'], 'available')
         self.assertEqual(row['service_tags'], ['anthropic', 'openai'])
-        self.assertEqual(inventory.summary('generic_api')['available'], 0)
-        self.assertIsNone(inventory.claim('generic_api'))
-        self.assertFalse(db.release_generic_api_email(row['email'], status='available'))
-        request = self.deliver()
-        self.assertEqual(request.call_args.args, ('POST', '/service-facts/batch'))
-        self.assertNotIn('code_url', str(request.call_args.kwargs['json']))
+        self.assertEqual(self.events()[0]['state'], 'local_only')
+        self.assertIsNone(self.events()[0].get('delivered_at'))
+        self.assertNotIn('code_url', str(self.events()[0]['payload']))
         self.assertNotIn('fixture-secret', str(self.events()))
         self.assertEqual(store.count_rows(store.EMAIL_USAGE_REPORTS), 0)
         ready = store.get_row(store.GENERIC_API_POOL, row['id'])
@@ -66,58 +62,45 @@ class EmailServiceFactsTests(PostgresTestCase):
         second = inventory.claim('generic_api', owner_kind='test', owner_id='owner', acquisition_id='same-intent')
         self.assertEqual(first['email'], second['email'])
 
-    def test_timeout_replays_same_evidence_and_original_route(self):
+    def test_retry_preserves_local_evidence_without_using_retired_route(self):
         self.stage()
-        error = client.EmailButlerClientError('私有响应不写入事件')
-        error.__cause__ = requests.Timeout('private-url')
-        with patch.object(client, '_request', side_effect=error):
-            sync.dispatch_once()
         event = self.events()[0]
-        self.assertEqual((event['state'], event['error_code']), ('pending', 'service_fact_timeout'))
-        self.assertNotIn('private-url', str(event))
-        sync.retry('generic_api', event['address_norm'], 'import')
-        request = self.deliver()
-        self.assertEqual(request.call_args.kwargs['api_base'], 'https://original.test/v1')
-        self.assertEqual(request.call_args.kwargs['json']['items'][0], event['payload'])
+        with patch.object(client, '_request') as request:
+            self.assertTrue(sync.retry('generic_api', event['address_norm'], 'import'))
+            self.assertFalse(sync.dispatch_once())
+        request.assert_not_called()
+        self.assertEqual(self.events()[0]['payload'], event['payload'])
+        self.assertEqual(self.events()[0]['state'], 'local_only')
 
-    def test_invalid_permanent_receipt_cannot_publish_inventory(self):
+    def test_local_import_does_not_fabricate_central_permanent_receipt(self):
         row = self.stage()
-        invalid = self.receipt(json={'items': [self.events()[0]['payload']]})
-        invalid['results'][0]['permanent'] = False
-        with patch.object(client, '_request', return_value=invalid):
-            sync.dispatch_once()
-        self.assertEqual(store.get_row(store.GENERIC_API_POOL, row['id'])['status'], 'pending_sync')
-        self.assertEqual(self.events()[0]['error_code'], 'service_fact_receipt_invalid')
+        self.assertEqual(row['service_fact_scope'], 'local')
+        self.assertEqual(self.events()[0]['error_code'], 'service_facts_unsupported')
+        self.assertIsNone(self.events()[0].get('delivered_at'))
 
-    def test_foreign_address_receipt_does_not_publish(self):
+    def test_foreign_address_is_not_modified_by_local_import(self):
+        foreign_id = store.insert_row(store.GENERIC_API_POOL, {'email': 'other@example.test', 'status': 'disabled'})
         self.stage()
-        invalid = self.receipt(json={'items': [self.events()[0]['payload']]})
-        invalid['results'][0]['address'] = 'other@example.test'
-        with patch.object(client, '_request', return_value=invalid):
-            sync.dispatch_once()
-        self.assertEqual(self.events()[0]['error_code'], 'service_fact_receipt_mismatch')
-        self.assertEqual(inventory.summary('generic_api')['available'], 0)
+        self.assertEqual(store.get_row(store.GENERIC_API_POOL, foreign_id)['status'], 'disabled')
+        self.assertEqual(inventory.summary('generic_api')['available'], 1)
 
-    def test_policy_rejection_is_visible_and_manual_retry_keeps_evidence(self):
-        self.stage()
-        rejected = self.receipt(json={'items': [self.events()[0]['payload']]})
-        rejected['results'][0].update(code=403, error_code='service_policy_mismatch', retryable=False)
-        with patch.object(client, '_request', return_value=rejected):
-            sync.dispatch_once()
+    def test_old_policy_blocked_import_recovers_locally_and_keeps_evidence(self):
+        row = self.stage()
         event = self.events()[0]
-        self.assertEqual(event['state'], 'blocked')
+        store.patch_row(store.GENERIC_API_POOL, row['id'], {'status': 'pending_sync'})
+        store.patch_row(store.EMAIL_SERVICE_SYNC, event['id'], {'state': 'blocked', 'error_code': 'service_policy_mismatch'})
         self.assertEqual(sync.summary()['blocked'], 1)
         self.assertTrue(sync.retry('generic_api', event['address_norm'], 'import'))
         self.assertEqual(self.events()[0]['payload'], event['payload'])
         self.deliver()
+        self.assertEqual(self.events()[0]['state'], 'local_only')
 
-    def test_missing_configuration_is_durable_then_binds_once(self):
+    def test_missing_butler_configuration_does_not_block_direct_import(self):
         with patch.object(sync, '_new_route', return_value={'api_base': '', 'credential_ref': '', 'error_code': 'service_fact_configuration_missing'}):
             row = self.stage()
-        self.assertEqual(row['service_sync_state'], 'blocked')
+        self.assertEqual((row['status'], row['service_sync_state']), ('available', 'local_only'))
         self.assertFalse(sync.dispatch_once())
         self.assertTrue(sync.retry('generic_api', row['email'], 'import'))
-        self.deliver()
 
     def test_transaction_rollback_has_no_pool_or_event(self):
         with self.assertRaisesRegex(RuntimeError, '事务回滚'):
@@ -128,15 +111,13 @@ class EmailServiceFactsTests(PostgresTestCase):
         self.assertEqual(self.events(), [])
         self.assertEqual(store.count_rows(store.GENERIC_API_POOL), 0)
 
-    def test_registered_material_waits_for_ack_and_reuses_existing_pool(self):
+    def test_registered_material_completes_locally_and_reuses_existing_pool(self):
         address = 'existing@example.test'
         pool_id = store.insert_row(store.GENERIC_API_POOL, {'email': address, 'status': 'used',
             'email_invalid': True, 'email_invalid_reason': '母邮箱不可用', 'email_invalid_source': 'manual'})
         self.assertEqual(db.import_registered_email_accounts([{'email': address, 'code_url': 'https://fixed.test'}], 'generic_api'), (1, 0))
-        self.assertIsNone(store.get_row_by(store.ACCOUNTS, 'email', address))
-        self.assertEqual(store.get_row(store.GENERIC_API_POOL, pool_id)['status'], 'pending_sync')
-        self.deliver()
         account = store.get_row_by(store.ACCOUNTS, 'email', address)
+        self.assertEqual(store.get_row(store.GENERIC_API_POOL, pool_id)['status'], 'used')
         self.assertIs(account['email_invalid'], True)
         self.assertEqual(store.get_row(store.GENERIC_API_POOL, pool_id)['registered_account_id'], account['id'])
         self.assertEqual(store.count_rows(store.GENERIC_API_POOL), 1)
@@ -149,11 +130,9 @@ class EmailServiceFactsTests(PostgresTestCase):
             'plan_type': 'plus', 'expires_at': '2000-01-01T00:00:00Z', 'device_id': 'fixture-device',
             'proxy_used': 'http://fixture:secret@synthetic.test:80',
             'codex_status': 'pending', 'codex_error': 'fixture-error'}], 'outlook'), (1, 0))
-        self.assertIsNone(store.get_row_by(store.ACCOUNTS, 'email', address))
         from core.storage import admin_repository
         listing = admin_repository.list_email_pool(admin_repository.PageRequest(page=1, page_size=50, filters={'source': 'outlook'}))
         self.assertNotIn('fixture:secret', str(listing))
-        self.deliver()
         self.assertEqual(store.get_row_by(store.OUTLOOK_POOL, 'email', address)['status'], 'used')
         self.assertEqual(store.get_row_by(store.ACCOUNTS, 'email', address)['access_token'], 'a')
         account = store.get_row_by(store.ACCOUNTS, 'email', address)
@@ -165,23 +144,24 @@ class EmailServiceFactsTests(PostgresTestCase):
 
     def test_expired_sender_is_recovered_and_old_completion_is_fenced(self):
         row = self.stage()
+        store.patch_row(store.GENERIC_API_POOL, row['id'], {'status': 'pending_sync'})
+        store.patch_row(store.EMAIL_SERVICE_SYNC, self.events()[0]['id'], {'state': 'pending'})
         old = sync._claim_next()
         self.assertIsNone(sync._claim_next())
         store.patch_row(store.EMAIL_SERVICE_SYNC, old['id'], {'lease_until': datetime.now(timezone.utc) - timedelta(seconds=1)})
         current = sync._claim_next()
         self.assertNotEqual(old['lease_owner'], current['lease_owner'])
-        sync._finish(old, delivered=True)
+        sync._finish(old, local_only=True)
         self.assertEqual(store.get_row(store.GENERIC_API_POOL, row['id'])['status'], 'pending_sync')
-        sync._finish(current, delivered=True)
+        sync._finish(current, local_only=True)
         self.assertEqual(store.get_row(store.GENERIC_API_POOL, row['id'])['status'], 'available')
 
-    def test_deleted_pending_import_still_syncs_without_resurrecting_address(self):
+    def test_deleted_local_import_keeps_evidence_without_resurrecting_address(self):
         row = self.stage()
         self.assertTrue(db.delete_generic_api_email(row['email']))
-        self.deliver()
         self.assertIsNone(store.get_row(store.GENERIC_API_POOL, row['id']))
         self.assertEqual(local_imports.import_resources([{'email': row['email'], 'code_url': 'https://fixture.test'}], source='generic_api'), (0, 1))
-        self.assertEqual(self.events()[0]['state'], 'delivered')
+        self.assertEqual(self.events()[0]['state'], 'local_only')
 
     def butler_row(self):
         profile_id = store.insert_row(store.EMAIL_INBOX_PROFILES, {'inbox_key': 'return-profile', 'revision': 1,
@@ -197,8 +177,8 @@ class EmailServiceFactsTests(PostgresTestCase):
         self.assertTrue(local_imports.delete_butler_email(row['email']))
         event = self.events()[0]
         self.assertEqual(event['payload'], {'email': row['email'], 'service': 'openai', 'acquisition_id': 'original-acquisition'})
-        with patch.object(client, '_request', return_value={'code': 200, 'email': row['email'], 'released': True,
-                                                         'removed': True, 'service_tags': []}) as request:
+        with patch.object(client, 'return_account', return_value={'email': row['email'], 'service': 'openai', 'released': True,
+                                                               'removed': True, 'service_tags': []}) as request:
             sync.dispatch_once()
         self.assertEqual(request.call_args.kwargs['api_base'], 'https://return-original.test/v1')
         self.assertEqual(self.events()[0]['state'], 'delivered')
@@ -209,7 +189,7 @@ class EmailServiceFactsTests(PostgresTestCase):
     def test_return_failure_is_visible_and_can_retry_after_deletion(self):
         row = self.butler_row()
         local_imports.delete_butler_email(row['email'])
-        with patch.object(client, '_request', side_effect=client.EmailButlerClientError('fixture', status_code=409, error_code='acquisition_service_mismatch')):
+        with patch.object(client, 'return_account', side_effect=client.EmailButlerClientError('fixture', status_code=409, error_code='acquisition_service_mismatch')):
             sync.dispatch_once()
         self.assertEqual(sync.sync_status('email_butler', row['email'])['state'], 'blocked')
         self.assertTrue(sync.retry('email_butler', row['email'], 'return'))
@@ -228,6 +208,8 @@ class EmailServiceFactsTests(PostgresTestCase):
 
     def test_api_rejects_manual_pending_status_bypass_and_omits_route(self):
         row = self.stage()
+        store.patch_row(store.GENERIC_API_POOL, row['id'], {'status': 'pending_sync'})
+        store.patch_row(store.EMAIL_SERVICE_SYNC, self.events()[0]['id'], {'state': 'pending'})
         web = create_app(auth_code='fixture-auth').test_client()
         headers = {'X-Auth-Code': 'fixture-auth'}
         response = web.post('/api/outlook/status', json={'email': row['email'], 'source': 'generic_api', 'status': 'available'}, headers=headers)
@@ -245,18 +227,24 @@ class EmailServiceFactsTests(PostgresTestCase):
             'local_acquisition_id': 'unrelated-local-task'})
         account = client.restore_local_account(row['email'])
         self.assertEqual(account.acquisition_id, 'original-acquisition')
-        with patch.object(client, 'fetch_inbound_otp', return_value='123456') as fetch:
+        with patch.object(client, '_fetch_v2_otp', return_value='123456') as fetch:
             client.fetch_latest_otp(row['email'], after_ts=100, max_wait=1)
-        self.assertEqual(fetch.call_args.kwargs['acquisition_id'], 'original-acquisition')
-        self.assertEqual(fetch.call_args.kwargs['api_base'], 'https://return-original.test/v1')
+        original = fetch.call_args.args[0]
+        self.assertEqual(original.acquisition_id, 'original-acquisition')
+        self.assertEqual(original.api_base, 'https://return-original.test/v2')
 
     def test_inbound_transport_carries_acquisition_without_new_claim(self):
-        with patch.object(client, '_request', return_value={'code': 200, 'verification_code': '123456'}) as request:
+        binding = {'lease_id': 'lse_original', 'client_id': 'fixture-client', 'api_base': 'https://original.test/v2'}
+        code = {'lease_id': 'lse_original', 'service': 'openai', 'status': 'matched',
+                'verification_code': '123456', 'code_id': 'code_fixture', 'received_at': '2026-11-08T00:00:00Z'}
+        with patch('core.email.email_butler.lease_bindings.resolve', return_value=binding) as resolve, patch(
+                'core.email.email_butler.v2.code', return_value=code) as request:
             self.assertEqual(client.fetch_inbound_otp('exact@icloud.com', after_ts=100,
-                max_wait=1, acquisition_id='original-remote'), '123456')
-        self.assertEqual(request.call_args.args, ('POST', '/inbound/code'))
-        self.assertEqual(request.call_args.kwargs['json']['acquisition_id'], 'original-remote')
-        self.assertEqual(request.call_args.kwargs['json']['service'], 'openai')
+                max_wait=1, acquisition_id='original-remote', api_base='https://original.test/v1',
+                api_key='fixture-secret'), '123456')
+        self.assertEqual(resolve.call_args.kwargs['acquisition_id'], 'original-remote')
+        self.assertEqual(request.call_args.args, ('lse_original',))
+        self.assertIn('since', request.call_args.kwargs)
 
     def test_parent_acquisition_is_never_sent_for_a_child_address(self):
         profile = {'butler_identity': {'email': 'parent@icloud.com', 'acquisition_id': 'parent-only'}}

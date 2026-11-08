@@ -1,19 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Email Butler `/v1` 通用邮箱 API 客户端。"""
+"""Email Butler v2 业务适配；历史完整身份保持固定归属。"""
 from __future__ import annotations
 
-from core.email.mailbox_wait import WAIT_INTERRUPTED, bounded_sleep, bounded_timeout, cooperative_checkpoint, cooperative_poll_limit
+from core.email.mailbox_wait import bounded_sleep, cooperative_checkpoint, cooperative_poll_limit
 import hashlib
 import logging
-import math
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
-from urllib.parse import quote
-
-import requests
 
 from config import email as _email_cfg
 from core.email.otp import extract_otp
@@ -77,6 +73,9 @@ class EmailButlerAccount:
     identity_type: str = "primary"
     parent_email: str = ""
     identity_id: str = ""
+    credential_ref: str = ""
+    client_id: str = ""
+    api_version: int = 2
 
 
 _CONTEXT_CACHE: dict[str, EmailButlerAccount] = {}
@@ -94,7 +93,7 @@ def _api_base(override: str | None = None) -> str:
         override if override is not None else getattr(_email_cfg, "EMAIL_BUTLER_API_BASE", "") or ""
     ).strip()
     if not base:
-        raise EmailButlerClientError("Email Butler API 地址未配置，请填写 /v1 根地址。")
+        raise EmailButlerClientError("Email Butler API 地址未配置，请填写 /v2 根地址。")
     return base.rstrip("/")
 
 
@@ -111,96 +110,29 @@ def _request_timeout() -> int:
     return max(3, int(getattr(_email_cfg, "EMAIL_BUTLER_REQUEST_TIMEOUT", 20) or 20))
 
 
-def _request(
-    method: str,
-    path: str,
-    *,
-    params: dict | None = None,
-    json: dict | None = None,
-    api_base: str | None = None,
-    api_key: str | None = None,
-    timeout: int | float | None = None,
-    retry_connection_error: bool = False,
-) -> dict:
-    attempts = 2 if retry_connection_error else 1
-    for attempt in range(1, attempts + 1):
-        try:
-            response = requests.request(
-                method,
-                _api_base(api_base) + path,
-                params=params,
-                json=json,
-                headers={
-                    "Authorization": f"Bearer {_api_key(api_key)}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                timeout=bounded_timeout(timeout if timeout is not None else _request_timeout()),
-            )
-            break
-        except requests.ConnectionError as exc:
-            if attempt < attempts:
-                logger.warning(
-                    "[EmailButler] 连接瞬时中断，0.5s 后重试一次：path=%s error=%s",
-                    path,
-                    str(exc)[:180],
-                )
-                bounded_sleep(0.5)
-                continue
-            raise EmailButlerClientError(
-                f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise EmailButlerClientError(
-                f"Email Butler 请求失败 ({path}): {type(exc).__name__}: {exc}"
-            ) from exc
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise EmailButlerClientError(
-            f"Email Butler 响应不是 JSON ({path}): HTTP {response.status_code}",
-            status_code=response.status_code,
-        ) from exc
-
-    if response.status_code == 401:
-        raise EmailButlerClientError("Email Butler API Key 非法、已停用或已轮换", status_code=401, error_code="invalid_key")
-    if response.status_code >= 400:
-        message = payload.get("message") if isinstance(payload, dict) else str(payload)
-        error_code = str(payload.get("error_code") or "") if isinstance(payload, dict) else ""
-        if path == "/identities/report" and response.status_code == 404 and not error_code:
-            error_code = "icloud_identity_not_found"
-        raise EmailButlerClientError(
-            f"Email Butler 请求失败 ({path}): HTTP {response.status_code}; {error_code}; {str(message)[:220]}",
-            status_code=response.status_code, error_code=error_code,
-        )
-    if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
-        raise EmailButlerClientError(f"Email Butler 响应异常 ({path}): {payload}")
-    return payload
+def _request(method: str, path: str, **kwargs) -> dict:
+    """旧合同仅保留可定位错误，禁止向退役接口提交业务写入。"""
+    raise EmailButlerClientError("api_version_retired: 请使用 Email Butler v2 租约接口",
+                                 status_code=410, error_code="api_version_retired")
 
 
 def test_connection(*, api_base: str | None = None, api_key: str | None = None) -> dict:
-    """调用 `/me` 验证 URL、Key、客户端策略和必要能力。"""
-    payload = _request("GET", "/me", api_base=api_base, api_key=api_key)
-    policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
-    capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), list) else []
-    required = {
-        "mailboxes.create",
-        "mailboxes.messages",
-        "mailboxes.release",
-        "signals.scan",
-        "inbound.code",
-    }
-    missing = sorted(required.difference(str(item) for item in capabilities))
-    if missing:
-        raise EmailButlerClientError(f"Email Butler 缺少必要能力: {', '.join(missing)}")
-    return {
-        "ok": True,
-        "name": str(payload.get("name") or ""),
-        "consumer": str(policy.get("consumer") or ""),
-        "service": str(policy.get("service") or ""),
-        "capabilities": capabilities,
-    }
+    """只读验证 v2 身份及现有、新导入各自所需的权限。"""
+    from core.email.email_butler import v2
+    try:
+        who = v2.me(api_base=_api_base(api_base), api_key=_api_key(api_key), timeout=_request_timeout())
+    except v2.ButlerV2Error as exc:
+        raise _v2_error(exc) from exc
+    services, permissions = who['allowed_services'], who['permissions']
+    if services != '*' and not {'openai', '*'}.intersection(services):
+        raise EmailButlerClientError('service_not_allowed: 当前 Key 未授权 openai 服务',
+                                     status_code=403, error_code='service_not_allowed')
+    required = {'leases.read', 'codes.read', 'leases.release', 'leases.create', 'leases.long_term'}
+    missing = sorted(required.difference(permissions)) if '*' not in permissions else []
+    return {'ok': True, 'ready': not missing, 'api_version': 2, 'name': who.get('name') or '',
+            'consumer': who['client_id'], 'service': 'openai', 'permissions': permissions,
+            'capabilities': permissions, 'missing_permissions': missing,
+            'api_base': v2.normalize_base(_api_base(api_base)), 'limits': who['limits']}
 
 
 def _signal_result(payload: dict, target: str, *, strict_family: bool, mailbox_email: str) -> dict:
@@ -246,66 +178,17 @@ def _signal_request(*, lookback_days: int, strict_family: bool, mailbox_email: s
 def scan_openai_deactivation(email: str, *, lookback_days: int = 120,
                             api_base: str | None = None, api_key: str | None = None,
                             mailbox_email: str = "", strict_family: bool = False) -> dict:
-    """扫描一个 Butler 邮箱中的高置信度 OpenAI 封号通知。"""
-    target = str(email or "").strip().lower()
-    if not target or "@" not in target:
-        raise EmailButlerClientError("待扫描邮箱地址无效")
-    if not strict_family:
-        context = get_account_context(target)
-        if context is None:
-            context = restore_local_account(target) or _restore_hme_context(target)
-        if context is not None and context.provider == "icloud_hme":
-            api_base, api_key = context.api_base, context.api_key
-            mailbox_email, strict_family = context.mailbox_email, True
-    mailbox = _cache_key(mailbox_email)
-    request_data = _signal_request(lookback_days=lookback_days, strict_family=strict_family, mailbox_email=mailbox)
-    request_data["email"] = target
-    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
-    payload = _request(
-        "POST",
-        "/signals/scan",
-        json=request_data,
-        **connection,
-        **({"timeout": max(_request_timeout(), 55)} if strict_family else {}),
-        # 封号信号是只读查询，连接被网关瞬时断开时可安全重试一次。
-        retry_connection_error=True,
-    )
-    return _signal_result(payload, target, strict_family=strict_family, mailbox_email=mailbox)
+    """v2 公开接口没有邮件信号扫描，不能用验证码结果推断账号存活。"""
+    raise EmailButlerClientError('signal_scan_unsupported: Email Butler v2 未提供封号邮件扫描接口',
+                                 error_code='signal_scan_unsupported')
 
 
 def scan_openai_deactivation_bulk(emails: list[str], *, lookback_days: int = 120,
                                  api_base: str | None = None, api_key: str | None = None,
                                  mailbox_email: str, strict_family: bool = True) -> dict[str, dict]:
-    """同一固定 Butler 收件箱共享批量扫描；单个地址失败不抹去其他结果。"""
-    targets = sorted({_cache_key(value) for value in emails})
-    if any(not target.partition("@")[0] or not target.partition("@")[2] for target in targets):
-        raise EmailButlerClientError("待扫描邮箱地址无效")
-    mailbox = _cache_key(mailbox_email)
-    data = _signal_request(lookback_days=lookback_days, strict_family=strict_family, mailbox_email=mailbox)
-    connection = {name: value for name, value in {"api_base": api_base, "api_key": api_key}.items() if value is not None}
-    results = {}
-    for offset in range(0, len(targets), 5000):
-        batch = targets[offset:offset + 5000]
-        try:
-            payload = _request("POST", "/signals/scan", json={**data, "emails": batch},
-                **connection, timeout=max(_request_timeout(), 55), retry_connection_error=True)
-            rows = payload.get("results")
-            if not isinstance(rows, dict):
-                raise EmailButlerClientError("signal_receipt_invalid: 批量信号扫描缺少逐地址结果")
-        except EmailButlerClientError as exc:
-            results.update({target: {"ok": False, "error": str(exc), "error_code": "signal_scan_failed"} for target in batch})
-            continue
-        for target in batch:
-            item = rows.get(target)
-            try:
-                if not isinstance(item, dict):
-                    raise EmailButlerClientError("signal_receipt_invalid: 批量信号扫描缺少该完整地址")
-                results[target] = _signal_result(item, target, strict_family=strict_family, mailbox_email=mailbox)
-            except EmailButlerClientError as exc:
-                error_code = item.get("error_code") if isinstance(item, dict) else ""
-                results[target] = {"ok": False, "error": str(exc),
-                    "error_code": str(error_code or str(exc).partition(":")[0])}
-    return results
+    """逐地址明确不支持扫描，不伪造阴性结果。"""
+    return {_cache_key(email): {'ok': False, 'error_code': 'signal_scan_unsupported',
+            'error': 'Email Butler v2 未提供封号邮件扫描接口'} for email in emails}
 
 
 def _mailbox_account(mailbox: dict, *, api_base: str | None = None, api_key: str | None = None) -> EmailButlerAccount:
@@ -345,17 +228,9 @@ def _account_from_legacy_intent(intent: dict) -> EmailButlerAccount:
     account = _mailbox_account(intent["mailbox"], api_base=connection["api_base"], api_key=connection["api_key"])
     if not _cache_key(account.email) or _cache_key(account.email) != _cache_key(intent.get('address_norm')):
         raise EmailButlerIntentLocked('recipient_mismatch: 原 Butler 意图保存的完整邮箱不一致')
-    if account.provider != 'icloud_hme':
-        try:
-            expiry = datetime.fromisoformat(account.leased_until.replace('Z', '+00:00'))
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            usable = expiry > datetime.now(timezone.utc)
-        except (TypeError, ValueError):
-            usable = False
-        if not usable:
-            raise EmailButlerIntentLocked('lease_restore_required: 原 Butler 普通邮箱租约已过期或无法确认，禁止改领新地址')
     account.acquisition_id = intent["acquisition_id"]
+    account.credential_ref = intent["credential_ref"]
+    account.lease_id = ""
     if account.provider == 'icloud_hme' and not _restore_hme_context(account.email):
         _persist_hme_context(account)
     _CONTEXT_CACHE[_cache_key(account.email)] = account
@@ -363,39 +238,30 @@ def _account_from_legacy_intent(intent: dict) -> EmailButlerAccount:
 
 
 def restore_local_account(email_or_row) -> EmailButlerAccount | None:
-    """从人工导入的固定收件配置恢复；缺失时绝不向 Butler 申请邮箱。"""
+    """只恢复已导入库存及固定路由，网络映射在取码前精确核验。"""
     from core.storage import records as record_store
     from core.email.derivation import _profile_credentials
-
     row = email_or_row if isinstance(email_or_row, dict) else record_store.get_row_by(
-        record_store.EMAIL_BUTLER_POOL, "email", _cache_key(email_or_row), lower=True)
+        record_store.EMAIL_BUTLER_POOL, 'email', _cache_key(email_or_row), lower=True)
     if not row:
         return None
-    profile_id = row.get('local_inbox_profile_id') or row.get("inbox_profile_id")
+    profile_id = row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
     profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(profile_id)) if profile_id else None
-    if not profile or profile.get("state") != "active" or profile.get("connector") != "forward_butler":
-        raise EmailButlerClientError("email_derivation_profile_unavailable: 本地 Butler 邮箱缺少固定收件配置")
+    if not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
+        raise EmailButlerClientError('email_derivation_profile_unavailable: 原邮箱缺少固定收件配置',
+                                     error_code='email_derivation_profile_unavailable')
     connection = _profile_credentials(profile)
-    provider = str(row.get("provider") or "icloud_hme")
-    address = _cache_key(row.get("email"))
-    if provider == "icloud_hme":
-        if row.get("recipient_mode") != _RECIPIENT_MODE or row.get("strict_family") is not True:
-            raise EmailButlerClientError("recipient_contract_unsupported: 本地 HME 缺少严格完整收件人声明")
-        mailbox = _cache_key(connection.get("mailbox_email") or row.get("mailbox_email"))
-        if not mailbox.partition("@")[2]:
-            raise EmailButlerClientError("mailbox_mismatch: 本地 HME 缺少固定最终收件箱")
-        account = EmailButlerAccount(email=address, mailbox_id="", provider="icloud_hme",
-            mailbox_email=mailbox, recipient_mode=_RECIPIENT_MODE, strict_family=True,
-            api_base=connection["api_base"], api_key=connection["api_key"],
-            acquisition_id=original_handoff_acquisition(address, row=row, profile=profile),
-            identity_type=str(row.get("identity_type") or ("plus_tag" if "+" in address.partition("@")[0] else "primary")),
-            parent_email=str(row.get("parent_email") or ""), identity_id=str(row.get("identity_id") or ""))
-    else:
-        mailbox = dict(row.get("mailbox") or {})
-        mailbox.update(email=address, provider=provider, id=str(row.get("mailbox_id") or mailbox.get("id") or ""))
-        if not mailbox["id"]:
-            raise EmailButlerClientError("recipient_contract_unsupported: 该本地 Butler provider 缺少可只读恢复的邮箱编号")
-        account = _mailbox_account(mailbox, api_base=connection["api_base"], api_key=connection["api_key"])
+    handoff, mailbox = row.get('butler_handoff') or {}, row.get('mailbox') or {}
+    address = _cache_key(row.get('email'))
+    account = EmailButlerAccount(email=address, mailbox_id=str(row.get('mailbox_id') or mailbox.get('id') or ''),
+        lease_id=str(handoff.get('lease_id') or ''), provider=str(row.get('provider') or 'icloud_hme'),
+        mailbox_email=_cache_key(connection.get('mailbox_email') or row.get('mailbox_email')),
+        recipient_mode=_RECIPIENT_MODE, strict_family=True,
+        api_base=connection['api_base'], api_key=connection['api_key'],
+        acquisition_id=original_handoff_acquisition(address, row=row, profile=profile),
+        identity_type=str(row.get('identity_type') or ('plus_alias' if '+' in address.partition('@')[0] else 'primary')),
+        parent_email=str(row.get('parent_email') or ''), identity_id=str(row.get('identity_id') or ''),
+        credential_ref=profile['credential_ref'], client_id=str(handoff.get('client_id') or ''))
     _CONTEXT_CACHE[address] = account
     return account
 
@@ -447,7 +313,7 @@ def active_mailbox_leases() -> list[dict]:
             "mailbox_email": account.mailbox_email,
         }
         for account in sorted(_CONTEXT_CACHE.values(), key=lambda item: item.email.lower())
-        if account.mailbox_id and (account.provider != "icloud_hme" or account.lease_id)
+        if account.lease_id or account.mailbox_id
     ]
 
 
@@ -533,6 +399,8 @@ def _restore_hme_context(email: str) -> EmailButlerAccount | None:
     return EmailButlerAccount(email=_cache_key(email), mailbox_id="", provider="icloud_hme",
         mailbox_email=connection["mailbox_email"], recipient_mode=_RECIPIENT_MODE, strict_family=True,
         api_base=connection["api_base"], api_key=connection["api_key"], acquisition_id=str(identity.get("acquisition_id") or ""),
+        lease_id=str(identity.get("lease_id") or ""), credential_ref=profile["credential_ref"],
+        client_id=str(identity.get("client_id") or ""),
         identity_type=str(identity.get("identity_type") or "primary"), parent_email=str(identity.get("parent_email") or ""),
         identity_id=str(identity.get("identity_id") or ""))
 
@@ -569,99 +437,61 @@ def _return_account_context(address: str) -> tuple[EmailButlerAccount | None, st
         handoff = row.get('butler_handoff') or {}
         # 本地领取意图与 Butler 交接意图不同，必须使用已保存的远端交接编号。
         acquisition = str(handoff.get('acquisition_id') or identity.get('acquisition_id') or '')
-        if not acquisition:
+        if not acquisition and not handoff.get('lease_id'):
             raise EmailButlerClientError('acquisition_required: 退号缺少原 Butler 交接编号')
         return EmailButlerAccount(email=address, mailbox_id='', provider=str(row.get('provider') or 'icloud_hme'),
-            acquisition_id=acquisition, api_base=connection['api_base'], api_key=connection['api_key']), acquisition
+            acquisition_id=acquisition, lease_id=str(handoff.get('lease_id') or ''),
+            credential_ref=profile['credential_ref'], client_id=str(handoff.get('client_id') or ''),
+            api_base=connection['api_base'], api_key=connection['api_key']), acquisition
     account = _restore_hme_context(address) or get_account_context(address)
     return account, str(account.acquisition_id or '') if account else ''
 
 
-def return_account(email: str, service: str = "openai", *, api_base: str | None = None,
-                   api_key: str | None = None, acquisition_id: str = '', lease_id: str = '') -> dict:
-    """按原交接身份退回未使用邮箱，重复调用不会影响后来的领取。"""
-    address = str(email or "").strip()
-    if "@" not in address:
-        return {"ok": False, "reason": "invalid_email"}
+def return_account(email: str, service: str = 'openai', *, api_base: str | None = None,
+                   api_key: str | None = None, acquisition_id: str = '', lease_id: str = '',
+                   client_id: str = '') -> dict:
+    """只结束原操作对应租约；失败交给持久出站队列沿原意图恢复。"""
+    from core.email.email_butler import v2, lease_bindings
+    address = _cache_key(email)
+    if '@' not in address or service != 'openai':
+        return {'ok': False, 'error_code': 'return_identity_invalid', 'reason': '退租地址或服务无效'}
     try:
+        account = None
         if not acquisition_id and not lease_id:
-            account, acquisition_id = _return_account_context(_cache_key(address))
+            account, acquisition_id = _return_account_context(address)
             if account:
-                api_base, api_key = account.api_base, account.api_key
-                lease_id = account.lease_id
-        body = {"email": address, "service": service}
-        if acquisition_id:
-            body['acquisition_id'] = acquisition_id
-        if lease_id:
-            body['lease_id'] = lease_id
-        payload = _request(
-            "POST",
-            "/automation/return-account",
-            json=body,
-            api_base=_api_base(api_base),
-            api_key=api_key,
-            retry_connection_error=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - 退号失败不能阻塞本地删除
-        logger.warning("[EmailButler] 退号失败，本地删除继续: %s %s", address, str(exc)[:160])
-        return {"ok": False, "reason": str(exc)[:160]}
-    return {
-        "ok": int(payload.get("code") or 0) == 200,
-        "released": bool(payload.get("released")),
-        "removed": int(bool(payload.get("removed"))),
-        "remaining": payload.get("service_tags") or [],
-        "reason": str(payload.get("message") or ""),
-    }
+                api_base, api_key, lease_id = account.api_base, account.api_key, account.lease_id
+        connection = {'api_base': _api_base(api_base), 'api_key': _api_key(api_key)}
+        binding = lease_bindings.resolve(address, **connection, acquisition_id=acquisition_id,
+            lease_id=lease_id, client_id=client_id or (account.client_id if account else ''),
+            credential_ref=(account.credential_ref if account else ''), for_release=True)
+        result = v2.release(binding['lease_id'], **connection, reason='Turb 显式删除未使用邮箱')
+        if (_cache_key(result.get('email')) != address or result.get('service') != service
+                or result.get('client_id') != binding['client_id']):
+            raise v2.ButlerV2Error('lease_identity_mismatch', '退租回执未确认原地址及服务')
+        lease_bindings.save(result, api_base=connection['api_base'], credential_ref=binding['credential_ref'],
+                            client_id=binding['client_id'], acquisition_id=acquisition_id)
+        _CONTEXT_CACHE.pop(address, None)
+        return {'ok': True, 'email': address, 'service': service, 'lease_id': result['id'],
+                'released': result['status'] == 'released' or result.get('already_inactive', False),
+                'removed': int(result.get('service_tag_removed', False)), 'remaining': [],
+                'service_tags': [], 'already_inactive': result.get('already_inactive', False)}
+    except (v2.ButlerV2Error, EmailButlerClientError) as exc:
+        return {'ok': False, 'error_code': exc.error_code or 'butler_return_unconfirmed',
+                'reason': str(exc), 'retryable': getattr(exc, 'retryable', False),
+                'request_unknown': getattr(exc, 'request_unknown', False), 'status_code': exc.status_code}
 
 
-def release_account(email: str, status: str = "available", note: str | None = None) -> None:
-    """HME 结果持久入队后收口上下文；普通旧租约仍只释放一次。"""
+def release_account(email: str, status: str = 'available', note: str | None = None) -> None:
+    """任务结果只更新本地业务事实；远端读取权保留到显式删除退租。"""
     from core.email.inventory import record_outcome
-    if record_outcome(email, source="email_butler", status=status, note=note):
-        if str(status or "").lower() not in {"request_unknown", "unknown", "running", "reserved", "available"}:
-            _CONTEXT_CACHE.pop(_cache_key(email), None)
+    if str(status or '').lower() in {'request_unknown', 'unknown', 'running', 'reserved'}:
         return
-    key = _cache_key(email)
-    if str(status or "").strip().lower() in {"request_unknown", "unknown", "running", "reserved"}:
-        return
-    from core.email.email_butler import usage_reports as email_usage_reports
-    if email_usage_reports.enqueue(email, status=status, source="email_butler") is not None:
-        _CONTEXT_CACHE.pop(key, None)
-        return
-    if email_usage_reports.has_success(email):
-        _CONTEXT_CACHE.pop(key, None)
-        return
-    account = _CONTEXT_CACHE.get(key)
-    if not account:
-        account = _restore_hme_context(email)
-        if account:
-            _CONTEXT_CACHE[key] = account
-    if not account:
-        logger.info("[EmailButler] 邮箱上下文已不存在，跳过释放: %s", email)
-        return
-    if account.provider == "icloud_hme":
-        if str(status or "").strip().lower() == "available":
-            return
-        fixed = _restore_hme_context(email)
-        if fixed:
-            account = fixed
-            _CONTEXT_CACHE[key] = fixed
-        else:
-            _persist_hme_context(account)
-        report_hme_identity(account, status=status, note=note)
-        _CONTEXT_CACHE.pop(key, None)
-        logger.info("[EmailButler] HME 完整身份结果已持久入队")
-        return
-    try:
-        _request(
-            "POST",
-            f"/mailboxes/{quote(account.mailbox_id, safe='')}/release",
-            json={"outcome": _outcome_for_status(status), "message": str(note or "")[:300]},
-            **{name: value for name, value in {"api_base": account.api_base, "api_key": account.api_key}.items() if value is not None},
-        )
-    finally:
-        _CONTEXT_CACHE.pop(key, None)
-    logger.info("[EmailButler] 已释放邮箱: %s outcome=%s", email, _outcome_for_status(status))
+    if not record_outcome(email, source='email_butler', status=status, note=note):
+        from core.email.email_butler import usage_reports
+        usage_reports.enqueue(email, status=status, source='email_butler')
+    if str(status or '').lower() != 'available':
+        _CONTEXT_CACHE.pop(_cache_key(email), None)
 
 
 def _message_otp(payload: dict) -> str | None:
@@ -748,218 +578,106 @@ def _validate_recipient_receipt(payload: dict, target: str, strict_family: bool,
         raise EmailButlerClientError(f"{error_code}: 原始收件证据无法唯一匹配完整地址", error_code=error_code)
 
 
-def fetch_inbound_otp(
-    email: str,
-    after_ts: float | None = None,
-    max_wait: int | None = None,
-    poll_interval: int | None = None,
-    settle_seconds: int | None = None,
-    local_probe: Callable[[], str | None] | None = None,
-    *,
-    require_recipient_evidence: bool = False,
-    strict_family: bool = False,
-    mailbox_email: str | None = None,
-    api_base: str | None = None,
-    api_key: str | None = None,
-    acquisition_id: str = '',
-) -> str:
-    """Wait on Email Butler's PG-backed forwarded-mail cache.
-
-    The server performs one initial exact query and then waits on PostgreSQL
-    LISTEN/NOTIFY. Long waits are split into gateway-safe chunks because the
-    public endpoint can be behind Cloudflare, whose timeout is shorter than the
-    configured OTP wait. Every chunk uses the same ``since`` anchor, so a
-    notification received between requests is found by the next exact query.
-    Callers that own the forwarding mailbox may also provide ``local_probe``.
-    Email Butler remains the primary source; after each remote miss or
-    transient failure the local mailbox is probed once before the next remote
-    wait. The probe only loops for the lifetime of this OTP wait and never
-    becomes a process-wide mailbox scanner.
-    """
+def fetch_inbound_otp(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                      poll_interval: int | None = None, settle_seconds: int | None = None,
+                      local_probe: Callable[[], str | None] | None = None, *,
+                      require_recipient_evidence: bool = False, strict_family: bool = False,
+                      mailbox_email: str | None = None, api_base: str | None = None,
+                      api_key: str | None = None, acquisition_id: str = '',
+                      lease_id: str = '', client_id: str = '', credential_ref: str = '') -> str:
+    """通过原 v2 租约取码，保留完整地址、服务及挑战时间边界。"""
     target = _cache_key(email)
-    if "@" not in target:
-        raise EmailButlerClientError("待查询的转发邮箱地址无效")
-    strict = bool(require_recipient_evidence or strict_family or "+" in target.partition("@")[0])
-    mailbox = _cache_key(mailbox_email)
-    connection = {}
-    if strict:
-        if not mailbox.partition("@")[0] or not mailbox.partition("@")[2]:
-            raise EmailButlerClientError("mailbox_mismatch: 严格取码必须指定最终收件箱", error_code="mailbox_mismatch")
-        connection = {"api_base": _api_base(api_base), "api_key": _api_key(api_key)}
-        _require_recipient_capability(**connection)
-        local_probe = None
+    cached = get_account_context(target)
+    if (cached is not None and (api_base is None or cached.api_base == api_base)
+            and (api_key is None or cached.api_key == api_key)):
+        account = cached
     else:
-        if api_base is not None:
-            connection["api_base"] = api_base
-        if api_key is not None:
-            connection["api_key"] = api_key
-    wait_seconds = max(
-        1,
-        int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT),
-    )
-    anchor = float(after_ts if after_ts is not None else time.time())
-    if not strict or after_ts is None:
-        anchor -= 30
-    since = datetime.fromtimestamp(anchor, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        account = EmailButlerAccount(email=target, mailbox_id='', api_base=api_base, api_key=api_key,
+            provider='icloud_hme', mailbox_email=_cache_key(mailbox_email), acquisition_id=acquisition_id)
+    if acquisition_id:
+        account.acquisition_id = acquisition_id
+    if lease_id:
+        account.lease_id = lease_id
+    if client_id:
+        account.client_id = client_id
+    if credential_ref:
+        account.credential_ref = credential_ref
+    return _fetch_v2_otp(account, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval)
+
+
+def fetch_latest_otp(email: str, after_ts: float | None = None, max_wait: int | None = None,
+                     poll_interval: int | None = None, settle_seconds: int | None = None) -> str:
+    """所有 Butler Provider 均使用固定租约取码，不暴露物理收件箱。"""
+    account = get_account_context(email) or restore_account_context(email)
+    return _fetch_v2_otp(account, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval)
+
+
+def _v2_error(exc):
+    error = EmailButlerClientError(str(exc), status_code=exc.status_code, error_code=exc.error_code)
+    error.retryable = exc.retryable
+    error.request_unknown = exc.request_unknown
+    error.request_id = exc.request_id
+    return error
+
+
+def _fetch_v2_otp(account, *, after_ts=None, max_wait=None, poll_interval=None):
+    from core.email.email_butler import v2, lease_bindings
+    from core.auth.email_guard import observe_candidate, current_session
+    connection = {'api_base': _api_base(account.api_base), 'api_key': _api_key(account.api_key)}
+    try:
+        binding = lease_bindings.resolve(account.email, **connection,
+            credential_ref=account.credential_ref, acquisition_id=account.acquisition_id,
+            lease_id=account.lease_id, client_id=account.client_id)
+    except v2.ButlerV2Error as exc:
+        raise _v2_error(exc) from exc
+    account.lease_id, account.client_id = binding['lease_id'], binding['client_id']
+    account.api_base = binding['api_base']
+    _CONTEXT_CACHE[_cache_key(account.email)] = account
+    wait_seconds = max(1, int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT))
     interval = max(0, int(poll_interval if poll_interval is not None else 1))
-    logger.info("[EmailButler] 等待 PG 入站验证码：%s，最长 %ss", target, wait_seconds)
-    started = time.monotonic()
-    deadline = started + wait_seconds
-    last_error = "尚未收到新的 OpenAI 验证码邮件"
-    last_error_code = ""
-    chunk_index = 0
+    anchor = float(after_ts) if after_ts is not None else time.time() - 30
+    since = datetime.fromtimestamp(anchor, timezone.utc).isoformat().replace('+00:00', 'Z')
+    session = current_session()
+    cursor = dict((session.row if session else {}).get('cursor') or {})
+    after_code_id = cursor.get('butler_v2_after_code_id')
+    if cursor.get('butler_v2_lease_id') != binding['lease_id']:
+        after_code_id = None
+    deadline = time.monotonic() + wait_seconds
+    last_code, last_error = 'inbound_code_timeout', '尚未收到当前时间窗口内的验证码'
     while time.monotonic() < deadline:
         cooperative_checkpoint()
-        remaining = max(0.0, deadline - time.monotonic())
-        # 有本机探测时缩短远端等待段，避免邮件已到 Gmail 但尚未入 PG 时
-        # 仍被一个长请求挡住很久；纯远端模式继续使用 75 秒网关安全段。
-        chunk_limit = cooperative_poll_limit(15 if local_probe is not None else _INBOUND_WAIT_CHUNK_SECONDS)
-        chunk_seconds = max(1, min(chunk_limit, int(math.ceil(remaining))))
-        chunk_index += 1
+        remaining = max(0, deadline - time.monotonic())
+        chunk = min(20, int(cooperative_poll_limit(20)), int(remaining))
         try:
-            request_data = {"email": target, "since": since, "timeout_seconds": chunk_seconds}
-            if acquisition_id:
-                request_data.update(acquisition_id=acquisition_id, service='openai')
-            if strict:
-                request_data.update(recipient_mode=_RECIPIENT_MODE, strict_family=bool(strict_family), mailbox_email=mailbox)
-            payload = _request(
-                "POST",
-                "/inbound/code",
-                json=request_data,
-                **connection,
-                timeout=max(_request_timeout(), chunk_seconds + 10),
-                # 等待入站通知是只读、幂等操作；Oracle/Nginx 偶发在建连阶段断开时，
-                # 立即重连一次即可继续等待，不需要重新扫描 Gmail。
-                retry_connection_error=True,
-            )
+            result = v2.code(binding['lease_id'], **connection, since=since, after_code_id=after_code_id,
+                wait_seconds=max(0, chunk), timeout=min(remaining + 1, max(_request_timeout(), chunk + 5)))
             cooperative_checkpoint()
-            otp = _message_otp(payload)
-            if otp:
-                if strict:
-                    _validate_recipient_receipt(payload, target, bool(strict_family), mailbox)
-                    from core.auth.email_guard import observe_candidate
-
-                    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-                    message_id = str(payload.get("message_id") or message.get("id") or message.get("message_id") or "").strip()
-                    identity = hashlib.sha256(f"{connection['api_base']}:{mailbox}".encode()).hexdigest()[:24]
-                    observe_candidate(f"butler:{identity}:{message_id}" if message_id else "",
-                        evidence=payload["recipient_evidence"],
-                        cursor={"inbox_key": identity, "message_id": message_id,
-                            "message_mapping": "stable_id" if message_id else "unknown"})
-                elapsed = time.monotonic() - started
-                logger.info("[EmailButler] 已从 PG 入站缓存取得 OTP，接口等待 %.1fs", elapsed)
-                return otp
-            last_error = "; ".join(str(payload.get(key) or "") for key in ("error_code", "message")).strip("; ") or "inbound_code_timeout: PG 入站等待结束但没有 OTP"
-            last_error_code = str(payload.get("error_code") or "inbound_code_timeout")
-        except EmailButlerClientError as exc:
-            if not _is_transient_inbound_error(exc):
-                raise
-            last_error = str(exc)
-            last_error_code = exc.error_code or "inbound_request_failed"
-            if last_error_code == "inbound_code_timeout" and exc.status_code != 408:
-                last_error_code = "inbound_request_failed"
-            logger.warning(
-                "[EmailButler] PG 入站等待第 %s 段瞬时失败，继续剩余等待：%s",
-                chunk_index,
-                str(exc)[:220],
-            )
-
-        # 接口优先。只有这一段没有拿到验证码时才探测本地转发邮箱；下一轮
-        # 仍会先请求接口，因此 Butler 恢复或 PG 完成入库后会回到主链路。
-        if local_probe is not None:
-            try:
-                local_otp = str(local_probe() or "").strip()
-                cooperative_checkpoint()
-            except WAIT_INTERRUPTED:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "[EmailButler] 本机收件兜底探测失败，继续等待 PG：%s: %s",
-                    type(exc).__name__,
-                    str(exc)[:180],
-                )
-            else:
-                if _OTP_RE.fullmatch(local_otp):
-                    elapsed = time.monotonic() - started
-                    logger.info("[EmailButler] 接口未命中，已从本机收件兜底取得 OTP，等待 %.1fs", elapsed)
-                    return local_otp
-
+            if result['service'] != 'openai' or result['lease_id'] != binding['lease_id']:
+                raise v2.ButlerV2Error('lease_identity_mismatch', '验证码回执不属于原服务租约')
+            if result['status'] == 'matched':
+                if not _OTP_RE.fullmatch(result['verification_code']):
+                    raise v2.ButlerV2Error('otp_format_invalid', 'OpenAI 验证码须为六位数字')
+                received = datetime.fromisoformat(result['received_at'].replace('Z', '+00:00'))
+                if received.timestamp() < anchor:
+                    raise v2.ButlerV2Error('otp_before_challenge', '验证码邮件早于本次挑战')
+                event = result['code_id']
+                identity = hashlib.sha256(f"{binding['api_base']}:{binding['lease_id']}".encode()).hexdigest()[:24]
+                # 记录 v2 的租约授权与邮件事件回执，不伪造旧 MIME 收件证据。
+                observe_candidate(f'butler-v2:{identity}:{event}',
+                    evidence={'contract': 'butler.v2.lease', 'recipient': _cache_key(account.email),
+                              'lease_id': binding['lease_id'], 'service': 'openai',
+                              'code_id': event, 'received_at': result['received_at']},
+                    cursor={'inbox_key': identity, 'message_id': event, 'message_mapping': 'stable_id',
+                            'butler_v2_lease_id': binding['lease_id'], 'butler_v2_after_code_id': event})
+                return result['verification_code']
+            last_code = 'inbound_code_ambiguous' if result['status'] == 'ambiguous' else 'inbound_code_timeout'
+            last_error = ('同一挑战窗口存在多个投递候选，未任取验证码' if result['status'] == 'ambiguous'
+                          else '尚未收到当前时间窗口内的验证码')
+        except v2.ButlerV2Error as exc:
+            if not exc.retryable:
+                raise _v2_error(exc) from exc
+            last_code, last_error = exc.error_code, str(exc)
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        if interval:
-            bounded_sleep(min(interval, remaining))
-
-    elapsed = time.monotonic() - started
-    logger.warning("[EmailButler] PG 入站等待结束但没有 OTP，累计等待 %.1fs", elapsed)
-    raise EmailButlerClientError(
-        f"等待 Email Butler 入站验证码超时（>{wait_seconds}s）：{target}; {last_error}",
-        error_code=last_error_code,
-    )
-
-
-def fetch_latest_otp(
-    email: str,
-    after_ts: float | None = None,
-    max_wait: int | None = None,
-    poll_interval: int | None = None,
-    settle_seconds: int | None = None,
-) -> str:
-    """轮询 Butler `/messages`，返回当前租约内最新 OpenAI 六位验证码。"""
-    account = get_account_context(email)
-    if not account:
-        try:
-            account = restore_account_context(email)
-        except EmailButlerClientError as exc:
-            raise EmailButlerClientError(f"Email Butler 邮箱租约上下文恢复失败: {email}; {exc}") from exc
-
-    if account.provider == "icloud_hme":
-        return fetch_inbound_otp(
-            email, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval, settle_seconds=settle_seconds,
-            require_recipient_evidence=True, strict_family=True, mailbox_email=account.mailbox_email,
-            api_base=account.api_base, api_key=account.api_key,
-            acquisition_id=account.acquisition_id,
-        )
-
-    wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
-    interval = max(1, int(poll_interval if poll_interval is not None else _email_cfg.OTP_POLL_INTERVAL))
-    settle = max(0, int(settle_seconds if settle_seconds is not None else _email_cfg.OTP_SETTLE_SECONDS))
-    deadline = time.monotonic() + max(0, wait_seconds)
-    since = ""
-    if after_ts is not None:
-        since = datetime.fromtimestamp(float(after_ts) - 30, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-
-    best_otp: str | None = None
-    settle_until: float | None = None
-    last_error = "尚未收到验证码"
-    logger.info("[EmailButler] 开始轮询邮箱 %s，最长 %ss", email, wait_seconds)
-    while time.monotonic() <= deadline:
-        remaining = max(1, int(deadline - time.monotonic()))
-        params = {"timeout_seconds": min(3, remaining), "interval_seconds": 1}
-        if since:
-            params["since"] = since
-        try:
-            payload = _request(
-                "GET",
-                f"/mailboxes/{quote(account.mailbox_id, safe='')}/messages",
-                params=params,
-                **{name: value for name, value in {"api_base": account.api_base, "api_key": account.api_key}.items() if value is not None},
-            )
-            otp = _message_otp(payload)
-            if otp and otp != best_otp:
-                best_otp = otp
-                settle_until = time.monotonic() + settle
-                logger.info("[EmailButler] 锁定 OTP 候选，等待 %ss 确认", settle)
-            if best_otp and settle_until is not None and time.monotonic() >= settle_until:
-                return best_otp
-        except EmailButlerClientError as exc:
-            last_error = str(exc)
-
-        remaining_float = deadline - time.monotonic()
-        if remaining_float <= 0:
-            break
-        bounded_sleep(min(interval, remaining_float))
-
-    if best_otp:
-        return best_otp
-    raise EmailButlerClientError(f"等待 Email Butler 验证码超时: {email}; {last_error}")
+        if remaining > 0:
+            bounded_sleep(min(max(interval, .1), remaining))
+    raise EmailButlerClientError(f'{last_code}: 等待 Email Butler 验证码超时；{last_error}', error_code=last_code)

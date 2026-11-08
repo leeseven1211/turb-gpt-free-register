@@ -1012,7 +1012,7 @@
   <div class="outlook-import-head">
     <div class="outlook-import-head-main">
       <h3 id="butlerImportTitle">从 Butler 导入邮箱</h3>
-      <p id="butlerImportDescription">从 Butler 已有库存补充邮箱，自动查询当前可用数量。</p>
+      <p id="butlerImportDescription">从 Butler 分配长期租用的邮箱，加入本地库存后使用。</p>
     </div>
     <button type="button" class="outlook-import-close" id="btnCloseButlerImport" aria-label="关闭 Butler 导入窗口">×</button>
   </div>
@@ -1021,33 +1021,20 @@
     <div class="butler-import-fields">
       <label class="outlook-import-field" for="butlerImportProvider">
         <span>邮箱类型</span>
-        <select id="butlerImportProvider"><option value="icloud_hme">iCloud 隐藏邮箱</option></select>
-      </label>
-      <label class="outlook-import-field" for="butlerImportIdentity">
-        <span>邮箱身份</span>
-        <select id="butlerImportIdentity">
-          <option value="all">全部</option>
-          <option value="primary">母邮箱</option>
-          <option value="plus_alias">子邮箱</option>
+        <select id="butlerImportProvider">
+          <option value="icloud_hme">iCloud 隐藏邮箱</option>
+          <option value="outlook_graph">Outlook / Hotmail</option>
+          <option value="cloudflare">Cloudflare</option>
+          <option value="mailcom">mail.com</option>
+          <option value="auto">全部来源</option>
         </select>
       </label>
       <label class="outlook-import-field" for="butlerImportCount">
         <span>导入数量</span>
         <input id="butlerImportCount" type="number" min="1" step="1" value="10" inputmode="numeric" aria-describedby="butlerImportCountHint">
-        <small id="butlerImportCountHint" class="outlook-import-hint">导入数量不限；不足时按实际可用数量导入。</small>
+        <small id="butlerImportCountHint" class="outlook-import-hint">不足时按预览可用数量导入，确认后由 Butler 分配完整地址。</small>
       </label>
     </div>
-    <details>
-      <summary>高级筛选（可选）</summary>
-      <div class="butler-import-fields">
-        <label class="outlook-import-field" for="butlerImportDomain">
-          <span>域名</span><input id="butlerImportDomain" type="text" list="butlerImportDomains" autocomplete="off" placeholder="留空不限"><datalist id="butlerImportDomains"></datalist>
-        </label>
-        <label class="outlook-import-field" for="butlerImportGroup">
-          <span>分组</span><input id="butlerImportGroup" type="text" list="butlerImportGroups" autocomplete="off" placeholder="留空不限"><datalist id="butlerImportGroups"></datalist>
-        </label>
-      </div>
-    </details>
     </div>
     <p id="butlerImportError" class="butler-import-feedback" role="alert" hidden></p>
     <div id="butlerImportPreview" class="butler-import-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1140,14 +1127,14 @@
 <script src="{{ url_for('static', filename='js/shared/common.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261105-concurrency-control') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261108-butler-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261105-concurrency-control') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261030-butler-unlimited') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261108-butler-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261105-concurrency-control') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261107-remove-menu-help') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261108-butler-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

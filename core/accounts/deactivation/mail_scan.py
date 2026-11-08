@@ -60,6 +60,7 @@ _PERMANENT_EMAIL_BUTLER_SCAN_ERRORS = (
     ("http 404", "email account not found"),
     ("http 403", "email is not registered for openai"),
 )
+_BUTLER_SCAN_ERROR = "signal_scan_unsupported: Email Butler v2 仅提供验证码接口，暂不支持封号邮件扫描"
 
 # The lookback setting predates C's canonical schema and is still a local
 # compatibility setting.  Keep it in the same durable snapshot envelope as
@@ -145,6 +146,8 @@ def _is_permanent_email_butler_scan_error(exc: BaseException) -> bool:
     """Return whether a Butler scan error cannot be fixed by retrying."""
     if not isinstance(exc, EmailButlerClientError):
         return False
+    if getattr(exc, 'error_code', '') in {'signal_scan_unsupported', 'api_version_retired'}:
+        return True
     message = str(exc).lower()
     return any(
         status_marker in message and error_marker in message
@@ -192,6 +195,7 @@ def _scan(
             db.update_account_deactivation_mail(account_id, {
                 "status": "unsupported",
                 "trigger": trigger,
+                "preserve_checked_at": True,
                 "error": "该账号邮箱来源暂不支持封号邮件扫描",
             })
             reporter.stage("preflight", "skipped", "该账号邮箱来源暂不支持封号邮件扫描")
@@ -268,22 +272,22 @@ def _scan(
         reporter.note(error, stage=active_stage, level="WARNING", detail={"cancelled": True})
         reporter.finish(status="cancelled", message="封号邮件扫描任务已取消", error=error)
     except (EmailButlerClientError, CFTempMailError, ForwardIMAPError) as exc:
-        if source == "email_butler" and _is_permanent_email_butler_scan_error(exc):
+        if _is_permanent_email_butler_scan_error(exc) or 'signal_scan_unsupported' in str(exc):
             error = str(exc)
             db.update_account_deactivation_mail(account_id, {
-                "status": "unsupported", "trigger": trigger, "error": error,
+                "status": "unsupported", "trigger": trigger, "error": error, "preserve_checked_at": True,
             })
             logger.info(
                 "[DeactivationMail] account=%s Butler mailbox is unavailable; scan unsupported: %s",
                 account_id, exc,
             )
             reporter.stage(
-                "mailbox_scan", "skipped", "Email Butler 中不存在可扫描邮箱",
+                "mailbox_scan", "skipped", "Email Butler 当前不支持该邮件扫描",
                 level="WARNING", detail={"error": error, "permanent": True},
             )
             reporter.finish(
                 status="unsupported",
-                message="Email Butler 中不存在可扫描邮箱",
+                message="Email Butler 当前不支持该邮件扫描",
                 error=error,
                 result_summary={
                     "email_source": source,
@@ -465,7 +469,7 @@ def _scan_hme_group(
         }
         if error:
             detail["error"] = error[:500]
-        level = "INFO" if status == "success" else "WARNING" if status == "cancelled" else "ERROR"
+        level = "INFO" if status == "success" else "WARNING" if status in {"cancelled", "unsupported"} else "ERROR"
         # 单个别名的结果不代表共享扫描已完成；主阶段只由批次汇总收口。
         event = {
             "stage": active_stage, "message": message, "detail": detail,
@@ -561,10 +565,12 @@ def _scan_hme_group(
                 error = f"批量封号邮件扫描未返回账号结果: {account_id}"
                 payload = {"ok": False, "status": status, "error": error}
             elif result.get("ok", True) is False:
-                status = "failed"
+                status = "unsupported" if result.get('error_code') == 'signal_scan_unsupported' else "failed"
                 error = str(result.get("error") or "该别名扫描失败")[:500]
                 payload = dict(result)
                 payload.update({"ok": False, "status": status, "error": error})
+                if status == 'unsupported':
+                    payload['preserve_checked_at'] = True
             else:
                 status = "success"
                 error = ""
@@ -592,16 +598,19 @@ def _scan_hme_group(
                 account_id,
                 status,
                 "发现高置信度封号邮件" if payload.get("detected") else
-                "未发现封号邮件" if status == "success" else "封号邮件扫描失败",
+                "未发现封号邮件" if status == "success" else
+                "当前邮箱服务不支持封号邮件扫描" if status == "unsupported" else "封号邮件扫描失败",
                 error=error or None,
             )
 
         failed_count = sum(status == "failed" for status in processed.values())
+        unsupported_count = sum(status == "unsupported" for status in processed.values())
         summary = {
             "account_count": len(entries),
             "completed_count": len(processed),
-            "success_count": len(entries) - failed_count,
+            "success_count": len(entries) - failed_count - unsupported_count,
             "failed_count": failed_count,
+            "unsupported_count": unsupported_count,
             "partial_failure": bool(failed_count),
             "email_source": "icloud_hide",
             "scan_mode": _HME_SCAN_MODE,
@@ -611,6 +620,11 @@ def _scan_hme_group(
             error = f"{failed_count}/{len(entries)} 个 HME 别名扫描失败"
             context.report(stage="mailbox_scan", state="failed", message=error, level="ERROR", detail=summary)
             context.finish(status="failed", message=error, error=error, result_summary=summary)
+        elif unsupported_count:
+            context.report(stage="mailbox_scan", state="skipped",
+                message=f"{unsupported_count} 个账号的邮箱服务不支持封号邮件扫描", level="WARNING", detail=summary)
+            context.finish(status="unsupported" if unsupported_count == len(entries) else "partial_success",
+                message="部分或全部邮箱服务不支持封号邮件扫描", result_summary=summary)
         else:
             context.report(
                 stage="mailbox_scan", state="success", message=f"已完成 {len(entries)} 个 HME 别名扫描",
@@ -885,14 +899,15 @@ def _enqueue_native_bulk(
             skipped.append({"id": account_id, "error": "账号不存在"})
             continue
         source = str(account.get("email_source") or "").strip().lower()
-        if source not in _SUPPORTED_SOURCES:
+        if source not in _SUPPORTED_SOURCES or source == 'email_butler':
+            error = _BUTLER_SCAN_ERROR if source == 'email_butler' else "该账号邮箱来源暂不支持封号邮件扫描"
             db.update_account_deactivation_mail(account_id, {
                 "status": "unsupported", "trigger": trigger,
-                "error": "该账号邮箱来源暂不支持封号邮件扫描",
+                "error": error, "preserve_checked_at": True,
             })
             skipped.append({
                 "id": account_id, "unsupported": True,
-                "error": "该账号邮箱来源不支持邮件扫描",
+                "error": error, "error_code": "signal_scan_unsupported" if source == 'email_butler' else "email_scan_connector_unsupported",
             })
             continue
         if source == "icloud_hide":
@@ -1047,8 +1062,18 @@ def enqueue_due_accounts() -> dict:
     interval_seconds = scheduler_interval_seconds()
     due_ids: list[int] = []
     skipped = 0
-    for account in db.list_accounts(limit=5000, archived=False):
+    accounts = db.list_accounts(limit=5000, archived=False)
+    unsupported = _butler_scan_account_ids(accounts)
+    for account in accounts:
         if str(account.get("email_source") or "").strip().lower() not in _SUPPORTED_SOURCES:
+            continue
+        if int(account.get('id') or 0) in unsupported:
+            skipped += 1
+            if (account.get('deactivation_mail_scan_status') != 'unsupported'
+                    or account.get('deactivation_mail_error') != _BUTLER_SCAN_ERROR):
+                db.update_account_deactivation_mail(int(account['id']), {
+                    'status': 'unsupported', 'trigger': 'scheduled', 'error': _BUTLER_SCAN_ERROR,
+                    'preserve_checked_at': True})
             continue
         checked = _parse_time(account.get("deactivation_mail_checked_at"))
         if checked and (now - checked).total_seconds() < interval_seconds:
@@ -1058,6 +1083,23 @@ def enqueue_due_accounts() -> dict:
     result = enqueue_bulk(due_ids, trigger="scheduled") if due_ids else {"started": [], "busy": [], "skipped": []}
     skipped += len(result.get("busy") or []) + len(result.get("skipped") or [])
     return {"started": len(result.get("started") or []), "skipped": skipped}
+
+
+def _butler_scan_account_ids(accounts: list[dict]) -> set[int]:
+    """按原固定连接批量识别 v2，避免周期任务重复排入不支持的扫描。"""
+    from config import email as config
+    from core.email.email_butler.bridge import inbox_profiles_for_addresses
+
+    hme = [row for row in accounts if str(row.get('email_source') or '').lower() == 'icloud_hide']
+    profiles = inbox_profiles_for_addresses([row.get('email') or '' for row in hme]) if hme else {}
+    default_butler = str(getattr(config, 'ICLOUD_HME_INBOX_MODE', '') or '').lower() == 'forward_butler'
+    ids = {int(row['id']) for row in accounts if str(row.get('email_source') or '').lower() == 'email_butler'}
+    for row in hme:
+        profile = profiles.get(str(row.get('email') or '').strip().lower())
+        if ((profile or {}).get('connector') == 'forward_butler'
+                or profile is None and default_butler):
+            ids.add(int(row['id']))
+    return ids
 
 
 SCHEDULER_TASK = "deactivation_mail_scan"

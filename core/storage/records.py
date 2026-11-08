@@ -434,6 +434,19 @@ EMAIL_INBOX_PROFILES = TableSpec(
     partial_unique=((("inbox_key", "revision"), "TRUE"),),
 )
 
+EMAIL_BUTLER_LEASE_BINDINGS = TableSpec(
+    name="email_butler_lease_bindings",
+    promoted={
+        "binding_key": "TEXT NOT NULL", "address_norm": "TEXT NOT NULL",
+        "api_base": "TEXT NOT NULL", "client_id": "TEXT NOT NULL",
+        "lease_id": "TEXT NOT NULL", "service": "TEXT NOT NULL", "status": "TEXT NOT NULL",
+        "credential_ref": "TEXT", "acquisition_id": "TEXT", "expires_at": "TIMESTAMPTZ",
+        "created_at": "TEXT NOT NULL", "updated_at": "TEXT NOT NULL",
+    },
+    unique=("binding_key",),
+    indexes=(("api_base", "address_norm", "service"), ("lease_id",), ("acquisition_id",)),
+)
+
 EMAIL_USAGE_REPORTS = TableSpec(
     name="email_usage_reports",
     promoted={
@@ -634,6 +647,7 @@ ALL_TABLES: tuple[TableSpec, ...] = (
     EMAIL_BUTLER_IMPORT_BATCHES,
     EMAIL_BUTLER_IMPORT_ITEMS,
     EMAIL_INBOX_PROFILES,
+    EMAIL_BUTLER_LEASE_BINDINGS,
     EMAIL_USAGE_REPORTS,
     EMAIL_SERVICE_SYNC,
     EMAIL_OTP_REQUESTS,

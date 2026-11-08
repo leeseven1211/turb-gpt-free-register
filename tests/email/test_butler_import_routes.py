@@ -75,6 +75,40 @@ class ButlerImportRoutesTests(unittest.TestCase):
                 self.assertFalse(response.json['ok'])
                 self.assertNotIn('secret-token', response.get_data(as_text=True))
 
+    def test_v2_errors_preserve_classification_and_do_not_expire_turb_login(self):
+        from core.email.email_butler.v2 import ButlerV2Error
+
+        for code, upstream, expected, retryable in (
+            ('permission_denied', 403, 403, False),
+            ('invalid_api_key', 401, 502, False),
+            ('no_inventory', 409, 409, False),
+            ('provider_unavailable', 502, 502, True),
+            ('request_timeout', None, 502, True),
+        ):
+            with self.subTest(code=code):
+                self.service.preview.side_effect = ButlerV2Error(code, '私有上游细节',
+                    status_code=upstream, retryable=retryable, request_unknown=retryable)
+                response = self.client.post('/api/email-butler/import-preview', json={})
+                self.assertEqual(response.status_code, expected)
+                self.assertEqual(response.json['error_code'], code)
+                self.assertEqual(response.json['upstream_status'], upstream)
+                self.assertEqual(response.json['retryable'], retryable)
+                self.assertNotIn('私有上游细节', response.get_data(as_text=True))
+
+    def test_v2_unsupported_filter_and_configuration_have_specific_messages(self):
+        for code, expected in (
+            ('butler_filter_unsupported', '来源和数量'),
+            ('butler_configuration_required', '/v2'),
+            ('butler_availability_invalid', '响应无效'),
+        ):
+            with self.subTest(code=code):
+                self.service.preview.side_effect = ValueError(code)
+                response = self.client.post('/api/email-butler/import-preview', json={})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json['error_code'], code)
+                self.assertIn(expected, response.json['error'])
+                self.assertNotIn('最终转发收件箱', response.json['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

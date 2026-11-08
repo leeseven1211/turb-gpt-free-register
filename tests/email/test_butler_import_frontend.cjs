@@ -102,7 +102,7 @@ test('预览仅调用只读接口，筛选变化使旧预览不能提交', async
   const h = createView();
   await h.view.preview();
   assert.deepEqual(h.requests.map(item => item.url), ['/api/email-butler/import-preview']);
-  assert.deepEqual(h.requests[0].body, {provider: 'icloud_hme', identity_type: 'all', count: 5, domain: '', group: ''});
+  assert.deepEqual(h.requests[0].body, {provider: 'icloud_hme', count: 5});
   assert.match(h.node('butlerImportPreview').textContent, /12.*5/);
   h.node('butlerImportCount').value = '6';
   h.view.invalidate();
@@ -255,7 +255,7 @@ test('续跑返回原部分结果时持续查询同批次，直到后台开始�
   await h.view.retry();
   assert.equal(JSON.parse(h.storage.get('turb.butler-import.v1')).resume_revision,
     JSON.stringify([original.updated_at, original.status, original.imported, original.pending,
-      original.submitting, original.unknown, original.failed, original.error_code]));
+      original.submitting, original.unknown, original.failed, original.error_code, original.blocked_by]));
   assert.ok(h.timers.size > 0, '续跑请求成功后继续读取后台状态');
   await h.runTimers(2500);
   assert.equal(h.view.state.batch.status, 'partial');
@@ -276,7 +276,7 @@ test('续跑预检期间刷新页面仍会持续恢复进度，完成后清除�
     imported: 1, pending: 1, submitting: 0, unknown: 0, failed: 0,
     can_retry: true, error_code: null, updated_at: '2026-10-28T00:00:00Z'};
   const revision = JSON.stringify([original.updated_at, original.status, original.imported,
-    original.pending, original.submitting, original.unknown, original.failed, original.error_code]);
+    original.pending, original.submitting, original.unknown, original.failed, original.error_code, original.blocked_by]);
   const h = createView({saved: {batch_id: original.batch_id, request_id: 'same-request',
     preview_token: 'same-preview', resume_revision: revision}, handler(call) {
     assert.equal(call.method, 'GET');
@@ -452,7 +452,7 @@ test('异步预览返回时筛选已变更，不使用旧预览', async () => {
   let finish;
   const h = createView({handler() { return new Promise(resolve => { finish = resolve; }); }});
   const preview = h.view.preview();
-  h.node('butlerImportIdentity').value = 'primary';
+  h.node('butlerImportProvider').value = 'outlook_graph';
   h.view.invalidate();
   finish({ok: true, preview_token: 'stale', available: 5, selected: 5});
   await preview;
@@ -493,10 +493,26 @@ test('已知失败全部终态允许新建，存在未知记录时保留原批�
 });
 
 test('两个入口同步恢复提示，重新载入时展示原请求筛选', async () => {
-  const h = createView({saved: {request_id: 'r', preview_token: 'p', filters: {provider: 'icloud_hme', identity_type: 'plus_alias', count: 7, domain: '', group: 'prepared'}}});
+  const h = createView({saved: {request_id: 'r', preview_token: 'p', filters: {provider: 'outlook_graph', count: 7}}});
   assert.match(h.node('btnOpenButlerImport').textContent, /Butler.*导入|导入.*Butler/);
   assert.match(h.node('btnOpenButlerImportPool').textContent, /Butler.*导入|导入.*Butler/);
-  assert.equal(h.node('butlerImportIdentity').value, 'plus_alias');
+  assert.equal(h.node('butlerImportProvider').value, 'outlook_graph');
   assert.equal(h.node('butlerImportCount').value, '7');
-  assert.equal(h.node('butlerImportGroup').value, 'prepared');
+  assert.equal(h.node('butlerImportProvider').disabled, true);
+});
+
+
+test('新版支持四种来源和自动分配，只提交来源与数量', async () => {
+  for (const provider of ['icloud_hme', 'outlook_graph', 'cloudflare', 'mailcom', 'auto']) {
+    const h = createView();
+    h.node('butlerImportProvider').value = provider;
+    await h.view.preview();
+    assert.deepEqual(h.requests.at(-1).body, {provider, count: 5});
+    assert.match(h.node('butlerImportPreview').textContent, /确认后由 Butler 分配/);
+  }
+  const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
+  const modal = template.slice(template.indexOf('<dialog id="butlerImportModal"'), template.indexOf('</dialog>', template.indexOf('<dialog id="butlerImportModal"')));
+  assert.doesNotMatch(modal, /id="butlerImport(?:Identity|Domain|Group)"/);
+  assert.match(modal, /for="butlerImportProvider"/);
+  assert.match(modal, /for="butlerImportCount"/);
 });

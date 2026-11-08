@@ -230,7 +230,7 @@ class LocalEmailInventoryTests(PostgresTestCase):
             butler._CONTEXT_CACHE.clear()
             with patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://changed.example/v1', EMAIL_BUTLER_API_KEY='changed'):
                 restored = bridge.restore_context(account.email)
-            self.assertEqual(restored.api_base, 'https://fixed.example/v1')
+            self.assertEqual(restored.api_base, 'https://fixed.example/v2')
             self.assertEqual(restored.acquisition_id, 'fixture:pinned@icloud.com')
 
     def test_hme_fixed_route_survives_cache_loss_bridge_off_and_sidecar_mode(self):
@@ -251,7 +251,7 @@ class LocalEmailInventoryTests(PostgresTestCase):
                 hme, '_request', side_effect=AssertionError('固定路由不能改回sidecar')):
             email_provider.restore_email_context('stable@icloud.com', source='icloud_hide')
             self.assertEqual(hme.fetch_latest_otp('stable@icloud.com', after_ts=100, max_wait=1), '000000')
-        self.assertEqual(fetch.call_args.kwargs['api_base'], 'https://fixed.example/v1')
+        self.assertEqual(fetch.call_args.kwargs['api_base'], 'https://fixed.example/v2')
         self.assertEqual(fetch.call_args.kwargs['api_key'], 'test-value')
         self.assertEqual(fetch.call_args.kwargs['mailbox_email'], 'final@example.test')
 
@@ -301,11 +301,11 @@ class LocalEmailInventoryTests(PostgresTestCase):
                 butler, '_request', side_effect=AssertionError('禁止重新提交旧领取')):
             account = butler.pick_account(owner_kind='test', owner_id='one', acquisition_id='confirmed')
         self.assertEqual(account.email, 'original@icloud.com')
-        self.assertEqual(account.api_base, 'https://old.example/v1')
+        self.assertEqual(account.api_base, 'https://old.example/v2')
         self.assertEqual(inv.summary('email_butler')['available'], 1)
 
     def test_old_claimed_butler_mailbox_mismatch_and_expired_generic_never_reallocate(self):
-        from core.email.email_butler import client as butler
+        from core.email.email_butler import client as butler, lease_bindings, v2
         for identity, mailbox in [
             ('mismatch', {'id': 'old-id', 'email': 'different@icloud.com', 'provider': 'icloud_hme',
                 'recipient_mode': 'forwarded_exact_v1', 'strict_family': True, 'mailbox_email': 'final@example.test'}),
@@ -318,9 +318,22 @@ class LocalEmailInventoryTests(PostgresTestCase):
                     'api_base': 'https://old.example/v1', 'credential_ref': 'LOCAL_TEST_BUTLER_SECRET',
                     'address_norm': 'original@icloud.com', 'mailbox': mailbox,
                 })
-                with patch.object(butler, '_request', side_effect=AssertionError('禁止申请/续租旧地址')):
-                    with self.assertRaises(butler.EmailButlerClientError):
-                        butler.pick_account(owner_kind='test', owner_id='one', acquisition_id=identity)
+                with patch.object(butler, '_request', side_effect=AssertionError('禁止申请/续租旧地址')), patch.object(
+                        v2, 'create_lease', side_effect=AssertionError('过期恢复不能新领邮箱')) as create:
+                    if identity == 'mismatch':
+                        with self.assertRaises(butler.EmailButlerClientError):
+                            butler.pick_account(owner_kind='test', owner_id='one', acquisition_id=identity)
+                    else:
+                        # 旧短租快照不再决定 v2 当前权限；领取保留原身份，读取前核对迁移租约。
+                        account = butler.pick_account(owner_kind='test', owner_id='one', acquisition_id=identity)
+                        self.assertEqual(account.email, 'original@icloud.com')
+                        with patch.object(lease_bindings, 'resolve', side_effect=v2.ButlerV2Error(
+                                'lease_expired', status_code=410)) as resolve:
+                            with self.assertRaises(butler.EmailButlerClientError) as caught:
+                                butler.fetch_latest_otp(account.email, max_wait=1)
+                        self.assertEqual(caught.exception.error_code, 'lease_expired')
+                        self.assertEqual(resolve.call_args.kwargs['acquisition_id'], identity)
+                    create.assert_not_called()
 
     def test_unknown_remote_intent_cannot_fall_back_to_local_stock(self):
         inv = self.inventory()
@@ -357,7 +370,7 @@ class LocalEmailInventoryTests(PostgresTestCase):
             account = butler.pick_account(owner_kind='test', owner_id='one', acquisition_id='local-butler')
             butler._CONTEXT_CACHE.clear()
             restored = butler.restore_account_context(account.email)
-        self.assertEqual(restored.api_base, 'https://fixed.example/v1')
+        self.assertEqual(restored.api_base, 'https://fixed.example/v2')
         self.assertEqual(restored.mailbox_email, 'final@example.test')
         self.assertTrue(restored.strict_family)
 
@@ -368,16 +381,14 @@ class LocalEmailInventoryTests(PostgresTestCase):
         account = butler.pick_account(owner_kind='test', owner_id='one', acquisition_id='scan')
         butler.release_account(account.email, status='used')
         butler._CONTEXT_CACHE.clear()
-        response = {'signal': {'detected': False}, 'recipient_mode': 'forwarded_exact_v1',
-                    'recipient_match': {'email': account.email, 'mailbox_email': 'final@example.test', 'strict_family': True},
-                    'recipient_evidence': {'original_recipients': [account.email]}}
         with patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://changed.example/v1', EMAIL_BUTLER_API_KEY='changed'), patch.object(
-                butler, '_request', return_value=response) as request:
-            self.assertTrue(butler.scan_openai_deactivation(account.email)['ok'])
+                butler, '_request', side_effect=AssertionError('不能重试退役信号接口')) as request:
+            with self.assertRaises(butler.EmailButlerClientError) as caught:
+                butler.scan_openai_deactivation(account.email)
+            self.assertEqual(caught.exception.error_code, 'signal_scan_unsupported')
             routes = bridge.inbox_profiles_for_addresses([account.email])
-        self.assertEqual(request.call_args.kwargs['api_base'], 'https://fixed.example/v1')
-        self.assertTrue(request.call_args.kwargs['json']['strict_family'])
-        self.assertEqual(routes[account.email]['api_base'], 'https://fixed.example/v1')
+        request.assert_not_called()
+        self.assertEqual(routes[account.email]['api_base'], 'https://fixed.example/v2')
         self.assertEqual(routes[account.email]['api_key'], 'test-value')
 
     def test_source_resolution_uses_durable_local_identity_after_process_cache_loss(self):

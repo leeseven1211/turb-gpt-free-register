@@ -108,8 +108,13 @@ class DerivedForwardIMAPTests(unittest.TestCase):
                 forward._settings()
 
     def test_butler_child_cannot_silently_switch_to_direct_imap(self):
-        with patch.multiple(forward._email_cfg, ICLOUD_HME_INBOX_MODE="forward_butler", ICLOUD_HME_FORWARD_IMAP_EMAIL=""), patch.object(forward, "_fetch_latest_otp_local") as local:
-            with self.assertRaisesRegex(forward.ForwardIMAPError, "mailbox_mismatch"):
+        from core.email.email_butler import v2
+        with patch.multiple(forward._email_cfg, ICLOUD_HME_INBOX_MODE='forward_butler',
+                ICLOUD_HME_FORWARD_IMAP_EMAIL='', EMAIL_BUTLER_API_BASE='https://fixture.test/v2',
+                EMAIL_BUTLER_API_KEY='fixture'), patch.object(forward, '_fetch_latest_otp_local') as local, \
+                patch('core.email.email_butler.lease_bindings.resolve', side_effect=v2.ButlerV2Error(
+                    'lease_restore_required', '原租约缺失')):
+            with self.assertRaisesRegex(forward.ForwardIMAPError, 'lease_restore_required'):
                 forward.fetch_latest_otp(CHILD_A, after_ts=0)
         local.assert_not_called()
 

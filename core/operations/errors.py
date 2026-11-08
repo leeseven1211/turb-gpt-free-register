@@ -1049,6 +1049,58 @@ def _registration_error_projection(
 
 
 _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
+    'butler_client_response_invalid': ('MAIL-BUTLER-V2-001', 'Butler 客户端身份回执无效'),
+    'butler_request_invalid': ('MAIL-BUTLER-V2-002', 'Butler 请求路径或参数无效'),
+    'butler_lease_id_invalid': ('MAIL-BUTLER-V2-003', 'Butler 原租约编号无效'),
+    'butler_wait_invalid': ('MAIL-BUTLER-V2-004', 'Butler 取码等待参数无效'),
+    'butler_since_invalid': ('MAIL-BUTLER-V2-005', 'Butler 验证码时间边界无效'),
+    'butler_release_response_invalid': ('MAIL-BUTLER-V2-006', 'Butler 退租结果回执无效'),
+    'butler_availability_response_invalid': ('MAIL-BUTLER-V2-007', 'Butler 可用库存回执无效'),
+    'idempotency_key_invalid': ('MAIL-BUTLER-V2-008', 'Butler 原幂等键无效'),
+    'idempotency_key_required': ('MAIL-BUTLER-V2-009', 'Butler 缺少原幂等键'),
+    'provider_not_supported': ('MAIL-BUTLER-V2-010', 'Butler 邮箱来源不受支持'),
+    'service_not_found': ('MAIL-BUTLER-V2-011', 'Butler 目标服务未配置'),
+    'ttl_out_of_range': ('MAIL-BUTLER-V2-012', 'Butler 租约时长超出授权范围'),
+    'allocation_busy': ('MAIL-BUTLER-V2-013', 'Butler 邮箱分配正在竞争，请沿原意图重试'),
+    'invalid_code_cursor': ('MAIL-BUTLER-V2-014', 'Butler 验证码事件游标无效'),
+    'invalid_since': ('MAIL-BUTLER-V2-015', 'Butler 验证码时间边界被服务端拒绝'),
+    'api_version_retired': ('MAIL-BUTLER-V2-API', '旧邮箱接口已退役，请使用 Butler v2'),
+    'invalid_api_key': ('MAIL-BUTLER-V2-AUTH', 'Butler API Key 无效或已停用'),
+    'permission_denied': ('MAIL-BUTLER-V2-PERMISSION', 'Butler 客户端缺少当前操作权限'),
+    'service_not_allowed': ('MAIL-BUTLER-V2-SERVICE', 'Butler 客户端未授权 OpenAI 服务'),
+    'lease_restore_required': ('MAIL-BUTLER-V2-RESTORE', '原邮箱未找到可恢复的有效租约'),
+    'lease_not_found': ('MAIL-BUTLER-V2-NOTFOUND', '原租约不存在或当前客户端无权读取'),
+    'lease_expired': ('MAIL-BUTLER-V2-EXPIRED', '原邮箱租约已到期，保留原账号与任务'),
+    'lease_released': ('MAIL-BUTLER-V2-RELEASED', '原邮箱租约已退租'),
+    'lease_revoked': ('MAIL-BUTLER-V2-REVOKED', '原邮箱租约已被管理员回收'),
+    'lease_mapping_ambiguous': ('MAIL-BUTLER-V2-MAPPING', '原地址匹配多个租约，无法确定读取归属'),
+    'lease_client_mismatch': ('MAIL-BUTLER-V2-CLIENT', '原租约客户端与当前凭据不一致'),
+    'lease_identity_mismatch': ('MAIL-BUTLER-V2-IDENTITY', '租约回执的完整地址、服务或客户端不一致'),
+    'lease_original_mapping_required': ('MAIL-BUTLER-V2-ORIGINAL', '退租尚缺原操作对应的精确租约映射'),
+    'lease_expiry_invalid': ('MAIL-BUTLER-V2-EXPIRY', '原租约到期时间无效'),
+    'provider_unavailable': ('MAIL-BUTLER-V2-PROVIDER', '邮箱来源暂时不可用'),
+    'inbound_code_ambiguous': ('MAIL-BUTLER-V2-AMBIGUOUS', '本次挑战存在多个验证码投递候选'),
+    'otp_format_invalid': ('MAIL-BUTLER-V2-FORMAT', 'OpenAI 验证码格式不符合六位数字要求'),
+    'otp_before_challenge': ('MAIL-BUTLER-V2-TIME', '验证码邮件早于本次挑战'),
+    'signal_scan_unsupported': ('MAIL-BUTLER-V2-SCAN', 'Butler v2 未提供封号邮件扫描接口'),
+    'butler_transport_timeout': ('MAIL-BUTLER-V2-TIMEOUT', 'Butler 网络请求超时，原意图保留'),
+    'butler_transport_connection': ('MAIL-BUTLER-V2-CONNECT', 'Butler 网络连接未完成'),
+    'butler_transport_failed': ('MAIL-BUTLER-V2-NETWORK', 'Butler 网络传输失败'),
+    'butler_endpoint_redirect': ('MAIL-BUTLER-V2-REDIRECT', 'Butler 接口发生跳转，需要核对固定入口'),
+    'butler_configuration_invalid': ('MAIL-BUTLER-V2-CONFIG', 'Butler v2 连接配置无效'),
+    'butler_credentials_missing': ('MAIL-BUTLER-V2-KEY', 'Butler 原连接凭据缺失'),
+    'butler_code_response_invalid': ('MAIL-BUTLER-V2-CODE', 'Butler 验证码回执不符合合同'),
+    'butler_lease_response_invalid': ('MAIL-BUTLER-V2-RECEIPT', 'Butler 租约回执不符合合同'),
+    'butler_lease_identity_mismatch': ('MAIL-BUTLER-V2-RECEIPT-ID', 'Butler 返回了不同租约身份'),
+    'butler_response_invalid': ('MAIL-BUTLER-V2-RESPONSE', 'Butler 响应结构无效'),
+    'butler_response_not_json': ('MAIL-BUTLER-V2-JSON', 'Butler 未返回有效 JSON'),
+    'butler_pagination_invalid': ('MAIL-BUTLER-V2-PAGE', 'Butler 租约分页回执无效'),
+    'inventory_exhausted': ('MAIL-BUTLER-V2-EMPTY', 'Butler 当前没有可分配库存'),
+    'idempotency_conflict': ('MAIL-BUTLER-V2-INTENT', 'Butler 原幂等键对应的请求内容冲突'),
+    'idempotency_result_expired': ('MAIL-BUTLER-V2-INTENT-EXPIRED', '原幂等结果已过保留期，等待查询原租约'),
+    'rate_limited': ('MAIL-BUTLER-V2-RATE', 'Butler 接口请求受到限流'),
+    'active_lease_limit': ('MAIL-BUTLER-V2-LIMIT', 'Butler 客户端有效租约数达到上限'),
+    'service_unavailable': ('MAIL-BUTLER-V2-UNAVAILABLE', 'Butler 当前服务暂停新租用'),
     "email_scan_connector_unsupported": ("MAIL-SCAN-001", "固定收件连接器尚不支持封号邮件扫描"),
     "source_untrusted": ("MAIL-SOURCE-001", "验证码邮件缺少可信 OpenAI 来源证据"),
     "source_authentication_failed": ("MAIL-SOURCE-002", "验证码邮件的 OpenAI 来源认证失败或矛盾"),
@@ -1059,6 +1111,10 @@ _BUTLER_RECIPIENT_CAUSES: dict[str, tuple[str, str]] = {
     "mailbox_mismatch": ("MAIL-RECIPIENT-005", "验证码邮件的最终收件箱不匹配或未配置"),
     "inbound_code_timeout": ("MAIL-RECIPIENT-006", "等待窗口内未收到符合条件的入站验证码"),
 }
+
+
+# 通用上游原因码只能结合 Butler 来源或结构化邮箱诊断解释。
+_BUTLER_V2_SCOPED_CAUSES = frozenset(['permission_denied', 'invalid_api_key', 'service_not_allowed', 'lease_not_found', 'provider_unavailable', 'inventory_exhausted', 'idempotency_conflict', 'rate_limited', 'active_lease_limit', 'service_unavailable', 'provider_not_supported', 'service_not_found', 'ttl_out_of_range', 'allocation_busy', 'invalid_code_cursor', 'invalid_since', 'idempotency_key_invalid', 'idempotency_key_required'])
 
 
 _OTP_PAGE_NETWORK_CAUSES: dict[str, tuple[str, str]] = {
@@ -1087,7 +1143,8 @@ _OTP_PAGE_NETWORK_CAUSES: dict[str, tuple[str, str]] = {
 
 
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
-    **_BUTLER_RECIPIENT_CAUSES,
+    **{code: value for code, value in _BUTLER_RECIPIENT_CAUSES.items()
+       if code not in _BUTLER_V2_SCOPED_CAUSES},
     **_OTP_PAGE_NETWORK_CAUSES,
     "local_email_inventory_empty": ("MAIL-LOCAL-STOCK-001", "本地邮箱库存为空"),
     "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
@@ -2321,6 +2378,12 @@ def classify_task_error(
         )
     ):
         stage = "mfa_challenge"
+    if cause is None and 'butler' in raw.lower():
+        for mailbox_code in sorted(_BUTLER_V2_SCOPED_CAUSES, key=len, reverse=True):
+            if str(error_code) == mailbox_code or re.search(r'(?<![a-z0-9_])' + re.escape(mailbox_code) + r'(?![a-z0-9_])', raw):
+                display, detail = _BUTLER_RECIPIENT_CAUSES[mailbox_code]
+                cause = {'cause_code': mailbox_code, 'cause_display_code': display, 'cause_summary': detail}
+                break
     if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
         cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_"))

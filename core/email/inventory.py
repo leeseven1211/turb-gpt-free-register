@@ -89,7 +89,7 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     email = f'lower({alias}.email)'
     conditions = [f"{alias}.status = 'available'", f'{alias}.registered_account_id IS NULL',
         f"NULLIF(BTRIM({alias}.used_at), '') IS NULL",
-        f"COALESCE({alias}.data->>'service_sync_state', 'delivered') = 'delivered'",
+        f"COALESCE({alias}.data->>'service_sync_state', 'delivered') IN ('delivered','local_only')",
         f"lower(COALESCE({alias}.data->>'email_invalid', 'false')) NOT IN ('true', '1', 'yes')",
         f"lower(COALESCE({alias}.data->>'remote_active', 'true')) NOT IN ('false', '0', 'no')",
         f"lower(COALESCE({alias}.data->>'archived', 'false')) NOT IN ('true', '1', 'yes')",
@@ -102,11 +102,22 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     if source == 'email_butler':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
         profile_id = _profile_reference_sql(f"{alias}.data->>'inbox_profile_id'")
-        conditions += [f"{alias}.data->>'provider' = 'icloud_hme'",
-            f"{alias}.data->>'recipient_mode' = 'forwarded_exact_v1'",
-            f"{alias}.data->>'strict_family' = 'true'",
-            confirmed_handoff,
-            f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id = {profile_id} AND profile.state = 'active' AND profile.connector = 'forward_butler' AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL AND strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1)"]
+        v2_handoff = (f"{handoff}->>'version' = '2' AND {handoff}->>'state' = 'issued' "
+            f"AND {handoff}->>'service' = 'openai' AND {handoff}->>'email' = {email} "
+            f"AND {alias}.data->>'provider' IN ('icloud_hme','outlook_graph','cloudflare','mailcom') "
+            f"AND NULLIF(BTRIM({handoff}->>'lease_id'), '') IS NOT NULL "
+            f"AND NULLIF(BTRIM({handoff}->>'client_id'), '') IS NOT NULL "
+            f"AND {handoff}->>'expires_at' IS NULL")
+        legacy_handoff = (f"{alias}.data->>'provider' = 'icloud_hme' AND "
+            f"{alias}.data->>'recipient_mode' = 'forwarded_exact_v1' AND "
+            f"{alias}.data->>'strict_family' = 'true' AND ({confirmed_handoff})")
+        conditions += [f"(({v2_handoff}) OR ({legacy_handoff}))",
+            f"EXISTS (SELECT 1 FROM {profiles} profile WHERE profile.id = {profile_id} "
+            f"AND profile.state = 'active' AND profile.connector = 'forward_butler' "
+            f"AND NULLIF(BTRIM(profile.credential_ref), '') IS NOT NULL "
+            f"AND NULLIF(BTRIM(profile.data->'inbox_locator'->>'api_base'), '') IS NOT NULL "
+            f"AND (({handoff}->>'version'='2') OR "
+            f"strpos(COALESCE(profile.data->'inbox_locator'->>'mailbox_email', ''), '@') > 1))"]
     if source == 'icloud_hide':
         profiles = postgres_store.qualified(record_store.EMAIL_INBOX_PROFILES.name)
         profile_id = _profile_reference_sql(f"{alias}.data->'derivation_policy'->>'inbox_profile_id'")

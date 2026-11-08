@@ -34,13 +34,15 @@ function createImportView() {
   return {context, view: context.view, element, calls, poolChanges, toasts, refreshes};
 }
 
-test('打开本地 Butler 池的导入弹窗保留来源，提示完整 HME 地址', () => {
+test('打开本地 Butler 池的导入弹窗保留来源，提示恢复原长期租约', () => {
   const {view, element} = createImportView();
   view.openOutlookImportModal();
   assert.equal(element('importSourceV2').value, 'email_butler');
   assert.match(element('importTextV2').placeholder, /icloud\.com/);
   assert.match(element('importFormatHintV2').textContent, /每行.*完整/);
   assert.match(element('importFormatHintV2').textContent, /手动/);
+  assert.match(element('importFormatHintV2').textContent, /长期租用/);
+  assert.match(element('importFormatHintV2').textContent, /本人原租约/);
 });
 
 test('本地 Butler 地址列表复用预览和导入合同，不发远端领取请求', async () => {

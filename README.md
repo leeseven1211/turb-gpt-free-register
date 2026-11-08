@@ -311,7 +311,7 @@ cp 用于注册的邮箱.txt.example /tmp/outlook-import.txt
 email----password----clientId----refreshToken
 ```
 
-也可以在 WebUI 的「邮箱池」页面导入；导入弹窗会先预览新增、已存在、重复和无效行，确认后将资源与永久服务事实同步意图一起写入 PostgreSQL。Outlook 和通用 API 先显示 `pending_sync`，后台收到 Email Butler 的永久 `openai` 事实回执后才成为可用库存，不保存或改写源文件，也不创建注册账号。命令行可使用 `tools/maintenance/import_outlook_pool.py --file PATH`；接收成功不代表同步完成，可在邮箱页的「服务同步记录」查看结果。
+也可以在 WebUI 的「邮箱池」页面导入；导入弹窗先预览新增、已存在、重复和无效行，确认后将资源及本地永久导入事实一起写入 PostgreSQL，不保存或改写源文件，也不创建注册账号。Email Butler v2 不提供外部素材永久事实写接口，这类证据以 `local_only` 留存，不等待已退役的远端同步。命令行可使用 `tools/maintenance/import_outlook_pool.py --file PATH`。
 
 #### 通用 API 邮箱
 
@@ -373,13 +373,12 @@ CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
 #### 子邮箱统一由 Email Butler 管理
 
 子邮箱的生成、累计额度、后缀策略和库存状态统一在 **Email Butler** 管理。
-生产入口：[Email Butler → 子邮箱](https://codex-auth.leeseven.com/email-butler/derived.html)；[库存与交接规则](docs/workflows/email-resources.md)。
+生产入口：[Email Butler → 子邮箱](https://email-butler.leeseven.com/)；[库存与交接规则](docs/workflows/email-resources.md)。
 Turb 仅负责导入、领取和使用邮箱；新任务通过 `email_butler` 来源领取完整地址。
 HME 当前每个母地址累计上限为 1 个、后缀 6 位；Hotmail、Outlook 和其他
 微软邮箱分别保存上限与后缀策略。所有子邮箱仅在 Butler 手动点击生成，
 启动、导入和同步不会自动补充或替换地址。Turb 不再生成任何来源的新子地址。
-Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份；其他来源
-的子身份在精确收件契约接通前会拒绝使用，普通母邮箱继续按原来源领取。
+Butler 导入支持 HME、Outlook / Hotmail、Cloudflare 和 mail.com；新版通过完整地址对应的 OpenAI 长期租约读取，服务端负责各来源的精确收件验证。独立 Outlook、通用 API 等本地来源保持各自连接器。
 
 「邮箱池 → 历史子邮箱」保留旧子地址的完整地址、母资源、历史状态及关联账号或
 任务，支持表头筛选、分页和复制，不提供生成、停用或恢复库存的操作。旧生成和
@@ -408,33 +407,28 @@ Turb 当前接受具备 `forwarded_exact_v1` 严格收件声明的 HME 子身份
 
 #### iCloud Hide My Email（`icloud_hide`）
 
-新注册只从本地邮箱列表领取，注册页可用数也只统计本地合格库存；不查询 Butler 库存、不远端领号、不在注册时同步或创建邮箱。已有 `icloud_hide` 本地未用地址可直接使用。邮箱列表支持 Outlook 四段、通用 API 两段，以及 Butler iCloud 隐藏邮箱的完整地址列表导入。后者固定当前 Butler 连接与最终转发邮箱；其他 Butler provider 不能仅凭邮箱单列推断收码路径。Apple 账号和子邮箱生成仍由 Butler 管理，库存用完后手动导入 Turb。
+新注册只领取本地合格库存，不在注册时远端补号或创建邮箱。邮箱池支持独立 Outlook 四段、通用 API 素材，以及 Butler 已租用完整地址的粘贴恢复；新 Butler 库存通过 **从 Butler 导入** 按来源与数量申请长期租约。等待远端期间不持有业务数据库连接，批次进度、未知结果和原请求持久保存。
 
-在「邮箱池 → 邮箱列表」或「资源总览」点击 **从 Butler 导入**，选择 iCloud HME、母邮箱／子邮箱／全部与数量，可选域名或分组筛选。导入数量为正整数，不设每批上限，库存不足时按实际可用数量导入；候选查询使用 Butler 的 `limit=0` 读取全部合格库存。窗口自动查询并显示当前可用数和本次可导入数，筛选变化后自动更新；查询不占用库存，不展示地址列表。点击 **开始导入** 后，系统从 Butler 的现有合格库存领取并登记永久归属。Butler 支持 `mailboxes.import_batch.v1` 时，每组最多 25 个原地址通过 `/mailboxes/import-batch` 交接，200 个邮箱只需 8 次交接请求；旧 Butler 保留最多 4 个邮箱并行交接（小数据库连接池自动降低并发）。等待远端交接时释放业务数据库连接，收到回执后逐个验证原身份并独立写入本地，不生成子邮箱。批量响应缺失、超时或身份不符时保留原地址与归属，继续原批次不会换号；日志分别记录每组准备、远端和本地写入耗时。
+导入弹窗支持关闭后后台继续、重新打开查看进度及原批次重试；成功项保留，未确认项不换邮箱补足。原 `icloud_hide` 库存、历史子地址和固定 IMAP 收码路由继续保留。所有本地领取在同一 PostgreSQL 事务中保存稳定 owner、acquisition 与完整地址；重复导入不重置已有使用、保留或未知状态。详细规则见[邮箱资源与取码](docs/workflows/email-resources.md)。
 
-导入时显示实际批次数量、进度条及已导入／待处理／交接中／已跳过／待确认／失败统计。点击 **关闭，后台继续** 后无需等待，页面右下角和原导入入口都可查看进度；刷新页面自动读取原批次，不重复发起导入。成功完成后右下角提示自动收起，刷新后也不再弹出；邮箱页原导入入口仍可查看完成结果。库存展示首次更新后最多每 15 秒刷新一次，批次结束时补刷；页面刷新不阻塞进度查询。服务重启后，中断批次明确显示可继续；点击 **继续原批次** 恢复原地址及归属，成功项保留，不换邮箱补足。**粘贴导入** 继续支持手工地址、Outlook 四段和通用 API 资源。其他 Butler provider 需要各自完整的长期收件合同后才可使用按钮导入。
+Email Butler 对接使用 `/v2` 租约 API：人工导入只查询当前可用量，确认后由 Butler 分配 `service=openai` 的长期租约；不再按身份类型、域名或分组挑选地址。每项先保存幂等键和 `external_ref`，超时及重启后继续原请求；超出远端幂等保留期只能查询原租约，不重复随机分配。注册仍只领取本地已经完成导入的库存。
 
-Butler 手动导入通过原完整地址与稳定 acquisition 进行精确交接，验证身份、固定收件路径及永久服务事实回执，避免同一地址分配给同服务的其他消费者。未确认交接的固定 Butler HME 不参与新领取，历史已用邮箱及原 claim 的固定读取保持。Turb 的 iCloud 同步/创建、供应目录和 CloudMail Token/域名管理入口已停用；完整支持范围见[邮箱资源与取码](docs/workflows/email-resources.md)。
+历史 `source=icloud_hide` 的母地址及子地址保持原完整地址、owner、acquisition 和固定 profile。访问时将已知旧入口规范到 v2，并在 `email_butler_lease_bindings` 保存原客户端下的租约映射；没有有效原租约时明确报错，不申请替代邮箱。新旧地址统一通过 `/leases/{id}/code` 取码，保留挑战时间与稳定 `code_id`，单次等待最多 20 秒，总等待预算保持原配置。多投递返回 `ambiguous`，不任取最新邮件。
 
-本地领取在同一 PostgreSQL 事务中锁定库存、保存稳定 acquisition/owner，并绑定任务完整地址；并发和重跑保持原邮箱。重复导入不会重置已有使用、保留或未知状态。Butler 收码继续使用完整目标地址、最终邮箱、时间窗口和原始收件证据；Key 只保存版本化引用。历史远端领取意图保留恢复路径，结果未知时禁止换号。
-
-成功导入的完整地址永久带有 `openai` 标签，母地址与 plus 子地址分别记录。标签只表示已为 OpenAI 导入或使用，不增加注册成功次数。Butler 的新 OpenAI 申请排除这些地址，其他服务按自己的事实和归属判断；Turb 已导入库存及原任务重跑继续使用原身份。HME 交接要求 `service_facts.permanent.v1` 能力并校验永久事实回执；其他来源通过持久队列同步，失败重试原证据和固定连接。删除只结束可退回的归属，保留永久标签；邮箱页区分本地删除与远端待同步、已完成或失败原因。详细规则见[邮箱资源与取码](docs/workflows/email-resources.md)。
-
-HME 结果与持久回执队列在同一 PG 事务保存，后台以稳定 `operation_id`、原固定连接及凭据引用报告；网络超时不影响本地注册成功。远端临时读租约保持原 TTL 并自然到期，永久库存交接归属不释放。`release_account` 名称为历史接口兼容，不表示 HME 会撤销远端归属。未知结果保留上下文且不上报成功，晚到失败不能覆盖成功。
-
-历史 `source=icloud_hide` 的母地址及子地址通过显式桥接继续使用，不修改原地址、owner、acquisition 或使用状态；历史取码直接访问 Butler PG 入站接口，不向 Apple 恢复租约。上报结果使用 `/identities/report` 和稳定 `operation_id`，未知结果保留原占用状态。配置示例：
+结果在本地事务内记录为 `local_only`，成功不能被晚到失败覆盖；v2 没有原 `/identities/report` 或 `/service-facts/batch`，不伪造远端送达。成功和结果未知账号保留长期读取权，只有原规则允许的显式删除才按原租约退租。Butler 当前服务标签随租约结束，Turb 本地永久导入历史继续保留。
 
 ```dotenv
 EMAIL_SOURCE=icloud_hide,email_butler,outlook,generic_api,cloudflare_domain
 ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True
 ICLOUD_HME_INBOX_MODE=forward_butler
 ICLOUD_HME_AUTO_CREATE=False
-EMAIL_BUTLER_API_BASE=https://你的入口/email-butler/v1
+EMAIL_BUTLER_API_BASE=https://email-butler.leeseven.com/v2
 EMAIL_BUTLER_API_KEY=专用客户端Key
-ICLOUD_HME_FORWARD_IMAP_EMAIL=最终收件箱
 ```
 
-历史来源无需改名；OTP 和封号邮件扫描都遵循原固定 Butler 连接。严格 OTP 保留显式发码时间，避免拿到前一次挑战的旧码；母子完整地址和最终收件箱必须分别匹配。所有来源的旧本机入口禁止新生成子地址，已有生成请求仍可恢复，新库存由 Butler 管理。
+Key 必须保持原稳定客户端并授权 `openai`。读取原租约需要 `leases.read`、`codes.read`；人工长期导入需要 `leases.create`、`leases.long_term`；显式删除需要 `leases.release`；限时租约续租还需要 `leases.renew`。连接测试分别展示认证及缺少的权限。v2 不要求 Turb 提供最终物理收件箱；已有 profile 和凭据版本保留，不覆盖历史路由。
+
+v2 公开 API 没有封号邮件扫描，Butler 连接明确显示不支持，自动任务不反复提交无效扫描；独立 IMAP 等具备该能力的来源继续按原规则扫描。所有来源的旧本机入口禁止新生成子地址，已有生成请求仍可恢复，新库存由 Butler 管理。
 
 桥接默认关闭。启用前先将完整历史身份导入 Butler，再运行受控迁移工具；工具默认只读预览，不初始化表、不写密钥。显式执行只改变原固定 IMAP profile 的引用，保留旧 profile 和版本化密钥，母资源和子地址的所有业务状态保持不变：
 
@@ -478,7 +472,7 @@ ICLOUD_HME_FORWARD_IMAP_EMAIL=你的_Gmail_地址
 ICLOUD_HME_FORWARD_IMAP_PASSWORD=你的_Gmail_应用专用密码
 ```
 
-- `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [部署与维护](docs/deployment/operations.md)。子地址及严格母地址要求 `inbound.recipient_evidence.v1` 能力，按完整目标地址、实际收件箱和投递证据核对，不能通过 IMAP 兜底绕过严格契约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
+- `forward_butler` 表示 Oracle 接收 Gmail 后写入 Email Butler PG。迁移顺序和验收边界见 [部署与维护](docs/deployment/operations.md)。Butler v2 按原长期租约、完整目标地址、服务及 `code_id` 取码，服务端负责投递证据验证，不能通过 IMAP 兜底绕过原租约。历史固定 IMAP profile 可通过上述工具受控切换，旧 profile 始终保留以便回滚。
 - `forward_imap` 的 Gmail 应用专用密码加密保存在运行配置数据库中，不会写入仓库或日志。
 - 本机收码使用共同的单调时钟截止时间，覆盖建连、登录、只读选箱、搜索、逐封读取和轮询；每步还受 `ICLOUD_HME_REQUEST_TIMEOUT` 限制。按最新候选使用 `BODY.PEEK` 取信，取得有效码即停止扫描并直接关闭连接，不等待 LOGOUT。日志仅记录阶段、数量和耗时。异常网络执行最多占用 8 个后台槽位，等待槽位也计入收码预算；晚到连接会被关闭，不接受超过总期限才返回的验证码。
 - 真实 IMAP 连接使用 UID 搜索和读取，避免邮件删除引起序号漂移；批量封号邮件扫描每次最多读取 20 封并按响应 UID 归属，收码仍逐封读取并在取得有效码后立即结束。日期月份固定为英文，不受本机语言影响。
@@ -999,7 +993,7 @@ USE_EMAIL_SERVICE=True
 EMAIL_SOURCE=icloud_hide,email_butler,outlook,generic_api,cloudflare_domain
 OTP_POLL_INTERVAL=3
 OTP_MAX_WAIT=240
-EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
+EMAIL_BUTLER_API_BASE=https://email-butler.leeseven.com/v2
 EMAIL_BUTLER_API_KEY=请从生产客户端配置安全同步，禁止提交
 EMAIL_BUTLER_REQUEST_TIMEOUT=20
 
@@ -1196,7 +1190,7 @@ ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED=True
 
 领取的目标邮箱若已属于本地账号（包括已归档或已废号的账号），换绑会在申请代理和发送远端请求前停止，并将任务与当前账号的换绑状态收口为失败；已用邮箱不会被释放为可用邮箱。应先核对邮箱来源的已使用记录，再重试。
 
-换绑远端成功且本地写回确认后，会将目标邮箱收口为已使用。Email Butler 按 API Key 的服务策略登记 `openai` 标签，避免后续再次分配；若供应商收口失败，任务保留换绑成功并记录告警。此流程不会自动回填旧版本成功记录中遗漏的服务标签，历史补登记须先核对账号、换绑结果和远端邮箱身份。
+换绑远端成功且本地写回确认后，目标邮箱收口为已使用并保存本地证据。Butler v2 的 OpenAI 服务标签来自原有效租约；任务结束保留读取权，不发送退役的注册结果报告。失败告警不会撤销已确认的换绑结果。
 
 账号列表显示 AT 签发时间、过期时间和剩余时间。定时刷新只处理进入提前刷新窗口的账号；默认提前 24 小时检查。自动刷新开关、扫描间隔、提前刷新窗口、启动后首次巡检延迟和单轮上限统一在「配置 → 注册与账号 → 刷新 AT」维护，配置如下：
 
@@ -1235,15 +1229,15 @@ WebUI「账号」页提供单账号“复查”和批量“查封号邮件”。
 
 当前支持以下账号邮箱来源：
 
-- `email_butler`：调用 `/v1/signals/scan`。
+- `email_butler`：v2 公开 API 不提供封号邮件扫描，显示不支持，不伪造阴性结果。
 - `cloudflare`：优先调用只读 `CLOUDFLARE_SIGNAL_PATH`；当前进程仍保有邮箱 JWT 时可回退扫描收件箱。
-- `icloud_hide`：通过独立协调队列处理；每个合并批次只建立一条转发 Gmail/IMAP 连接，服务器端按多个隐藏邮箱合并过滤收件人，再按账号拆分结果，不会为每个账号单独建连接或下载整个收件箱。
+- `icloud_hide`：固定 Butler 路由同样不支持；原独立 Gmail/IMAP 路由通过协调队列合并扫描，再按完整地址拆分结果。
 
 `outlook`、`cloudflare_domain` 等其他来源会显示“不支持”，不会误报。已确认收到封号通知后，证据会持久保留；后续缩短回溯窗口或一次未命中不会把它自动清除。
 
 ```dotenv
 # Email Butler（本地开发可使用受 API Key 保护的 HTTPS 入口；服务器本机可用 127.0.0.1）
-EMAIL_BUTLER_API_BASE=https://codex-auth.leeseven.com/email-butler/v1
+EMAIL_BUTLER_API_BASE=https://email-butler.leeseven.com/v2
 EMAIL_BUTLER_API_KEY=请替换
 EMAIL_BUTLER_REQUEST_TIMEOUT=20
 

@@ -1071,12 +1071,12 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "EMAIL_BUTLER_API_BASE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "Email Butler API 地址", "help": "通用 /v1 根地址，例如 http://127.0.0.1:8788/v1",
+        "label": "Email Butler API 地址", "help": "v2 租约 API 根地址，例如 https://email-butler.leeseven.com/v2；历史固定连接会规范到 v2",
         "storage": "env",
     },
     {
         "key": "EMAIL_BUTLER_API_KEY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "Email Butler API Key", "help": "专用客户端 Key；策略在 Butler 端绑定，保存在 .env",
+        "label": "Email Butler API Key", "help": "客户端需授权 openai；读取需要 leases.read/codes.read，导入长租需要 leases.create/leases.long_term，退租需要 leases.release；密钥加密保存",
         "storage": "env", "secret": True,
     },
     {

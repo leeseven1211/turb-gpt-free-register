@@ -17,13 +17,14 @@ from webui.routes.email_pool import _parse_email_pool_import
 
 
 class LocalEmailImportParsingTests(unittest.TestCase):
-    def test_butler_text_import_keeps_full_hme_identity_and_rejects_other_routes(self):
+    def test_butler_text_import_keeps_complete_addresses_from_all_providers(self):
         parsed = _parse_email_pool_import(
             'Parent@icloud.com\nparent+tag@icloud.com\nuser@outlook.com\na@@icloud.com\n',
             'email_butler',
         )
-        self.assertEqual(parsed['records'], [{'email': 'parent@icloud.com'}, {'email': 'parent+tag@icloud.com'}])
-        self.assertEqual(len(parsed['errors']), 2)
+        self.assertEqual(parsed['records'], [{'email': 'parent@icloud.com'}, {'email': 'parent+tag@icloud.com'},
+                                              {'email': 'user@outlook.com'}])
+        self.assertEqual(len(parsed['errors']), 1)
 
 
 class LocalEmailImportsTests(PostgresTestCase):
@@ -37,7 +38,7 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.env_patch = patch('config.env_loader._ENV_PATH', Path(self.directory.name) / '.env')
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
-        self.config_patch = patch.multiple('config.email', EMAIL_BUTLER_API_BASE='https://butler.example.test/v1',
+        self.config_patch = patch.multiple('config.email', EMAIL_BUTLER_API_BASE='https://butler.example.test/v2',
             EMAIL_BUTLER_API_KEY='test-fixed-key', ICLOUD_HME_FORWARD_IMAP_EMAIL='forward@example.test')
         self.config_patch.start()
         self.env_values_patch = patch.dict(os.environ)
@@ -52,11 +53,10 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.addCleanup(self.config_patch.stop)
         self.handoff_patch = patch('core.email.email_butler.inventory_handoff.handoff_for_import',
             side_effect=lambda email, profile, **kwargs: {
-                'version': 1, 'state': 'issued', 'owner_kind': 'local_inventory',
-                'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': email},
-                'owner_id': 'test-instance', 'acquisition_id': 'test-handoff:' + email,
-                'identity_id': 'identity:' + email,
-                'parent_email': email.partition('@')[0].split('+', 1)[0] + '@icloud.com',
+                'version': 2, 'state': 'issued', 'owner_kind': 'local_inventory', 'service': 'openai',
+                'owner_id': 'test-instance', 'client_id': 'test-client', 'provider': 'icloud_hme',
+                'acquisition_id': 'test-handoff:' + email, 'lease_id': 'lse_' + email.replace('@', '_'),
+                'email': email, 'expires_at': None,
             })
         self.handoff_patch.start()
         self.addCleanup(self.handoff_patch.stop)
@@ -82,7 +82,7 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.assertEqual(row['status'], 'available')
         self.assertEqual(row['provider'], 'icloud_hme')
         self.assertEqual(original_profile['connector'], 'forward_butler')
-        self.assertEqual(original_profile['inbox_locator'], {'api_base': 'https://butler.example.test/v1', 'mailbox_email': 'forward@example.test'})
+        self.assertEqual(original_profile['inbox_locator'], {'api_base': 'https://butler.example.test/v2', 'api_version': 2})
         self.assertNotIn('test-fixed-key', str(row))
         from core.email import inventory as local_email_inventory
         local_email_inventory.claim('email_butler', owner_kind='test', owner_id='list-redaction',
@@ -115,8 +115,8 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.assertEqual(db.import_generic_api_emails([{'email': 'used@icloud.com', 'code_url': 'https://code.example.test'}]), (0, 1))
         self.assertEqual(db.import_generic_api_emails([{'email': 'registered@icloud.com', 'code_url': 'https://code.example.test'}]), (0, 1))
 
-    def test_missing_fixed_forward_connection_fails_without_importing(self):
-        with patch('config.email.ICLOUD_HME_FORWARD_IMAP_EMAIL', ''):
+    def test_missing_fixed_api_key_fails_without_importing(self):
+        with patch('config.email.EMAIL_BUTLER_API_KEY', ''):
             response = self.post('/api/outlook/import', {'source': 'email_butler', 'text': 'new@icloud.com'})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)

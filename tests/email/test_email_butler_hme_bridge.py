@@ -2,7 +2,9 @@
 """统一 Butler 后的新租约及历史 HME 身份桥接回归。"""
 import unittest
 import os
-from unittest.mock import Mock, patch
+import hashlib
+from contextlib import contextmanager
+from unittest.mock import patch
 
 from config import email as cfg
 from core.email.email_butler import client as butler
@@ -87,12 +89,12 @@ class ButlerHMEProviderTests(PostgresTestCase):
             with self.assertRaisesRegex(butler.EmailButlerClientError, "recipient_mismatch"):
                 butler.fetch_latest_otp(PARENT, after_ts=100, max_wait=1)
 
-    def test_historical_report_404_without_remote_error_code_is_explicitly_classified(self):
-        response = Mock(status_code=404)
-        response.json.return_value = {"code": 404, "message": "email account not found"}
-        with patch.object(butler.requests, "request", return_value=response):
-            with self.assertRaisesRegex(butler.EmailButlerClientError, "icloud_identity_not_found"):
-                butler._request("POST", "/identities/report", json={"email": PARENT, "status": "ok"})
+    def test_historical_report_is_explicitly_retired_without_http(self):
+        with patch('requests.request') as request:
+            with self.assertRaisesRegex(butler.EmailButlerClientError, 'api_version_retired') as error:
+                butler._request('POST', '/identities/report', json={'email': PARENT, 'status': 'ok'})
+        self.assertEqual(error.exception.error_code, 'api_version_retired')
+        request.assert_not_called()
 
     def test_new_hme_lease_keeps_connection_for_fetch_and_release(self):
         with patch.object(butler, "_request", return_value={"code": 200, "mailbox": mailbox()}):
@@ -124,16 +126,17 @@ class ButlerHMEProviderTests(PostgresTestCase):
         self.assertEqual(request.call_args.kwargs["json"]["mailbox_email"], MAILBOX)
         self.assertTrue(request.call_args.kwargs["json"]["strict_family"])
 
-    def test_cached_hme_scan_uses_its_fixed_connection_without_profile_or_reallocation(self):
-        context = butler.EmailButlerAccount(PARENT, "lease-hme", provider="icloud_hme", mailbox_email=MAILBOX,
-            api_base="https://cached.test/v1", api_key="cached-key", strict_family=True)
+    def test_cached_hme_scan_is_explicitly_unsupported_without_http_or_reallocation(self):
+        context = butler.EmailButlerAccount(PARENT, 'lease-hme', provider='icloud_hme', mailbox_email=MAILBOX,
+            api_base='https://cached.test/v1', api_key='cached-key', strict_family=True)
         butler._CONTEXT_CACHE[PARENT] = context
-        with patch.object(butler, "_restore_hme_context", side_effect=AssertionError("cached fixed identity already available")), patch.object(
-            butler, "_request", return_value={**answer(), "signal": {"detected": False}}
-        ) as request:
-            self.assertTrue(butler.scan_openai_deactivation(PARENT)["ok"])
-        self.assertEqual(request.call_args.kwargs.get("api_base"), "https://cached.test/v1")
-        self.assertEqual(request.call_args.kwargs["api_key"], "cached-key")
+        with patch.object(butler, '_restore_hme_context', side_effect=AssertionError('不能重建身份')), \
+                patch.object(butler, '_request') as request:
+            with self.assertRaises(butler.EmailButlerClientError) as error:
+                butler.scan_openai_deactivation(PARENT)
+        self.assertEqual(error.exception.error_code, 'signal_scan_unsupported')
+        self.assertIs(butler.get_account_context(PARENT), context)
+        request.assert_not_called()
 
     def test_completed_hme_registration_retries_real_report_after_network_failure(self):
         from core.registration.service import _mark_completed_registration_email
@@ -303,43 +306,63 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
             return {"code": 200}
         self.fail("桥接不应调用其他接口")
 
+    @contextmanager
+    def v2_inbox(self):
+        from core.email.email_butler import lease_bindings, v2
+        leases = {}
+        def resolve(address, **kwargs):
+            identifier = 'lse_' + hashlib.sha256(address.encode()).hexdigest()[:16]
+            leases[identifier] = address
+            return {'lease_id': identifier, 'client_id': 'stable-client', 'email': address,
+                'provider': 'icloud_hme', 'service': 'openai', 'status': 'active', 'expires_at': None,
+                'api_base': v2.normalize_base(kwargs['api_base'])}
+        def code(lease_id, **kwargs):
+            self.assertIn(lease_id, leases)
+            return {'lease_id': lease_id, 'service': 'openai', 'status': 'matched',
+                'verification_code': '654321', 'code_id': 'code_stable_delivery',
+                'received_at': '1970-01-01T00:02:00Z'}
+        with patch.object(lease_bindings, 'resolve', side_effect=resolve) as restored, \
+                patch.object(v2, 'code', side_effect=code) as fetched, \
+                patch.object(v2, 'create_lease', side_effect=AssertionError('历史恢复不能新领邮箱')), \
+                patch.object(butler, '_request', side_effect=AssertionError('不能调用退役接口')):
+            yield restored, fetched
+
     def test_historical_child_restores_and_receives_without_sidecar_imap_or_old_secret(self):
-        address = self.child["address"]
-        with patch.object(butler, "_request", side_effect=self.request) as request, patch.object(
-                hme, "_request", side_effect=AssertionError("不能依赖本机 sidecar")), patch.object(
-                imap, "_connect", side_effect=AssertionError("不能读取本机 IMAP")):
-            self.assertEqual(email_provider.restore_email_context(address, source="icloud_hide"), "icloud_hide")
-            self.assertEqual(email_provider.wait_for_otp(address, after_ts=100, email_source="icloud_hide", max_wait=1), "654321")
-        self.assertFalse(any(call.args[1] == "/mailboxes" for call in request.call_args_list))
-        inbound = next(call for call in request.call_args_list if call.args[1] == "/inbound/code")
-        self.assertEqual(inbound.kwargs["json"]["email"], address)
-        saved = allocations.get_allocation(self.child["id"])
-        self.assertEqual((saved["address"], saved["owner_id"], saved["acquisition_id"], saved["state"]),
-            (address, "history-root", "history-intent", "reserved"))
+        address = self.child['address']
+        with self.v2_inbox() as (restored, fetched), patch.object(
+                hme, '_request', side_effect=AssertionError('不能依赖本机 sidecar')), patch.object(
+                imap, '_connect', side_effect=AssertionError('不能读取本机 IMAP')):
+            self.assertEqual(email_provider.restore_email_context(address, source='icloud_hide'), 'icloud_hide')
+            self.assertEqual(email_provider.wait_for_otp(address, after_ts=100, email_source='icloud_hide', max_wait=1), '654321')
+        self.assertEqual(restored.call_args.args, (address,))
+        self.assertEqual(fetched.call_args.kwargs['since'], '1970-01-01T00:01:40Z')
+        saved = allocations.get_allocation(self.child['id'])
+        self.assertEqual((saved['address'], saved['owner_id'], saved['acquisition_id'], saved['state']),
+            (address, 'history-root', 'history-intent', 'reserved'))
 
     def test_direct_parent_and_bound_entrypoints_use_bridge(self):
-        with patch.object(butler, "_request", side_effect=self.request), patch.object(
-                imap, "_connect", side_effect=AssertionError("不能读取本机 IMAP")), patch.object(
-                hme, "_request", side_effect=AssertionError("不能访问 sidecar")):
-            self.assertEqual(hme.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), "654321")
-            self.assertEqual(email_derivation.fetch_bound_otp(self.child["address"], after_ts=100, max_wait=1), "654321")
+        with self.v2_inbox() as (restored, fetched), patch.object(
+                imap, '_connect', side_effect=AssertionError('不能读取本机 IMAP')), patch.object(
+                hme, '_request', side_effect=AssertionError('不能访问 sidecar')):
+            self.assertEqual(hme.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), '654321')
+            self.assertEqual(email_derivation.fetch_bound_otp(self.child['address'], after_ts=100, max_wait=1), '654321')
+        self.assertEqual([call.args[0] for call in restored.call_args_list], [PARENT, self.child['address']])
+        self.assertNotEqual(fetched.call_args_list[0].args[0], fetched.call_args_list[1].args[0])
 
     def test_strict_butler_candidate_is_retained_in_child_authentication_ledger(self):
         from core.auth.email_guard import email_auth_session
-
-        address = self.child["address"]
-
-        def request(method, path, **kwargs):
-            value = self.request(method, path, **kwargs)
-            return {**value, "message_id": "stable-pg-message"} if path == "/inbound/code" else value
-
-        with email_auth_session(address) as session, patch.object(butler, "_request", side_effect=request):
-            self.assertEqual(email_provider.wait_for_otp(address, after_ts=100, max_wait=1), "654321")
-            saved = allocations.get_otp_request(session.row["id"])
-            self.assertTrue(saved["candidate_message_key"].endswith(":stable-pg-message"))
-            self.assertEqual(saved["candidate_evidence"]["original_recipients"], [address])
-            self.assertEqual(saved["submission_state"], "offered")
-            self.assertNotIn("654321", str(saved))
+        address = self.child['address']
+        with email_auth_session(address) as session, self.v2_inbox():
+            self.assertEqual(email_provider.wait_for_otp(address, after_ts=100, max_wait=1), '654321')
+            saved = allocations.get_otp_request(session.row['id'])
+            self.assertTrue(saved['candidate_message_key'].endswith(':code_stable_delivery'))
+            self.assertEqual(saved['candidate_evidence']['recipient'], address)
+            self.assertEqual(saved['candidate_evidence']['contract'], 'butler.v2.lease')
+            self.assertEqual(saved['candidate_evidence']['code_id'], 'code_stable_delivery')
+            self.assertEqual(saved['submission_state'], 'offered')
+            self.assertEqual(saved['cursor']['butler_v2_after_code_id'], 'code_stable_delivery')
+            self.assertNotIn('original_recipients', saved['candidate_evidence'])
+            self.assertNotIn('654321', str(saved))
 
     def test_bulk_scan_restores_parent_profile_without_any_child_allocation(self):
         from core.email.email_butler import bridge as email_butler_bridge
@@ -353,7 +376,7 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
             "derivation_policy": {"inbox_profile_id": profile["id"]}})
         with patch.dict(os.environ, {ref: "pinned-key"}):
             restored = email_butler_bridge.inbox_profiles_for_addresses([parent])
-        self.assertEqual(restored[parent]["api_base"], "https://pinned.test/v1")
+        self.assertEqual(restored[parent]["api_base"], "https://pinned.test/v2")
         self.assertEqual(restored[parent]["api_key"], "pinned-key")
         self.assertTrue(restored[parent]["strict_family"])
 
@@ -375,15 +398,18 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
 
     def test_parent_uses_pinned_butler_profile_when_global_connection_changes(self):
         from core.storage.email.inbox_cutover import apply_cutover, plan_cutover
-        ref = "EMAIL_DERIVATION_BUTLER_SECRET_PINNED"
-        apply_cutover(plan_cutover(api_base="https://pinned.test/v1", mailbox_email=MAILBOX, credential_ref=ref))
-        with patch.dict(os.environ, {ref: "pinned-key"}), patch.multiple(cfg,
-                EMAIL_BUTLER_API_BASE="", EMAIL_BUTLER_API_KEY="", ICLOUD_HME_FORWARD_IMAP_EMAIL=""), patch.object(
-                butler, "_request", side_effect=self.request) as request:
-            self.assertEqual(hme.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), "654321")
-        inbound = next(call for call in request.call_args_list if call.args[1] == "/inbound/code")
-        self.assertEqual(inbound.kwargs["api_base"], "https://pinned.test/v1")
-        self.assertEqual(inbound.kwargs["api_key"], "pinned-key")
+        ref = 'EMAIL_DERIVATION_BUTLER_SECRET_PINNED'
+        apply_cutover(plan_cutover(api_base='https://pinned.test/v1', mailbox_email=MAILBOX, credential_ref=ref))
+        with patch.dict(os.environ, {ref: 'pinned-key'}), patch.multiple(cfg,
+                EMAIL_BUTLER_API_BASE='', EMAIL_BUTLER_API_KEY='', ICLOUD_HME_FORWARD_IMAP_EMAIL=''), \
+                self.v2_inbox() as (restored, fetched):
+            self.assertEqual(hme.fetch_latest_otp(PARENT, after_ts=100, max_wait=1), '654321')
+        self.assertEqual(restored.call_args.args, (PARENT,))
+        self.assertEqual(restored.call_args.kwargs['credential_ref'], ref)
+        self.assertEqual(restored.call_args.kwargs['api_base'], 'https://pinned.test/v2')
+        self.assertEqual(restored.call_args.kwargs['api_key'], 'pinned-key')
+        self.assertEqual(fetched.call_args.kwargs['api_base'], 'https://pinned.test/v2')
+        self.assertEqual(fetched.call_args.kwargs['api_key'], 'pinned-key')
 
     def test_unknown_parent_preserves_local_pool_state(self):
         before = record_store.get_row(record_store.ICLOUD_HIDE_POOL, self.parent)
@@ -418,7 +444,7 @@ class HistoricalHMEBridgeTests(PostgresTestCase):
         request.assert_not_called()
         reports = record_store.list_rows(record_store.EMAIL_USAGE_REPORTS)
         self.assertEqual(len(reports), 1)
-        self.assertEqual(reports[0]["state"], "pending")
+        self.assertEqual(reports[0]["state"], "local_only")
         self.assertEqual(reports[0]["credential_ref"], reference)
         self.assertEqual(reports[0]["address_norm"], self.child["address"])
 

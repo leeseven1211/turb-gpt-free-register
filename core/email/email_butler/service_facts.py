@@ -1,4 +1,4 @@
-"""永久服务事实与退号的持久同步；网络调用只发生在提交后的发送阶段。"""
+"""保留本地永久服务事实；仅退租通过 Butler v2 持久发送。"""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +8,6 @@ import re
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
 
 from core.storage import postgres as pg, records as store
 
@@ -49,9 +48,9 @@ def _new_route():
     base = str(getattr(config, 'EMAIL_BUTLER_API_BASE', '') or '').strip().rstrip('/')
     key = str(getattr(config, 'EMAIL_BUTLER_API_KEY', '') or '').strip()
     try:
-        parsed = urlsplit(base)
-        valid = (parsed.scheme in {'http', 'https'} and parsed.hostname and not parsed.username
-                 and not parsed.password and not parsed.query and not parsed.fragment and parsed.path.endswith('/v1'))
+        from core.email.email_butler.v2 import normalize_base
+        base = normalize_base(base)
+        valid = bool(base)
     except ValueError:
         valid = False
     if not valid or not key:
@@ -62,7 +61,7 @@ def _new_route():
 
 
 def enqueue_import(source, row, *, conn, final_status='available', as_registered=False):
-    """原池行保留素材，只有中央回执确认后才成为可领取库存。"""
+    """v2 不接收业务事实：原子保存本地证据并完成本地导入。"""
     from core.email.email_butler.inventory_handoff import _consumer_instance
     address = _address(row['email'])
     event_key = f"{'registered-import' if as_registered else 'import'}:{source}:{row['id']}"
@@ -71,18 +70,40 @@ def enqueue_import(source, row, *, conn, final_status='available', as_registered
         return existing
     instance = _consumer_instance()
     evidence = 'turb-import:' + hashlib.sha256(f"{instance}:{event_key}:{address}".encode()).hexdigest()
-    route = _new_route()
     payload = {'address': address, 'service': 'openai', 'fact_type': 'imported', 'evidence_id': evidence,
                'source_instance': instance, 'source_record': f"{source}:{row['id']}",
                'observed_at': datetime.now(timezone.utc).isoformat()}
-    state = 'blocked' if route.get('error_code') else 'pending'
     event_id = store.insert_row(_TABLE, {'event_key': event_key, 'kind': 'import', 'address_norm': address,
-        'source': source, 'pool_id': row['id'], 'state': state, 'attempts': 0, **route,
+        'source': source, 'pool_id': row['id'], 'state': 'local_only', 'attempts': 0,
+        'api_base': '', 'credential_ref': '', 'error_code': 'service_facts_unsupported',
         'payload': payload, 'final_status': final_status, 'as_registered': as_registered}, conn=conn)
-    store.patch_row(_tables()[source], row['id'], {'status': 'pending_sync',
-        'service_tags': permanent_tags(row.get('service_tags')), 'service_sync_state': state,
-        'service_sync_error': route.get('error_code'), 'service_fact_permanent': False}, conn=conn)
-    return store.get_row(_TABLE, event_id, conn=conn)
+    event = store.get_row(_TABLE, event_id, conn=conn)
+    _publish_import_local(event, row, conn=conn)
+    return event
+
+
+def _publish_import_local(event, row, *, conn):
+    """新导入和旧 pending_sync 共用发布规则，不伪造远端事实回执。"""
+    if not row or _address(row['email']) != event['address_norm']:
+        return
+    if row.get('status') in {'tombstone', 'replaced', 'request_unknown', 'reserved', 'running'}:
+        return
+    final_status = event.get('final_status') or 'available'
+    if event['source'] == 'icloud_hide' and row.get('remote_active') is False:
+        final_status = 'disabled'
+    changes = {'service_sync_state': 'local_only', 'service_sync_error': None,
+        'service_fact_scope': 'local', 'service_fact_permanent': True,
+        'service_tags': permanent_tags(row.get('service_tags'))}
+    if row.get('status') in {'pending_sync', 'available'}:
+        changes['status'] = final_status
+    store.patch_row(_tables()[event['source']], row['id'], changes, conn=conn)
+    if event.get('as_registered'):
+        from core.storage.db_legacy import import_registered_email_accounts
+        imported, _ = import_registered_email_accounts(
+            [{**row, 'expires_at': row.get('registered_expires_at')}], event['source'],
+            _service_fact_confirmed=True, _conn=conn)
+        if not imported and not store.get_row_by(store.ACCOUNTS, 'email', row['email'], lower=True, conn=conn):
+            raise ValueError('registered_import_conflict: 原已注册账号导入无法完成')
 
 
 def enqueue_return(source, row, *, conn):
@@ -96,14 +117,20 @@ def enqueue_return(source, row, *, conn):
     profile = store.get_row(store.EMAIL_INBOX_PROFILES, int(profile_id), conn=conn) if profile_id else None
     from core.email.email_butler.client import original_handoff_acquisition
     acquisition = original_handoff_acquisition(address, row=row, profile=profile)
-    if source != 'email_butler' and not acquisition:
+    lease_id = str((row.get('butler_handoff') or {}).get('lease_id') or '')
+    if source != 'email_butler' and not acquisition and not lease_id:
         return None
     error = None
     if not profile or profile.get('connector') != 'forward_butler' or profile.get('state') != 'active':
         error = 'fixed_route_unavailable'
-    elif not acquisition:
+    elif not acquisition and not lease_id:
         error = 'acquisition_required'
     payload = {'email': address, 'service': 'openai', 'acquisition_id': acquisition}
+    if lease_id:
+        payload['lease_id'] = lease_id
+    client_id = str((row.get('butler_handoff') or {}).get('client_id') or '')
+    if client_id:
+        payload['client_id'] = client_id
     event_id = store.insert_row(_TABLE, {'event_key': event_key, 'kind': 'return', 'address_norm': address,
         'source': source, 'pool_id': row['id'], 'state': 'blocked' if error else 'pending', 'attempts': 0,
         'profile_id': profile_id,
@@ -115,7 +142,8 @@ def enqueue_return(source, row, *, conn):
 def _public(row):
     return {'source': row['source'], 'email': row['address_norm'], 'kind': row['kind'],
             'state': row['state'], 'error_code': row.get('error_code'),
-            'permanent': row['kind'] == 'return' or row['state'] == 'delivered',
+            'permanent': row['kind'] == 'return' or row['state'] in {'delivered', 'local_only'},
+            'scope': 'local' if row['state'] == 'local_only' else 'remote',
             'updated_at': row.get('updated_at')}
 
 
@@ -132,7 +160,7 @@ def list_sync(limit=100):
 
 
 def summary():
-    counts = {state: 0 for state in ('pending', 'sending', 'delivered', 'blocked')}
+    counts = {state: 0 for state in ('pending', 'sending', 'delivered', 'blocked', 'local_only')}
     with store.transaction() as conn, conn.cursor() as cur:
         cur.execute(f'SELECT state,count(*) AS n FROM {pg.qualified(_TABLE.name)} GROUP BY state')
         for row in cur.fetchall():
@@ -144,7 +172,7 @@ def summary():
 def pending_count(source, emails):
     with store.transaction() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT count(DISTINCT address_norm) AS n FROM {pg.qualified(_TABLE.name)} "
-                    "WHERE source=%s AND kind='import' AND state<>'delivered' AND address_norm=ANY(%s)",
+                    "WHERE source=%s AND kind='import' AND state NOT IN ('delivered','local_only') AND address_norm=ANY(%s)",
                     (source, sorted({_address(value) for value in emails})))
         return int(cur.fetchone()['n'])
 
@@ -159,18 +187,14 @@ def retry(source, email, kind):
             return False
         store.get_row(_tables()[source], rows[0]['pool_id'], conn=conn, for_update=True)
         row = store.get_row(_TABLE, rows[0]['id'], conn=conn, for_update=True)
-        if row['state'] in {'sending', 'delivered'}:
+        if row['state'] in {'sending', 'delivered', 'local_only'}:
             return True
         changes = {'state': 'pending', 'next_attempt_at': None, 'error_code': None}
         # 尚未建立连接的意图可首次补齐连接；已固定的原连接永不改绑。
-        if kind == 'import' and not row.get('api_base'):
-            changes.update(_new_route())
-            if changes.get('error_code'):
-                changes['state'] = 'blocked'
         if kind == 'return' and row.get('error_code') in {'fixed_route_unavailable', 'acquisition_required'}:
             profile = store.get_row(store.EMAIL_INBOX_PROFILES, row['profile_id'], conn=conn) if row.get('profile_id') else None
             if (not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler'
-                    or not row['payload'].get('acquisition_id')):
+                    or not (row['payload'].get('acquisition_id') or row['payload'].get('lease_id'))):
                 changes.update(state='blocked', error_code=row['error_code'])
         store.patch_row(_TABLE, row['id'], changes, conn=conn)
         _update_pool(row, changes['state'], changes.get('error_code'), conn=conn)
@@ -192,7 +216,8 @@ def _update_pool(event, state, error, *, conn):
 def _claim_next():
     with store.transaction() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {pg.qualified(_TABLE.name)} WHERE "
-            "(state='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=now())) "
+            "(kind='import' AND state IN ('pending','blocked')) "
+            "OR (state='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=now())) "
             "OR (state='sending' AND lease_until<=now()) ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1")
         row = store.merge_row(_TABLE, cur.fetchone())
         if not row:
@@ -203,7 +228,7 @@ def _claim_next():
         return {**row, **changes}
 
 
-def _finish(event, *, delivered=False, blocked=False, error=None):
+def _finish(event, *, delivered=False, blocked=False, local_only=False, error=None, status_code=None):
     with store.transaction() as conn, conn.cursor() as cur:
         if event.get('as_registered'):
             from core.storage.email.validity import lock_email_validity
@@ -216,7 +241,9 @@ def _finish(event, *, delivered=False, blocked=False, error=None):
                     (event['id'], event['lease_owner']))
         if not cur.fetchone():
             return
-        state = 'delivered' if delivered else 'blocked' if blocked else 'pending'
+        state = 'local_only' if local_only else 'delivered' if delivered else 'blocked' if blocked else 'pending'
+        if local_only and event['kind'] == 'import':
+            _publish_import_local(event, row, conn=conn)
         if delivered and event['kind'] == 'import':
             table = _tables()[event['source']]
             if row and _address(row['email']) == event['address_norm'] and row.get('status') == 'pending_sync':
@@ -236,6 +263,7 @@ def _finish(event, *, delivered=False, blocked=False, error=None):
         _update_pool(event, state, error, conn=conn)
         delay = min(3600, 5 * 2 ** min(event['attempts'], 10))
         store.patch_row(_TABLE, event['id'], {'state': state, 'error_code': error,
+            'error_status_code': status_code if type(status_code) is int else None,
             'lease_owner': None, 'lease_until': None,
             'next_attempt_at': datetime.now(timezone.utc) + timedelta(seconds=delay) if state == 'pending' else None,
             'delivered_at': datetime.now(timezone.utc) if delivered else None}, conn=conn)
@@ -265,6 +293,9 @@ def dispatch_once():
     event = _claim_next()
     if not event:
         return False
+    if event['kind'] == 'import':
+        _finish(event, local_only=True, error='service_facts_unsupported')
+        return True
     try:
         from config.runtime import read_persisted_values
         from core.email.email_butler import client
@@ -272,37 +303,28 @@ def dispatch_once():
         if not key or not event.get('api_base'):
             _finish(event, blocked=True, error='original_credential_missing')
             return True
-        if event['kind'] == 'import':
-            payload = client._request('POST', '/service-facts/batch', json={'items': [event['payload']]},
-                                      api_base=event['api_base'], api_key=key, timeout=10)
-            results = payload.get('results')
-            if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
-                raise ValueError('service_fact_receipt_invalid')
-            result = results[0]
-            if (result.get('address') != event['address_norm'] or result.get('evidence_id') != event['payload']['evidence_id']):
-                raise ValueError('service_fact_receipt_mismatch')
-            if result.get('code') != 200:
-                code = str(result.get('error_code') or 'service_fact_rejected')
-                if not re.fullmatch(r'[a-z][a-z0-9_]{1,100}', code):
-                    code = 'service_fact_response_invalid'
-                status = result.get('code')
-                if not isinstance(status, int):
-                    raise ValueError('service_fact_receipt_invalid')
-                retryable = result.get('retryable') is True or status in {408, 425, 429} or status >= 500
-                _finish(event, blocked=not retryable, error=code)
-                return True
-            validate_fact(result)
-        else:
-            result = client._request('POST', '/automation/return-account', json=event['payload'],
-                                     api_base=event['api_base'], api_key=key, timeout=10)
-            if (result.get('code') != 200 or result.get('email') != event['address_norm']
-                    or result.get('service', 'openai') != 'openai'):
-                raise ValueError('return_receipt_mismatch')
+        result = client.return_account(event['address_norm'], service='openai',
+            api_base=event['api_base'], api_key=key,
+            acquisition_id=event['payload'].get('acquisition_id') or '',
+            lease_id=event['payload'].get('lease_id') or '',
+            client_id=event['payload'].get('client_id') or '')
+        if result.get('ok') is False:
+            code = str(result.get('error_code') or 'return_response_invalid')
+            if not re.fullmatch(r'[a-z][a-z0-9_]{1,100}', code):
+                code = 'return_response_invalid'
+            unknown = result.get('request_unknown') is True
+            retryable = result.get('retryable') is True
+            _finish(event, blocked=not unknown and not retryable, error=code, status_code=result.get('status_code'))
+            return True
+        if (result.get('email') != event['address_norm'] or result.get('service') != 'openai'
+                or result.get('released') is not True):
+            raise ValueError('return_receipt_mismatch')
         _finish(event, delivered=True)
     except Exception as exc:
         status = getattr(exc, 'status_code', None)
         code = _delivery_error(exc, event['kind'])
-        _finish(event, blocked=isinstance(status, int) and 400 <= status < 500 and status not in {408, 425, 429}, error=code)
+        _finish(event, blocked=isinstance(status, int) and 400 <= status < 500 and status not in {408, 425, 429},
+                error=code, status_code=status)
     return True
 
 

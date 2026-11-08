@@ -1,18 +1,11 @@
-"""Persistent, HME-only result delivery. Importing this module does no work.
-
-The original endpoint, credential reference and payload are immutable snapshots.
-Registration commits its local result and this event in one transaction; only the
-runtime worker performs HTTP. Ordinary mailbox lease mutations are never queued.
-"""
+"""在业务事务中持久保存使用证据；Butler v2 不接收注册结果报告。"""
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
 
 from core.storage import postgres as postgres_store, records as record_store
 
@@ -68,7 +61,7 @@ def _route(address, source, row, cursor):
         profile = profiles[0] if profiles else None
     if profile:
         identity = profile.get("butler_identity") or {}
-        if profile.get("connector") != "forward_butler" or (source != "icloud_hide" and identity.get("provider") != "icloud_hme" and row.get("provider") != "icloud_hme"):
+        if profile.get("connector") != "forward_butler" or (source not in {"icloud_hide", "email_butler"} and identity.get("provider") != "icloud_hme" and row.get("provider") != "icloud_hme"):
             return None
         locator = profile.get("inbox_locator") or {}
         if _address(identity.get("email")) != address:
@@ -113,24 +106,23 @@ def enqueue(email, *, status, source, row=None, claim=None, cursor=None):
     operation_id = hashlib.sha256(f"turb-hme:{identity}:{result}".encode()).hexdigest()
     event_key = hashlib.sha256(f"{route['api_base']}:{operation_id}".encode()).hexdigest()
     payload = {"email": address, "status": result, "service": "openai", "consumer": "turb-gpt-register",
-        "message": "Turb registration result: " + ("used" if result == "ok" else "failed"), "operation_id": operation_id}
+        "message": "Turb 注册结果：" + ("已使用" if result == "ok" else "失败"), "operation_id": operation_id}
     # Remote permanent handoff ownership is unrelated to the local task owner.
     for key in ("acquisition_id", "owner_kind", "owner_id"):
         if handoff.get(key):
             payload[key] = str(handoff[key])
     if result == "ok":
         cursor.execute(f"UPDATE {_table()} SET state = 'superseded', updated_at = %s "
-            "WHERE address_norm = %s AND result <> 'ok' AND state IN ('pending', 'blocked')",
+            "WHERE address_norm = %s AND result <> 'ok' AND state IN ('pending', 'blocked', 'local_only')",
             (record_store._now(), address))
     rows = record_store.list_rows(record_store.EMAIL_USAGE_REPORTS, where="event_key = %s", params=(event_key,), conn=cursor.connection)
     if rows:
         return rows[0]
-    blocked = route["route_state"] != "active" or not route["api_base"] or not route["credential_ref"]
     event_id = record_store.insert_row(record_store.EMAIL_USAGE_REPORTS, {
         "event_key": event_key, "operation_id": operation_id, "address_norm": address, "source": source,
-        "result": result, "state": "blocked" if blocked else "pending", "attempts": 0,
+        "result": result, "state": "local_only", "attempts": 0,
         "profile_id": route["profile_id"], "api_base": route["api_base"], "credential_ref": route["credential_ref"],
-        "payload": payload, "last_error": "fixed_route_unavailable" if blocked else None,
+        "payload": payload, "last_error": None, "delivery_reason": "usage_report_unsupported",
     }, conn=cursor.connection)
     return record_store.get_row(record_store.EMAIL_USAGE_REPORTS, event_id, conn=cursor.connection)
 
@@ -166,7 +158,7 @@ def _claim_next():
         # Take the address advisory lock before any event row lock, matching
         # enqueue. A persisted sending lease spans the HTTP call after commit.
         cur.execute(f"SELECT id, address_norm FROM {_table()} WHERE "
-            "(state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())) "
+            "state IN ('pending', 'blocked') "
             "OR (state = 'sending' AND lease_until <= NOW()) ORDER BY id LIMIT 50")
         candidates = list(cur.fetchall())
         for candidate in candidates:
@@ -175,7 +167,7 @@ def _claim_next():
             if not cur.fetchone()["locked"]:
                 continue
             cur.execute(f"SELECT * FROM {_table()} WHERE id = %s AND "
-                "((state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())) "
+                "(state IN ('pending', 'blocked') "
                 "OR (state = 'sending' AND lease_until <= NOW())) FOR UPDATE SKIP LOCKED", (candidate["id"],))
             row = record_store.merge_row(record_store.EMAIL_USAGE_REPORTS, cur.fetchone())
             if not row:
@@ -194,7 +186,7 @@ def _claim_next():
     return None
 
 
-def _finish(event, *, delivered=False, blocked=False, error=None):
+def _finish(event, *, delivered=False, blocked=False, local_only=False, error=None):
     with record_store.transaction() as conn, conn.cursor() as cur:
         _lock(cur, event["address_norm"])
         cur.execute(f"SELECT * FROM {_table()} WHERE id = %s AND state = 'sending' AND lease_owner = %s FOR UPDATE",
@@ -202,7 +194,7 @@ def _finish(event, *, delivered=False, blocked=False, error=None):
         current = cur.fetchone()
         if not current:
             return
-        state = "delivered" if delivered else "blocked" if blocked else "pending"
+        state = "local_only" if local_only else "delivered" if delivered else "blocked" if blocked else "pending"
         if event["result"] != "ok" and has_success(event["address_norm"], cursor=cur):
             state = "superseded"
         delay = min(3600, 5 * (2 ** min(int(event["attempts"]), 10)))
@@ -210,39 +202,21 @@ def _finish(event, *, delivered=False, blocked=False, error=None):
             "state": state, "lease_owner": None, "lease_until": None,
             "next_attempt_at": datetime.now(timezone.utc) + timedelta(seconds=delay) if state == "pending" else None,
             "delivered_at": datetime.now(timezone.utc) if delivered else None, "last_error": error,
+            **({"delivery_reason": "usage_report_unsupported"} if local_only else {}),
         }, conn=conn)
 
 
 def dispatch_once():
-    """Deliver one claimed event using one bounded, idempotent HTTP attempt."""
+    """归档旧待发送意图，保留本地证据，不调用已退役的报告接口。"""
     event = _claim_next()
     if not event:
         return False
-    try:
-        from config.runtime import read_persisted_values
-        from core.email.email_butler import client as butler
-        parsed = urlsplit(event["api_base"])
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-            _finish(event, blocked=True, error="fixed_route_unavailable")
-            return True
-        reference = event["credential_ref"]
-        key = str(read_persisted_values().get(reference) or os.environ.get(reference) or "").strip()
-        if not key:
-            _finish(event, blocked=True, error="original_credential_missing")
-            return True
-        butler._request("POST", "/identities/report", json=event["payload"], api_base=event["api_base"], api_key=key, timeout=10)
-    except Exception as exc:
-        code = getattr(exc, "status_code", None)
-        blocked = isinstance(code, int) and 400 <= code < 500 and code not in {408, 425, 429}
-        # Exception text may contain URL credentials, mailbox data or OTPs.
-        _finish(event, blocked=blocked, error=f"http_{code}" if isinstance(code, int) else "delivery_unavailable")
-    else:
-        _finish(event, delivered=True)
+    _finish(event, local_only=True)
     return True
 
 
 def worker_status():
-    counts = {state: 0 for state in ("pending", "sending", "delivered", "blocked", "superseded")}
+    counts = {state: 0 for state in ("pending", "sending", "delivered", "blocked", "superseded", "local_only")}
     with record_store.transaction() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT state, count(*) AS n FROM {_table()} GROUP BY state")
         for row in cur.fetchall():
@@ -257,7 +231,7 @@ def _run_worker():
             if dispatch_once():
                 continue
         except Exception as exc:
-            logger.warning("HME result worker unavailable (%s)", type(exc).__name__)
+            logger.warning("邮箱使用证据归档暂不可用：%s", type(exc).__name__)
         _stop.wait(3)
 
 

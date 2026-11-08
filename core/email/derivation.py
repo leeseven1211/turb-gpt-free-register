@@ -8,7 +8,6 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
-from urllib.parse import urlsplit
 
 from config import email as email_config
 from core.storage import records as record_store
@@ -244,8 +243,13 @@ def _profile_credentials(profile: dict) -> dict:
     if not password:
         raise EmailDerivationError("email_derivation_profile_unavailable", "原收件配置的凭据引用缺失，不能切换当前全局收件账号")
     secret_field = "api_key" if profile["connector"] == "forward_butler" else "password"
+    locator = dict(profile.get("inbox_locator") or {})
+    if profile["connector"] == "forward_butler":
+        from core.email.email_butler.v2 import normalize_base
+        locator.update(api_base=normalize_base(locator.get("api_base", "")), api_version=2,
+                       credential_ref=reference)
     return {
-        **dict(profile.get("inbox_locator") or {}), "connector": profile["connector"], secret_field: password,
+        **locator, "connector": profile["connector"], secret_field: password,
         "id": profile["id"], "inbox_key": profile["inbox_key"], "revision": profile["revision"],
         **({"require_recipient_evidence": True, 'butler_identity': dict(profile.get('butler_identity') or {})}
            if profile["connector"] == "forward_butler" else {}),
@@ -253,13 +257,12 @@ def _profile_credentials(profile: dict) -> dict:
 
 
 def _butler_locator_valid(locator: dict) -> bool:
-    """固定 Butler 路由只接受 HTTP API 地址与完整最终邮箱。"""
+    """v2 路由以租约隔离读取，不要求客户端保存物理收件箱。"""
+    from core.email.email_butler.v2 import normalize_base, ButlerV2Error
     try:
-        parsed = urlsplit(str(locator.get("api_base") or ""))
-        mailbox = str(locator.get("mailbox_email") or "").strip()
-        return bool(parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.username
-                    and mailbox.partition("@")[0] and mailbox.partition("@")[2])
-    except ValueError:
+        normalize_base(str(locator.get('api_base') or ''))
+        return True
+    except ButlerV2Error:
         return False
 
 

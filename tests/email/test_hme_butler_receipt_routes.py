@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.accounts.deactivation import mail_scan as scans
-from core.email.email_butler import client as butler
+from core.email.email_butler import client as butler, v2, lease_bindings
 from core.email import forward_imap as imap
 
 
@@ -24,59 +24,60 @@ def receipt(address, *, detected=True):
 
 
 class StrictButlerReceiptTests(unittest.TestCase):
-    def inbound(self, payload, *, after_ts=100):
-        with patch.object(butler, "_require_recipient_capability"), patch.object(
-            butler, "_request", return_value=payload
-        ) as request:
-            value = butler.fetch_inbound_otp(
-                CHILD, after_ts=after_ts, max_wait=1, require_recipient_evidence=True,
-                strict_family=True, mailbox_email=MAILBOX, api_base="https://pinned.test/v1", api_key="pinned",
-            )
+    def inbound(self, payload, *, after_ts=100, address=CHILD):
+        binding = {'lease_id': 'lse_original', 'client_id': 'client-fixture',
+                   'email': address, 'service': 'openai', 'api_base': 'https://pinned.test/v2'}
+        result = {'lease_id': 'lse_original', 'service': 'openai', 'status': 'matched',
+                  'verification_code': '123456', 'code_id': 'code_original',
+                  'received_at': '1970-01-01T00:01:41Z', **payload}
+        with patch.object(lease_bindings, 'resolve', return_value=binding), patch.object(
+            v2, 'code', return_value=result
+        ) as request, patch.dict(butler._CONTEXT_CACHE, {}, clear=True):
+            value = butler.fetch_inbound_otp(address, after_ts=after_ts, max_wait=1,
+                require_recipient_evidence=True, strict_family=True, api_base='https://pinned.test/v2', api_key='fixture')
         return value, request.call_args.kwargs
 
     def test_strict_explicit_challenge_does_not_include_previous_30_seconds(self):
-        payload = {**receipt(CHILD), "verification_code": "123456"}
-        value, request = self.inbound(payload)
-        self.assertEqual(value, "123456")
-        self.assertEqual(request["json"]["since"], datetime.fromtimestamp(100, timezone.utc).isoformat().replace("+00:00", "Z"))
+        value, request = self.inbound({})
+        self.assertEqual(value, '123456')
+        self.assertEqual(request['since'], datetime.fromtimestamp(100, timezone.utc).isoformat().replace('+00:00', 'Z'))
 
     def test_strict_validated_candidate_keeps_stable_message_and_recipient_evidence(self):
-        payload = {**receipt(CHILD), "verification_code": "123456", "body": "must not reach ledger"}
-        with patch("core.auth.email_guard.observe_candidate") as observe:
-            self.inbound(payload)
+        with patch('core.auth.email_guard.observe_candidate') as observe:
+            self.inbound({'body': '不会写入候选账本'})
         observe.assert_called_once()
-        self.assertIn("pg:123", observe.call_args.args[0])
-        self.assertEqual(observe.call_args.kwargs["evidence"], payload["recipient_evidence"])
-        self.assertNotIn("body", observe.call_args.kwargs["cursor"])
+        self.assertTrue(observe.call_args.args[0].endswith(':code_original'))
+        self.assertEqual(observe.call_args.kwargs['evidence']['recipient'], CHILD)
+        self.assertEqual(observe.call_args.kwargs['evidence']['contract'], 'butler.v2.lease')
+        self.assertNotIn('body', str(observe.call_args))
+        self.assertNotIn('123456', str(observe.call_args))
 
     def test_invalid_receipt_never_records_candidate(self):
-        payload = {**receipt(PARENT), "verification_code": "123456"}
-        with patch("core.auth.email_guard.observe_candidate") as observe:
-            with self.assertRaisesRegex(butler.EmailButlerClientError, "recipient_mismatch"):
-                self.inbound(payload)
-        observe.assert_not_called()
+        for changes in ({'lease_id': 'lse_other'}, {'service': 'grok'},
+                        {'verification_code': 'ABC123'}, {'received_at': '1970-01-01T00:01:39Z'}):
+            with self.subTest(changes=changes), patch('core.auth.email_guard.observe_candidate') as observe:
+                with self.assertRaises(butler.EmailButlerClientError):
+                    self.inbound(changes)
+                observe.assert_not_called()
 
-    def test_non_strict_challenge_retains_compatibility_window(self):
-        with patch.object(butler, "_request", return_value={"code": 200, "verification_code": "123456"}) as request:
-            butler.fetch_inbound_otp(PARENT, after_ts=100, max_wait=1)
-        self.assertEqual(request.call_args.kwargs["json"]["since"], datetime.fromtimestamp(70, timezone.utc).isoformat().replace("+00:00", "Z"))
+    def test_parent_challenge_keeps_same_explicit_time_boundary(self):
+        _, request = self.inbound({}, address=PARENT)
+        self.assertEqual(request['since'], datetime.fromtimestamp(100, timezone.utc).isoformat().replace('+00:00', 'Z'))
 
-    def test_strict_scan_preserves_pinned_connection_and_full_address_proof(self):
+    def test_strict_scan_reports_v2_unsupported_without_reading_another_connection(self):
         with patch.object(butler, "_request", return_value=receipt(CHILD)) as request:
-            result = butler.scan_openai_deactivation(
-                CHILD, api_base="https://pinned.test/v1", api_key="pinned",
-                mailbox_email=MAILBOX, strict_family=True,
-            )
-        self.assertTrue(result["detected"])
-        self.assertEqual(request.call_args.kwargs["api_base"], "https://pinned.test/v1")
-        self.assertEqual(request.call_args.kwargs["api_key"], "pinned")
-        self.assertEqual(request.call_args.kwargs["json"]["email"], CHILD)
-        self.assertTrue(request.call_args.kwargs["json"]["strict_family"])
+            with self.assertRaisesRegex(butler.EmailButlerClientError, 'signal_scan_unsupported'):
+                butler.scan_openai_deactivation(
+                    CHILD, api_base="https://pinned.test/v1", api_key="pinned",
+                    mailbox_email=MAILBOX, strict_family=True,
+                )
+        request.assert_not_called()
 
-    def test_strict_negative_scan_requires_matching_recipient_receipt(self):
-        with patch.object(butler, "_request", return_value=receipt(PARENT, detected=False)):
-            with self.assertRaisesRegex(butler.EmailButlerClientError, "recipient_mismatch"):
+    def test_unsupported_scan_never_returns_negative_detection(self):
+        with patch.object(butler, "_request", return_value=receipt(PARENT, detected=False)) as request:
+            with self.assertRaisesRegex(butler.EmailButlerClientError, 'signal_scan_unsupported'):
                 butler.scan_openai_deactivation(CHILD, mailbox_email=MAILBOX, strict_family=True)
+        request.assert_not_called()
 
     def test_bulk_scan_does_not_turn_failed_item_into_negative_success(self):
         failed = {"ok": False, "error_code": "signal_history_incomplete", "error": "history incomplete"}
@@ -85,13 +86,13 @@ class StrictButlerReceiptTests(unittest.TestCase):
                 [PARENT, CHILD], api_base="https://pinned.test/v1", api_key="pinned",
                 mailbox_email=MAILBOX, strict_family=True,
             )
-        self.assertTrue(result[PARENT]["detected"])
+        self.assertFalse(result[PARENT]["ok"])
+        self.assertNotIn('detected', result[PARENT])
         self.assertFalse(result[CHILD]["ok"])
-        self.assertEqual(result[CHILD]["error_code"], "signal_history_incomplete")
-        self.assertEqual(set(request.call_args.kwargs["json"]["emails"]), {PARENT, CHILD})
-        request.assert_called_once()
+        self.assertEqual(result[CHILD]["error_code"], "signal_scan_unsupported")
+        request.assert_not_called()
 
-    def test_bulk_scan_shares_one_mailbox_scan_for_5000_targets(self):
+    def test_bulk_scan_marks_all_5001_targets_unsupported_without_remote_calls(self):
         targets = [f"alias{i}@icloud.com" for i in range(5001)]
 
         def respond(method, path, **kwargs):
@@ -100,24 +101,29 @@ class StrictButlerReceiptTests(unittest.TestCase):
         with patch.object(butler, "_request", side_effect=respond) as request:
             result = butler.scan_openai_deactivation_bulk(targets, mailbox_email=MAILBOX)
         self.assertEqual(len(result), 5001)
-        self.assertEqual([len(call.kwargs["json"]["emails"]) for call in request.call_args_list], [5000, 1])
-        self.assertGreaterEqual(request.call_args.kwargs["timeout"], 55)
+        self.assertTrue(all(item.get('error_code') == 'signal_scan_unsupported' for item in result.values()))
+        self.assertTrue(all('detected' not in item for item in result.values()))
+        request.assert_not_called()
 
-    def test_bulk_mismatched_receipt_fails_only_that_full_recipient(self):
-        with patch.object(butler, "_request", return_value={"code": 200, "results": {PARENT: receipt(PARENT), CHILD: receipt(PARENT)}}):
+    def test_retired_bulk_receipts_cannot_override_v2_unsupported(self):
+        with patch.object(butler, "_request", return_value={"code": 200, "results": {PARENT: receipt(PARENT), CHILD: receipt(PARENT)}}) as request:
             result = butler.scan_openai_deactivation_bulk([PARENT, CHILD], mailbox_email=MAILBOX)
-        self.assertTrue(result[PARENT]["ok"])
+        self.assertFalse(result[PARENT]["ok"])
         self.assertFalse(result[CHILD]["ok"])
-        self.assertEqual(result[CHILD]["error_code"], "recipient_mismatch")
+        self.assertEqual(result[CHILD]["error_code"], "signal_scan_unsupported")
+        request.assert_not_called()
 
     def test_bulk_malformed_item_fails_only_that_full_recipient(self):
         for invalid in ("broken", {"code": "invalid", "signal": {"detected": False}}):
             with self.subTest(invalid=invalid), patch.object(butler, "_request", return_value={
                 "code": 200, "results": {PARENT: receipt(PARENT), CHILD: invalid}
-            }):
+            }) as request:
                 result = butler.scan_openai_deactivation_bulk([PARENT, CHILD], mailbox_email=MAILBOX)
-                self.assertTrue(result[PARENT]["ok"])
+                self.assertFalse(result[PARENT]["ok"])
                 self.assertFalse(result[CHILD]["ok"])
+                self.assertEqual(result[PARENT]['error_code'], 'signal_scan_unsupported')
+                self.assertEqual(result[CHILD]['error_code'], 'signal_scan_unsupported')
+                request.assert_not_called()
 
 
 class HistoricalScanRouteTests(unittest.TestCase):
@@ -129,8 +135,11 @@ class HistoricalScanRouteTests(unittest.TestCase):
             imap._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_imap"
         ), patch.object(imap, "_connect", side_effect=AssertionError("固定 Butler 母地址不能改扫全局 IMAP")), patch.object(
             butler, "_request", return_value={"code": 200, "results": {PARENT: receipt(PARENT)}}
-        ):
-            self.assertTrue(imap.scan_openai_deactivation_bulk([PARENT])[PARENT]["detected"])
+        ) as request:
+            result = imap.scan_openai_deactivation_bulk([PARENT])[PARENT]
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error_code'], 'signal_scan_unsupported')
+        request.assert_not_called()
 
     def test_unavailable_parent_profile_fails_only_that_target_without_global_fallback(self):
         from core.email import derivation as email_derivation
@@ -155,7 +164,8 @@ class HistoricalScanRouteTests(unittest.TestCase):
             result = imap.scan_openai_deactivation_bulk([PARENT, CHILD])
         self.assertFalse(result[PARENT]["ok"])
         self.assertEqual(result[PARENT]["error_code"], "email_derivation_profile_unavailable")
-        self.assertTrue(result[CHILD]["detected"])
+        self.assertFalse(result[CHILD]["ok"])
+        self.assertEqual(result[CHILD]['error_code'], 'signal_scan_unsupported')
 
     def test_unavailable_child_profile_is_returned_without_losing_other_parent_route(self):
         from core.email import derivation as email_derivation
@@ -177,7 +187,7 @@ class HistoricalScanRouteTests(unittest.TestCase):
         self.assertEqual(profiles[CHILD]["error_code"], "email_derivation_profile_unavailable")
         self.assertEqual(profiles["other@icloud.com"]["api_key"], "valid")
 
-    def test_pinned_and_global_butler_targets_share_one_remote_batch_without_imap(self):
+    def test_pinned_and_global_butler_targets_are_unsupported_without_imap_fallback(self):
         profile = {"connector": "forward_butler", "api_base": "https://pinned.test/v1", "api_key": "pinned", "mailbox_email": MAILBOX}
         with patch("core.email.email_butler.bridge.inbox_profiles_for_addresses", return_value={CHILD: profile}), patch.object(
             imap._email_cfg, "ICLOUD_HME_INBOX_MODE", "forward_butler"
@@ -187,10 +197,11 @@ class HistoricalScanRouteTests(unittest.TestCase):
             imap, "_connect", side_effect=AssertionError("Butler scans must not open IMAP")
         ), patch.object(butler, "_request", return_value={"code": 200, "results": {PARENT: receipt(PARENT), CHILD: receipt(CHILD)}}) as request:
             result = imap.scan_openai_deactivation_bulk([PARENT, CHILD])
-        self.assertTrue(result[PARENT]["detected"])
-        self.assertTrue(result[CHILD]["detected"])
-        request.assert_called_once()
-        self.assertEqual(set(request.call_args.kwargs["json"]["emails"]), {PARENT, CHILD})
+        self.assertFalse(result[PARENT]["ok"])
+        self.assertFalse(result[CHILD]["ok"])
+        self.assertEqual(result[PARENT]['error_code'], 'signal_scan_unsupported')
+        self.assertEqual(result[CHILD]['error_code'], 'signal_scan_unsupported')
+        request.assert_not_called()
 
     def test_single_account_scan_does_not_report_ok_false_as_success(self):
         account = {"id": 7, "email": CHILD, "email_source": "icloud_hide"}

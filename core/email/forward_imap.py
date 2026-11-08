@@ -32,7 +32,11 @@ logger = logging.getLogger('core.forward_imap_client')
 
 
 class ForwardIMAPError(RuntimeError):
-    pass
+    def __init__(self, message, *, error_code='', status_code=None, retryable=False):
+        super().__init__(message)
+        self.error_code = error_code
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 class ForwardIMAPNoMailTimeout(ForwardIMAPError):
@@ -863,11 +867,16 @@ def fetch_latest_otp(
                 api_base=str(profile.get("api_base") or "") if pinned else None,
                 api_key=str(profile.get("api_key") or "") if pinned else None,
                 acquisition_id=original_handoff_acquisition(target, profile=profile) if pinned else '',
+                lease_id=str((profile.get('butler_identity') or {}).get('lease_id') or '') if pinned else '',
+                client_id=str((profile.get('butler_identity') or {}).get('client_id') or '') if pinned else '',
+                credential_ref=str(profile.get('credential_ref') or '') if pinned else '',
             )
         except WAIT_INTERRUPTED:
             raise
         except Exception as exc:
-            raise ForwardIMAPError(f"Email Butler 严格收件取码失败: {exc}") from exc
+            raise ForwardIMAPError(f"Email Butler 租约取码失败: {exc}",
+                error_code=getattr(exc, "error_code", "butler_code_failed"),
+                status_code=getattr(exc, "status_code", None), retryable=getattr(exc, "retryable", False)) from exc
 
     mail = None
     try:
@@ -903,7 +912,9 @@ def fetch_latest_otp(
     except WAIT_INTERRUPTED:
         raise
     except Exception as exc:
-        raise ForwardIMAPError(f"Email Butler PG 缓存取码失败: {exc}") from exc
+        raise ForwardIMAPError(f"Email Butler 租约取码失败: {exc}",
+            error_code=getattr(exc, "error_code", "butler_code_failed"),
+            status_code=getattr(exc, "status_code", None), retryable=getattr(exc, "retryable", False)) from exc
     finally:
         if mail is not None:
             if current_budget() is not None:

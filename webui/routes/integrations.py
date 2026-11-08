@@ -263,7 +263,9 @@ def create_integrations_blueprint(context: WebUIContext):
             )
             return jsonify(result)
         except Exception as exc:
-            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:260]}"}), 400
+            return jsonify({"ok": False, "error": str(exc)[:260],
+                            "error_code": getattr(exc, "error_code", "butler_connection_failed"),
+                            "upstream_status": getattr(exc, "status_code", None)}), 400
 
     @bp.get("/api/email-butler/leases")
     def api_email_butler_leases():

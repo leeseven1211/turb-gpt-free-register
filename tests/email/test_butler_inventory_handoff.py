@@ -1,288 +1,192 @@
-"""人工导入持久交接，不允许远端另发邮箱或以短租约冒充归属。"""
-import unittest
+"""旧完整地址交接入口只恢复 v2 原租约，不调用随机分配和退役 API。"""
 from copy import deepcopy
+import unittest
 from unittest.mock import patch
+
+from core.email.email_butler import inventory_handoff as handoff, v2
 
 
 class ButlerInventoryHandoffTests(unittest.TestCase):
     def setUp(self):
-        self.profile = {'connector': 'forward_butler', 'credential_ref': 'TEST_KEY',
-                        'inbox_locator': {'api_base': 'https://butler.example/v1',
-                                          'mailbox_email': 'final@example.test'}}
+        self.profile = {'id': 1, 'state': 'active', 'connector': 'forward_butler', 'credential_ref': 'TEST_KEY',
+            'inbox_locator': {'api_base': 'https://butler.example/v1', 'mailbox_email': 'final@example.test'}}
+        self.connection = {'api_base': 'https://butler.example/v1', 'api_key': 'fixture-secret'}
         self.calls = []
-
-    def request(self, method, path, **kwargs):
-        self.calls.append((method, path, kwargs))
-        if path == '/me':
-            return {'code': 200, 'id': 'stable-client',
-                    'policy': {'consumer': 'turb', 'service': 'openai'},
-                    'capabilities': ['mailboxes.acquisition.v1', 'inbound.recipient_evidence.v1', 'service_facts.permanent.v1']}
-        return {'code': 200, 'mailbox': {
-            'email': 'parent+tag@icloud.com', 'provider': 'icloud_hme',
-            'mailbox_email': 'final@example.test', 'identity_type': 'plus_alias',
-            'identity_id': 'fixed-identity', 'parent_email': 'parent@icloud.com',
-            'recipient_mode': 'forwarded_exact_v1', 'strict_family': True,
-            'lease_id': 'fixed-lease', 'service': 'openai',
-            'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': 'parent+tag@icloud.com'},
-        }}
-
-    def invoke(self, request=None):
-        from core.email.email_butler import inventory_handoff as handoff
-        with patch.object(handoff, '_consumer_instance', return_value='local-instance'), \
-             patch('core.email.derivation._profile_credentials', return_value={
-                 'api_base': 'https://butler.example/v1', 'api_key': 'test-key',
-                 'mailbox_email': 'final@example.test'}), \
-             patch('core.email.email_butler.client._request', side_effect=request or self.request):
-            return handoff.handoff_for_import('parent+tag@icloud.com', self.profile)
-
-    def test_exact_manual_handoff_has_stable_persistent_owner(self):
-        first = self.invoke()
-        second = self.invoke()
-        self.assertEqual(first, second)
-        self.assertEqual(first['identity_id'], 'fixed-identity')
-        writes = [call for call in self.calls if call[1] == '/mailboxes' and call[2]['json'].get('acquisition_id')]
-        self.assertEqual(len(writes), 2)
-        self.assertEqual(writes[0][2]['json'], writes[1][2]['json'])
-        body = writes[0][2]['json']
-        self.assertEqual(body['requested_email'], 'parent+tag@icloud.com')
-        self.assertEqual(body['owner_kind'], 'local_inventory')
-        self.assertEqual(body['owner_id'], 'local-instance')
-        self.assertNotIn('lease_id', first)
-        self.assertNotIn('api_key', str(first))
-
-    def test_different_identity_is_rejected_before_local_import(self):
-        def wrong(method, path, **kwargs):
-            result = self.request(method, path, **kwargs)
-            if path == '/mailboxes':
-                result['mailbox']['email'] = 'other@icloud.com'
-            return result
-        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
-            self.invoke(wrong)
-
-    def test_missing_capability_never_mutates_remote_stock(self):
-        def unsupported(method, path, **kwargs):
-            result = self.request(method, path, **kwargs)
-            if path == '/me':
-                result['capabilities'] = []
-            return result
-        with self.assertRaisesRegex(ValueError, 'handoff_contract_unsupported'):
-            self.invoke(unsupported)
-        self.assertEqual([call[1] for call in self.calls], ['/me'])
-
-    def test_timeout_replay_uses_original_acquisition(self):
-        def timeout(method, path, **kwargs):
-            result = self.request(method, path, **kwargs)
-            if path == '/mailboxes' and kwargs['json'].get('acquisition_id'):
-                raise TimeoutError('simulated')
-            return result
-        with self.assertRaisesRegex(ValueError, 'handoff_unconfirmed'):
-            self.invoke(timeout)
-        self.invoke()
-        writes = [call for call in self.calls if call[1] == '/mailboxes' and call[2]['json'].get('acquisition_id')]
-        self.assertEqual(writes[0][2]['json'], writes[1][2]['json'])
-
-
-class ButlerInventoryBatchHandoffTests(unittest.TestCase):
-    def setUp(self):
-        self.profile = {'state': 'active', 'connector': 'forward_butler'}
-        self.connection = {'api_base': 'https://butler.example/v1', 'api_key': 'test-key',
-                           'mailbox_email': 'final@example.test'}
-        self.items = [self.item('first'), self.item('second')]
-        self.calls = []
-
-    def item(self, tag):
-        return {'id': tag, 'address_norm': f'parent+{tag}@icloud.com',
-                'acquisition_id': f'fixed-{tag}',
+        self.bindings = {}
+        self.items = []
+        for index in range(2):
+            email = f'parent+tag{index}@icloud.com'
+            acquisition = 'original-acquisition-' + str(index)
+            self.bindings[email] = {'email': email, 'provider': 'icloud_hme', 'client_id': 'stable-client',
+                'lease_id': 'lse_original_' + str(index), 'service': 'openai', 'status': 'active',
+                'expires_at': None, 'acquisition_id': acquisition}
+            self.items.append({'acquisition_id': acquisition, 'address_norm': email,
+                'candidate': {'email': email, 'provider': 'icloud_hme'},
                 'ownership': {'owner_kind': 'local_inventory', 'owner_id': 'local-instance',
-                              'acquisition_id': f'fixed-{tag}'},
-                'candidate': {'email': f'parent+{tag}@icloud.com', 'provider': 'icloud_hme',
-                    'mailbox_email': 'final@example.test', 'identity_type': 'plus_alias',
-                    'identity_id': f'identity-{tag}', 'parent_email': 'parent@icloud.com',
-                    'recipient_mode': 'forwarded_exact_v1', 'strict_family': True}}
+                    'acquisition_id': acquisition}})
+        for target in [
+            patch('core.email.derivation._profile_credentials', return_value=self.connection),
+            patch('core.email.email_butler.lease_bindings.resolve', side_effect=self.resolve),
+            patch.object(v2, 'create_lease', side_effect=AssertionError('禁止随机分配')),
+            patch('core.email.email_butler.client._request', side_effect=AssertionError('禁止旧接口')),
+        ]:
+            target.start()
+            self.addCleanup(target.stop)
 
-    def result(self, item):
-        return {'requested_email': item['address_norm'], 'acquisition_id': item['acquisition_id'],
-                'code': 200, 'mailbox': {**item['candidate'], **item['ownership'],
-                                         'lease_id': 'fixed-lease', 'service': 'openai', 'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': item['address_norm']}}}
+    def resolve(self, email, **kwargs):
+        self.calls.append((email, kwargs))
+        result = self.bindings[email]
+        if isinstance(result, Exception):
+            raise result
+        return deepcopy(result)
 
-    def invoke(self, results=None, *, error=None, items=None, provided_connection=False,
-               response_payload=...):
-        from core.email.email_butler import inventory_handoff as handoff
+    def invoke(self):
+        return handoff.handoff_for_import(self.items[0]['address_norm'], self.profile)
 
-        def request(method, path, **kwargs):
-            self.calls.append((method, path, kwargs))
-            if error:
-                raise error
-            if response_payload is not ...:
-                return response_payload
-            return {'code': 200, 'results': results if results is not None
-                    else [self.result(item) for item in self.items]}
+    def batch(self, items=None, **kwargs):
+        return handoff.handoff_selected_batch(self.items if items is None else items,
+            self.profile, client_id='stable-client', **kwargs)
 
-        with patch('core.email.derivation._profile_credentials', return_value=self.connection) as credentials, \
-             patch('core.email.email_butler.client._request', side_effect=request):
-            output = handoff.handoff_selected_batch(
-                self.items if items is None else items, self.profile, client_id='stable-client',
-                **({'connection': self.connection} if provided_connection else {}))
-            self.credential_calls = credentials.call_count
-            return output
+    def test_pasted_address_recovers_the_same_long_term_lease(self):
+        first, second = self.invoke(), self.invoke()
+        self.assertEqual(first, second)
+        self.assertEqual(first['version'], 2)
+        self.assertEqual(first['lease_id'], 'lse_original_0')
+        self.assertEqual(first['email'], self.items[0]['address_norm'])
+        self.assertNotIn('api_key', first)
+        v2.create_lease.assert_not_called()
 
-    def test_reordered_results_match_frozen_acquisition_and_address(self):
-        output = self.invoke([self.result(self.items[1]), self.result(self.items[0])])
-        self.assertEqual(output['fixed-first']['receipt'], {
-            'owner_kind': 'local_inventory', 'owner_id': 'local-instance',
-            'acquisition_id': 'fixed-first', 'client_id': 'stable-client',
-            'identity_id': 'identity-first', 'parent_email': 'parent@icloud.com',
-            'state': 'issued', 'version': 1, 'service': 'openai', 'service_fact': {'service': 'openai', 'ever_imported': True, 'permanent': True, 'address': 'parent+first@icloud.com'}})
-        self.assertEqual(output['fixed-second']['receipt']['identity_id'], 'identity-second')
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][:2], ('POST', '/mailboxes/import-batch'))
-        self.assertEqual(self.calls[0][2]['json']['items'][0], {
-            'requested_email': 'parent+first@icloud.com', 'provider': 'icloud_hme',
-            'owner_kind': 'local_inventory', 'owner_id': 'local-instance',
-            'acquisition_id': 'fixed-first'})
-        self.assertEqual(self.credential_calls, 1)
+    def test_different_complete_address_is_rejected(self):
+        self.bindings[self.items[0]['address_norm']]['email'] = 'different@icloud.com'
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.invoke()
 
-    def test_item_rejection_does_not_discard_another_confirmed_handoff(self):
-        rejected = {'requested_email': 'parent+second@icloud.com',
-                    'acquisition_id': 'fixed-second', 'code': 409,
-                    'error_code': 'acquisition_owner_conflict'}
-        output = self.invoke([self.result(self.items[0]), rejected])
-        self.assertIn('receipt', output['fixed-first'])
-        self.assertEqual(output['fixed-second']['outcome'], 'failed')
-        self.assertEqual(output['fixed-second']['error_code'], 'acquisition_owner_conflict')
-        self.assertEqual(output['fixed-second']['status_code'], 409)
+    def test_missing_read_permission_is_classified_without_allocating(self):
+        self.bindings[self.items[0]['address_norm']] = v2.ButlerV2Error('permission_denied', status_code=403)
+        with self.assertRaises(v2.ButlerV2Error) as error:
+            self.invoke()
+        self.assertEqual(error.exception.error_code, 'permission_denied')
+        v2.create_lease.assert_not_called()
 
-    def test_missing_result_only_leaves_its_original_acquisition_unknown(self):
-        output = self.invoke([self.result(self.items[0])])
-        self.assertIn('receipt', output['fixed-first'])
-        self.assertEqual(output['fixed-second']['outcome'], 'unknown')
-        self.assertEqual(output['fixed-second']['error_code'], 'handoff_response_invalid')
-
-    def test_duplicate_response_cannot_confirm_duplicated_acquisition(self):
-        first = self.result(self.items[0])
-        output = self.invoke([first, deepcopy(first), self.result(self.items[1])])
-        self.assertNotIn('receipt', output['fixed-first'])
-        self.assertEqual(output['fixed-first']['error_code'], 'handoff_response_invalid')
-        self.assertIn('receipt', output['fixed-second'])
-
-    def test_unknown_response_identity_invalidates_envelope(self):
-        output = self.invoke([self.result(self.items[0]), self.result(self.item('unexpected'))])
-        self.assertTrue(all(result.get('error_code') == 'handoff_response_invalid'
-                            for result in output.values()))
-
-    def test_incomplete_response_identity_invalidates_envelope(self):
-        output = self.invoke([self.result(self.items[0]), {'code': 200}])
-        self.assertTrue(all(result.get('error_code') == 'handoff_response_invalid'
-                            for result in output.values()))
-
-    def test_swapped_addresses_never_confirm_either_acquisition(self):
-        first, second = [self.result(item) for item in self.items]
-        first['requested_email'], second['requested_email'] = second['requested_email'], first['requested_email']
-        output = self.invoke([first, second])
-        self.assertTrue(all('receipt' not in result for result in output.values()))
-        self.assertTrue(all(result['outcome'] == 'unknown' for result in output.values()))
-
-    def test_changed_complete_mailbox_or_ownership_cannot_be_imported(self):
-        changes = ({'identity_id': 'replacement'}, {'owner_id': 'other-owner'},
-                   {'acquisition_id': 'other-acquisition'}, {'lease_id': ''},
-                   {'strict_family': False}, {'mailbox_email': 'other@example.test'})
-        for change in changes:
-            with self.subTest(change=change):
-                first = self.result(self.items[0])
-                first['mailbox'].update(change)
-                output = self.invoke([first, self.result(self.items[1])])
-                self.assertEqual(output['fixed-first']['error_code'], 'handoff_identity_mismatch')
-                self.assertEqual(output['fixed-first']['outcome'], 'unknown')
-                self.assertIn('receipt', output['fixed-second'])
-
-    def test_malformed_item_status_does_not_confirm_mailbox(self):
-        for code in (None, True, '200', [], 201, 302):
-            with self.subTest(code=code):
-                first = self.result(self.items[0])
-                first['code'] = code
-                output = self.invoke([first, self.result(self.items[1])])
-                self.assertEqual(output['fixed-first']['error_code'], 'handoff_response_invalid')
-                self.assertIn('receipt', output['fixed-second'])
-
-    def test_malformed_envelope_leaves_every_original_acquisition_unknown(self):
-        for payload in (None, [], {'code': 200}, {'code': '200', 'results': []},
-                        {'code': 200, 'results': {}}, {'code': 500, 'results': []}):
-            with self.subTest(payload=payload):
-                output = self.invoke(response_payload=payload)
-                self.assertEqual(set(output), {'fixed-first', 'fixed-second'})
-                self.assertTrue(all(result['outcome'] == 'unknown' and
-                    result['error_code'] == 'handoff_response_invalid' for result in output.values()))
-
-    def test_non_string_lease_never_confirms_handoff(self):
-        for lease in (True, 123, [], {}):
-            with self.subTest(lease=lease):
-                first = self.result(self.items[0])
-                first['mailbox']['lease_id'] = lease
-                output = self.invoke([first, self.result(self.items[1])])
-                self.assertEqual(output['fixed-first']['error_code'], 'handoff_identity_mismatch')
-
-    def test_timeout_retries_only_the_original_batch_acquisitions(self):
-        output = self.invoke(error=TimeoutError('simulated'))
-        self.assertTrue(all(result['outcome'] == 'unknown' for result in output.values()))
-        self.assertTrue(all(result['error_code'] == 'handoff_timeout' for result in output.values()))
+    def test_timeout_recovery_always_keeps_original_address(self):
+        email = self.items[0]['address_norm']
+        original = self.bindings[email]
+        self.bindings[email] = v2.ButlerV2Error('butler_transport_timeout', retryable=True)
+        with self.assertRaises(v2.ButlerV2Error):
+            self.invoke()
+        self.bindings[email] = original
         self.invoke()
-        self.assertEqual(self.calls[0][2]['json'], self.calls[1][2]['json'])
+        self.assertEqual([call[0] for call in self.calls], [email, email])
 
-    def test_transient_http_item_failures_remain_unknown(self):
-        for code in (408, 425, 429, 500, 503):
-            with self.subTest(code=code):
-                first = self.result(self.items[0])
-                first.update(code=code, error_code='remote_temporarily_unavailable')
-                output = self.invoke([first, self.result(self.items[1])])
-                self.assertEqual(output['fixed-first']['outcome'], 'unknown')
-                self.assertEqual(output['fixed-first']['status_code'], code)
+    def test_batch_results_are_keyed_by_original_acquisition(self):
+        result = self.batch()
+        self.assertEqual(set(result), {item['acquisition_id'] for item in self.items})
+        for item in self.items:
+            self.assertEqual(result[item['acquisition_id']]['receipt']['email'], item['address_norm'])
 
-    def test_http_rejection_and_transient_failure_keep_classification(self):
-        from core.email.email_butler.client import EmailButlerClientError
-        for code, outcome in ((401, 'failed'), (429, 'unknown'), (503, 'unknown')):
-            with self.subTest(code=code):
-                output = self.invoke(error=EmailButlerClientError(
-                    'message-must-not-be-copied', status_code=code, error_code='remote_error'))
-                self.assertTrue(all(result['outcome'] == outcome for result in output.values()))
-                self.assertTrue(all(result['status_code'] == code for result in output.values()))
-                self.assertNotIn('message-must-not-be-copied', str(output))
+    def test_one_rejected_item_does_not_discard_another_confirmed_lease(self):
+        self.bindings[self.items[0]['address_norm']] = v2.ButlerV2Error('lease_released', status_code=410)
+        result = self.batch()
+        self.assertEqual(result[self.items[0]['acquisition_id']]['outcome'], 'unknown')
+        self.assertIn('receipt', result[self.items[1]['acquisition_id']])
 
-    def test_provided_connection_never_reloads_fixed_credentials(self):
-        output = self.invoke(provided_connection=True)
-        self.assertIn('receipt', output['fixed-first'])
-        self.assertEqual(self.credential_calls, 0)
+    def test_missing_mapping_preserves_original_intent(self):
+        self.bindings[self.items[0]['address_norm']] = v2.ButlerV2Error('lease_restore_required')
+        result = self.batch()
+        self.assertEqual(result[self.items[0]['acquisition_id']]['error_code'], 'lease_restore_required')
+        self.assertEqual(self.items[0]['acquisition_id'], 'original-acquisition-0')
 
-    def test_oversize_or_duplicate_input_never_submits_partial_batch(self):
-        for items in ([self.item(str(index)) for index in range(26)],
-                      [self.items[0], deepcopy(self.items[0])]):
-            with self.subTest(count=len(items)):
-                with self.assertRaisesRegex(ValueError, 'handoff_'):
-                    self.invoke(items=items)
+    def test_duplicate_acquisition_is_rejected_before_any_lookup(self):
+        changed = deepcopy(self.items)
+        changed[1]['acquisition_id'] = changed[0]['acquisition_id']
+        changed[1]['ownership']['acquisition_id'] = changed[0]['acquisition_id']
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.batch(changed)
         self.assertEqual(self.calls, [])
 
-    def test_25_frozen_items_use_one_http_request(self):
-        items = [self.item(str(index)) for index in range(25)]
-        output = self.invoke([self.result(item) for item in reversed(items)], items=items)
-        self.assertEqual(len(output), 25)
-        self.assertTrue(all('receipt' in result for result in output.values()))
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(len(self.calls[0][2]['json']['items']), 25)
-
-    def test_changed_local_acquisition_or_address_never_mutates_remote(self):
-        for key, value in (('acquisition_id', 'replacement'), ('address_norm', 'other@icloud.com')):
-            with self.subTest(key=key):
-                item = deepcopy(self.items[0])
-                item[key] = value
-                with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
-                    self.invoke(items=[item])
+    def test_duplicate_address_is_rejected_before_any_lookup(self):
+        changed = deepcopy(self.items)
+        changed[1]['address_norm'] = changed[0]['address_norm']
+        changed[1]['candidate']['email'] = changed[0]['address_norm']
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.batch(changed)
         self.assertEqual(self.calls, [])
 
-    def test_single_handoff_can_reuse_connection_without_changing_receipt(self):
-        from core.email.email_butler import inventory_handoff as handoff
-        with patch('core.email.derivation._profile_credentials') as credentials, \
-             patch('core.email.email_butler.client._request', return_value=self.result(self.items[0])):
-            receipt = handoff.handoff_selected(self.items[0]['candidate'], self.profile,
-                ownership=self.items[0]['ownership'], client_id='stable-client', connection=self.connection)
-        self.assertEqual(receipt['identity_id'], 'identity-first')
-        credentials.assert_not_called()
+    def test_missing_candidate_is_rejected_before_any_lookup(self):
+        changed = deepcopy(self.items)
+        changed[0]['candidate'] = None
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.batch(changed)
+        self.assertEqual(self.calls, [])
 
+    def test_swapped_local_addresses_cannot_confirm_wrong_identity(self):
+        changed = deepcopy(self.items)
+        changed[0]['address_norm'], changed[1]['address_norm'] = changed[1]['address_norm'], changed[0]['address_norm']
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.batch(changed)
+        self.assertEqual(self.calls, [])
+
+    def test_wrong_provider_cannot_publish_original_lease(self):
+        self.bindings[self.items[0]['address_norm']]['provider'] = 'mailcom'
+        result = self.batch()
+        self.assertEqual(result[self.items[0]['acquisition_id']]['error_code'], 'handoff_identity_mismatch')
+
+    def test_wrong_client_cannot_publish_original_lease(self):
+        self.bindings[self.items[0]['address_norm']]['client_id'] = 'other-client'
+        result = self.batch()
+        self.assertEqual(result[self.items[0]['acquisition_id']]['error_code'], 'handoff_identity_mismatch')
+
+    def test_wrong_service_cannot_publish_original_lease(self):
+        self.bindings[self.items[0]['address_norm']]['service'] = 'grok'
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.invoke()
+
+    def test_empty_lease_id_cannot_confirm_handoff(self):
+        self.bindings[self.items[0]['address_norm']]['lease_id'] = ''
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.invoke()
+
+    def test_expired_lease_cannot_be_replaced_with_random_address(self):
+        self.bindings[self.items[0]['address_norm']]['status'] = 'expired'
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.invoke()
+        v2.create_lease.assert_not_called()
+
+    def test_short_lease_cannot_be_published_as_long_term_stock(self):
+        self.bindings[self.items[0]['address_norm']]['expires_at'] = '2026-12-01T00:00:00Z'
+        with self.assertRaisesRegex(ValueError, 'handoff_identity_mismatch'):
+            self.invoke()
+
+    def test_unknown_transient_http_status_keeps_error_classification(self):
+        for status, code in [(403, 'permission_denied'), (429, 'rate_limited'), (503, 'provider_unavailable')]:
+            with self.subTest(status=status):
+                self.bindings[self.items[0]['address_norm']] = v2.ButlerV2Error(code, status_code=status)
+                item = self.batch()[self.items[0]['acquisition_id']]
+                self.assertEqual((item['error_code'], item['status_code'], item['outcome']), (code, status, 'unknown'))
+
+    def test_supplied_connection_never_reloads_fixed_credentials(self):
+        with patch('core.email.derivation._profile_credentials', side_effect=AssertionError('禁止重载')):
+            self.batch(connection=self.connection)
+        self.assertTrue(all(call[1]['api_key'] == 'fixture-secret' for call in self.calls))
+
+    def test_oversized_batch_is_rejected_before_partial_lookup(self):
+        with self.assertRaisesRegex(ValueError, 'handoff_batch_too_large'):
+            self.batch(self.items * 51)
+        self.assertEqual(self.calls, [])
+
+    def test_empty_batch_never_calls_remote(self):
+        self.assertEqual(self.batch([]), {})
+        self.assertEqual(self.calls, [])
+
+    def test_frozen_acquisition_is_forwarded_to_resolver(self):
+        receipt = handoff.handoff_selected(self.items[0]['candidate'], self.profile,
+            ownership=self.items[0]['ownership'], client_id='stable-client')
+        self.assertEqual(self.calls[0][1]['acquisition_id'], self.items[0]['acquisition_id'])
+        self.assertEqual(receipt['owner_id'], 'local-instance')
+        self.assertEqual(receipt['acquisition_id'], self.items[0]['acquisition_id'])
+
+    def test_inactive_profile_cannot_switch_to_global_connection(self):
+        self.profile['state'] = 'disabled'
+        with self.assertRaisesRegex(ValueError, 'fixed_route_unavailable'):
+            self.invoke()
+        self.assertEqual(self.calls, [])

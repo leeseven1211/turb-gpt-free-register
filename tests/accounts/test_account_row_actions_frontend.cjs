@@ -382,6 +382,10 @@ test('封号邮件列统一显示复查按钮并按扫描状态禁用', () => {
   assert.match(unsupported, /data-deactivation-mail-check="7"[^>]*disabled[^>]*>复查<\/button>/);
   assert.match(unsupported, /title="当前邮箱来源不支持"/);
   assert.doesNotMatch(unsupported, /不支持<\/span>|class="pill/);
+
+  const butlerV2 = render('_deactivationMailCell', {id: 8, email_source: 'email_butler'});
+  assert.match(butlerV2, /data-deactivation-mail-check="8"[^>]*disabled[^>]*>复查<\/button>/);
+  assert.match(butlerV2, /Email Butler v2 暂不提供封号邮件扫描/);
 });
 
 test('2FA 只显示复制或补充，并复用现有账号动作入口', () => {

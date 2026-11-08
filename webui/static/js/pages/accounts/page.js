@@ -1156,7 +1156,8 @@ function _deactivationMailCell(r) {
   const subject = r.deactivation_mail_subject || '';
   const sender = r.deactivation_mail_sender || '';
   const err = r.deactivation_mail_error || '';
-  const supported = ['email_butler','cloudflare','icloud_hide'].includes((r.email_source || '').toString().toLowerCase());
+  const source = (r.email_source || '').toString().toLowerCase();
+  const supported = ['cloudflare','icloud_hide'].includes(source);
   let title = '尚未扫描';
   if (detected) {
     title = [received && `收件: ${received}`, sender && `发件人: ${sender}`, subject].filter(Boolean).join('；') || '已收到封号邮件';
@@ -1166,7 +1167,7 @@ function _deactivationMailCell(r) {
   let buttonTitle = '扫描该账号对应邮箱；不会刷新 AT';
   if (!supported || status === 'unsupported') {
     disabled = true;
-    title = err || '当前邮箱来源暂不支持扫描';
+    title = err || (source === 'email_butler' ? 'Email Butler v2 暂不提供封号邮件扫描' : '当前邮箱来源暂不支持扫描');
     buttonTitle = title;
   } else if (status === 'queued' || status === 'running') {
     disabled = true;

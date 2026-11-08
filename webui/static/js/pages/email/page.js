@@ -671,7 +671,7 @@ async function onOutlookBodyClick(e) {
 const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
-  email_butler: 'Butler 本地邮箱（iCloud HME）',
+  email_butler: 'Butler 已租用邮箱',
 };
 let outlookImportPreview = null;
 function setImportSourceV2(val) {
@@ -692,7 +692,7 @@ function setImportSourceV2(val) {
   const formats = {
     outlook: ['email----password----clientId----refreshToken', '每行一条，支持 ---- 和 ==== 分隔符；多余字段不会写入邮箱池。'],
     generic_api: ['email----取码地址----2026-10-28T12:00:00+08:00', '每行一条，第三字段可填写带时区的有效期（ISO8601，如 2026-10-28T12:00:00+08:00 或 Z）；每行有效期优先于批次值，旧两段格式仍支持。'],
-    email_butler: ['one@icloud.com\ntwo+tag@icloud.com', '每行一个完整 iCloud HME 地址；手动导入时将原地址交接给 Turb，Butler 不再重复分配。其他类型请选择 Outlook 或通用 API。'],
+    email_butler: ['one@icloud.com\nuser@outlook.com', '每行一个已在 Butler 长期租用的完整邮箱地址；手动导入仅恢复本人原租约。需要补充新邮箱时使用“从 Butler 导入”。'],
   };
   if (text) text.placeholder = formats[next][0];
   if (hint) hint.textContent = formats[next][1];

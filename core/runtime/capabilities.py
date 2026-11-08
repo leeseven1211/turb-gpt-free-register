@@ -103,28 +103,23 @@ def require_email_source(source: str) -> tuple[bool, str]:
 
 
 def _historical_mail_readable() -> bool:
-    """已有账号读信能力与新邮箱库存容量独立；不发起网络请求。"""
+    """封号信号扫描仅支持直连 IMAP 与 Cloudflare；v2 验证码能力不等于读信。"""
     from config import email
     from core.email.derivation import _profile_credentials
     from core.storage.email.address_allocations import EmailDerivationError
     from core.storage.email.address_allocations import list_inbox_profiles
 
-    if (getattr(email, 'EMAIL_BUTLER_API_BASE', '') and getattr(email, 'EMAIL_BUTLER_API_KEY', '')):
-        return True
     if (getattr(email, 'CLOUDFLARE_API_BASE', '') and
             (getattr(email, 'CLOUDFLARE_SIGNAL_API_KEY', '') or getattr(email, 'CLOUDFLARE_API_KEY', ''))):
         return True
     for profile in list_inbox_profiles(state='active'):
-        if profile.get('connector') not in {'forward_butler', 'forward_imap'}:
+        if profile.get('connector') != 'forward_imap':
             continue
         try:
             locator = _profile_credentials(profile)
         except (EmailDerivationError, ValueError, KeyError):
             continue
-        if profile['connector'] == 'forward_butler':
-            if locator.get('api_base') and '@' in str(locator.get('mailbox_email') or ''):
-                return True
-        elif locator.get('server') and '@' in str(locator.get('email') or ''):
+        if locator.get('server') and '@' in str(locator.get('email') or ''):
             return True
     return False
 
@@ -314,7 +309,7 @@ def feature_availability() -> dict[str, Any]:
         "extract_link": _feature(extract_ok, extract_reason),
         "sub2_upload": _feature(sub2_ok, sub2_reason),
         "cpa_download": _feature(cpa_ok, cpa_reason),
-        "deactivation_mail": _feature(deactivation_ready, "没有配置支持封号扫描的 Email Butler / Cloudflare / iCloud 邮箱来源"),
+        "deactivation_mail": _feature(deactivation_ready, "Email Butler v2 不提供封号邮件扫描；请使用原固定 IMAP 或 Cloudflare 扫描连接"),
         "proxy_provider_test": _feature(proxy_test_ok, proxy_test_reason),
         "roxy_workspaces": _feature(roxy_ok, roxy_reason),
         "cloudmail_token": _feature(False, "邮箱管理已迁至邮箱服务，请在邮箱服务生成 Token"),

@@ -366,7 +366,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         source = str(data.get("source") or data.get("type") or "").strip().lower()
         if source not in ("outlook", "generic_api", "email_butler"):
-            return jsonify({"ok": False, "error": "请选择 Outlook、通用 API 或 Butler 转发邮箱来源"}), 400
+            return jsonify({"ok": False, "error": "请选择 Outlook、通用 API 或 Butler 邮箱来源"}), 400
         parsed = _parse_email_pool_import(data.get("text") or "", source, expires_at=data.get('expires_at'))
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多预览 5000 行邮箱"}), 400
@@ -394,7 +394,7 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     def _butler_import_action(action, *args, body=False, batch=False, status=200):
         """Keep import failures safe; remote credentials never reach the browser."""
-        from core.email.email_butler import manual_import as service
+        from core.email.email_butler import manual_import as service, v2
 
         messages = {
             'invalid_request_id': '导入请求编号无效，请重新预览。',
@@ -404,7 +404,9 @@ def create_email_pool_blueprint(context: WebUIContext):
             'unsupported_import_type': '请选择当前支持的邮箱类型。',
             'invalid_import_domain': '请检查域名筛选。',
             'invalid_import_group': '请检查分组筛选。',
-            'butler_configuration_required': '请先配置 Butler 连接与最终转发收件箱。',
+            'butler_configuration_required': '请先配置 Butler /v2 连接地址和 API Key。',
+            'butler_filter_unsupported': '新版 Butler 按来源和数量分配邮箱，请清除旧筛选后重新预览。',
+            'butler_availability_invalid': 'Butler 可用数量响应无效，请稍后重新预览。',
             'handoff_contract_unsupported': '当前 Butler 连接不支持所需的领取和收码方式，请检查连接配置。',
             'import_preview_not_found': '预览不存在，请重新预览。',
             'import_preview_expired': '预览已过期，请重新预览。',
@@ -422,6 +424,24 @@ def create_email_pool_blueprint(context: WebUIContext):
         try:
             result = getattr(service, action)(*args)
             return jsonify({"ok": True, "batch": result} if batch else result), status
+        except v2.ButlerV2Error as exc:
+            remote_messages = {
+                'permission_denied': '当前 Butler Key 缺少所需权限，请检查租约读取和长期租用授权。',
+                'service_not_allowed': '当前 Butler Key 无权使用 OpenAI 服务。',
+                'invalid_api_key': 'Butler Key 无效或已停用，请检查连接配置。',
+                'no_inventory': 'Butler 当前没有符合条件的可租邮箱。',
+                'service_unavailable': 'Butler 已暂停此服务的新租用。',
+                'api_version_retired': '当前 Butler 接口版本已经退役，请核对 /v2 地址。',
+            }
+            upstream = getattr(exc, 'status_code', None)
+            response_status = upstream if isinstance(upstream, int) and 400 <= upstream < 600 else 502
+            if response_status == 401:
+                # 上游 Key 失效不等于当前 Turb 登录会话失效。
+                response_status = 502
+            return jsonify({'ok': False, 'error': remote_messages.get(exc.error_code,
+                'Butler 请求未确认，请保留原请求后重试。'), 'code': exc.error_code,
+                'error_code': exc.error_code, 'retryable': exc.retryable,
+                'request_unknown': exc.request_unknown, 'upstream_status': upstream}), response_status
         except service.RemoteError as exc:
             return jsonify({"ok": False, "error": "暂时无法读取 Butler，请稍后重试。", "code": "butler_unavailable", "error_code": "butler_unavailable"}), 502
         except LookupError as exc:
@@ -468,7 +488,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         data = request.get_json(silent=True) or {}
         source = (data.get("source") or data.get("type") or "").strip().lower()
         if source not in ("outlook", "generic_api", "email_butler"):
-            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook、通用 API 或 Butler 转发邮箱"}), 400
+            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook、通用 API 或 Butler 邮箱"}), 400
         text = data.get("text") or ""
         # Old API clients may still send as_registered; keep the compatibility
         # path while the current UI always imports resources only.
@@ -482,7 +502,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         if parsed["total_lines"] > 5000:
             return jsonify({"ok": False, "error": "单次最多导入 5000 行邮箱"}), 400
         if not records:
-            need = ("每行一个完整 iCloud HME 邮箱地址" if source == "email_butler" else
+            need = ("每行一个已租用的完整邮箱地址" if source == "email_butler" else
                     "2 段：邮箱----取码地址" if source == "generic_api" else "4 段：email----password----clientId----refreshToken")
             error = parsed['errors'][0]['reason'] if parsed['errors'] else f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"
             return jsonify({"ok": False, "error": error, 'invalid_rows': parsed['errors'][:100]}), 400
@@ -497,6 +517,13 @@ def create_email_pool_blueprint(context: WebUIContext):
                 inserted, skipped = db.import_outlook_accounts(records)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            from core.email.email_butler.v2 import ButlerV2Error
+            if not isinstance(exc, ButlerV2Error):
+                raise
+            return jsonify({'ok': False, 'error': '原邮箱租约未确认，请保留完整地址后重试。',
+                'code': exc.error_code, 'error_code': exc.error_code,
+                'upstream_status': exc.status_code, 'retryable': exc.retryable}), 502
         from core.email.email_butler import service_facts
         return jsonify({
             "ok": True,
