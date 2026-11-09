@@ -322,6 +322,12 @@ def _compact_account_for_list(row: dict) -> dict:
 
 def _account_secret_value(row: dict, field: str) -> str:
     field = (field or "").strip()
+    if field == "email":
+        return str(row.get("email") or "").strip()
+    if field == "extract_link":
+        if str(row.get("extract_link_status") or "").lower() != "success" and row.get("extract_link_ok") is not True:
+            return ""
+        return str(row.get("extract_link_long_url") or row.get("extract_link_copy_paste") or "").strip()
     if field == "access_token":
         return str(row.get("access_token") or "")
     if field == "copy_line":
@@ -333,7 +339,7 @@ def _account_secret_value(row: dict, field: str) -> str:
         return f"{row.get('email') or ''}----{password}" if password else ""
     if field == "totp_secret":
         return str(row.get("totp_secret") or "")
-    raise ValueError("field 仅支持 access_token/copy_line/account_password/account_password_line/totp_secret/chatgpt_session")
+    raise ValueError("field 仅支持 email/extract_link/access_token/copy_line/account_password/account_password_line/totp_secret/chatgpt_session")
 
 
 def _account_password(row: dict) -> str:

@@ -2055,15 +2055,12 @@ async function copySelectedAccountLines() {
 async function copySelectedAccountExtractLinks() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
-  const links = ACCOUNTS
-    .filter(r => ids.includes(Number(r.id)))
-    .filter(r => String(r.extract_link_status || '').toLowerCase() === 'success' || r.extract_link_ok === true)
-    .map(r => r.extract_link_long_url || r.extract_link_copy_paste || '')
-    .map(value => String(value).trim())
-    .filter(Boolean);
-  if (!links.length) { showToast('选中账号没有成功提炼地址'); return; }
-  const copied = await copyText(links.join('\n'), false);
-  showToast(copied ? `已复制 ${links.length} 个提炼地址` : '复制提炼地址失败');
+  try {
+    const links = await fetchAccountSecrets(ids, 'extract_link');
+    if (!links.length) { showToast('选中账号没有成功提炼地址'); return; }
+    const copied = await copyText(links.join('\n'), false);
+    showToast(copied ? `已复制 ${links.length} 个提炼地址` : '复制提炼地址失败');
+  } catch(err) { showToast('复制提炼地址失败: ' + err.message); }
 }
 
 async function copySelectedAccountPasswords() {
@@ -2224,16 +2221,15 @@ function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
   syncBtnText();
 }
 
-function copySelectedAccountEmails() {
+async function copySelectedAccountEmails() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
-  const emails = ACCOUNTS
-    .filter(r => ids.includes(Number(r.id)))
-    .map(r => (r.email || '').trim())
-    .filter(Boolean);
-  if (!emails.length) { showToast('选中账号没有可复制的邮箱'); return; }
-  copyText(emails.join('\n'));
-  showToast(`已复制 ${emails.length} 个邮箱`);
+  try {
+    const emails = await fetchAccountSecrets(ids, 'email');
+    if (!emails.length) { showToast('选中账号没有可复制的邮箱'); return; }
+    const copied = await copyText(emails.join('\n'), false);
+    showToast(copied ? `已复制 ${emails.length} 个邮箱` : '复制邮箱失败');
+  } catch(err) { showToast('复制邮箱失败: ' + err.message); }
 }
 
 async function downloadSelectedAccountTxt() {
@@ -2299,10 +2295,7 @@ async function downloadSelectedAccountSessions() {
 async function downloadSelectedCpa() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const missingCodex = selectedAccounts.filter(a => (a.codex_status || '') !== 'success').length;
-  let msg = `确定从 CPA 下载选中的 ${ids.length} 个账号的 CPA/Codex JSON 吗？\n\n会按账号邮箱匹配 CPA auth-files，成功的文件会打包成 ZIP。`;
-  if (missingCodex) msg += `\n\n其中 ${missingCodex} 个账号本地 Codex 状态不是 success，若 CPA 端没有文件会写入 manifest 错误清单。`;
+  const msg = `确定从 CPA 下载选中的 ${ids.length} 个账号的 CPA/Codex JSON 吗？\n\n会按账号邮箱匹配 CPA auth-files，成功的文件会打包成 ZIP，缺失文件会写入 manifest 错误清单。`;
   if (!confirm(msg)) return;
   const btn = $('#btnDownloadSelectedCpaV2');
   const old = btn.textContent;
@@ -2388,12 +2381,10 @@ async function extractOneLink(id, btn) {
 }
 
 async function extractSelectedLinks() {
+  // 提交完整跨页选择，由服务端按最新状态逐个检查资格。
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const eligible = selected.filter(a => !accountIsDeactivated(a) && (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && _isFreeTrialPromotion(a));
-  if (!eligible.length) { showToast('选中账号里没有已确认的 Plus 免费试用账号'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 Plus 免费试用账号吗？\n\n折扣优惠和历史待复查账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
+  if (!confirm(`确定为选中的 ${ids.length} 个账号批量提链吗？\n\n仅处理已确认的 Plus 免费试用账号，折扣优惠和历史待复查账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -2402,7 +2393,7 @@ async function extractSelectedLinks() {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: eligible.map(a => a.id)}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
     const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
@@ -2421,10 +2412,7 @@ async function extractSelectedLinks() {
 async function uploadSelectedCodexSub2() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const ready = selected.filter(a => (a.codex_status || '') === 'success');
-  if (!ready.length) { showToast('选中账号里没有已通过的 Codex OAuth 凭证'); return; }
-  if (!confirm(`确定上传选中的 ${ready.length} 个 Codex OAuth 凭证到 sub2api 吗？\n\n未完成 Codex OAuth 的账号会自动跳过。`)) return;
+  if (!confirm(`确定上传选中的 ${ids.length} 个账号的 Codex OAuth 凭证到 sub2api 吗？\n\n未完成 Codex OAuth 的账号会自动跳过。`)) return;
   const btn = $('#btnUploadSelectedCodexSub2V2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -2455,11 +2443,6 @@ async function uploadSelectedCodexSub2() {
 async function checkSelectedPlans() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const eligibleIds = ids.filter(id => {
-    const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
-    return account && !accountIsDeactivated(account);
-  });
-  if (!eligibleIds.length) { showToast('选中账号均已废号'); return; }
   const btn = $('#btnCheckSelectedPlansV2');
   if (!btn) return;
   btn.disabled = true;
@@ -2469,11 +2452,12 @@ async function checkSelectedPlans() {
     const r = await api('/api/accounts/check-plan-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: eligibleIds}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const failed = r.failed_count || 0;
     const busy = r.busy_count || 0;
-    showToast(`已入队 ${r.started_count || 0} 个，查询中跳过 ${busy} 个，入队失败 ${failed} 个`);
+    const skipped = (r.skipped || []).length;
+    showToast(`已入队 ${r.started_count || 0} 个，查询中跳过 ${busy} 个，入队失败 ${failed} 个${skipped ? `，跳过 ${skipped} 个` : ''}${accountBulkQueueReasons(r)}`);
     await pollAccountPlanStatuses();
   } catch(err) {
     showToast('批量查询失败: ' + err.message);
@@ -2511,11 +2495,6 @@ async function checkOneDeactivationMail(id, btn) {
 async function checkSelectedDeactivationMail() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (!ids.length) { showToast('请先选择账号'); return; }
-  const eligible = ids.filter(id => {
-    const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-    return acc && ['email_butler','cloudflare','icloud_hide'].includes((acc.email_source || '').toString().toLowerCase());
-  });
-  if (!eligible.length) { showToast('选中账号中没有支持扫描的邮箱来源'); return; }
   const btn = $('#btnCheckSelectedDeactivationMailV2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -2524,11 +2503,11 @@ async function checkSelectedDeactivationMail() {
     const r = await api('/api/accounts/check-deactivation-mail-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: eligible}),
+      body: JSON.stringify({account_ids: ids}),
     });
     showToast(`已入队 ${r.started_count || 0} 个，跳过 ${r.skipped_count || 0} 个；不会刷新 AT`);
     await loadAccounts();
-    if ((r.started_count || 0) > 0) await _pollDeactivationMailResults(eligible);
+    if ((r.started_count || 0) > 0) await _pollDeactivationMailResults(ids);
   } catch(err) {
     showToast('批量扫描失败: ' + err.message);
   } finally {
@@ -2775,10 +2754,7 @@ async function deleteSelectedAccounts() {
 async function stopSelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retrying = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying');
-  if (retrying.length === 0) { showToast('选中账号里没有正在补跑的 Codex'); return; }
-  if (!confirm(`确定停止选中的 ${retrying.length} 个 Codex 补跑吗？\n\n会发送停止信号，并将状态标记为“已停止”。`)) return;
+  if (!confirm(`确定停止选中的 ${ids.length} 个账号的 Codex 补跑吗？\n\n会向正在补跑的任务发送停止信号，并将状态标记为“已停止”；未在补跑的账号会自动跳过。`)) return;
   const btn = $('#btnStopSelectedCodexV2');
   if (!btn) return;
   btn.disabled = true;
@@ -2786,7 +2762,7 @@ async function stopSelectedCodex() {
     const r = await api('/api/codex/stop-bulk', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: retrying.map(a => a.id)}),
+      body: JSON.stringify({account_ids: ids}),
     });
     const skippedCount = (r.skipped || []).length;
     showToast(skippedCount ? `已停止 ${r.stopped_count || 0} 个，跳过 ${skippedCount} 个` : `已停止 ${r.stopped_count || 0} 个`);
@@ -2801,17 +2777,13 @@ async function retrySelectedCodex() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
   const workers = getAccountOperationWorkers();
-  const selectedAccounts = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
-  const retryingCount = selectedAccounts.filter(a => ['queued','running','cancelling'].includes(a.codex_execution_status || '') || (a.codex_status || '') === 'retrying').length;
-  const deactivatedCount = selectedAccounts.filter(accountIsDeactivated).length;
-  let msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
+  const msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
 
 并发线程数：${workers}
 
-将按账号消耗邮箱 OTP 和接码短信。`;
-  if (retryingCount || deactivatedCount) msg += `
+将按账号消耗邮箱 OTP 和接码短信。
 
-其中：补跑中 ${retryingCount} 个、已废号 ${deactivatedCount} 个会自动跳过。`;
+补跑中和已废号账号会自动跳过。`;
   if (!confirm(msg)) return;
   const btn = $('#btnRetrySelectedCodexV2');
   if (!btn) return;
