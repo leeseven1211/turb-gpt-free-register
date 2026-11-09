@@ -274,8 +274,19 @@ test('套餐查询失败在详情展示每个国家的具体原因并转义文�
   });
   assert.match(sandbox.result, /JP：本地检查发现 AT 已过期，未发起套餐请求/);
   assert.match(sandbox.result, /VN：服务端返回 HTTP 401 &lt;拒绝&gt;/);
-  assert.match(sandbox.result, /IN：未记录具体原因/);
+  assert.match(sandbox.result, /IN：诊断记录不完整/);
   assert.doesNotMatch(sandbox.result, /JP：本地 AT 已过期；VN：服务端返回 HTTP 401/);
+});
+
+test('自动刷新 AT 失败的具体原因先于逐国旧 AT 错误展示', () => {
+  const progress = {failure:{label:'刷新 AT', stage:'mfa_challenge',
+    message:'自动刷新 AT 失败：MFA 验证被拒绝',
+    error_info:{summary:'自动刷新 AT 失败：MFA 验证被拒绝', auto_refresh_at_failed:true},
+    country_failures:[{country:'JP', summary:'套餐接口返回 HTTP 401，AT 未通过验证'}]}};
+  const sandbox = runVm(`${progressFunctions}\nresult = accountTaskFailureSummary(progress);`, {
+    progress, esc: htmlEscape, attrEsc: htmlEscape,
+  });
+  assert.ok(sandbox.result.indexOf('自动刷新 AT 失败：MFA 验证被拒绝') < sandbox.result.indexOf('JP：套餐接口返回 HTTP 401'));
 });
 
 test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全量运行日志', () => {

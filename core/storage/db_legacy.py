@@ -434,10 +434,11 @@ def _decorate_account(row: dict) -> dict:
             started_at = datetime.fromisoformat(str(out.get(stamp_key) or ""))
             deadline_text = out.get("plan_check_deadline_at") if plan_status == "running" else None
             try:
-                within_budget = bool(deadline_text and datetime.fromisoformat(str(deadline_text)) > datetime.now())
+                deadline = datetime.fromisoformat(str(deadline_text)) if deadline_text else None
+                within_budget = bool(deadline and deadline > datetime.now(deadline.tzinfo))
             except (TypeError, ValueError):
                 within_budget = False
-            if not within_budget and (datetime.now() - started_at).total_seconds() >= stale_after:
+            if not within_budget and (datetime.now(started_at.tzinfo) - started_at).total_seconds() >= stale_after:
                 out["plan_check_status"] = "failed"
                 out["plan_check_error"] = "上次套餐查询状态已超时，可重新查询"
                 out["plan_check_stale"] = True
@@ -1861,10 +1862,10 @@ def update_account_deactivation_mail(acc_id: int, result: dict | None = None, *,
     return updated
 
 
-def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
+def update_account_liveness(acc_id: int, result: dict | None = None, *, conn=None) -> bool:
     """写回账号查活结果；成功时同步刷新最新 access_token 和账号基础信息。"""
     result = result or {}
-    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    account = record_store.get_row(record_store.ACCOUNTS, int(acc_id), conn=conn, for_update=conn is not None)
     if account is None:
         return False
     now = _now()
@@ -1938,12 +1939,13 @@ def update_account_liveness(acc_id: int, result: dict | None = None) -> bool:
         if result.get("proxy_used"):
             changes["live_check_proxy_used"] = result.get("proxy_used")
         changes["live_check_error"] = None
-    updated = _patch_account(int(acc_id), changes)
+    updated = _patch_account(int(acc_id), changes, conn=conn)
     if updated and status == "deactivated":
         mark_codex_account_deactivated(
             str(account.get("email") or ""),
             str(result.get("error") or "account_deactivated"),
             checked_at=str(result.get("checked_at") or now),
+            **({"conn": conn} if conn is not None else {}),
         )
     return updated
 

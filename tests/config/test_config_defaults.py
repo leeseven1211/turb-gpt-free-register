@@ -20,6 +20,25 @@ from core import roxy_registration
 
 
 class ConfigDefaultFallbackTests(unittest.TestCase):
+    def test_plan_auto_refresh_at_is_enabled_and_webui_editable(self):
+        key = "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED"
+        field = next(item for item in config_editor.EDITABLE_FIELDS if item["key"] == key)
+        self.assertTrue(proxy_config.PLAN_CHECK_AUTO_REFRESH_AT_ENABLED)
+        self.assertTrue(field["default"])
+        self.assertEqual("bool", field["type"])
+        self.assertEqual("database", field["storage"])
+        self.assertFalse(field["restart"])
+        self.assertEqual("AT 失效时自动刷新", field["label"])
+        self.assertEqual({key: False}, config_schema.validate_config_updates({key: False}))
+        old_loaded = env_loader._LOADED
+        env_loader._LOADED = True
+        try:
+            with patch.dict(os.environ, {key: "false"}, clear=False):
+                self.assertFalse(importlib.reload(proxy_config).PLAN_CHECK_AUTO_REFRESH_AT_ENABLED)
+        finally:
+            env_loader._LOADED = old_loaded
+            importlib.reload(proxy_config)
+
     def test_codex_oauth_sub2api_automation_is_optional_and_webui_editable(self):
         key = "CODEX_OAUTH_AUTO_UPLOAD_SUB2API"
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}

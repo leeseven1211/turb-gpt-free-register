@@ -3002,6 +3002,49 @@ def _operation_task_query_base(*, include_current_run: bool, include_run_count: 
     return query
 
 
+def _attach_plan_failure_summaries(items: list[dict], *, conn, run_rows: bool = False) -> None:
+    """一次批量恢复旧套餐 Run 的逐国错误，仅补读模型而不回写历史事实。"""
+    from core.accounts.plans.errors import country_failures_from_events
+
+    by_run: dict[int, list[dict]] = {}
+    for item in items:
+        if item.get("task_type") != "plan_check" or item.get("status") not in {"failed", "partial_success"}:
+            continue
+        summary = item.get("result_summary") if isinstance(item.get("result_summary"), dict) else {}
+        if isinstance(summary.get("country_failures"), list):
+            continue
+        run_id = item.get("id" if run_rows else "last_run_id")
+        if run_id:
+            by_run.setdefault(int(run_id), []).append(item)
+    if not by_run:
+        return
+    with conn.cursor() as cur:
+        # 正式回执和旧 warning 分别取最后一条，成功回执也必须读取，避免复现已恢复的旧错误。
+        cur.execute(
+            f"""
+            SELECT DISTINCT ON (run_id, detail->>'country', event_type)
+                   id, run_id, stage, event_type, detail, created_at
+            FROM {_table('operation_events')}
+            WHERE run_id=ANY(%s) AND stage IN ('plan_check', 'plan_check_result')
+              AND event_type IN ('promotion.query.recorded', 'note.warning')
+              AND detail->'ok' IN ('true'::jsonb, 'false'::jsonb)
+              AND detail->>'country' IS NOT NULL
+            ORDER BY run_id, detail->>'country', event_type, created_at DESC, id DESC
+            """,
+            (list(by_run),),
+        )
+        events_by_run: dict[int, list[dict]] = {}
+        for row in cur.fetchall():
+            event = _row(dict(row)) or {}
+            events_by_run.setdefault(int(event["run_id"]), []).append(event)
+    for run_id, events in events_by_run.items():
+        events.sort(key=_event_time_sort_key)
+        failures = country_failures_from_events(events)
+        for item in by_run[run_id]:
+            summary = item.get("result_summary") if isinstance(item.get("result_summary"), dict) else {}
+            item["result_summary"] = {**summary, "country_failures": failures}
+
+
 def list_tasks(
     *, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "",
     source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
@@ -3123,6 +3166,7 @@ def list_tasks(
                 }
                 for row in cur.fetchall()
             ]
+        _attach_plan_failure_summaries(items, conn=conn)
         _attach_admission_wait(items, conn=conn)
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size,
             **({"facets": facets} if include_facets else {})}
@@ -3243,6 +3287,10 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
             )
             raw_parent = cur.fetchone()
             parent = _row(dict(raw_parent)) if raw_parent else None
+        if task.get("task_type") == "plan_check":
+            for run in runs:
+                run["task_type"] = "plan_check"
+            _attach_plan_failure_summaries(runs, conn=conn, run_rows=True)
     result = _row(dict(task)) or {}
     _apply_current_run_projection(result, _select_current_run(runs))
     result.update({
@@ -6635,6 +6683,38 @@ def _confirmed_independent_payment_partial(cur, run: dict, result_summary: dict)
             and summary.get("failure_code") in {"MATERIAL_MISSING", "MATERIAL_UNSUPPORTED", "INVALID_AT"})
 
 
+def _confirmed_plan_refresh(run: dict, result_summary: dict) -> bool:
+    """独立套餐后续查询失败不能推翻本 Run 已三证确认的 AT 刷新。"""
+    refresh = result_summary.get("auto_refresh_at")
+    if (run.get("task_type") != "plan_check" or run.get("source_system") != "native_operations"
+            or run.get("resource_family") != "openai_interactive"
+            or not isinstance(refresh, dict) or refresh.get("attempted") is not True
+            or refresh.get("ok") is not True or refresh.get("reconcile_required") is True
+            or result_summary.get("reconcile_required") is True
+            or result_summary.get("manual_reconcile") is True
+            or result_summary.get("outcome") in {"unknown", "request_unknown"}):
+        return False
+    data = _decode(run.get("data"))
+    data = data if isinstance(data, dict) else {}
+    intent = _remote_write_checkpoint(data)
+    receipt = data.get("remote_receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    request_id = str(intent.get("request_id") or "")
+    detail = receipt.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    return bool(
+        intent.get("action") == "token_refresh"
+        and (intent.get("receipt_state") or intent.get("state")) == "confirmed"
+        and receipt.get("action") == "token_refresh"
+        and (receipt.get("receipt_state") or receipt.get("outcome")) == "confirmed"
+        and request_id.startswith(f"token-refresh:{int(run['id'])}:")
+        and receipt.get("request_id") == request_id
+        and all(detail.get(key) is True for key in (
+            "remote_result_confirmed", "local_business_writeback_confirmed", "local_readback_confirmed",
+        ))
+    )
+
+
 def _confirmed_account_setup_partial(cur, run: dict, result_summary: dict) -> bool:
     """仅为步骤回执完整且成功项本地读回一致的协议补密码保留部分成功。"""
     if (run.get("source_system") != "webui_runtime" or run.get("task_type") not in {"account_setup_retry", "password_setup"}
@@ -6771,8 +6851,12 @@ def finish_run(
                 and (_confirmed_independent_payment_partial(cur, found, dependency_result)
                      or _confirmed_account_setup_partial(cur, found, dependency_result))
             )
+            confirmed_plan_refresh = (
+                status_value in {"failed", "partial_success", "cancelled", "stopped"}
+                and _confirmed_plan_refresh(found, dependency_result)
+            )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
-                not (explicit_remote_rejection or confirmed_extract_failure or confirmed_independent_partial)
+                not (explicit_remote_rejection or confirmed_extract_failure or confirmed_independent_partial or confirmed_plan_refresh)
                 and (status_value != "success" or receipt != "confirmed")
             ):
                 # 未确认的远端写入保留在当前 Run，人工重跑会创建新的 Run，

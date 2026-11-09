@@ -1151,7 +1151,7 @@ def create_accounts_blueprint(context: WebUIContext):
         if db.account_is_deactivated(acc):
             return jsonify({"ok": False, "deactivated": True, "error": "账号已废号，不能查询套餐"}), 409
         token = (acc.get("access_token") or "").strip()
-        if not token:
+        if not token and not bool(plan_check_service.get_config_snapshot().get("PLAN_CHECK_AUTO_REFRESH_AT_ENABLED", True)):
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
         account_id = int(acc.get("id"))
         queued = plan_check_service.enqueue_account_plan_check(
@@ -1185,6 +1185,7 @@ def create_accounts_blueprint(context: WebUIContext):
         items = []
         skipped = []
         seen = set()
+        auto_refresh_at = None
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -1202,8 +1203,11 @@ def create_accounts_blueprint(context: WebUIContext):
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已废号"})
                 continue
             if not (acc.get("access_token") or "").strip():
-                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
-                continue
+                if auto_refresh_at is None:
+                    auto_refresh_at = bool(plan_check_service.get_config_snapshot().get("PLAN_CHECK_AUTO_REFRESH_AT_ENABLED", True))
+                if not auto_refresh_at:
+                    skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
+                    continue
             items.append(acc)
 
         started = []

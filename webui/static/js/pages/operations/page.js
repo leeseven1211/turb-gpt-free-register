@@ -303,7 +303,7 @@ function accountTaskCountryFailures(progress) {
   const rows = Array.isArray(progress?.failure?.country_failures) ? progress.failure.country_failures : [];
   const items = rows.filter(row => row && typeof row === 'object' && String(row.country || '').trim());
   if (!items.length) return '';
-  return `<ul class="account-task-country-failures">${items.map(row => `<li>${esc(String(row.country).trim())}：${esc(String(row.summary || '').trim() || '未记录具体原因')}</li>`).join('')}</ul>`;
+  return `<ul class="account-task-country-failures">${items.map(row => `<li>${esc(String(row.country).trim())}：${esc(String(row.summary || '').trim() || '诊断记录不完整')}</li>`).join('')}</ul>`;
 }
 function accountTaskFailureSummary(progress) {
   const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
@@ -322,7 +322,8 @@ function accountTaskFailureSummary(progress) {
   const technical = failure.error_info || (failure.evidence && typeof failure.evidence === 'object')
     ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
     : '';
-  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${countries || `<span>${esc(message)}</span>`}${errorSummary ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
+  const primary = !countries || failure.error_info?.auto_refresh_at_failed ? `<span>${esc(message)}</span>` : '';
+  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${primary}${countries}${errorSummary && errorSummary !== message ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
 }
 function accountTaskStepTooltipText(step) {
   return taskProgressStepTooltip(step);
@@ -1323,6 +1324,7 @@ function accountTaskResultTooltipText(task) {
     result.current_plan_type ? `套餐 ${result.current_plan_type}` : '套餐查询结果',
     status?.state,
     status?.failedText,
+    ...(Array.isArray(result.country_failures) ? result.country_failures : []).map(row => `${row.country}：${row.summary || '诊断记录不完整'}`),
   ];
   if (displays.length) {
     displays.forEach(display => {

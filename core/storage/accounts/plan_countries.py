@@ -148,11 +148,21 @@ def update_country_progress(account_id: int, country: str, progress: dict, *, ac
             state["status"] = "queued"
             row.update(status="queued", error=None)
         elif action == "http_start":
-            if state["http_attempts"] >= progress["max_attempts"]:
+            if state["http_attempts"] >= progress["max_attempts"] + state.get("auth_retry_allowance", 0):
                 raise ValueError("该国家请求次数已耗尽")
             state["http_attempts"] += 1
             state["status"] = "running"
             row.update(status="running", error=None)
+        elif action == "auth_retry":
+            # 新 AT 仅给本次认证失败国家一次补查，不重置其他请求/库存预算。
+            if state["success"] or state.get("auth_retry_allowance"):
+                raise ValueError("该国家无需或已使用 AT 恢复补查额度")
+            if row.get("http_status") != 401:
+                raise ValueError("仅 HTTP 401 国家可申请 AT 恢复补查")
+            state.update(auth_retry_allowance=1, pending=True, status="queued", retry_not_before=0)
+            row.update(status="queued", error=None, http_status=None)
+            for key in ("token_expired", "token_expires_at"):
+                row.pop(key, None)
         elif action == "result":
             _settle_slice(state, now)
             result = result or {"ok": False, "error": "该国家查询失败"}
@@ -214,7 +224,9 @@ def finish_unfinished_countries(account_id: int, *, status: str, error: str, fen
     def update(rows):
         for row in rows:
             if row.get("status") in {"queued", "running"}:
-                row.update(status=status, error=sanitize_promotion_text(error), checked_at=now_iso())
+                row.update(status=status, error=sanitize_promotion_text(error), checked_at=now_iso(), http_status=None)
+                for key in ("token_expired", "token_expires_at"):
+                    row.pop(key, None)
         return rows, {}
     return _update(account_id, update, fence=fence, conn=conn)
 

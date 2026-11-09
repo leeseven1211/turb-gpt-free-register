@@ -166,7 +166,7 @@ def test_plan_country_failure_distinguishes_local_expiry_and_missing_detail():
     events.append(_event(5, "plan_check", "failed", message="全部国家查询失败"))
     snapshot = build_progress_snapshot(1, 2, "plan_check", _run("failed"), events)
     failures = snapshot["failure"]["country_failures"]
-    assert [f["code"] for f in failures] == ["token_local_expired", "proxy_tunnel_failed", "timeout", "detail_unclassified"]
+    assert [f["code"] for f in failures] == ["token_local_expired", "proxy_tunnel_failed", "timeout", "detail_incomplete"]
     assert "本地" in failures[0]["summary"]
     assert "secret-value" not in str(snapshot["failure"])
     assert "example.invalid" not in str(snapshot["failure"])
@@ -182,6 +182,33 @@ def test_plan_country_warning_without_http_evidence_does_not_infer_local_expiry(
     failure = build_progress_snapshot(1, 2, "plan_check", _run("failed"), events)["failure"]
     assert failure["country_failures"][0]["code"] == "token_expired_or_rejected"
     assert "未发起" not in failure["message"]
+
+
+def test_plan_auto_refresh_is_optional_and_authentication_events_share_its_step():
+    without = build_progress_snapshot(1, 2, "plan_check", _run("success"), [
+        _event(1, "plan_check", "success", message="套餐查询完成"),
+    ])
+    assert "refresh_token" not in {step["id"] for step in without["main_steps"]}
+    events = [
+        _event(1, "refresh_token", "running", message="开始刷新 AT"),
+        _event(2, "login_password", "success", message="密码验证完成"),
+        _event(3, "email_otp", "success", message="邮箱验证完成"),
+        _event(4, "mfa_challenge", "failed", message="MFA 未通过"),
+        _event(5, "refresh_token", "failed", message="刷新 AT 失败"),
+        {**_event(6, "plan_check", detail={"country": "JP", "ok": False, "http_status": 401}),
+         "event_type": "promotion.query.recorded"},
+    ]
+    run = _run("failed", error_message="全部国家查询失败：JP", result_summary={
+        "auto_refresh_at": {"attempted": True, "ok": False, "error": "MFA 未通过", "cause_code": "mfa_rejected"},
+    })
+    snapshot = build_progress_snapshot(1, 2, "plan_check", run, events)
+    refresh = _step(snapshot, "refresh_token")
+    assert refresh["label"] == "刷新 AT"
+    assert {"login_password", "email_otp", "mfa_challenge"} <= {item["id"] for item in refresh["children"]}
+    assert snapshot["failure"]["step_id"] == "refresh_token"
+    assert snapshot["failure"]["error_info"]["code"] == "mfa_rejected"
+    assert snapshot["failure"]["message"].startswith("自动刷新 AT 失败")
+    assert snapshot["failure"]["country_failures"][0]["code"] == "token_http_401"
 
 
 def test_partial_plan_success_reports_failed_countries_without_changing_outcome():

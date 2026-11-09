@@ -100,6 +100,27 @@ function createConfigView(fields = []) {
 
 const field = (key, group, extra = {}) => ({key, group, label: key, type: 'str', value: '', ...extra});
 
+test('AT 失效自动刷新开关只在查询套餐中展示并可搜索定位', () => {
+  const key = 'PLAN_CHECK_AUTO_REFRESH_AT_ENABLED';
+  const fields = [
+    field(key, '代理与网络', {type: 'bool', value: true, label: 'AT 失效时自动刷新'}),
+    field('PLAN_CHECK_PAYMENT_METHODS_ENABLED', '代理与网络', {type: 'bool', value: false}),
+    field('ACCOUNT_AT_REFRESH_DRIVER', '注册与账号', {value: 'protocol'}),
+  ];
+  const {view} = createConfigView(fields);
+  view.search(key);
+  assert.equal(view.state().menu, '注册与账号');
+  assert.equal(view.state().domains['注册与账号'], '注册与账号');
+  const groups = view.groups();
+  const planFields = groups['注册与账号'].filter(item => item.key === key);
+  assert.equal(planFields.length, 1);
+  const markup = view.render('注册与账号', groups['注册与账号']);
+  assert.match(markup, /AT 失效时自动刷新/);
+  assert.match(markup, /type="checkbox"[^>]*data-key="PLAN_CHECK_AUTO_REFRESH_AT_ENABLED"[^>]*checked/);
+  assert.doesNotMatch(markup, /data-key="ACCOUNT_AT_REFRESH_DRIVER"/);
+  assert.ok(!(groups['代理与网络'] || []).some(item => item.key === key));
+});
+
 test('提链独立支付分类只呈现公共XXSYUN配置，搜索Key会定位该分类', () => {
   const key = 'EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY';
   const fields = [

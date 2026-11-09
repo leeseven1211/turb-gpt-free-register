@@ -421,6 +421,7 @@ _DEFAULTS: dict[str, Any] = {
     "PLAN_CHECK_PROXY": "",
     "PLAN_CHECK_PROXY_ALLOW_REUSE": True,
     "PLAN_CHECK_PROXY_REUSE_LIMIT": 3,
+    "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED": True,
     "PLAN_CHECK_PAYMENT_METHODS_ENABLED": False,
     "PLAN_CHECK_COUNTRIES": ["JP", "VN", "IN"],
     "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT": 60,
@@ -740,6 +741,10 @@ _FIELD_DEFINITIONS = [
     {
         "key": "PLAN_CHECK_PROXY_REUSE_LIMIT", "file": "proxy.py", "type": "int", "group": "代理与网络",
         "label": "查询套餐同一 IP 租用次数上限", "help": "仅影响使用代理池的查套餐；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；各供应商及手动地址仍验证出口国家和健康状态。仅在允许复用 IP 开启时生效。",
+    },
+    {
+        "key": "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED", "file": "proxy.py", "type": "bool", "group": "代理与网络",
+        "label": "AT 失效时自动刷新", "help": "默认开启。独立查套餐遇到 AT 缺失、本地过期或接口返回 HTTP 401 时，按“刷新 AT”配置自动刷新一次，保存成功后补查失败国家；成功国家保留结果。每次执行最多自动刷新一次，失败仍可手动重跑；不影响注册查套餐。新任务保存配置快照，缺少此项的历史任务重跑时读取当前开关。",
     },
     {
         "key": "PLAN_CHECK_PAYMENT_METHODS_ENABLED", "file": "proxy.py", "type": "bool", "group": "代理与网络",

@@ -1224,7 +1224,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "extract_tls_error": ("NET-LINK-TLS", "提链阶段 TLS 连接失败"),
     "extract_certificate_error": ("NET-LINK-CERT", "提链阶段 TLS 证书校验失败"),
     "extract_approval_query_failed": ("LINK-APPROVAL-QUERY", "Stripe 确认后的审批或结果查询失败"),
-    "plan_country_queries_failed": ("OA-PLAN-COUNTRIES", "套餐国家查询均失败，具体原因未记录"),
+    "plan_country_queries_failed": ("OA-PLAN-COUNTRIES", "诊断记录不完整，缺少逐国套餐失败证据"),
     "mfa_code_missing": ("AUTH-MFA-001", "MFA 验证码不可用"),
     "mfa_factor_missing": ("AUTH-MFA-002", "MFA 验证方式不可用"),
     "mfa_issue_challenge_failed": ("AUTH-MFA-003", "MFA 挑战发起失败"),
@@ -2345,6 +2345,61 @@ def _concurrency_error_projection(raw, error_code, summary, stage):
     return None
 
 
+def _plan_failure_projection(raw: str, summary: dict, *, stage: str, task_status: str,
+                             previous: dict | None) -> dict | None:
+    """只细化套餐诊断，不改变已有重跑和远端回执语义。"""
+    from core.accounts.plans.errors import classify_plan_failure, country_failures_from_summary, summarize_plan_failures
+
+    refresh = summary.get("auto_refresh_at")
+    if isinstance(refresh, dict) and refresh.get("attempted") is True and refresh.get("ok") is False:
+        refresh_error = str(refresh.get("error") or "AT 自动刷新未完成")
+        info = classify_task_error(
+            refresh_error, task_type="token_refresh", stage=str(refresh.get("failure_stage") or "reauth"),
+            error_code=str(refresh.get("cause_code") or refresh.get("error_code") or ""),
+            result_summary=refresh, task_status=task_status,
+        )
+        if info is not None:
+            info = dict(info)
+            info["summary"] = "自动刷新 AT 失败：" + str(info.get("summary") or "诊断记录不完整")
+            info["title"] = "自动刷新 AT · " + str(info.get("kind_label") or "认证失败")
+            info["auto_refresh_at_failed"] = True
+            # 刷新过程已有的恢复提示由外层当前任务结果决定，不从内联投影扩张约束。
+            for key in ("retryability", "remote_state_impact", "next_action"):
+                info.pop(key, None)
+                if key in (previous or {}):
+                    info[key] = previous[key]
+            return info
+    failures = country_failures_from_summary(summary)
+    if failures:
+        codes = {row["code"] for row in failures}
+        code = next(iter(codes)) if len(codes) == 1 else "plan_country_mixed_failures"
+        message = summarize_plan_failures(failures)
+    elif raw.startswith("全部国家查询失败"):
+        return previous
+    else:
+        if stage == "network" and (previous or {}).get("code") not in {None, TaskErrorCode.UNKNOWN.value}:
+            return previous
+        failure = classify_plan_failure({**summary, "error": raw}, local_check_observed=True)
+        if failure["code"] == "detail_incomplete":
+            return previous
+        code, message = failure["code"], failure["summary"]
+    display = {
+        "token_http_401": "OA-PLAN-401", "token_local_expired": "AUTH-PLAN-EXP",
+        "token_missing": "AUTH-PLAN-MISSING", "token_expired_or_rejected": "AUTH-PLAN-EVIDENCE",
+        "plan_http_forbidden": "OA-PLAN-403", "plan_http_rate_limited": "OA-PLAN-429",
+        "detail_incomplete": "OA-PLAN-EVIDENCE", "plan_country_mixed_failures": "OA-PLAN-MIXED",
+    }.get(code, "NET-PLAN-" + code.upper().replace("_", "-"))
+    info = _error_projection(
+        code, "external", "套餐查询", message, stage="plan_check", error_code="", raw=raw,
+        summary=message, display_code=display,
+    )
+    for key in ("retryability", "remote_state_impact", "next_action"):
+        if key in (previous or {}):
+            info[key] = previous[key]
+    info.update(cause_code=code, cause_display_code=display, cause_summary=message)
+    return info
+
+
 def classify_task_error(
     message: Any,
     *,
@@ -2483,6 +2538,10 @@ def classify_task_error(
         if reconcile_required and (projection is None or projection["code"] == TaskErrorCode.UNKNOWN.value):
             cause = _receipt_missing_cause(stage=stage, task_type=task_type, summary=summary_data)
             projection = _cause_error_projection(cause, stage=stage, error_code=error_code, raw=raw)
+    if str(task_type or "").strip().lower() == "plan_check":
+        projection = _plan_failure_projection(
+            raw, summary_data, stage=stage, task_status=task_status, previous=projection,
+        )
     if projection is not None and reconcile_required:
         # 保留防重复执行的恢复语义，但主错误仍是已证实的具体失败原因。
         projection.update({

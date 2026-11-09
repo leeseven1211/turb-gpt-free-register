@@ -20,6 +20,7 @@ from core.accounts.plans.promotion import sanitize_promotion_text
 from core.operations.reporter import TaskReporter
 from core.operations.executor import configured_workers, operation_log_context
 from core.operations.executor import executor as _ACCOUNT_EXECUTOR
+from core.accounts.liveness.service import LIVE_CONFIG_ALLOWLIST
 
 logger = logging.getLogger('core.plan_check_service')
 
@@ -66,6 +67,7 @@ _EXECUTOR = _RegistrationExecutorCompatibility()
 # Run.  The actual proxy URL/API token remains an on-demand resource owned by
 # the account/HTTP clients and is never part of task data.
 PLAN_CONFIG_ALLOWLIST = {
+    **LIVE_CONFIG_ALLOWLIST,
     "plan_check_timeout": "PLAN_CHECK_TIMEOUT",
     "plan_check_max_attempts": "PLAN_CHECK_MAX_ATTEMPTS",
     "plan_check_retry_delay": "PLAN_CHECK_RETRY_DELAY",
@@ -79,6 +81,7 @@ PLAN_CONFIG_ALLOWLIST = {
     "countries": "PLAN_CHECK_COUNTRIES",
     "country_wait_timeout": "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT",
     "payment_methods_enabled": "PLAN_CHECK_PAYMENT_METHODS_ENABLED",
+    "auto_refresh_at_enabled": "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED",
     "legacy_route_source": "ACCOUNT_ACTION_PROXY_MODE",
     "registration_route_source": "REGISTRATION_PROXY_MODE",
 }
@@ -387,10 +390,12 @@ def _plan_result_summary(result: dict) -> dict:
         "plus_discount_eligible", "plus_promo_kind", "plus_promo_discount_percentage",
         "plus_promo_duration_num_periods", "plus_promo_duration_period",
         "checked_at", "token_expires_at", "plan_check_countries", "plan_check_partial",
-        "country_success_count", "country_total_count", "failed_countries",
+        "country_success_count", "country_total_count", "failed_countries", "auto_refresh_at",
     )
     summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
     summary.update(_checkout_summary(result))
+    from core.accounts.plans.errors import country_failures_from_summary
+    summary["country_failures"] = country_failures_from_summary(result)
     for key in ("account_promotions", "promotion_query_snapshot"):
         if key in result:
             summary[key] = result[key]
@@ -407,6 +412,7 @@ def _run_country_plan_checks(
     *, account_id: int, email: str, access_token: str, trigger: str, proxy: str | None,
     timezone_offset_min: str, countries: list[str], reporter, operation_context,
     config_snapshot: dict | None, proxy_source: str | None, fence: dict | None = None,
+    at_recovery=None,
 ) -> dict:
     """逐国查询并立即保存结果，单国缺货或请求失败不会跳过后续国家。"""
     from core.proxy.account_routes import acquire_account_proxy
@@ -421,12 +427,25 @@ def _run_country_plan_checks(
     wait_timeout = float(_snapshot_value(config_snapshot, "country_wait_timeout", getattr(proxy_cfg, "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT", 60)))
     rate_budget = (float(_snapshot_value(config_snapshot, "min_interval", .4)) + float(_snapshot_value(config_snapshot, "jitter", .3))) * (configured_workers() + 1)
     budget = len(countries) * (wait_timeout + timeout * (attempts + 1) + 30 * (attempts - 1) + rate_budget + 35)
+    if at_recovery is not None:
+        budget += at_recovery.budget_seconds
     rows, progress = plan_countries.initialize_country_checks(
         account_id, countries, fence=fence, budget_seconds=budget,
         wait_seconds=wait_timeout, max_attempts=attempts,
     )
     countries = list(progress["countries"])
     attempts = progress["max_attempts"]
+    if at_recovery is not None and at_recovery.needs_refresh(access_token):
+        refreshed = at_recovery.refresh(access_token, reason="token_missing" if not access_token else "token_local_expired")
+        if refreshed:
+            access_token = refreshed
+        else:
+            for country in countries:
+                if progress["countries"][country]["pending"]:
+                    rows, progress = plan_countries.update_country_progress(
+                        account_id, country, progress, action="result", fence=fence,
+                        result={"ok": False, "error": "自动刷新 AT 失败：" + at_recovery.summary.get("error", "认证未完成"), "checked_at": now_iso()},
+                    )
     while any(state["pending"] for state in progress["countries"].values()):
         made_progress = False
         for country in countries:
@@ -436,7 +455,7 @@ def _run_country_plan_checks(
             _checkpoint(operation_context, "逐国查询前检查取消状态")
             now = time.time()
             expired = progress["deadline_at"] - now < 2
-            exhausted = state["http_attempts"] >= attempts
+            exhausted = state["http_attempts"] >= attempts + state.get("auth_retry_allowance", 0)
             no_supply_budget = state["wait_used"] >= progress["wait_limit"]
             if expired or exhausted or no_supply_budget:
                 error = "国家查询总期限已到" if expired else "该国家请求次数已耗尽" if exhausted else "该国库存暂缺，累计等待预算已耗尽"
@@ -534,6 +553,14 @@ def _run_country_plan_checks(
             )
             records = [{**_plan_query_record(answer, phase="initial"), "country": country}]
             _record_promotion_queries(reporter, {**answer, "promotion_query_history": records})
+            if (at_recovery is not None and answer.get("http_status") == 401
+                    and not at_recovery.summary.get("attempted")):
+                refreshed = at_recovery.refresh(access_token, reason="token_http_401")
+                if refreshed:
+                    access_token = refreshed
+                    rows, progress = plan_countries.update_country_progress(
+                        account_id, country, progress, action="auth_retry", fence=fence,
+                    )
             reporter.note(
                 f"{country} 套餐查询{'成功' if answer.get('ok') else '失败，继续其他国家'}",
                 stage="plan_check", level="INFO" if answer.get("ok") else "WARNING",
@@ -549,6 +576,8 @@ def _run_country_plan_checks(
     history = [record for state in progress["countries"].values() for record in state["history"]]
     result = aggregate_country_results(rows)
     result["promotion_query_history"] = history
+    if at_recovery is not None and at_recovery.summary:
+        result["auto_refresh_at"] = at_recovery.summary
     if plan_countries.save_country_summary(account_id, result, fence=fence):
         _reconcile_extract_payment_after_plan(account_id, result, trigger=trigger)
     count = result["country_success_count"]
@@ -629,6 +658,7 @@ def _run_plan_check(
     proxy_source: str | None = None,
     countries: list[str] | None = None,
     finish_operation: bool = True,
+    at_recovery=None,
 ) -> dict:
     account_route = None
     result = None
@@ -665,7 +695,19 @@ def _run_plan_check(
                 proxy=proxy, timezone_offset_min=timezone_offset_min, countries=countries,
                 reporter=reporter, operation_context=operation_context,
                 config_snapshot=config_snapshot, proxy_source=proxy_source, fence=fence,
+                at_recovery=at_recovery,
             )
+
+        if at_recovery is not None and at_recovery.needs_refresh(access_token):
+            refreshed = at_recovery.refresh(access_token, reason="token_missing" if not access_token else "token_local_expired")
+            if refreshed:
+                access_token = refreshed
+            else:
+                result = {"ok": False, "error": "自动刷新 AT 失败：" + at_recovery.summary.get("error", "认证未完成"),
+                          "auto_refresh_at": at_recovery.summary, "checked_at": datetime.now().isoformat(timespec="seconds")}
+                db.update_account_plan_check(acc_id=account_id, result=result)
+                reporter.finish(status="failed", message="套餐自动刷新 AT 失败", error=result["error"], result_summary=_plan_result_summary(result))
+                return result
 
         from core.proxy.account_routes import acquire_account_proxy
         _checkpoint(operation_context, "套餐查询申请线路前检查取消状态")
@@ -719,6 +761,33 @@ def _run_plan_check(
             if key not in {"proxy_mode", "network_route", "proxy_used"} or not result.get(key)
         })
         _record_promotion_queries(reporter, result)
+        if (at_recovery is not None and result.get("http_status") == 401
+                and not at_recovery.summary.get("attempted")):
+            account_route.release(reason=f"plan-check-before-refresh-{account_id}")
+            account_route = None
+            refreshed = at_recovery.refresh(access_token, reason="token_http_401")
+            if refreshed:
+                _checkpoint(operation_context)
+                reporter.stage("network", "running", "AT 已刷新，重新申请套餐查询线路")
+                account_route = acquire_account_proxy(**route_kwargs)
+                reporter.resource("resource.acquired", message="已领取 AT 刷新后的套餐查询线路", detail=account_route.public_dict())
+                reporter.stage("network", "success", "套餐补查线路已就绪")
+                reporter.stage("plan_check", "running", "使用新 AT 补查套餐")
+                previous_history = result.get("promotion_query_history", [])
+                result = _query_account_plan(
+                    email=email, access_token=refreshed, trigger=trigger, proxy=account_route.proxy_url,
+                    timezone_offset_min=timezone_offset_min, config_snapshot=config_snapshot,
+                    include_checkout=_payment_methods_enabled(config_snapshot),
+                    checkout_country=account_route.public_dict().get("proxy_region") or getattr(account_route, "region", None),
+                    checkout_checkpoint=lambda message: _checkpoint(operation_context, message),
+                )
+                _record_promotion_queries(reporter, result)
+                result["promotion_query_history"] = previous_history + result.get("promotion_query_history", [])
+                result.update({key: value for key, value in account_route.public_dict().items() if key != "proxy_url"})
+        if at_recovery is not None and at_recovery.summary:
+            result["auto_refresh_at"] = at_recovery.summary
+        if countries == [] and not str(trigger).startswith("registration"):
+            result.update(plan_check_countries=[], plan_check_partial=False)
         if db.update_account_plan_check(acc_id=account_id, result=result):
             _reconcile_extract_payment_after_plan(account_id, result, trigger=trigger)
         _log_plan_result(email, trigger, result)
@@ -739,7 +808,7 @@ def _run_plan_check(
             message=("套餐查询成功" + _checkout_message(result)) if result.get("ok") else "套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
             result_summary=_plan_result_summary(result),
-            route=account_route.public_dict(),
+            route=account_route.public_dict() if account_route is not None else None,
             validation_method="access_token",
         )
         return result
@@ -754,6 +823,8 @@ def _run_plan_check(
             "error": str(exc) or "套餐查询任务已取消",
             "cancelled": True,
         }
+        if at_recovery is not None and at_recovery.summary:
+            result["auto_refresh_at"] = at_recovery.summary
         if multi_country:
             result = _interrupted_country_result(account_id, result, fence=fence)
         try:
@@ -775,6 +846,8 @@ def _run_plan_check(
             "checked_at": datetime.now().isoformat(timespec="seconds"),
             "error": f"{type(exc).__name__}: {str(exc)[:180]}",
         }
+        if at_recovery is not None and at_recovery.summary:
+            result["auto_refresh_at"] = at_recovery.summary
         if multi_country:
             result = _interrupted_country_result(account_id, result, fence=fence)
         try:
@@ -992,7 +1065,9 @@ def _handle_plan_operation(context):
         return None
     access_token = str((account or {}).get("access_token") or "").strip()
     email = str((account or {}).get("email") or context.email or "").strip()
-    if not access_token:
+    standalone = not str(context.run.get("trigger") or "").startswith("registration")
+    auto_refresh = standalone and bool(_snapshot_value(context.config_snapshot, "auto_refresh_at_enabled", False))
+    if not access_token and not auto_refresh:
         error = "账号缺少 access_token"
         _ReporterAdapter(context.task_id, context).stage("preflight", "failed", error, level="ERROR")
         db.update_account_plan_check(
@@ -1003,6 +1078,11 @@ def _handle_plan_operation(context):
         return None
     with context.lease(resource_family="openai_interactive"):
         with operation_log_context(context, stage="preflight"):
+            recovery = None
+            if auto_refresh:
+                from core.accounts.plans.at_recovery import PlanAtRecovery
+                recovery = PlanAtRecovery(context, account_id=int(context.account_id), email=email,
+                                          config_snapshot=context.config_snapshot)
             _run_plan_check(
                 account_id=int(context.account_id),
                 email=email,
@@ -1020,8 +1100,36 @@ def _handle_plan_operation(context):
                     or ""
                 ).strip() or None,
                 countries=data.get("countries") if isinstance(data.get("countries"), list) else None,
+                at_recovery=recovery,
             )
     return None
+
+
+def _retry_plan_operation(task):
+    """旧 Run 首次重跑补齐新增配置，已有快照保持原选择。"""
+    from core.storage.operations import store
+    if account_task_store.operation_is_deactivated(task) or str(task.get("status") or "") in {
+        "queued", "running", "cancelling", "settling", "stopping", "waiting",
+    }:
+        return account_task_store.default_operation_retry(task)
+    previous = store.get_run(int(task.get("last_run_id") or 0)) or {}
+    previous_data = previous.get("data") or {}
+    snapshot = dict(previous_data.get("config_snapshot") or {})
+    if "auto_refresh_at_enabled" in snapshot:
+        return account_task_store.default_operation_retry(task)
+    current = account_task_store.normalize_config_snapshot(get_config_snapshot(), allowlist=PLAN_CONFIG_ALLOWLIST)
+    # 仅补本次新增的恢复配置，不替换原国家、支付预检或套餐预算。
+    for key in ("auto_refresh_at_enabled", *LIVE_CONFIG_ALLOWLIST):
+        if key not in snapshot and key in current:
+            snapshot[key] = current[key]
+    try:
+        run = store.retry_runtime_task(int(task["id"]), trigger="manual_retry",
+                                      data={"retry_action": "manual_retry", "config_snapshot": snapshot})
+    except (LookupError, ValueError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc)}
+    account_task_store.notify_dispatch()
+    return {"accepted": True, "busy": False, "reused": False, "task_id": int(task["id"]),
+            "run_id": run["id"], "account_id": task.get("account_id"), "status": "queued"}
 
 
 def register_operation_handlers() -> bool:
@@ -1034,6 +1142,7 @@ def register_operation_handlers() -> bool:
         source_systems=("native_operations",),
         config_allowlist=PLAN_CONFIG_ALLOWLIST,
     )
+    account_task_store.register_operation_actions("plan_check", retry_handler=_retry_plan_operation)
     return True
 
 
@@ -1121,7 +1230,7 @@ def enqueue_account_plan_check(
     email = str(email or "").strip()
     trigger = str(trigger or "manual")
     access_token = str(access_token or "").strip()
-    if not access_token:
+    if not access_token and (str(trigger).startswith("registration") or not bool(getattr(proxy_cfg, "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED", True))):
         return {"accepted": False, "busy": False, "error": "账号缺少 access_token"}
     account = db.get_account(account_id)
     if not account:

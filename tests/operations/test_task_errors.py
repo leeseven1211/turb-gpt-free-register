@@ -144,8 +144,39 @@ class TaskErrorClassificationTests(unittest.TestCase):
             error_code="unknown.unclassified",
         )
         self.assertEqual("plan_country_queries_failed", info["code"])
-        self.assertEqual("套餐国家查询均失败，具体原因未记录", info["summary"])
+        self.assertEqual("诊断记录不完整，缺少逐国套餐失败证据", info["summary"])
         self.assertEqual("plan_check", info["stage"])
+
+    def test_plan_country_failure_uses_structured_causes_and_legacy_http(self):
+        from core.accounts.plans.errors import classify_plan_failure
+
+        for evidence in (
+            {"country_failures": [classify_plan_failure({"http_status": 401}, country="JP")]},
+            {"promotion_query_history": [{"country": "JP", "ok": False, "http_status": 401}]},
+        ):
+            with self.subTest(evidence=evidence):
+                info = classify_task_error("全部国家查询失败：JP", task_type="plan_check",
+                                           stage="complete", result_summary=evidence)
+                self.assertEqual("token_http_401", info["code"])
+                self.assertEqual("plan_check", info["stage"])
+                self.assertIn("JP：套餐接口返回 HTTP 401", info["summary"])
+                self.assertNotIn("本地", info["summary"])
+
+    def test_plan_country_mixed_failures_and_auto_refresh_cause(self):
+        from core.accounts.plans.errors import classify_plan_failure
+
+        summary = {"country_failures": [
+            classify_plan_failure({"http_status": 401}, country="JP"),
+            classify_plan_failure({"error": "TimeoutError: 请求超时"}, country="VN"),
+        ]}
+        info = classify_task_error("全部国家查询失败：JP、VN", task_type="plan_check", result_summary=summary)
+        self.assertEqual("plan_country_mixed_failures", info["code"])
+        self.assertIn("VN：套餐查询超时", info["summary"])
+        summary["auto_refresh_at"] = {"attempted": True, "ok": False,
+                                       "error": "OTP 被拒绝", "cause_code": "mfa_rejected"}
+        info = classify_task_error("全部国家查询失败：JP、VN", task_type="plan_check", result_summary=summary)
+        self.assertEqual("mfa_rejected", info["code"])
+        self.assertIn("自动刷新 AT 失败：MFA 验证被拒绝", info["summary"])
 
     def test_extract_categories_do_not_infer_cause_from_generic_http(self):
         for raw in ("平台提链失败：HTTP 401", "平台提链失败：HTTP 400", "平台提链失败：原因未知"):
