@@ -274,6 +274,145 @@ class ButlerManualImportTests(PostgresTestCase):
             first.result(10)
         self.assertEqual(len(self.calls), 2)
 
+    def test_cancel_before_worker_is_idempotent_and_replay_never_restarts(self):
+        batch, request = self.create()
+        before = self.items(batch)
+        cancelled = self.service.cancel(batch['batch_id'])
+        self.assertEqual(cancelled['status'], 'cancelled')
+        self.assertFalse(cancelled['can_retry'])
+        self.assertFalse(cancelled['can_cancel'])
+        self.assertTrue(cancelled['cancelled_at'])
+        self.assertEqual(self.service.cancel(batch['batch_id'])['cancelled_at'], cancelled['cancelled_at'])
+        self.service._launch.reset_mock()
+        self.assertEqual(self.service.retry(batch['batch_id'])['status'], 'cancelled')
+        self.assertEqual(self.service.create(request)['status'], 'cancelled')
+        self.assertEqual(self.run_batch(batch)['status'], 'cancelled')
+        self.assertEqual(self.service.reconcile_interrupted(), 0)
+        self.assertIsNone(self.service._claim_batch_owner(batch['batch_id']))
+        self.service._launch.assert_not_called()
+        self.assertEqual(self.items(batch), before)
+        self.assertEqual(self.calls, [])
+
+    def test_cancel_partial_preserves_imported_stock_and_original_unknown_intent(self):
+        batch, _ = self.create()
+        self.timeout_address = self.addresses[0]
+        partial = self.run_batch(batch)
+        self.assertEqual((partial['imported'], partial['unknown']), (1, 1))
+        before = self.items(batch)
+        pool = record_store.list_rows(record_store.EMAIL_BUTLER_POOL)
+        with patch.object(self.api, 'release') as release:
+            cancelled = self.service.cancel(batch['batch_id'])
+            release.assert_not_called()
+        self.assertEqual(cancelled['status'], 'cancelled')
+        self.assertEqual((cancelled['imported'], cancelled['unknown']), (1, 1))
+        self.assertEqual(cancelled['error_counts'], {'request_timeout': 1})
+        self.assertEqual(self.items(batch), before)
+        self.assertEqual(record_store.list_rows(record_store.EMAIL_BUTLER_POOL), pool)
+
+    def test_cancel_capacity_wait_exits_without_waiting_for_a_free_permit(self):
+        from core.operations import concurrency
+        from core.storage import runtime_config
+
+        batch, _ = self.create()
+        runtime_config.write_values({'GLOBAL_TASK_WORKERS': '1'}, source='test')
+        occupied = concurrency.try_admit_and_claim(execution_key='fixture:cancel-busy', task_type='email_import',
+            claim=lambda conn, execution_id: {'execution_id': execution_id})
+        self.assertIsNotNone(occupied.context)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                worker = executor.submit(self.service._run_batch, batch['batch_id'])
+                try:
+                    deadline = time.monotonic() + 5
+                    while not self.service.get(batch['batch_id'])['blocked_by'] and time.monotonic() < deadline:
+                        threading.Event().wait(.02)
+                    self.assertTrue(self.service.get(batch['batch_id'])['blocked_by'])
+                    self.service.cancel(batch['batch_id'])
+                    worker.result(5)
+                finally:
+                    concurrency.release_execution(occupied.context, reason='test')
+        finally:
+            concurrency.release_execution(occupied.context, reason='test')
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual((result['status'], result['blocked_by']), ('cancelled', []))
+        self.assertTrue(all(item['status'] == 'pending' for item in self.items(batch)))
+        self.assertEqual(self.calls, [])
+
+    def test_cancel_between_wait_check_and_atomic_claim_prevents_remote_requests(self):
+        from core.operations import concurrency
+
+        batch, _ = self.create()
+        original = concurrency.try_admit_and_claim
+        def cancel_before_claim(**kwargs):
+            self.service.cancel(batch['batch_id'])
+            return original(**kwargs)
+        self.api.me.reset_mock()
+        with patch.object(concurrency, 'try_admit_and_claim', side_effect=cancel_before_claim):
+            result = self.run_batch(batch)
+        self.assertEqual(result['status'], 'cancelled')
+        self.api.me.assert_not_called()
+        self.assertEqual(self.calls, [])
+        self.assertTrue(all(item['status'] == 'pending' for item in self.items(batch)))
+
+    def test_cancel_during_preflight_cannot_be_overwritten_by_running_or_final_status(self):
+        batch, _ = self.create()
+        def cancel_during_preflight(**kwargs):
+            self.service.cancel(batch['batch_id'])
+            return deepcopy(self.me)
+        with patch.object(self.api, 'me', side_effect=cancel_during_preflight):
+            result = self.run_batch(batch)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(self.calls, [])
+
+    def test_cancel_during_preflight_failure_cannot_be_overwritten_by_partial(self):
+        batch, _ = self.create()
+        def cancel_then_fail(**kwargs):
+            self.service.cancel(batch['batch_id'])
+            raise ValueError('fixed_route_unavailable')
+        with patch.object(self.api, 'me', side_effect=cancel_then_fail):
+            result = self.run_batch(batch)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertIsNone(result['error_code'])
+        self.assertEqual(self.calls, [])
+
+    def test_cancel_inflight_keeps_receipts_and_unknown_results_without_dispatching_remaining_items(self):
+        self.addresses = [f'cancel-{index}@icloud.com' for index in range(8)]
+        self.timeout_address = self.addresses[0]
+        batch, _ = self.create(count=8)
+        entered, release = threading.Event(), threading.Event()
+        starts, starts_lock = [], threading.Lock()
+        original = self.remote
+        def slow(**kwargs):
+            with starts_lock:
+                starts.append(kwargs['idempotency_key'])
+                if len(starts) == 4:
+                    entered.set()
+            release.wait(10)
+            return original(**kwargs)
+        with patch.object(self.api, 'create_lease', side_effect=slow), ThreadPoolExecutor(max_workers=1) as executor:
+            worker = executor.submit(self.service._run_batch, batch['batch_id'])
+            try:
+                self.assertTrue(entered.wait(8))
+                cancelled = self.service.cancel(batch['batch_id'])
+                self.assertEqual((cancelled['status'], cancelled['submitting']), ('cancelled', 4))
+            finally:
+                release.set()
+            worker.result(15)
+        result = self.service.get(batch['batch_id'])
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual((result['imported'], result['unknown'], result['pending']), (3, 1, 4))
+        self.assertEqual(result['error_counts'], {'request_timeout': 1})
+        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 3)
+        self.assertFalse(result['can_retry'])
+
+    def test_cancel_completed_batch_keeps_completed_status(self):
+        batch, _ = self.create()
+        self.assertEqual(self.run_batch(batch)['status'], 'completed')
+        completed = self.service.cancel(batch['batch_id'])
+        self.assertEqual(completed['status'], 'completed')
+        self.assertFalse(completed['can_cancel'])
+        self.assertIsNone(completed['cancelled_at'])
+
     def test_parallel_import_finishes_other_items_while_one_request_waits(self):
         batch, _ = self.create()
         entered, release = threading.Event(), threading.Event()

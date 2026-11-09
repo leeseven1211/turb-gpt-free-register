@@ -103,6 +103,44 @@ def test_diagnostic_formatter_uses_the_sanitized_exception_type():
     assert "fixture-private" not in rendered
 
 
+def test_historical_otp_stage_failure_displays_stage_without_inventing_timeout():
+    summary = {
+        "outcome": "request_unknown", "cause_code": "protocol_failure_evidence_missing",
+        "registration_diagnostics": {
+            "operation": "other", "failure_kind": "unknown", "failure_stage": "email_otp",
+            "otp_received": False,
+        },
+    }
+    before = json.dumps(summary, sort_keys=True)
+    info = classify_task_error(
+        "request_unknown: protocol_failure_evidence_missing", task_type="registration", result_summary=summary,
+    )
+    assert info["code"] == "email_otp_evidence_missing"
+    assert info["summary"] == "邮箱验证码阶段失败，未保留具体原因"
+    assert info["reconcile_required"] is True
+    assert json.dumps(summary, sort_keys=True) == before
+
+    # 历史 Run 投影可能没有保存 otp_received；只展示已知阶段。
+    missing_otp = {**summary, "registration_diagnostics": {
+        k: v for k, v in summary["registration_diagnostics"].items() if k != "otp_received"
+    }}
+    projected = classify_task_error("", task_type="registration", result_summary=missing_otp)
+    assert projected["code"] == "email_otp_evidence_missing"
+    assert projected["summary"] == "邮箱验证码阶段失败，未保留具体原因"
+
+    for key, value in (("failure_stage", "password"), ("otp_received", True),
+                       ("failure_kind", "transport_error"), ("operation", "otp_send")):
+        other = {**summary, "registration_diagnostics": {**summary["registration_diagnostics"], key: value}}
+        projected = classify_task_error("", task_type="registration", result_summary=other)
+        assert projected["code"] != "email_otp_evidence_missing"
+
+    explicit = classify_task_error("", task_type="registration", result_summary=summary,
+                                   error_code="email_resource_expired")
+    assert explicit["code"] == "email_resource_expired"
+    assert explicit["summary"] == "原邮箱已超过有效期，请保留原身份并检查邮箱资源"
+    assert explicit["reconcile_required"] is True
+
+
 @pytest.mark.parametrize("summary", [{}, {"cause_code": "user_register_result_unknown"}])
 @pytest.mark.parametrize("message", [
     "request_unknown:账号创建请求结果待确认：ProtocolOssRequestUnknown HTTP 401",

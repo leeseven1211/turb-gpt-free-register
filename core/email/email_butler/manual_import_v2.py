@@ -281,19 +281,24 @@ def run_batch(batch):
     connection = _profile_credentials(profile)
     connection['api_base'] = v2.normalize_base(connection['api_base'])
     context = service._wait_import_execution(batch, 'preflight', lambda _conn, execution_id: {'execution_id': execution_id})
+    if context is None:
+        return
     try:
         with concurrency.execution_scope(context):
             who = v2.me(api_base=connection['api_base'], api_key=connection['api_key'])
             verify_client(who, client_id=batch['client_id'], allocating=batch.get('api_version') == 2)
     finally:
         concurrency.release_execution(context, reason='worker_exit')
-    record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'], {'status': 'running', 'error_code': None})
+    if not service._patch_active_batch(batch, {'status': 'running', 'error_code': None}):
+        return
     # 固定数量的在途 future，批次再大也不一次性提交全部任务。
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix='butler-v2-import') as executor:
         candidates = iter(remaining)
         futures = set()
         exhausted = False
         while futures or not exhausted:
+            if not exhausted and store.batch(batch['batch_id'])['status'] == 'cancelled':
+                exhausted = True
             while len(futures) < 4 and not exhausted:
                 item = next(candidates, None)
                 if item is None:

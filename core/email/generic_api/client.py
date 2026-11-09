@@ -80,28 +80,6 @@ def _raise_read_status(status: int) -> None:
     raise GenericApiMailError(f'取码服务读取失败（HTTP {status}）')
 
 
-def _recipient_matches(data: dict, expected_email: str | None) -> bool:
-    if not expected_email:
-        return True
-    values = [data[key] for key in _RECIPIENT_FIELDS if key in data and data[key] not in (None, '', [])]
-    if not values:
-        return True
-    addresses = set()
-    def collect(value):
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                collect(item)
-        elif isinstance(value, dict):
-            for key in ('email', 'address'):
-                if key in value:
-                    collect(value[key])
-        elif isinstance(value, str):
-            addresses.update(item.lower() for item in re.findall(r'[A-Za-z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+', value))
-    for value in values:
-        collect(value)
-    return addresses == {expected_email.strip().lower()}
-
-
 def _flatten_json(obj) -> str:
     parts: list[str] = []
     def walk(x):
@@ -279,23 +257,21 @@ def _parse_generic_api_ts(value) -> float | None:
     return None
 
 
-def _structured_constraints(value, *, after_ts=None, expected_email=None) -> bool:
+def _structured_constraints(value, *, after_ts=None) -> bool:
     if isinstance(value, list):
-        return all(_structured_constraints(item, after_ts=after_ts, expected_email=expected_email) for item in value)
+        return all(_structured_constraints(item, after_ts=after_ts) for item in value)
     if not isinstance(value, dict):
         return True
-    if not _recipient_matches(value, expected_email):
-        return False
     for key in _TIME_FIELDS:
         if key in value and value[key] not in (None, ''):
             stamp = _parse_generic_api_ts(value[key])
             if stamp is None or (after_ts is not None and stamp + 2 < after_ts):
                 return False
-    return all(_structured_constraints(child, after_ts=after_ts, expected_email=expected_email)
+    return all(_structured_constraints(child, after_ts=after_ts)
                for key, child in value.items() if key not in _SENDER_FIELDS)
 
 
-def _extract_structured_api_code(text: str, after_ts: float | None = None, expected_email: str | None = None) -> tuple[str, dict] | None:
+def _extract_structured_api_code(text: str, after_ts: float | None = None) -> tuple[str, dict] | None:
     """
     兼容 newzoe 这类直接返回 JSON 的取码接口：
       {"code":"784207","from":"...","subject":"Your temporary ChatGPT login code","time":"2026-08-05T01:10:17.000Z"}
@@ -310,7 +286,7 @@ def _extract_structured_api_code(text: str, after_ts: float | None = None, expec
         return None
     if not isinstance(data, (dict, list)):
         return None
-    if not _structured_constraints(data, after_ts=after_ts, expected_email=expected_email):
+    if not _structured_constraints(data, after_ts=after_ts):
         return None
 
     # 常见字段优先级：code / otp / verification_code；没有再回退从拉平文本提取。
@@ -405,8 +381,8 @@ def _fetch_yangyang_otp(
     for item in items:
         msg_ts_raw = item.get("received_at") or item.get("receivedAt")
         msg_ts = _parse_yangyang_ts(msg_ts_raw)
-        if not _structured_constraints(item, after_ts=after_ts, expected_email=expected_email):
-            logger.debug('[GenericAPI] yangyang 跳过不符合收件或时间条件的邮件')
+        if not _structured_constraints(item, after_ts=after_ts):
+            logger.debug('[GenericAPI] yangyang 跳过不符合时间条件的邮件')
             continue
         msg_id = item.get("id")
         if not msg_id:
@@ -430,7 +406,7 @@ def _fetch_yangyang_otp(
 
         detail_ts_raw = detail.get('receivedAt') or detail.get('received_at')
         detail_ts = _parse_yangyang_ts(detail_ts_raw)
-        if not _structured_constraints(detail, after_ts=after_ts, expected_email=expected_email):
+        if not _structured_constraints(detail, after_ts=after_ts):
             continue
 
         raw_body = str(detail.get("body") or "")
@@ -645,7 +621,7 @@ def fetch_latest_otp(
                     except (ValueError, TypeError):
                         structured = False
                     if structured:
-                        result = _extract_structured_api_code(body, after_ts=after_ts, expected_email=email)
+                        result = _extract_structured_api_code(body, after_ts=after_ts)
                         code = result[0] if result else None
                         if not result:
                             best_otp = settle_until = None

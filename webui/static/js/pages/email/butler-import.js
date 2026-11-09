@@ -5,11 +5,12 @@ const BUTLER_IMPORT_STATE = {
   busy: false, polling: false, timer: null, opener: null,
   refreshedImported: -1, storageError: false,
   previewTimer: null, refreshPromise: null, lastRefreshAt: 0,
-  resumePending: null,
+  resumePending: null, cancelling: false, pollVersion: 0,
 };
 const butlerImportElement = id => document.getElementById(id);
 const butlerImportRunning = () => ['pending', 'queued', 'running', 'processing'].includes(BUTLER_IMPORT_STATE.batch?.status);
 const butlerImportSucceeded = status => ['completed', 'succeeded', 'done'].includes(status);
+const butlerImportCancelled = () => BUTLER_IMPORT_STATE.batch?.status === 'cancelled';
 const butlerImportRevision = batch => JSON.stringify([batch.updated_at, batch.status, batch.imported, batch.pending, batch.submitting, batch.unknown, batch.failed, batch.error_code, batch.blocked_by]);
 
 function butlerImportError(message = '') {
@@ -29,8 +30,8 @@ function restoreButlerImport() {
     }
     if (typeof saved.batch_id === 'string' && saved.batch_id) {
       BUTLER_IMPORT_STATE.batch = {batch_id: saved.batch_id,
-        status: butlerImportSucceeded(saved.batch_status) ? saved.batch_status : 'running'};
-      if (typeof saved.resume_revision === 'string') BUTLER_IMPORT_STATE.resumePending = saved.resume_revision;
+        status: butlerImportSucceeded(saved.batch_status) || saved.batch_status === 'cancelled' ? saved.batch_status : 'running'};
+      if (saved.batch_status !== 'cancelled' && typeof saved.resume_revision === 'string') BUTLER_IMPORT_STATE.resumePending = saved.resume_revision;
     }
   } catch (_) { BUTLER_IMPORT_STATE.storageError = true; }
 }
@@ -47,6 +48,7 @@ function persistButlerImport() {
 
 function butlerImportCanReset() {
   const batch = BUTLER_IMPORT_STATE.batch;
+  if (batch?.status === 'cancelled') return true;
   return !!batch && !batch.can_retry && !Number(batch.unknown || 0)
     && ['completed', 'succeeded', 'done', 'partial', 'failed', 'rejected'].includes(batch.status);
 }
@@ -72,9 +74,15 @@ function renderButlerImportControls() {
   }
   const retry = butlerImportElement('btnRetryButlerImport');
   if (retry) {
-    retry.hidden = !state.request || butlerImportRunning() || !!state.resumePending || (!!state.batch && !state.batch.can_retry);
+    retry.hidden = !state.request || butlerImportCancelled() || butlerImportRunning() || !!state.resumePending || (!!state.batch && !state.batch.can_retry);
     retry.disabled = state.busy || state.polling;
     retry.textContent = state.batch ? '继续原批次' : '重试原请求';
+  }
+  const terminate = butlerImportElement('btnTerminateButlerImport');
+  if (terminate) {
+    terminate.hidden = !state.batch || state.batch.can_cancel === false || butlerImportCancelled() || butlerImportSucceeded(state.batch.status);
+    terminate.disabled = state.busy;
+    terminate.textContent = state.cancelling ? '正在终止…' : '终止批次';
   }
   const reset = butlerImportElement('btnNewButlerImport');
   if (reset) { reset.hidden = !butlerImportCanReset(); reset.disabled = state.busy || state.polling; }
@@ -98,7 +106,7 @@ function renderButlerImportControls() {
   if (description) description.textContent = state.request ? '导入进度会自动保存，可随时关闭窗口。' : '从 Butler 分配长期租用的邮箱，加入本地库存后使用。';
   const pageStatus = butlerImportElement('butlerImportPageStatus');
   if (pageStatus) {
-    pageStatus.hidden = !state.request || !!modal?.open || butlerImportSucceeded(state.batch?.status);
+    pageStatus.hidden = !state.request || !!modal?.open || butlerImportSucceeded(state.batch?.status) || butlerImportCancelled();
     pageStatus.textContent = state.batch
       ? `Butler 导入${butlerImportRunning() ? '中' : '结果'} · 已导入 ${Number(state.batch.imported || 0)} / ${Number(state.batch.total || 0)} · 查看进度`
       : 'Butler 导入请求待确认 · 查看进度';
@@ -226,7 +234,7 @@ function scheduleButlerImportPoll() {
   const state = BUTLER_IMPORT_STATE;
   clearTimeout(state.timer);
   state.timer = null;
-  if (state.batch && (butlerImportRunning() || state.resumePending)) {
+  if (state.batch && !butlerImportCancelled() && (butlerImportRunning() || state.resumePending)) {
     state.timer = setTimeout(pollButlerImport, 2000);
   }
 }
@@ -236,7 +244,7 @@ function renderButlerImportBatch() {
   if (!batch) return;
   const labels = {pending: '等待导入', queued: '等待导入', running: '正在导入', processing: '正在导入',
     partial: batch.can_retry ? '部分完成，可继续原批次' : '本批次已结束（部分失败）', completed: '导入完成', succeeded: '导入完成', done: '导入完成',
-    failed: '导入失败', rejected: '导入未开始', unknown: '结果待确认'};
+    failed: '导入失败', rejected: '导入未开始', unknown: '结果待确认', cancelled: '本批次已终止'};
   const total = Number(batch.total || 0);
   const imported = Number(batch.imported || 0), skipped = Number(batch.skipped || 0), failed = Number(batch.failed || 0), unknown = Number(batch.unknown || 0);
   const processed = imported + skipped + failed + unknown;
@@ -245,7 +253,9 @@ function renderButlerImportBatch() {
   const hint = butlerImportElement('butlerImportStatusHint');
   const waitingLabels = {global_capacity: '等待全局业务空位', type_capacity: '等待邮箱导入空位', batch_capacity: '等待当前导入批次空位', fairness_turn: '等待其他类型或批次轮转', scheduler_store_unavailable: '等待数据库恢复后继续准入', concurrency_policy_migration_required: '等待保存部署并发策略', concurrency_policy_invalid: '等待修正并发策略', concurrency_policy_missing: '等待补齐邮箱导入并发策略'};
   const waitingReasons = (Array.isArray(batch.blocked_by) ? batch.blocked_by : []).map(code => waitingLabels[code] || `等待准入（${code}）`);
-  if (hint) hint.textContent = butlerImportRunning() || BUTLER_IMPORT_STATE.resumePending
+  if (hint) hint.textContent = butlerImportCancelled()
+    ? '已停止后续导入。已导入邮箱、原租约和待确认记录均保留；已发出的请求仍会保存结果。可以关闭窗口或新建导入。'
+    : butlerImportRunning() || BUTLER_IMPORT_STATE.resumePending
     ? `${waitingReasons.length ? `${waitingReasons.join('；')}。` : ''}可以关闭窗口，导入会在后台继续。右下角可随时查看进度，刷新页面也能恢复。`
     : batch.can_retry ? '可继续原批次处理剩余邮箱，已导入的邮箱会保留。'
       : '已导入的邮箱已加入本地库存，可以关闭窗口或新建导入。';
@@ -321,8 +331,22 @@ async function acceptButlerImportBatch(data) {
   const state = BUTLER_IMPORT_STATE;
   if (data.ok === false || !data.batch?.batch_id) throw new Error(data.error || '服务端未返回导入批次');
   if (state.batch && state.batch.batch_id !== data.batch.batch_id) throw new Error('服务端返回了不同批次，保留原批次等待确认');
+  // 终止是不可逆终态；其他标签页或较早发出的查询不能重新激活该批次。
+  let cancelled = butlerImportCancelled();
+  try {
+    const saved = JSON.parse(localStorage.getItem(BUTLER_IMPORT_STORAGE_KEY) || 'null');
+    cancelled ||= saved?.batch_id === data.batch.batch_id && saved.batch_status === 'cancelled';
+  } catch (_) { /* 浏览器存储异常沿用当前内存状态。 */ }
+  if (cancelled && data.batch.status !== 'cancelled') {
+    data = {...data, batch: {...data.batch, status: 'cancelled', can_retry: false, can_cancel: false}};
+  }
   if (state.resumePending && (['pending', 'queued', 'running', 'processing'].includes(data.batch.status) || butlerImportRevision(data.batch) !== state.resumePending)) state.resumePending = null;
   state.batch = data.batch;
+  if (butlerImportCancelled()) {
+    state.resumePending = null;
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
   try { persistButlerImport(); }
   catch (_) { butlerImportError('原请求已保存，批次编号暂未写入浏览器；重开后将恢复原请求。'); }
   renderButlerImportBatch();
@@ -352,7 +376,7 @@ async function applyButlerImport() {
 
 async function retryButlerImport() {
   const state = BUTLER_IMPORT_STATE;
-  if (state.busy || state.polling || !state.request || (state.batch && !state.batch.can_retry)) return;
+  if (state.busy || state.polling || !state.request || butlerImportCancelled() || (state.batch && !state.batch.can_retry)) return;
   state.busy = true;
   butlerImportError();
   renderButlerImportControls();
@@ -377,21 +401,53 @@ async function retryButlerImport() {
   } finally { state.busy = false; renderButlerImportControls(); scheduleButlerImportPoll(); }
 }
 
+async function terminateButlerImport() {
+  const state = BUTLER_IMPORT_STATE;
+  if (state.busy || !state.batch || state.batch.can_cancel === false || butlerImportCancelled() || butlerImportSucceeded(state.batch.status)) return;
+  state.busy = state.cancelling = true;
+  butlerImportError();
+  renderButlerImportControls();
+  try {
+    const data = await api(`/api/email-butler/imports/${encodeURIComponent(state.batch.batch_id)}/cancel`, {method: 'POST'});
+    await acceptButlerImportBatch(data);
+    if (data.batch?.status !== 'cancelled' && !butlerImportSucceeded(data.batch?.status)) throw new Error('服务端尚未确认终止');
+    state.pollVersion += 1;
+    state.polling = false;
+    butlerImportElement('btnNewButlerImport')?.focus();
+  } catch (error) {
+    butlerImportError(`终止尚未确认：${error.message}。已保留原批次，请重试终止或查看原批次状态。`);
+  } finally {
+    state.busy = state.cancelling = false;
+    renderButlerImportControls();
+    scheduleButlerImportPoll();
+  }
+}
+
 async function pollButlerImport() {
   const state = BUTLER_IMPORT_STATE;
   if (!state.batch || state.polling || state.busy) return;
   clearTimeout(state.timer);
   state.timer = null;
+  const version = ++state.pollVersion;
+  const batchId = state.batch.batch_id;
   state.polling = true;
   renderButlerImportControls();
   try {
-    const data = await api(`/api/email-butler/imports/${encodeURIComponent(state.batch.batch_id)}`);
+    const data = await api(`/api/email-butler/imports/${encodeURIComponent(batchId)}`);
+    if (version !== state.pollVersion || state.batch?.batch_id !== batchId) return;
     butlerImportError();
     await acceptButlerImportBatch(data);
   } catch (error) {
+    if (version !== state.pollVersion || state.batch?.batch_id !== batchId) return;
     butlerImportError(`暂时无法读取原批次：${error.message}。请重开此窗口恢复查看。`);
     scheduleButlerImportPoll();
-  } finally { state.polling = false; renderButlerImportControls(); scheduleButlerImportPoll(); }
+  } finally {
+    if (version === state.pollVersion) {
+      state.polling = false;
+      renderButlerImportControls();
+      scheduleButlerImportPoll();
+    }
+  }
 }
 
 function resetButlerImport() {
@@ -400,6 +456,7 @@ function resetButlerImport() {
   try { localStorage.removeItem(BUTLER_IMPORT_STORAGE_KEY); }
   catch (_) { butlerImportError('无法清除上次导入记录，请恢复浏览器存储后重试。'); return; }
   clearTimeout(state.timer);
+  state.pollVersion += 1;
   state.request = state.batch = null;
   state.resumePending = null;
   state.refreshedImported = -1;
@@ -422,12 +479,28 @@ function bindButlerImport() {
   on('btnPreviewButlerImport', 'click', previewButlerImport);
   on('btnApplyButlerImport', 'click', applyButlerImport);
   on('btnRetryButlerImport', 'click', retryButlerImport);
+  on('btnTerminateButlerImport', 'click', terminateButlerImport);
   on('btnNewButlerImport', 'click', resetButlerImport);
   on('butlerImportModal', 'cancel', event => { event.preventDefault(); closeButlerImportModal(); });
   for (const id of ['butlerImportProvider', 'butlerImportCount']) {
     on(id, 'input', queueButlerImportPreview);
     on(id, 'change', queueButlerImportPreview);
   }
+  globalThis.addEventListener?.('storage', event => {
+    if (event.key !== BUTLER_IMPORT_STORAGE_KEY || !event.newValue) return;
+    try {
+      const saved = JSON.parse(event.newValue);
+      const state = BUTLER_IMPORT_STATE;
+      if (saved.batch_id !== state.batch?.batch_id || saved.batch_status !== 'cancelled') return;
+      state.pollVersion += 1;
+      state.polling = false;
+      state.resumePending = null;
+      state.batch = {...state.batch, status: 'cancelled', can_retry: false, can_cancel: false};
+      clearTimeout(state.timer);
+      state.timer = null;
+      renderButlerImportBatch();
+    } catch (_) { /* 无效的跨标签页通知不改变当前批次。 */ }
+  });
   renderButlerImportControls();
   if (BUTLER_IMPORT_STATE.batch) void pollButlerImport();
 }
