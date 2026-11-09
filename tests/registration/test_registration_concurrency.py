@@ -4,6 +4,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import tempfile
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -188,6 +189,74 @@ class RegistrationConcurrencyTests(PostgresTestCase):
         claim.assert_not_called()
         self.assertEqual("pending", db.get_job(job["id"])["status"])
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
+
+    def test_large_queue_waits_without_worker_submissions_and_retries_failed_submission(self):
+        self.policy(GLOBAL_TASK_WORKERS=100, REGISTRATION_PROTO2_WORKERS=10)
+        jobs = [{"id": index, "batch_id": "large", "batch_workers": 10,
+                 "config_snapshot": {"registration_driver": "protocol_oss_2"}}
+                for index in range(1, 132)]
+        pool = Mock()
+        pool.available_slots.return_value = 100
+        futures = []
+
+        def submit(_execute, _job):
+            future = Future()
+            futures.append(future)
+            return future
+
+        pool.try_submit.side_effect = submit
+        with patch.object(service, "get_executor", return_value=pool), \
+                patch.object(admission, "pending_jobs", return_value=jobs), \
+                patch.object(service, "_DISPATCHING_JOBS", {}), \
+                patch.object(db, "claim_job_for_execution", wraps=db.claim_job_for_execution) as claim:
+            self.assertEqual(10, service.dispatch_pending_once())
+            self.assertEqual(0, service.dispatch_pending_once())
+            self.assertEqual(10, pool.try_submit.call_count)
+            # 提交的线程未开始准入时，也不能继续塞入剩余 121 个排队候选。
+            claim.assert_not_called()
+            with self.assertLogs(service.logger, level="ERROR"):
+                futures[0].set_exception(RuntimeError("测试线程提交后失败"))
+            self.assertEqual(1, service.dispatch_pending_once())
+            self.assertEqual(1, pool.try_submit.call_args.args[1]["id"])
+            self.assertEqual(10, len(service._DISPATCHING_JOBS))
+
+    def test_executor_full_does_not_reserve_dispatch_capacity_or_claim_job(self):
+        job = self.job()
+        pool = Mock()
+        pool.available_slots.return_value = 1
+        pool.try_submit.return_value = None
+        with patch.object(service, "get_executor", return_value=pool), \
+                patch.object(service, "_DISPATCHING_JOBS", {}), \
+                patch.object(db, "claim_job_for_execution", wraps=db.claim_job_for_execution) as claim:
+            self.assertEqual(0, service.dispatch_pending_once())
+            self.assertEqual({}, service._DISPATCHING_JOBS)
+            completed = Future()
+            completed.set_result(None)
+            pool.try_submit.return_value = completed
+            self.assertEqual(1, service.dispatch_pending_once())
+            self.assertEqual({}, service._DISPATCHING_JOBS)
+            claim.assert_not_called()
+        self.assertEqual("pending", db.get_job(job["id"])["status"])
+
+    def test_capacity_failure_and_concurrent_scan_preserve_the_pending_queue(self):
+        job = self.job()
+        pool = Mock()
+        pool.available_slots.return_value = 1
+        pool.try_submit.return_value = Future()
+        with patch.object(service, "get_executor", return_value=pool), \
+                patch.object(service, "_DISPATCHING_JOBS", {}):
+            service._DISPATCH_PASS_LOCK.acquire()
+            try:
+                self.assertEqual(0, service.dispatch_pending_once())
+                pool.available_slots.assert_not_called()
+            finally:
+                service._DISPATCH_PASS_LOCK.release()
+            with patch.object(admission, "dispatch_candidates", side_effect=concurrency.ConcurrencyStoreUnavailable("测试容量读取失败")):
+                with self.assertRaises(concurrency.ConcurrencyStoreUnavailable):
+                    service.dispatch_pending_once()
+            self.assertEqual({}, service._DISPATCHING_JOBS)
+            self.assertEqual(1, service.dispatch_pending_once())
+        self.assertEqual("pending", db.get_job(job["id"])["status"])
 
     def test_composite_legacy_twofa_and_codex_retry_use_actual_action_classes(self):
         self.assertEqual("account_setup_retry", admission.registration_admission_class({"job_type": "twofa_retry"}))

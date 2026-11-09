@@ -213,6 +213,8 @@ macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryp
 
 容量不足时任务保留排队，不变成业务失败、不消耗重试次数。等待原因区分全局、类型、批次、平台、账号占用、远端订单与查询未到期。远端支付等待和持久化定时续查的间隔不占本地执行槽，未结束 XXSYUN 订单继续占订单名额；驱动内部 HTTP/OTP/重试等待、停止清理和注册调试保留仍占槽。下调上限不终止现有执行，页面显示“等待现有任务结束”，占用降到新上限以下后再派发；上调在下个调度周期补位。
 
+注册调度每轮先只读检查全局、驱动、批次、注册尝试和账号的剩余容量，满额任务留在 PostgreSQL 队列；本地已提交但尚未准入的候选也计入本轮容量，已获准执行不重复扣减。只有可能有名额的候选才交给线程申请原子许可，避免大批量排队任务反复抢锁、占用数据库连接。容量提示不替代最终准入校验，跨进程竞争、热调整上限和重启恢复仍以数据库为准；并发策略读取只解密相关配置键。
+
 `GET /api/operations/concurrency` 返回 `scope`、`policy_revision`、`observed_at`、全局 `limit/occupied/reserved/executing/cleaning/debug_hold/draining` 和各类型占用、排队、等待原因；`?details=1` 按需附加平台、批次与订单限制。状态轮询只更新统计，保留编辑草稿与焦点；隐藏页面暂停轮询，重新进入后刷新。字段失焦和保存时校验，失败保留草稿并提供可定位摘要。
 
 旧 `ACCOUNT_BATCH_WORKERS` 仅保留迁移参考，旧客户端写入会收到 `concurrency_config_migrated`，不会暗中改变新全局上限。`GET /api/config/concurrency-preview` 仅生成建议；旧账号池上限无法推导历史全系统上限。已有部署缺少 `CONCURRENCY_POLICY_REVISION` 时显示 `migration_required`，新任务等待策略确认；点击“将迁移建议填入草稿”后明确设置全局值，再经 `POST /api/config` 一次保存全部新键及 `CONCURRENCY_POLICY_REVISION=1`，此后新键是唯一权威。若选择与旧账号池相同的全局值，注册、提链也会计入，混跑峰值可能下降。

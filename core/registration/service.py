@@ -40,10 +40,11 @@ _executor: AccountOperationExecutor | None = None
 _executor_workers = _DEFAULT_MAX_WORKERS
 _executor_lock = threading.RLock()
 _DISPATCH_LOCK = threading.RLock()
+_DISPATCH_PASS_LOCK = threading.Lock()
 _DISPATCH_STOP = threading.Event()
 _DISPATCH_WAKE = threading.Event()
 _DISPATCH_THREAD: threading.Thread | None = None
-_DISPATCHING_JOBS: set[int] = set()
+_DISPATCHING_JOBS: dict[int, dict] = {}
 _DISPATCH_INTERVAL = 0.5
 
 _STOP_EVENTS: dict[int, threading.Event] = {}
@@ -1724,43 +1725,50 @@ def _execute_queued_job(job: dict) -> None:
 
 
 def dispatch_pending_once() -> int:
-    """只提交空闲 worker 数量的候选；业务队列始终以 PostgreSQL 为准。"""
-    from core.registration.admission import pending_jobs
+    """先只读筛选剩余业务容量，再提交候选；原子认领仍在 worker 内完成。"""
+    from core.registration.admission import dispatch_candidates, pending_jobs
 
-    pool = get_executor()
-    if pool.available_slots() <= 0:
+    if not _DISPATCH_PASS_LOCK.acquire(blocking=False):
         return 0
-    jobs = pending_jobs()
-    submitted = 0
-    for job in jobs:
-        job_id = int(job["id"])
+    try:
+        pool = get_executor()
+        slots = pool.available_slots()
+        if slots <= 0:
+            return 0
+        jobs = pending_jobs()
         with _DISPATCH_LOCK:
-            if job_id in _DISPATCHING_JOBS:
-                continue
-            _DISPATCHING_JOBS.add(job_id)
-        try:
-            future = pool.try_submit(_execute_queued_job, job)
-        except Exception:
+            in_flight = list(_DISPATCHING_JOBS.values())
+        candidates = dispatch_candidates(jobs, in_flight=in_flight, limit=slots)
+        submitted = 0
+        for job in candidates:
+            job_id = int(job["id"])
             with _DISPATCH_LOCK:
-                _DISPATCHING_JOBS.discard(job_id)
-            logger.exception("[Service] executor_submit_failed：注册任务 #%s 保留排队", job_id)
-            continue
-        if future is None:
-            with _DISPATCH_LOCK:
-                _DISPATCHING_JOBS.discard(job_id)
-            break
-        submitted += 1
-
-        def finished(completed, source_id=job_id):
-            with _DISPATCH_LOCK:
-                _DISPATCHING_JOBS.discard(source_id)
+                _DISPATCHING_JOBS[job_id] = job
             try:
-                completed.result()
+                future = pool.try_submit(_execute_queued_job, job)
             except Exception:
-                logger.exception("[Service] 注册调度异常：任务 #%s", source_id)
+                with _DISPATCH_LOCK:
+                    _DISPATCHING_JOBS.pop(job_id, None)
+                logger.exception("[Service] executor_submit_failed：注册任务 #%s 保留排队", job_id)
+                continue
+            if future is None:
+                with _DISPATCH_LOCK:
+                    _DISPATCHING_JOBS.pop(job_id, None)
+                break
+            submitted += 1
 
-        future.add_done_callback(finished)
-    return submitted
+            def finished(completed, source_id=job_id):
+                with _DISPATCH_LOCK:
+                    _DISPATCHING_JOBS.pop(source_id, None)
+                try:
+                    completed.result()
+                except Exception:
+                    logger.exception("[Service] 注册调度异常：任务 #%s", source_id)
+
+            future.add_done_callback(finished)
+        return submitted
+    finally:
+        _DISPATCH_PASS_LOCK.release()
 
 
 def notify_dispatch() -> None:

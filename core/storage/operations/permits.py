@@ -136,6 +136,22 @@ def occupied(cur) -> dict[tuple[str, str], int]:
     return {(row["scope_kind"], row["scope_key"]): int(row["occupied"]) for row in cur.fetchall()}
 
 
+def dispatch_usage(conn) -> tuple[dict[tuple[str, str], int], set[str]]:
+    """只读派发提示；同一快照读取占用和身份，最终容量仍由准入事务裁决。"""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(f"""SELECT p.execution_key, s.scope_kind, s.scope_key, s.units
+            FROM {postgres.qualified('operation_execution_permits')} p
+            JOIN {postgres.qualified('operation_execution_permit_scopes')} s USING (permit_id)
+            WHERE p.released_at IS NULL""")
+        counts: dict[tuple[str, str], int] = {}
+        active_keys: set[str] = set()
+        for row in cur.fetchall():
+            key = (row["scope_kind"], row["scope_key"])
+            counts[key] = counts.get(key, 0) + int(row["units"])
+            active_keys.add(row["execution_key"])
+    return counts, active_keys
+
+
 def _capacity_reasons(scopes, counts) -> list[str]:
     codes = {"global": "global_capacity", "type": "type_capacity", "batch": "batch_capacity",
              "provider": "provider_capacity", "continuation": "provider_capacity", "account": "account_busy"}

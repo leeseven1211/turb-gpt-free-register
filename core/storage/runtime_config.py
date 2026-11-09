@@ -6,7 +6,7 @@ import os
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
@@ -113,16 +113,25 @@ def current_revision(*, conn=None) -> int:
         return int(metadata["revision"]) if metadata else 0
 
 
-def read_values(*, conn=None) -> dict[str, str] | None:
-    """未激活返回 None；已激活时任何密钥或数据库异常都明确失败。"""
+def read_values(*, conn=None, keys: Iterable[str] | None = None) -> dict[str, str] | None:
+    """未激活返回 None；可按键读取，避免无关配置的查询和解密成本。"""
     with _connection(conn) as current:
         metadata = _metadata(current)
         if not metadata or not metadata["active"]:
             return None
+        selected_keys = list(dict.fromkeys(keys)) if keys is not None else None
+        if selected_keys == []:
+            return {}
         cipher = _cipher()
         table = postgres_store.qualified("runtime_config_values")
         with current.cursor(row_factory=dict_row) as cur:
-            cur.execute(f"SELECT key, value_encrypted FROM {table} ORDER BY key")
+            if selected_keys is None:
+                cur.execute(f"SELECT key, value_encrypted FROM {table} ORDER BY key")
+            else:
+                cur.execute(
+                    f"SELECT key, value_encrypted FROM {table} WHERE key = ANY(%s) ORDER BY key",
+                    (selected_keys,),
+                )
             return {row["key"]: _decrypt(cipher, row["value_encrypted"]) for row in cur.fetchall()}
 
 

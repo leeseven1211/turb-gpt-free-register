@@ -60,6 +60,38 @@ class RuntimeConfigStoreTests(PostgresTestCase):
         self.assertEqual({"A": "value"}, store.read_values())
         self.assertEqual(2, store.current_revision())
 
+    def test_selected_keys_preserve_values_and_ignore_missing_or_duplicate_keys(self):
+        values = {"GLOBAL_TASK_WORKERS": "100", "REGISTRATION_PROTO2_WORKERS": "10", "OTHER": "中文\n配置"}
+        store.write_values(values, activate=True)
+        self.assertEqual(
+            {"GLOBAL_TASK_WORKERS": "100", "REGISTRATION_PROTO2_WORKERS": "10"},
+            store.read_values(keys=("REGISTRATION_PROTO2_WORKERS", "GLOBAL_TASK_WORKERS", "GLOBAL_TASK_WORKERS", "MISSING")),
+        )
+        self.assertEqual({}, store.read_values(keys=("MISSING",)))
+        self.assertEqual(values, store.read_values())
+
+    def test_selected_keys_do_not_read_or_decrypt_unrelated_corrupt_values(self):
+        store.write_values({"GLOBAL_TASK_WORKERS": "100", "OTHER": "无关配置"}, activate=True)
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {postgres_store.qualified('runtime_config_values')} SET value_encrypted=%s WHERE key=%s",
+                ("损坏的密文", "OTHER"),
+            )
+        self.assertEqual({"GLOBAL_TASK_WORKERS": "100"}, store.read_values(keys=("GLOBAL_TASK_WORKERS",)))
+        for keys in (None, ("OTHER",)):
+            with self.subTest(keys=keys), self.assertRaises(store.RuntimeConfigStoreError) as raised:
+                store.read_values(keys=keys)
+            self.assertEqual("decryption_failed", raised.exception.code)
+
+    def test_empty_key_selection_checks_activation_without_requiring_cipher(self):
+        self.assertIsNone(store.read_values(keys=()))
+        store.write_values({"A": "value"})
+        with patch.object(store, "_cipher", side_effect=AssertionError("空键集合不应读取密钥")):
+            self.assertIsNone(store.read_values(keys=()))
+        store.write_values({}, activate=True)
+        with patch.object(store, "_cipher", side_effect=AssertionError("空键集合不应读取密钥")):
+            self.assertEqual({}, store.read_values(keys=()))
+
     def test_same_values_do_not_add_revision_or_history(self):
         store.write_values({"A": "one"}, activate=True)
         revision = store.current_revision()
@@ -98,6 +130,8 @@ class RuntimeConfigStoreTests(PostgresTestCase):
             with store.transaction() as conn:
                 store.write_values({"A": "candidate", "B": "new"}, conn=conn)
                 self.assertEqual({"A": "candidate", "B": "new"}, store.read_values())
+                self.assertEqual({"A": "candidate"}, store.read_values(keys=("A",)))
+                self.assertEqual({"B": "new"}, store.read_values(conn=conn, keys=("B",)))
                 with store.transaction() as nested:
                     self.assertIs(conn, nested)
                     self.assertEqual(before + 1, store.current_revision())

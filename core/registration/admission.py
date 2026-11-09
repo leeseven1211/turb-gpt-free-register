@@ -11,6 +11,8 @@ from core import db
 from core.operations import concurrency
 from core.registration.driver_selection import normalize_registration_driver
 from core.storage import records
+from core.storage import postgres
+from core.storage.operations import permits
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,71 @@ def pending_jobs() -> list[dict]:
     return concurrency.order_dispatch_candidates(jobs)
 
 
+def _job_extra_scopes(job: Mapping) -> list[dict]:
+    attempt = str(job.get("attempt_id") or job.get("root_job_id") or job["id"])
+    scopes = [{"kind": "registration_attempt", "key": attempt, "limit": 1}]
+    if job.get("account_id") is not None:
+        scopes.append({"kind": "account", "key": f"{int(job['account_id'])}:openai_interactive", "limit": 1})
+    return scopes
+
+
+def dispatch_candidates(jobs: list[dict], *, in_flight=(), limit: int) -> list[dict]:
+    """满额候选留在持久队列，不提交线程争抢准入锁或借用连接等待。"""
+    if not jobs or limit <= 0:
+        return []
+    try:
+        permits.ensure_tables()
+        with postgres.connect() as conn:
+            values, _revision, migration_required = concurrency._policy(conn)
+            if migration_required:
+                return []
+            counts, active_keys = permits.dispatch_usage(conn)
+    except concurrency.ConcurrencyPolicyError:
+        raise
+    except Exception as exc:
+        raise concurrency.ConcurrencyStoreUnavailable("注册派发容量读取失败，任务继续排队") from exc
+
+    def scopes_for(job):
+        spec = concurrency.resolve_admission_class(registration_admission_class(job))
+        return [
+            {"kind": "global", "key": "deployment", "limit": values["GLOBAL_TASK_WORKERS"]},
+            {"kind": "type", "key": spec.key, "limit": values[spec.config_key]},
+            {"kind": "batch", "key": f"registration:{job.get('batch_id') or job['id']}",
+             "limit": max(1, int(job.get("batch_workers") or 1))},
+            *_job_extra_scopes(job),
+        ]
+
+    def reserve(scopes):
+        for scope in scopes:
+            key = (scope["kind"], scope["key"])
+            counts[key] = counts.get(key, 0) + 1
+
+    submitted_ids = set()
+    for job in in_flight:
+        job_id = int(job["id"])
+        if job_id in submitted_ids:
+            continue
+        submitted_ids.add(job_id)
+        # 已获准的本地执行已在数据库占用中，不能重复扣减。
+        if f"registration_job:{job_id}" not in active_keys:
+            reserve(scopes_for(job))
+
+    selected = []
+    for job in jobs:
+        job_id = int(job["id"])
+        if job_id in submitted_ids or f"registration_job:{job_id}" in active_keys:
+            continue
+        scopes = scopes_for(job)
+        if any(counts.get((scope["kind"], scope["key"]), 0) >= scope["limit"] for scope in scopes):
+            continue
+        reserve(scopes)
+        selected.append(job)
+        submitted_ids.add(job_id)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def try_admit_job(job: Mapping):
     """许可与 legacy pending→running 使用同一事务，worker 不再二次抢占。"""
     records.init()
@@ -75,16 +142,12 @@ def try_admit_job(job: Mapping):
         return records.get_row(records.JOBS, job_id, conn=conn)
 
     batch = str(job.get("batch_id") or job_id)
-    attempt = str(job.get("attempt_id") or job.get("root_job_id") or job_id)
-    extra_scopes = [{"kind": "registration_attempt", "key": attempt, "limit": 1}]
-    if job.get("account_id") is not None:
-        extra_scopes.append({"kind": "account", "key": f"{int(job['account_id'])}:openai_interactive", "limit": 1})
     result = concurrency.try_admit_and_claim(
         execution_key=f"registration_job:{job_id}",
         task_type=registration_admission_class(job), claim=claim,
         batch_key=f"registration:{batch}", batch_limit=max(1, int(job.get("batch_workers") or 1)),
         metadata={"source_system": "registration_jobs", "source_id": str(job_id)},
-        extra_scopes=extra_scopes,
+        extra_scopes=_job_extra_scopes(job),
     )
     reasons = list(result.blocked_by)
     if result.context is None and reasons != list(job.get("concurrency_blocked_by") or []):
@@ -177,6 +240,6 @@ def standalone_execution(*, email: str, driver: str, entrypoint: str):
 
 __all__ = [
     "registration_admission_class", "pending_jobs", "try_admit_job", "verify_job_execution",
-    "run_job", "try_admit_cli", "cli_execution", "standalone_execution",
+    "run_job", "try_admit_cli", "cli_execution", "standalone_execution", "dispatch_candidates",
     "mark_execution_state",
 ]

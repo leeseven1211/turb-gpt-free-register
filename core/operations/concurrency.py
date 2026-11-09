@@ -144,10 +144,10 @@ def current_execution() -> ExecutionContext | None:
 
 
 def _policy(conn) -> tuple[dict[str, int], int, bool]:
-    from config.concurrency import policy_values
+    from config.concurrency import POLICY_KEYS, policy_values
     from core.storage import runtime_config
 
-    raw = runtime_config.read_values(conn=conn)
+    raw = runtime_config.read_values(conn=conn, keys=POLICY_KEYS)
     try:
         values = policy_values(raw if raw is not None else {})
     except (TypeError, ValueError) as exc:
@@ -365,13 +365,25 @@ def get_concurrency_status(*, include_details: bool = False) -> dict[str, Any]:
     types = []
     for spec in POLICIES.values():
         queued = [row for row in requests if row["task_type"] == spec.key]
+        facts = queued_by_type.get(spec.key, {})
+        inferred = []
+        if facts.get("queued", 0):
+            # 满额候选不再逐个申请许可；等待提示从事实队列和当前占用只读推导。
+            if counts.get(("global", "deployment"), 0) >= values["GLOBAL_TASK_WORKERS"]:
+                inferred.append("global_capacity")
+            if counts.get(("type", spec.key), 0) >= values[spec.config_key]:
+                inferred.append("type_capacity")
+            if any(counts.get(("batch", key), 0) >= limit
+                   for key, limit in facts.get("batch_limits", {}).items()):
+                inferred.append("batch_capacity")
+        observed = [code for row in queued for code in row["blocked_by"]]
         types.append({"key": spec.key, "label": spec.label, "config_key": spec.config_key,
                       "limit": values[spec.config_key], "occupied": sum(row["task_type"] == spec.key for row in active),
                       "draining": sum(row["task_type"] == spec.key for row in active) > values[spec.config_key],
-                      "queued": queued_by_type.get(spec.key, {}).get("queued", 0),
-                      "oldest_ready_at": queued_by_type.get(spec.key, {}).get("oldest_ready_at"),
+                      "queued": facts.get("queued", 0),
+                      "oldest_ready_at": facts.get("oldest_ready_at"),
                       "task_types": [spec.key, *[alias for alias, canonical in _ALIASES.items() if canonical == spec.key]],
-                      "blocked_by": list(dict.fromkeys(code for row in queued for code in row["blocked_by"]))})
+                      "blocked_by": list(dict.fromkeys([*observed, *inferred]))})
     result = {"scope": postgres.schema_name(), "policy_revision": revision,
               "observed_at": datetime.now(timezone.utc).isoformat(), "global": global_status,
               "types": types, "migration_required": migration_required,
@@ -436,7 +448,7 @@ def _remote_order_status():
     return orders, waiting
 
 
-def _queued_counts() -> dict[str, dict]:
+def _queued_counts() -> tuple[dict[str, dict], list[dict], int]:
     """统计事实队列，兼容注册投影按 source 排除，不能拿扫描候选冒充总数。"""
     from psycopg.rows import dict_row
     from core.storage import postgres, records
@@ -465,9 +477,11 @@ def _queued_counts() -> dict[str, dict]:
         scheduled = int(cur.fetchone()["count"])
         cur.execute(f"""SELECT job_type AS task_type,
                 jsonb_build_object('registration_driver',data #>> '{{config_snapshot,registration_driver}}') AS data,
+                'registration:' || COALESCE(NULLIF(batch_id, ''), id::text) AS batch_key,
+                data->>'batch_workers' AS batch_limit,
                 COUNT(*) AS queued,MIN(created_at) AS oldest
             FROM {postgres.qualified(records.JOBS.name)} WHERE status='pending'
-            GROUP BY job_type,data #>> '{{config_snapshot,registration_driver}}'""")
+            GROUP BY job_type,data #>> '{{config_snapshot,registration_driver}}',batch_key,batch_limit""")
         for row in cur.fetchall():
             row = dict(row)
             if row["task_type"] == "twofa_retry":
@@ -484,8 +498,12 @@ def _queued_counts() -> dict[str, dict]:
             name = str(row.get("task_type") or "")
             unknown_types[name] = unknown_types.get(name, 0) + int(row["queued"])
             continue
-        entry = result.setdefault(spec.key, {"queued": 0, "oldest_ready_at": None})
+        entry = result.setdefault(spec.key, {"queued": 0, "oldest_ready_at": None, "batch_limits": {}})
         entry["queued"] += int(row["queued"])
+        if row.get("batch_key"):
+            key = str(row["batch_key"])
+            limit = max(1, int(row.get("batch_limit") or 1))
+            entry["batch_limits"][key] = min(entry["batch_limits"].get(key, limit), limit)
         value = row.get("oldest")
         value = value.isoformat() if hasattr(value, "isoformat") else str(value or "") or None
         if value and (entry["oldest_ready_at"] is None or value < entry["oldest_ready_at"]):

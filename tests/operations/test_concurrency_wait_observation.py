@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from cryptography.fernet import Fernet
 
 from core.operations import concurrency, task_gateway
-from core.storage import postgres, runtime_config
+from core.storage import postgres, records, runtime_config
 from core.storage.operations import legacy_task_store, permits, store
 from tests.support_pg import PostgresTestCase
 
@@ -153,6 +153,59 @@ class ConcurrencyWaitObservationTests(PostgresTestCase):
         self.assertEqual([{"code": "account_busy"}],store.get_run(waiting["id"])["admission_wait_reasons"])
         plan = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "plan_check")
         self.assertIn("account_busy",plan["blocked_by"])
+
+    def test_unattempted_registration_queue_shows_current_capacity_without_lock_or_writes(self):
+        self.policy(GLOBAL_TASK_WORKERS=1, REGISTRATION_PROTO2_WORKERS=1)
+        admitted = concurrency.try_admit_and_claim(
+            execution_key="registration_job:active", task_type="registration_proto2",
+            batch_key="registration:容量观察", batch_limit=1,
+            claim=lambda _conn, execution_id: {"execution_id": execution_id},
+        )
+        self.assertTrue(admitted.admitted)
+        self.contexts.append(admitted.context)
+        waiting_id = records.insert_row(records.JOBS, {
+            "status": "pending", "job_type": "registration", "batch_id": "容量观察", "batch_workers": 1,
+            "config_snapshot": {"registration_driver": "protocol_oss_2"},
+        })
+        with patch.object(permits, "admission_lock", side_effect=AssertionError("状态查询不应争抢准入锁")):
+            status = concurrency.get_concurrency_status()
+        proto = next(row for row in status["types"] if row["key"] == "registration_proto2")
+        self.assertEqual(1, proto["queued"])
+        self.assertEqual({"global_capacity", "type_capacity", "batch_capacity"}, set(proto["blocked_by"]))
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM {postgres.qualified('operation_execution_requests')}")
+            self.assertEqual(0, cur.fetchone()[0])
+        self.assertEqual("pending", records.get_row(records.JOBS, waiting_id)["status"])
+        self.policy(GLOBAL_TASK_WORKERS=2, REGISTRATION_PROTO2_WORKERS=2)
+        proto = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "registration_proto2")
+        self.assertEqual(["batch_capacity"], proto["blocked_by"])
+        concurrency.release_execution(admitted.context)
+        proto = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "registration_proto2")
+        self.assertEqual([], proto["blocked_by"])
+
+    def test_unattempted_registration_waits_clear_on_policy_increase_or_queue_removal(self):
+        self.policy(GLOBAL_TASK_WORKERS=1, REGISTRATION_PROTO2_WORKERS=1)
+        admitted = concurrency.try_admit_and_claim(
+            execution_key="registration_job:active", task_type="registration_proto2",
+            batch_key="registration:另一批次", batch_limit=1,
+            claim=lambda _conn, execution_id: {"execution_id": execution_id},
+        )
+        self.assertTrue(admitted.admitted)
+        self.contexts.append(admitted.context)
+        waiting_id = records.insert_row(records.JOBS, {
+            "status": "pending", "job_type": "registration", "batch_id": "未执行批次", "batch_workers": 1,
+            "config_snapshot": {"registration_driver": "protocol_oss_2"},
+        })
+        proto = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "registration_proto2")
+        self.assertEqual({"global_capacity", "type_capacity"}, set(proto["blocked_by"]))
+        self.policy(GLOBAL_TASK_WORKERS=2, REGISTRATION_PROTO2_WORKERS=2)
+        proto = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "registration_proto2")
+        self.assertEqual([], proto["blocked_by"])
+        self.policy(GLOBAL_TASK_WORKERS=1, REGISTRATION_PROTO2_WORKERS=1)
+        records.patch_row(records.JOBS, waiting_id, {"status": "cancelled"})
+        proto = next(row for row in concurrency.get_concurrency_status()["types"] if row["key"] == "registration_proto2")
+        self.assertEqual(0, proto["queued"])
+        self.assertEqual([], proto["blocked_by"])
 
     def test_loop_waits_for_the_poll_interval_after_full_carrier_observation(self):
         self.policy(GLOBAL_TASK_WORKERS=1)
