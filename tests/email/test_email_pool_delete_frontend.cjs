@@ -46,7 +46,40 @@ test('批量删除展示各类跳过原因，只取消已移除项的勾选', as
   assert.deepEqual(screen.refreshes, ['list', 'summary']);
   assert.match(screen.confirmations[0], /本地邮箱池移除/);
   assert.match(screen.confirmations[0], /保留使用历史/);
-  assert.match(screen.confirmations[0], /原租约退还由现有流程处理/);
+  assert.match(screen.confirmations[0], /注册结果未确认时保留原租约/);
+  assert.match(screen.confirmations[0], /确认账号未创建后才可退还/);
+});
+
+test('批量删除统计保留租约，同时保留跳过原因与未删除项勾选', async () => {
+  const screen = createView({deleted_count: 1,
+    deleted: [{source: 'email_butler', email: 'unknown@example.test',
+      sync: {state: 'local_only', lease_retained: true, error_code: 'registration_result_unverified'}}],
+    skipped: [{source: 'outlook', email: 'success@example.test', reason: '邮箱已确认注册成功，不能删除'}],
+  });
+  await screen.view.deleteSelectedOutlook();
+  assert.equal(screen.toasts[0], '本地已移除 1 个，其中 1 个已保留原租约，跳过 1 个：邮箱已确认注册成功，不能删除（1 个）');
+  assert.deepEqual([...screen.selected], ['outlook|success@example.test']);
+});
+
+test('单条删除展示保留原租约的后端说明', async () => {
+  const message = '本地已移除，注册结果未确认，已保留原租约';
+  const screen = createView({deleted: true,
+    sync: {state: 'local_only', lease_retained: true, message}});
+  const action = {dataset: {poolAct: 'delete', email: 'unknown@example.test', source: 'email_butler'}};
+  await screen.view.onOutlookBodyClick({target: {closest: selector => selector === '[data-pool-act]' ? action : null}});
+  assert.deepEqual(screen.toasts, [message]);
+  assert.deepEqual([...screen.selected], ['outlook|success@example.test']);
+  assert.deepEqual(screen.refreshes, ['list', 'summary']);
+  assert.match(screen.confirmations[0], /注册结果未确认时保留原租约/);
+});
+
+test('单条删除展示活跃注册延后退租的后端说明', async () => {
+  const message = '本地已移除，注册仍在执行，结束后再核验租约';
+  const screen = createView({deleted: true,
+    sync: {state: 'pending', error_code: 'registration_active', message}});
+  const action = {dataset: {poolAct: 'delete', email: 'unknown@example.test', source: 'email_butler'}};
+  await screen.view.onOutlookBodyClick({target: {closest: selector => selector === '[data-pool-act]' ? action : null}});
+  assert.deepEqual(screen.toasts, [message]);
 });
 
 test('单条成功保护直接展示后端原因', async () => {

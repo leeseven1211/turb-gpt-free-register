@@ -131,17 +131,46 @@ def enqueue_return(source, row, *, conn):
     client_id = str((row.get('butler_handoff') or {}).get('client_id') or '')
     if client_id:
         payload['client_id'] = client_id
+    from core.storage.email.deletion import lease_return_block_reason
+
+    # 固定删除前的使用状态，发送时不能把 tombstone 当作从未使用的证据。
+    evidence = {'version': 1, 'pool_status': row.get('status'), 'used_at': row.get('used_at')}
+    safety_reason = lease_return_block_reason(address, conn=conn, pool=row,
+        account_id=row.get('registered_account_id'),
+        unused_inventory=evidence['pool_status'] == 'available' and not evidence['used_at'])
+    retained = safety_reason in {'registration_confirmed', 'registration_result_unverified'}
+    if retained:
+        state = 'local_only'
+    elif safety_reason == 'registration_active':
+        state = 'pending'
+    else:
+        state = 'blocked' if error else 'pending'
     event_id = store.insert_row(_TABLE, {'event_key': event_key, 'kind': 'return', 'address_norm': address,
-        'source': source, 'pool_id': row['id'], 'state': 'blocked' if error else 'pending', 'attempts': 0,
+        'source': source, 'pool_id': row['id'], 'state': state, 'attempts': 0,
         'profile_id': profile_id,
         'api_base': ((profile or {}).get('inbox_locator') or {}).get('api_base', ''),
-        'credential_ref': (profile or {}).get('credential_ref') or '', 'error_code': error, 'payload': payload}, conn=conn)
+        'credential_ref': (profile or {}).get('credential_ref') or '',
+        'error_code': safety_reason or error, 'payload': payload, 'return_evidence': evidence}, conn=conn)
     return store.get_row(_TABLE, event_id, conn=conn)
 
 
 def _public(row):
+    error = row.get('error_code')
+    retained = row['kind'] == 'return' and error in {
+        'registration_confirmed', 'registration_result_unverified', 'registration_active'}
+    messages = {
+        'registration_confirmed': '本地已移除，注册成功已确认，已保留原租约',
+        'registration_result_unverified': '本地已移除，注册结果未确认，已保留原租约',
+        'registration_active': '本地已移除，任务仍在执行，暂不退还原租约',
+    }
+    message = messages.get(error, '') if row['kind'] == 'return' else ''
+    if row['kind'] == 'return' and not message:
+        message = {'pending': '本地已移除，原租约退还处理中',
+                   'sending': '本地已移除，原租约退还处理中',
+                   'delivered': '本地已移除，原租约已退还',
+                   'blocked': '本地已移除，原租约尚未退还'}.get(row['state'], '')
     return {'source': row['source'], 'email': row['address_norm'], 'kind': row['kind'],
-            'state': row['state'], 'error_code': row.get('error_code'),
+            'state': row['state'], 'error_code': error, 'lease_retained': retained, 'message': message,
             'permanent': row['kind'] == 'return' or row['state'] in {'delivered', 'local_only'},
             'scope': 'local' if row['state'] == 'local_only' else 'remote',
             'updated_at': row.get('updated_at')}
@@ -299,7 +328,7 @@ def dispatch_once():
     try:
         from config.runtime import read_persisted_values
         from core.email.email_butler import client
-        from core.storage.email.deletion import registration_active, registration_confirmed
+        from core.storage.email.deletion import lease_return_block_reason
 
         # 删除可先隐藏素材；与成功落库共享地址锁，退租前再次核对。
         # _finish 会获取池行锁，必须在退出本事务后调用，保持统一取锁顺序。
@@ -307,18 +336,17 @@ def dispatch_once():
             pool = store.get_row(_tables()[event['source']], event['pool_id'], conn=conn, for_update=True)
             store.advisory_xact_lock(conn, 'registered-account:' + event['address_norm'])
             store.advisory_xact_lock(conn, 'email-usage:' + event['address_norm'])
-            confirmed = bool(str((pool or {}).get('access_token') or '').strip()) or registration_confirmed(
-                event['address_norm'], conn=conn, account_id=(pool or {}).get('registered_account_id'))
-            active = not confirmed and registration_active(event['address_norm'], conn=conn)
-            if confirmed or active:
+            evidence = event.get('return_evidence') or {}
+            unused = (isinstance(evidence, dict) and evidence.get('version') == 1
+                and evidence.get('pool_status') == 'available' and not evidence.get('used_at'))
+            safety_reason = lease_return_block_reason(event['address_norm'], conn=conn, pool=pool,
+                account_id=(pool or {}).get('registered_account_id'), unused_inventory=unused)
+            if safety_reason:
                 result = None
             else:
                 result = _return_original_lease(event, client, read_persisted_values)
-        if confirmed:
-            _finish(event, local_only=True, error='registration_confirmed')
-            return True
-        if active:
-            _finish(event, error='registration_active')
+        if safety_reason:
+            _finish(event, local_only=safety_reason != 'registration_active', error=safety_reason)
             return True
         if result.get('ok') is False:
             code = str(result.get('error_code') or 'return_response_invalid')

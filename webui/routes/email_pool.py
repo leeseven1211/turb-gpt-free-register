@@ -63,7 +63,7 @@ def _pool_row_for_source(email: str, source: str) -> dict | None:
 
 
 _EMAIL_SYNC_SOURCES = frozenset({'outlook', 'generic_api', 'cloudflare_domain', 'icloud_hide', 'email_butler'})
-_EMAIL_SYNC_STATES = frozenset({'pending', 'sending', 'delivered', 'blocked', 'not_required'})
+_EMAIL_SYNC_STATES = frozenset({'pending', 'sending', 'delivered', 'blocked', 'local_only', 'not_required'})
 
 
 def _public_email_sync(value: dict | None) -> dict:
@@ -75,6 +75,8 @@ def _public_email_sync(value: dict | None) -> dict:
         'kind': value.get('kind') if value.get('kind') in {'import', 'return'} else '',
         'error_code': str(value.get('error_code') or '')[:120],
         'permanent': value.get('permanent') is True,
+        'lease_retained': value.get('lease_retained') is True,
+        'message': str(value.get('message') or '')[:300],
     }
 
 
@@ -654,7 +656,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             source = "outlook"
         if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
             return jsonify({"ok": True, "deleted": False, "local_deleted": False,
-                "reason": "邮箱已确认注册成功，不能删除"})
+                "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
         deleted = (
             local_email_imports.delete_butler_email(email)
             if source == "email_butler"
@@ -666,9 +668,13 @@ def create_email_pool_blueprint(context: WebUIContext):
             if source == "icloud_hide"
             else db.delete_outlook(email)
         )
+        if not deleted and local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
+            return jsonify({"ok": True, "deleted": False, "local_deleted": False,
+                "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
         return jsonify({"ok": True, "deleted": deleted, "local_deleted": deleted,
             "sync": _email_sync_status(source, email) if deleted else None,
-            "reason": "" if deleted else "邮箱不存在或当前状态不允许删除"})
+            "reason": "" if deleted else "邮箱不存在或当前状态不允许删除",
+            "reason_code": "" if deleted else "email_delete_not_allowed"})
 
     @bp.post("/api/outlook/delete-bulk")
     def api_outlook_delete_bulk():
@@ -701,7 +707,8 @@ def create_email_pool_blueprint(context: WebUIContext):
                 continue
             seen.add(key)
             if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source)):
-                skipped.append({"email": email, "source": item_source, "reason": "邮箱已确认注册成功，不能删除"})
+                skipped.append({"email": email, "source": item_source,
+                    "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
                 continue
             deleted_ok = (
                 local_email_imports.delete_butler_email(email)
@@ -718,7 +725,10 @@ def create_email_pool_blueprint(context: WebUIContext):
                 deleted.append({"email": email, "source": item_source, "local_deleted": True,
                     "sync": _email_sync_status(item_source, email)})
             else:
-                skipped.append({"email": email, "reason": "邮箱不存在"})
+                confirmed = local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source))
+                skipped.append({"email": email, "source": item_source,
+                    "reason": "邮箱已确认注册成功，不能删除" if confirmed else "邮箱不存在",
+                    "reason_code": "registration_confirmed" if confirmed else "email_not_found"})
 
         return jsonify({
             "ok": True,
@@ -726,6 +736,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             "deleted_count": len(deleted),
             "pending_sync_count": sum(item['sync']['state'] in {'pending', 'sending'} for item in deleted),
             "blocked_sync_count": sum(item['sync']['state'] == 'blocked' for item in deleted),
+            "lease_retained_count": sum(item['sync'].get('lease_retained') is True for item in deleted),
             "skipped": skipped,
         })
 
