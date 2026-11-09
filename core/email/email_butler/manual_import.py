@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from datetime import datetime, timezone
 
 from core.storage import records as record_store
 from core.storage.email import butler_manual_imports as store
@@ -65,7 +66,9 @@ def _public(row, *, conn=None):
             'total': sum(counts.values()), 'requested': row['filters']['count'],
             **counts, 'counts': counts,
             'completed': counts['imported'] + counts['skipped'] + counts['failed'] + counts['unknown'],
-            'can_retry': bool(counts['pending'] or counts['submitting'] or counts['unknown']),
+            'can_retry': row['status'] != 'cancelled' and bool(counts['pending'] or counts['submitting'] or counts['unknown']),
+            'can_cancel': row['status'] not in {'completed', 'cancelled'},
+            'cancelled_at': row.get('cancelled_at'),
             'blocked_by': list(row.get('concurrency_blocked_by') or []),
             'error_counts': error_counts, 'error_code': row.get('error_code'),
             'created_at': row.get('created_at'), 'updated_at': row.get('updated_at')}
@@ -83,6 +86,26 @@ def retry(batch_id):
     if public['can_retry']:
         _launch(batch_id)
     return public
+
+
+def cancel(batch_id):
+    """终止后续导入；原请求、在途回执和已导入邮箱继续保留，不自动退租。"""
+    batch_id = _uuid(batch_id, 'batch_id')
+    with record_store.transaction() as conn:
+        record_store.advisory_xact_lock(conn, 'butler-manual-import:' + batch_id)
+        row = store.batch(batch_id, conn=conn)
+        if row['status'] not in {'completed', 'cancelled'}:
+            changes = {'status': 'cancelled', 'cancelled_at': datetime.now(timezone.utc).isoformat(),
+                       'concurrency_blocked_by': []}
+            record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, row['id'], changes, conn=conn)
+            row.update(changes)
+        return _public(row, conn=conn)
+
+
+def _patch_active_batch(batch, changes, *, conn=None):
+    """晚到的协调者和等待状态不能覆盖用户已终止的批次。"""
+    return record_store.claim_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
+                                  changes=changes, guard="status <> 'cancelled'", conn=conn)
 
 
 def _launch(batch_id):
@@ -124,13 +147,14 @@ def _batch_owner_active(batch):
 def _claim_batch_owner(batch_id):
     """短事务固定协调者身份，等待业务许可时不借用数据库连接。"""
     previous = store.batch(batch_id)
-    if _batch_owner_active(previous):
+    if previous['status'] == 'cancelled' or _batch_owner_active(previous):
         return None
     owner = {**current_owner(), 'thread_id': threading.get_ident()}
     with record_store.transaction() as conn:
         record_store.advisory_xact_lock(conn, 'butler-manual-import:' + batch_id)
         batch = store.batch(batch_id, conn=conn)
-        if batch.get('worker_execution_id') != previous.get('worker_execution_id'):
+        if (batch['status'] == 'cancelled'
+                or batch.get('worker_execution_id') != previous.get('worker_execution_id')):
             return None
         execution_id = uuid.uuid4().hex
         record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
@@ -198,21 +222,37 @@ def _record_item_error(item, error_code, *, rejected=False):
 
 def _wait_import_execution(batch, suffix, claim):
     """容量不足仅等待，不提交远端、不改变重试计数或交接意图。"""
+    from psycopg import Error as PostgresError
+    from psycopg_pool import PoolTimeout
+
     key = f"butler-import:{batch['batch_id']}:{suffix}"
     last_reasons = None
+
+    def claim_active(conn, execution_id):
+        # 并发准入已持有并发锁，再取批次锁；终止仅取批次锁，保持锁顺序一致。
+        record_store.advisory_xact_lock(conn, 'butler-manual-import:' + batch['batch_id'])
+        if store.batch(batch['batch_id'], conn=conn)['status'] == 'cancelled':
+            return None
+        return claim(conn, execution_id)
+
     while True:
         try:
+            # 容量不足时不会进入 claim，也需要让显式终止及时结束等待。
+            if store.batch(batch['batch_id'])['status'] == 'cancelled':
+                return None
             admitted = concurrency.try_admit_and_claim(
-                execution_key=key, task_type='email_import', claim=claim,
+                execution_key=key, task_type='email_import', claim=claim_active,
                 batch_key=f"butler-import:{batch['batch_id']}", batch_limit=4,
                 metadata={'source_system': 'email_butler_import_batches', 'source_id': batch['batch_id']},
             )
         except (concurrency.ConcurrencyStoreUnavailable, concurrency.ConcurrencyPolicyError) as error:
             admitted = concurrency.AdmissionResult(blocked_by=(error.code,))
+        except (PostgresError, PoolTimeout):
+            admitted = concurrency.AdmissionResult(blocked_by=('scheduler_store_unavailable',))
         if admitted.context is not None:
             if last_reasons:
                 try:
-                    record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'], {'concurrency_blocked_by': []})
+                    _patch_active_batch(batch, {'concurrency_blocked_by': []})
                 except Exception:
                     logger.warning('Butler 已获准执行，等待原因暂未清除')
             return admitted.context
@@ -221,12 +261,11 @@ def _wait_import_execution(batch, suffix, claim):
         reasons = list(admitted.blocked_by)
         if reasons != last_reasons:
             try:
-                record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'], {'concurrency_blocked_by': reasons})
+                _patch_active_batch(batch, {'concurrency_blocked_by': reasons})
                 last_reasons = reasons
             except Exception:
                 # 数据库失联时保持原执行意图，恢复连接后继续等待同一许可。
                 pass
-        # 导入没有取消入口；存储状态仍是 pending，进程停止后按原批次显式继续。
         threading.Event().wait(0.25)
 
 
@@ -249,12 +288,10 @@ def _run_batch(batch_id):
         run_batch(batch)
         states = [item['status'] for item in store.items(batch_id)]
         complete = all(state in {'imported', 'skipped'} for state in states)
-        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                               {'status': 'completed' if complete else 'partial', 'error_code': None})
+        _patch_active_batch(batch, {'status': 'completed' if complete else 'partial', 'error_code': None})
     except Exception as exc:
         error_code = _batch_error_code(exc)
-        record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, batch['id'],
-                               {'status': 'partial', 'error_code': error_code})
-        logger.warning('Butler 手动导入已暂停，原批次已保留：%s（%s）', error_code, type(exc).__name__)
+        if _patch_active_batch(batch, {'status': 'partial', 'error_code': error_code}):
+            logger.warning('Butler 手动导入已暂停，原批次已保留：%s（%s）', error_code, type(exc).__name__)
     finally:
         _release_batch_owner(batch)

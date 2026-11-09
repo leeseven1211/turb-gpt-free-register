@@ -477,6 +477,10 @@ def create_email_pool_blueprint(context: WebUIContext):
     def api_butler_import_retry(batch_id):
         return _butler_import_action('retry', batch_id, batch=True, status=202)
 
+    @bp.post("/api/email-butler/imports/<batch_id>/cancel")
+    def api_butler_import_cancel(batch_id):
+        return _butler_import_action('cancel', batch_id, batch=True)
+
     @bp.post("/api/outlook/import")
     def api_outlook_import():
         """

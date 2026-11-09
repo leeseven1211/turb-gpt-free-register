@@ -38,6 +38,7 @@ class FlaskRouteContractTests(PostgresTestCase):
     # Explicit additive maintenance/integration routes; the previous 163-route
     # baseline remains independently verified after removing only these rows.
     ADDED_ROUTES = {
+        "/api/email-butler/imports/<batch_id>/cancel\tPOST\tapi_butler_import_cancel",
         "/api/sub2api/automation\tGET\tapi_sub2api_automation",
         "/api/sub2api/automation/check\tPOST\tapi_sub2api_automation_check",
         "/api/maintenance/sentinel\tGET\tapi_sentinel_maintenance",

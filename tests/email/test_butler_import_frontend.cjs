@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const script = path.join(__dirname, '../../webui/static/js/pages/email/butler-import.js');
 
 function createView({saved, handler, storageFails = false, refreshFails = false, refreshGate} = {}) {
-  const nodes = new Map(), requests = [], timers = new Map(), refreshes = [];
+  const nodes = new Map(), requests = [], timers = new Map(), refreshes = [], windowListeners = {};
   let timerId = 0;
   let now = Date.now();
   const storage = new Map(saved ? [['turb.butler-import.v1', JSON.stringify(saved)]] : []);
@@ -29,6 +29,7 @@ function createView({saved, handler, storageFails = false, refreshFails = false,
   node('butlerImportCount').value = '5';
   const context = {
     document, crypto: {randomUUID: () => '11111111-1111-4111-8111-111111111111'},
+    addEventListener: (type, listener) => { windowListeners[type] = listener; },
     Date: class extends Date { static now() { return now; } },
     localStorage: {
       getItem: key => storage.get(key) || null,
@@ -56,14 +57,14 @@ function createView({saved, handler, storageFails = false, refreshFails = false,
   };
   vm.createContext(context);
   assert.ok(fs.existsSync(script), '手动 Butler 导入脚本尚未实现');
-  vm.runInContext(fs.readFileSync(script, 'utf8') + '\nglobalThis.view = {state: BUTLER_IMPORT_STATE, open: openButlerImportModal, close: closeButlerImportModal, preview: previewButlerImport, apply: applyButlerImport, poll: pollButlerImport, retry: retryButlerImport, invalidate: invalidateButlerImportPreview, reset: resetButlerImport};', context);
+  vm.runInContext(fs.readFileSync(script, 'utf8') + '\nglobalThis.view = {state: BUTLER_IMPORT_STATE, open: openButlerImportModal, close: closeButlerImportModal, preview: previewButlerImport, apply: applyButlerImport, poll: pollButlerImport, retry: retryButlerImport, terminate: terminateButlerImport, invalidate: invalidateButlerImportPreview, reset: resetButlerImport};', context);
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const runTimers = async maximumDelay => {
     const scheduled = [...timers].filter(([, timer]) => timer.delay <= maximumDelay);
     for (const [id, timer] of scheduled) { timers.delete(id); await timer.fn(); }
     await settle();
   };
-  return {view: context.view, node, requests, storage, timers, refreshes, document, settle, runTimers,
+  return {view: context.view, node, requests, storage, timers, refreshes, document, settle, runTimers, windowListeners,
     advanceTime: milliseconds => { now += milliseconds; }};
 }
 
@@ -490,6 +491,121 @@ test('已知失败全部终态允许新建，存在未知记录时保留原批�
     h.view.reset();
     assert.equal(h.view.state.batch === null, !unknown);
   }
+});
+
+test('显式终止待确认批次保留结果，清除右下角提示并允许新建', async () => {
+  const batch = {batch_id: 'stop-partial', status: 'partial', total: 100, requested: 100,
+    imported: 1, unknown: 99, can_retry: true, can_cancel: true};
+  const h = createView({saved: {batch_id: batch.batch_id, request_id: 'r', preview_token: 'p'}, handler(call) {
+    if (call.url.endsWith('/cancel')) return {ok: true, batch: {...batch, status: 'cancelled', can_retry: false, can_cancel: false}};
+    if (call.url.endsWith('import-preview')) return {ok: true, preview_token: 'new-preview', available: 10, selected: 5};
+    return {ok: true, batch};
+  }});
+  await h.settle();
+  assert.equal(h.node('btnTerminateButlerImport').hidden, false);
+  h.view.close();
+  assert.equal(h.requests.filter(call => call.method === 'POST').length, 0, '关闭保持原批次');
+  assert.equal(h.node('butlerImportPageStatus').hidden, false);
+  await h.node('btnTerminateButlerImport').listeners.click();
+  assert.equal(h.requests.at(-1).url, '/api/email-butler/imports/stop-partial/cancel');
+  assert.equal(h.requests.at(-1).method, 'POST');
+  assert.equal(h.view.state.batch.status, 'cancelled');
+  assert.equal(h.view.state.batch.unknown, 99);
+  assert.equal(h.view.state.batch.imported, 1);
+  assert.equal(h.node('btnRetryButlerImport').hidden, true);
+  assert.equal(h.node('btnTerminateButlerImport').hidden, true);
+  assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  assert.equal(h.node('btnNewButlerImport').hidden, false);
+  assert.match(h.node('butlerImportStatusHint').textContent, /保留.*请求.*保存结果/);
+  assert.equal(h.timers.size, 0);
+  assert.equal(JSON.parse(h.storage.get('turb.butler-import.v1')).batch_status, 'cancelled');
+  await h.view.retry();
+  assert.equal(h.requests.filter(call => call.method === 'POST').length, 1, '终止后不能重新启动原批次');
+  h.view.reset();
+  await h.settle();
+  assert.equal(h.view.state.batch, null);
+  assert.equal(h.view.state.request, null);
+  assert.equal(h.node('butlerImportProvider').disabled, false);
+  assert.ok(h.requests.every(call => call.url !== '/api/email-butler/imports'), '新建仅查询数量，不自动分配');
+});
+
+test('终止请求显示等待，阻止重复点击；失败保留原批次和继续入口', async () => {
+  let rejectCancel;
+  const batch = {batch_id: 'cancel-fails', status: 'partial', unknown: 2, can_retry: true, can_cancel: true};
+  const h = createView({saved: {batch_id: batch.batch_id, request_id: 'r', preview_token: 'p'}, handler(call) {
+    if (call.url.endsWith('/cancel')) return new Promise((_resolve, reject) => { rejectCancel = reject; });
+    return {ok: true, batch};
+  }});
+  await h.settle();
+  const cancellation = h.view.terminate();
+  await h.view.terminate();
+  assert.equal(h.requests.filter(call => call.url.endsWith('/cancel')).length, 1);
+  assert.equal(h.node('btnTerminateButlerImport').disabled, true);
+  assert.equal(h.node('btnTerminateButlerImport').textContent, '正在终止…');
+  rejectCancel(new Error('暂时无法连接'));
+  await cancellation;
+  assert.equal(h.view.state.batch.status, 'partial');
+  assert.equal(h.node('btnRetryButlerImport').hidden, false);
+  assert.equal(h.node('btnNewButlerImport').hidden, true);
+  assert.equal(h.node('btnTerminateButlerImport').disabled, false);
+  assert.match(h.node('butlerImportError').textContent, /终止尚未确认.*保留原批次/);
+});
+
+test('刷新已终止批次不复活提示，旧状态响应也不能覆盖终止状态', async () => {
+  let finishRead;
+  const h = createView({saved: {batch_id: 'saved-cancelled', batch_status: 'cancelled',
+    request_id: 'r', preview_token: 'p', resume_revision: 'old'},
+    handler: () => new Promise(resolve => { finishRead = resolve; })});
+  assert.equal(h.view.state.batch.status, 'cancelled');
+  assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  assert.equal(h.view.state.resumePending, null);
+  finishRead({ok: true, batch: {batch_id: 'saved-cancelled', status: 'partial', unknown: 100, can_retry: true}});
+  await h.settle();
+  assert.equal(h.view.state.batch.status, 'cancelled');
+  assert.equal(h.view.state.batch.can_retry, false);
+  assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  assert.equal(h.node('btnNewButlerImport').hidden, false);
+  assert.equal(h.timers.size, 0);
+  assert.ok(h.requests.every(call => call.method === 'GET'));
+});
+
+test('终止可在轮询未返回时执行，迟到响应不能恢复旧批次或污染新建', async () => {
+  let finishRead;
+  const batch = {batch_id: 'inflight-stop', status: 'running', pending: 5, can_retry: true, can_cancel: true};
+  const h = createView({saved: {batch_id: batch.batch_id, request_id: 'r', preview_token: 'p'}, handler(call) {
+    if (call.url.endsWith('/cancel')) return {ok: true, batch: {...batch, status: 'cancelled', can_retry: false, can_cancel: false}};
+    if (call.url.endsWith('import-preview')) return {ok: true, preview_token: 'p2', available: 5, selected: 5};
+    return new Promise(resolve => { finishRead = resolve; });
+  }});
+  assert.equal(h.view.state.polling, true);
+  assert.equal(h.node('btnTerminateButlerImport').disabled, false);
+  await h.view.terminate();
+  assert.equal(h.view.state.polling, false);
+  h.view.reset();
+  await h.settle();
+  finishRead({ok: true, batch});
+  await h.settle();
+  assert.equal(h.view.state.batch, null);
+  assert.equal(h.view.state.request, null);
+  assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  assert.equal(h.storage.has('turb.butler-import.v1'), false);
+});
+
+test('其他标签页终止同批次后立即隐藏提示，忽略此前发出的查询', async () => {
+  let finishRead;
+  const h = createView({saved: {batch_id: 'shared-batch', request_id: 'r', preview_token: 'p'},
+    handler: () => new Promise(resolve => { finishRead = resolve; })});
+  const saved = {batch_id: 'shared-batch', batch_status: 'cancelled', request_id: 'r', preview_token: 'p'};
+  h.storage.set('turb.butler-import.v1', JSON.stringify(saved));
+  h.windowListeners.storage({key: 'turb.butler-import.v1', newValue: JSON.stringify(saved)});
+  assert.equal(h.view.state.batch.status, 'cancelled');
+  assert.equal(h.node('butlerImportPageStatus').hidden, true);
+  assert.equal(h.node('btnNewButlerImport').hidden, false);
+  finishRead({ok: true, batch: {batch_id: 'shared-batch', status: 'running', pending: 10, can_retry: true}});
+  await h.settle();
+  assert.equal(h.view.state.batch.status, 'cancelled');
+  assert.equal(h.view.state.polling, false);
+  assert.equal(h.timers.size, 0);
 });
 
 test('两个入口同步恢复提示，重新载入时展示原请求筛选', async () => {

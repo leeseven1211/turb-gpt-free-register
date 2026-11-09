@@ -21,6 +21,8 @@ API 根地址为 `https://email-butler.leeseven.com/v2`。预览仅 GET 可用�
 
 确认导入后，先在 PostgreSQL 保存原批次及每项的 `Idempotency-Key`、`external_ref`，再请求 `POST /leases`，显式 `service=openai`、`ttl_seconds=null`。远端成功、本地失败时保留原回执；超时、进程重启、批次部分完成均继续原项。超过 Butler 幂等结果保留期，只能按原 `external_ref` 查询，不能再提交可能分配新地址的请求。本地冲突保留租约和未确认项，不自动退租。
 
+“关闭”只收起窗口；“终止批次”通过 `POST /api/email-butler/imports/{batch_id}/cancel` 持久保存 `cancelled`，停止未开始项，等待容量时也能退出。已经发出的请求仍可保存成功或待确认结果，但不能覆盖批次的终止状态。终止不会删除已导入邮箱、释放租约或清除幂等键及回执；刷新或重启后不会重新启动该批次，右下角提示隐藏，可以新建导入。
+
 `email_inbox_profiles` 保存固定连接及版本化 `credential_ref`，`email_butler_lease_bindings` 保存完整地址、服务、稳定客户端与 `lease_id` 的映射。旧 profile 不覆盖；已知旧入口在访问时规范为 v2。恢复不按域名猜路由，不改 owner 或 acquisition，不申请替代邮箱。
 
 原 Key 必须保留稳定 client，授权 `openai`。读取需要 `leases.read`、`codes.read`；新长期租约需要 `leases.create`、`leases.long_term`；显式退租需要 `leases.release`；限时续租需要 `leases.renew`。连接测试显示认证与缺少权限。新长期租约不依赖客户端保存最终物理收件箱。

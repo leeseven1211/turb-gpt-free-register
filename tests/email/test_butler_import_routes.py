@@ -23,7 +23,7 @@ class ButlerImportRoutesTests(unittest.TestCase):
         self.client = app.test_client()
         self.service = SimpleNamespace(RemoteError=RemoteError, **{
             name: Mock(return_value={'batch_id': 'fixture', 'status': 'completed'})
-            for name in ('options', 'preview', 'create', 'get', 'retry')
+            for name in ('options', 'preview', 'create', 'get', 'retry', 'cancel')
         })
         self.module = patch.object(email_butler, 'manual_import', self.service, create=True)
         self.module.start()
@@ -61,6 +61,29 @@ class ButlerImportRoutesTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 400)
         self.service.preview.assert_not_called()
         self.service.create.assert_not_called()
+
+    def test_explicit_cancel_only_terminates_the_requested_batch(self):
+        self.service.cancel.return_value = {'batch_id': 'fixture', 'status': 'cancelled',
+                                           'can_retry': False, 'can_cancel': False}
+        response = self.client.post('/api/email-butler/imports/fixture/cancel')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json['ok'])
+        self.assertEqual(response.json['batch']['status'], 'cancelled')
+        self.service.cancel.assert_called_once_with('fixture')
+        self.service.create.assert_not_called()
+        self.service.retry.assert_not_called()
+        self.assertEqual(self.client.get('/api/email-butler/imports/fixture/cancel').status_code, 405)
+
+    def test_cancel_invalid_or_missing_batch_has_classified_error(self):
+        for error, expected_status, code in (
+            (ValueError('invalid_batch_id'), 400, 'invalid_batch_id'),
+            (LookupError('import_batch_not_found'), 404, 'import_batch_not_found'),
+        ):
+            with self.subTest(code=code):
+                self.service.cancel.side_effect = error
+                response = self.client.post('/api/email-butler/imports/fixture/cancel')
+                self.assertEqual(response.status_code, expected_status)
+                self.assertEqual(response.json['error_code'], code)
 
     def test_expected_error_status_and_unexpected_error_redaction(self):
         for error, status in ((ValueError('invalid_count: 数量无效'), 400),
