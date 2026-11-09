@@ -1,6 +1,6 @@
 """开源protocol-2 的真实上游控制流与本地接缝回归。"""
 import json
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -26,6 +26,7 @@ class Transport:
         self.checkpoints = []
         self.password_error = None
         self.password_status = 200
+        self.password_payload = None
         self.profile_status = 200
         self.profile_payload = None
         self.progress_events = []
@@ -49,6 +50,8 @@ class Transport:
         payload = {}
         if url.endswith("/email-otp/validate"):
             payload = self.otp_payloads.pop(0) if self.otp_payloads else self.otp_payload
+        elif url.endswith("/user/register") and self.password_payload is not None:
+            payload = self.password_payload
         elif url.endswith("/create_account") and self.profile_payload is not None:
             payload = self.profile_payload
         elif url.endswith("/create_account") or url.endswith("/password/verify"):
@@ -61,7 +64,7 @@ class Transport:
         if url.endswith("/create_account"):
             status = self.profile_status
         response = Mock(status_code=status, url=self.navigation_redirects.get(url, url), headers={}, content=b"{}", text=self.navigation_html.get(url, "{}"))
-        if url.endswith("/create_account"):
+        if url.endswith("/create_account") or url.endswith("/user/register"):
             response.text = json.dumps(payload)
         response.json.return_value = payload
         return response
@@ -106,6 +109,24 @@ def run_flow(session, **overrides):
     )
     kwargs.update(overrides)
     return run_upstream_protocol(session, **kwargs)
+
+
+@contextmanager
+def registration_run_context(*, action_type="registration_resume", run_no=1,
+                             password=None, password_state="prepared"):
+    """为原身份恢复提供完整且相互匹配的任务事实，避免以密码有无推断意图。"""
+    facts = {"attempt_id": 42, "run_id": 71, "execution_id": "fixture-execution", "job_id": None}
+    run = {
+        "id": 71, "attempt_id": 42, "execution_id": "fixture-execution",
+        "action_type": action_type, "run_no": run_no,
+    }
+    private = {"password": password, "password_state": password_state} if password else {}
+    with (
+        patch("core.registration.service.registration_fact_context", return_value=facts),
+        patch("core.storage.registration.get_run", return_value=run),
+        patch("core.storage.registration.get_private_resume_context", return_value=private),
+    ):
+        yield facts
 
 
 def test_real_upstream_flow_saves_password_before_write_and_reuses_local_mail(upstream):
@@ -385,7 +406,7 @@ def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoin
     assert result["register_response_confirmed"] is True
     assert result["core_persisted"] is False
     assert result["account_id"] is None
-    assert "本地写入失败" in result["error"]
+    assert "注册执行检查点读取或保存失败" in result["error"]
     assert "private-storage-detail" not in result["error"]
 
 
@@ -397,10 +418,7 @@ def test_unknown_resume_does_not_inherit_old_registration_response(upstream, pas
     with (
         patch("core.auth.protocol.session.BrowserSession", return_value=session),
         patch("core.email.provider.retain_email"),
-        patch("core.registration.service.registration_fact_context", return_value={"attempt_id": 42}),
-        patch("core.storage.registration.get_private_resume_context", return_value={
-            "password": "original-password", "password_state": password_state,
-        }),
+        registration_run_context(password="original-password", password_state=password_state),
     ):
         result = run_protocol_oss_2_registration(
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
@@ -433,7 +451,10 @@ def test_retry_uses_original_password_without_registering_another_password(upstr
 
 def test_retry_before_submission_can_register_with_the_original_password(upstream):
     session, transport, _ = upstream
-    with patch.object(AuthFlow, "signup", _VENDOR_SIGNUP):
+    with (
+        patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
+        registration_run_context(password="original-password"),
+    ):
         result = run_flow(session, existing_password="original-password")
     assert [row["state"] for row in transport.checkpoints] == ["started", "confirmed"]
     registration = next(kw["json"] for _, url, kw in transport.requests if url.endswith("/user/register"))
@@ -445,7 +466,7 @@ def test_retry_before_submission_can_register_with_the_original_password(upstrea
 
 @pytest.mark.parametrize("existing_password", [None, "original-password"])
 @pytest.mark.parametrize("continuation", ["profile", "callback"])
-def test_otp_landing_without_password_links_keeps_the_remote_auth_step(
+def test_resume_otp_landing_without_password_links_keeps_the_remote_auth_step(
     upstream, existing_password, continuation,
 ):
     session, transport, wait = upstream
@@ -459,7 +480,10 @@ def test_otp_landing_without_password_links_keeps_the_remote_auth_step(
             "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture",
         }
 
-    with patch.object(AuthFlow, "signup", _VENDOR_SIGNUP):
+    with (
+        patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
+        registration_run_context(password=existing_password),
+    ):
         result = run_flow(session, existing_password=existing_password)
 
     assert result["access_token"] == "fixture-at"
@@ -500,10 +524,7 @@ def test_resume_password_rejection_can_finish_otp_without_confirming_the_candida
         "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=fixture",
     }
     with (
-        patch("core.registration.service.registration_fact_context", return_value={"attempt_id": 42}),
-        patch("core.storage.registration.get_private_resume_context", return_value={
-            "password": "original-password", "password_state": password_state,
-        }),
+        registration_run_context(password="original-password", password_state=password_state),
     ):
         result = run_flow(session, existing_password="original-password")
     assert result["access_token"] == "fixture-at"
@@ -521,10 +542,7 @@ def test_resume_password_rejection_can_finish_otp_without_confirming_the_candida
 def test_resume_rejects_a_password_that_does_not_match_the_original_attempt(upstream):
     session, transport, _ = upstream
     with (
-        patch("core.registration.service.registration_fact_context", return_value={"attempt_id": 42}),
-        patch("core.storage.registration.get_private_resume_context", return_value={
-            "password": "another-password", "password_state": "confirmed",
-        }),
+        registration_run_context(password="another-password", password_state="confirmed"),
     ):
         with pytest.raises(RuntimeError, match="恢复密码不一致"):
             run_flow(session, existing_password="original-password")
@@ -662,6 +680,7 @@ def test_otp_resume_persists_core_token_and_keeps_password_for_later_completion(
     }
     with (
         patch.object(AuthFlow, "signup", _VENDOR_SIGNUP),
+        registration_run_context(password="original-password"),
         patch("core.auth.protocol.session.BrowserSession", return_value=session),
         patch("core.registration.protocol_oss_2.lifecycle._upstream_config.CHATGPT_AUTH_BOOTSTRAP_ENABLED", False),
         patch("core.registration.service.persist_registration_core", return_value=42) as persist,

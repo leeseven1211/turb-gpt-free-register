@@ -38,6 +38,38 @@ class ProtocolSessionResponseError(RuntimeError):
     cause_code = "registration_session_invalid_response"
 
 
+class ProtocolRegistrationContextError(RuntimeError):
+    """原执行事实无法核验，不能把续跑猜测为全新注册。"""
+
+    cause_code = "registration_checkpoint_failed"
+
+
+def _registration_intent_from_facts(facts: dict) -> str:
+    """使用持久化 Run 判定执行意图，不从密码是否存在或页面落点推断。"""
+    if not any(facts.values()):
+        return "signup"
+    if not all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id")):
+        raise ProtocolRegistrationContextError("原注册执行上下文不完整")
+    from core.storage import registration
+
+    try:
+        run = registration.get_run(int(facts["run_id"]))
+    except Exception as exc:
+        raise ProtocolRegistrationContextError("原注册执行检查点读取失败") from exc
+    if (not run or run.get("attempt_id") != facts["attempt_id"]
+            or run.get("execution_id") != facts["execution_id"]
+            or run.get("job_id") != facts.get("job_id")
+            or run.get("action_type") not in {"registration", "registration_resume"}):
+        raise ProtocolRegistrationContextError("原注册执行检查点与当前任务不匹配")
+    try:
+        run_no = int(run["run_no"])
+        if run_no < 1:
+            raise ValueError("执行序号必须为正数")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProtocolRegistrationContextError("原注册执行序号无效") from exc
+    return "resume" if run["action_type"] == "registration_resume" else "signup"
+
+
 def _check_stop_requested():
     from core.registration.service import StopRequested, check_stop_requested
 
@@ -84,14 +116,27 @@ class _ObservedSession:
         if method.upper() == "POST" and path.endswith("/create_account"):
             context["profile_started"] = True
         profile_submit = method.upper() == "POST" and auth_submission_endpoint(url) == "profile_submit"
+        password_create = method.upper() == "POST" and path == "/api/accounts/user/register"
         if profile_submit:
             context.pop("profile_diagnostics", None)
+        if password_create:
+            context.pop("password_diagnostics", None)
         started = time.perf_counter()
         response = None
         error = None
         try:
             response = self._transport.request(method, url, **kwargs)
             response._protocol2_streaming = bool(kwargs.get("stream"))
+            if password_create:
+                try:
+                    status = int(response.status_code)
+                    if status != 200:
+                        context["password_diagnostics"] = {
+                            "operation": "password_submit", "http_status": status,
+                            "auth_error": auth_error_from_body(response.text),
+                        }
+                except Exception:
+                    pass
             if profile_submit and not kwargs.get("stream"):
                 try:
                     status = int(response.status_code)
@@ -203,10 +248,11 @@ def run_upstream_protocol(
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
 
+    facts = registration_fact_context()
+    registration_intent = _registration_intent_from_facts(facts)
     if existing_password:
         from core.storage import registration
 
-        facts = registration_fact_context()
         if facts.get("attempt_id") is not None:
             private = registration.get_private_resume_context(int(facts["attempt_id"]), email=email)
             saved_password = private.get("password")
@@ -278,7 +324,13 @@ def run_upstream_protocol(
         def register_password(self, address):
             accepted = observed_action("password_submit", super().register_password, address)
             if not accepted:
-                progress("password", "failed", "上游未接受密码注册，继续通过原邮箱验证")
+                diagnostic = context.get("password_diagnostics") or {}
+                status = diagnostic.get("http_status")
+                code = (diagnostic.get("auth_error") or {}).get("code")
+                detail = f"密码创建请求被拒绝：HTTP {status}" if status else "上游未接受密码注册"
+                if code:
+                    detail += f"，原因={code}"
+                progress("password", "failed", f"{detail}；继续通过原邮箱验证")
             return accepted
 
         def _random_password(self):
@@ -395,6 +447,7 @@ def run_upstream_protocol(
         )
         flow.registration_name = name
         flow.registration_birthday = birthday
+        flow.registration_intent = registration_intent
         flow._last_sentinel_token = ""
         flow._last_sentinel_so_token = ""
         flow.result.password = existing_password or ""
@@ -432,6 +485,7 @@ def run_upstream_protocol(
             "registration_password": result.password or existing_password or None,
             "password_validated": password_validated,
             "password_state": "confirmed" if password_validated else "candidate",
+            "password_diagnostics": context.get("password_diagnostics"),
             "remote_identity": "existing" if flow._is_existing_account else "new",
             "challenge_chain": (["password"] if password_validated else []) + ["email_otp"],
         }

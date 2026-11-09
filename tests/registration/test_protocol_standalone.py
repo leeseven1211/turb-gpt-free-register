@@ -28,8 +28,16 @@ class ProtocolStandaloneTests(PostgresTestCase):
         first = seen[0]
         self.assertEqual(registration.get_attempt(first["attempt_id"])["driver"], "protocol_oss_2")
         self.assertEqual(registration.get_run(first["run_id"])["status"], "request_unknown")
+        self.assertEqual(registration.get_run(first["run_id"])["action_type"], "registration")
 
         def resume(**restored):
+            from core.registration.protocol_oss_2.runtime import _registration_intent_from_facts
+
+            facts = service.registration_fact_context()
+            run = registration.get_run(facts["run_id"])
+            self.assertEqual(run["action_type"], "registration_resume")
+            self.assertEqual(run["run_no"], 2)
+            self.assertEqual(_registration_intent_from_facts(facts), "resume")
             self.assertEqual(restored["existing_password"], "fixture-original-password")
             self.assertEqual(restored["email_source"], "icloud_hide")
             self.assertEqual(service.registration_fact_context()["attempt_id"], first["attempt_id"])
@@ -57,6 +65,40 @@ class ProtocolStandaloneTests(PostgresTestCase):
             state=state, run_id=facts["run_id"], execution_id=facts["execution_id"],
         )
         return facts
+
+    def test_protocol2_preauth_failure_retries_password_registration_in_same_attempt(self):
+        """尚未提交密码的网络失败不应让下一次执行跳过前置密码。"""
+        seen = []
+
+        def preauth_failed(**kwargs):
+            facts = service.registration_fact_context()
+            seen.append(facts)
+            self.assertEqual(registration.get_run(facts["run_id"])["action_type"], "registration")
+            raise TimeoutError("合成预认证网络失败")
+
+        with self.assertRaises(TimeoutError):
+            run_protocol_in_context(preauth_failed, {"email": self.email})
+        first = seen[0]
+        attempt = registration.get_attempt(first["attempt_id"])
+        self.assertEqual(attempt["checkpoint"], "auth_started")
+        self.assertEqual(attempt["remote_identity_state"], "not_started")
+        self.assertEqual(attempt["remote_account_state"], "not_started")
+        self.assertFalse(registration.get_private_resume_context(first["attempt_id"], email=self.email))
+
+        def retry(**kwargs):
+            from core.registration.protocol_oss_2.runtime import _registration_intent_from_facts
+
+            facts = service.registration_fact_context()
+            run = registration.get_run(facts["run_id"])
+            self.assertEqual(facts["attempt_id"], first["attempt_id"])
+            self.assertEqual(run["run_no"], 2)
+            self.assertEqual(run["action_type"], "registration")
+            self.assertEqual(_registration_intent_from_facts(facts), "signup")
+            self.assertNotIn("existing_password", kwargs)
+            return {"status": "failed", "registration_success": False}
+
+        run_protocol_in_context(retry, {"email": self.email})
+        self.assertEqual(len(registration.list_runs(first["attempt_id"])), 2)
 
     def test_exception_after_submission_keeps_same_attempt_and_original_password(self):
         seen = []
@@ -90,8 +132,19 @@ class ProtocolStandaloneTests(PostgresTestCase):
         attempt = registration_standalone.prepare_attempt(self.email)
         self.assertIsNone(attempt.get("account_id"))
         self.assertEqual(registration.list_runs(attempt["id"])[0]["status"], "interrupted")
+        self.assertEqual(attempt["checkpoint"], "auth_started")
+        self.assertEqual(attempt["remote_identity_state"], "not_started")
+        self.assertEqual(attempt["remote_account_state"], "not_started")
 
         def resume(**kwargs):
+            from core.registration.protocol_oss_2.runtime import _registration_intent_from_facts
+
+            facts = service.registration_fact_context()
+            run = registration.get_run(facts["run_id"])
+            self.assertEqual(facts["attempt_id"], attempt["id"])
+            self.assertEqual(run["action_type"], "registration")
+            self.assertEqual(run["run_no"], 2)
+            self.assertEqual(_registration_intent_from_facts(facts), "signup")
             self.assertEqual(kwargs["existing_password"], "fixture-original-password")
             return {"status": "failed", "registration_success": False}
 
@@ -197,6 +250,36 @@ class ProtocolStandaloneTests(PostgresTestCase):
         self.assertEqual(
             registration.get_attempt(attempt["id"])["remote_identity_state"],
             "request_unknown",
+        )
+
+    def test_roxy_preauth_retry_preserves_existing_resume_action(self):
+        """proto2 的预认证重试分支不能改变 Roxy 的原判断。"""
+        from core.registration.standalone import run_registration_in_context
+
+        seen = []
+
+        def fail_before_submission(**kwargs):
+            facts = service.registration_fact_context()
+            seen.append(facts)
+            self.assertEqual(registration.get_run(facts["run_id"])["action_type"], "registration")
+            raise TimeoutError("合成 Roxy 预认证失败")
+
+        with self.assertRaises(TimeoutError):
+            run_registration_in_context(
+                fail_before_submission, {"email": self.email}, entrypoint="roxy_cli", driver_name="roxy",
+            )
+        first = seen[0]
+
+        def retry(**kwargs):
+            facts = service.registration_fact_context()
+            run = registration.get_run(facts["run_id"])
+            self.assertEqual(facts["attempt_id"], first["attempt_id"])
+            self.assertEqual(run["run_no"], 2)
+            self.assertEqual(run["action_type"], "registration_resume")
+            return {"status": "failed", "registration_success": False}
+
+        run_registration_in_context(
+            retry, {"email": self.email}, entrypoint="roxy_cli", driver_name="roxy",
         )
 
     def test_partial_context_fails_before_driver_and_db_mutation(self):

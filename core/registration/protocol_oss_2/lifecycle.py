@@ -78,6 +78,7 @@ def _run_local_postprocessing(
     options: dict[str, Any],
     existing_totp_secret: str | None = None,
     password_confirmed: bool = False,
+    password_diagnostics: dict | None = None,
 ) -> dict[str, Any]:
     from config import codex as codex_cfg
     from config import twofa as twofa_cfg
@@ -220,6 +221,18 @@ def _run_local_postprocessing(
     codex_ok = bool(codex_result.get("ok") or codex_result.get("status") == "skipped")
     twofa_ok = (not twofa_enabled) or bool(totp_secret)
     password_ok = not password_required or password_confirmed
+    password_error = "原密码尚未确认生效"
+    password_cause = None if password_ok else "registration_password_unconfirmed"
+    if not password_ok and password_diagnostics:
+        from core.network.response_diagnostics import safe_auth_error
+
+        status = password_diagnostics.get("http_status")
+        if type(status) is int and 400 <= status <= 599:
+            password_error = f"密码创建请求被拒绝：HTTP {status}"
+            code = safe_auth_error(password_diagnostics.get("auth_error")).get("code")
+            if code:
+                password_error += f"，原因={code}"
+            password_cause = "registration_password_create_rejected"
     postprocess_success = bool(
         codex_ok and twofa_ok and plan_result.get("ok") and password_ok and not bootstrap_error
     )
@@ -227,7 +240,7 @@ def _run_local_postprocessing(
         None if codex_ok else f"Codex 未完成：{codex_result.get('message') or '未知'}",
         None if twofa_ok else twofa_error or "2FA 未完成",
         None if plan_result.get("ok") else "套餐查询待重试",
-        None if password_ok else "原密码尚未确认生效",
+        None if password_ok else password_error,
         bootstrap_error,
     ]
     readiness = summarize_postprocess(
@@ -253,6 +266,7 @@ def _run_local_postprocessing(
         "account_readiness": readiness.account_readiness,
         "warnings": [bootstrap_error] if bootstrap_error else [],
         "error": "; ".join(item for item in error_parts if item) or None,
+        "cause_code": password_cause,
     }
 
 
@@ -335,6 +349,7 @@ def run_protocol_oss_2_lifecycle(
             email_source=selected_source,
             options=options,
             password_confirmed=password_confirmed,
+            password_diagnostics=flow_result.get("password_diagnostics"),
             **({"existing_totp_secret": existing_totp_secret} if existing_totp_secret else {}),
         )
         postprocess_success = bool(local_result.get("postprocess_success"))
@@ -364,6 +379,8 @@ def run_protocol_oss_2_lifecycle(
                 challenge_chain=flow_result.get("challenge_chain") or [],
             ).as_dict(),
             "error": local_result.get("error"),
+            **({"cause_code": local_result["cause_code"], "error_code": local_result["cause_code"]}
+               if local_result.get("cause_code") else {}),
         }
     except StopRequested:
         raise
@@ -396,6 +413,7 @@ def run_protocol_oss_2_lifecycle(
             )
         password_entry_cause = getattr(exc, "cause_code", "")
         if password_entry_cause in {
+            "registration_checkpoint_failed",
             "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered", "identity_mismatch",
             "registration_password_create_rejected", "registration_password_unconfirmed",
             "registration_auth_state_unrecognized", "registration_session_invalid_response",

@@ -251,6 +251,8 @@ class AuthFlow:
         self._is_existing_account = False
         self._existing_email_verification_mode = ""
         self._existing_page_type = ""
+        # 由本地原 Attempt/Run 决定；新注册与原身份续跑共用实现，分别选择密码分支。
+        self.registration_intent = "signup"
         # ── 2026-09-21 真机抓包（captures/revive-20260920-reg，418 请求）新增两个字段 ──
         # ① authorize 落地 URL。今天 POST /api/accounts/authorize/continue **0 次调用**：
         #    邮箱由 signin 的 login_hint 带进 authorize URL，authorize 这一跳直接把
@@ -2649,11 +2651,13 @@ class AuthFlow:
         }.get(parsed.path.rstrip("/"), "")
 
     def _classify_authorize_landing(self, landing_url: str, intent: str = "signup") -> str:
-        """密码创建只依据本轮明确页面；邮箱验证码页不能证明账号或密码已存在。"""
+        """新注册从验证码页尝试创建密码；续跑沿本轮认证页面继续。"""
         page_type = self._landing_page_type(landing_url)
         if not page_type:
             return ""
         if page_type in {"create_account_password", "about_you"}:
+            return "new"
+        if page_type == "email_otp_verification" and intent == "signup":
             return "new"
         return "existing"
 
@@ -2671,11 +2675,7 @@ class AuthFlow:
 
     def signup(self, email: str, sentinel_token: str = "", landing_url: str = "",
                intent: str = "signup", sentinel_provider=None) -> bool:
-        """优先使用当前文档的密码入口，再按真实落点或认证响应继续。
-
-        True 仅表示本轮明确要求创建密码或提交资料。邮箱验证码页本身不能
-        推断为密码创建页；未知落点可以询问原认证接口，仍未知时保留任务供重跑。
-        """
+        """新注册恢复前置密码；原身份续跑优先使用当前文档的认证入口。"""
         landing = (landing_url or "").strip()
         if landing:
             landing = self._prefer_current_password_entry(landing, getattr(self, "_authorize_landing_html", ""))
@@ -2745,6 +2745,10 @@ class AuthFlow:
                 mode = (payload.get("email_verification_mode", "") or "").strip()
                 self._existing_email_verification_mode = mode
                 self._existing_page_type = page_type
+                if intent == "signup" and mode == "passwordless_signup":
+                    self._is_existing_account = False
+                    logger.info("新注册收到 passwordless_signup，按原注册流程尝试创建密码")
+                    return True
                 otp_page = urljoin("https://auth.openai.com/", continue_url)
                 if self._landing_page_type(otp_page) == "email_otp_verification":
                     try:
@@ -3939,6 +3943,7 @@ class AuthFlow:
         # auth_oauth_init 记下的落地 URL 传进去，否则 signup() 每轮都退到
         # 兜底探测，等于没改。
         is_new = self.signup(email, sentinel, landing_url=self._authorize_landing_url,
+                             intent=self.registration_intent,
                              sentinel_provider=lambda: self.get_sentinel_token(device_id))
 
         # 号池邮箱被 OpenAI 标"已有账号" 处理策略:
@@ -3973,7 +3978,7 @@ class AuthFlow:
                     f"OpenAI 静默拒绝发 OTP (识别 {email} 为已有账号, {pool_tag} 池 fast-fail)"
                 )
 
-        # 本轮页面明确提供创建密码入口才发送注册请求；只有 OTP 时沿原认证继续。
+        # 新注册恢复前置密码；原身份续跑只有当前认证要求创建密码时才进入该分支。
         if self._existing_page_type == "about_you":
             continue_url = self.create_account()
         elif is_new:

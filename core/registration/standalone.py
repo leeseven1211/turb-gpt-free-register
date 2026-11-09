@@ -62,8 +62,17 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
     if permit is None:
         raise RuntimeError("独立注册未取得并发许可")
     execution = permit.execution_id
+    action_type = "registration_resume" if attempt.get("checkpoint") != "created" else "registration"
+    if (persisted_driver == "protocol_oss_2"
+            and attempt.get("checkpoint") in {"created", "email_claimed", "auth_started"}
+            and attempt.get("remote_identity_state") not in {"request_unknown", "confirmed"}
+            and attempt.get("remote_account_state") not in {"request_unknown", "confirmed"}):
+        private = registration.get_private_resume_context(int(attempt["id"]), email=kwargs["email"])
+        # 预认证中断或仅生成候选时，原邮箱重试仍需创建密码；已提交的原身份沿认证继续。
+        if private.get("password_state") not in {"started", "confirmed"}:
+            action_type = "registration"
     run = registration.start_run(
-        int(attempt["id"]), action_type="registration_resume" if attempt.get("checkpoint") != "created" else "registration",
+        int(attempt["id"]), action_type=action_type,
         execution_id=execution, worker_pid=os.getpid(), initial_status="running",
         data={"entrypoint": source, "worker_host": socket.gethostname(), "driver": persisted_driver,
               "execution_key": permit.execution_key},
