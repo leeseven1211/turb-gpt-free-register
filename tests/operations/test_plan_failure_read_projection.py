@@ -60,6 +60,42 @@ class PlanFailureReadProjectionTests(PostgresTestCase):
         listed = store.list_tasks(task_type="plan_check", include_facets=False)["items"]
         self.assertEqual(expected, {row["id"]: row["result_summary"]["country_failures"][0]["http_status"] for row in listed})
 
+    def test_legacy_single_country_failure_has_same_cause_in_list_detail_and_progress(self):
+        from webui.app import create_app
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        for index, (error, code) in enumerate((
+            ("TimeoutError: 套餐请求读取超时", "timeout"),
+            ("ProxyError: Proxy CONNECT aborted", "proxy_connect_failed"),
+        )):
+            with self.subTest(code=code):
+                legacy_id = account_task_store.create_task(
+                    task_type="plan_check", account_id=950 + index,
+                    email=f"legacy-plan-{index}@example.test", trigger="registration_auto",
+                )
+                account_task_store.append_event(
+                    legacy_id, stage="plan_check", message="已保存套餐优惠响应记录",
+                    event_type="promotion.query.recorded", detail={"ok": False, "http_status": None, "error": error},
+                )
+                account_task_store.append_event(legacy_id, stage="plan_check", state="failed", message="注册后套餐查询失败")
+                account_task_store.finish_task(
+                    legacy_id, status="failed", message="注册后套餐查询失败", error=error,
+                    result_summary={"ok": False, "http_status": None,
+                                    "promotion_query_history": [{"ok": False, "http_status": None}]},
+                )
+                listed = client.get("/api/operations?type=plan_check&include_facets=0&include_batches=0").get_json()["items"]
+                item = next(row for row in listed if row.get("source_id") == str(legacy_id))
+                detail = client.get(f"/api/operations/{item['id']}?include_events=0").get_json()["task"]
+                self.assertEqual(error, item["error_message"])
+                self.assertEqual(item["error_message"], detail["error_message"])
+                self.assertEqual(code, item["error_info"]["code"])
+                self.assertEqual(item["error_info"]["code"], detail["error_info"]["code"])
+                progress = client.get(f"/api/operations/{item['id']}/runs/{item['last_run_id']}/progress").get_json()["progress"]
+                self.assertEqual(code, progress["failure"]["error_info"]["code"])
+                self.assertEqual(item["error_info"]["summary"], progress["failure"]["message"])
+
 
 def test_old_country_evidence_is_read_with_one_batch_query():
     cursor = MagicMock()
@@ -71,3 +107,14 @@ def test_old_country_evidence_is_read_with_one_batch_query():
     store._attach_plan_failure_summaries(items, conn=connection)
     assert cursor.execute.call_count == 1
     assert cursor.execute.call_args.args[1] == ([1, 2, 3],)
+
+
+def test_repeated_compatibility_normalization_preserves_projected_error_and_explicit_clear():
+    for source in ("account_action_tasks", "registration_jobs"):
+        original = {"source_system": source, "status": "failed", "error_message": "旧套餐失败正文"}
+        once = store._normalize_compatibility_run(dict(original))
+        twice = store._normalize_compatibility_run(dict(once))
+        assert once["error_message"] == twice["error_message"] == original["error_message"]
+        cleared = store._normalize_compatibility_run({**original, "effective_error_message": None})
+        assert cleared["error_message"] is None
+        assert store._normalize_compatibility_run(dict(cleared))["error_message"] is None

@@ -1210,6 +1210,28 @@ def build_progress_snapshot(
                 stage=failure["stage"], task_status=str(run_value.get("status") or ""),
                 result_summary={**summary, "country_failures": country_failures},
             )
+        elif not summary.get("plan_check_countries"):
+            # 旧单国任务没有 country 字段；只采用明确属于本 Run 的最后一次正式回执。
+            # 最后回执成功时不复现此前失败，缺少归属的旧事件也不用于推断。
+            single_record = next((event for event in reversed(source_events)
+                                  if _event_run_id(event) == current_run
+                                  and _raw_stage(event) == "plan_check"
+                                  and event.get("event_type") == "promotion.query.recorded"
+                                  and not _event_detail(event).get("country")
+                                  and type(_event_detail(event).get("ok")) is bool), None)
+            detail = _event_detail(single_record) if single_record else {}
+            if detail.get("ok") is False and (detail.get("error") or detail.get("http_status")):
+                info = classify_task_error(
+                    detail.get("error") or f"HTTP {detail['http_status']}", task_type="plan_check",
+                    stage="plan_check", task_status=str(run_value.get("status") or ""),
+                    result_summary={**summary, "http_status": detail.get("http_status")},
+                )
+                if info:
+                    failure = {**(failure or {}), "step_id": "plan_check", "stage": "plan_check",
+                               "label": stage_label("plan_check"), "event_id": _event_id(single_record),
+                               "evidence": "explicit", "error_info": info, "message": info["summary"],
+                               "reconcile_required": bool((failure or {}).get("reconcile_required")),
+                               "child_task_id": None, "child_run_id": None}
         if failure and (failure.get("error_info") or {}).get("auto_refresh_at_failed"):
             failure.update(step_id="refresh_token", label="刷新 AT",
                            stage=failure["error_info"].get("stage") or "refresh_token",

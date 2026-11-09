@@ -184,6 +184,33 @@ def test_plan_country_warning_without_http_evidence_does_not_infer_local_expiry(
     assert "未发起" not in failure["message"]
 
 
+def test_legacy_single_country_failure_uses_only_latest_response_from_current_run():
+    def receipt(event_id, *, run_id=2, ok=False, error="TimeoutError: 请求超时", status=None):
+        return {**_event(event_id, "plan_check", detail={"ok": ok, "error": error, "http_status": status}),
+                "event_type": "promotion.query.recorded", "run_id": run_id}
+
+    failed = {**_event(8, "plan_check", "failed", message="注册后套餐查询失败"), "run_id": 2}
+    current = receipt(2, error="ProxyError: Proxy CONNECT aborted")
+    events = [receipt(1), current, receipt(3, run_id=99, error="HTTP 403", status=403),
+              receipt(4, run_id=None, error="HTTP 401", status=401), failed]
+    snapshot = build_progress_snapshot(1, 2, "plan_check", _run("failed"), events)
+    failure = snapshot["failure"]
+    assert failure["error_info"]["code"] == "proxy_connect_failed"
+    assert failure["message"] == "代理连接失败"
+    assert failure["event_id"] == "2"
+    assert failure["evidence"] == "explicit"
+    assert not failure.get("country_failures")
+
+    for unsupported in (
+        [receipt(1, run_id=99), failed],
+        [receipt(1, run_id=None), failed],
+        [receipt(1), receipt(2, ok=True, error=None, status=200), failed],
+    ):
+        snapshot = build_progress_snapshot(1, 2, "plan_check", _run("failed"), unsupported)
+        assert (snapshot["failure"].get("error_info") or {}).get("code") != "timeout"
+        assert snapshot["failure"].get("event_id") != "1"
+
+
 def test_plan_auto_refresh_is_optional_and_authentication_events_share_its_step():
     without = build_progress_snapshot(1, 2, "plan_check", _run("success"), [
         _event(1, "plan_check", "success", message="套餐查询完成"),

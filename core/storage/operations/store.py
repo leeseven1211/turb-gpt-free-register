@@ -1032,7 +1032,8 @@ def _normalize_compatibility_run(run: dict) -> dict:
     effective_started_at = run.pop("effective_started_at", None)
     run.pop("effective_created_at_sort", None)
     effective_completed_at = run.pop("effective_completed_at", None)
-    effective_error_message = run.pop("effective_error_message", None)
+    # 列表已用 SQL 投影错误正文，重复归一化不能把该正文清空；显式 NULL 仍按来源事实清空。
+    effective_error_message = run.pop("effective_error_message", run.get("error_message"))
     debug_pause = run.pop("effective_debug_pause", None)
     run.pop("debug_pause", None)
     if effective_status:
