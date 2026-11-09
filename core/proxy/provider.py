@@ -975,7 +975,7 @@ def _acquire_registration_proxy_from_batch(
             route_attempt_no=route_attempt_no,
         )
     total_jobs = max(1, int(batch_size or 1))
-    workers = max(1, min(16, int(batch_workers or 1)))
+    workers = max(1, int(batch_workers or 1))
 
     while True:
         with _BATCH_CONDITION:

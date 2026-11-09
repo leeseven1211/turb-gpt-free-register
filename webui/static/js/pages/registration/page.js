@@ -49,7 +49,15 @@ async function loadRegistrationEmailSources() {
 }
 async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBtn) {
   const count = parseInt((countEl?.value || '1'), 10);
-  const workers = parseInt((workersEl?.value || '3'), 10);
+  const workers = Number(workersEl?.value ?? '3');
+  if (!Number.isSafeInteger(workers) || workers < 1) {
+    const warnEl = $('#regWarnV2');
+    if (warnEl) warnEl.innerHTML = '<div class="banner warn" role="alert">并发线程数必须为有效的正整数</div>';
+    workersEl?.setAttribute?.('aria-invalid', 'true');
+    workersEl?.focus?.();
+    return;
+  }
+  workersEl?.removeAttribute?.('aria-invalid');
   const emailSource = String(sourceEl?.value || '').trim();
   const debugEnabled = Boolean($('#regDebugV2')?.checked);
   if (!emailSource) {
@@ -79,10 +87,13 @@ async function startRegistrationFromInputs(countEl, workersEl, sourceEl, startBt
     const sourceLabel = registrationEmailSourceLabel(r.email_source || emailSource);
     const driverLabel = registrationDriverLabel(r.registration_driver);
     const debugLabel = debugEnabled ? ' · 网络调试已开启' : '';
-    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · ${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${r.workers || workers}${debugLabel}</div>`;
+    const returnedWorkers = Number(r.workers);
+    const acceptedWorkers = Number.isSafeInteger(returnedWorkers) && returnedWorkers > 0 ? returnedWorkers : workers;
+    const warnHtml = r.warning ? `<div class="banner warn">${esc(r.warning)}（${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${acceptedWorkers}${debugLabel}）</div>` : `<div class="banner info">已提交 ${r.submitted} 个任务 · ${esc(driverLabel)} · 邮箱 ${esc(sourceLabel)} · 并发 ${acceptedWorkers}${debugLabel}</div>`;
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = warnHtml;
     const c2 = $('#regCountV2'); if (c2) c2.value = count;
-    const w2 = $('#regWorkersV2'); if (w2) w2.value = workers;
+    if (workersEl) workersEl.value = String(acceptedWorkers);
+    const w2 = $('#regWorkersV2'); if (w2) w2.value = String(acceptedWorkers);
     refreshJobs();
   } catch(e) {
     const warnEl = $('#regWarnV2'); if (warnEl) warnEl.innerHTML = `<div class="banner warn">${esc(e.message)}</div>`;

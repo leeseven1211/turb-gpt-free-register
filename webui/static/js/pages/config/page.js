@@ -2215,7 +2215,7 @@ function renderConcurrencyConfigSectionV2(fields) {
       <div class="config-concurrency-types-v2">${types.map(field => renderConcurrencyFieldV2(field)).join('')}</div>
     </div>
     <details class="config-concurrency-details-v2" data-concurrency-details><summary>业务附加限制与计量说明</summary>
-      <p class="hint">注册批次保留 1–16，提链批次与平台保留 1–50；它们与全局、类型限制同时生效。XXSYUN 未结束订单名额在远端等待时仍占用，本地查询间隔不占执行槽。调试保留、停止清理和已预约执行仍计入占用。</p>
+      <p class="hint">注册批次并发填写正整数，提链批次与平台保留 1–50；它们与全局、类型限制同时生效。XXSYUN 未结束订单名额在远端等待时仍占用，本地查询间隔不占执行槽。调试保留、停止清理和已预约执行仍计入占用。</p>
       <p class="hint">账号补全等待独立子任务时不重复占全局槽；HME 合并扫描按一个扫描 Run 计数；邮箱导入按实际远端交接调用计数。Sub2API 远端账号并发属性在服务集成中维护。</p>
       <div data-concurrency-details-status class="hint"></div>
       <button type="button" class="btn" data-concurrency-load-details>查看当前平台、批次与订单限制</button>

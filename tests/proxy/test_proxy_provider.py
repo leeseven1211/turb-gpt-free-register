@@ -601,6 +601,7 @@ class ProxyProviderTests(unittest.TestCase):
 
         self.assertIs(result, lease)
         acquire.assert_called_once()
+        self.assertEqual(64, proxy_provider._BATCH_STATES["batch-partial"].workers)
         self.assertFalse(proxy_provider._BATCH_STATES["batch-partial"].loading)
         self.assertEqual([], proxy_provider._BATCH_STATES["batch-partial"].leases)
         proxy_provider._BATCH_STATES.pop("batch-partial", None)

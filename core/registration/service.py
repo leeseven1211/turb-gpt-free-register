@@ -35,7 +35,6 @@ logger = logging.getLogger('core.registration_service')
 # workers 只保留批次默认值，执行承载与业务许可分别管理。
 _DEFAULT_MAX_WORKERS = 4
 _MIN_MAX_WORKERS = 1
-_MAX_MAX_WORKERS = 16
 _executor: AccountOperationExecutor | None = None
 _executor_workers = _DEFAULT_MAX_WORKERS
 _executor_lock = threading.RLock()
@@ -1654,14 +1653,22 @@ def _acquire_registration_proxy_with_retries(
     return acquire_proxy(**acquire_kwargs)
 
 
+def validate_registration_workers(value: Any) -> int:
+    """批次并发按正整数原值保存，由配置中的全局、驱动和批次额度共同裁决。"""
+    if isinstance(value, str):
+        value = value.strip()
+        if not value.isascii() or not value.isdigit():
+            raise ValueError("workers 必须为正整数")
+        value = int(value)
+    if type(value) is not int or value < _MIN_MAX_WORKERS:
+        raise ValueError("workers 必须为正整数")
+    return value
+
+
 def _normalize_workers(max_workers: int | None) -> int:
     if max_workers is None:
         return _DEFAULT_MAX_WORKERS
-    try:
-        value = int(max_workers)
-    except (TypeError, ValueError):
-        value = _DEFAULT_MAX_WORKERS
-    return max(_MIN_MAX_WORKERS, min(_MAX_MAX_WORKERS, value))
+    return validate_registration_workers(max_workers)
 
 
 def _registration_worker_capacity() -> int:
@@ -2955,6 +2962,8 @@ def submit_registration(
     Returns:
         N 个新创建的 job dict
     """
+    if workers is not None:
+        workers = validate_registration_workers(workers)
     selected_driver = (
         validate_registration_driver(registration_driver)
         if registration_driver is not None
@@ -3912,6 +3921,11 @@ def retry_job(
     proxy_country: str | None = None,
 ) -> dict:
     """按原身份重跑终态任务，显式驱动或国家覆盖只冻结到新子任务。"""
+    if workers is not None:
+        try:
+            workers = validate_registration_workers(workers)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "status": 400}
     if registration_driver is not None and registration_driver != "roxy":
         return {"ok": False, "error": "单任务驱动覆盖仅支持 roxy", "status": 400}
     if debug_enabled is not None and type(debug_enabled) is not bool:

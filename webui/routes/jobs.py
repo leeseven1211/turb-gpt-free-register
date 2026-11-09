@@ -236,9 +236,9 @@ def create_jobs_blueprint(context: WebUIContext):
 
         # workers 是本批次的附加上限，实际启动还受部署全局和注册驱动额度约束。
         try:
-            workers = max(1, min(16, int(data.get("workers", 3))))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 非法"}), 400
+            workers = svc.validate_registration_workers(data.get("workers", 3))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
         if debug_enabled:
             if selected_driver not in {"protocol_oss_2", "roxy"}:
@@ -382,9 +382,9 @@ def create_jobs_blueprint(context: WebUIContext):
                 return jsonify({"ok": False, "error": "proxy_country 必须是有效的两位国家码"}), 400
             proxy_country = svc._normalize_registration_country(value)
         try:
-            workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 非法"}), 400
+            workers = svc.validate_registration_workers(data.get("workers", svc.get_executor_workers()))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         retry_kwargs = {"registration_driver": registration_driver} if registration_driver else {}
         if "debug_enabled" in data:
             retry_kwargs["debug_enabled"] = data["debug_enabled"]
@@ -414,9 +414,9 @@ def create_jobs_blueprint(context: WebUIContext):
         if len(job_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多重试 500 个任务"}), 400
         try:
-            workers = max(1, min(16, int(data.get("workers", svc.get_executor_workers()))))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "workers 非法"}), 400
+            workers = svc.validate_registration_workers(data.get("workers", svc.get_executor_workers()))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
         started: list[dict] = []
         reused: list[dict] = []

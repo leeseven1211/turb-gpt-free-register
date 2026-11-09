@@ -78,6 +78,12 @@ class RegistrationDispatchCapacityTests(PostgresTestCase):
                 self.assertEqual(0, cur.fetchone()[0], table)
         self.assertTrue(all(job["status"] == "pending" for job in jobs))
 
+    def test_configured_thirty_workers_are_not_capped_at_sixteen(self):
+        self.policy(GLOBAL_TASK_WORKERS=100, REGISTRATION_PROTO2_WORKERS=30)
+        jobs = [self.job(index, workers=30) for index in range(1, 61)]
+        chosen = admission.dispatch_candidates(jobs, limit=100)
+        self.assertEqual(list(range(1, 31)), [job["id"] for job in chosen])
+
     def test_full_batch_does_not_dispatch_until_a_permit_is_released(self):
         self.policy(GLOBAL_TASK_WORKERS=100, REGISTRATION_PROTO2_WORKERS=10)
         active = [self.hold(self.job(index)) for index in range(1, 11)]
