@@ -7,6 +7,7 @@ import pytest
 
 from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown
 from core.email.email_butler.client import EmailButlerClientError
+from core.email.generic_api.client import GenericApiMailError
 from core.operations.errors import classify_task_error
 from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
 from core.registration.protocol_oss_2 import runtime
@@ -15,7 +16,7 @@ from tests.registration.test_protocol_oss_2 import run_flow, upstream as upstrea
 
 
 @pytest.mark.parametrize("provider_code,status,cause_code,description", [
-    ("inbound_code_timeout", None, "email_otp_no_mail", "未收到验证码邮件"),
+    ("inbound_code_timeout", None, "email_otp_no_mail", "未取得符合条件的验证码"),
     ("inbound_request_failed", None, "email_otp_mailbox_failed", "验证码邮箱读取失败"),
     ("recipient_mismatch", None, "recipient_mismatch", "完整收件地址不匹配"),
     ("inbound_code_timeout", 403, "email_otp_mailbox_failed", "验证码邮箱读取失败"),
@@ -51,6 +52,44 @@ def test_mailbox_failure_keeps_specific_cause_and_registration_behavior(upstream
         info = classify_task_error(result["error"], task_type="registration", result_summary=summary)
         assert info["code"] == cause_code
         assert info["source"] == "external"
+
+
+@pytest.mark.parametrize("provider_code,description", [
+    ("email_otp_no_mail", "等待窗口内未取得符合条件的验证码"),
+    ("email_resource_read_failed", "原邮箱取码接口不可用"),
+    ("email_resource_expired", "原邮箱已超过有效期"),
+    ("email_resource_expiry_invalid", "邮箱有效期格式无效"),
+])
+def test_generic_api_terminal_error_keeps_specific_mailbox_fact(upstream, provider_code, description):
+    session, transport, wait = upstream
+    wait.side_effect = GenericApiMailError("private@example.test token=private", error_code=provider_code)
+    with (
+        patch("core.auth.protocol.session.BrowserSession", return_value=session),
+        patch("core.email.provider.retain_email") as retain,
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
+            proxy=session.proxy, email_source="generic_api",
+        )
+    assert result["cause_code"] == provider_code
+    assert description in result["error"]
+    assert "private" not in result["error"]
+    assert result["request_unknown"] is True
+    assert result["register_response_confirmed"] is True
+    assert result["registration_pending"] is True
+    assert result["manual_reconcile"] is False
+    assert result["registration_diagnostics"]["failure_kind"] == (
+        "no_mail" if provider_code == "email_otp_no_mail" else "mailbox_error"
+    )
+    assert result["registration_diagnostics"]["mailbox_error_code"] == provider_code
+    assert wait.call_count == 1
+    assert [(method, url.rsplit("/", 1)[-1]) for method, url, _ in transport.requests] == [
+        ("GET", "password"), ("POST", "register"), ("GET", "send"),
+    ]
+    retain.assert_called_once()
+    info = classify_task_error(result["error"], task_type="registration", result_summary=result)
+    assert info["code"] == provider_code
+    assert info["source"] == "external"
 
 
 def test_recovered_mailbox_timeout_does_not_replace_later_failure(upstream):

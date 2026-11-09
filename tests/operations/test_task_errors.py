@@ -1403,7 +1403,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
             "email_otp_send_unconfirmed": "验证码发送结果未获确认",
             "email_otp_send_no_response": "验证码发送请求未收到响应",
             "email_otp_send_unknown": "验证码发送结果未确认",
-            "email_otp_no_mail": "等待窗口内未收到验证码邮件",
+            "email_otp_no_mail": "等待窗口内未取得符合条件的验证码",
             "post_register_failure": "注册请求之后流程失败（细项未记录）",
         }
         for cause_code, cause_summary in causes.items():

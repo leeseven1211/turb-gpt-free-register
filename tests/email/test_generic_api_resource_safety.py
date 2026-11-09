@@ -98,14 +98,13 @@ def test_structured_old_code_is_not_recovered_by_plain_text_fallback(inbox, time
 
 
 @pytest.mark.parametrize("recipient_key", ["to", "recipient", "email"])
-def test_structured_wrong_recipient_is_not_recovered_by_plain_text_fallback(inbox, recipient_key):
+def test_structured_code_accepts_different_recipient(inbox, recipient_key):
     _, _, poll = inbox
     session = FakeSession(response(payload={
         "code": OTP, recipient_key: "someone-else@example.test", "timestamp": START,
         "subject": "Your verification code", "body": "Code " + OTP,
     }))
-    with pytest.raises(client.GenericApiMailError):
-        poll(session)
+    assert poll(session) == OTP
 
 
 @pytest.mark.parametrize('key', ['time', 'date', 'received_at', 'receivedAt', 'created_at', 'createdAt'])
@@ -115,11 +114,21 @@ def test_zero_timestamp_constraint_is_not_treated_as_absent(inbox, key):
         poll(FakeSession(response(payload={'code': OTP, key: 0, 'to': ADDRESS})))
 
 
-@pytest.mark.parametrize('metadata', [{'timestamp': 1}, {'recipient': 'other@example.test'}, {'timestamp': 'invalid'}])
+@pytest.mark.parametrize('metadata', [{'timestamp': 1}, {'timestamp': 'invalid'}])
 def test_nested_metadata_constrains_nested_code(inbox, metadata):
     _, _, poll = inbox
     with pytest.raises(client.GenericApiMailError):
         poll(FakeSession(response(payload={'data': {'code': OTP, **metadata}})))
+
+
+def test_nested_different_recipient_does_not_bypass_time_filter(inbox):
+    _, _, poll = inbox
+    session = FakeSession(response(payload={'data': {
+        'code': OTP, 'recipient': 'other@example.test', 'timestamp': START - 300,
+    }}))
+    with pytest.raises(client.GenericApiMailError) as exc:
+        poll(session)
+    assert exc.value.error_code == 'email_otp_no_mail'
 
 
 @pytest.mark.parametrize("body", ["Your verification code is " + OTP, json.dumps({
@@ -214,6 +223,31 @@ def test_yangyang_list_metadata_cannot_recover_old_or_invalid_otp(metadata):
                                       {}, after_ts=START, expected_email=ADDRESS)
     assert result is None
     assert len(session.calls) == 1
+
+
+def test_yangyang_accepts_different_recipient_in_message(inbox):
+    account, _, poll = inbox
+    other = 'parent@example.test'
+    account.code_url = 'https://inbox.example.test/messages/fixture-token/' + ADDRESS
+    session = FakeSession(
+        response(payload={'items': [{'id': 'fixture-message', 'recipient': other, 'received_at': START}],
+                          'has_more': False}),
+        response(payload={'subject': 'Your verification code', 'body': 'Your code is ' + OTP,
+                          'to': other, 'received_at': START}),
+    )
+    assert poll(session) == OTP
+    assert len(session.calls) == 2
+    assert all(ADDRESS in url for url, _ in session.calls)
+
+
+def test_yangyang_rejects_url_for_different_fixed_mailbox(inbox):
+    account, _, poll = inbox
+    account.code_url = 'https://inbox.example.test/messages/fixture-token/other@example.test'
+    session = FakeSession(response(payload={'items': []}))
+    with pytest.raises(client.GenericApiMailError) as exc:
+        poll(session)
+    assert exc.value.error_code == 'email_resource_read_failed'
+    assert not session.calls
 
 
 def test_yangyang_timestamp_honors_explicit_timezone():

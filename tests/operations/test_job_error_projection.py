@@ -1,5 +1,6 @@
 """任务错误展示只细化同一 Roxy 调试任务已保存的认证挑战。"""
 from copy import deepcopy
+import json
 from unittest.mock import patch
 
 import pytest
@@ -39,6 +40,68 @@ def projection(row, surface, client):
         response = client.get("/api/jobs/992/log", headers={"X-Auth-Code": "test-auth"})
     assert response.status_code == 200
     return response.get_json()["job"]
+
+
+@pytest.mark.parametrize("surface", ["table", "log"])
+def test_historical_protocol_otp_stage_reaches_job_api_without_mutation(surface, client):
+    diagnostics = {"operation": "other", "failure_kind": "unknown", "failure_stage": "email_otp",
+                   "exception_type": "Exception", "exception_chain": ["Exception"],
+                   "profile_confirmed": False, "last_confirmed_stage": "auth_redirect"}
+    row = challenged_job()
+    row.update({
+        "job_type": "registration", "debug_enabled": False, "progress_stage": "complete",
+        "config_snapshot": {"registration_driver": "protocol_oss_2"},
+        "error_message": ("request_unknown: protocol_failure_evidence_missing: "
+                          "协议失败未保留足够请求证据，无法确认具体原因：Exception 诊断="
+                          + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))),
+    })
+    row.pop("debug_capture_summary")
+    original = deepcopy(row)
+    if surface == "table":
+        with patch("webui.routes.jobs.admin_repository.list_jobs", return_value={"items": [row]}):
+            response = client.get("/api/jobs?view=table", headers={"X-Auth-Code": "test-auth"})
+        result = response.get_json()["items"][0]
+    else:
+        with patch("webui.routes.jobs.db.get_job", return_value=row), patch(
+            "webui.routes.jobs.svc.read_job_log", return_value="测试日志",
+        ):
+            response = client.get("/api/jobs/992/log", headers={"X-Auth-Code": "test-auth"})
+        result = response.get_json()["job"]
+    assert response.status_code == 200
+    assert result["error_info"]["code"] == "email_otp_evidence_missing"
+    assert result["error_info"]["summary"] == "邮箱验证码阶段失败，未保留具体原因"
+    assert result["error_info"]["reconcile_required"] is True
+    for key in ("status", "retryable", "retry_action"):
+        assert result[key] == original[key]
+    assert original["error_message"].startswith(result["error_message"].rstrip("…"))
+    # 路由可将展示结果附加到临时行；不得改变已有业务字段。
+    for key in ("status", "error_message", "retryable", "retry_action"):
+        assert row[key] == original[key]
+
+
+@pytest.mark.parametrize("change", ["other_stage", "received", "other_operation", "bad_json", "prefix", "extra_text", "specific_cause", "specific_code"])
+def test_historical_protocol_otp_projection_rejects_unrelated_evidence(change):
+    from core.operations.errors import classify_task_error
+
+    diagnostics = {"operation": "other", "failure_kind": "unknown", "failure_stage": "email_otp"}
+    if change == "other_stage":
+        diagnostics["failure_stage"] = "password"
+    elif change == "received":
+        diagnostics["otp_received"] = True
+    elif change == "other_operation":
+        diagnostics["operation"] = "otp_send"
+    raw = ("request_unknown: protocol_failure_evidence_missing: 协议失败未保留足够请求证据，"
+           "无法确认具体原因：Exception 诊断=" + json.dumps(diagnostics, ensure_ascii=False))
+    if change == "bad_json":
+        raw = raw[:-1] + ",}"
+    elif change == "prefix":
+        raw = "其他错误 " + raw
+    elif change == "extra_text":
+        raw += " 额外内容"
+    summary = {"cause_code": "email_otp_mailbox_failed"} if change == "specific_cause" else None
+    error_code = "email_resource_expired" if change == "specific_code" else ""
+    info = classify_task_error(raw, task_type="registration", result_summary=summary, error_code=error_code)
+    assert info["code"] != "email_otp_evidence_missing"
 
 
 @pytest.mark.parametrize("surface", ["list", "log"])
@@ -246,7 +309,7 @@ def test_current_accepted_resend_refines_no_mail_display_without_changing_retry(
     assert info["code"] == "email_otp_no_mail"
     assert info["cause_code"] == "email_otp_no_mail"
     assert info["display_code"] == "MAIL-OTP-005"
-    assert info["summary"] == "等待窗口内未收到验证码邮件"
+    assert info["summary"] == "等待窗口内未取得符合条件的验证码"
     assert info["otp_request_accepted"] is True
     assert "private_extra" not in info
     for key in ("status", "error_message", "request_unknown", "retryable", "retry_action"):

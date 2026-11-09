@@ -12,6 +12,7 @@ _EXCEPTION_TYPES = frozenset({
     "ConnectionRefusedError", "BrokenPipeError", "HTTPError", "RequestException", "Timeout",
     "ConnectTimeout", "ReadTimeout", "ProxyError", "SSLError", "TlsError", "ProxyConnectionError",
     "JSONDecodeError", "ProtocolOssRequestUnknown", "ModuleNotFoundError", "ImportError", "EmailButlerClientError",
+    "GenericApiMailError",
 })
 _STAGES = frozenset({
     "browser", "submit_email", "auth_redirect", "password", "login_password", "email_otp", "profile", "token",
@@ -140,6 +141,7 @@ class RegistrationFailureDiagnostics:
         for cause in chain:
             if self.stage == "email_otp" and not self.otp_received:
                 from core.email.email_butler.client import EmailButlerClientError
+                from core.email.generic_api.client import GenericApiMailError
                 from core.operations.errors import safe_registration_diagnostics
 
                 if isinstance(cause, EmailButlerClientError):
@@ -149,6 +151,14 @@ class RegistrationFailureDiagnostics:
                         "operation": "mailbox_wait", "http_status": cause.status_code, "auth_error": {},
                         "failure_kind": "no_mail" if no_mail else "mailbox_error",
                         "mailbox_error_code": "" if cause.error_code == "inbound_code_timeout" else cause.error_code,
+                    })
+                    break
+                if isinstance(cause, GenericApiMailError):
+                    # 只依据最终取码异常的固定代码，不把读取错误推断为未收到验证码。
+                    selected = safe_registration_diagnostics({
+                        "operation": "mailbox_wait", "auth_error": {},
+                        "failure_kind": "no_mail" if cause.error_code == "email_otp_no_mail" else "mailbox_error",
+                        "mailbox_error_code": cause.error_code,
                     })
                     break
             selected = next((data for _, data, observed in reversed(self._events) if observed is cause), None)

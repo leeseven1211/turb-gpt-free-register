@@ -1181,7 +1181,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_send_unconfirmed": ("MAIL-SEND-003", "验证码发送结果未获确认"),
     "email_otp_send_no_response": ("MAIL-SEND-004", "验证码发送请求未收到响应"),
     "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送结果未确认"),
-    "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未收到验证码邮件"),
+    "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未取得符合条件的验证码"),
     "email_otp_mailbox_failed": ("MAIL-OTP-READ", "验证码邮箱读取失败"),
     "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未确认下一步"),
     "email_transition_timeout": ("FLOW-EMAIL-002", "邮箱提交或认证跳转预算耗尽"),
@@ -1388,6 +1388,9 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "email_otp_send_unknown",
     "email_otp_no_mail",
     "email_otp_mailbox_failed",
+    "email_resource_expired",
+    "email_resource_expiry_invalid",
+    "email_resource_read_failed",
     "password_entry_navigation_failed",
     "password_entry_navigation_timeout",
     "password_entry_not_offered",
@@ -1427,7 +1430,7 @@ _REGISTRATION_EXCEPTION_TYPES = frozenset({
     "SSLError", "SSLCertVerificationError", "CertificateError", "TlsError", "ProxyConnectionError", "ProxyError",
     "HTTPError", "HTTPStatusError", "RequestException", "RequestError", "TransportError", "ProtocolError",
     "ConnectError", "ReadError", "WriteError", "ConnectTimeoutError", "ReadTimeoutError", "ProtocolOssRequestUnknown",
-    "EmailButlerClientError",
+    "EmailButlerClientError", "GenericApiMailError",
 })
 
 
@@ -1458,7 +1461,10 @@ def safe_registration_diagnostics(value: object) -> dict[str, Any]:
         if type(value.get(key)) is bool:
             result[key] = value[key]
     mailbox_code = value.get("mailbox_error_code")
-    if isinstance(mailbox_code, str) and mailbox_code in (_BUTLER_RECIPIENT_CAUSES.keys() | {"inbound_request_failed", "invalid_key"}):
+    if isinstance(mailbox_code, str) and mailbox_code in (_BUTLER_RECIPIENT_CAUSES.keys() | {
+        "inbound_request_failed", "invalid_key", "email_otp_no_mail", "email_resource_read_failed",
+        "email_resource_expired", "email_resource_expiry_invalid",
+    }):
         result["mailbox_error_code"] = mailbox_code
     exception_type = value.get("exception_type")
     if isinstance(exception_type, str):
@@ -1486,6 +1492,8 @@ def registration_diagnostic_cause_code(value: object) -> str:
         if kind in {"no_mail", "mailbox_error"}:
             mailbox_code = diagnostics.get("mailbox_error_code")
             if mailbox_code in _BUTLER_RECIPIENT_CAUSES and mailbox_code != "inbound_code_timeout":
+                return mailbox_code
+            if mailbox_code in {"email_resource_read_failed", "email_resource_expired", "email_resource_expiry_invalid"}:
                 return mailbox_code
             return "email_otp_mailbox_failed"
     if kind == "http_error" and operation == "profile_submit":
@@ -1760,6 +1768,15 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
         display_code, cause_summary = _OTP_PAGE_NETWORK_CAUSES[code]
         return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
     registration_cause = registration_diagnostic_cause_code(summary.get("registration_diagnostics"))
+    registration_diagnostics = safe_registration_diagnostics(summary.get("registration_diagnostics"))
+    if (code == "protocol_failure_evidence_missing"
+            and registration_diagnostics.get("failure_stage") == "email_otp"
+            and registration_diagnostics.get("otp_received") is not True
+            and registration_diagnostics.get("failure_kind") == "unknown"
+            and registration_diagnostics.get("operation") == "other"):
+        # 历史记录只有阶段事实；不推断实际是否发码、投递或取码超时。
+        return {"cause_code": "email_otp_evidence_missing", "cause_display_code": "MAIL-OTP-EVIDENCE",
+                "cause_summary": "邮箱验证码阶段失败，未保留具体原因"}
     if registration_cause and code in ({"", "registration_failed", "user_register_result_unknown"} | {
         item for item in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES if item.startswith("protocol_")
     }):
@@ -2071,7 +2088,7 @@ def _cause_error_projection(
     return projection
 
 
-def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, Any]) -> dict[str, str] | None:
+def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, Any], *, error_code: str = "") -> dict[str, str] | None:
     """只使用历史记录中的固定状态或明确文本细化通用错误。"""
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
@@ -2087,6 +2104,27 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
             "cause_summary": f"MFA 页面网络传输失败（{mfa_network.group(1)}）",
         }
     if task_key in {"registration", "registration_resume"}:
+        if (not isinstance(summary.get("registration_diagnostics"), dict)
+                and summary.get("cause_code") in (None, "", "protocol_failure_evidence_missing")
+                and error_code in ("", "request_unknown", "registration_failed", "protocol_failure_evidence_missing")):
+            # 旧注册任务将受控诊断附在固定错误格式的末尾；只读取完整 JSON 中
+            # 的白名单字段，不根据原始异常正文推断验证码或远端结果。
+            match = re.fullmatch(
+                r"(?:request_unknown:\s*)?protocol_failure_evidence_missing: "
+                r"协议失败未保留足够请求证据，无法确认具体原因：[A-Za-z_][A-Za-z0-9_]{0,79} "
+                r"诊断=(\{[^\n]{1,2048}\})", raw,
+            )
+            if match:
+                try:
+                    stored_diagnostics = json.loads(match.group(1))
+                except (TypeError, ValueError):
+                    stored_diagnostics = None
+                projected = _specific_error_cause({
+                    "cause_code": "protocol_failure_evidence_missing",
+                    "registration_diagnostics": safe_registration_diagnostics(stored_diagnostics),
+                })
+                if projected and projected["cause_code"] == "email_otp_evidence_missing":
+                    return projected
         if re.fullmatch(
             r"(?:request_unknown:\s*)?_EmailSubmissionUnknown: email_submit_unconfirmed: "
             r"当前认证入口尚未进入下一步，交回服务层检查线路; "
@@ -2354,7 +2392,12 @@ def classify_task_error(
                 'remote_state_impact': 'unknown', 'next_action': 'manual_reconcile',
             })
         return recovery_projection
-    cause = _stored_specific_error_cause(raw, task_type, summary_data) or _specific_error_cause(summary_data)
+    cause = _stored_specific_error_cause(raw, task_type, summary_data, error_code=error_code) or _specific_error_cause(summary_data)
+    if cause and cause["cause_code"] == "email_otp_evidence_missing":
+        # 阶段兜底只补充缺失信息；调用方保存的明确错误码始终优先。
+        explicit_code = str(error_code or "").strip()
+        if explicit_code in _CAUSE_DETAILS and explicit_code != "protocol_failure_evidence_missing":
+            cause = _specific_error_cause({"cause_code": explicit_code}) or cause
     if cause is None and raw.strip() == "原密码尚未确认生效" and str(task_type or "").strip().lower() in {
         "registration", "registration_resume", "twofa_retry", "account_setup_retry",
     }:
