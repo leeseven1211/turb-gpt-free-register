@@ -415,6 +415,8 @@ Butler 导入支持 HME、Outlook / Hotmail、Cloudflare 和 mail.com；新版�
 
 Email Butler 对接使用 `/v2` 租约 API：人工导入只查询当前可用量，确认后由 Butler 分配 `service=openai` 的长期租约；不再按身份类型、域名或分组挑选地址。每项先保存幂等键和 `external_ref`，超时及重启后继续原请求；超出远端幂等保留期只能查询原租约，不重复随机分配。注册仍只领取本地已经完成导入的库存。
 
+导入浮窗按 OpenAI 服务显示可用数量，并展示 Butler 返回的来源不可用、现有租约占用、历史占用限制和冷却数量。Butler 管理页的“未租用地址”只表示当前没有活动租约；历史导入保留标记或服务的 `new_only` 规则仍可能使这些地址不可导入，历史导入记录也不代表已确认注册成功。
+
 历史 `source=icloud_hide` 的母地址及子地址保持原完整地址、owner、acquisition 和固定 profile。访问时将已知旧入口规范到 v2，并在 `email_butler_lease_bindings` 保存原客户端下的租约映射；没有有效原租约时明确报错，不申请替代邮箱。新旧地址统一通过 `/leases/{id}/code` 取码，保留挑战时间与稳定 `code_id`，单次等待最多 20 秒，总等待预算保持原配置。多投递返回 `ambiguous`，不任取最新邮件。
 
 结果在本地事务内记录为 `local_only`，成功不能被晚到失败覆盖；v2 没有原 `/identities/report` 或 `/service-facts/batch`，不伪造远端送达。成功和结果未知账号保留长期读取权，只有原规则允许的显式删除才按原租约退租。Butler 当前服务标签随租约结束，Turb 本地永久导入历史继续保留。

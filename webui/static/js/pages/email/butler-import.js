@@ -174,6 +174,22 @@ function closeButlerImportModal() {
   BUTLER_IMPORT_STATE.opener?.focus();
 }
 
+function butlerImportAvailabilityText(data) {
+  const labels = {
+    source_unavailable: '来源不可用', active_same_service: 'OpenAI 已租用',
+    other_service_exclusive: '其他服务占用', history_blocked: '历史占用限制', cooldown: '冷却中',
+  };
+  const buckets = data.availability_buckets;
+  const reasons = buckets && typeof buckets === 'object' ? Object.entries(labels)
+    .filter(([key]) => Number.isSafeInteger(buckets[key]) && buckets[key] > 0)
+    .map(([key, label]) => `${label} ${buckets[key]} 个`) : [];
+  const scope = Number.isSafeInteger(data.resource_total) && data.resource_total >= 0
+    ? `当前查询范围 ${data.resource_total} 个` : '当前查询范围';
+  return `当前可用 ${Number(data.available || 0)} 个 · 本次可导入 ${Number(data.selected || 0)} 个。`
+    + (reasons.length ? `${scope}：${reasons.join(' · ')}。` : '')
+    + 'Butler“未租用”不等于可用于 OpenAI。查询不占用库存；确认后由 Butler 分配地址，导入时再核对本地占用。';
+}
+
 async function previewButlerImport() {
   const state = BUTLER_IMPORT_STATE;
   if (state.busy || state.request) return;
@@ -193,8 +209,8 @@ async function previewButlerImport() {
     if (version !== state.previewVersion || JSON.stringify(filters) !== JSON.stringify(butlerImportFilters())) return;
     if (data.ok === false || !data.preview_token) throw new Error(data.error || '可用数量查询未返回有效结果，请刷新数量');
     state.preview = {...data, filters};
-    butlerImportElement('butlerImportPreview').textContent = `当前可用 ${Number(data.available || 0)} 个 · 本次可导入 ${Number(data.selected || 0)} 个。查询不占用库存；确认后由 Butler 分配地址，导入时再核对本地占用。`;
-    if (!Number(data.selected || 0)) butlerImportError('当前筛选下没有可导入邮箱，请调整条件或在 Butler 补充库存后刷新数量。');
+    butlerImportElement('butlerImportPreview').textContent = butlerImportAvailabilityText(data);
+    if (!Number(data.selected || 0)) butlerImportError('当前没有可用于 OpenAI 的邮箱，请在 Butler 按目标服务核对来源状态、历史占用和冷却限制后刷新数量。');
   } catch (error) { if (version === state.previewVersion) butlerImportError(`查询可用数量失败：${error.message}`); }
   finally {
     state.busy = false;

@@ -16,6 +16,10 @@ PROVIDERS = {
     'icloud_hme': 'iCloud 隐藏邮箱', 'outlook_graph': 'Outlook / Hotmail',
     'cloudflare': 'Cloudflare', 'mailcom': 'mail.com', 'auto': '全部来源',
 }
+_AVAILABILITY_BUCKETS = (
+    'source_unavailable', 'active_same_service', 'other_service_exclusive',
+    'history_blocked', 'cooldown', 'available',
+)
 
 
 def configuration():
@@ -81,8 +85,20 @@ def preview(data):
         'config_fingerprint': connection['fingerprint'], 'client_id': client_id,
         'idempotency_retention_seconds': int((who.get('limits') or {}).get('idempotency_retention_seconds') or 604800),
     })
+    # 仅公开计数，保留旧响应兼容，不把远端额外字段或地址带入浏览器。
+    diagnostics = {}
+    total = result.get('resource_total')
+    if type(total) is int and total >= 0:
+        diagnostics['resource_total'] = total
+    buckets = result.get('availability_buckets')
+    if isinstance(buckets, dict):
+        diagnostics['availability_buckets'] = {
+            key: buckets[key] for key in _AVAILABILITY_BUCKETS
+            if type(buckets.get(key)) is int and buckets[key] >= 0
+        }
     return {'ok': True, 'api_version': 2, 'preview_token': token, 'available': available,
-            'selected': amount, 'count': selected['count'], 'items': [], 'filters': selected}
+            'selected': amount, 'count': selected['count'], 'items': [], 'filters': selected,
+            **diagnostics}
 
 
 def create(data):

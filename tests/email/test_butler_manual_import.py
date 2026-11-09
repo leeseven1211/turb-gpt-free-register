@@ -107,6 +107,35 @@ class ButlerManualImportTests(PostgresTestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(record_store.count_rows(record_store.EMAIL_INBOX_PROFILES), 0)
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
+        self.assertNotIn('availability_buckets', result)
+        self.assertNotIn('resource_total', result)
+
+    def test_preview_explains_history_limits_without_claiming_inventory(self):
+        remote = {'service': 'openai', 'available': 0, 'resource_total': 57,
+            'availability_buckets': {'history_blocked': 57, 'available': 0},
+            'email': 'private@example.test', 'api_key': 'private-key'}
+        with patch.object(self.api, 'availability', return_value=remote):
+            result = self.preview()
+        self.assertEqual((result['available'], result['selected']), (0, 0))
+        self.assertEqual(result['resource_total'], 57)
+        self.assertEqual(result['availability_buckets'], {'history_blocked': 57, 'available': 0})
+        self.assertNotIn('email', result)
+        self.assertNotIn('api_key', result)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
+
+    def test_preview_only_discloses_valid_whitelisted_diagnostic_counts(self):
+        for invalid_total in (-1, True, 2.5, 'private@example.test', None):
+            with self.subTest(total=invalid_total):
+                remote = {'service': 'openai', 'available': 2, 'resource_total': invalid_total,
+                    'availability_buckets': {'source_unavailable': -1, 'active_same_service': True,
+                        'other_service_exclusive': 1.5, 'history_blocked': 'private-key',
+                        'cooldown': 0, 'available': 2, 'private@example.test': 99}}
+                with patch.object(self.api, 'availability', return_value=remote):
+                    result = self.preview()
+                self.assertNotIn('resource_total', result)
+                self.assertEqual(result['availability_buckets'], {'cooldown': 0, 'available': 2})
+                self.assertEqual((result['available'], result['selected']), (2, 2))
 
     def test_preview_accepts_unlimited_requested_count_without_snapshotting_addresses(self):
         self.addresses = [f'parent+large{index}@icloud.com' for index in range(5001)]

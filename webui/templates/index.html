@@ -24,10 +24,10 @@
     #butlerImportModal .outlook-import-head, #butlerImportModal .outlook-import-foot { flex-shrink: 0; }
     #butlerImportModal .outlook-import-head p,
     #butlerImportModal .outlook-import-hint { color: var(--ui-color-text-secondary); }
-    #butlerImportModal .butler-import-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    #butlerImportModal .butler-import-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
     #butlerImportSetup { display: flex; flex-direction: column; gap: 16px; }
-    #butlerImportModal label { min-width: 0; }
-    #butlerImportModal select, #butlerImportModal input { width: 100%; box-sizing: border-box; min-height: 40px; padding: 8px 12px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; }
+    #butlerImportModal .outlook-import-field { display: flex; flex-direction: column; min-width: 0; gap: 8px; }
+    #butlerImportModal select, #butlerImportModal input { width: 100%; box-sizing: border-box; height: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; }
     #butlerImportModal :is(button, input, select, summary):focus-visible { outline: 3px solid var(--ui-color-brand); outline-offset: 3px; }
     #butlerImportModal :disabled { opacity: .6; cursor: not-allowed; }
     #butlerImportModal [hidden] { display: none !important; }
@@ -1032,9 +1032,9 @@
       <label class="outlook-import-field" for="butlerImportCount">
         <span>导入数量</span>
         <input id="butlerImportCount" type="number" min="1" step="1" value="10" inputmode="numeric" aria-describedby="butlerImportCountHint">
-        <small id="butlerImportCountHint" class="outlook-import-hint">不足时按预览可用数量导入，确认后由 Butler 分配完整地址。</small>
       </label>
     </div>
+    <small id="butlerImportCountHint" class="outlook-import-hint">不足时按预览可用数量导入，确认后由 Butler 分配完整地址。</small>
     </div>
     <p id="butlerImportError" class="butler-import-feedback" role="alert" hidden></p>
     <div id="butlerImportPreview" class="butler-import-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1132,7 +1132,7 @@
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261108-butler-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261105-concurrency-control') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-registration-workers') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>

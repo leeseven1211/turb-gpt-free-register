@@ -84,6 +84,48 @@ test('打开弹窗自动查询可用数量，查询不领取邮箱也不展示�
   assert.ok(h.requests.every(call => call.url !== '/api/email-butler/imports'));
 });
 
+test('历史导入限制解释零可用，未租用不被描述为OpenAI可租', async () => {
+  const h = createView({handler(call) {
+    assert.ok(call.url.endsWith('import-preview'));
+    return {ok: true, preview_token: 'p', available: 0, selected: 0, resource_total: 57,
+      availability_buckets: {history_blocked: 57, available: 0}};
+  }});
+  await h.view.preview();
+  const preview = content(h.node('butlerImportPreview'));
+  assert.match(preview, /当前可用 0 个.*本次可导入 0 个/);
+  assert.match(preview, /当前查询范围 57 个.*历史占用限制 57 个/);
+  assert.match(preview, /未租用.*不等于可用于 OpenAI/);
+  assert.doesNotMatch(preview, /已注册/);
+  assert.match(h.node('butlerImportError').textContent, /目标服务.*历史占用/);
+  assert.doesNotMatch(h.node('butlerImportError').textContent, /补充库存/);
+  assert.equal(h.node('btnApplyButlerImport').disabled, true);
+  assert.equal(h.requests.length, 1);
+});
+
+test('旧预览响应没有诊断计数时仍可导入且不显示虚构原因', async () => {
+  const h = createView();
+  await h.view.preview();
+  const preview = content(h.node('butlerImportPreview'));
+  assert.match(preview, /当前可用 12 个.*本次可导入 5 个/);
+  assert.doesNotMatch(preview, /undefined|NaN|历史占用限制|来源不可用/);
+  assert.equal(h.node('btnApplyButlerImport').disabled, false);
+});
+
+test('原因概览只展示已知原因的有效正整数，不泄露其他字段', async () => {
+  const h = createView({handler() {
+    return {ok: true, preview_token: 'p', available: 2, selected: 2,
+      resource_total: 'private-total', availability_buckets: {
+        source_unavailable: 3, active_same_service: 4, other_service_exclusive: 5,
+        history_blocked: 'private-history', cooldown: true, 'private-field': 99,
+      }};
+  }});
+  await h.view.preview();
+  const preview = content(h.node('butlerImportPreview'));
+  assert.match(preview, /来源不可用 3 个.*OpenAI 已租用 4 个.*其他服务占用 5 个/);
+  assert.doesNotMatch(preview, /private-|历史占用限制|冷却中/);
+  assert.equal(h.node('btnApplyButlerImport').disabled, false);
+});
+
 test('连续修改筛选立即使旧数量失效，防抖后仅查询最后一次条件', async () => {
   const h = createView();
   await h.view.open();
