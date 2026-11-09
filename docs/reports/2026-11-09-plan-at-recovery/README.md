@@ -1,5 +1,7 @@
 # 独立查套餐错误诊断与 AT 自动恢复验收
 
+最终合并及双端发布见[部署验收](deployment.md)，全部分支核对见[合并审计清单](merge-audit.md)。
+
 ## 实现范围
 
 - 「配置 → 注册与账号 → 查询套餐」新增 `PLAN_CHECK_AUTO_REFRESH_AT_ENABLED`，默认开启。
