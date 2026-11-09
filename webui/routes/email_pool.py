@@ -640,7 +640,7 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.post("/api/outlook/delete")
     def api_outlook_delete():
-        """从邮箱池彻底删除一个邮箱：body {email}。"""
+        """从本地邮箱池移除未确认注册成功的邮箱：body {email}。"""
         data = request.get_json(silent=True) or {}
         email = (data.get("email") or "").strip()
         if not email:
@@ -650,7 +650,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             source = "outlook"
         if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
             return jsonify({"ok": True, "deleted": False, "local_deleted": False,
-                "reason": "邮箱已有使用或未知结果历史，保留完整身份，不能删除后重新导入"})
+                "reason": "邮箱已确认注册成功，不能删除"})
         deleted = (
             local_email_imports.delete_butler_email(email)
             if source == "email_butler"
@@ -668,7 +668,7 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.post("/api/outlook/delete-bulk")
     def api_outlook_delete_bulk():
-        """从邮箱池批量彻底删除邮箱：body {emails: [...]}。"""
+        """批量移除未确认注册成功的本地邮箱：body {emails: [...]}。"""
         data = request.get_json(silent=True) or {}
         source = _pool_source_arg()
         emails = data.get("items") or data.get("emails") or []
@@ -697,7 +697,7 @@ def create_email_pool_blueprint(context: WebUIContext):
                 continue
             seen.add(key)
             if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source)):
-                skipped.append({"email": email, "source": item_source, "reason": "邮箱已有使用或未知结果历史，保留完整身份"})
+                skipped.append({"email": email, "source": item_source, "reason": "邮箱已确认注册成功，不能删除"})
                 continue
             deleted_ok = (
                 local_email_imports.delete_butler_email(email)

@@ -121,7 +121,7 @@ class LocalEmailImportsTests(PostgresTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(record_store.count_rows(record_store.EMAIL_BUTLER_POOL), 0)
 
-    def test_butler_unknown_can_be_manually_reset_without_losing_claim_or_delete_protection(self):
+    def test_butler_unknown_can_be_deleted_without_losing_original_claim(self):
         from core.email import inventory as local_email_inventory
 
         self.assertEqual(self.post('/api/outlook/import', {'source': 'email_butler', 'text': 'kept@icloud.com'}).status_code, 200)
@@ -133,26 +133,22 @@ class LocalEmailImportsTests(PostgresTestCase):
             'status': 'request_unknown', 'used_at': '2026-11-01T00:00:00',
         })
         deleted = self.post('/api/outlook/delete', {'source': 'email_butler', 'email': row['email']})
-        self.assertFalse(deleted.get_json()['deleted'])
+        self.assertTrue(deleted.get_json()['deleted'])
         changed = self.post('/api/outlook/status', {'source': 'email_butler', 'email': row['email'], 'status': 'available'})
-        self.assertEqual(changed.status_code, 200)
+        self.assertNotEqual(changed.status_code, 200)
         restored = record_store.get_row(record_store.EMAIL_BUTLER_POOL, row['id'])
-        self.assertEqual(restored['status'], 'available')
-        self.assertIsNone(restored['used_at'])
+        self.assertEqual(restored['status'], 'tombstone')
         self.assertEqual(record_store.get_row(record_store.LOCAL_EMAIL_CLAIMS, claim['id']), claim)
         deleted = self.post('/api/outlook/delete', {'source': 'email_butler', 'email': row['email']})
-        self.assertFalse(deleted.get_json()['deleted'])
+        self.assertTrue(deleted.get_json()['deleted'])
         self.assertIsNone(local_email_inventory.claim('email_butler', owner_kind='test', owner_id='another',
                                                     acquisition_id='another'))
 
-    def test_legacy_used_resource_can_be_manually_reset_while_bulk_delete_stays_protected(self):
+    def test_legacy_used_resource_without_success_can_be_bulk_deleted(self):
         record_store.insert_row(record_store.GENERIC_API_POOL, {'email': 'legacy@example.test', 'status': 'used'})
         deleted = self.post('/api/outlook/delete-bulk', {'items': [{'source': 'generic_api', 'email': 'legacy@example.test'}]}).get_json()
-        self.assertEqual(deleted['deleted_count'], 0)
-        self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'used')
-        changed = self.post('/api/outlook/status', {'source': 'generic_api', 'email': 'legacy@example.test', 'status': 'available'})
-        self.assertEqual(changed.status_code, 200)
-        self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'available')
+        self.assertEqual(deleted['deleted_count'], 1)
+        self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'tombstone')
 
     def test_manual_status_routes_reset_historical_states_for_every_source(self):
         cases = (
@@ -311,8 +307,8 @@ class LocalEmailImportsTests(PostgresTestCase):
                     admin = admin_pool.submit(mutation)
                     self.assertTrue(admin_has_row.wait(5))
                     outcome = outcome_pool.submit(inventory.record_outcome, address, source='email_butler', status='used')
-                    self.assertEqual(admin.result(timeout=10), operation == 'status')
+                    self.assertTrue(admin.result(timeout=10))
                     self.assertTrue(outcome.result(timeout=10))
                 row = local_email_imports.get_butler_email(address)
-                self.assertEqual(row['status'], 'used')
+                self.assertEqual(row['status'], 'tombstone' if operation == 'delete' else 'used')
                 self.assertTrue(inventory.has_claim(address))

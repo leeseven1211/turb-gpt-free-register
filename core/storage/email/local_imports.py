@@ -225,27 +225,15 @@ def get_butler_email(email: str) -> dict | None:
 
 
 def pool_mutation_protected(row: dict | None, *, conn=None) -> bool:
-    """删除邮箱资源时保留已有使用、占用或结果未知的身份历史。"""
+    """只有已确认注册成功的完整邮箱阻止删除。"""
     if row is None:
         return False
-    if (str(row.get('status') or '').lower() in {
-            'used', 'issued', 'reserved', 'registered', 'request_unknown', 'unknown',
-            'result_unknown', 'replaced', 'retired', 'tombstone', 'submitting', 'running'}
-            or row.get('used_at') or row.get('registered_account_id')):
+    if str(row.get('access_token') or '').strip():
         return True
-    from core.storage import postgres as postgres_store
+    from core.storage.email.deletion import registration_confirmed
 
     def check(current):
-        address = str(row.get('email') or '').strip().lower()
-        for table, field in ((record_store.ACCOUNTS, 'email'),
-                             (record_store.EMAIL_ADDRESS_ALLOCATIONS, 'address_norm'),
-                             (record_store.LOCAL_EMAIL_CLAIMS, 'address_norm')):
-            if record_store.get_row_by(table, field, address, lower=True, conn=current):
-                return True
-        remote = postgres_store.qualified(record_store.EMAIL_BUTLER_CLAIM_INTENTS.name)
-        with current.cursor() as cursor:
-            cursor.execute(f"SELECT 1 FROM {remote} WHERE lower(COALESCE(address_norm, data->'mailbox'->>'email', ''))=%s AND status NOT IN ('prepared','rejected') LIMIT 1", (address,))
-            return cursor.fetchone() is not None
+        return registration_confirmed(row.get('email'), account_id=row.get('registered_account_id'), conn=current)
     if conn is not None:
         return check(conn)
     with record_store.transaction() as current:
@@ -258,6 +246,8 @@ def set_butler_status(email: str, *, status: str, note=None) -> bool:
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, lower=True, conn=conn, for_update=True)
         if row is None:
             return False
+        if row.get('status') == 'tombstone':
+            raise ValueError('local_email_deleted: 邮箱已删除，不能恢复为可用')
         if row.get('status') == 'pending_sync':
             raise ValueError('service_fact_sync_pending: 导入服务事实尚未确认，请重试同步')
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
@@ -279,12 +269,18 @@ def delete_butler_email(email: str) -> bool:
     with record_store.transaction() as conn:
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_POOL, 'email', address, lower=True, conn=conn, for_update=True)
         record_store.advisory_xact_lock(conn, 'registered-account:' + address)
-        if not row or pool_mutation_protected(row, conn=conn):
+        if not row:
+            return False
+        if row.get('status') == 'tombstone':
+            return True
+        if pool_mutation_protected(row, conn=conn):
             return False
         from core.email.email_butler import service_facts
         event = service_facts.enqueue_return('email_butler', row, conn=conn)
         changed = record_store.patch_row(record_store.EMAIL_BUTLER_POOL, row['id'], {
             'status': 'tombstone', 'service_tags': service_facts.permanent_tags(row.get('service_tags')),
+            'deleted_at': datetime.now().isoformat(timespec='seconds'),
+            'pool_deleted_at': datetime.now().isoformat(timespec='seconds'),
             'return_sync_state': (event or {}).get('state', 'not_required'),
         }, conn=conn)
     return changed

@@ -881,9 +881,18 @@ def start_run(
         completed_at = _now()
     init()
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT id FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
-        if cur.fetchone() is None:
+        cur.execute(f"SELECT id,email,email_snapshot FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        identity = cur.fetchone()
+        if identity is None:
             raise LookupError(f"注册 Attempt 不存在: {attempt_id}")
+        if not historical and status_value in ACTIVE_RUN_STATUSES:
+            address = str((identity or {}).get('email') or (identity or {}).get('email_snapshot') or '').strip().lower()
+            if address:
+                # 与删除/退租串行，只阻止恢复已明确删除的素材，不改变认证步骤。
+                record_store.advisory_xact_lock(conn, 'registered-account:' + address)
+                from core.storage.email.deletion import pool_deleted
+                if pool_deleted(address, conn=conn):
+                    raise ValueError('local_email_deleted: 原邮箱已删除，不能继续注册')
         if job_id is not None:
             cur.execute(f"SELECT id, attempt_id FROM {_table('registration_jobs')} WHERE id=%s", (int(job_id),))
             job = cur.fetchone()
@@ -1672,6 +1681,8 @@ def save_totp_checkpoint(attempt_id: int, *, email: str, secret: str, confirmed:
         if not attempt:
             raise LookupError("注册 Attempt 不存在")
         _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        pool = (record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, conn=conn, lower=True, for_update=True)
+                if confirmed else None)
         record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
         account = record_store.get_row_by(record_store.ACCOUNTS, "email", email, conn=conn, lower=True, for_update=True)
         if not account or int(account["id"]) != int(attempt.get("account_id") or 0):
@@ -1693,7 +1704,6 @@ def save_totp_checkpoint(attempt_id: int, *, email: str, secret: str, confirmed:
         changes["extra_json"] = json.dumps(extra, ensure_ascii=False)
         record_store.patch_row(record_store.ACCOUNTS, int(account["id"]), changes, conn=conn)
         if confirmed:
-            pool = record_store.get_row_by(record_store.OUTLOOK_POOL, "email", email, conn=conn, lower=True, for_update=True)
             if pool:
                 record_store.patch_row(record_store.OUTLOOK_POOL, int(pool["id"]), {"totp_secret": secret}, conn=conn)
 

@@ -245,6 +245,9 @@ def restore_local_account(email_or_row) -> EmailButlerAccount | None:
         record_store.EMAIL_BUTLER_POOL, 'email', _cache_key(email_or_row), lower=True)
     if not row:
         return None
+    if row.get('status') == 'tombstone':
+        raise EmailButlerClientError('local_email_deleted: 邮箱已删除，不能恢复原注册领取',
+                                     error_code='local_email_deleted')
     profile_id = row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
     profile = record_store.get_row(record_store.EMAIL_INBOX_PROFILES, int(profile_id)) if profile_id else None
     if not profile or profile.get('state') != 'active' or profile.get('connector') != 'forward_butler':
@@ -465,7 +468,7 @@ def return_account(email: str, service: str = 'openai', *, api_base: str | None 
         binding = lease_bindings.resolve(address, **connection, acquisition_id=acquisition_id,
             lease_id=lease_id, client_id=client_id or (account.client_id if account else ''),
             credential_ref=(account.credential_ref if account else ''), for_release=True)
-        result = v2.release(binding['lease_id'], **connection, reason='Turb 显式删除未使用邮箱')
+        result = v2.release(binding['lease_id'], **connection, reason='Turb 显式删除未确认注册成功的邮箱')
         if (_cache_key(result.get('email')) != address or result.get('service') != service
                 or result.get('client_id') != binding['client_id']):
             raise v2.ButlerV2Error('lease_identity_mismatch', '退租回执未确认原地址及服务')

@@ -491,7 +491,7 @@ function renderOutlook() {
       <td class="col-actions">
         <div class="acc-v2-actions">
           ${_poolCopyButton('复制素材', r, 'copy_line', 'primary')}
-          <button type="button" class="danger" data-pool-act="delete" data-email="${email}" data-source="${src}" title="删除邮箱素材">删除</button>
+          <button type="button" class="danger" data-pool-act="delete" data-email="${email}" data-source="${src}" title="从本地邮箱池移除，保留使用历史">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-outlook-more-toggle aria-haspopup="true">更多</button>
             <div class="acc-v2-more-menu" role="menu">${_outlookMoreMenu(r)}</div>
@@ -589,11 +589,11 @@ async function onOutlookBodyClick(e) {
   const source = t.dataset.source || getPoolSource();
   try {
     if (poolAct === 'delete') {
-      if (!confirm(`确定从邮箱池删除 ${email}？此操作不可撤销。`)) return;
+      if (!confirm(`确定从本地邮箱池移除 ${email}？\n\n保留使用历史，原租约退还由现有流程处理。已确认注册成功的邮箱不能删除。`)) return;
       const result = await api('/api/outlook/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, source}) });
-      if (!result.deleted) { showToast(result.reason || '邮箱未删除'); return; }
+      if (!result.deleted) { showToast(result.reason || '邮箱未移除'); return; }
       OUTLOOK_SELECTED.delete(`${source}|${email}`);
-      showToast('本地已删除');
+      showToast('本地已移除');
     } else {
       const noteMap = {failed:'手动标记失败', available:'手动恢复可用', disabled:'手动停用'};
       await api('/api/outlook/status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, status: poolAct, source, note: noteMap[poolAct] || '手动修改状态'}) });
@@ -893,13 +893,25 @@ async function bulkMarkOutlookStatus(status) {
   }
 }
 
+function _poolDeleteResultMessage(result) {
+  const skipped = result.skipped || [];
+  const summary = `本地已移除 ${result.deleted_count || 0} 个，跳过 ${skipped.length} 个`;
+  if (!skipped.length) return summary;
+  const reasons = new Map();
+  skipped.forEach(item => {
+    const reason = String(item.reason || '未返回具体原因').trim();
+    reasons.set(reason, (reasons.get(reason) || 0) + 1);
+  });
+  return `${summary}：${Array.from(reasons, ([reason, count]) => `${reason}（${count} 个）`).join('；')}`;
+}
+
 async function deleteSelectedOutlook() {
   const items = Array.from(OUTLOOK_SELECTED).map(key => {
     const [source, ...rest] = key.split('|');
     return {source, email: rest.join('|')};
   });
   if (items.length === 0) { showToast('请先选择邮箱'); return; }
-  if (!confirm(`确定从邮箱池删除选中的 ${items.length} 个邮箱吗？\n\n此操作不可撤销。`)) return;
+  if (!confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n保留使用历史，原租约退还由现有流程处理。已确认注册成功的邮箱会跳过。`)) return;
   const delBtn = document.getElementById('btnDeleteSelectedOutlookV2'); if (delBtn) delBtn.disabled = true;
   try {
     const r = await api('/api/outlook/delete-bulk', {
@@ -908,8 +920,7 @@ async function deleteSelectedOutlook() {
       body: JSON.stringify({items, source: getPoolSource()}),
     });
     (r.deleted || []).forEach(item => OUTLOOK_SELECTED.delete(`${item.source}|${item.email}`));
-    const skippedCount = (r.skipped || []).length;
-    showToast(`本地已删除 ${r.deleted_count || 0} 个，跳过 ${skippedCount} 个`);
+    showToast(_poolDeleteResultMessage(r));
     loadOutlook(); loadSummary();
   } catch(err) {
     showToast('批量删除失败: ' + err.message);

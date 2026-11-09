@@ -898,7 +898,8 @@ def list_email_pool(request: PageRequest) -> dict:
     pool = _pool_union()
     accounts = _q(record_store.ACCOUNTS)
     filters = request.filters
-    where: list[str] = []
+    visible = "COALESCE(p.status,'')<>'tombstone' AND COALESCE(p.data->>'pool_deleted_at','')=''"
+    where: list[str] = [visible]
     params: list[Any] = []
     source = _text(filters.get("source")).lower()
     if source and source != "all":
@@ -946,9 +947,9 @@ def list_email_pool(request: PageRequest) -> dict:
         raw_rows = cur.fetchall()
         cur.execute(
             f"""
-            SELECT 'source' AS facet, p.source AS value, COUNT(*) AS count {from_sql} GROUP BY p.source
+            SELECT 'source' AS facet, p.source AS value, COUNT(*) AS count {from_sql} WHERE {visible} GROUP BY p.source
             UNION ALL
-            SELECT 'status', LOWER(COALESCE(p.status, '')), COUNT(*) {from_sql} GROUP BY 2
+            SELECT 'status', LOWER(COALESCE(p.status, '')), COUNT(*) {from_sql} WHERE {visible} GROUP BY 2
             """
         )
         facets = _facet_dict(cur.fetchall())

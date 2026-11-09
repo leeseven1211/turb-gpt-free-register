@@ -159,7 +159,7 @@ class EmailServiceFactsTests(PostgresTestCase):
     def test_deleted_local_import_keeps_evidence_without_resurrecting_address(self):
         row = self.stage()
         self.assertTrue(db.delete_generic_api_email(row['email']))
-        self.assertIsNone(store.get_row(store.GENERIC_API_POOL, row['id']))
+        self.assertEqual(store.get_row(store.GENERIC_API_POOL, row['id'])['status'], 'tombstone')
         self.assertEqual(local_imports.import_resources([{'email': row['email'], 'code_url': 'https://fixture.test'}], source='generic_api'), (0, 1))
         self.assertEqual(self.events()[0]['state'], 'local_only')
 
@@ -276,6 +276,6 @@ class EmailServiceFactsTests(PostgresTestCase):
             deletion = admins.submit(local_imports.delete_butler_email, row['email'])
             self.assertTrue(admin_locked.wait(5))
             finished = senders.submit(sync._finish, event, delivered=True)
-            self.assertFalse(deletion.result(timeout=10))
+            self.assertTrue(deletion.result(timeout=10))
             finished.result(timeout=10)
         self.assertEqual(self.events()[0]['state'], 'delivered')

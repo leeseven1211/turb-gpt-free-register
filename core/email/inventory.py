@@ -88,6 +88,7 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     _table(source)
     email = f'lower({alias}.email)'
     conditions = [f"{alias}.status = 'available'", f'{alias}.registered_account_id IS NULL',
+        f"COALESCE({alias}.data->>'pool_deleted_at','')=''",
         f"NULLIF(BTRIM({alias}.used_at), '') IS NULL",
         f"COALESCE({alias}.data->>'service_sync_state', 'delivered') IN ('delivered','local_only')",
         f"lower(COALESCE({alias}.data->>'email_invalid', 'false')) NOT IN ('true', '1', 'yes')",
@@ -166,7 +167,7 @@ def summary(source: str | None = None, *, include_next_expiry: bool = False) -> 
                     f"AND ({epoch})::numeric <= 253402300799.999999 THEN ({epoch})::double precision "
                     "END END) AS next_expiry_epoch"
                 )
-            cursor.execute(f"SELECT count(*) AS total, count(*) FILTER (WHERE {eligible}) AS available, count(*) FILTER (WHERE p.status IN ('used','reserved','registered','request_unknown','unknown','replaced')) AS used, count(*) FILTER (WHERE p.status = 'failed') AS failed, count(*) FILTER (WHERE p.status = 'disabled') AS disabled{expiry_column} FROM {table} p", params)
+            cursor.execute(f"SELECT count(*) AS total, count(*) FILTER (WHERE {eligible}) AS available, count(*) FILTER (WHERE p.status IN ('used','reserved','registered','request_unknown','unknown','replaced')) AS used, count(*) FILTER (WHERE p.status = 'failed') AS failed, count(*) FILTER (WHERE p.status = 'disabled') AS disabled{expiry_column} FROM {table} p WHERE COALESCE(p.status,'')<>'tombstone' AND COALESCE(p.data->>'pool_deleted_at','')=''", params)
             counts = cursor.fetchone()
             rows.append({'source': item, **{field: int(counts[field] or 0) for field in _COUNT_FIELDS}})
             if include_next_expiry and counts.get('next_expiry_epoch') is not None:
@@ -215,7 +216,8 @@ def record_outcome(address: str, *, source: str | None = None, status='used', no
             if normalized != 'used' and has_success(address, cursor=cursor):
                 return True
             enqueue(address, status=normalized, source=source, row=row, claim=previous, cursor=cursor)
-        changes = {'status': normalized}
+        # 删除只移除列表素材，不抹掉迟到的成功事实，也不复活已删除行。
+        changes = {} if row.get('status') == 'tombstone' or row.get('pool_deleted_at') else {'status': normalized}
         if note is not None:
             changes['note'] = str(note)
         record_store.patch_row(TABLES[source], row['id'], changes, conn=conn)
@@ -283,7 +285,8 @@ def claim(source: str, *, owner_kind=None, owner_id=None, acquisition_id=None,
             if (previous['source'], previous['owner_kind'], str(previous['owner_id'])) != (source, owner_kind, owner_id):
                 raise LocalEmailInventoryError('email_derivation_identity_conflict', '原本地领取意图的来源或归属不一致')
             row = record_store.get_row(spec, int(previous['pool_id']), conn=conn, for_update=True)
-            if not row or str(row['email']).lower() != previous['address_norm']:
+            if (not row or str(row['email']).lower() != previous['address_norm']
+                    or row.get('status') == 'tombstone' or row.get('pool_deleted_at')):
                 raise LocalEmailInventoryError('local_email_identity_unavailable', '原本地完整邮箱已删除或变更，不能改领其他地址')
             require_usable(row)
             _bind_job(conn, row, source, previous['id'], batch, job_id)

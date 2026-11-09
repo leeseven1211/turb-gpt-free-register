@@ -261,7 +261,7 @@ def _finish(event, *, delivered=False, blocked=False, local_only=False, error=No
                     if not imported and not store.get_row_by(store.ACCOUNTS, 'email', row['email'], lower=True, conn=conn):
                         raise ValueError('registered_import_conflict: 原已注册账号导入无法完成')
         _update_pool(event, state, error, conn=conn)
-        delay = min(3600, 5 * 2 ** min(event['attempts'], 10))
+        delay = 5 if error == 'registration_active' else min(3600, 5 * 2 ** min(event['attempts'], 10))
         store.patch_row(_TABLE, event['id'], {'state': state, 'error_code': error,
             'error_status_code': status_code if type(status_code) is int else None,
             'lease_owner': None, 'lease_until': None,
@@ -299,15 +299,27 @@ def dispatch_once():
     try:
         from config.runtime import read_persisted_values
         from core.email.email_butler import client
-        key = str(read_persisted_values().get(event.get('credential_ref')) or os.environ.get(event.get('credential_ref') or '', '') or '')
-        if not key or not event.get('api_base'):
-            _finish(event, blocked=True, error='original_credential_missing')
+        from core.storage.email.deletion import registration_active, registration_confirmed
+
+        # 删除可先隐藏素材；与成功落库共享地址锁，退租前再次核对。
+        # _finish 会获取池行锁，必须在退出本事务后调用，保持统一取锁顺序。
+        with store.transaction() as conn:
+            pool = store.get_row(_tables()[event['source']], event['pool_id'], conn=conn, for_update=True)
+            store.advisory_xact_lock(conn, 'registered-account:' + event['address_norm'])
+            store.advisory_xact_lock(conn, 'email-usage:' + event['address_norm'])
+            confirmed = bool(str((pool or {}).get('access_token') or '').strip()) or registration_confirmed(
+                event['address_norm'], conn=conn, account_id=(pool or {}).get('registered_account_id'))
+            active = not confirmed and registration_active(event['address_norm'], conn=conn)
+            if confirmed or active:
+                result = None
+            else:
+                result = _return_original_lease(event, client, read_persisted_values)
+        if confirmed:
+            _finish(event, local_only=True, error='registration_confirmed')
             return True
-        result = client.return_account(event['address_norm'], service='openai',
-            api_base=event['api_base'], api_key=key,
-            acquisition_id=event['payload'].get('acquisition_id') or '',
-            lease_id=event['payload'].get('lease_id') or '',
-            client_id=event['payload'].get('client_id') or '')
+        if active:
+            _finish(event, error='registration_active')
+            return True
         if result.get('ok') is False:
             code = str(result.get('error_code') or 'return_response_invalid')
             if not re.fullmatch(r'[a-z][a-z0-9_]{1,100}', code):
@@ -326,6 +338,17 @@ def dispatch_once():
         _finish(event, blocked=isinstance(status, int) and 400 <= status < 500 and status not in {408, 425, 429},
                 error=code, status_code=status)
     return True
+
+
+def _return_original_lease(event, client, read_persisted_values):
+    key = str(read_persisted_values().get(event.get('credential_ref')) or os.environ.get(event.get('credential_ref') or '', '') or '')
+    if not key or not event.get('api_base'):
+        return {'ok': False, 'error_code': 'original_credential_missing'}
+    return client.return_account(event['address_norm'], service='openai',
+        api_base=event['api_base'], api_key=key,
+        acquisition_id=event['payload'].get('acquisition_id') or '',
+        lease_id=event['payload'].get('lease_id') or '',
+        client_id=event['payload'].get('client_id') or '')
 
 
 def worker_status():

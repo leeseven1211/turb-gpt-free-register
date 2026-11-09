@@ -579,9 +579,10 @@ def insert_account(
         from core.storage.email.validity import facts_for_address, lock_email_validity
 
         lock_email_validity(conn, shared=True)
+        # 删除与注册成功共用池行→地址锁顺序，避免并发删除时互相等待。
+        outlook_row = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, normalized_email)
         record_store.advisory_xact_lock(conn, f"registered-account:{normalized_email.lower()}")
         existing = _locked_row_by_email(conn, record_store.ACCOUNTS, normalized_email)
-        outlook_row = _locked_row_by_email(conn, record_store.OUTLOOK_POOL, normalized_email)
         if (
             existing
             and not str(access_token or "").strip()
@@ -663,7 +664,7 @@ def insert_account(
 
         if outlook_row is not None:
             pool_changes: dict[str, Any] = {
-                "status": "used",
+                "status": "tombstone" if outlook_row.get('status') == 'tombstone' else "used",
                 "used_at": outlook_row.get("used_at") or now,
                 "registered_account_id": row_id,
                 "access_token": access_token,
@@ -2465,6 +2466,8 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     row = _pool_row_by_email(spec, email)
     if row is None:
         return False
+    if row.get('status') == 'tombstone' or row.get('pool_deleted_at'):
+        return False
     if row.get('status') == 'pending_sync':
         return False
     if status == "available" and str(row.get("status") or "").strip().lower() == "replaced":
@@ -2494,11 +2497,20 @@ def _delete_pool_email(spec, email: str) -> bool:
                         'WHERE lower(email) = lower(%s) ORDER BY id FOR UPDATE', (str(email or "").strip(),))
             parents = [record_store.merge_row(spec, row) for row in cur.fetchall()]
         for parent in parents:
+            from core.storage.email.local_imports import pool_mutation_protected
+
+            record_store.advisory_xact_lock(conn, 'registered-account:' + str(parent['email']).lower())
+            if parent.get('status') == 'tombstone':
+                changed = True
+                continue
+            if pool_mutation_protected(parent, conn=conn):
+                continue
             if source and parent_has_allocations(source, int(parent["id"]), conn=conn):
                 policy = dict(parent.get("derivation_policy") or {})
                 policy["enabled"] = False
                 updated = record_store.patch_row(spec, int(parent["id"]), {
                     "archived": True, "status": "disabled", "derivation_policy": policy,
+                    "pool_deleted_at": _now(),
                     "note": "母资源关联已有子地址，已停止新分配并保留历史恢复资料",
                 }, conn=conn)
                 changed = bool(updated) or changed
@@ -2506,8 +2518,9 @@ def _delete_pool_email(spec, email: str) -> bool:
                 from core.email.email_butler import service_facts
                 if source:
                     service_facts.enqueue_return(source, parent, conn=conn)
-                rows = record_store.delete_rows_where_returning(spec, where="id = %s", params=(int(parent["id"]),), conn=conn)
-                changed = bool(rows) or changed
+                updated = record_store.patch_row(spec, int(parent['id']),
+                    {'status': 'tombstone', 'deleted_at': _now(), 'pool_deleted_at': _now()}, conn=conn)
+                changed = bool(updated) or changed
     kind = _POOL_EXPORT_KINDS.get(spec.name)
     if changed and kind:
         compat_export.schedule(kind)
@@ -2522,7 +2535,8 @@ def _pool_summary(spec, statuses: tuple[str, ...]) -> dict:
     with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COALESCE(status, 'available') AS status, COUNT(*) AS count, "
                     "COUNT(*) FILTER (WHERE data->>'email_invalid' = 'true') AS invalid_count "
-                    f"FROM {table} GROUP BY 1")
+                    f"FROM {table} WHERE COALESCE(status,'')<>'tombstone' "
+                    "AND COALESCE(data->>'pool_deleted_at','')='' GROUP BY 1")
         rows = cur.fetchall()
     for row in rows:
         result[str(row["status"])] = int(row["count"]) - (int(row["invalid_count"]) if row["status"] == "available" else 0)
@@ -2605,6 +2619,8 @@ def import_registered_email_accounts(records: list[dict], source: str | None, *,
 
             # 账号唯一性与对应邮箱池的状态变更必须一起判定；事务级业务键锁住
             # 跨进程的“检查后插入”窗口，数据库 identity 负责生成新 ID。
+            pool_spec = record_store.GENERIC_API_POOL if source == 'generic_api' else record_store.OUTLOOK_POOL
+            pool_row = _locked_row_by_email(conn, pool_spec, email)
             record_store.advisory_xact_lock(conn, f"registered-account:{email.lower()}")
             from core.storage.email import address_allocations as email_address_allocations
 
@@ -2617,13 +2633,6 @@ def import_registered_email_accounts(records: list[dict], source: str | None, *,
 
             now = _now()
             original_line = email
-            pool_spec = (
-                record_store.GENERIC_API_POOL
-                if source == "generic_api"
-                else record_store.OUTLOOK_POOL
-            )
-            pool_row = _locked_row_by_email(conn, pool_spec, email)
-
             if source == "generic_api":
                 code_url = (raw.get("code_url") or raw.get("url") or "").strip()
                 if not code_url:
