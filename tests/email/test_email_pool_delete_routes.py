@@ -44,11 +44,13 @@ class EmailPoolDeleteRoutesTests(unittest.TestCase):
                 self.assertEqual(single.status_code, 200)
                 self.assertFalse(single.json['deleted'])
                 self.assertEqual(single.json['reason'], '邮箱已确认注册成功，不能删除')
+                self.assertEqual(single.json['reason_code'], 'registration_confirmed')
                 bulk = self.client.post('/api/outlook/delete-bulk', json={'items': [item]})
                 self.assertEqual(bulk.status_code, 200)
                 self.assertEqual(bulk.json['deleted_count'], 0)
                 self.assertEqual(bulk.json['skipped'][0]['source'], source)
                 self.assertEqual(bulk.json['skipped'][0]['reason'], single.json['reason'])
+                self.assertEqual(bulk.json['skipped'][0]['reason_code'], 'registration_confirmed')
         for delete in self.deleters.values():
             delete.assert_not_called()
         self.sync.assert_not_called()
@@ -79,6 +81,49 @@ class EmailPoolDeleteRoutesTests(unittest.TestCase):
         self.assertEqual(response.json['deleted_count'], 1)
         self.assertEqual([item['reason'] for item in response.json['skipped']],
             ['邮箱已确认注册成功，不能删除', '邮箱不存在'])
+
+    def test_late_confirmed_success_keeps_same_single_and_bulk_reason(self):
+        self.deleters['email_butler'].return_value = False
+        item = {'source': 'email_butler', 'email': 'late-success@example.test'}
+        self.protected.side_effect = [False, True, False, True]
+        single = self.client.post('/api/outlook/delete', json=item)
+        bulk = self.client.post('/api/outlook/delete-bulk', json={'items': [item]})
+        self.assertFalse(single.json['deleted'])
+        self.assertEqual(single.json['reason'], '邮箱已确认注册成功，不能删除')
+        self.assertEqual(single.json['reason_code'], 'registration_confirmed')
+        self.assertEqual(bulk.json['deleted_count'], 0)
+        self.assertEqual(bulk.json['skipped'], [{**item,
+            'reason': single.json['reason'], 'reason_code': 'registration_confirmed'}])
+        self.sync.assert_not_called()
+
+    def test_retained_lease_message_and_count_survive_delete_response(self):
+        receipt = {
+            'state': 'local_only', 'kind': 'return', 'permanent': False,
+            'error_code': 'registration_result_unverified', 'lease_retained': True,
+            'message': '本地已移除，注册结果未确认，已保留原租约',
+        }
+        self.sync.return_value = receipt
+        item = {'source': 'email_butler', 'email': 'unknown@example.test'}
+        single = self.client.post('/api/outlook/delete', json=item)
+        self.assertTrue(single.json['deleted'])
+        self.assertEqual(single.json['sync'], receipt)
+        bulk = self.client.post('/api/outlook/delete-bulk', json={'items': [item]})
+        self.assertEqual(bulk.json['deleted'][0]['sync'], receipt)
+        self.assertEqual(bulk.json['lease_retained_count'], 1)
+        self.assertEqual(bulk.json['pending_sync_count'], 0)
+
+    def test_public_sync_keeps_display_fields_without_connection_details(self):
+        receipt = email_pool._public_email_sync({
+            'state': 'local_only', 'kind': 'return', 'permanent': True,
+            'error_code': 'registration_confirmed', 'lease_retained': True,
+            'message': '本地已移除，邮箱已确认注册成功，已保留原租约',
+            'api_key': 'private-test-key', 'lease_id': 'private-test-lease',
+        })
+        self.assertEqual(receipt, {
+            'state': 'local_only', 'kind': 'return', 'permanent': True,
+            'error_code': 'registration_confirmed', 'lease_retained': True,
+            'message': '本地已移除，邮箱已确认注册成功，已保留原租约',
+        })
 
 
 if __name__ == '__main__':

@@ -419,7 +419,7 @@ Email Butler 对接使用 `/v2` 租约 API：人工导入只查询当前可用�
 
 历史 `source=icloud_hide` 的母地址及子地址保持原完整地址、owner、acquisition 和固定 profile。访问时将已知旧入口规范到 v2，并在 `email_butler_lease_bindings` 保存原客户端下的租约映射；没有有效原租约时明确报错，不申请替代邮箱。新旧地址统一通过 `/leases/{id}/code` 取码，保留挑战时间与稳定 `code_id`，单次等待最多 20 秒，总等待预算保持原配置。多投递返回 `ambiguous`，不任取最新邮件。
 
-结果在本地事务内记录为 `local_only`，成功不能被晚到失败覆盖；v2 没有原 `/identities/report` 或 `/service-facts/batch`，不伪造远端送达。成功和结果未知账号保留长期读取权，只有原规则允许的显式删除才按原租约退租。Butler 当前服务标签随租约结束，Turb 本地永久导入历史继续保留。
+结果在本地事务内记录为 `local_only`，已使用记录不能被晚到失败覆盖；v2 没有原 `/identities/report` 或 `/service-facts/batch`，不伪造远端送达。邮箱池删除仅保护 Token、明确的已注册导入及账号成功落库等注册完成证据，单独的 `used`、历史使用报告 `ok` 或远端身份确认不作为注册完成证据。结果未确认的邮箱可从本地移除，但保留原租约和使用历史；自动退租仅开放删除前仍为 `available`、没有领取或注册等使用历史的邮箱，发送前再次复查。Butler 当前服务标签随租约结束，Turb 本地永久导入历史继续保留。完整规则见[邮箱资源工作流](docs/workflows/email-resources.md#本地删除与原租约退还)。
 
 ```dotenv
 EMAIL_SOURCE=icloud_hide,email_butler,outlook,generic_api,cloudflare_domain

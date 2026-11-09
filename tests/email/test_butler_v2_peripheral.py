@@ -122,11 +122,13 @@ class V2ServiceFactTests(PostgresTestCase):
             'credential_ref': 'V2_RETURN_KEY', 'inbox_locator': {'api_base': 'https://fixed.example.test/v2'},
         })
         pool_id = store.insert_row(store.EMAIL_BUTLER_POOL, {
-            'email': 'return@example.test', 'status': 'tombstone', 'inbox_profile_id': profile_id,
+            'email': 'return@example.test', 'status': 'available', 'inbox_profile_id': profile_id,
             'butler_handoff': {'version': 2, 'lease_id': 'lse_original', 'client_id': 'original-client'},
         })
         with store.transaction() as conn:
-            return service_facts.enqueue_return('email_butler', store.get_row(store.EMAIL_BUTLER_POOL, pool_id), conn=conn)
+            event = service_facts.enqueue_return('email_butler', store.get_row(store.EMAIL_BUTLER_POOL, pool_id), conn=conn)
+            store.patch_row(store.EMAIL_BUTLER_POOL, pool_id, {'status': 'tombstone'}, conn=conn)
+            return event
 
     def test_v2_return_uses_original_lease_without_legacy_acquisition(self):
         event = self.return_event()

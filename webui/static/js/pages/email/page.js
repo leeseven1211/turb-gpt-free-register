@@ -589,11 +589,11 @@ async function onOutlookBodyClick(e) {
   const source = t.dataset.source || getPoolSource();
   try {
     if (poolAct === 'delete') {
-      if (!confirm(`确定从本地邮箱池移除 ${email}？\n\n保留使用历史，原租约退还由现有流程处理。已确认注册成功的邮箱不能删除。`)) return;
+      if (!confirm(`确定从本地邮箱池移除 ${email}？\n\n保留使用历史；注册结果未确认时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
       const result = await api('/api/outlook/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, source}) });
       if (!result.deleted) { showToast(result.reason || '邮箱未移除'); return; }
       OUTLOOK_SELECTED.delete(`${source}|${email}`);
-      showToast('本地已移除');
+      showToast(result.sync?.message || '本地已移除');
     } else {
       const noteMap = {failed:'手动标记失败', available:'手动恢复可用', disabled:'手动停用'};
       await api('/api/outlook/status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, status: poolAct, source, note: noteMap[poolAct] || '手动修改状态'}) });
@@ -895,7 +895,9 @@ async function bulkMarkOutlookStatus(status) {
 
 function _poolDeleteResultMessage(result) {
   const skipped = result.skipped || [];
-  const summary = `本地已移除 ${result.deleted_count || 0} 个，跳过 ${skipped.length} 个`;
+  const retainedCount = (result.deleted || []).filter(item => item.sync?.lease_retained === true).length;
+  const retained = retainedCount ? `，其中 ${retainedCount} 个已保留原租约` : '';
+  const summary = `本地已移除 ${result.deleted_count || 0} 个${retained}，跳过 ${skipped.length} 个`;
   if (!skipped.length) return summary;
   const reasons = new Map();
   skipped.forEach(item => {
@@ -911,7 +913,7 @@ async function deleteSelectedOutlook() {
     return {source, email: rest.join('|')};
   });
   if (items.length === 0) { showToast('请先选择邮箱'); return; }
-  if (!confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n保留使用历史，原租约退还由现有流程处理。已确认注册成功的邮箱会跳过。`)) return;
+  if (!confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n保留使用历史；注册结果未确认时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱会跳过。`)) return;
   const delBtn = document.getElementById('btnDeleteSelectedOutlookV2'); if (delBtn) delBtn.disabled = true;
   try {
     const r = await api('/api/outlook/delete-bulk', {
