@@ -424,6 +424,21 @@ function readSavedTableTotal(key) {
   return Number.isFinite(total) && total > 0 ? total : 0;
 }
 
+function isCompactTableLayout() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(max-width: 860px)').matches;
+}
+
+// 手机端列表中已改为卡片流，固定像素宽度会把卡片撑出屏幕，直接不写内联宽度。
+function applyTablePixelWidth(table, width) {
+  if (!table) return;
+  if (isCompactTableLayout()) {
+    table.style.removeProperty('width');
+    return;
+  }
+  table.style.setProperty('width', `${width}px`, 'important');
+}
+
 function saveTableWidths(key, widths, total = 0) {
   const precision = key === 'accounts' ? 8 : 4;
   localStorage.setItem(TABLE_WIDTH_STORAGE_PREFIX + key, JSON.stringify(widths.map(value => Number(value.toFixed(precision)))));
@@ -439,7 +454,7 @@ function resetResizableTable(key) {
   if (key === 'accounts') localStorage.removeItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
   table.dataset.autoSized = '0';
   table.style.removeProperty('width');
-  if (key === 'accounts') table.style.setProperty('width', '1500px', 'important');
+  if (key === 'accounts') applyTablePixelWidth(table, 1500);
   applyResizableTableWidths(table, TABLE_DEFAULT_WIDTHS[key]);
   showToast('已恢复默认列宽');
 }
@@ -527,7 +542,7 @@ function initResizableTable(table) {
       tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
       saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
     }
-    table.style.setProperty('width', `${tableWidth}px`, 'important');
+    applyTablePixelWidth(table, tableWidth);
   }
   applyResizableTableWidths(table, effectiveWidths);
 
@@ -565,7 +580,7 @@ function initResizableTable(table) {
           const nextWidths = [...startWidths];
           nextWidths[index] += delta;
           const nextTableWidth = Math.max(1, tableWidth + delta);
-          table.style.setProperty('width', `${nextTableWidth}px`, 'important');
+          applyTablePixelWidth(table, nextTableWidth);
           applyResizableTableWidths(table, nextWidths.map(value => value / nextTableWidth));
           return;
         }
@@ -605,6 +620,20 @@ function initResizableTables() {
   Object.entries(resetButtons).forEach(([id, key]) => {
     document.getElementById(id)?.addEventListener('click', () => resetResizableTable(key));
   });
+  const syncCompactTableWidths = () => {
+    document.querySelectorAll('table[data-resizable-table]').forEach(table => {
+      const key = table.dataset.resizableTable;
+      if (isCompactTableLayout()) {
+        table.style.removeProperty('width');
+        return;
+      }
+      if (table.style.getPropertyValue('width')) return;
+      const total = readSavedTableTotal(key) || (key === 'accounts' ? 1500 : 0);
+      if (total) applyTablePixelWidth(table, total);
+    });
+  };
+  syncCompactTableWidths();
+  window.addEventListener('resize', debounce(syncCompactTableWidths, 150));
 }
 
 // ---------- 统一列表表头筛选 ----------
