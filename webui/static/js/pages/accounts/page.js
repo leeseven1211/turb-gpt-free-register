@@ -1472,6 +1472,44 @@ function _accountEmailInvalidBadge(r) {
   const detail = [r.email_invalid_reason || '该账号关联邮箱已标记失效', r.email_invalid_at ? `标记时间：${r.email_invalid_at}` : ''].filter(Boolean).join('；');
   return `<span class="pill status-failed account-email-invalid-badge" title="${esc(detail)}">邮箱失效</span>`;
 }
+function _accountRowTone(tr) {
+  const cell = tr.querySelector('.col-account-status');
+  const html = cell ? cell.innerHTML : '';
+  if (/status-(failed|error|invalid|rejected)/.test(html)) return 'bad';
+  if (/status-(warning|pending|unknown|used)/.test(html)) return 'warn';
+  return 'ok';
+}
+
+// 手机端双行列表：主行邮箱 + 状态点，次行元信息（来源/套餐/2FA/Codex）。
+function decorateAccountMobileRows(body) {
+  if (!body) return;
+  body.querySelectorAll('tr').forEach(tr => {
+    const emailCell = tr.querySelector('.col-email');
+    if (!emailCell || emailCell.querySelector('.acc-mobile-meta')) return;
+    const text = sel => (tr.querySelector(sel)?.innerText || '').replace(/\s+/g, ' ').trim();
+    const meta = [text('.col-source'), text('.col-plan'), text('.col-small.col-2fa'), text('.col-status')]
+      .filter(value => value && value !== '-')
+      .join(' · ');
+    const link = emailCell.querySelector('.acc-v2-email-link');
+    if (link && !link.querySelector('.acc-mobile-dot')) {
+      const dot = document.createElement('span');
+      dot.className = `acc-mobile-dot is-${_accountRowTone(tr)}`;
+      dot.setAttribute('aria-hidden', 'true');
+      link.insertBefore(dot, link.firstChild);
+    }
+    if (meta) {
+      const metaEl = document.createElement('div');
+      metaEl.className = 'acc-mobile-meta';
+      metaEl.textContent = meta;
+      emailCell.appendChild(metaEl);
+    }
+    tr.addEventListener('click', ev => {
+      if (ev.target.closest('button, a, input, label, .acc-v2-more-menu')) return;
+      tr.querySelector('.acc-v2-email-link')?.click();
+    });
+  });
+}
+
 function renderAccounts() {
   const openMoreId = getOpenAccountsV2MoreId();
   const total = ACCOUNTS_TOTAL;
@@ -1518,6 +1556,7 @@ function renderAccounts() {
     bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || (accountSearchErrorQuery === accountAdvancedSearchQuery
       ? renderTableStateRow(16, '搜索条件有误', '请按输入框旁的提示修改，或清空高级搜索。', 'error')
       : renderTableStateRow(16, '暂无匹配账号', '可移除部分搜索条件，或切换活跃与归档账号视图。'));
+    decorateAccountMobileRows(bodyV2);
     if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
   }
   const summary = $('#accountsPageSummary');

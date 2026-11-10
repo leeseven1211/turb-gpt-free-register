@@ -142,6 +142,47 @@ function syncCodexSelectAllUi(pageRows = null) {
   cb.indeterminate = !allChecked && someChecked;
   cb.disabled = pageFilenames.length === 0;
 }
+function _codexRowTone(tr) {
+  const badges = tr.querySelectorAll('.col-status');
+  const html = badges.length > 1 ? badges[1].innerHTML : (badges[0]?.innerHTML || '');
+  if (/status-failed/.test(html)) return 'bad';
+  if (/status-running|status-used/.test(html)) return 'warn';
+  return 'ok';
+}
+
+// 手机端双行列表：主行邮箱 + 状态点，次行 Plan / OAuth / 到期时间。
+function decorateCodexMobileRows(body) {
+  if (!body) return;
+  body.querySelectorAll('tr').forEach(tr => {
+    const emailCell = tr.querySelector('.col-email');
+    if (!emailCell || emailCell.querySelector('.acc-mobile-meta')) return;
+    const text = sel => (tr.querySelector(sel)?.innerText || '').replace(/\s+/g, ' ').trim();
+    const badges = tr.querySelectorAll('.col-status');
+    const oauth = badges.length > 1 ? (badges[1].innerText || '').trim() : '';
+    const expired = (tr.querySelectorAll('.col-time')[1]?.innerText || '').trim();
+    const meta = [text('.col-plan'), oauth, expired && expired !== '-' ? `${expired.slice(0, 10)} 到期` : '']
+      .filter(value => value && value !== '-')
+      .join(' · ');
+    const emailEl = emailCell.querySelector('.acc-v2-email');
+    if (emailEl && !emailCell.querySelector('.acc-mobile-dot')) {
+      const dot = document.createElement('span');
+      dot.className = `acc-mobile-dot is-${_codexRowTone(tr)}`;
+      dot.setAttribute('aria-hidden', 'true');
+      emailCell.insertBefore(dot, emailEl);
+    }
+    if (meta) {
+      const metaEl = document.createElement('div');
+      metaEl.className = 'acc-mobile-meta';
+      metaEl.textContent = meta;
+      emailCell.appendChild(metaEl);
+    }
+    tr.addEventListener('click', ev => {
+      if (ev.target.closest('button, a, input, label, .acc-v2-more-menu')) return;
+      tr.querySelector('[data-codex-more-toggle]')?.click();
+    });
+  });
+}
+
 function renderCodex() {
   const total = CODEX_TOTAL;
   const rows = CODEX;
@@ -151,6 +192,7 @@ function renderCodex() {
     const checked = CODEX_SELECTED.has(r.filename) ? 'checked' : '';
     const exported = (r.exported_count || 0) > 0;
     const moreItems = [
+      `<button type="button" class="good" data-codex-download="${esc(r.filename)}" title="从数据库生成 Codex OAuth JSON 并下载">下载凭证</button>`,
       `<button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>`,
       `<button type="button" class="good" data-codex-download-cpa="${esc(r.filename)}" title="按邮箱从 CPA auth-files 下载真实 Codex JSON">从CPA下载</button>`,
       `<button type="button" class="good" data-codex-refresh-token="${esc(r.filename)}" title="使用 refresh_token 换新 access token，不需要邮箱或短信验证码">刷新 OAuth Token</button>`,
@@ -183,6 +225,7 @@ function renderCodex() {
       </td>
     </tr>`;
   }).join('') || renderTableStateRow(10, '暂无授权凭证', '调整筛选条件，或从账号页发起 Codex 授权。');
+  decorateCodexMobileRows(body);
   syncCodexSelectAllUi(rows);
   const summary = $('#codexPageSummary');
   if (summary) summary.textContent = `${total || 0} 个凭证 · 当前页 ${rows.length} 条`;
