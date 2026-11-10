@@ -4305,3 +4305,86 @@
   .accounts-table-v2 input[type="checkbox"]:checked::after { left: 5px; top: 1px; }
   .codex-table-v2 input[type="checkbox"]:checked::after { left: 5px; top: 1px; }
 }
+
+/* 手机卡片流：覆盖 ui-foundation 里按桌面行高写死的高度，否则内容会叠在一起 */
+@media (max-width: 860px) {
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr {
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 7px 10px !important;
+    padding: 11px 12px 10px !important;
+    border: 1px solid #e6e9f0 !important;
+    border-radius: 12px !important;
+    background: #fff !important;
+    box-shadow: 0 1px 2px rgb(23 32 51 / 4%) !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td {
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    vertical-align: top !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-check { align-self: center; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-lines,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-cell-line {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    grid-template-rows: none !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    gap: 8px !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-email {
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--countries,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-cell--single,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .account-promotion-country-row,
+  #accountsPanelV2 table[data-resizable-table="accounts"] .quota-cell {
+    height: auto !important;
+    min-height: 0 !important;
+    display: block !important;
+    grid-template-rows: none !important;
+  }
+
+  #tab-codex .codex-table-v2 tbody tr {
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 7px 10px !important;
+    padding: 11px 12px 10px !important;
+    border: 1px solid #e6e9f0 !important;
+    border-radius: 12px !important;
+    background: #fff !important;
+    box-shadow: 0 1px 2px rgb(23 32 51 / 4%) !important;
+  }
+  #tab-codex .codex-table-v2 tbody td {
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+  }
+  #tab-codex .codex-table-v2 .acc-v2-email {
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere;
+  }
+}
