@@ -447,3 +447,23 @@
   .bulk-side-heading strong { font-size: 14px; }
   .bulk-operation-summary { margin-top: 10px; }
 }
+
+.bulk-filter-editor { padding-top: 2px; }
+@media (min-width: 861px) {
+  .bulk-create-card { padding: 14px 16px; }
+  .bulk-create-main { gap: 10px; }
+  .bulk-create-card .bulk-step-head { margin-bottom: 10px; }
+  .bulk-operation { min-height: 54px; padding: 8px 12px; gap: 9px; }
+  .bulk-operation svg { width: 17px; height: 17px; flex-basis: 17px; }
+  .bulk-operation strong { font-size: 12.5px; }
+  .bulk-operation small { font-size: 10.5px; }
+  .bulk-operation-summary { margin-top: 8px; padding: 8px 10px; }
+  .bulk-match { min-height: 36px; margin-bottom: 10px; }
+  .bulk-chips { margin-bottom: 8px; }
+  .bulk-range-row { margin-top: 10px; padding-top: 10px; }
+  .bulk-create-settings { padding: 0 16px; }
+  .bulk-create-settings .bulk-advanced > summary { min-height: 42px; }
+  .bulk-create-side { top: 10px; }
+  .bulk-side-sticky { gap: 10px; padding: 14px 16px; }
+  .bulk-side-big { font-size: 28px; }
+}
