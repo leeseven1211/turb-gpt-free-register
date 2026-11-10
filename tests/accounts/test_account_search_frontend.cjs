@@ -43,7 +43,9 @@ function harness() {
   };
   view.attrEsc = view.esc;
   view.debounce = callback => { let id; return () => { view.clearTimeout(id); id = view.setTimeout(callback); }; };
+  view.window = view;
   vm.createContext(view);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/account-query.js'), 'utf8'), view);
   const bindingStart = source.indexOf('(function bindAccountsFilterV2()');
   vm.runInContext([
     ...['columnFilterValue', 'setColumnFilterValue'].filter(name => commonSource.includes(`function ${name}(`)).map(name => functionSource(name, commonSource)),

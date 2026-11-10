@@ -14,6 +14,7 @@ from core.integrations.sub2api import client
 from core.operations import concurrency, task_gateway
 from core.operations.runtime import OperationCancelled
 from core.storage import records
+from core.storage import codex as credential_store
 from core.storage.operations import store as operation
 from core.storage.sub2api import credential_generation
 
@@ -36,7 +37,10 @@ def register_handler() -> None:
 
 
 def _read(filename: str) -> tuple[dict, str, dict | None, dict | None]:
-    row = next((item for item in db.list_codex_accounts(archived="all") if str(item.get("filename") or "") == filename), None)
+    try:
+        row = credential_store.get_codex_account(filename)
+    except ValueError as exc:
+        raise ManualUploadError("sub2api_credential_invalid", "Codex 凭证文件名无效") from exc
     account = db.get_account_by_email(str((row or {}).get("email") or "")) if row else None
     if row and (str(row.get("oauth_account_status") or "").lower() == "deactivated" or db.account_is_deactivated(account)):
         raise ManualUploadError("sub2api_account_deactivated", "关联账号已停用，禁止上传 OAuth 凭证")
@@ -87,7 +91,7 @@ def queue_account(account: dict) -> dict[str, Any]:
     if str(account.get("codex_status") or "") != "success":
         raise ManualUploadError("sub2api_oauth_incomplete", "该账号尚未完成 Codex OAuth")
     email = str(account.get("email") or "").strip().casefold()
-    row = next((item for item in db.list_codex_accounts(archived="all") if str(item.get("email") or "").strip().casefold() == email), None)
+    row = credential_store.get_codex_account_by_email(email)
     if row is None:
         raise ManualUploadError("sub2api_credential_missing", "Codex 状态已通过，但本地未找到对应 OAuth JSON")
     return queue_filename(str(row.get("filename") or ""))

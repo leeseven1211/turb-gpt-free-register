@@ -22,6 +22,7 @@ from typing import Any, Iterable
 from core.storage import postgres as postgres_store, records as record_store
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway as account_task_store
+from core.bulk_operations import execution as bulk_execution
 from core.operations.runtime import OperationAccountDeactivated
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES, classify_task_error
 from core.operations.progress import build_progress_snapshot
@@ -1984,6 +1985,11 @@ def _lock_existing_projection_queue(cur, batch_id: int) -> dict | None:
 
 
 def _refresh_batch(cur, batch_id: int) -> None:
+    from core.storage.operations import bulk_schema
+    if bulk_schema._READY_KEY == f"{postgres_store.database_url()}::{_schema_name()}":
+        cur.execute(f"SELECT 1 FROM {_table('operation_batch_controls')} WHERE batch_id=%s", (int(batch_id),))
+        if cur.fetchone():
+            return
     batch_id = int(batch_id)
     _lock_projection_batch(cur, batch_id)
     cur.execute(
@@ -2963,16 +2969,25 @@ def _operation_task_where(
     return where, params
 
 
-def _operation_task_current_run_join_sql() -> str:
-    """Join one authoritative run per task without a per-task lateral lookup.
-
-    The ordering deliberately matches the former ``LATERAL ... LIMIT 1`` query:
-    an active attempt wins over terminal history, then the newest run number and
-    id win.  ``DISTINCT ON`` evaluates that ordering once for the operation-run
-    relation instead of repeating the compatibility projection for every task.
-    """
+def _operation_task_indexed_run_join_sql(*, sort_only: bool = False) -> str:
+    """仅在候选任务/当前页内按索引取Run，排序口径与历史查询相同。"""
+    status_sql = _compatibility_run_status_sql()
+    # 原生任务的有效排序时间恒为task.created_at；兼容任务才读取来源时间。
+    predicate = " AND t.source_system IN ('registration_jobs','registration_chains','account_action_tasks')" if sort_only else ""
     return (
-        f"LEFT JOIN ("
+        f"LEFT JOIN LATERAL ("
+        f"SELECT rr.*, {_compatibility_run_projection_sql()} "
+        f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
+        f"WHERE rr.task_id=t.id{predicate} "
+        f"ORDER BY CASE WHEN ({status_sql}) IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
+        f"rr.run_no DESC, rr.id DESC LIMIT 1"
+        f") {'sort_run' if sort_only else 'r'} ON TRUE "
+    )
+
+
+def _operation_task_current_run_relation_sql() -> str:
+    """Run相关筛选保留有效活跃优先的集合投影。"""
+    return (
         f"SELECT DISTINCT ON (current_run.task_id) current_run.* "
         f"FROM ("
         f"SELECT rr.*, {_compatibility_run_projection_sql()} "
@@ -2981,25 +2996,30 @@ def _operation_task_current_run_join_sql() -> str:
         f"ORDER BY current_run.task_id, "
         f"CASE WHEN current_run.effective_status IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
         f"current_run.run_no DESC, current_run.id DESC"
-        f") r ON r.task_id=t.id"
     )
 
 
-def _operation_task_query_base(*, include_current_run: bool, include_run_count: bool) -> str:
+def _operation_task_current_run_join_sql() -> str:
+    return f"LEFT JOIN ({_operation_task_current_run_relation_sql()}) r ON r.task_id=t.id"
+
+
+def _operation_task_query_base(*, include_current_run: bool, include_run_count: bool, facet_cte: bool = False) -> str:
     """Build the read-only task-list relation with only needed derived joins."""
     query = (
         f"FROM {_table('operation_tasks')} t "
         f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
     )
     if include_run_count:
-        query += (
-            f"LEFT JOIN ("
-            f"SELECT rr.task_id, COUNT(*) AS run_count "
-            f"FROM {_table('operation_runs')} rr GROUP BY rr.task_id"
-            f") run_counts ON run_counts.task_id=t.id "
-        )
+        if facet_cte:
+            query += "LEFT JOIN facet_run_counts run_counts ON run_counts.task_id=t.id "
+        else:
+            query += (
+                f"LEFT JOIN (SELECT rr.task_id, COUNT(*) AS run_count "
+                f"FROM {_table('operation_runs')} rr GROUP BY rr.task_id"
+                f") run_counts ON run_counts.task_id=t.id "
+            )
     if include_current_run:
-        query += _operation_task_current_run_join_sql()
+        query += "LEFT JOIN facet_current_runs r ON r.task_id=t.id " if facet_cte else _operation_task_current_run_join_sql()
     return query
 
 
@@ -3079,12 +3099,35 @@ def list_tasks(
         include_current_run=uses_current_run(),
         include_run_count=bool(run_count),
     )
-    page_from_sql = _operation_task_query_base(include_current_run=True, include_run_count=True)
+    page_from_sql = _operation_task_query_base(include_current_run=True, include_run_count=bool(run_count))
+    page_cte = ""
+    page_clause = clause
+    page_params = (*params, page_size, (page - 1) * page_size)
+    page_order = "COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"
+    if not uses_current_run() and not run_count:
+        # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
+        # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
+        candidate_from = (f"FROM {_table('operation_tasks')} t "
+                          f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id ")
+        ordinary_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system NOT IN ('registration_jobs','registration_chains','account_action_tasks')"
+        legacy_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system IN ('registration_jobs','registration_chains','account_action_tasks')"
+        page_cte = (f"WITH page_ids AS MATERIALIZED (SELECT * FROM ("
+                    f"SELECT t.id,t.created_at AS sort_at {candidate_from}{ordinary_clause} "
+                    f"UNION ALL SELECT t.id,COALESCE(sort_run.effective_created_at_sort,t.created_at) AS sort_at "
+                    f"{candidate_from}{_operation_task_indexed_run_join_sql(sort_only=True)}{legacy_clause}"
+                    f") candidates ORDER BY sort_at DESC,id DESC LIMIT %s OFFSET %s) ")
+        page_params = (*params, *params, page_size, (page - 1) * page_size)
+        page_from_sql = (f"FROM page_ids selected JOIN {_table('operation_tasks')} t ON t.id=selected.id "
+                         f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
+                         + _operation_task_indexed_run_join_sql())
+        page_clause = ""
+        page_order = "selected.sort_at DESC,t.id DESC"
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
             f"""
+            {page_cte}
             SELECT t.*, b.batch_uuid, b.title AS batch_title, b.batch_type,
                    r.id AS __current_run_id, r.effective_status AS __current_run_status,
                    r.effective_progress_stage AS __current_run_stage,
@@ -3096,12 +3139,12 @@ def list_tasks(
                    r.effective_error_message AS __current_run_error_message,
                    r.run_no AS last_run_no, r.duration_ms, r.result_summary,
                    r.source_system AS run_source_system, r.source_id AS run_source_id,
-                   {run_count_expression} AS run_count
+                   {run_count_expression if run_count else 'NULL::bigint'} AS run_count
             {page_from_sql}
-            {clause}
-            ORDER BY COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
+            {page_clause}
+            ORDER BY {page_order}
             """,
-            (*params, page_size, (page - 1) * page_size),
+            page_params,
         )
         items = []
         for raw_row in cur.fetchall():
@@ -3124,6 +3167,13 @@ def list_tasks(
                 current_run = _normalize_compatibility_run(current_run)
                 _apply_current_run_projection(item, current_run)
             items.append(item)
+        if items and not run_count:
+            # 显示次数只需当前页；不为50条响应聚合所有历史Run。
+            cur.execute(f"SELECT task_id,COUNT(*) AS n FROM {_table('operation_runs')} "
+                        "WHERE task_id=ANY(%s) GROUP BY task_id", ([int(item["id"]) for item in items],))
+            page_run_counts = {int(row["task_id"]): int(row["n"]) for row in cur.fetchall()}
+            for item in items:
+                item["run_count"] = page_run_counts.get(int(item["id"]), 0)
         facet_specs = (
             ("task_type", "t.task_type", "task_type"),
             ("status", "COALESCE(r.effective_status, t.status)", "status"),
@@ -3141,6 +3191,8 @@ def list_tasks(
             ),
         )
         facets: dict[str, list[dict[str, Any]]] = {}
+        facet_queries = []
+        facet_query_params = []
         for facet_name, expression, exclude in (facet_specs if include_facets else ()):
             facet_where, facet_params = _operation_task_where(
                 task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
@@ -3153,22 +3205,30 @@ def list_tasks(
             facet_clause = f" WHERE {' AND '.join(facet_where)}"
             facet_from_sql = _operation_task_query_base(
                 include_current_run=uses_current_run(exclude=exclude, facet_name=facet_name),
-                include_run_count=bool(run_count) or facet_name == "run_count",
+                include_run_count=bool(run_count) or facet_name == "run_count", facet_cte=True,
             )
-            cur.execute(
+            facet_queries.append(
                 f"SELECT {facet_name!r} AS facet, {expression} AS value, COUNT(*) AS count "
-                f"{facet_from_sql}{facet_clause} GROUP BY 2 ORDER BY 2",
-                facet_params,
-            )
-            facets[facet_name] = [
-                {
-                    "value": str(row["value"] or ""), "count": int(row["count"] or 0),
-                    **({"label": stage_label(row["value"])} if facet_name == "stage" else {}),
-                }
-                for row in cur.fetchall()
-            ]
+                f"{facet_from_sql}{facet_clause} GROUP BY 2")
+            facet_query_params.extend(facet_params)
+            facets[facet_name] = []
+        if facet_queries:
+            # 各列自排除条件分别保留；当前Run与次数在同一语句仅物化一次。
+            search_columns = "effective_error_message,result_summary" if q or result else "NULL::text AS effective_error_message,NULL::jsonb AS result_summary"
+            cur.execute(
+                f"WITH facet_current_runs AS MATERIALIZED ("
+                f"SELECT task_id,effective_status,effective_progress_stage,{search_columns} "
+                f"FROM ({_operation_task_current_run_relation_sql()}) projected), "
+                f"facet_run_counts AS MATERIALIZED (SELECT task_id,COUNT(*) AS run_count "
+                f"FROM {_table('operation_runs')} GROUP BY task_id) "
+                + " UNION ALL ".join(facet_queries) + " ORDER BY 1,2", facet_query_params)
+            for row in cur.fetchall():
+                name = str(row["facet"])
+                facets[name].append({"value": str(row["value"] or ""), "count": int(row["count"] or 0),
+                                     **({"label": stage_label(row["value"])} if name == "stage" else {})})
         _attach_plan_failure_summaries(items, conn=conn)
         _attach_admission_wait(items, conn=conn)
+        bulk_execution.attach_context(conn, items)
     return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size,
             **({"facets": facets} if include_facets else {})}
 
@@ -3305,6 +3365,8 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     with _connect() as conn:
         _attach_admission_wait(runs, conn=conn, run_rows=True)
         _attach_admission_wait([result], conn=conn)
+        bulk_execution.attach_context(conn, runs, run_rows=True)
+        bulk_execution.attach_context(conn, [result])
     return result
 
 
@@ -3646,7 +3708,7 @@ def register_task_dependency(
     child_system = _text(child_source_system, 120)
     child_id = _text(child_source_id, 240)
     dependency = _text(dependency_type, 120)
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.dependency_update(conn, payload=payload):
         cur.execute(
             f"""
             INSERT INTO {_table('operation_task_dependencies')} (
@@ -3672,16 +3734,16 @@ def register_task_dependency(
             child_number = int(child_id)
         except (TypeError, ValueError):
             child_number = None
-        if child_system == "native_operations" and child_number is not None:
+        if child_system in {"native_operations", "webui_runtime"} and child_number is not None:
             cur.execute(
                 f"""
                 SELECT t.status AS task_status, r.status AS run_status,
                        r.result_summary
                 FROM {_table('operation_tasks')} t
                 LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id
-                WHERE t.id=%s
+                WHERE t.id=%s AND t.source_system=%s
                 """,
-                (child_number,),
+                (child_number, child_system),
             )
             child = cur.fetchone()
         elif child_system == "account_action_tasks" and child_number is not None:
@@ -3774,7 +3836,7 @@ def claim_task_dependency(dependency_id: int, *, initialize: bool = True, conn=N
     """Atomically claim one ready handoff so restart/reconcile cannot double-run it."""
     if initialize and conn is None:
         init()
-    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur, bulk_execution.dependency_update(conn, dependency_id=dependency_id):
         cur.execute(
             f"""
             UPDATE {_table('operation_task_dependencies')}
@@ -3830,7 +3892,7 @@ def complete_task_dependency(
 ) -> bool:
     """Ack a claimed handoff; failed continuation remains retryable as ``ready``."""
     init()
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.dependency_update(conn, dependency_id=dependency_id):
         cur.execute(
             f"""
             UPDATE {_table('operation_task_dependencies')}
@@ -3903,82 +3965,83 @@ def apply_task_dependency_result(
         observed_run_id = int(parent.get("last_run_id") or 0)
         if expected_parent_run_id is not None and observed_run_id != int(expected_parent_run_id):
             return {**(_row(parent) or {}), "dependency_stale": True}
-        # 与准入/终态写回保持 Run→Task 顺序；读取任务身份本身不先持任务行锁。
-        cur.execute(
-            f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
-            (observed_run_id,),
-        )
-        parent_run = cur.fetchone()
-        cur.execute(f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (parent_task_id,))
-        locked_parent = cur.fetchone()
-        if not locked_parent:
-            return None
-        if int(locked_parent.get("last_run_id") or 0) != observed_run_id:
-            return {**(_row(dict(locked_parent)) or {}), "dependency_stale": True}
-        parent_summary = _decode(parent_run.get("result_summary")) if parent_run else {}
-        parent_summary = dict(parent_summary) if isinstance(parent_summary, dict) else {}
-        parent_summary.update({
-            "child_status": child_status_value,
-            "child_result": _scrub(child_payload),
-        })
-        if deactivated:
-            parent_summary.update({"status": "deactivated", "requested_status": "deactivated"})
-        elif unknown:
-            parent_summary.update({"outcome": "request_unknown", "reconcile_required": True})
-        cur.execute(
-            f"""
-            UPDATE {_table('operation_tasks')}
-            SET status=%s, target_status=%s, current_stage='complete',
-                next_actions=%s::jsonb, completed_at=COALESCE(completed_at, now()),
-                updated_at=now(), error_message=%s
-            WHERE id=%s
-            """,
-            (
-                desired, target_status, _json(next_actions),
-                _text(
-                    "子任务已确认废号，父任务停止重跑"
-                    if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
-                    if unknown else "子任务失败，父任务保留部分成功结果",
-                    1400,
-                ),
-                parent_task_id,
-            ),
-        )
-        if parent_run:
+        with bulk_execution.fact_update(conn, observed_run_id):
+            # 与准入/终态写回保持 Run→Task 顺序；读取任务身份本身不先持任务行锁。
+            cur.execute(
+                f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
+                (observed_run_id,),
+            )
+            parent_run = cur.fetchone()
+            cur.execute(f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (parent_task_id,))
+            locked_parent = cur.fetchone()
+            if not locked_parent:
+                return None
+            if int(locked_parent.get("last_run_id") or 0) != observed_run_id:
+                return {**(_row(dict(locked_parent)) or {}), "dependency_stale": True}
+            parent_summary = _decode(parent_run.get("result_summary")) if parent_run else {}
+            parent_summary = dict(parent_summary) if isinstance(parent_summary, dict) else {}
+            parent_summary.update({
+                "child_status": child_status_value,
+                "child_result": _scrub(child_payload),
+            })
+            if deactivated:
+                parent_summary.update({"status": "deactivated", "requested_status": "deactivated"})
+            elif unknown:
+                parent_summary.update({"outcome": "request_unknown", "reconcile_required": True})
             cur.execute(
                 f"""
-                UPDATE {_table('operation_runs')}
-                SET status=%s, progress_stage='complete', completed_at=COALESCE(completed_at, now()),
-                    heartbeat_at=now(), result_summary=%s::jsonb,
-                    error_message=%s
+                UPDATE {_table('operation_tasks')}
+                SET status=%s, target_status=%s, current_stage='complete',
+                    next_actions=%s::jsonb, completed_at=COALESCE(completed_at, now()),
+                    updated_at=now(), error_message=%s
                 WHERE id=%s
                 """,
                 (
-                    desired, _json(parent_summary),
-                    "子任务已确认废号，父任务停止重跑"
-                    if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
-                    if unknown else "子任务失败，父任务保留部分成功结果",
-                    int(parent_run["id"]),
+                    desired, target_status, _json(next_actions),
+                    _text(
+                        "子任务已确认废号，父任务停止重跑"
+                        if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
+                        if unknown else "子任务失败，父任务保留部分成功结果",
+                        1400,
+                    ),
+                    parent_task_id,
                 ),
             )
-        event_uuid = uuid.uuid4().hex
-        cur.execute(
-            f"""
-            INSERT INTO {_table('operation_events')} (
-                event_uuid, task_id, run_id, source_system, source_id,
-                level, stage, event_type, message, detail
-            ) VALUES (%s,%s,%s,%s,%s,'WARNING','complete',%s,%s,%s::jsonb)
-            """,
-            (
-                event_uuid, parent_task_id,
-                int(parent_run["id"]) if parent_run else None,
-                parent_system, event_uuid,
-                "task.dependency_deactivated" if deactivated else "task.dependency_unknown" if unknown else "task.dependency_failed",
-                "子任务已确认废号，父任务停止重跑" if deactivated else "子任务结果待核验，父任务暂停续接" if unknown else "子任务失败，父任务保留部分成功结果",
-                _json({"child_status": child_status_value, "child_result": child_payload}),
-            ),
-        )
-        return _row(parent) or {}
+            if parent_run:
+                cur.execute(
+                    f"""
+                    UPDATE {_table('operation_runs')}
+                    SET status=%s, progress_stage='complete', completed_at=COALESCE(completed_at, now()),
+                        heartbeat_at=now(), result_summary=%s::jsonb,
+                        error_message=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        desired, _json(parent_summary),
+                        "子任务已确认废号，父任务停止重跑"
+                        if deactivated else "子任务远端结果待核验，父任务禁止自动重做"
+                        if unknown else "子任务失败，父任务保留部分成功结果",
+                        int(parent_run["id"]),
+                    ),
+                )
+            event_uuid = uuid.uuid4().hex
+            cur.execute(
+                f"""
+                INSERT INTO {_table('operation_events')} (
+                    event_uuid, task_id, run_id, source_system, source_id,
+                    level, stage, event_type, message, detail
+                ) VALUES (%s,%s,%s,%s,%s,'WARNING','complete',%s,%s,%s::jsonb)
+                """,
+                (
+                    event_uuid, parent_task_id,
+                    int(parent_run["id"]) if parent_run else None,
+                    parent_system, event_uuid,
+                    "task.dependency_deactivated" if deactivated else "task.dependency_unknown" if unknown else "task.dependency_failed",
+                    "子任务已确认废号，父任务停止重跑" if deactivated else "子任务结果待核验，父任务暂停续接" if unknown else "子任务失败，父任务保留部分成功结果",
+                    _json({"child_status": child_status_value, "child_result": child_payload}),
+                ),
+            )
+            return _row(parent) or {}
 
 
 def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int | None = None) -> dict | None:
@@ -4266,11 +4329,12 @@ def _insert_runtime_run(
             "任务等待子任务完成" if status_value == "waiting" else "任务已加入队列",
         ),
     )
-    task_run_log.append(
-        log_file, level="INFO", message="任务等待子任务完成" if status_value == "waiting" else "任务已加入队列",
-        task_id=int(task_id), run_id=int(run["id"]), stage=status_value,
-        event_type="run.waiting" if status_value == "waiting" else "run.queued",
-    )
+    if not (data or {}).get("bulk_target_round_id"):
+        task_run_log.append(
+            log_file, level="INFO", message="任务等待子任务完成" if status_value == "waiting" else "任务已加入队列",
+            task_id=int(task_id), run_id=int(run["id"]), stage=status_value,
+            event_type="run.waiting" if status_value == "waiting" else "run.queued",
+        )
     return run
 
 
@@ -4302,7 +4366,11 @@ def create_runtime_task(
     source_system_value = str(source_system or "native_operations").strip()[:120] or "native_operations"
     source_value = str(source_id or idempotency_key or "").strip() or task_uuid
     account_value = int(account_id) if account_id else None
+    managed_source_run_id = bulk_execution.source_run_for_creation(account_id=account_value, data=data)
     with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
+        managed = bulk_execution.lock_run(conn, managed_source_run_id) if managed_source_run_id else None
+        if managed:
+            data = {**(data or {}), "bulk_target_round_id": int(managed["id"])}
         if account_value:
             account = record_store.get_row(
                 record_store.ACCOUNTS,
@@ -4382,6 +4450,9 @@ def create_runtime_task(
             resource_family=resource_family,
             data=data,
         )
+        if managed:
+            bulk_execution.inherit(conn, int(run["id"]), source_run_id=managed_source_run_id, step_key=str(task_type), parent_task_id=int(managed.get("task_id") or 0) or int(task["id"]))
+            bulk_execution.changed(conn, managed)
         cur.execute(
             f"UPDATE {_table('operation_tasks')} SET last_run_id=%s WHERE id=%s",
             (int(run["id"]), int(task["id"])),
@@ -4409,6 +4480,80 @@ def create_runtime_task(
         return task
 
 
+def create_runtime_tasks_many(specifications: list[dict], *, conn) -> list[dict]:
+    """在已持账号锁的批量事务中集合创建 Task、Run 和排队事件。"""
+    if not specifications:
+        return []
+    rows = []
+    for spec in specifications:
+        data = dict(spec.get("data") or {})
+        if not data.get("bulk_target_round_id"):
+            raise ValueError("集合提交仅接受带固定批量目标的任务")
+        task_uuid, run_uuid = uuid.uuid4().hex, uuid.uuid4().hex
+        rows.append({
+            "task_uuid": task_uuid, "run_uuid": run_uuid,
+            "source_system": str(spec.get("source_system") or "native_operations"),
+            "source_id": str(spec["source_id"]), "task_type": str(spec["task_type"]),
+            "account_id": int(spec["account_id"]), "email": str(spec.get("email") or ""),
+            "resource_family": str(spec.get("resource_family") or "openai_interactive"),
+            "trigger": str(spec.get("trigger") or "manual_bulk"), "data": _scrub(data),
+            "cancellation_token": uuid.uuid4().hex,
+            "log_file": str(task_run_log.build_path(task_uuid=task_uuid, run_no=1, run_uuid=run_uuid)),
+            "event_uuid": uuid.uuid4().hex,
+        })
+    with conn.cursor() as cur:
+        cur.execute(f"""SELECT t.*,r.id AS owned_run_id FROM {_table('operation_tasks')} t
+          JOIN jsonb_to_recordset(%s::jsonb) AS s(source_system TEXT,source_id TEXT)
+            ON s.source_system=t.source_system AND s.source_id=t.source_id
+          LEFT JOIN {_table('operation_runs')} r ON r.id=t.last_run_id""", (json.dumps(rows, ensure_ascii=False),))
+        existing = {(row["source_system"], row["source_id"]): dict(row) for row in cur.fetchall()}
+        fresh = [row for row in rows if (row["source_system"], row["source_id"]) not in existing]
+        created = {}
+        if fresh:
+            payload = json.dumps(fresh, ensure_ascii=False)
+            cur.execute(f"""INSERT INTO {_table('operation_tasks')}
+              (task_uuid,source_system,source_id,task_type,target_type,target_id,account_id,email_snapshot,
+               requested_action,status,target_status,current_stage,next_actions,trigger,data)
+              SELECT s.task_uuid,s.source_system,s.source_id,s.task_type,'account',s.account_id,s.account_id,s.email,
+                     s.task_type,'queued','pending','queued','[]'::jsonb,s.trigger,s.data
+              FROM jsonb_to_recordset(%s::jsonb) AS s(task_uuid TEXT,source_system TEXT,source_id TEXT,
+                task_type TEXT,account_id BIGINT,email TEXT,trigger TEXT,data JSONB)
+              RETURNING id,task_uuid,source_system,source_id""", (payload,))
+            tasks = {row["task_uuid"]: dict(row) for row in cur.fetchall()}
+            for row in fresh:
+                row["task_id"] = int(tasks[row["task_uuid"]]["id"])
+            payload = json.dumps(fresh, ensure_ascii=False)
+            cur.execute(f"""INSERT INTO {_table('operation_runs')}
+              (run_uuid,task_id,run_no,source_system,source_id,status,account_id,resource_family,cancellation_token,log_file,data)
+              SELECT s.run_uuid,s.task_id,1,s.source_system,s.run_uuid,'queued',s.account_id,s.resource_family,s.cancellation_token,s.log_file,s.data
+              FROM jsonb_to_recordset(%s::jsonb) AS s(run_uuid TEXT,task_id BIGINT,source_system TEXT,
+                account_id BIGINT,resource_family TEXT,cancellation_token TEXT,log_file TEXT,data JSONB)
+              RETURNING id,task_id""", (payload,))
+            runs = {int(row["task_id"]): int(row["id"]) for row in cur.fetchall()}
+            for row in fresh:
+                row["run_id"] = runs[row["task_id"]]
+                created[(row["source_system"], row["source_id"])] = row
+            payload = json.dumps(fresh, ensure_ascii=False)
+            cur.execute(f"""UPDATE {_table('operation_tasks')} t SET root_task_id=t.id,last_run_id=s.run_id
+              FROM jsonb_to_recordset(%s::jsonb) AS s(task_id BIGINT,run_id BIGINT) WHERE t.id=s.task_id""", (payload,))
+            cur.execute(f"""INSERT INTO {_table('operation_events')}
+              (event_uuid,task_id,run_id,source_system,source_id,level,stage,event_type,message,detail)
+              SELECT s.event_uuid,s.task_id,s.run_id,s.source_system,s.event_uuid,'INFO','queued','run.queued','任务已加入队列','{{}}'::jsonb
+              FROM jsonb_to_recordset(%s::jsonb) AS s(event_uuid TEXT,task_id BIGINT,run_id BIGINT,source_system TEXT)""", (payload,))
+        output = []
+        for row in rows:
+            identity = (row["source_system"], row["source_id"])
+            prior = existing.get(identity)
+            if prior:
+                if int(prior.get("account_id") or 0) != row["account_id"] or prior.get("task_type") != row["task_type"]:
+                    raise ValueError("幂等任务身份与批量目标不一致")
+                output.append({"accepted": True, "task_id": int(prior["id"]), "run_id": int(prior["owned_run_id"]), "reused": True})
+            else:
+                item = created[identity]
+                output.append({"accepted": True, "task_id": item["task_id"], "run_id": item["run_id"], "reused": False})
+        return output
+
+
 def _remote_write_checkpoint(data: Any) -> dict:
     payload = _decode(data)
     intent = payload.get("remote_intent") if isinstance(payload, dict) else None
@@ -4418,10 +4563,21 @@ def _remote_write_checkpoint(data: Any) -> dict:
 
 
 def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dict | None = None,
-                       expected_previous_run_id: int | None = None) -> dict:
+                       expected_previous_run_id: int | None = None, conn=None) -> dict:
     """在同一逻辑任务下新建 attempt；不会制造第二条逻辑任务。"""
-    init()
-    with _connect() as conn, conn.cursor() as cur:
+    if conn is None:
+        init()
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT account_id,last_run_id FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
+        identity = cur.fetchone() or {}
+        source_run_id = int(identity.get("last_run_id") or 0)
+        # 新轮已有新target锁；依赖续接继续使用原轮target。
+        managed = None
+        new_target = (data or {}).get("bulk_target_round_id")
+        if source_run_id and not new_target:
+            managed = bulk_execution.lock_run(conn, source_run_id)
+        if (managed or new_target) and identity.get("account_id"):
+            record_store.get_row(record_store.ACCOUNTS, int(identity["account_id"]), conn=conn, for_update=True)
         cur.execute(
             f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE",
             (int(task_id),),
@@ -4522,6 +4678,9 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             previous_data = dict(previous_data)
             previous_data.update(merged_data)
             merged_data = previous_data
+        if managed:
+            # Task数据保留首轮身份；后轮自动续接必须继承确切上一Run归属。
+            merged_data["bulk_target_round_id"] = int(managed["id"])
         # Clear after merging the previous Run, otherwise its checkpoints are
         # copied back into the supposedly fresh attempt.
         merged_data.pop("remote_intent", None)
@@ -4536,6 +4695,9 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
             resource_family=str(previous_run.get("resource_family") or "openai_interactive"),
             data=merged_data,
         )
+        if managed:
+            bulk_execution.inherit(conn, int(run["id"]), source_run_id=source_run_id, step_key=task_type)
+            bulk_execution.changed(conn, managed)
         if (
             task_type == "extract_link"
             and str(task.get("source_system") or "") == "native_operations"
@@ -5115,6 +5277,7 @@ def claim_next_queued_run(
     with _connect() as conn, conn.cursor() as cur:
         clauses = [
             "r.status='queued'",
+            "NOT (r.data ? 'bulk_target_round_id')",
             "r.cancel_requested_at IS NULL",
             "(r.next_attempt_at IS NULL OR r.next_attempt_at <= now())",
             _extract_batch_has_capacity_sql(),
@@ -5335,6 +5498,18 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
     with _connect() as conn, conn.cursor() as cur:
         permits.admission_lock(conn)
         requeued_continuations = _requeue_stale_extract_continuations(cur, stale_seconds)
+        cur.execute(f"""SELECT r.id,(r.data->>'bulk_target_round_id')::bigint AS target_id
+            FROM {_table('operation_runs')} r WHERE r.data->>'bulk_target_round_id' ~ '^[0-9]+$'
+              AND r.status IN ('running','cancelling','settling')
+              AND (r.heartbeat_at IS NULL OR r.heartbeat_at < now() - (%s * interval '1 second'))
+              AND NOT EXISTS (SELECT 1 FROM {_table('operation_execution_permits')} p WHERE p.run_id=r.id AND p.released_at IS NULL)
+            ORDER BY target_id,r.id""", (stale_seconds,))
+        managed_candidates = list(cur.fetchall())
+        managed_targets = {}
+        for candidate in managed_candidates:
+            managed = bulk_execution.lock_run(conn, int(candidate["id"]))
+            if managed:
+                managed_targets[int(managed["id"])] = managed
         cur.execute(
             f"""
             UPDATE {_table('operation_runs')} AS run
@@ -5575,6 +5750,8 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 ),
             )
         _refresh_batches(cur, [row.get("batch_id") for row in recovered + requeued_continuations])
+        for managed in managed_targets.values():
+            bulk_execution.changed(conn, managed, event_kind="recovered")
     if ready_dependencies:
         from core.operations import task_gateway
 
@@ -5630,7 +5807,7 @@ def claim_run(run_id: int, *, execution_id: str, worker_pid: int, conn=None) -> 
     external_connection = conn is not None
     blocked_before_execution = False
     result: dict | None = None
-    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id), claim=True):
         cur.execute(
             f"""
             SELECT * FROM {_table('operation_runs')}
@@ -5778,7 +5955,7 @@ def requeue_claimed_run(
         raise ValueError("延期数据不能覆盖远端请求回执")
     patch.update({"last_requeue_reason": _text(reason, 500), "next_attempt_delay_seconds": delay})
     stage_value = _text(stage, 100).strip() or "queued"
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         cur.execute(
             f"""
             SELECT r.*, t.task_type, t.email_snapshot, t.trigger
@@ -5907,7 +6084,7 @@ def append_runtime_event(
     clean_detail.setdefault("raw_stage", str(stage or "event"))
     if state_value is not None:
         clean_detail["step_state"] = state_value
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         cur.execute(
             f"SELECT r.task_id, r.log_file, r.source_system, t.task_type "
             f"FROM {_table('operation_runs')} r JOIN {_table('operation_tasks')} t ON t.id=r.task_id WHERE r.id=%s",
@@ -6090,7 +6267,7 @@ def record_remote_intent(
     action_value = _text(action, 160).strip() or "remote_operation"
     request_value = _text(request_id, 240).strip() if request_id else ""
     safe_detail = _scrub(detail or {})
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         run = _remote_checkpoint_fence(
             cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
             require_lease=kind == "remote_write",
@@ -6223,7 +6400,7 @@ def record_remote_receipt(
                 "confirmed receipt 必须明确 local_readback_confirmed=true"
             )
     safe_detail = _scrub(raw_detail)
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         run = _remote_checkpoint_fence(
             cur, int(run_id), execution_id=execution_id, lease_token=lease_token,
             require_lease=False,
@@ -6301,7 +6478,7 @@ def record_remote_receipt(
 def heartbeat_run(run_id: int, lease_token: str = "", *, ttl_seconds: int = 600) -> bool:
     init()
     ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or 600)))
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id), emit=False):
         token = str(lease_token or "").strip()
         if token:
             cur.execute(
@@ -6412,10 +6589,12 @@ def request_run_cancel(
     *,
     reason: str = "用户手动停止",
     expected_status: str | None = None,
+    conn=None,
 ) -> dict:
     """协作式取消：排队任务立即取消；运行任务进入 cancelling 等待检查点收口。"""
-    init()
-    with _connect() as conn, conn.cursor() as cur:
+    if conn is None:
+        init()
+    with (_connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         cur.execute(
             f"SELECT * FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE",
             (int(run_id),),
@@ -6526,7 +6705,7 @@ def is_run_cancel_requested(run_id: int, cancellation_token: str = "") -> bool:
 def mark_run_settling(run_id: int) -> bool:
     """Callback 已交给远端后进入有界对账阶段；保留 cancel_requested_at。"""
     init()
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         cur.execute(
             f"""
             UPDATE {_table('operation_runs')}
@@ -6792,7 +6971,7 @@ def finish_run(
         500,
     ).strip() or "任务被终止"
     idempotent = False
-    with _connect() as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur, bulk_execution.fact_update(conn, int(run_id)):
         cur.execute(
             f"""
             SELECT r.*, t.task_type, t.parent_task_id, t.email_snapshot, t.trigger
@@ -7061,6 +7240,7 @@ def cleanup_terminal_history(
             SELECT task.*
             FROM {_table('operation_tasks')} task
             WHERE task.status IN ({_TERMINAL_STATUS_SQL})
+              AND NOT (task.data ? 'bulk_target_round_id')
               AND task.completed_at IS NOT NULL
               AND task.completed_at < %s
               AND NOT EXISTS (
@@ -7142,6 +7322,7 @@ def cleanup_terminal_history(
             SELECT batch.*
             FROM {_table('operation_batches')} batch
             WHERE batch.status IN ({_TERMINAL_STATUS_SQL})
+              AND batch.source_system <> 'bulk_manager'
               AND batch.completed_at IS NOT NULL
               AND batch.completed_at < %s
               AND NOT EXISTS (

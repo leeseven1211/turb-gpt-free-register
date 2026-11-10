@@ -1,0 +1,59 @@
+{
+  "samples": 30,
+  "accounts": 100000,
+  "history_task_run_rows_each": 1000000,
+  "external_requests": 0,
+  "measurements": {
+    "selection_500": {
+      "p50_ms": 140.618,
+      "p95_ms": 441.573,
+      "max_ms": 872.264,
+      "sql_min": 14,
+      "sql_max": 14
+    },
+    "accept_500": {
+      "p50_ms": 11.243,
+      "p95_ms": 15.849,
+      "max_ms": 25.585,
+      "sql_min": 8,
+      "sql_max": 8
+    },
+    "selection_10000": {
+      "p50_ms": 2095.214,
+      "p95_ms": 3373.5,
+      "max_ms": 3617.011,
+      "sql_min": 19,
+      "sql_max": 19
+    },
+    "accept_10000": {
+      "p50_ms": 10.296,
+      "p95_ms": 15.911,
+      "max_ms": 17.8,
+      "sql_min": 8,
+      "sql_max": 8
+    },
+    "expand_100": {
+      "p50_ms": 232.29,
+      "p95_ms": 276.023,
+      "max_ms": 336.564,
+      "sql_min": 28,
+      "sql_max": 28,
+      "targets_per_second_p50": 430.5
+    },
+    "summary_10000": {
+      "p50_ms": 10.056,
+      "p95_ms": 13.496,
+      "max_ms": 14.418,
+      "sql_min": 4,
+      "sql_max": 4
+    },
+    "targets_50_of_10000": {
+      "p50_ms": 6.641,
+      "p95_ms": 9.173,
+      "max_ms": 9.484,
+      "sql_min": 3,
+      "sql_max": 3
+    }
+  },
+  "schema_cleaned": true
+}

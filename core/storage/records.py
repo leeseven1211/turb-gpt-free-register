@@ -865,6 +865,12 @@ def init() -> None:
                         )
                     if spec is ACCOUNTS:
                         _backfill_account_promotion_columns(cur)
+                    if spec is CODEX_CREDENTIALS:
+                        # 按规范邮箱定位沿用列表的BTRIM/大小写口径，避免每账号扫描全库凭证。
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS idx_codex_credentials_normalized_email "
+                            f"ON {_qualified(spec)} (LOWER(BTRIM(email)), id DESC)"
+                        )
                     if spec is EMAIL_ADDRESS_ALLOCATIONS:
                         # 已部署账本的归属列原为必填；人工库存尚无业务归属。
                         for column in ("acquisition_id", "owner_kind", "owner_id"):

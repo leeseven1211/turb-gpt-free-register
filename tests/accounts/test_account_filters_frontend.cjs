@@ -32,7 +32,9 @@ function harness() {
     SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
     accountAdvancedSearchQuery: '', PAGERS: {accounts: {page: 2, size: 20}},
   };
+  view.window = view;
   vm.createContext(view);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/account-query.js'), 'utf8'), view);
   const labelsStart = common.indexOf('const LIST_FACET_LABELS =');
   vm.runInContext(common.slice(labelsStart, common.indexOf('\n};', labelsStart) + 3), view);
   vm.runInContext(common.slice(common.indexOf('function facetLabel('), common.indexOf('// ---------- 分页状态 ----------')), view);

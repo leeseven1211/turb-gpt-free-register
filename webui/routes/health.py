@@ -26,6 +26,7 @@ _REQUIRED_RUNTIME_WORKER_KEYS = (
     "codex_dispatcher",
     "dependency_dispatcher",
     "projection_worker",
+    "bulk_operations",
 )
 
 

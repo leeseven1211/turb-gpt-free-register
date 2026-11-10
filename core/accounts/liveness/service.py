@@ -2202,6 +2202,10 @@ def _handle_live_operation(context):
 
 def _retry_token_refresh_operation(task: dict) -> dict:
     """重跑刷新 AT 时固定当前配置，历史 Run 仍保留原驱动和请求证据。"""
+    from core.bulk_operations.execution import retry_managed
+    managed_retry = retry_managed(task)
+    if managed_retry is not None:
+        return managed_retry
     from core.storage.operations import store as operation
 
     if account_task_store.operation_is_deactivated(task):
@@ -2501,22 +2505,25 @@ def enqueue_account_live_check(
     idempotency_key: str | None = None,
     resource_family: str = "openai_interactive",
     allow_missing_token: bool = False,
+    config_snapshot: dict | None = None,
 ) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
     trigger = str(trigger or "manual")
     if not email:
         return {"accepted": False, "busy": False, "error": "email 为空"}
-    snapshot = account_task_store.normalize_config_snapshot(get_config_snapshot(), allowlist=LIVE_CONFIG_ALLOWLIST)
+    snapshot = (dict(config_snapshot) if config_snapshot is not None else
+                account_task_store.normalize_config_snapshot(get_config_snapshot(), allowlist=LIVE_CONFIG_ALLOWLIST))
     effective_live_check_driver = None
     effective_refresh_driver = None
     if not force_refresh:
         try:
-            effective_live_check_driver = resolve_driver(driver)
+            effective_live_check_driver = resolve_driver(driver or snapshot.get("live_check_driver") if config_snapshot is not None else driver)
         except LiveCheckDriverError as exc:
             return {"accepted": False, "busy": False, "error": str(exc)}
     else:
-        effective_refresh_driver = _resolve_refresh_driver(driver)
+        effective_refresh_driver = (_resolve_refresh_driver(driver, config_snapshot=snapshot)
+                                    if config_snapshot is not None else _resolve_refresh_driver(driver))
     unavailable = deployment_unavailable(
         force_refresh=force_refresh, driver=effective_refresh_driver if force_refresh else effective_live_check_driver,
         config_snapshot=snapshot,

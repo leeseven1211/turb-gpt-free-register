@@ -92,6 +92,7 @@ def _runtime_status() -> dict:
         "codex_dispatcher": {"started": True, "alive": True, "name": "codex"},
         "dependency_dispatcher": {"started": True, "alive": True, "name": "dependency"},
         "projection_worker": {"started": True, "alive": True, "name": "projection"},
+        "bulk_operations": {"started": True, "alive": True, "name": "bulk"},
     }
 
 
@@ -101,7 +102,7 @@ def test_runtime_status_requires_each_critical_worker():
 
     with patch.object(health.runtime, "runtime_status", return_value=baseline, create=True):
         assert health._runtime_check()["ok"] is True
-        for component in ("codex_dispatcher", "dependency_dispatcher", "projection_worker"):
+        for component in ("codex_dispatcher", "dependency_dispatcher", "projection_worker", "bulk_operations"):
             dead = copy.deepcopy(baseline)
             dead[component]["alive"] = False
             with patch.object(health.runtime, "runtime_status", return_value=dead, create=True):

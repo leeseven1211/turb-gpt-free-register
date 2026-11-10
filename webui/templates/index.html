@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261109-mobile-pager-1') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-v1') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
@@ -109,6 +110,16 @@
       <div class="sidebar-subnav" data-module-subnav="codex" aria-label="Codex 授权子菜单">
         <button type="button" class="is-active" data-view="active">活跃账号</button>
         <button type="button" data-view="archived">归档账号</button>
+      </div>
+    </div>
+    <div class="sidebar-module" data-sidebar-module="bulk">
+      <button type="button" data-tab="bulk" class="sidebar-item">
+        <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="m14 17 3 3 4-6"/></svg>
+        <span class="sidebar-item-label">批量任务</span>
+      </button>
+      <div class="sidebar-subnav" aria-label="批量任务子菜单">
+        <button type="button" data-bulk-nav="list">批次列表</button>
+        <button type="button" data-bulk-nav="create">新建批次</button>
       </div>
     </div>
     <button type="button" data-tab="tasks" class="sidebar-item">
@@ -441,12 +452,15 @@
   </section>
 
   <!-- ============ 账号 ============ -->
+  <section id="tab-bulk" class="hidden" aria-label="批量任务"></section>
   <div id="tab-accounts" class="hidden" data-module-view="active">
     <h1 class="register-title">账号</h1>
     <section class="accounts-panel-v2" id="accountsPanelV2" aria-label="账号列表">
       <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
+        <button type="button" class="jobs-tb-btn" id="btnBulkFromAccountFilters" onclick="BulkTasks.fromAccounts(false)">按当前筛选创建批次</button>
+        <button type="button" class="jobs-tb-btn" id="btnBulkFromSelectedAccounts" onclick="BulkTasks.fromAccounts(true)">用已选账号创建批次</button>
         <button type="button" class="jobs-tb-btn" id="btnAccountInspection" onclick="openAccountInspectionStart()">一键巡检</button>
         <button type="button" class="jobs-tb-btn" onclick="openAccountInspectionHistory()">巡检历史</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()">删除已废</button>
@@ -1126,11 +1140,13 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261109-cross-page-selection') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261110-task-receipts') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261110-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261109-delete-evidence-v1') }}"></script>
@@ -1139,4 +1155,5 @@
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

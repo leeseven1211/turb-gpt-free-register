@@ -46,11 +46,23 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
 | `mail_provider_orders` | MailCode/Xigua 的稳定领取身份、幂等购买键、供应商订单、已购邮箱和私有取码游标 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（兼容模型） |
+| `operation_selections` / `operation_selection_targets` | 查询快照、固定目标名单及预检；准备中的名单可在进程重启后继续 |
+| `operation_batch_controls` / `operation_batch_rounds` | 批次控制版本、冻结设置、首轮和各重跑轮的范围与汇总 |
+| `operation_batch_target_rounds` / `operation_batch_run_links` | 每账号每轮状态与精确归属的父、子及续接 Run |
+| `operation_projection_outbox` / `operation_batch_control_commands` | 持久增量结果投影、控制回执与幂等恢复 |
 | `extract_link_provider_jobs` | 按 Run 保存提链平台原单、付款材料和平台自带支付状态 |
 | `extract_link_payment_orders` | 独立支付尝试、稳定幂等键、远端订单身份、支付状态和加密恢复请求 |
 | `account_password_recoveries` | Roxy 原账号及手动改密的密文候选、执行归属和确认历史 |
 | `account_protocol_sessions` | v3 刷新 AT 使用的加密登录 Cookie、设备画像和已验证身份，绑定账号及当前邮箱，默认保存 24 小时 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
+
+### 批量任务
+
+批量平台复用 `operation_batches/tasks/runs`，另用上面八张表记录名单、轮次、归属与投影。账号列表和新建批次使用同一 `AccountQuery` 谓词；名单在一个数据库快照内固定，后续账号变化不改变本批成员。创建批次不逐个创建 Run，后台按窗口集合提交，账号忙时保留等待与退避。
+
+每个固定账号的当前结果指向最近已冻结轮次；首轮和旧轮仍可单独查看，迟到证据只能更新其所属轮次。组合补全的父、子和续接 Run 都按精确引用关联，其他批次碰巧执行的同账号任务不会被计入。结果变更在事实写回事务中进入 outbox，后台增量投影；投影异常保留最近结果及同步状态，并隔离异常批次。
+
+请求幂等键、控制版本和领取 fence 均持久化。取消未开始和请求停止分别处理未物化、排队及已运行目标；清理策略保留仍由批量平台引用的 Task/Run。只读接口不建表、不展开任务、不修复投影。完整事务边界见[批量平台详细设计](../reports/2026-11-10-bulk-performance-audit/detailed-design.md)。
 
 ### 独立支付订单
 

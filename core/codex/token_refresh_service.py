@@ -945,8 +945,7 @@ def refresh_credential(
 
 
 def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
-    rows = db.list_codex_accounts(archived="all")
-    row = next((item for item in rows if item.get("filename") == filename), {})
+    row = db.get_codex_account(filename) or {}
     if not bool(getattr(_cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True)):
         return {"status": "disabled"}
     account_deactivated = str(row.get("oauth_account_status") or "").strip().lower() == "deactivated"
@@ -1540,10 +1539,10 @@ def enqueue_refresh(
     allow_unknown_manual_retry: bool = False,
 ) -> dict[str, Any]:
     filename = str(filename or "").strip()
-    row = next(
-        (item for item in db.list_codex_accounts(archived="all") if item.get("filename") == filename),
-        None,
-    )
+    try:
+        row = db.get_codex_account(filename)
+    except ValueError:
+        row = None
     if row is None:
         return {"accepted": False, "error": "Codex 凭证不存在", "filename": filename}
     decorated = decorate_row(row)

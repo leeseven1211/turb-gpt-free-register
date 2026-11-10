@@ -67,6 +67,16 @@ def create_operations_blueprint(context: WebUIContext):
         if expected_status and current_status != expected_status:
             return {"ok": False, "error": "任务状态已变化，请刷新后重试"}, 409
         if action == "retry":
+            from core.bulk_operations.service import retry_managed_task
+            try:
+                retry_key = request.headers.get("Idempotency-Key")
+                if retry_key and len(retry_key) > 128:
+                    return {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
+                managed_retry = retry_managed_task(task_id, request_key=f"operations-retry:{retry_key}:{task_id}" if retry_key else None)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc), "error_code": getattr(exc, "code", "bulk_retry_failed")}, getattr(exc, "status", 409)
+            if managed_retry is not None:
+                return managed_retry, 202
             if driver_override is not None and not (
                 source_system == "native_operations" and task_type == "codex_retry"
             ):

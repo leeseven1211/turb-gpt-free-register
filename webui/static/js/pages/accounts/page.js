@@ -84,13 +84,8 @@ function accountListQueryParams() {
   const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
   const p = PAGERS.accounts;
   const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, q, date_from:dateFrom, date_to:dateTo});
-  const accountFilters = {
-    id: 'accountIdFilterV2', source: 'accountSourceFilterV2', registration_driver: 'accountRegistrationDriverFilterV2', token: 'accountTokenFilterV2',
-    password: 'accountPasswordFilterV2', promotion: 'accountTrialFilterV2', totp: 'accountTotpFilterV2', risk: 'accountRiskFilterV2', codex: 'accountCodexFilterV2', account_status: 'accountStatusFilterV2',
-    email_status: 'accountEmailStatusFilterV2',
-  };
-  Object.entries(accountFilters).forEach(([key, id]) => params.set(key, columnFilterValue(document.getElementById(id))));
-  return params;
+  AccountQuery.fields.forEach(({key, controlId}) => params.set(key, columnFilterValue(document.getElementById(controlId))));
+  return AccountQuery.toLegacy(AccountQuery.fromLegacy(params), {paged:'1', page:String(p.page), page_size:String(p.size)});
 }
 function showAccountsLoadingState(query) {
   if (query === accountsRenderedQuery) return;

@@ -90,6 +90,90 @@ class ConcurrencyWaitObservationTests(PostgresTestCase):
         plan = next(row for row in status["types"] if row["key"] == "plan_check")
         self.assertIn("global_capacity", plan["blocked_by"])
 
+    def test_full_carrier_capacity_is_read_once_for_all_candidates(self):
+        self.policy(GLOBAL_TASK_WORKERS=1)
+        for _ in range(8):
+            self.queued("plan_check")
+        full = SimpleNamespace(available_slots=Mock(return_value=0), try_submit=Mock())
+        handlers = {"plan_check": (Mock(), ("native_operations",))}
+        with patch.object(task_gateway, "_executor", return_value=full), patch.dict(
+            task_gateway._DISPATCH_HANDLERS, handlers, clear=True
+        ), patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True):
+            self.assertEqual(0, task_gateway.dispatch_registered_once(limit=8))
+        full.available_slots.assert_called_once_with()
+        full.try_submit.assert_not_called()
+
+    def test_many_waiters_share_fixed_sql_budget_and_unchanged_observation_does_not_write(self):
+        import psycopg
+
+        self.policy(GLOBAL_TASK_WORKERS=1)
+        self.admit(self.queued("live_check"))
+        waiting = [self.queued("plan_check") for _ in range(64)]
+        original = psycopg.Cursor.execute
+        queries = []
+        def capture(cursor, query, params=None, **kwargs):
+            queries.append(str(query))
+            return original(cursor, query, params, **kwargs)
+        with patch.object(psycopg.Cursor, "execute", capture), patch.object(concurrency, "_policy", wraps=concurrency._policy) as policy:
+            first = task_gateway.observe_operation_runs(waiting)
+        self.assertEqual(1, policy.call_count)
+        self.assertEqual({("global_capacity",)}, {item.blocked_by for item in first})
+        first_count = len(queries)
+        self.assertLessEqual(first_count, 12, queries)
+        self.assertEqual(1, sum("INSERT INTO" in text and "operation_execution_requests" in text for text in queries))
+        before = self.request(waiting[-1]["id"])
+        queries.clear()
+        with patch.object(psycopg.Cursor, "execute", capture):
+            second = task_gateway.observe_operation_runs(waiting)
+        self.assertLessEqual(len(queries), first_count)
+        self.assertEqual(first, second)
+        self.assertFalse(any(text.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for text in queries), queries)
+        self.assertEqual(before, self.request(waiting[-1]["id"]))
+        queries.clear()
+        with patch.object(psycopg.Cursor, "execute", capture):
+            task_gateway.observe_operation_runs(waiting[:8])
+        self.assertEqual(first_count - 1, len(queries))
+
+    def test_many_observation_reads_managed_batch_limit_once(self):
+        from core.bulk_operations import adapters, catalog
+        from core.storage.operations import bulk
+
+        self.policy(GLOBAL_TASK_WORKERS=3)
+        bulk.reset_ready()
+        bulk.init()
+        ids = self.seed(records.ACCOUNTS, [{"email": f"managed-observe-{i}@example.test", "access_token": "synthetic"} for i in range(3)])
+        settings = catalog.capture_settings("plan_check")
+        selection = bulk.create_selection(request_key="managed-observe-selection", source={"kind": "ids", "ids": ids},
+            operation_key="plan_check", parameters={}, config_revision=settings["config_revision"], config_snapshot=settings["config_snapshot"])
+        selected = bulk.freeze_selection(selection["id"])
+        batch = bulk.create_batch(request_key="managed-observe-batch", selection_id=selection["id"],
+            selection_revision=selected["selection_revision"], operation_key="plan_check", parameters={},
+            config_revision=settings["config_revision"], max_concurrency=1)
+        bulk.process_batch(batch["id"], adapters.submit_chunk)
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {store._table('operation_runs')} WHERE batch_id=%s ORDER BY id", (batch["id"],))
+            runs = [store.get_run(row["id"]) for row in cur.fetchall()]
+        self.admit(runs[0])
+        waiting = runs[1:]
+        results = task_gateway.observe_operation_runs(waiting)
+        self.assertEqual({("batch_capacity",)}, {item.blocked_by for item in results})
+        for run in waiting:
+            request = self.request(run["id"])
+            self.assertIn({"kind": "batch", "key": f"operation:{batch['id']}", "limit": 1}, request["scopes"])
+
+    def test_unchanged_observation_renews_periodically_without_replacing_request_identity(self):
+        self.policy(GLOBAL_TASK_WORKERS=3)
+        run = self.queued("plan_check")
+        task_gateway.observe_operation_run(run)
+        before = self.request(run["id"])
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {postgres.qualified('operation_execution_requests')} SET seen_at=now()-interval '20 seconds' WHERE execution_key=%s", (before["execution_key"],))
+        task_gateway.observe_operation_run(run)
+        after = self.request(run["id"])
+        self.assertEqual(before["created_at"], after["created_at"])
+        self.assertEqual(before["blocked_by"], after["blocked_by"])
+        self.assertGreater(after["seen_at"], before["seen_at"])
+
     def test_full_account_carrier_is_observed_when_extract_carrier_has_free_slots(self):
         self.policy(GLOBAL_TASK_WORKERS=1)
         self.admit(self.queued("live_check"))

@@ -620,6 +620,7 @@ function renderAccountTasks() {
     const stoppable = accountTaskCanStop(task);
     const terminationLabel = task.status === 'queued' ? '取消' : '终止';
     const target = task.account_id ? `账号 #${task.account_id}` : (task.attempt_id ? `注册尝试 #${task.attempt_id}` : '-');
+    const managedBatchId = task.bulk_batch_id || task.bulk_context?.batch_id;
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
     const trigger = facetLabel('trigger', task.trigger);
     const stage = task.current_stage_label || facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
@@ -652,7 +653,7 @@ function renderAccountTasks() {
       <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
       <td title="${esc(task.status || '')}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : accountTaskAdmissionWaitMarkup(task)}</td>
       <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
-      <td title="${esc(batch)} · ${esc(trigger)}">${esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
+      <td title="${esc(batch)} · ${esc(trigger)}">${managedBatchId ? `<button type="button" class="bulk-link" data-account-bulk-batch="${attrEsc(managedBatchId)}" data-account-bulk-round="${attrEsc(task.bulk_round_id || task.bulk_context?.round_id || '')}">${esc(short(batch, 26))}</button>` : esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
       <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
       <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
@@ -885,7 +886,7 @@ function renderAccountTaskArtifacts(task) {
   const panel = $('#accountTaskArtifactContent');
   if (!panel) return;
   const resources = (task?.resources || []).filter(item => !activeAccountTaskRunId || String(item.run_id || '') === String(activeAccountTaskRunId));
-  const run = (task?.runs || []).find(item => Number(item.id) === Number(activeAccountTaskRunId));
+  const run = (task?.runs || []).find(item => String(item.id) === String(activeAccountTaskRunId));
   const debug = run?.debug_artifacts;
   const browserKept = run?.result_summary?.debug_browser_kept === true;
   const diagnostic = debug?.available ? `<div class="account-task-artifact"><strong>Roxy 刷新调试</strong><div>${debug.state === 'recording' ? '正在抓包' : '诊断已保存'} · 请求 ${esc(debug.summary?.request_count || 0)} 条${browserKept ? ' · 失败窗口已保留，可在 Roxy 中查看' : ''}</div><div class="account-task-artifact-links"><a href="${esc(debug.har_url)}" download>下载 HAR</a>${debug.page_state_url ? `<a href="${esc(debug.page_state_url)}" download>下载页面现场</a>` : ''}${debug.screenshot_url ? `<a href="${esc(debug.screenshot_url)}" target="_blank" rel="noopener">查看失败截图</a>` : ''}</div></div>` : '';
@@ -908,7 +909,7 @@ function setAccountTaskDetailView(view) {
 function resetAccountTaskRunData(runId) {
   hideAccountTaskStepTooltip();
   closeAccountTaskStepDialog(false);
-  activeAccountTaskRunId = runId ? Number(runId) : null;
+  activeAccountTaskRunId = runId ? String(runId) : null;
   accountTaskStepPage = 0;
   accountTaskStepPageSize = 0;
   accountTaskStepFilter = accountTaskPendingStepFilter || null;
@@ -930,10 +931,10 @@ function resetAccountTaskRunData(runId) {
 function syncAccountTaskRunPicker(task) {
   const select = $('#accountTaskRunSelect');
   const runs = Array.isArray(task?.runs) ? task.runs : [];
-  const desired = Number(activeAccountTaskRunId || task?.last_run_id || runs[runs.length - 1]?.id || 0) || null;
+  const desired = String(activeAccountTaskRunId || task?.last_run_id || runs[runs.length - 1]?.id || '') || null;
   select.innerHTML = runs.map(run => `<option value="${attrEsc(run.id)}">第 ${esc(run.run_no || '-')} 次 · ${esc(run.status || '-')}</option>`).join('');
-  if (desired && runs.some(run => Number(run.id) === desired)) select.value = String(desired);
-  const selected = Number(select.value || desired || 0) || null;
+  if (desired && runs.some(run => String(run.id) === desired)) select.value = String(desired);
+  const selected = String(select.value || desired || '') || null;
   if (selected !== activeAccountTaskRunId) resetAccountTaskRunData(selected);
   select.disabled = runs.length <= 1;
 }
@@ -941,14 +942,14 @@ function syncAccountTaskRunPicker(task) {
 async function pollAccountTaskEvents(reset = false) {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
   const requestId = accountTaskRequestId;
-  const taskId = Number(activeAccountTaskId);
-  const runId = Number(activeAccountTaskRunId);
+  const taskId = String(activeAccountTaskId);
+  const runId = String(activeAccountTaskRunId);
   const scroller = $('#accountTaskLogContent')?.parentElement;
   const atBottom = !scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 36;
   const params = new URLSearchParams({limit:'500'});
   if (!reset && accountTaskEventCursor != null) params.set('after_id', String(accountTaskEventCursor));
   const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/events?${params}`);
-  if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+  if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId) || runId !== String(activeAccountTaskRunId)) return;
   const incoming = result.items || [];
   if (reset || accountTaskEventCursor == null) accountTaskEventCache = incoming;
   else {
@@ -968,18 +969,18 @@ async function pollAccountTaskEvents(reset = false) {
 
 async function pollAccountTaskProgress() {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
-  const taskId = Number(activeAccountTaskId);
-  const runId = Number(activeAccountTaskRunId);
+  const taskId = String(activeAccountTaskId);
+  const runId = String(activeAccountTaskRunId);
   const detailRequestId = accountTaskRequestId;
   const requestId = ++accountTaskProgressRequestId;
   try {
     const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(activeAccountTaskRunId)}/progress`);
-    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== String(activeAccountTaskId) || runId !== String(activeAccountTaskRunId)) return;
     accountTaskProgressSnapshot = result.progress || null;
     accountTaskProgressError = '';
     renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
   } catch (e) {
-    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+    if (detailRequestId !== accountTaskRequestId || requestId !== accountTaskProgressRequestId || taskId !== String(activeAccountTaskId) || runId !== String(activeAccountTaskRunId)) return;
     accountTaskProgressError = e.message || '进度更新失败';
     // 保留最近的完整快照；首次读取失败时不从分页事件推导不完整进度。
     if (accountTaskProgressSnapshot) renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
@@ -989,12 +990,12 @@ async function pollAccountTaskProgress() {
 async function pollAccountTaskRunLog(reset = false) {
   if (!activeAccountTaskId || !activeAccountTaskRunId) return;
   const requestId = accountTaskRequestId;
-  const taskId = Number(activeAccountTaskId);
-  const runId = Number(activeAccountTaskRunId);
+  const taskId = String(activeAccountTaskId);
+  const runId = String(activeAccountTaskRunId);
   const params = new URLSearchParams({limit:'500'});
   if (!reset && accountTaskRunLogCursor != null) params.set('cursor', String(accountTaskRunLogCursor));
   const result = await api(`/api/operations/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}/logs?${params}`);
-  if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId) || runId !== Number(activeAccountTaskRunId)) return;
+  if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId) || runId !== String(activeAccountTaskRunId)) return;
   if (reset || accountTaskRunLogCursor == null) accountTaskRunLogLines = result.items || [];
   else accountTaskRunLogLines.push(...(result.items || []));
   accountTaskRunLogCursor = Number(result.next_cursor || 0);
@@ -1003,7 +1004,7 @@ async function pollAccountTaskRunLog(reset = false) {
 
 function openAccountTaskLog(taskId, runId = null, stepId = null) {
   accountTaskRequestId += 1;
-  activeAccountTaskId = Number(taskId);
+  activeAccountTaskId = String(taskId);
   accountTaskPendingStepFilter = stepId ? String(stepId) : null;
   accountTaskSnapshot = null;
   resetAccountTaskRunData(runId || null);
@@ -1032,24 +1033,24 @@ function renderAccountTaskSelectedRunError(run) {
 async function pollAccountTaskLog() {
   if (!activeAccountTaskId || accountTaskPolling) return;
   const requestId = accountTaskRequestId;
-  const taskId = Number(activeAccountTaskId);
+  const taskId = String(activeAccountTaskId);
   accountTaskPolling = true;
   try {
     const result = await api(`/api/operations/${encodeURIComponent(taskId)}?include_events=0`);
-    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
+    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
     const task = result.task || {};
     accountTaskSnapshot = task;
     const previousRunId = activeAccountTaskRunId;
     syncAccountTaskRunPicker(task);
-    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
-    const selectedRun = (task.runs || []).find(run => Number(run.id) === Number(activeAccountTaskRunId)) || {};
+    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
+    const selectedRun = (task.runs || []).find(run => String(run.id) === String(activeAccountTaskRunId)) || {};
     renderAccountTaskSelectedRunError(selectedRun.id ? selectedRun : task);
     const waitReasons = accountTaskAdmissionReasons(selectedRun.id ? selectedRun : task);
     const waitText = (selectedRun.status || task.status) === 'queued' && waitReasons.length
       ? ` · ${waitReasons.map(accountTaskAdmissionReasonText).join('；')}` : '';
     $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}${waitText}`}`;
     await pollAccountTaskProgress();
-    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
+    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
       await pollAccountTaskEvents(true);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(true);
@@ -1057,7 +1058,7 @@ async function pollAccountTaskLog() {
       await pollAccountTaskEvents(false);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(false);
     }
-    if (requestId !== accountTaskRequestId || taskId !== Number(activeAccountTaskId)) return;
+    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
     renderAccountTaskArtifacts(task);
     if (!accountTaskIsActive(task)) {
       clearInterval(accountTaskLogTimer);
@@ -1065,7 +1066,7 @@ async function pollAccountTaskLog() {
       loadAccounts();
     }
   } catch (e) {
-    if (requestId === accountTaskRequestId && taskId === Number(activeAccountTaskId)) {
+    if (requestId === accountTaskRequestId && taskId === String(activeAccountTaskId)) {
       $('#accountTaskLogContent').innerHTML = `<div class="account-task-empty">加载失败：${esc(e.message)}</div>`;
     }
   } finally {
@@ -1074,7 +1075,7 @@ async function pollAccountTaskLog() {
 }
 
 $('#accountTaskRunSelect')?.addEventListener('change', event => {
-  resetAccountTaskRunData(Number(event.target.value || 0) || null);
+  resetAccountTaskRunData(String(event.target.value || '') || null);
   pollAccountTaskLog();
 });
 $('#accountTaskLogPanel')?.addEventListener('wheel', scrollAccountTaskDialogFromWheel, {passive:false});
@@ -1156,11 +1157,24 @@ $('#accountTaskNewEvents')?.addEventListener('click', () => {
   accountTaskNewEventCount = 0;
   $('#accountTaskNewEvents').classList.add('hidden');
 });
+async function operationIntent(scope, url, body) {
+  const storageKey=`turb_operation_intent:${scope}`;
+  const signature=JSON.stringify({url,body:body||null});
+  let saved=null;try{saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');}catch(_){}
+  if(saved&&saved.signature!==signature)throw new Error('上次重跑回执尚未确认，请保持原选择重试以找回原请求。');
+  saved ||= {key:globalThis.crypto?.randomUUID?.()||`operation-${Date.now()}-${Math.random().toString(36).slice(2)}`,signature};
+  sessionStorage.setItem(storageKey,JSON.stringify(saved));
+  try {
+    const result=await api(url,{method:'POST',headers:{'Idempotency-Key':saved.key,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+    sessionStorage.removeItem(storageKey);return result;
+  }catch(error){if([400,403,404,409,410,422,429].includes(error.status))sessionStorage.removeItem(storageKey);throw error;}
+}
 async function retryAccountTask(taskId, button) {
   button.disabled = true;
   try {
-    await api(`/api/operations/${encodeURIComponent(taskId)}/retry`, {method:'POST'});
-    showToast('任务已重新入队');
+    const result = await operationIntent(`retry:${taskId}`,`/api/operations/${encodeURIComponent(taskId)}/retry`);
+    const receipt = result.data || result;
+    showToast(receipt.round_id || receipt.bulk_round_id ? '重跑已受理，已创建所属批次的新轮次' : '任务已重新入队');
     loadAccountTasks();
   } catch (e) {
     showToast('重跑失败: ' + e.message);
@@ -1230,11 +1244,9 @@ async function bulkAccountTasks(action) {
   const button = document.getElementById(buttonId);
   if (button) button.disabled = true;
   try {
-    const result = await api('/api/operations/bulk', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action, task_ids: eligible.map(task => Number(task.id))}),
-    });
+    const result = action==='retry'
+      ? await operationIntent('bulk:retry','/api/operations/bulk',{action,task_ids:eligible.map(task=>Number(task.id))})
+      : await api('/api/operations/bulk', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,task_ids:eligible.map(task=>Number(task.id))})});
     const skipped = Number(result.skipped_count || 0);
     if (action === 'cancel') {
       const accepted = Array.isArray(result.accepted) ? result.accepted : [];
@@ -1317,6 +1329,8 @@ $('#btnResetAccountTaskFiltersV2')?.addEventListener('click', () => {
   scheduleAccountTaskFilterReload(true);
 });
 $('#accountTasksPanel')?.addEventListener('click', event => {
+  const batchBtn = event.target.closest('[data-account-bulk-batch]');
+  if (batchBtn && window.BulkTasks) { BulkTasks.navigate('detail', {batch_id:batchBtn.dataset.accountBulkBatch, round_id:batchBtn.dataset.accountBulkRound || ''}); return; }
   const logBtn = event.target.closest('[data-account-task-log]');
   if (logBtn) { openAccountTaskLog(Number(logBtn.dataset.accountTaskLog)); return; }
   const retryBtn = event.target.closest('[data-account-task-retry]');

@@ -388,9 +388,9 @@ test('切换 Run 会清除旧步骤筛选，同时保留显式传入的新筛选
     hideAccountTaskStepTooltip: () => {},
   });
   assert.deepEqual(JSON.parse(sandbox.result), {
-    first: {run: 22, filter: null},
-    second: {run: 33, filter: 'step-new'},
-    finalRun: 44,
+    first: {run: '22', filter: null},
+    second: {run: '33', filter: 'step-new'},
+    finalRun: '44',
     finalFilter: null,
   });
 });

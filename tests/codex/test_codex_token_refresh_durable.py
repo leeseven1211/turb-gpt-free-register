@@ -72,7 +72,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
             "status": "queued",
         }
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[self._row()]),
+            patch.object(service.db, "get_codex_account", return_value=self._row()),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
             patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
@@ -113,7 +113,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
         }
         row = self._row(oauth_refresh_error="request_unknown: needs_reconciliation")
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
             patch.object(
@@ -141,7 +141,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
     def test_scheduler_still_blocks_unknown_refresh_without_explicit_retry(self):
         row = self._row(oauth_refresh_error="request_unknown: needs_reconciliation")
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
             patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
@@ -173,7 +173,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
                 "status": "queued",
             }
             with (
-                patch.object(service.db, "list_codex_accounts", return_value=[self._row()]),
+                patch.object(service.db, "get_codex_account", return_value=self._row()),
                 patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
                 patch.object(service.operation_runtime_store, "active_run_for_account", return_value=None),
                 patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
@@ -199,7 +199,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
 
     def test_duplicate_durable_submission_returns_busy_from_database(self):
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[self._row()]),
+            patch.object(service.db, "get_codex_account", return_value=self._row()),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
             patch.object(service.operation_runtime_store, "active_run_for_account", return_value={"id": 99, "task_id": 98, "status": "queued"}),
@@ -216,7 +216,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
             oauth_refresh_error="request_unknown: needs_reconciliation",
         )
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service, "_register_worker"),
             patch.object(service, "_durable_submit") as submit,
@@ -233,7 +233,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
             oauth_refresh_error="request_unknown: needs_reconciliation",
         )
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(service, "_durable_submit") as submit,
             patch.object(service.requests, "post") as post,
@@ -251,7 +251,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
     def test_manual_submit_uses_durable_fence_when_credential_marker_is_missing(self):
         row = self._row(oauth_refresh_error=None, account_id="provider-account")
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(
                 service.operation_runtime_store,
@@ -278,7 +278,7 @@ class CodexTokenRefreshSubmissionTests(TestCase):
     def test_reconcile_flag_blocks_clean_credential_before_durable_submit(self):
         row = self._row(oauth_refresh_error=None, account_id="provider-account")
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"id": 17}),
             patch.object(
                 service.operation_runtime_store,

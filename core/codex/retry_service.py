@@ -403,6 +403,7 @@ def _run_retry_plan_check(
     task_id: int | None,
     *,
     trigger: str,
+    config_snapshot: dict | None = None,
 ) -> dict | None:
     """补跑前同步补查套餐；失败只记事件，不阻断后续账号动作。"""
     if str(account.get("plan_check_status") or "").lower() == "success":
@@ -438,6 +439,7 @@ def _run_retry_plan_check(
             access_token=token,
             proxy=(getattr(account_route, "proxy_url", None) if account_route is not None else None),
             trigger=str(trigger or "retry_plan_check"),
+            **({"config_snapshot": config_snapshot} if config_snapshot is not None else {}),
         )
         if str(result.get("status") or "").lower() == "deactivated":
             result["account_status_persisted"] = _persist_account_deactivated_result(
@@ -1278,6 +1280,7 @@ def run_twofa_worker(
     force_twofa_change: bool = False,
     execution_fence: dict | None = None,
     proxy_country_override: str | None = None,
+    execution_settings: dict | None = None,
 ) -> dict:
     """重新登录并执行指定账号配置步骤，不重复执行 Codex OAuth。
 
@@ -1389,12 +1392,10 @@ def run_twofa_worker(
                 selected_twofa_mode = "browser"
         else:
             selected_twofa_mode = "auto"
-        browser_fallback_enabled = bool(
-            getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)
-        )
-        protocol_reauth_enabled = bool(
-            getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)
-        )
+        browser_fallback_enabled = bool((execution_settings or {}).get("twofa_browser_fallback_enabled",
+            getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)))
+        protocol_reauth_enabled = bool((execution_settings or {}).get("twofa_protocol_reauth_enabled",
+            getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)))
         if (
             "twofa" in requested_steps
             and selected_twofa_mode != "browser"
@@ -1452,6 +1453,8 @@ def run_twofa_worker(
                     plan_route,
                     task_id,
                     trigger=str(task_trigger or "manual") + "_plan_check",
+                    **({"config_snapshot": execution_settings["child_execution"]["plan_check"]}
+                       if isinstance((execution_settings or {}).get("child_execution", {}).get("plan_check"), dict) else {}),
                 )
             finally:
                 plan_route.release(reason=f"plan-check-{email}")
@@ -1704,7 +1707,8 @@ def run_twofa_worker(
             and (
                 force_password_reset
                 or (
-                    getattr(account_cfg, "ACCOUNT_PASSWORD_RESET_ENABLED", False)
+                    (execution_settings or {}).get("password_reset_enabled",
+                        getattr(account_cfg, "ACCOUNT_PASSWORD_RESET_ENABLED", False))
                     and not _account_login_password(account)
                 )
             )

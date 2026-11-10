@@ -167,11 +167,52 @@ def _scope_policy(classification, *, batch_key=None,batch_limit=None,provider_ke
             raw = runtime_config.read_values(conn=conn) or {}
             limit = int(raw.get(_PROVIDER_KEYS.get(str(provider_key), ""), provider_limit or 1))
             scopes.append({"kind": "provider", "key": str(provider_key), "limit": limit})
-        scopes.extend(dict(scope) for scope in (extra_scopes or []))
+        # 动态领域约束在准入事务的同一连接读取，不能使用候选扫描时的陈旧配额。
+        additional = extra_scopes(conn) if callable(extra_scopes) else extra_scopes
+        scopes.extend(dict(scope) for scope in (additional or []))
         if any(isinstance(scope["limit"], bool) or int(scope["limit"]) < 1 for scope in scopes):
             raise ConcurrencyPolicyError("concurrency_policy_invalid", "并发上限必须是正整数")
         return scopes, revision, ["concurrency_policy_migration_required"] if migration_required else []
     return policy
+
+
+def observe_waiting_many(requests: list[dict], *, prepare_scopes=None) -> list[AdmissionResult]:
+    """同一观察事务仅读一次全局策略、供应商配置及活动许可。"""
+    if not requests:
+        return []
+    normalized = [{**item, "task_type": resolve_admission_class(item["task_type"]).key} for item in requests]
+    def policies(conn):
+        values, revision, migration_required = _policy(conn)
+        provider_values = {}
+        if any(item.get("provider_key") is not None for item in normalized):
+            from core.storage import runtime_config
+            provider_values = runtime_config.read_values(conn=conn) or {}
+        prepared = prepare_scopes(conn) if prepare_scopes else {}
+        result = []
+        for item in normalized:
+            classification = resolve_admission_class(item["task_type"])
+            scopes = [{"kind": "global", "key": "deployment", "limit": values["GLOBAL_TASK_WORKERS"]},
+                      {"kind": "type", "key": classification.key, "limit": values[classification.config_key]}]
+            if item.get("batch_key") is not None and item.get("batch_limit") is not None:
+                scopes.append({"kind": "batch", "key": str(item["batch_key"]), "limit": int(item["batch_limit"])})
+            provider = item.get("provider_key")
+            if provider is not None:
+                scopes.append({"kind": "provider", "key": str(provider),
+                    "limit": int(provider_values.get(_PROVIDER_KEYS.get(str(provider), ""), item.get("provider_limit") or 1))})
+            additional = prepared.get(item["execution_key"], item.get("extra_scopes"))
+            additional = additional(conn) if callable(additional) else additional
+            scopes.extend(dict(scope) for scope in (additional or []))
+            if any(isinstance(scope["limit"], bool) or int(scope["limit"]) < 1 for scope in scopes):
+                raise ConcurrencyPolicyError("concurrency_policy_invalid", "并发上限必须是正整数")
+            result.append((scopes,revision,["concurrency_policy_migration_required"] if migration_required else []))
+        return result
+    try:
+        results = permits.observe_waiting_many(normalized, policy=policies)
+    except ConcurrencyPolicyError:
+        raise
+    except Exception as exc:
+        raise ConcurrencyStoreUnavailable("等待原因存储不可用，任务继续排队") from exc
+    return [AdmissionResult(blocked_by=tuple(item["blocked_by"])) for item in results]
 
 
 def observe_waiting(*, execution_key: str, task_type: str,
@@ -179,19 +220,9 @@ def observe_waiting(*, execution_key: str, task_type: str,
                     provider_key: str | None = None,provider_limit: int | None = None,
                     run_id: int | None = None,metadata: Mapping | None = None,
                     extra_scopes: list[dict] | None = None) -> AdmissionResult:
-    """承载已满时核验数据库实际容量，业务与公平调度事实均不变。"""
-    classification = resolve_admission_class(task_type)
-    try:
-        result = permits.observe_waiting(
-            execution_key=execution_key,task_type=classification.key,batch_key=str(batch_key or ""),metadata=dict(metadata or {}),
-            policy=_scope_policy(classification,batch_key=batch_key,batch_limit=batch_limit,
-                                 provider_key=provider_key,provider_limit=provider_limit,extra_scopes=extra_scopes),
-        )
-    except ConcurrencyPolicyError:
-        raise
-    except Exception as exc:
-        raise ConcurrencyStoreUnavailable("等待原因存储不可用，任务继续排队") from exc
-    return AdmissionResult(blocked_by=tuple(result["blocked_by"]))
+    return observe_waiting_many([dict(execution_key=execution_key,task_type=task_type,batch_key=batch_key,
+        batch_limit=batch_limit,provider_key=provider_key,provider_limit=provider_limit,run_id=run_id,
+        metadata=dict(metadata or {}),extra_scopes=extra_scopes)])[0]
 
 
 def try_admit_and_claim(*, execution_key: str, task_type: str,

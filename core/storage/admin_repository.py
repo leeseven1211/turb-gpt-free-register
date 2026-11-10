@@ -253,7 +253,7 @@ def _account_facet_predicates(
     return predicates
 
 
-def _account_where(
+def _compile_account_predicates(
     archived: str,
     plan: str,
     q: str,
@@ -313,6 +313,39 @@ def _account_where(
         where.append(predicate)
         params.extend(values)
     return where, params
+
+
+def _account_where(archived, plan, q, date_from, date_to, filters):
+    """旧 URL 参数与批量选择统一到同一个查询契约。"""
+    from core.accounts.query import compile_query, from_legacy
+    spec = from_legacy(archived=archived, plan=plan, q=q, date_from=date_from,
+                       date_to=date_to, filters=filters)
+    sql, params = compile_query(spec, strict=False)
+    return [sql], params
+
+
+def account_query_facets(spec: dict) -> dict:
+    """批量创建页按需读取窄列选项，共用列表的自排除列语义。"""
+    from core.accounts.query import normalize_query
+    normalized = normalize_query(spec)
+    filters = {key: ",".join(value) if isinstance(value, list) else value for key, value in normalized["filters"].items()}
+    where, params = _compile_account_predicates(normalized["archived"], "", normalized["q"],
+        normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")})
+    expressions = _account_facet_expressions()
+    predicates = ["NULLIF(f.value, '') IS NOT NULL"]
+    for key, predicate, values in _account_facet_predicates(
+        ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions}):
+        predicates.append(f"(f.facet = %s OR ({predicate}))")
+        params.extend((key, *values))
+    columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+    facet_values = ", ".join(f"('{key}',b.{key})" for key in expressions)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""WITH base AS MATERIALIZED (SELECT {columns} FROM {_q(record_store.ACCOUNTS)} a
+            WHERE {' AND '.join(where) or 'TRUE'})
+            SELECT f.facet,f.value,COUNT(*) AS count FROM base b
+            CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet,value)
+            WHERE {' AND '.join(predicates)} GROUP BY f.facet,f.value""", params)
+        return _facet_dict(cur.fetchall())
 
 
 def list_accounts(

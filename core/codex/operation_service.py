@@ -470,6 +470,7 @@ def submit(
     idempotency_key: str | None = None,
     completion_auth: bool = False,
     sub2api_targets: Mapping[str, Any] | None = None,
+    config_snapshot: Mapping[str, Any] | None = None,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -481,7 +482,7 @@ def submit(
     account_id = int(account.get("id") or 0)
     if db.account_is_deactivated(account):
         return {"accepted": False, "error": "账号已废号，不能补跑 Codex"}
-    snapshot = _config_snapshot(driver_override=driver)
+    snapshot = dict(config_snapshot) if config_snapshot is not None else _config_snapshot(driver_override=driver)
     unavailable = _deployment_unavailable(snapshot)
     if unavailable:
         return unavailable
@@ -651,6 +652,10 @@ def retry_task(
     task = operation_task_store.get_task(int(task_id))
     if not task:
         return {"accepted": False, "error": "任务不存在"}
+    from core.bulk_operations.execution import retry_managed
+    managed_retry = retry_managed(task)
+    if managed_retry is not None:
+        return managed_retry
     if str(task.get("source_system") or "") != "native_operations":
         return {"accepted": False, "error": "该历史任务尚未迁移为原生运行任务"}
     if driver is not None and str(task.get("task_type") or "") != "codex_retry":
@@ -1088,6 +1093,7 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                 "message": result.get("message"),
                 "credential_confirmed": confirmed,
                 "callback_submitted": callback_submitted,
+                "existing_valid": existing_valid,
                 "credential_file": Path(str(result.get("file_path") or "")).name or None,
                 "receipt_file": Path(str(result.get("receipt_path") or "")).name or None,
                 "oauth_driver": driver,

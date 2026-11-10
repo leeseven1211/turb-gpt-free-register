@@ -87,7 +87,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
         for projected in (public, compact, service.decorate_row(row)):
             with self.subTest(model=projected):
                 self.assertTrue(projected["oauth_reauth_required"])
-        with patch.object(service.db, "list_codex_accounts", return_value=[public]):
+        with patch.object(service.db, "get_codex_account", return_value=public):
             result = service.enqueue_refresh(filename=row["filename"])
         self.assertFalse(result["accepted"])
         self.assertEqual("reauth_required", result["error_code"])
@@ -175,7 +175,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
             "oauth_account_status": "deactivated",
             "oauth_refreshable": True,
         }
-        with patch.object(service.db, "list_codex_accounts", return_value=[row]):
+        with patch.object(service.db, "get_codex_account", return_value=row):
             result = service.enqueue_refresh("codex-dead.json")
 
         self.assertFalse(result["accepted"])
@@ -195,7 +195,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
             "account_status_reason": "account_deactivated",
         }
         with (
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value=account),
             patch.object(service.db, "mark_codex_account_deactivated") as mark_deactivated,
             patch.object(service.operation_runtime_store, "list_reconciliation_accounts", return_value=[]),
@@ -221,7 +221,7 @@ class CodexOauthMetadataTests(unittest.TestCase):
         }
         with (
             patch.object(service._cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True),
-            patch.object(service.db, "list_codex_accounts", return_value=[row]),
+            patch.object(service.db, "get_codex_account", return_value=row),
             patch.object(service.db, "get_account_by_email", return_value={"account_status": "deactivated"}),
             patch.object(service.db, "read_codex_credential", return_value=(
                 json.dumps({"email": "sync-dead@example.com", "refresh_token": "refresh"}),

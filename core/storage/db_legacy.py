@@ -4258,27 +4258,22 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
         "promotion_query_snapshot",
         "quota_windows",
     )
-    if account_ids:
-        accounts.extend(record_store.list_rows(
+    if account_ids or emails:
+        # 同一集合查询读取显式ID和邮箱候选；内存仍先采用ID命中，保留旧归属优先级。
+        candidates = record_store.list_rows(
             record_store.ACCOUNTS,
-            where="id = ANY(%s)",
-            params=(account_ids,),
+            where="id = ANY(%s) OR lower(email) = ANY(%s)",
+            params=(account_ids, emails),
             order_by="id DESC",
             data_exclude=data_exclude,
             exclude_columns=("chatgpt_session",),
-        ))
-    # emails 是排序后的 list；用集合差避免已经按 id 找到的账号重复查询。
-    found_emails = {str(account.get("email") or "").strip().lower() for account in accounts}
-    missing_emails = [email for email in emails if email not in found_emails]
-    if missing_emails:
-        accounts.extend(record_store.list_rows(
-            record_store.ACCOUNTS,
-            where="lower(email) = ANY(%s)",
-            params=(missing_emails,),
-            order_by="id DESC",
-            data_exclude=data_exclude,
-            exclude_columns=("chatgpt_session",),
-        ))
+        )
+        explicit_ids = set(account_ids)
+        accounts = [account for account in candidates if int(account["id"]) in explicit_ids]
+        found_emails = {str(account.get("email") or "").strip().lower() for account in accounts}
+        missing_emails = set(emails) - found_emails
+        accounts.extend(account for account in candidates
+                        if str(account.get("email") or "").lower() in missing_emails)
     decorated = [_decorate_account(account) for account in accounts]
     by_id = {int(account["id"]): account for account in decorated}
     by_email = {str(account.get("email") or "").strip().lower(): account for account in decorated}

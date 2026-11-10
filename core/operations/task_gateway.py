@@ -120,7 +120,7 @@ def normalize_config_snapshot(
     if isinstance(snapshot, Mapping):
         payload = _thaw(snapshot)
         if revision is _MISSING:
-            revision = payload.get("revision", payload.get("version"))
+            revision = payload.get("revision", payload.get("version", payload.get("config_snapshot_revision", _MISSING)))
         values = payload.get("values")
         if values is None:
             values = payload.get("snapshot")
@@ -766,6 +766,10 @@ def default_operation_retry(task: Mapping[str, Any]) -> dict[str, Any]:
     任务下创建新的 Run。远端结果未知时保留旧 Run 的请求证据，但不再阻止操作员
     创建新的 Run。
     """
+    from core.bulk_operations.execution import retry_managed
+    managed_retry = retry_managed(task)
+    if managed_retry is not None:
+        return managed_retry
     if operation_is_deactivated(task):
         return {
             "accepted": False,
@@ -1588,7 +1592,7 @@ def _is_extract_continuation(run: Mapping[str, Any]) -> bool:
     )
 
 
-def _operation_admission_arguments(run: Mapping[str, Any], capacity_handler=None) -> dict:
+def _operation_admission_arguments(run: Mapping[str, Any], capacity_handler=None, *, observation=False) -> dict:
     from core.operations import concurrency
 
     task_type = str(run.get("task_type") or "")
@@ -1618,6 +1622,21 @@ def _operation_admission_arguments(run: Mapping[str, Any], capacity_handler=None
     if _is_extract_continuation(run):
         # 平台上限在同连接读取当前策略；续查独立最多两项，不能缓存旧平台值形成隐藏门限。
         extra_scopes.append({"kind": "continuation", "key": str(provider), "limit": 2})
+    if data.get("bulk_target_round_id"):
+        batch_limit = None
+        fixed_scopes = tuple(extra_scopes)
+        def managed_scopes(conn):
+            from core.storage.operations import store
+            with conn.cursor() as cur:
+                cur.execute(f"""SELECT c.batch_id,c.desired_workers FROM {store._table('operation_batch_controls')} c
+                    JOIN {store._table('operation_batch_target_rounds')} tr ON tr.batch_id=c.batch_id
+                    JOIN {store._table('operation_batch_run_links')} l ON l.target_round_id=tr.id
+                    WHERE l.run_id=%s AND l.relation IN ('owned_root','owned_child','owned_continuation')""", (int(run["id"]),))
+                managed = cur.fetchone()
+            if managed is None:
+                raise concurrency.ConcurrencyPolicyError("bulk_ownership_missing", "批量执行归属缺失，暂停新准入")
+            return [*fixed_scopes, {"kind": "batch", "key": f"operation:{managed['batch_id']}", "limit": int(managed["desired_workers"])}]
+        extra_scopes = fixed_scopes if observation else managed_scopes
     run_id = int(run["id"])
     return dict(
         execution_key=f"operation_run:{run_id}", task_type=classification.key, run_id=run_id,
@@ -1638,10 +1657,38 @@ def admit_operation_run(run: Mapping[str, Any], capacity_handler=None):
     )
 
 
-def observe_operation_run(run: Mapping[str, Any], capacity_handler=None):
+def observe_operation_runs(runs: list[Mapping[str, Any]], capacity_handlers=None):
+    """满载候选集合观察，批次约束也在同一只读配置快照内一次定位。"""
     from core.operations import concurrency
+    capacity_handlers = capacity_handlers or {}
+    requests = [_operation_admission_arguments(run,capacity_handlers.get(str(run.get("task_type") or "")),observation=True) for run in runs]
+    managed_ids = [int(run["id"]) for run in runs if (run.get("data") or {}).get("bulk_target_round_id")]
+    def prepare_scopes(conn):
+        if not managed_ids:
+            return {}
+        from core.storage.operations import store
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT l.run_id,c.batch_id,c.desired_workers
+                FROM {store._table('operation_batch_run_links')} l
+                JOIN {store._table('operation_batch_target_rounds')} tr ON tr.id=l.target_round_id
+                JOIN {store._table('operation_batch_controls')} c ON c.batch_id=tr.batch_id
+                WHERE l.run_id=ANY(%s) AND l.relation IN ('owned_root','owned_child','owned_continuation')""", (managed_ids,))
+            limits = {int(row["run_id"]): row for row in cur.fetchall()}
+        result = {}
+        for item in requests:
+            if item["run_id"] not in managed_ids:
+                continue
+            managed = limits.get(item["run_id"])
+            if managed is None:
+                raise concurrency.ConcurrencyPolicyError("bulk_ownership_missing", "批量执行归属缺失，暂停等待观察")
+            result[item["execution_key"]] = [*item["extra_scopes"], {"kind": "batch", "key": f"operation:{managed['batch_id']}", "limit": int(managed["desired_workers"])}]
+        return result
+    return concurrency.observe_waiting_many(requests, prepare_scopes=prepare_scopes)
 
-    return concurrency.observe_waiting(**_operation_admission_arguments(run,capacity_handler))
+
+def observe_operation_run(run: Mapping[str, Any], capacity_handler=None):
+    handlers = {str(run.get("task_type") or ""): capacity_handler} if capacity_handler is not None else None
+    return observe_operation_runs([run], handlers)[0]
 
 
 def execute_admitted(execution, callback: Callable[[], Any]):
@@ -1679,10 +1726,12 @@ def dispatch_registered_once(*, limit: int | None = None) -> int:
 
 def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int | None = None) -> int:
     global _PREFER_EXTRACT_CONTINUATIONS
-    slots = pool.available_slots() if pool is not None else (
-        (_executor().available_slots() if any(name != "extract_link" for name in handlers) else 0)
-        + (_extract_executor().available_slots() if "extract_link" in handlers else 0)
-    )
+    # 每轮只读一次承载配置；最终许可和try_submit仍在实际提交时校验。
+    account_pool = pool if pool is not None else _executor() if any(name != "extract_link" for name in handlers) else None
+    extract_pool = pool if pool is not None else _extract_executor() if "extract_link" in handlers else None
+    carriers = {id(value): value for value in (account_pool, extract_pool) if value is not None}
+    capacity_hints = {key: carrier.available_slots() for key, carrier in carriers.items()}
+    slots = sum(capacity_hints.values())
     source_systems: set[str] = set()
     accepts_all_sources = False
     for _handler, allowed_sources in handlers.values():
@@ -1713,6 +1762,7 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
 
     runs = order_dispatch_candidates(runs)
     submitted = 0
+    waiting_observations = []
     for run in runs:
         task_type = str(run.get("task_type") or "")
         entry = handlers.get(task_type)
@@ -1722,12 +1772,9 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
         source_system = str(run.get("source_system") or "")
         if allowed_sources is not None and source_system not in allowed_sources:
             continue
-        selected_pool = pool if pool is not None else _extract_executor() if task_type == "extract_link" else _executor()
-        if selected_pool.available_slots() <= 0:
-            try:
-                observe_operation_run(run,capacity_handlers.get(task_type))
-            except Exception:
-                logger.exception("等待原因观察暂不可用，任务继续排队：run_id=%s",run.get("id"))
+        selected_pool = pool if pool is not None else extract_pool if task_type == "extract_link" else account_pool
+        if capacity_hints[id(selected_pool)] <= 0:
+            waiting_observations.append(run)
             continue
         if submitted >= slots:
             continue
@@ -1758,6 +1805,7 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             rollback_admission(execution)
             break
         submitted += 1
+        capacity_hints[id(selected_pool)] -= 1
         data = run.get("data")
         if task_type == "extract_link" and isinstance(data, Mapping) and data.get("provider_id") in {"huanguang", "legacy", "anguang"}:
             with _RUN_DISPATCH_LOCK:
@@ -1775,6 +1823,11 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
             future.add_done_callback(completed)
         except Exception:
             release_dispatch(int(run["id"]))
+    if waiting_observations:
+        try:
+            observe_operation_runs(waiting_observations,capacity_handlers)
+        except Exception:
+            logger.exception("等待原因集合观察暂不可用，任务继续排队：count=%s", len(waiting_observations))
     return submitted
 
 

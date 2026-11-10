@@ -58,8 +58,9 @@ def account_setup_unavailable(
     driver = canonical_twofa_executor(settings.get("twofa_driver"))
     return browser_operation_unavailable(
         driver,
-        # 账号配置执行器目前从运行配置读取兜底，历史 snapshot 不覆盖此值。
-        browser_fallback_enabled=bool(getattr(account, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)),
+        # 新批次已冻结执行设置；原有历史入口继续沿用当前运行配置。
+        browser_fallback_enabled=bool(settings.get("twofa_browser_fallback_enabled", True)
+            if settings.get("bulk_execution_frozen") else getattr(account, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)),
         fallback_setting="ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
     )
 

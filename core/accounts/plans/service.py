@@ -930,6 +930,7 @@ def check_registration_account_plan(
     session=None,
     timezone_offset_min: str = "-",
     trigger: str = "registration_auto",
+    config_snapshot: dict | None = None,
 ) -> dict:
     """用注册任务的同一代理同步查询套餐，返回后调用方才可释放代理租约。"""
     account_id = int(account_id)
@@ -965,6 +966,8 @@ def check_registration_account_plan(
         }
         if session is not None:
             query_kwargs["session"] = session
+        if config_snapshot is not None:
+            query_kwargs["config_snapshot"] = config_snapshot
         result = _query_account_plan(
             **query_kwargs,
         )
@@ -1107,6 +1110,10 @@ def _handle_plan_operation(context):
 
 def _retry_plan_operation(task):
     """旧 Run 首次重跑补齐新增配置，已有快照保持原选择。"""
+    from core.bulk_operations.execution import retry_managed
+    managed_retry = retry_managed(task)
+    if managed_retry is not None:
+        return managed_retry
     from core.storage.operations import store
     if account_task_store.operation_is_deactivated(task) or str(task.get("status") or "") in {
         "queued", "running", "cancelling", "settling", "stopping", "waiting",

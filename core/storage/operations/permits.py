@@ -183,23 +183,67 @@ def _record_request(cur, *, execution_key, task_type, batch_key, scopes, metadat
                  json.dumps(list(dict.fromkeys(reasons))),bool(observed_only)))
 
 
-def observe_waiting(*, execution_key: str, task_type: str, batch_key: str, metadata: Mapping,
-                    policy: Callable[[Any], tuple[list[dict], int, list[str]]]) -> dict:
-    """仅记录此刻确认的容量等待，不认领、不预约，也不参与公平候选。"""
+def observe_waiting_many(requests: list[dict], *, policy: Callable[[Any], list[tuple[list[dict], int, list[str]]]]) -> list[dict]:
+    """一次只读容量快照观察有界候选；仅原因变化或15秒续期才集合写入。"""
+    if not requests:
+        return []
     ensure_tables()
+    keys = [str(item["execution_key"]) for item in requests]
+    if len(keys) != len(set(keys)):
+        raise ValueError("同一次等待观察的执行标识不能重复")
     with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
         admission_lock(conn)
-        scopes, _revision, policy_blocks = policy(conn)
-        reasons = list(policy_blocks) + _capacity_reasons(scopes, occupied(cur))
-        cur.execute(f"SELECT 1 FROM {postgres.qualified('operation_execution_permits')} WHERE execution_key=%s AND released_at IS NULL", (execution_key,))
-        if cur.fetchone():
-            cur.execute(f"DELETE FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=%s AND observed_only IS TRUE", (execution_key,))
-            return {"blocked_by": ["execution_active"]}
-        if not reasons:
-            reasons.append("executor_capacity")
-        _record_request(cur,execution_key=execution_key,task_type=task_type,batch_key=batch_key,
-                        scopes=scopes,metadata=metadata,reasons=reasons,observed_only=True)
-        return {"blocked_by": list(dict.fromkeys(reasons))}
+        policies = policy(conn)
+        if len(policies) != len(requests):
+            raise ValueError("等待观察策略未覆盖全部执行")
+        counts = occupied(cur)
+        cur.execute(f"SELECT execution_key FROM {postgres.qualified('operation_execution_permits')} "
+                    "WHERE execution_key=ANY(%s) AND released_at IS NULL", (keys,))
+        active = {row["execution_key"] for row in cur.fetchall()}
+        cur.execute(f"SELECT *,seen_at < now()-interval '15 seconds' AS renew "
+                    f"FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=ANY(%s)", (keys,))
+        existing = {row["execution_key"]: row for row in cur.fetchall()}
+        changed, cleared, results = [], [], []
+        for request, (scopes, _revision, blocks) in zip(requests, policies):
+            key = str(request["execution_key"])
+            previous = existing.get(key)
+            if key in active:
+                if previous and previous["observed_only"]:
+                    cleared.append(key)
+                results.append({"blocked_by": ["execution_active"]})
+                continue
+            reasons = list(dict.fromkeys([*blocks, *_capacity_reasons(scopes, counts)])) or ["executor_capacity"]
+            row = {"execution_key": key, "task_type": request["task_type"],
+                   "batch_key": str(request.get("batch_key") or ""), "scopes": scopes,
+                   "dispatch_lane": str((request.get("metadata") or {}).get("dispatch_lane") or "new"),
+                   "blocked_by": reasons}
+            # 实际准入请求的公平身份、账号阻塞及seen_at均不能被纯观察改写。
+            if not previous or (previous["observed_only"] and
+                    (previous["renew"] or any(previous[field] != value for field, value in row.items()))):
+                changed.append(row)
+            results.append({"blocked_by": reasons})
+        if cleared:
+            cur.execute(f"DELETE FROM {postgres.qualified('operation_execution_requests')} "
+                        "WHERE execution_key=ANY(%s) AND observed_only IS TRUE", (cleared,))
+        if changed:
+            target = postgres.qualified('operation_execution_requests')
+            cur.execute(f"""INSERT INTO {target}
+                (execution_key,task_type,batch_key,scopes,dispatch_lane,blocked_by,observed_only)
+                SELECT execution_key,task_type,batch_key,scopes,dispatch_lane,blocked_by,TRUE
+                FROM jsonb_to_recordset(%s::jsonb) AS item(execution_key text,task_type text,
+                    batch_key text,scopes jsonb,dispatch_lane text,blocked_by jsonb)
+                ON CONFLICT(execution_key) DO UPDATE SET task_type=EXCLUDED.task_type,
+                    batch_key=EXCLUDED.batch_key,scopes=EXCLUDED.scopes,dispatch_lane=EXCLUDED.dispatch_lane,
+                    blocked_by=EXCLUDED.blocked_by,seen_at=now()
+                WHERE {target}.observed_only IS TRUE""", (json.dumps(changed),))
+        return results
+
+
+def observe_waiting(*, execution_key: str, task_type: str, batch_key: str, metadata: Mapping,
+                    policy: Callable[[Any], tuple[list[dict], int, list[str]]]) -> dict:
+    """单项兼容入口与集合观察使用同一事实和去抖规则。"""
+    return observe_waiting_many([dict(execution_key=execution_key,task_type=task_type,
+        batch_key=batch_key,metadata=dict(metadata))], policy=lambda conn: [policy(conn)])[0]
 
 
 def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: int | None,

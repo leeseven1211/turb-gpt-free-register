@@ -1082,6 +1082,7 @@ async function api(url, opts = {}) {
     const j = await r.json().catch(()=>({}));
     if (!r.ok) {
       const error = new Error(j.error || ('HTTP '+r.status));
+      error.status = r.status;
       error.code = j.code || '';
       error.fields = j.fields && typeof j.fields === 'object' ? j.fields : {};
       throw error;
@@ -1172,6 +1173,7 @@ function debounce(fn, wait=250) {
 const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
+  bulk: { title: '批量任务', description: '创建固定账号范围，追踪每轮结果与失败原因' },
   tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
   'extract-workbench': { title: '提链工作台', description: '管理提链、支付状态和 Plus 权益核验' },
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },
@@ -1180,7 +1182,7 @@ const TAB_META = {
   'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约、线路历史和请求流量' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
 };
-const NAV_ALLOWED_TABS = ['overview','register','tasks','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
+const NAV_ALLOWED_TABS = ['overview','register','bulk','tasks','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
 const NAV_HISTORY_KEY = 'gptConsoleNav';
 let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
@@ -1190,6 +1192,14 @@ function navigationModuleForTab(tab) {
 }
 function normalizeNavigationState(raw) {
   const tab = NAV_ALLOWED_TABS.includes(raw?.tab) ? raw.tab : 'overview';
+  if (tab === 'bulk') {
+    const nav = {tab, view: ['list','create','detail'].includes(raw?.view) ? raw.view : 'list'};
+    for (const key of ['batch_id','round_id','result_state','reason_code','cursor','q','operation','state','created_from','created_to']) {
+      if (raw?.[key]) nav[key] = String(raw[key]);
+    }
+    if (nav.view === 'detail' && !/^\d+$/.test(nav.batch_id || '')) return {tab, view:'list'};
+    return nav;
+  }
   const module = navigationModuleForTab(tab);
   const view = raw?.view;
   if (module && view && MODULE_VIEW_META[module]?.[view] !== undefined) return {tab, module, view};
@@ -1197,15 +1207,23 @@ function normalizeNavigationState(raw) {
 }
 function currentNavigationState() {
   const tab = NAV_ALLOWED_TABS.includes(ACTIVE_TAB) ? ACTIVE_TAB : 'overview';
+  if (tab === 'bulk' && window.BulkTasks) return normalizeNavigationState(BulkTasks.navigationState());
   const module = navigationModuleForTab(tab);
   const view = module ? document.getElementById(`tab-${module}`)?.dataset.moduleView : null;
   return normalizeNavigationState({tab, view});
 }
 function navigationHash(state) {
   const nav = normalizeNavigationState(state);
+  if (nav.tab === 'bulk') {
+    const {tab, view, ...params} = nav;
+    const query = new URLSearchParams(params).toString();
+    return `#bulk/${view}${query ? `?${query}` : ''}`;
+  }
   return `#${nav.tab}${nav.module && nav.view ? `/${encodeURIComponent(nav.view)}` : ''}`;
 }
 function parseNavigationHash(hash) {
+  const bulk = String(hash || '').match(/^#bulk(?:\/(list|create|detail))?(?:\?(.*))?$/);
+  if (bulk) return normalizeNavigationState({...Object.fromEntries(new URLSearchParams(bulk[2] || '')),tab:'bulk',view:bulk[1] || 'list'});
   const parts = String(hash || '').replace(/^#/, '').split('/').filter(Boolean);
   if (!parts.length || !NAV_ALLOWED_TABS.includes(parts[0]) || parts.length > 2) return null;
   let view = '';
@@ -1217,6 +1235,7 @@ function parseNavigationHash(hash) {
 }
 function historyNavigationState() {
   if (history.state?.[NAV_HISTORY_KEY]) {
+    if (history.state.gptConsoleNavTab === 'bulk') return normalizeNavigationState(history.state.gptConsoleBulkNav || {tab:'bulk',view:'list'});
     return normalizeNavigationState({tab: history.state.gptConsoleNavTab, view: history.state.gptConsoleNavView});
   }
   return parseNavigationHash(location.hash);
@@ -1242,6 +1261,7 @@ function recordNavigationHistory(mode = 'push') {
     [NAV_HISTORY_KEY]: true,
     gptConsoleNavTab: nav.tab,
     gptConsoleNavView: nav.view || '',
+    gptConsoleBulkNav: nav.tab === 'bulk' ? nav : null,
     gptConsoleNavIndex: nextIndex,
   };
   history[mode === 'push' ? 'pushState' : 'replaceState'](nextState, '', hash);
@@ -1249,6 +1269,7 @@ function recordNavigationHistory(mode = 'push') {
 }
 function applyNavigationState(raw) {
   const nav = normalizeNavigationState(raw);
+  if (nav.tab === 'bulk' && window.BulkTasks) BulkTasks.restoreNavigation(nav);
   // Codex 先确定归档范围，避免历史恢复时先请求上一个菜单的数据。
   if (nav.module === 'codex' && nav.view) {
     const tab = document.getElementById('tab-codex');
@@ -1341,7 +1362,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
     item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
   });
-  const contentTabs = ['overview','register','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
+  const contentTabs = ['overview','register','bulk','accounts','codex','outlook','proxy-traffic','config','extract-workbench'];
   const accountTab = $('#tab-accounts');
   if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
   if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
@@ -1359,6 +1380,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   if (tab === 'overview') ensureViewLoaded('overview', loadDashboard);
+  if (tab === 'bulk' && window.BulkTasks) void BulkTasks.activate();
   if (tab === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
