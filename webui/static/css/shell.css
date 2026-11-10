@@ -3765,3 +3765,416 @@
     padding: 10px;
   }
 }
+
+/* 移动端分页：只保留总数 + 上一页/当前页/下一页，隐藏每页条数、跳转和中间页码。 */
+@media (max-width: 560px) {
+  .jobs-v2-pager {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    row-gap: 6px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    font-size: 12px;
+  }
+  .jobs-v2-pager .pager-total {
+    flex: 1 0 100%;
+    margin-right: 0;
+    text-align: center;
+    font-size: 12px;
+  }
+  .jobs-v2-pager .pager-goto,
+  .jobs-v2-pager .pager-size,
+  .jobs-v2-pager > button:not([title]) {
+    display: none;
+  }
+  .jobs-v2-pager button,
+  .jobs-v2-pager .pager-page {
+    min-width: 44px;
+    min-height: 44px;
+    height: 44px;
+    font-size: 13px;
+  }
+}
+
+/* 移动端账号页顶部操作区：三列主操作 + 整行筛选/搜索，统一 44px 触控。 */
+@media (max-width: 560px) {
+  .accounts-command-deck #accountsToolbarV2 {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+    align-items: stretch;
+  }
+  #accountsToolbarV2:not(.has-selection) .list-selection-hint {
+    display: none;
+  }
+  #accountsToolbarV2 .list-selection-hint {
+    grid-column: 1 / -1;
+    min-height: 20px;
+    padding: 0;
+  }
+  #accountsToolbarV2 > .jobs-tb-btn {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 4px;
+    font-size: 10px;
+  }
+  #accountsToolbarV2 .acc-v2-btn-group {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  #accountsToolbarV2 .acc-v2-btn-group .jobs-tb-btn {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+  #accountsToolbarV2 .toolbar-overflow {
+    grid-column: 1 / -1;
+  }
+  #accountsToolbarV2 .toolbar-overflow > summary {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+  #accountsToolbarV2 .list-toolbar-utilities {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  #accountsToolbarV2 .account-email-status-filter {
+    grid-column: 1 / -1;
+    min-height: 44px;
+    padding: 0 10px;
+    justify-content: space-between;
+    border: 1px solid #dfe2e9;
+    border-radius: 8px;
+    background: #fff;
+  }
+  #accountsToolbarV2 .account-email-status-filter select {
+    min-height: 36px;
+  }
+  #accountsToolbarV2 .account-search-control {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  #accountsToolbarV2 .account-advanced-search {
+    min-height: 44px;
+  }
+  #accountsToolbarV2 #btnResetAccountsColumnsV2,
+  #accountsToolbarV2 #btnRefreshAccountsV2 {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+/* 移动端任务中心顶部操作区：信息行 + 2×2 批量操作 + 恢复列宽/刷新并排。 */
+@media (max-width: 560px) {
+  .account-tasks-command-deck .account-tasks-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+    align-items: stretch;
+  }
+  .account-tasks-toolbar:not(.has-selection) .list-selection-hint {
+    display: none;
+  }
+  .account-tasks-toolbar .list-selection-hint {
+    grid-column: 1 / -1;
+    min-height: 20px;
+    padding: 0;
+  }
+  .account-tasks-toolbar .selection-only {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+  .account-tasks-toolbar .list-toolbar-utilities {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .account-tasks-toolbar .account-task-timezone-hint,
+  .account-tasks-toolbar .account-task-refresh-meta {
+    grid-column: 1 / -1;
+    max-width: none;
+    white-space: normal;
+    font-size: 10px;
+    line-height: 1.4;
+  }
+  .account-tasks-toolbar #btnResetAccountTaskColumnsV2,
+  .account-tasks-toolbar #btnRefreshAccountTasks {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+/* 移动端 Codex 顶部操作区：批量按钮两列，删除整行，工具行两列。 */
+@media (max-width: 560px) {
+  .codex-command-deck #codexToolbarV2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+    align-items: stretch;
+    overflow: visible;
+  }
+  #codexToolbarV2:not(.has-selection) .list-selection-hint {
+    display: none;
+  }
+  #codexToolbarV2 .list-selection-hint {
+    grid-column: 1 / -1;
+    min-height: 20px;
+    padding: 0;
+  }
+  #codexToolbarV2 .selection-only {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+  #codexToolbarV2 #btnCodexDeleteBulkV2 {
+    grid-column: 1 / -1;
+  }
+  #codexToolbarV2 .list-toolbar-utilities {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  #codexToolbarV2 #btnResetCodexColumnsV2,
+  #codexToolbarV2 #btnRefreshCodexV2 {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+/* ===== 移动端整体收口：邮箱池 / 提链 / 代理 / 配置 / 弹窗 ===== */
+@media (max-width: 560px) {
+  /* 邮箱池顶部操作区 */
+  #outlookToolbarV2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px;
+    overflow: visible;
+    align-items: stretch;
+  }
+  #outlookToolbarV2:not(.has-selection) .list-selection-hint { display: none; }
+  #outlookToolbarV2 .list-selection-hint {
+    grid-column: 1 / -1;
+    min-height: 20px;
+    padding: 0;
+  }
+  #outlookToolbarV2 .selection-only {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+  #outlookToolbarV2 #btnDeleteSelectedOutlookV2 { grid-column: 1 / -1; }
+  #outlookToolbarV2 #btnImportOutlookV2 { margin-left: 0; }
+  #outlookToolbarV2 #btnOpenButlerImportPool { grid-column: 1 / -1; }
+  #outlookToolbarV2 .list-toolbar-utilities {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  #outlookToolbarV2 #btnResetOutlookColumnsV2,
+  #outlookToolbarV2 #btnRefreshOutlookV2 { width: 100%; min-height: 44px; }
+
+  /* 邮箱资源卡片：移动端单列，标题与库存标签分开 */
+  .mail-source-cards { grid-template-columns: minmax(0, 1fr); }
+  .mail-source-card-head { flex-wrap: wrap; align-items: flex-start; }
+  .mail-source-card-head strong { white-space: normal; overflow: visible; text-overflow: clip; }
+
+  /* 提链工作台工具栏 */
+  .extract-workbench-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+  .extract-workbench-toolbar > .btn { width: 100%; min-height: 44px; }
+  .extract-workbench-batch-query {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .extract-workbench-batch-picker { grid-column: 1 / -1; }
+  .extract-workbench-batch-picker select { width: 100%; min-height: 44px; }
+  .extract-workbench-batch-query .btn { width: 100%; min-height: 44px; padding-inline: 4px; font-size: 11px; }
+  .extract-workbench-filters > select,
+  .extract-workbench-search { min-height: 44px; }
+  .extract-workbench-search button { width: 44px; min-height: 44px; }
+  .extract-workbench-pagination .btn { min-height: 44px; }
+  .extract-workbench-create-dialog .extract-workbench-dialog-footer { flex-direction: column-reverse; gap: 8px; }
+  .extract-workbench-create-dialog .extract-workbench-dialog-footer > div { display: grid; grid-template-columns: 1fr; width: 100%; }
+  .extract-workbench-create-dialog .extract-workbench-dialog-footer .btn { width: 100%; min-height: 44px; }
+
+  /* 代理与流量 */
+  .proxy-traffic-view-bar { flex-wrap: wrap; align-items: stretch; gap: 6px; }
+  .proxy-traffic-view-tabs { flex: 1 1 100%; overflow-x: auto; }
+  .proxy-traffic-view-actions {
+    flex: 1 1 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .proxy-traffic-view-actions button { width: 100%; min-height: 44px; }
+  .proxy-traffic-summary > div { padding: 10px 12px; }
+  .proxy-traffic-summary strong { font-size: 16px; }
+  .proxy-pool-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-pool-country-cards { grid-template-columns: minmax(0, 1fr); }
+
+  /* 配置页保存栏 */
+  #tab-config .config-save-bar-v2 {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  #tab-config .config-save-bar-inner-v2 {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px;
+  }
+  #tab-config .config-save-bar-actions-v2 { display: grid; grid-template-columns: 1fr 1fr; }
+  #tab-config .config-save-bar-actions-v2 button { width: 100%; min-height: 44px; }
+
+  /* 弹窗标题栏与底部按钮 */
+  .modal-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .modal-header h2 { flex: 1 1 100%; font-size: 16px; }
+  .modal-header .jobs-tb-btn { min-height: 44px; }
+  .account-detail-head h2 {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .outlook-import-foot { flex-wrap: wrap; }
+  .outlook-import-foot .jobs-tb-btn { flex: 1 1 100%; min-height: 44px; }
+  #logPanel .log, #liveLogPanel .log, #accountTaskLogPanel .log {
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  #accountTaskLogPanel .account-task-detail-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  #accountTaskLogPanel .account-task-run-picker,
+  #accountTaskLogPanel .account-task-run-picker select { width: 100%; min-height: 44px; }
+  .overview-customizer-list { padding-bottom: 12px; }
+}
+
+/* 提链工作台：页面样式表在本文件之后加载，这里用 id 前缀提高优先级。 */
+@media (max-width: 560px) {
+  #extractWorkbenchRoot .extract-workbench-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+  #extractWorkbenchRoot .extract-workbench-toolbar > .btn {
+    width: 100%;
+    min-height: 44px;
+  }
+  #extractWorkbenchRoot .extract-workbench-batch-query {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    justify-content: stretch;
+  }
+  #extractWorkbenchRoot .extract-workbench-batch-picker {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 4px;
+  }
+  #extractWorkbenchRoot .extract-workbench-batch-picker > span { display: block; }
+  #extractWorkbenchRoot .extract-workbench-batch-picker select {
+    width: 100%;
+    min-height: 44px;
+  }
+  #extractWorkbenchRoot .extract-workbench-batch-query .btn {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 4px;
+    font-size: 11px;
+    white-space: normal;
+  }
+  #extractWorkbenchRoot .extract-workbench-status-tabs {
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+  #extractWorkbenchRoot .extract-workbench-status-tabs button { min-height: 44px; }
+  #extractWorkbenchRoot .extract-workbench-filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  #extractWorkbenchRoot .extract-workbench-filters > select {
+    width: 100%;
+    min-height: 44px;
+  }
+  #extractWorkbenchRoot .extract-workbench-search {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-height: 44px;
+  }
+  #extractWorkbenchRoot .extract-workbench-search button { width: 44px; min-height: 44px; }
+  #extractWorkbenchRoot .extract-workbench-search input { min-height: 44px; }
+  #extractWorkbenchRoot .extract-workbench-pagination .btn { min-height: 44px; }
+}
+
+/* 配置页：二级类型切换按钮在手机上补足触控高度。 */
+@media (max-width: 560px) {
+  #tab-config .config-type-tabs-v2 button,
+  #tab-config .config-subtabs-v2 button,
+  #tab-config .config-section-tabs-v2 button { min-height: 44px; }
+}
+
+@media (max-width: 560px) {
+  #outlookToolbarV2 .jobs-tb-btn { min-height: 44px; }
+  #outlookPanelV2 .column-filter-trigger { min-height: 44px; }
+  #outlookPanelV2 .outlook-row-actions .jobs-tb-btn { min-height: 36px; }
+}
+
+@media (max-width: 560px) {
+  #tab-config .config-card-v2 button,
+  #tab-config .config-card-v2 .btn { min-height: 40px; }
+  #outlookPanelV2 .outlook-table-v2 button.jobs-tb-btn { min-height: 36px; }
+  #outlookPanelV2 .column-filters-reset { min-height: 32px; }
+}
+
+@media (max-width: 560px) {
+  #accountInspectionHistory .jobs-tb-btn,
+  #accountInspectionFailures .jobs-tb-btn { min-height: 44px; }
+  #overviewCustomizer .overview-customizer-item button { min-width: 40px; min-height: 40px; }
+}

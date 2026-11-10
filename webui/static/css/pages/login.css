@@ -325,3 +325,18 @@
 
       .page { padding-block: 28px; }
     }
+
+/* 移动端登录页：键盘弹出时允许滚动，避免按钮被顶出视口。 */
+@media (max-width: 560px) {
+  body {
+    min-height: 100dvh;
+    align-items: flex-start;
+    overflow-y: auto;
+  }
+  .page {
+    min-height: 100dvh;
+    justify-content: center;
+    padding: 24px 0 calc(24px + env(safe-area-inset-bottom));
+  }
+  .card { padding: 28px 20px 24px; }
+}
