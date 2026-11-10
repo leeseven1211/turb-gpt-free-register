@@ -1520,7 +1520,7 @@ function renderAccounts() {
       r.email_source,
       _htmlText(_planCell(r)),
       r.totp_enabled ? '2FA 已验证' : '2FA 未验证',
-      _htmlText(_codexCellV2(r)),
+      (() => { const codex = _htmlText(_codexCellV2(r)); return codex && codex !== '-' ? `Codex ${codex}` : ''; })(),
     ].filter(value => value && value !== '-').join(' · ');
     return `
     <tr>
