@@ -348,6 +348,19 @@ def account_query_facets(spec: dict) -> dict:
         return _facet_dict(cur.fetchall())
 
 
+def account_query_count(spec: dict) -> int:
+    """与列表同一套谓词，只返回命中总数，供批量创建页显示实时范围。"""
+    from core.accounts.query import compile_query
+    try:
+        sql, params = compile_query(spec, strict=False)
+    except Exception:
+        return 0
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {_q(record_store.ACCOUNTS)} a WHERE {sql}", params)
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
 def list_accounts(
     request: PageRequest,
     *,

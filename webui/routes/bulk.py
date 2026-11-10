@@ -203,6 +203,10 @@ def create_bulk_blueprint(_context):
             data = cached[1]
         else:
             data = {"facets": admin_repository.account_query_facets(spec), "as_of": datetime.now().astimezone().isoformat()}
+            try:
+                data["matched"] = admin_repository.account_query_count(spec)
+            except Exception:
+                data["matched"] = None
             with _FACET_LOCK:
                 if len(_FACET_CACHE) >= 128:
                     _FACET_CACHE.clear()
