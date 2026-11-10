@@ -1994,10 +1994,12 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         from core.maintenance import sentinel
         from core.integrations.sub2api import monitor as sub2api_monitor
         from core.integrations.sub2api import manual_upload
+        from core.integrations.c2a import manual_sync as c2a_manual_sync
 
         sentinel.register_handler()
         sub2api_monitor.register_handler()
         manual_upload.register_handler()
+        c2a_manual_sync.register_handler()
         recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
         if recovered_operation_runs:
             active_logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)

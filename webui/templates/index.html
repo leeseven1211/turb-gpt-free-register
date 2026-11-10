@@ -12,12 +12,37 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
-    #accountsPanelV2 > #accountRegistrationRetryResultV2 { flex-wrap: wrap; overflow: visible; align-items: center; }
-    #accountRegistrationRetryResultV2 details { min-width: 0; max-width: 100%; font-size: 12px; }
-    #accountRegistrationRetryResultV2 summary { cursor: pointer; }
-    #accountRegistrationRetryResultV2 ul { max-height: 220px; overflow: auto; padding-left: 22px; margin: 8px 0 0; }
-    #accountRegistrationRetryResultV2 li { margin-bottom: 6px; overflow-wrap: anywhere; }
-    #accountRegistrationRetryResultV2 :is(button, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
+    #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
+    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
+    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) summary { cursor: pointer; }
+    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) ul { max-height: 220px; overflow: auto; padding-left: 22px; margin: 8px 0 0; }
+    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) li { margin-bottom: 6px; overflow-wrap: anywhere; }
+    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) :is(button, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
+    #c2aReimportConfirmModal { width: min(620px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); color: var(--ui-color-text); background: var(--ui-color-surface); box-shadow: var(--ui-shadow-md); }
+    #c2aReimportConfirmModal::backdrop { background: rgb(12 20 37 / 52%); }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px; border-bottom: 1px solid var(--ui-color-border); }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-kicker { margin: 0 0 6px; color: var(--ui-color-text-muted); font-size: 11px; font-weight: 700; }
+    #c2aReimportConfirmModal h3 { margin: 0; font-size: 18px; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-head p:last-child { margin: 6px 0 0; color: var(--ui-color-text-secondary); font-size: 13px; line-height: 1.55; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-close { flex: 0 0 auto; min-width: 36px; min-height: 36px; padding: 4px 10px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); color: var(--ui-color-text-secondary); background: var(--ui-color-surface); font: inherit; cursor: pointer; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-body { display: grid; gap: 12px; max-height: min(58dvh, 520px); padding: 20px; overflow: auto; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-scope { margin: 0; font-size: 14px; line-height: 1.55; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-scope strong { font-variant-numeric: tabular-nums; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-note { padding: 12px 14px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface-raised, var(--ui-color-surface)); }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-note h4 { margin: 0 0 6px; font-size: 14px; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-note p, #c2aReimportConfirmModal .c2a-reimport-confirm-note ul { margin: 0; color: var(--ui-color-text-secondary); font-size: 13px; line-height: 1.6; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-note ul { padding-left: 20px; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-note--warning { border-color: var(--ui-color-warning-border, var(--ui-color-border-strong)); background: var(--ui-color-warning-soft); }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-status { margin: 0; color: var(--ui-color-text-secondary); font-size: 13px; line-height: 1.5; }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--ui-color-border); }
+    #c2aReimportConfirmModal .c2a-reimport-confirm-foot .jobs-tb-btn { min-height: 40px; }
+    #c2aReimportConfirmModal :is(button, summary):focus-visible { outline: 3px solid var(--ui-color-brand); outline-offset: 3px; }
+    #c2aReimportConfirmModal :disabled { opacity: .6; cursor: not-allowed; }
+    @media (max-width: 640px) {
+      #c2aReimportConfirmModal .c2a-reimport-confirm-head, #c2aReimportConfirmModal .c2a-reimport-confirm-body { padding: 16px; }
+      #c2aReimportConfirmModal .c2a-reimport-confirm-foot { padding: 12px 16px; }
+      #c2aReimportConfirmModal .c2a-reimport-confirm-foot .jobs-tb-btn { flex: 1 1 0; min-height: 44px; justify-content: center; }
+    }
     #butlerImportModal { padding: 0; margin: auto; width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - 32px); color: var(--ui-color-text); }
     #butlerImportModal:not([open]) { display: none; }
     #butlerImportModal::backdrop { background: rgba(15, 23, 42, .45); }
@@ -475,6 +500,7 @@
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">操作</span>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="按已保存的刷新驱动获取最新 AT">刷新 AT</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="用本地当前 AT 原位更新唯一同邮箱的 C2A 账号；不会刷新本地 AT">同步到 C2A</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddTwofaSelectedAccountsV2" disabled title="只给选中账号补充 Authenticator 2FA">补 2FA</button>
@@ -527,6 +553,7 @@
       <div class="column-filter-summary account-search-summary" id="accountSearchSummaryV2" aria-label="已生效的高级搜索条件" hidden></div>
       <div class="column-filter-summary" data-filter-summary="accounts" hidden></div>
       <div class="column-filter-summary account-search-summary" id="accountRegistrationRetryResultV2" role="status" aria-live="polite" hidden></div>
+      <div class="column-filter-summary account-search-summary" id="accountC2aReimportResultV2" role="status" aria-live="polite" hidden></div>
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2" data-resizable-table="accounts" data-filter-multiple="true">
           <colgroup>
@@ -571,6 +598,39 @@
       </div>
       <div class="account-detail-body" id="accountDetailBody"></div>
     </aside>
+    <dialog id="c2aReimportConfirmModal" aria-labelledby="c2aReimportConfirmTitle" aria-describedby="c2aReimportConfirmDescription">
+      <div class="c2a-reimport-confirm-head">
+        <div>
+          <p class="c2a-reimport-confirm-kicker">本地 AT · 远端账号更新</p>
+          <h3 id="c2aReimportConfirmTitle">同步到 C2A</h3>
+          <p id="c2aReimportConfirmDescription">只把本地当前 AT 更新到同邮箱唯一匹配的既有 C2A 账号。</p>
+        </div>
+        <button type="button" class="c2a-reimport-confirm-close" id="btnCloseC2aReimportV2" aria-label="关闭 C2A 同步确认窗口">×</button>
+      </div>
+      <div class="c2a-reimport-confirm-body">
+        <p class="c2a-reimport-confirm-scope">将为 <strong id="c2aReimportConfirmCountV2">0</strong> 个已选账号创建同步任务。</p>
+        <section class="c2a-reimport-confirm-note" aria-labelledby="c2aReimportConfirmScopeTitle">
+          <h4 id="c2aReimportConfirmScopeTitle">更新范围</h4>
+          <ul>
+            <li>任务执行时读取本地保存的当前 AT；不会刷新本地 AT，也不会重新登录。</li>
+            <li>只按完整邮箱唯一匹配既有 C2A 账号，并更新该账号的 AT；不会创建、删除、分组、代理、启用或更新 refresh_token。</li>
+          </ul>
+        </section>
+        <section class="c2a-reimport-confirm-note" aria-labelledby="c2aReimportConfirmSafetyTitle">
+          <h4 id="c2aReimportConfirmSafetyTitle">提交安全条件</h4>
+          <p>任务写入前会确认 C2A 的“自动移除异常账号”和“自动移除限流账号”都已关闭；无法确认或任一开关开启时，不会发送更新。执行期间请保持两个开关关闭。</p>
+        </section>
+        <section class="c2a-reimport-confirm-note c2a-reimport-confirm-note--warning" aria-labelledby="c2aReimportConfirmSideEffectTitle">
+          <h4 id="c2aReimportConfirmSideEffectTitle">C2A 端状态可能变化</h4>
+          <p>当前 C2A 通用更新接口会按自身规则清除凭据错误。AT 更新确认后，异常账号可能恢复正常；最终以 C2A 状态和任务回执为准。</p>
+        </section>
+        <p class="c2a-reimport-confirm-status" id="c2aReimportConfirmStatusV2" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+      </div>
+      <div class="c2a-reimport-confirm-foot">
+        <button type="button" class="jobs-tb-btn" id="btnCancelC2aReimportV2">取消</button>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnConfirmC2aReimportV2">提交并入队</button>
+      </div>
+    </dialog>
     <style>
       #accountInspectionStart, #accountInspectionHistory, #accountInspectionFailures { padding: 20px; max-height: 88dvh; overflow: auto; }
       #accountInspectionHistory, #accountInspectionFailures { width: min(1180px, calc(100vw - 28px)); }
@@ -1140,13 +1200,13 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261110-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261110-c2a-reimport-4-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261110-bulk-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261110-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261110-c2a-reimport-4-bulk-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261110-c2a-reimport-4-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261109-delete-evidence-v1') }}"></script>

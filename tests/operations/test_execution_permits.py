@@ -391,12 +391,13 @@ class ExecutionPermitTests(PostgresTestCase):
             task_gateway.stop_dispatcher()
 
     def test_restart_registers_and_executes_existing_peripheral_queue_without_new_requests(self):
+        from core.integrations.c2a import manual_sync
         from core.integrations.sub2api import manual_upload, monitor
         from core.maintenance import sentinel
         from webui import runtime
 
         self.policy(GLOBAL_TASK_WORKERS=3)
-        types = ("sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload")
+        types = ("sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload", "c2a_session_reimport")
         tasks = [store.create_runtime_task(task_type=kind, account_id=None, email="", data={}) for kind in types]
         for kind in types:
             task_gateway.unregister_operation_handler(kind)
@@ -412,6 +413,7 @@ class ExecutionPermitTests(PostgresTestCase):
             "core.accounts.deactivation.mail_scan.start_periodic_scanner",
             "core.accounts.token_refresh.start_periodic_refresher", "core.codex.token_refresh_service.start_periodic_refresher",
             "core.integrations.sub2api.jobs.start_periodic_sync", "core.integrations.sub2api.monitor.start_periodic_monitor",
+            "core.bulk_operations.service.start_workers",
             "core.accounts.auth_context_cleanup.start_periodic_cleanup", "core.operations.retention.start_periodic_cleanup",
             "core.email.email_butler.usage_reports.start_worker",
         )
@@ -422,6 +424,7 @@ class ExecutionPermitTests(PostgresTestCase):
                 stack.enter_context(patch.object(sentinel, "_handle_check", side_effect=handler))
                 stack.enter_context(patch.object(monitor, "_handle_scan", side_effect=handler))
                 stack.enter_context(patch.object(manual_upload, "_handle", side_effect=handler))
+                stack.enter_context(patch.object(manual_sync, "_handle", side_effect=handler))
                 for target in stop_targets:
                     stack.enter_context(patch(target, return_value={}))
                 stack.enter_context(patch.object(runtime.sms_provider, "start_cancel_worker"))
@@ -432,10 +435,10 @@ class ExecutionPermitTests(PostgresTestCase):
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline:
                     states = [store.get_run(task["run"]["id"])["status"] for task in tasks]
-                    if states == ["success"] * 3 and not concurrency.active_execution_keys():
+                    if states == ["success"] * len(types) and not concurrency.active_execution_keys():
                         break
                     time.sleep(.05)
-                self.assertEqual(["success"] * 3, states)
+                self.assertEqual(["success"] * len(types), states)
                 self.assertCountEqual(types, handled)
         finally:
             task_gateway.stop_dispatcher()

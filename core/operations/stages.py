@@ -91,6 +91,9 @@ STAGES: dict[str, dict[str, str]] = {
     "credential_confirm": {"label": "确认远端凭证", "group": "codex"},
     "credential_persist": {"label": "保存凭证", "group": "codex"},
     "sub2api_sync": {"label": "上传并启用 Sub2API", "group": "codex"},
+    "c2a_safety": {"label": "确认 C2A 安全策略", "group": "codex"},
+    "c2a_resolve": {"label": "定位 C2A 账号", "group": "codex"},
+    "c2a_update": {"label": "更新 C2A AT", "group": "codex"},
     "cancelling": {"label": "正在停止", "group": "system"},
     "codex": {"label": "Codex 授权", "group": "codex"},
     "plan": {"label": "生成补全计划", "group": "account"},
@@ -196,6 +199,7 @@ TASK_TEMPLATES: _FLOW = {
     "live_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("access_token", depends_on=("network",))),
     "token_refresh": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge", depends_on=("network",)), _s("refresh_token", depends_on=("authenticate",)), _s("token", depends_on=("refresh_token",))),
     "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token", depends_on=("preflight",)), _s("credential", "credential_confirm", "credential_persist", depends_on=("refresh_token",))),
+    "c2a_session_reimport": _flow(_s("preflight"), _s("c2a_resolve", depends_on=("preflight",)), _s("c2a_safety", depends_on=("c2a_resolve",)), _s("c2a_update", depends_on=("c2a_safety",))),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
         _step("refresh_token", "刷新 AT", "account", "refresh_token", "authenticate", "login", "login_password",

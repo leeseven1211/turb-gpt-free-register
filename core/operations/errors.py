@@ -2303,6 +2303,65 @@ def _sub2api_error_projection(raw: str, *, error_code: str, stage: str, summary:
     return projection
 
 
+_C2A_ERROR_DETAILS = {
+    "c2a_timeout": ("transport", "C2A-NET-001", "C2A 请求超时"),
+    "c2a_connection_failed": ("transport", "C2A-NET-002", "无法连接 C2A 管理接口"),
+    "c2a_request_failed": ("transport", "C2A-NET-003", "C2A 管理接口网络请求失败"),
+    "c2a_rate_limited": ("transport", "C2A-NET-004", "C2A 管理接口请求过于频繁"),
+    "c2a_server_error": ("transport", "C2A-NET-005", "C2A 管理接口暂时不可用"),
+    "c2a_http_error": ("http", "C2A-HTTP-001", "C2A 管理接口返回 HTTP 错误"),
+    "c2a_auth_rejected": ("auth", "C2A-AUTH-001", "C2A 管理接口鉴权失败或权限不足"),
+    "c2a_update_rejected": ("remote_rejected", "C2A-REMOTE-001", "C2A 拒绝更新 Access Token"),
+    "c2a_remote_account_missing": ("remote_rejected", "C2A-REMOTE-002", "C2A 目标账号已不存在"),
+    "c2a_update_unconfirmed": ("confirmation", "C2A-CONFIRM-001", "C2A 未返回可确认的 Access Token 更新回执"),
+    "c2a_remote_policy_unverified": ("safety", "C2A-SAFE-001", "未能确认 C2A 已关闭自动清理策略，未更新远端账号"),
+    "c2a_remote_auto_removal_enabled": ("safety", "C2A-SAFE-002", "C2A 自动移除异常或限流账号已开启，未更新远端账号"),
+    "c2a_config_invalid": ("configuration", "C2A-CONFIG-001", "C2A API 地址、管理员 Key 或超时配置无效"),
+    "c2a_backend_changed": ("configuration", "C2A-CONFIG-002", "C2A 目标已变化，原任务未写入远端"),
+    "c2a_response_invalid": ("contract", "C2A-CONTRACT-001", "C2A 响应格式无效"),
+    "c2a_pagination_limit": ("contract", "C2A-CONTRACT-002", "C2A 账号查询超过分页保护上限"),
+    "c2a_account_identity_invalid": ("local_policy", "C2A-LOCAL-001", "账号邮箱身份无效，未查询 C2A"),
+    "c2a_account_missing": ("contract", "C2A-CONTRACT-003", "C2A 中未找到同邮箱账号，未创建新账号"),
+    "c2a_account_ambiguous": ("contract", "C2A-CONTRACT-004", "C2A 中同一邮箱存在多条账号，未覆盖任何账号"),
+    "c2a_remote_account_id_invalid": ("contract", "C2A-CONTRACT-005", "C2A 目标账号管理 ID 无效"),
+    "c2a_local_access_token_missing": ("credential", "C2A-CRED-001", "本地账号缺少可同步的 Access Token"),
+    "c2a_local_account_missing": ("local_policy", "C2A-LOCAL-002", "本地账号已不存在，未更新 C2A"),
+    "c2a_local_account_identity_invalid": ("local_policy", "C2A-LOCAL-003", "本地账号缺少有效邮箱，未更新 C2A"),
+    "c2a_local_at_missing": ("credential", "C2A-CRED-002", "本地账号没有可重新导入的 AT"),
+    "c2a_local_at_expired": ("credential", "C2A-CRED-003", "本地 AT 已过期，未覆盖 C2A 旧 AT"),
+    "c2a_local_at_unverified": ("credential", "C2A-CRED-004", "本地 AT 的有效期或身份无法解析，请先刷新 AT"),
+    "c2a_local_at_identity_mismatch": ("identity", "C2A-ID-001", "本地 AT 身份与账号邮箱不一致"),
+    "c2a_local_identity_changed": ("identity", "C2A-ID-002", "本地账号邮箱已变化，未覆盖原 C2A 目标"),
+    "c2a_account_deactivated": ("local_policy", "C2A-POLICY-001", "关联账号已确认停用，未更新 C2A"),
+    "c2a_local_receipt_writeback_failed": ("local_writeback", "C2A-LOCAL-004", "C2A 更新已确认，但本地回执写回未确认"),
+    "c2a_manual_execution_failed": ("local_execution", "C2A-LOCAL-005", "C2A 重新导入本地执行异常，具体阶段已保留"),
+    "c2a_client_error": ("local_execution", "C2A-LOCAL-006", "C2A 客户端处理异常，尚无更多远端证据"),
+    "c2a_manual_queue_failed": ("local_execution", "C2A-LOCAL-007", "C2A 重新导入任务入队失败"),
+    "c2a_local_account_id_invalid": ("local_policy", "C2A-LOCAL-008", "账号 ID 必须是正整数，未创建同步任务"),
+    "c2a_manual_queue_busy": ("local_policy", "C2A-LOCAL-009", "该账号已有 C2A 重新导入任务，未重复入队"),
+    "c2a_manual_queue_deferred": ("local_execution", "C2A-LOCAL-010", "C2A 重新导入任务暂未入队"),
+}
+
+
+def _c2a_error_projection(raw: str, *, error_code: str, stage: str, summary: dict) -> dict | None:
+    code = str(summary.get("error_code") or error_code or "")
+    detail = _C2A_ERROR_DETAILS.get(code)
+    if detail is None:
+        return None
+    category, display, message = detail
+    c2a_stage = str(summary.get("stage") or stage or "c2a_update")
+    if code == "c2a_timeout":
+        write_may_have_started = bool(summary.get("remote_update_started")) and c2a_stage in {"c2a_update", "update_account"}
+        message = "C2A 更新请求超时，远端结果待确认" if write_may_have_started else "C2A 请求超时，未更新远端账号"
+    projection = _error_projection(
+        f"external.c2a.{category}", "c2a", "C2A", message,
+        stage=c2a_stage, error_code=code,
+        raw=raw, summary=message, display_code=display,
+    )
+    projection.update(cause_code=code, cause_display_code=display, cause_summary=message)
+    return projection
+
+
 _CONCURRENCY_ERROR_DETAILS = {
     "concurrency_policy_invalid": ("configuration", "CFG-CONC-001", "并发策略数值或执行范围无效"),
     "concurrency_policy_missing": ("configuration", "CFG-CONC-002", "任务类型尚未登记并发策略"),
@@ -2431,6 +2490,12 @@ def classify_task_error(
             sub2api_projection.update(reconcile_required=True, retryability="manual_only",
                                      remote_state_impact="unknown", next_action="manual_reconcile")
         return sub2api_projection
+    c2a_projection = _c2a_error_projection(raw, error_code=error_code, stage=stage, summary=summary_data)
+    if c2a_projection is not None:
+        if reconcile_required:
+            c2a_projection.update(reconcile_required=True, retryability="manual_only",
+                                  remote_state_impact="unknown", next_action="manual_reconcile")
+        return c2a_projection
     recovery_projection = _password_recovery_error_projection(
         raw, stage=stage, error_code=error_code, summary=summary_data,
     )

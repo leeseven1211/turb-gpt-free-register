@@ -216,7 +216,7 @@ def _codex_retry_status(driver_override: str | None = None) -> dict[str, Any]:
 
 
 def feature_availability() -> dict[str, Any]:
-    from config import codex, email, extract_link, sub2api, roxybrowser
+    from config import c2a, codex, email, extract_link, sub2api, roxybrowser
     from core.accounts.liveness import service as live_service
     from core.accounts.liveness.router import resolve_driver, LiveCheckDriverError
     from config import account as account_cfg
@@ -269,6 +269,10 @@ def feature_availability() -> dict[str, Any]:
     sub2_ok, sub2_reason = _all_present([
         ("SUB2API_API_BASE", getattr(sub2api, "SUB2API_API_BASE", "") or getattr(sub2api, "SUB2API_API_URL", "")),
     ])
+    c2a_ok, c2a_reason = _all_present([
+        ("C2A_API_BASE", getattr(c2a, "C2A_API_BASE", "")),
+        ("C2A_API_KEY", getattr(c2a, "C2A_API_KEY", "")),
+    ])
     cpa_ok, cpa_reason = _all_present([
         ("CPA_MANAGEMENT_URL", getattr(codex, "CPA_MANAGEMENT_URL", "")),
         ("CPA_MANAGEMENT_KEY", getattr(codex, "CPA_MANAGEMENT_KEY", "")),
@@ -309,6 +313,7 @@ def feature_availability() -> dict[str, Any]:
         "codex_retry": _codex_retry_status(),
         "extract_link": _feature(extract_ok, extract_reason),
         "sub2_upload": _feature(sub2_ok, sub2_reason),
+        "c2a_sync": _feature(c2a_ok, c2a_reason),
         "cpa_download": _feature(cpa_ok, cpa_reason),
         "deactivation_mail": _feature(deactivation_ready, "Email Butler v2 不提供封号邮件扫描；请使用原固定 IMAP 或 Cloudflare 扫描连接"),
         "proxy_provider_test": _feature(proxy_test_ok, proxy_test_reason),

@@ -41,6 +41,15 @@ from webui.route_helpers import _account_secret_value, _compact_account_for_list
 
 logger = logging.getLogger(__name__)
 
+
+def _strict_positive_account_id(value):
+    """只接受 JSON 正整数或规范十进制字符串，避免 bool/浮点数误指向账号。"""
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
+        return int(value)
+    raise ValueError("账号 ID 必须是正整数")
+
 def create_accounts_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("accounts", __name__)
     logger = context.logger
@@ -1469,6 +1478,131 @@ def create_accounts_blueprint(context: WebUIContext):
             "ok": True,
             "accepted": True, "status": "queued", "queued": queued, "queued_count": len(queued),
             "uploaded": [], "uploaded_count": 0,
+            "failed": failed,
+            "failed_count": len(failed),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }), 202
+
+    @bp.post("/api/accounts/<int:acc_id>/c2a/sync")
+    def api_account_c2a_sync(acc_id: int):
+        """将一个本地账号的当前 AT 原位更新到唯一同邮箱 C2A 账号。"""
+        unavailable = _feature_unavailable("c2a_sync")
+        if unavailable:
+            return unavailable
+        from core.integrations.c2a import client as c2a_client
+        from core.integrations.c2a import manual_sync
+
+        account = db.get_account(acc_id)
+        if not account:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        try:
+            queued = manual_sync.queue_account(account)
+        except (manual_sync.C2AReimportError, c2a_client.C2AError, ValueError) as exc:
+            return jsonify({
+                "ok": False,
+                "error_code": getattr(exc, "code", "c2a_manual_queue_failed"),
+                "error": str(exc),
+            }), 400
+        except Exception:
+            logger.exception("C2A 单账号重新导入入队失败：account_id=%s", acc_id)
+            return jsonify({
+                "ok": False,
+                "error_code": "c2a_manual_queue_failed",
+                "error": "C2A 重新导入入队失败，请查看服务日志",
+            }), 500
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **queued}), 409 if queued.get("busy") else 400
+        return jsonify({
+            "ok": True,
+            **queued,
+            "account_id": acc_id,
+            "email": account.get("email"),
+            "message": "C2A 重新导入已入队，请在任务中心查看最终结果",
+        }), 202
+
+    @bp.post("/api/accounts/c2a/sync-bulk")
+    def api_accounts_c2a_sync_bulk():
+        """批量入队 C2A AT 原位更新。Body: {account_ids:[...]}。"""
+        unavailable = _feature_unavailable("c2a_sync")
+        if unavailable:
+            return unavailable
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多提交 500 个账号"}), 400
+
+        from core.integrations.c2a import client as c2a_client
+        from core.integrations.c2a import manual_sync
+
+        queued, failed, skipped = [], [], []
+        seen = set()
+        for index, raw in enumerate(ids, start=1):
+            try:
+                acc_id = _strict_positive_account_id(raw)
+            except ValueError:
+                skipped.append({
+                    "input_index": index,
+                    "error_code": "c2a_local_account_id_invalid",
+                    "reason": "账号 ID 必须是正整数",
+                })
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            account = db.get_account(acc_id)
+            if not account:
+                skipped.append({
+                    "id": acc_id,
+                    "error_code": "c2a_local_account_missing",
+                    "reason": "账号不存在",
+                })
+                continue
+            try:
+                result = manual_sync.queue_account(account)
+                if not result.get("accepted"):
+                    busy = bool(result.get("busy"))
+                    skipped.append({
+                        "id": acc_id,
+                        "email": account.get("email"),
+                        "error_code": result.get("error_code") or (
+                            "c2a_manual_queue_busy" if busy else "c2a_manual_queue_deferred"
+                        ),
+                        "reason": result.get("error") or (
+                            "该账号已有 C2A 重新导入任务" if busy else "账号任务暂不可入队"
+                        ),
+                        "task_id": result.get("task_id"),
+                        "run_id": result.get("run_id"),
+                    })
+                    continue
+                queued.append({"id": acc_id, "email": account.get("email"), **result})
+            except (manual_sync.C2AReimportError, c2a_client.C2AError, ValueError) as exc:
+                failed.append({
+                    "id": acc_id,
+                    "email": account.get("email"),
+                    "error_code": getattr(exc, "code", "c2a_manual_queue_failed"),
+                    "error": str(exc),
+                })
+            except Exception:
+                logger.exception("C2A 批量重新导入入队失败：account_id=%s", acc_id)
+                failed.append({
+                    "id": acc_id,
+                    "email": account.get("email"),
+                    "error_code": "c2a_manual_queue_failed",
+                    "error": "C2A 重新导入入队失败，请查看服务日志",
+                })
+        return jsonify({
+            "ok": True,
+            "accepted": True,
+            "status": "queued",
+            "queued": queued,
+            "queued_count": len(queued),
+            "updated": [],
+            "updated_count": 0,
             "failed": failed,
             "failed_count": len(failed),
             "skipped": skipped,

@@ -1557,7 +1557,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
   const v2Ids = [
     'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnEmailChangeSelectedV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
-    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnRetrySelectedRegistrationV2', 'btnUploadSelectedCodexSub2V2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
+    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnRetrySelectedRegistrationV2', 'btnUploadSelectedCodexSub2V2', 'btnReimportSelectedC2aV2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
     'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
     'btnCopySelectedExtractLinksV2',
     'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
@@ -2435,6 +2435,216 @@ async function uploadSelectedCodexSub2() {
   }
 }
 
+const C2A_REIMPORT_TASK_TYPE = 'c2a_session_reimport';
+const C2A_REIMPORT_DIALOG = {ids: [], trigger: null, submitting: false};
+
+function c2aReimportDialogElements() {
+  return {
+    dialog: $('#c2aReimportConfirmModal'),
+    count: $('#c2aReimportConfirmCountV2'),
+    status: $('#c2aReimportConfirmStatusV2'),
+    close: $('#btnCloseC2aReimportV2'),
+    cancel: $('#btnCancelC2aReimportV2'),
+    confirm: $('#btnConfirmC2aReimportV2'),
+  };
+}
+
+function setC2aReimportDialogSubmitting(submitting) {
+  const {close, cancel, confirm} = c2aReimportDialogElements();
+  if (close) close.disabled = submitting;
+  if (cancel) cancel.disabled = submitting;
+  if (confirm) {
+    confirm.disabled = submitting;
+    confirm.textContent = submitting ? '正在提交…' : '提交并入队';
+  }
+}
+
+function restoreC2aReimportTrigger() {
+  const trigger = C2A_REIMPORT_DIALOG.trigger;
+  C2A_REIMPORT_DIALOG.ids = [];
+  C2A_REIMPORT_DIALOG.trigger = null;
+  C2A_REIMPORT_DIALOG.submitting = false;
+  if (typeof trigger?.focus !== 'function') return;
+  // 对话框关闭会使折叠菜单收起；下一帧改将焦点交给仍可见的开关。
+  trigger.focus({preventScroll: true});
+  if (typeof requestAnimationFrame !== 'function') return;
+  requestAnimationFrame(() => {
+    const moreActions = $('#accountsMoreActionsV2');
+    const fallback = moreActions?.open === false ? moreActions.querySelector('summary') : trigger;
+    if (typeof fallback?.focus === 'function') fallback.focus({preventScroll: true});
+  });
+}
+
+function closeC2aReimportConfirm(returnValue = 'cancel', {force = false} = {}) {
+  const {dialog} = c2aReimportDialogElements();
+  if (!dialog?.open || (C2A_REIMPORT_DIALOG.submitting && !force)) return false;
+  dialog.close(returnValue);
+  // 测试环境的 dialog 桩不会派发 close；真实浏览器中二次调用是幂等的。
+  restoreC2aReimportTrigger();
+  return true;
+}
+
+function openC2aReimportConfirm(ids, trigger) {
+  const {dialog, count, status} = c2aReimportDialogElements();
+  if (!dialog || dialog.open || typeof dialog.showModal !== 'function') {
+    showToast('C2A 同步确认窗口不可用，请刷新页面后重试');
+    return;
+  }
+  C2A_REIMPORT_DIALOG.ids = [...ids];
+  C2A_REIMPORT_DIALOG.trigger = trigger || null;
+  C2A_REIMPORT_DIALOG.submitting = false;
+  if (count) count.textContent = String(ids.length);
+  if (status) {
+    status.hidden = true;
+    status.textContent = '';
+  }
+  setC2aReimportDialogSubmitting(false);
+  dialog.showModal();
+}
+
+function reimportSelectedC2a(event) {
+  const ids = Array.from(ACCOUNT_SELECTED);
+  if (!ids.length) { showToast('请先选择账号'); return; }
+  const btn = $('#btnReimportSelectedC2aV2');
+  if (!btn || btn.disabled) return;
+  openC2aReimportConfirm(ids, event?.currentTarget || btn);
+}
+
+async function submitC2aReimport() {
+  const ids = [...C2A_REIMPORT_DIALOG.ids];
+  const {dialog, status} = c2aReimportDialogElements();
+  if (!dialog?.open || !ids.length || C2A_REIMPORT_DIALOG.submitting) return;
+  const btn = C2A_REIMPORT_DIALOG.trigger || $('#btnReimportSelectedC2aV2');
+  const old = btn?.textContent || '';
+  let submitted = false;
+  C2A_REIMPORT_DIALOG.submitting = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '提交导入…';
+  }
+  if (status) {
+    status.hidden = false;
+    status.textContent = '正在创建 C2A 同步任务…';
+  }
+  setC2aReimportDialogSubmitting(true);
+  try {
+    const result = await api('/api/accounts/c2a/sync-bulk', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account_ids: ids}),
+    });
+    const skipped = Number(result.skipped_count || 0) + Number(result.failed_count || 0);
+    const queued = Array.isArray(result.queued) ? result.queued : [];
+    const receiptItems = c2aReimportTaskEntries(result).map(entry => entry.item);
+    showC2aReimportResult(result);
+    if (result.accepted) {
+      showToast(`C2A 重新导入已入队 ${result.queued_count || 0} 个${skipped ? `，未入队 ${skipped} 个（已显示具体原因）` : ''}${queued.length ? '，最终结果在任务回执中更新' : ''}`);
+      if (receiptItems.length) trackAcceptedOperationsV2(receiptItems, '重新导入 C2A', {navigate: false});
+    } else {
+      showToast(skipped ? `C2A 已重新导入 ${result.updated_count || 0} 个，跳过/失败 ${skipped} 个` : `C2A 已重新导入 ${result.updated_count || 0} 个`);
+      await loadAccounts();
+    }
+    submitted = true;
+  } catch(err) {
+    showToast('重新导入 C2A 失败: ' + err.message);
+    if (status) {
+      status.hidden = false;
+      status.textContent = `提交失败：${err.message}。请检查后再次提交。`;
+    }
+    updateAccountSelectionUi();
+  } finally {
+    C2A_REIMPORT_DIALOG.submitting = false;
+    setC2aReimportDialogSubmitting(false);
+    if (btn) {
+      btn.textContent = old;
+      btn.disabled = false;
+    }
+    if (submitted) closeC2aReimportConfirm('submitted', {force: true});
+    else updateAccountSelectionUi();
+  }
+}
+
+function c2aReimportSummary(result) {
+  const queued = Number(result.queued_count ?? result.queued?.length ?? 0);
+  const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0);
+  const failed = Number(result.failed_count ?? result.failed?.length ?? 0);
+  return `C2A 重新导入：已入队 ${queued} 个，未入队 ${skipped + failed} 个`;
+}
+
+function c2aReimportEntries(result) {
+  const queued = Array.isArray(result.queued) ? result.queued : [];
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  const failed = Array.isArray(result.failed) ? result.failed : [];
+  return [
+    ...queued.map(item => ({item, state: '已入队'})),
+    ...skipped.map(item => ({item, state: '未入队'})),
+    ...failed.map(item => ({item, state: '入队失败'})),
+  ];
+}
+
+function c2aReimportTaskEntries(result) {
+  return c2aReimportEntries(result).filter(entry => Number(entry.item?.task_id) > 0);
+}
+
+function openC2aReimportTasks(items = []) {
+  const single = items.length === 1 ? items[0] : null;
+  // 保留 C2A 任务分类，避免复用注册重跑入口后清空类型筛选。
+  for (const selector of [
+    '#accountTaskIdFilterV2', '#accountTaskStatusFilterV2', '#accountTaskTargetStatusFilterV2',
+    '#accountTaskBatchFilterV2', '#accountTaskRunCountFilterV2', '#accountTaskStageFilterV2',
+    '#accountTaskDateFromV2', '#accountTaskDateToV2', '#accountTaskResultFilterV2',
+  ]) {
+    const field = $(selector);
+    if (field) field.value = '';
+  }
+  const typeFilter = $('#accountTaskTypeFilterV2');
+  if (typeFilter) typeFilter.value = C2A_REIMPORT_TASK_TYPE;
+  const targetFilter = $('#accountTaskTargetFilterV2');
+  if (targetFilter) targetFilter.value = '';
+  PAGERS.accountTasks.page = 1;
+  activateTab('tasks');
+  const taskId = Number(single?.task_id);
+  if (taskId > 0) openAccountTaskLog(taskId, Number(single?.run_id) || null);
+}
+
+function renderC2aReimportResult(result) {
+  const entries = c2aReimportEntries(result);
+  const taskEntries = entries.filter(entry => Number(entry.item?.task_id) > 0);
+  const rows = entries.map((entry, index) => {
+    const item = entry.item || {};
+    const accountId = Number(item.id);
+    const subject = Number.isInteger(accountId) && accountId > 0
+      ? `账号 #${accountId}` : `提交项 #${Number(item.input_index) || index + 1}`;
+    const details = [item.email, item.error_code, item.reason || item.error].filter(Boolean).map(String);
+    const taskIndex = taskEntries.indexOf(entry);
+    const taskId = Number(item.task_id);
+    const taskButton = taskIndex >= 0
+      ? ` <button type="button" class="jobs-tb-btn" data-c2a-reimport-task="${taskIndex}">查看任务 #${esc(taskId)}</button>` : '';
+    return `<li>${esc(subject)} · ${esc(entry.state)}${details.length ? ` · ${esc(details.join(' · '))}` : ''}${taskButton}</li>`;
+  }).join('');
+  const hasUnqueued = entries.some(entry => entry.state !== '已入队');
+  return `<span class="column-filter-summary-label">${esc(c2aReimportSummary(result))}</span>
+    ${taskEntries.length ? '<button type="button" class="jobs-tb-btn" data-c2a-reimport-tasks>打开任务中心</button>' : ''}
+    ${rows ? `<details${hasUnqueued ? ' open' : ''}><summary>查看${hasUnqueued ? '任务与未入队原因' : '任务'}</summary><ul>${rows}</ul></details>` : ''}`;
+}
+
+function showC2aReimportResult(result) {
+  const panel = $('#accountC2aReimportResultV2');
+  if (!panel) return;
+  const taskEntries = c2aReimportTaskEntries(result);
+  panel.hidden = false;
+  panel.innerHTML = renderC2aReimportResult(result);
+  panel.querySelector('[data-c2a-reimport-tasks]')?.addEventListener('click', () => {
+    openC2aReimportTasks(taskEntries.map(entry => entry.item));
+  });
+  panel.querySelectorAll('[data-c2a-reimport-task]').forEach(button => {
+    button.addEventListener('click', () => {
+      const entry = taskEntries[Number(button.dataset.c2aReimportTask)];
+      if (entry) openC2aReimportTasks([entry.item]);
+    });
+  });
+}
+
 async function checkSelectedPlans() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -2995,6 +3205,15 @@ async function copySelectedAccountTokens() {
   bind('btnCompleteSelectedAccountsV2', completeSelectedAccounts);
   bind('btnRetrySelectedRegistrationV2', event => retryAccountRegistration(null, event.currentTarget));
   bind('btnUploadSelectedCodexSub2V2', uploadSelectedCodexSub2);
+  bind('btnReimportSelectedC2aV2', reimportSelectedC2a);
+  bind('btnCloseC2aReimportV2', () => closeC2aReimportConfirm());
+  bind('btnCancelC2aReimportV2', () => closeC2aReimportConfirm());
+  bind('btnConfirmC2aReimportV2', submitC2aReimport);
+  const c2aDialog = $('#c2aReimportConfirmModal');
+  c2aDialog?.addEventListener('cancel', event => {
+    if (C2A_REIMPORT_DIALOG.submitting) event.preventDefault();
+  });
+  c2aDialog?.addEventListener('close', restoreC2aReimportTrigger);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
   bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);
   bind('btnStopSelectedCodexV2', stopSelectedCodex);

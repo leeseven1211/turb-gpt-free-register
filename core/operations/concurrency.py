@@ -55,6 +55,7 @@ _DEFINITIONS = (
     ("codex_retry", "Codex 授权", "CODEX_OAUTH_WORKERS", 3),
     ("codex_token_refresh", "刷新 Codex Token", "CODEX_TOKEN_REFRESH_WORKERS", 3),
     ("sub2api_sync", "Sub2API 上传与同步", "SUB2API_SYNC_WORKERS", 3),
+    ("c2a_sync", "C2A 重新导入", "C2A_SYNC_WORKERS", 3),
     ("extract_link", "提链", "EXTRACT_LINK_WORKERS", 3),
     ("email_import", "邮箱导入", "EMAIL_IMPORT_WORKERS", 1),
     ("sub2api_scan", "Sub2API 异常扫描", "SUB2API_SCAN_WORKERS", 1),

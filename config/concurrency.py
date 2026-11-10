@@ -25,6 +25,7 @@ ACCOUNT_INSPECTION_WORKERS: int = schema_default("ACCOUNT_INSPECTION_WORKERS")
 CODEX_OAUTH_WORKERS: int = schema_default("CODEX_OAUTH_WORKERS")
 CODEX_TOKEN_REFRESH_WORKERS: int = schema_default("CODEX_TOKEN_REFRESH_WORKERS")
 SUB2API_SYNC_WORKERS: int = schema_default("SUB2API_SYNC_WORKERS")
+C2A_SYNC_WORKERS: int = schema_default("C2A_SYNC_WORKERS")
 EXTRACT_LINK_WORKERS: int = schema_default("EXTRACT_LINK_WORKERS")
 EMAIL_IMPORT_WORKERS: int = schema_default("EMAIL_IMPORT_WORKERS")
 SUB2API_SCAN_WORKERS: int = schema_default("SUB2API_SCAN_WORKERS")
@@ -35,7 +36,7 @@ WORKER_KEYS = tuple(CONCURRENCY_WORKER_DEFAULTS)
 POLICY_KEYS = (*WORKER_KEYS, "CONCURRENCY_POLICY_REVISION")
 _LEGACY_ACCOUNT_KEYS = frozenset({
     key for key in WORKER_KEYS
-    if key.startswith("ACCOUNT_") or key.startswith("CODEX_") or key == "SUB2API_SYNC_WORKERS"
+    if key.startswith("ACCOUNT_") or key.startswith("CODEX_") or key in {"SUB2API_SYNC_WORKERS", "C2A_SYNC_WORKERS"}
 })
 
 

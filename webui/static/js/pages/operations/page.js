@@ -6,7 +6,7 @@ let accountTaskListSignature = '';
 let accountTaskRecentBatchCount = 0;
 const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;
 Object.assign(ACCOUNT_TASK_TYPE_LABELS, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次',
-  sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描'});
+  sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描', c2a_session_reimport: 'C2A 重新导入'});
 const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;
 const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;
 const OPERATION_RECEIPTS_V2 = {items: new Map(), timer: null, loading: false, cursor: 0, observer: null, error: ''};
@@ -252,6 +252,7 @@ function accountTaskResultText(task, compact = false) {
     if (!result.ok) return 'OAuth Token 刷新失败';
     return result.sub2_sync === 'failed' ? 'Token 已刷新 · sub2 同步失败' : 'OAuth Token 已刷新';
   }
+  if (task.task_type === 'c2a_session_reimport') return result.ok ? (result.message || 'C2A AT 已从本地重新导入') : result.error_code || result.message || 'C2A 重新导入失败，请查看任务日志';
   if (task.task_type === 'sub2api_manual_upload') return result.ok ? '手动上传 Sub2API 已完成' : result.error_code || result.message || '手动上传失败，请查看任务日志';
   if (task.task_type === 'sub2api_scan') return result.ok ? 'Sub2API 异常扫描已完成' : result.error_code || result.message || '扫描未完成，请查看任务日志';
   return Object.keys(result).length ? JSON.stringify(result) : '-';
@@ -1285,7 +1286,7 @@ function updateAccountTaskFilters(facets = {}) {
   }
   syncFacetSelect('accountTaskTypeFilterV2', types, {
     group: 'task_type',
-    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'email_change', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'sub2api_sync', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link', 'account_inspection', 'account_inspection_batch'],
+    values: ['registration', 'registration_resume', 'account_setup_retry', 'password_setup', 'password_change', 'twofa_setup', 'twofa_change', 'account_completion', 'email_change', 'twofa_retry', 'codex_retry', 'codex_token_refresh', 'sub2api_sync', 'c2a_session_reimport', 'live_check', 'token_refresh', 'plan_check', 'deactivation_mail', 'extract_link', 'account_inspection', 'account_inspection_batch'],
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',

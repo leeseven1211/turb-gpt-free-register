@@ -3842,6 +3842,10 @@
     min-height: 44px;
     justify-content: center;
   }
+  #accountsToolbarV2 .toolbar-overflow-menu .jobs-tb-btn {
+    height: auto;
+    min-height: 44px;
+  }
   #accountsToolbarV2 .list-toolbar-utilities {
     grid-column: 1 / -1;
     display: grid;
