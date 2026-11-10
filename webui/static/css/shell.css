@@ -4182,3 +4182,126 @@
   #accountInspectionFailures .jobs-tb-btn { min-height: 44px; }
   #overviewCustomizer .overview-customizer-item button { min-width: 40px; min-height: 40px; }
 }
+
+/* ---- 账号 / Codex 列表：桌面吸边 + 手机卡片化 ---- */
+@media (min-width: 861px) {
+  .accounts-table-v2 .col-check,
+  .codex-table-v2 .col-check { position: sticky; left: 0; z-index: 4; background: #fff; }
+  .accounts-table-v2 thead .col-check,
+  .codex-table-v2 thead .col-check { background: #f5f7fa; z-index: 6; }
+  .accounts-table-v2 .col-email,
+  .codex-table-v2 .col-email {
+    position: sticky; left: 48px; z-index: 4; background: #fff;
+    box-shadow: 1px 0 0 #ebeef5;
+  }
+  .accounts-table-v2 thead .col-email,
+  .codex-table-v2 thead .col-email { background: #f5f7fa; z-index: 6; }
+  .accounts-table-v2 .col-actions,
+  .codex-table-v2 .col-actions {
+    position: sticky; right: 0; z-index: 4; background: #fff;
+    box-shadow: -1px 0 0 #ebeef5;
+  }
+  .accounts-table-v2 thead .col-actions,
+  .codex-table-v2 thead .col-actions { background: #f5f7fa; z-index: 6; }
+}
+
+.codex-table-v2 .acc-v2-more-menu button.danger { color: #c0392b; }
+.codex-table-v2 .acc-v2-more-menu button.danger:hover:not(:disabled) { background: #fdf2f1; color: #a52a1f; }
+
+@media (max-width: 860px) {
+  .accounts-table-v2-wrap,
+  .codex-table-v2-wrap { overflow: visible; padding: 0; }
+
+  .accounts-table-v2,
+  .codex-table-v2 { display: block; width: 100%; min-width: 0; }
+
+  .accounts-table-v2 colgroup,
+  .accounts-table-v2 thead,
+  .codex-table-v2 colgroup,
+  .codex-table-v2 thead { display: none; }
+
+  .accounts-table-v2 tbody,
+  .codex-table-v2 tbody { display: block; padding: 8px 10px 4px; }
+
+  .accounts-table-v2 tbody tr,
+  .codex-table-v2 tbody tr {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px;
+    margin: 0 0 9px; padding: 11px 12px 10px;
+    border: 1px solid #e6e9f0; border-radius: 12px;
+    background: #fff; box-shadow: 0 1px 2px rgb(23 32 51 / 4%);
+  }
+
+  .accounts-table-v2 tbody td,
+  .codex-table-v2 tbody td {
+    display: block; height: auto; min-height: 0; padding: 0;
+    border: 0; white-space: normal; overflow: visible;
+    color: #5b6472; font-size: 12px; line-height: 1.4;
+  }
+
+  .accounts-table-v2 tbody td[data-label]::before,
+  .codex-table-v2 tbody td[data-label]::before {
+    content: attr(data-label); display: block; margin-bottom: 2px;
+    font-size: 10px; line-height: 1.2; font-weight: 500; color: #98a0ae;
+  }
+
+  /* 账号卡片 */
+  .accounts-table-v2 .col-id,
+  .accounts-table-v2 .col-source,
+  .accounts-table-v2 .col-registration-driver,
+  .accounts-table-v2 .col-quota,
+  .accounts-table-v2 .col-password,
+  .accounts-table-v2 .col-risk-mail,
+  .accounts-table-v2 .col-time { display: none; }
+
+  .accounts-table-v2 .col-check { order: 1; width: 18px; flex: 0 0 18px; }
+  .accounts-table-v2 .col-email { order: 2; flex: 1 1 62%; min-width: 0; }
+  .accounts-table-v2 .col-email .acc-v2-email { white-space: normal; overflow-wrap: anywhere; }
+  .accounts-table-v2 .col-email .acc-v2-sub { margin-top: 3px; }
+  .accounts-table-v2 .col-account-status { order: 3; flex: 0 0 auto; }
+  .accounts-table-v2 .col-token { order: 4; }
+  .accounts-table-v2 .col-plan { order: 5; }
+  .accounts-table-v2 .col-trial { order: 6; }
+  .accounts-table-v2 .col-2fa { order: 7; }
+  .accounts-table-v2 .col-status { order: 8; }
+  .accounts-table-v2 .col-actions {
+    order: 9; width: 100%; margin-top: 3px;
+    display: flex; justify-content: flex-end;
+  }
+
+  /* Codex 卡片 */
+  .codex-table-v2 .col-sub2api-id,
+  .codex-table-v2 tbody td.col-time:nth-of-type(8) { display: none; }
+
+  .codex-table-v2 .col-check { order: 1; width: 18px; flex: 0 0 18px; }
+  .codex-table-v2 .col-email { order: 2; flex: 1 1 62%; min-width: 0; }
+  .codex-table-v2 .col-email .acc-v2-email { white-space: normal; overflow-wrap: anywhere; }
+  .codex-table-v2 .col-plan { order: 3; }
+  .codex-table-v2 .col-status { order: 4; }
+  .codex-table-v2 .col-account { order: 5; min-width: 0; overflow-wrap: anywhere; }
+  .codex-table-v2 .col-time { order: 6; }
+  .codex-table-v2 .col-actions {
+    order: 9; width: 100%; margin-top: 3px;
+    display: flex; justify-content: flex-end;
+  }
+
+  /* 触控尺寸 */
+  .accounts-table-v2 .acc-v2-actions,
+  .codex-table-v2 .acc-v2-actions { gap: 8px; }
+  .accounts-table-v2 .acc-v2-actions > button,
+  .codex-table-v2 .acc-v2-actions > button,
+  .accounts-table-v2 .acc-v2-more-btn,
+  .codex-table-v2 .acc-v2-more-btn {
+    min-height: 34px; padding: 0 14px; border-radius: 8px; font-size: 13px;
+  }
+  .accounts-table-v2 .acc-v2-actions > button.acc-v2-detail,
+  .codex-table-v2 .acc-v2-actions > button.primary { min-width: 92px; }
+  .accounts-table-v2 .acc-v2-more-menu button,
+  .codex-table-v2 .acc-v2-more-menu button { min-height: 40px; padding: 9px 14px; font-size: 13.5px; }
+  .accounts-table-v2 input[type="checkbox"],
+  .codex-table-v2 input[type="checkbox"] {
+    width: 18px !important; height: 18px !important;
+    min-width: 18px !important; min-height: 18px !important;
+  }
+  .accounts-table-v2 input[type="checkbox"]:checked::after { left: 5px; top: 1px; }
+  .codex-table-v2 input[type="checkbox"]:checked::after { left: 5px; top: 1px; }
+}

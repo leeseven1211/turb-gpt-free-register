@@ -1210,6 +1210,7 @@ function _accountsV2MoreMenu(r) {
       : '',
     _codexAction(r),
     `<button type="button" data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
+    `<button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}" title="删除该账号本地记录；不可撤销">删除账号</button>`,
   ].filter(html => String(html || '').trim());
   return parts.join('');
 }
@@ -1490,19 +1491,19 @@ function renderAccounts() {
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
-      <td class="col-token">${_tokenCellV2(r)}</td>
-      <td class="col-account-status">${_accountStatusCellV2(r)}</td>
-      <td class="col-small">${_passwordCellV2(r)}</td>
-      <td class="col-plan"><div class="account-cell-lines"><div class="account-cell-line">${_planCell(r)}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
+      <td class="col-token" data-label="Token">${_tokenCellV2(r)}</td>
+      <td class="col-account-status" data-label="账号状态">${_accountStatusCellV2(r)}</td>
+      <td class="col-small col-password" data-label="账号密码">${_passwordCellV2(r)}</td>
+      <td class="col-plan" data-label="套餐"><div class="account-cell-lines"><div class="account-cell-line">${_planCell(r)}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
       <td class="col-quota">${_quotaCell(r)}</td>
-      <td class="col-trial">${_promotionCell(r)}</td>
-      <td class="col-small">${_totpCellV2(r)}</td>
+      <td class="col-trial" data-label="套餐优惠">${_promotionCell(r)}</td>
+      <td class="col-small col-2fa" data-label="2FA">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
-      <td class="col-status"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
+      <td class="col-status" data-label="Codex"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
       <td class="col-time">${_accountTimesCellV2(r)}</td>
       <td class="col-actions">
         <div class="account-cell-lines acc-v2-actions">
-          <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button>
+          <button type="button" class="acc-v2-detail" data-account-detail-id="${esc(r.id)}">详情</button>
           <div class="acc-v2-more" data-account-more-id="${esc(r.id)}">
             <button type="button" class="acc-v2-more-btn" data-acc-more-toggle aria-haspopup="true" aria-expanded="false">更多</button>
             <div class="acc-v2-more-menu" role="menu">${_accountsV2MoreMenu(r)}</div>

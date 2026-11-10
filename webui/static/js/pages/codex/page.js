@@ -151,11 +151,13 @@ function renderCodex() {
     const checked = CODEX_SELECTED.has(r.filename) ? 'checked' : '';
     const exported = (r.exported_count || 0) > 0;
     const moreItems = [
-      `<button type="button" class="good" data-codex-refresh-token="${esc(r.filename)}" title="使用 refresh_token 换新 access token，不需要邮箱或短信验证码">刷新 OAuth Token</button>`,
+      `<button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>`,
       `<button type="button" class="good" data-codex-download-cpa="${esc(r.filename)}" title="按邮箱从 CPA auth-files 下载真实 Codex JSON">从CPA下载</button>`,
+      `<button type="button" class="good" data-codex-refresh-token="${esc(r.filename)}" title="使用 refresh_token 换新 access token，不需要邮箱或短信验证码">刷新 OAuth Token</button>`,
       `<button type="button" class="good" data-codex-upload-sub2="${esc(r.filename)}" title="把这份本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>`,
       exported ? `<button type="button" data-codex-reset="${esc(r.filename)}" title="重新标记为未导出">重置标记</button>` : '',
       `<button type="button" class="${r.archived ? 'good' : ''}" data-codex-archive="${esc(r.filename)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认 Codex 列表' : '归档后默认列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
+      `<button type="button" class="danger" data-codex-delete="${esc(r.filename)}" title="删除数据库中的 Codex 凭证及导出状态；不可撤销">删除凭证</button>`,
     ].filter(Boolean).join('');
     return `
     <tr>
@@ -163,18 +165,16 @@ function renderCodex() {
       <td class="col-email" title="${esc(r.email || '')} · 文件：${esc(r.filename || '')}">
         <div class="acc-v2-email">${esc(r.email || '-')}${r.archived ? ' <span class="pill status-used" title="已归档">归档</span>' : ''}</div>
       </td>
-      <td class="col-plan">${esc(r.plan || '-')}</td>
-      <td class="col-status">${_codexStatusBadge(r)}</td>
-      <td class="col-status">${_codexOauthBadge(r)}</td>
-      <td class="col-account" title="${esc(r.account_id || '-')}">${esc(r.account_id || '-')}</td>
-      <td class="col-sub2api-id" title="${esc(r.sub2api_account_id ?? '-')}">${esc(r.sub2api_account_id ?? '-')}</td>
-      <td class="col-time" title="${esc(r.mtime || '-')}">${esc(r.mtime || '-')}</td>
-      <td class="col-time" title="${esc(r.expired || '-')}">${esc(r.expired || '-')}</td>
+      <td class="col-plan" data-label="Plan">${esc(r.plan || '-')}</td>
+      <td class="col-status" data-label="凭证状态">${_codexStatusBadge(r)}</td>
+      <td class="col-status" data-label="OAuth">${_codexOauthBadge(r)}</td>
+      <td class="col-account" data-label="Account ID" title="${esc(r.account_id || '-')}">${esc(r.account_id || '-')}</td>
+      <td class="col-sub2api-id" data-label="Sub2API" title="${esc(r.sub2api_account_id ?? '-')}">${esc(r.sub2api_account_id ?? '-')}</td>
+      <td class="col-time" data-label="更新时间" title="${esc(r.mtime || '-')}">${esc(r.mtime || '-')}</td>
+      <td class="col-time" data-label="过期时间" title="${esc(r.expired || '-')}">${esc(r.expired || '-')}</td>
       <td class="col-actions">
         <div class="acc-v2-actions">
-          <button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>
           <button type="button" class="primary" data-codex-download="${esc(r.filename)}" title="从数据库生成 Codex OAuth JSON 并下载">下载凭证</button>
-          <button type="button" class="danger" data-codex-delete="${esc(r.filename)}" title="删除数据库中的 Codex 凭证及导出状态">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-codex-more-toggle aria-haspopup="true">更多</button>
             <div class="acc-v2-more-menu" role="menu">${moreItems}</div>
