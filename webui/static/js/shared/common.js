@@ -1174,7 +1174,7 @@ function debounce(fn, wait=250) {
 const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
-  bulk: { title: '批量任务', description: '创建固定账号范围，追踪每轮结果与失败原因' },
+  bulk: { title: '批量任务', description: '' },
   tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
   'extract-workbench': { title: '提链工作台', description: '管理提链、支付状态和 Plus 权益核验' },
   accounts: { title: '账号资产', description: '查询、筛选和批量维护已注册账号' },

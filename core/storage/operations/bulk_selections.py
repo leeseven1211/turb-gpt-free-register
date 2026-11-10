@@ -343,6 +343,11 @@ def fail_selection(
 
 _RESULT_FILTERS = {
     "query_outcome",
+    "refresh_outcome",
+    "validation_method",
+    "refresh_driver",
+    "token_expired",
+    "needs_live_check",
     "account_plan_type",
     "plus_offer_kind",
     "confirmed_no_offer",

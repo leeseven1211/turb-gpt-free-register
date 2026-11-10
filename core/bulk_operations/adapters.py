@@ -1,4 +1,4 @@
-"""五类账号操作的集合预检与同事务提交适配。"""
+"""账号批量操作的集合预检与同事务提交适配。"""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -38,16 +38,31 @@ def _key(context: Mapping) -> str:
     return str(context.get("operation_key") or context.get("action_key") or operation.get("key") or "")
 
 
+def _refresh_driver(account: Mapping, snapshot: Mapping) -> str:
+    from core.accounts.liveness import service as live_service
+    selected = live_service._resolve_refresh_driver(config_snapshot=dict(snapshot))
+    # 与账号页的显式刷新保持一致：已标记收件失效时不走旧邮箱OTP驱动。
+    if account.get("email_invalid") is True and selected not in {"browser_roxy", "protocol_v3"}:
+        selected = "protocol_v2"
+    return selected
+
+
+def _refresh_queue_changes(now: str) -> dict:
+    return {"live_check_status": "queued", "live_check_ok": False, "live_check_trigger": "manual_bulk",
+            "live_check_queued_at": now, "live_check_started_at": None, "live_checked_at": None,
+            "live_check_error": None, "live_check_http_status": None, "updated_at": now}
+
+
 def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, preflight_only: bool = False) -> list[dict]:
     """三次集合查询读取账号、活跃 Run 和注册占用；返回材料仅在调用栈使用。"""
     account_ids = sorted({_identity(target) for target in targets if _identity(target) > 0})
     if not account_ids:
         return [{"target": dict(target), "disposition": "not_executable", "reason_code": "account_missing"} for target in targets]
     key, snapshot = _key(context), _settings(context)
-    if preflight_only and key in {"plan_check", "codex_retry"}:
+    if preflight_only and key in {"plan_check", "token_refresh", "codex_retry"}:
         # 只读资格不需要解压账号会话、历史结果或凭据；与执行时重检分开。
         with conn.cursor() as cur:
-            cur.execute(f"""SELECT id,email,codex_status,codex_credential_state,
+            cur.execute(f"""SELECT id,email,email_invalid,codex_status,codex_credential_state,
                 data->>'account_status' AS account_status,
                 CASE WHEN account_has_access_token THEN 'present' ELSE '' END AS access_token
                 FROM {records._qualified(records.ACCOUNTS)} WHERE id=ANY(%s)""", (account_ids,))
@@ -86,6 +101,18 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
             item.update(disposition="waiting_account", reason_code="registration_in_progress")
         elif key == "plan_check" and not account.get("access_token") and not snapshot.get("auto_refresh_at_enabled", True):
             item.update(disposition="not_executable", reason_code="access_token_missing")
+        elif key == "token_refresh":
+            from core.accounts.liveness import service as live_service
+            if not str(account.get("access_token") or "").strip():
+                item.update(disposition="not_executable", reason_code="access_token_missing")
+            else:
+                driver = _refresh_driver(account, snapshot)
+                if driver not in availability:
+                    availability[driver] = live_service.deployment_unavailable(
+                        force_refresh=True, driver=driver, config_snapshot=snapshot)
+                unavailable = availability[driver]
+                if unavailable:
+                    item.update(disposition="not_executable", reason_code=unavailable.get("error_code") or "operation_unavailable")
         elif key in {"password_setup", "twofa_setup", "account_completion"}:
             from core.accounts import operation_coordinator as coordinator
             from core.runtime.capabilities import account_setup_unavailable
@@ -132,6 +159,12 @@ def _task_data(key: str, item: Mapping, context: Mapping) -> dict:
     data = {"bulk_target_round_id": _target_round_id(item["target"])}
     if key == "plan_check":
         data.update(timezone_offset_min=str(parameters.get("timezone_offset_min", "-")), countries=list(snapshot.get("countries") or []), proxy_source="pool")
+    elif key == "token_refresh":
+        from core.accounts.liveness import service as live_service
+        data.update(force_refresh=True, refresh_driver=live_service._refresh_driver_request(_refresh_driver(item["account"], snapshot)),
+                    driver=None, proxy_source=snapshot.get("refresh_at_proxy_mode") or "", explicit_proxy_requested=False)
+        if context.get("_stage_queued_at"):
+            data["live_check_queued_at"] = context["_stage_queued_at"]
     elif key in {"password_setup", "twofa_setup"}:
         data.update(steps=["password" if key == "password_setup" else "twofa"], task_trigger="manual_bulk", force_password_reset=False, force_twofa_change=False)
     elif key == "account_completion":
@@ -173,6 +206,13 @@ def submit_chunk(conn, targets: Sequence[Mapping], context: Mapping) -> list[dic
                         "plan_check_completed_at": None, "plan_check_error": None,
                     }, conn=conn):
                         raise _ItemWaiting("plan_check_busy")
+                elif key == "token_refresh":
+                    from core.storage import db_legacy
+                    queued_at = datetime.now(timezone.utc).isoformat()
+                    if not db_legacy._claim_account_stage(int(account["id"]), "live_check",
+                            _refresh_queue_changes(queued_at), require_alive=True, conn=conn):
+                        raise _ItemWaiting("live_check_busy")
+                    data["live_check_queued_at"] = queued_at
                 if source_task_id:
                     run = store.retry_runtime_task(int(source_task_id), trigger="manual_bulk_retry", data={**data, "config_snapshot": snapshot}, conn=conn)
                     submitted = {"accepted": True, "task_id": int(source_task_id), "run_id": int(run["id"])}
@@ -190,6 +230,10 @@ def submit_chunk(conn, targets: Sequence[Mapping], context: Mapping) -> list[dic
                     records.patch_row(records.ACCOUNTS, int(account["id"]), changes={"plan_check_status": "queued", "plan_check_ok": False,
                         "plan_check_trigger": "manual_bulk", "plan_check_queued_at": now, "plan_check_started_at": None,
                         "plan_check_deadline_at": None, "plan_check_completed_at": None, "plan_check_error": None, "updated_at": now}, conn=conn)
+                elif key == "token_refresh":
+                    # retry_runtime_task也会重置账号投影；在同事务内恢复本Run的精确排队标识。
+                    records.patch_row(records.ACCOUNTS, int(account["id"]),
+                        changes=_refresh_queue_changes(data["live_check_queued_at"]), conn=conn)
                 elif key == "codex_retry":
                     changes = {"codex_execution_status": "queued", "codex_active_run_id": submitted["run_id"], "updated_at": now}
                     if account.get("codex_status") != "success" and account.get("codex_credential_state") not in {"valid", "pending_confirmation"}:
@@ -210,7 +254,7 @@ def submit_chunk(conn, targets: Sequence[Mapping], context: Mapping) -> list[dic
 
 
 def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int, dict]:
-    """五功能共用集合写入；正常路径 SQL 数量不随目标数增长。"""
+    """共用集合写入；正常路径 SQL 数量不随目标数增长。"""
     import json
     key, snapshot = _key(context), _settings(context)
     eligible = list(items)
@@ -231,6 +275,18 @@ def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int,
                     "target_round_id": _target_round_id(item["target"]), "disposition": "waiting_account", "reason_code": "plan_check_busy",
                     "blocker_run_id": None, "task_id": None, "run_id": None, "step_key": key, "relation": "owned_root", "generation": 1}
         eligible = [item for item in eligible if int(item["account"]["id"]) in allowed]
+    elif key == "token_refresh":
+        from core.storage import db_legacy
+        guard, guard_params = db_legacy._stage_claim_guard("live_check", require_alive=True)
+        claimed = records.patch_rows_where_returning(records.ACCOUNTS, changes=_refresh_queue_changes(now),
+            where=f"id=ANY(%s) AND ({guard})", params=([int(item["account"]["id"]) for item in eligible], *guard_params), conn=conn)
+        allowed = {int(row["id"]) for row in claimed}
+        for item in eligible:
+            if int(item["account"]["id"]) not in allowed:
+                output[_target_round_id(item["target"])] = {
+                    "target_round_id": _target_round_id(item["target"]), "disposition": "waiting_account", "reason_code": "live_check_busy",
+                    "blocker_run_id": None, "task_id": None, "run_id": None, "step_key": key, "relation": "owned_root", "generation": 1}
+        eligible = [item for item in eligible if int(item["account"]["id"]) in allowed]
     specs = []
     for item in eligible:
         target, account = item["target"], item["account"]
@@ -238,7 +294,7 @@ def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int,
             "source_system": "webui_runtime" if key in {"password_setup", "twofa_setup", "account_completion"} else "native_operations",
             "source_id": f"bulk:{context['batch_id']}:{target.get('canonical_target_id') or target.get('member_target_id') or _target_round_id(target)}:{key}",
             "resource_family": "completion_coordinator" if key == "account_completion" else "openai_interactive",
-            "data": {**_task_data(key, item, context), "config_snapshot": snapshot}})
+            "data": {**_task_data(key, item, {**context, "_stage_queued_at": now}), "config_snapshot": snapshot}})
     submitted = store.create_runtime_tasks_many(specs, conn=conn)
     for item, receipt in zip(eligible, submitted, strict=True):
         target_id = _target_round_id(item["target"])

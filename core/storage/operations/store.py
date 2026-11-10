@@ -6659,6 +6659,8 @@ def request_run_cancel(
         )
         if run.get("batch_id"):
             _refresh_batches(cur, [int(run["batch_id"])])
+        if target == "cancelled":
+            bulk_execution.release_cancelled_refresh(conn, updated)
         return _row(updated) or {}
 
 

@@ -107,6 +107,7 @@ class BulkAdapterStoreTests(PostgresTestCase):
         self.stack.enter_context(patch("core.accounts.operation_coordinator._completion_deployment_unavailable", return_value=None))
         self.stack.enter_context(patch("core.codex.operation_service._deployment_unavailable", return_value=None))
         self.stack.enter_context(patch("core.codex.operation_service._feature_ready", return_value=(True, "")))
+        self.stack.enter_context(patch("core.accounts.liveness.service.deployment_unavailable", return_value=None))
         self.stack.enter_context(patch("core.operations.task_gateway.notify_dispatch"))
 
     def context(self, key):
@@ -119,7 +120,7 @@ class BulkAdapterStoreTests(PostgresTestCase):
     def targets(self, ids):
         return [{"target_round_id": index + 1000, "canonical_target_id": index, "account_id": index, "ordinal": index} for index in ids]
 
-    def test_five_operations_create_exact_owned_queue_without_dispatch(self):
+    def test_operations_create_exact_owned_queue_without_dispatch(self):
         for index, key in enumerate(catalog.OPERATIONS, 1):
             with self.subTest(operation=key), store._connect() as conn:
                 receipt = adapters.submit_chunk(conn, self.targets([index]), self.context(key))[0]

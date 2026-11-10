@@ -74,6 +74,21 @@ def changed(conn, managed, *, event_kind: str = "fact_changed") -> None:
         bulk.record_managed_change(conn, int(managed.get("target_round_id") or managed["id"]), event_kind=event_kind)
 
 
+def release_cancelled_refresh(conn, run: Mapping) -> None:
+    """排队受管AT取消后，仅释放同一排队时间的账号投影，不触碰更新的执行。"""
+    data = run.get("data") if isinstance(run.get("data"), Mapping) else {}
+    queued_at = data.get("live_check_queued_at")
+    if (not data.get("bulk_target_round_id") or data.get("force_refresh") is not True or not queued_at
+            or run.get("status") != "cancelled" or run.get("started_at") or data.get("remote_intent")):
+        return
+    from core.storage import records
+    from datetime import datetime, timezone
+    records.claim_row(records.ACCOUNTS, int(run["account_id"]), conn=conn,
+        guard="live_check_status='queued' AND data->>'live_check_queued_at'=%s AND data->>'live_check_trigger'='manual_bulk'",
+        guard_params=(str(queued_at),), changes={"live_check_status": "cancelled", "live_check_ok": False,
+            "live_check_error": "批量任务取消未开始", "live_checked_at": datetime.now(timezone.utc).isoformat()})
+
+
 def source_run_for_creation(*, account_id: int | None, data: Mapping | None) -> int | None:
     """仅同账号当前执行的受管链可传播上下文，不凭时间或邮箱猜归属。"""
     from core.operations.concurrency import current_execution

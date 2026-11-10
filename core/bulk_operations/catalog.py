@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 OPERATIONS = {
     "plan_check": "查询套餐",
+    "token_refresh": "刷新 AT",
     "password_setup": "补密码",
     "twofa_setup": "补 2FA",
     "codex_retry": "补 Codex",
@@ -52,6 +53,15 @@ def capture_settings(operation_key: str, parameters: Mapping | None = None) -> d
     if operation_key == "plan_check":
         from core.accounts.plans.service import PLAN_CONFIG_ALLOWLIST
         snapshot = normalize_config_snapshot(schema.non_sensitive_snapshot(), allowlist=PLAN_CONFIG_ALLOWLIST)
+    elif operation_key == "token_refresh":
+        from core.accounts.liveness import service as live_service
+        from core.proxy.account_routes import proxy_configuration_status
+        snapshot = normalize_config_snapshot(schema.non_sensitive_snapshot(), allowlist=live_service.LIVE_CONFIG_ALLOWLIST)
+        driver = live_service._resolve_refresh_driver(config_snapshot=snapshot)
+        unavailable = live_service.deployment_unavailable(force_refresh=True, driver=driver, config_snapshot=snapshot)
+        proxy = proxy_configuration_status("token-refresh")
+        if unavailable is None and not proxy.get("ok"):
+            unavailable = {"error_code": "proxy_configuration_unavailable", "error": proxy.get("reason") or "刷新 AT 代理尚未配置"}
     elif operation_key == "codex_retry":
         from core.codex import operation_service
         snapshot = operation_service._config_snapshot(driver_override=parameters.get("driver"))
@@ -103,7 +113,7 @@ def catalog() -> dict:
                            "effective_settings": settings["effective_settings"],
                            "capabilities": {"cancel_not_started": True, "request_stop": True, "country_override": False},
                            "result_schema_version": 1, "result_panel": key})
-    return {"catalog_revision": "1", "query_schema": {"version": 1, "entity": "account"},
+    return {"catalog_revision": "2", "query_schema": {"version": 1, "entity": "account"},
             "limits": {"explicit_ids_max": 10000, "target_limit_max": 100000,
                        "page_size_max": 100, "concurrency_max": 128, "selection_ttl_seconds": 1800},
             "operations": operations}

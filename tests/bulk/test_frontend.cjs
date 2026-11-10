@@ -153,3 +153,89 @@ test('套餐明细区分真实优惠变化和不可比较，待执行不显示�
   const unconfirmed=ctx.resultText({query_outcome:'unconfirmed',plus_offer_kind:'unknown',comparison:'not_comparable'});
   assert.equal(unconfirmed,'查询待确认');
 });
+test('AT 刷新展示本轮结果，确认与失败统计不显示内部字段名',()=>{
+  const ctx=renderingContext();
+  for(const [outcome,title]of Object.entries({pending:'等待本轮 AT 刷新',success:'本轮 AT 刷新成功',failed:'本轮 AT 刷新失败',unconfirmed:'本轮 AT 刷新待确认',not_executed:'本轮未执行 AT 刷新'})){
+    assert.equal(ctx.resultText({refresh_outcome:outcome,confirmation:'unconfirmed'}),title);
+  }
+  ctx.renderBusiness({'account.token_refresh.confirmed':8,'account.token_refresh.unconfirmed':2,'account.token_refresh.failed':3});
+  assert.ok(ctx.host.innerHTML.includes('刷新'));
+  for(const value of [8,2,3])assert.ok(ctx.host.innerHTML.includes(`<dd>${value}</dd>`));
+  assert.equal(ctx.host.innerHTML.includes('account.token_refresh'),false);
+});
+
+test('筛选选项的旧响应不能覆盖更新后的归档范围',async()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  async function ensureFacets('),source.indexOf('  function scheduleFacets('));
+  const queries=Object.create(null);const ctx=context();
+  ctx.state={draft:{query:{archived:'0'}},facetsCache:new Map()};
+  ctx.request=url=>new Promise(resolve=>{queries[JSON.parse(decodeURIComponent(url.split('?query=')[1])).archived]=resolve;});
+  vm.runInContext(helper,ctx);
+  const before=ctx.ensureFacets();ctx.state.draft.query={archived:'only'};
+  const after=ctx.ensureFacets();
+  queries.only({facets:{source:[{value:'icloud_hide'}]}});await after;
+  queries['0']({facets:{source:[{value:'outlook'}]}});await before;
+  assert.equal(ctx.state.facets.source[0].value,'icloud_hide');
+  assert.equal(ctx.state.facetsCache.size,2);
+});
+
+function queryFilterContext() {
+  const ctx=context();
+  ctx.facetLabel=(field,value)=>({none:'无优惠',free_trial:'免费试用',expired:'已过期',has:'有 Token'}[value]||value);
+  vm.runInContext(fs.readFileSync(path.join(root,'webui/static/js/shared/account-filters.js'),'utf8'),ctx);
+  return ctx;
+}
+test('折叠筛选摘要保留日期、多选、归档及精确文本，不从展示标签重建查询',()=>{
+  const ctx=queryFilterContext();
+  const query=ctx.AccountQuery.normalize({date_from:'2026-10-01',date_to:'2026-10-31',archived:'all',q:'备注:"a/b"',
+    plan:['free','plus'],filters:{email:'some+name@example.invalid',promotion:['none','free_trial'],token:['expired'],id:'9007199254740993'}});
+  const before=JSON.stringify(query);
+  const chips=plain(ctx.AccountFilters.chips(query,{fields:[]}));
+  assert.ok(chips.some(([key,title])=>key==='dates'&&title.includes('2026-10-01')&&title.includes('2026-10-31')));
+  assert.ok(chips.some(([key,title])=>key==='promotion'&&title.includes('无优惠')&&title.includes('免费试用')));
+  assert.ok(chips.some(([key,title])=>key==='email'&&title.includes('some+name@example.invalid')));
+  assert.ok(chips.some(([key,title])=>key==='id'&&title.includes('9007199254740993')));
+  assert.ok(chips.some(([key])=>key==='archived'));
+  assert.equal(JSON.stringify(query),before);
+});
+test('动态选项保留正在操作的节点，收起后补入新来源并保留旧选择',()=>{
+  const ctx=queryFilterContext();ctx.attrEsc=value=>String(value);ctx.esc=value=>String(value);
+  const selected={dataset:{queryFilter:'source'},type:'checkbox',checked:true,value:'outlook'};
+  const archived={dataset:{query:'archived'},value:'only'};
+  const panel={innerHTML:'original-checkbox-node',querySelectorAll:()=>[selected],querySelector:()=>null,
+    insertAdjacentHTML:(_position,html)=>{panel.innerHTML+=html;}};const chipHost={innerHTML:''};
+  const details={dataset:{filterField:'source'},open:true,classList:{toggle:()=>{}},contains:()=>false,
+    querySelector:selector=>selector==='.bulk-filter-options'?panel:{textContent:'',hidden:true}};
+  const host={querySelectorAll:selector=>selector==='[data-query]'?[archived]:selector==='[data-query-filter]'?[selected]:selector==='[data-filter-field]'?[details]:[],
+    querySelector:selector=>selector==='[data-filter-field="source"]'?details:selector==='[data-query-chips]'?chipHost:null};
+  const schema={fields:[{key:'source',options:[{value:'icloud_hide',label:'iCloud Hide'}]}]};
+  ctx.AccountFilters.updateOptions(host,schema);
+  assert.ok(panel.innerHTML.startsWith('original-checkbox-node'));
+  assert.ok(panel.innerHTML.includes('value="icloud_hide"'));
+  details.open=false;ctx.AccountFilters.updateOptions(host,schema);
+  assert.ok(panel.innerHTML.includes('value="icloud_hide"'));
+  assert.ok(panel.innerHTML.includes('value="outlook" checked'));
+  assert.equal(selected.checked,true);
+});
+test('清空条件和退出固定名单后重新加载对应范围的可选项',async()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const action=source.slice(source.indexOf('  async function action('),source.indexOf("  document.getElementById('tab-bulk')?.addEventListener('click'"));
+  const ctx=context();let scheduled=0;
+  Object.assign(ctx,{state:{draft:{query:{archived:'only'},source:{kind:'ids',ids:['1']},limit:2}},
+    invalidateSelection:()=>{},saveDraft:()=>{},renderCreate:()=>{},scheduleFacets:()=>{scheduled++;}});
+  vm.runInContext(action,ctx);
+  for(const choice of ['clear-filters','use-query']){
+    await ctx.action(choice);assert.equal(ctx.state.draft.query.archived,'0');assert.equal(ctx.state.draft.source,null);
+  }
+  assert.equal(scheduled,2);
+});
+test('列表日期与结果错误分类面板均有明确关闭入口',()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  function popoverHeader('),source.indexOf('  function renderListShell('));
+  const list=source.slice(source.indexOf('  function renderListShell('),source.indexOf('  async function loadList('));
+  const detail=source.slice(source.indexOf('  function renderDetailShell('),source.indexOf('  function detailParams('));
+  const host={innerHTML:''};const ctx={state:{nav:{}},host,$b:()=>host,operationNames:{},labels:{},terminal:[],
+    optionsMarkup:()=>'',text:String,attrEsc:String,label:String};vm.createContext(ctx);vm.runInContext(helper+list+detail,ctx);
+  ctx.renderListShell();assert.ok(host.innerHTML.includes('aria-label="关闭创建日期筛选"'));
+  ctx.renderDetailShell();assert.ok(host.innerHTML.includes('aria-label="关闭错误分类筛选"'));
+});

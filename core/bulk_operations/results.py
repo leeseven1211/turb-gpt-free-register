@@ -151,6 +151,26 @@ def project_one(evidence: Mapping, *, operation_key: str | None = None, schema_v
         result = _plan(summary, state, baseline)
         if state == "success" and result["query_outcome"] != "success":
             state, contract_error = "attention_required", "plan_result_confirmation_missing"
+    elif key == "token_refresh":
+        # 刷新成功必须来自本轮重新认证、远端回执和写回读回确认；旧AT在线校验不算刷新。
+        confirmed = (state == "success" and data.get("force_refresh") is True and summary.get("ok") is True
+                     and receipt.get("action") == "token_refresh" and receipt_state == "confirmed"
+                     and summary.get("validation_method") != "access_token"
+                     and not summary.get("reconcile_required") and not summary.get("manual_reconcile"))
+        if state == "success" and not confirmed:
+            state, contract_error = "attention_required", "refresh_confirmation_missing"
+        outcome = ("success" if confirmed else "pending" if state in ACTIVE or state in {"pending_submit", "waiting_account"}
+                   else "unconfirmed" if state == "attention_required"
+                   else "not_executed" if state in {"not_executed", "cancelled"} else "failed")
+        result = {"refresh_outcome": outcome,
+                  "confirmation": "confirmed" if confirmed else "not_executed" if outcome == "not_executed" else "unconfirmed",
+                  "validation_method": summary.get("validation_method"),
+                  "refresh_driver": summary.get("token_refresh_driver") or summary.get("live_check_driver"),
+                  "protocol_version": summary.get("protocol_version"),
+                  "token_expired": summary.get("token_expired") if confirmed else None,
+                  "needs_live_check": summary.get("needs_live_check") if confirmed else None,
+                  "receipt_state": receipt_state,
+                  "failure_stage": summary.get("failure_stage") or run.get("progress_stage")}
     elif key in {"password_setup", "twofa_setup"}:
         step = "password" if key == "password_setup" else "twofa"
         step_receipts = summary.get("setup_step_receipts") or {}
@@ -210,6 +230,9 @@ def project_one(evidence: Mapping, *, operation_key: str | None = None, schema_v
             dimensions["country_query.failed"] = result.get("country_failed_count", 0)
         if state in TERMINAL:
             dimensions[f"account.comparison.{result['comparison']}"] = 1
+    elif key == "token_refresh" and result.get("refresh_outcome") in {"success", "failed", "unconfirmed"}:
+        metric = "confirmed" if result["refresh_outcome"] == "success" else result["refresh_outcome"]
+        dimensions[f"account.token_refresh.{metric}"] = 1
     elif key in {"password_setup", "twofa_setup"} and result.get("confirmation") == "confirmed":
         dimensions[f"account.{key}.confirmed"] = 1
     elif key == "codex_retry" and result.get("credential_confirmation") == "confirmed":
