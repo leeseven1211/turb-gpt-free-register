@@ -289,7 +289,7 @@ class ProtocolOtpDiagnosticIntegrationTests(unittest.TestCase):
             patch.object(legacy, "send_email_otp") as retry_send,
             patch.object(legacy, "validate_email_otp") as validate,
         ):
-            result = v2.refresh_access_token(EMAIL, proxy="")
+            result = v2.refresh_access_token(EMAIL, proxy="", callback_recovery=True)
 
         self.assertFalse(result["ok"])
         self.assertEqual("email_otp_failed", result["error"])
@@ -299,7 +299,7 @@ class ProtocolOtpDiagnosticIntegrationTests(unittest.TestCase):
         self.assertEqual("mailbox_error", result["auth_diagnostics"]["failure_kind"])
         self.assertEqual(408, result["auth_diagnostics"]["http_status"])
         self.assertNotIn("fixture-secret", json.dumps(result))
-        initial_send.assert_called_once_with(session)
+        initial_send.assert_not_called()
         waiter.assert_called_once()
         retry_send.assert_not_called()
         validate.assert_not_called()

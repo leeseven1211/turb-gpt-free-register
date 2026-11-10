@@ -8,7 +8,7 @@ OTP_OPERATIONS = frozenset({"email_otp", "email_otp_send", "email_otp_validate"}
 MAILBOX_ERROR_CODES = frozenset({
     "source_untrusted", "source_authentication_failed", "recipient_contract_unsupported",
     "recipient_evidence_missing", "recipient_ambiguous", "recipient_mismatch", "mailbox_mismatch",
-    "inbound_code_timeout", "inbound_request_failed", "inbound_storage_error",
+    "inbound_code_timeout", "inbound_code_ambiguous", "inbound_request_failed", "inbound_storage_error",
     "invalid_key", "service_not_authorized", "invalid_request", "unknown",
 })
 TRANSPORT_EXCEPTION_TYPES = frozenset({

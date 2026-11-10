@@ -732,23 +732,27 @@ def _refresh_with_password(
         if final_host == "auth.openai.com" and final_path == "/email-verification":
             auth_method = "email_otp"
             password_auth_status = "skipped"
-            # 到达验证页不代表已发信；显式发码后再开始等待本轮邮件。
-            otp_after_ts = time.time()
-            try:
-                send_email_otp(session)
-            except Exception as exc:
-                error = ProtocolV2AuthError(
-                    "email_otp_send_failed",
-                    category="email",
-                    roxy_fallback_allowed=False,
-                )
-                error.diagnostics = {
-                    "operation": "email_otp_send",
-                    "failure_kind": exc.reason if isinstance(exc, EmailOtpSendError) else "transport_error",
-                    "http_status": exc.status_code if isinstance(exc, EmailOtpSendError) else None,
-                    "exception_type": type(exc).__name__[:80],
-                }
-                raise error from exc
+            # 仅 AT 刷新保留跳转前时间窗，先读取 authorize 可能已发送的验证码。
+            # 补密码等共享调用继续使用既有显式发码，无效码重发仍由 OTP 状态机处理。
+            if _AT_CALLBACK_CONTEXT.get() is None:
+                otp_after_ts = time.time()
+                try:
+                    send_email_otp(session)
+                except Exception as exc:
+                    error = ProtocolV2AuthError(
+                        "email_otp_send_failed",
+                        category="email",
+                        roxy_fallback_allowed=False,
+                    )
+                    error.diagnostics = {
+                        "operation": "email_otp_send",
+                        "failure_kind": exc.reason if isinstance(exc, EmailOtpSendError) else "transport_error",
+                        "http_status": exc.status_code if isinstance(exc, EmailOtpSendError) else None,
+                        "exception_type": type(exc).__name__[:80],
+                    }
+                    raise error from exc
+            else:
+                logger.info("[查活][Protocol v2] 已进入邮箱验证码页，沿授权前时间窗等待已有验证码，本次不追加重发")
             email_result, auth_method = _complete_email_otp(
                 session,
                 email,
