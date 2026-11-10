@@ -97,7 +97,15 @@
 .bulk-loading-dot { width: 8px; height: 8px; background: var(--ui-color-brand); border-radius: 50%; }
 /* 列表与明细。 */
 .bulk-list-card { padding: 16px 20px; }
-.bulk-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 16px; }
+.bulk-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-bottom: 14px; }
+.bulk-kpi { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--ui-color-border); border-radius: 10px; background: var(--ui-color-surface-subtle); }
+.bulk-kpi > span { font-size: 11px; color: var(--ui-color-text-secondary); }
+.bulk-kpi > b { font-size: 20px; font-weight: 700; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.bulk-kpi > b small { margin-left: 5px; font-size: 11px; font-weight: 500; color: var(--ui-color-text-muted); }
+.bulk-kpi.is-warn > b { color: var(--ui-color-warning, #8b570b); }
+.bulk-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--ui-color-border); }
+.bulk-filter-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.bulk-list-filters > .bulk-search-field { margin-right: 0; }
 .bulk-list-filters > .bulk-field { width: 150px; }
 .bulk-list-filters > .bulk-search-field { width: auto; flex: 1 1 260px; max-width: 360px; margin-right: auto; }
 .bulk-list-dates .bulk-filter-popover-panel { right: 0; left: auto; }
@@ -116,23 +124,30 @@
 .bulk-batch-table th:nth-child(5) { width: 17%; }
 .bulk-batch-table th:nth-child(6) { width: 6%; }
 .bulk-batch-name { color: var(--ui-color-text); font-size: 13px; font-weight: 600; }
-.bulk-result-links { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.bulk-count-link { color: var(--ui-color-text-secondary); font-size: 11px; line-height: 1.6; }
-.bulk-count-link strong { font-weight: 650; }
-.bulk-count-link.is-success { color: var(--ui-color-success, #126847); }
-.bulk-count-link.is-failed { color: var(--ui-color-danger, #a42b35); }
-.bulk-count-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.bulk-result-links { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.bulk-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 0; border-radius: 6px; font: inherit; font-size: 11px; font-weight: 600; background: var(--ui-color-surface-subtle); color: var(--ui-color-text-secondary); }
+.bulk-pill b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.bulk-pill.is-success { color: var(--ui-color-success, #126847); background: var(--ui-color-success-soft); }
+.bulk-pill.is-failed { color: var(--ui-color-danger, #a42b35); background: var(--ui-color-danger-soft); }
+.bulk-pill.is-warn { color: var(--ui-color-warning, #8b570b); background: var(--ui-color-warning-soft); }
+.bulk-pill.is-zero { opacity: .55; font-weight: 500; }
+.bulk-pill:not(:disabled):hover { filter: brightness(.95); }
+.bulk-open-arrow { border: 0; background: transparent; padding: 2px 4px; color: var(--ui-color-text-muted); font-size: 14px; line-height: 1; cursor: pointer; border-radius: 6px; }
+.bulk-open-arrow:hover { color: var(--ui-color-brand); background: var(--ui-color-brand-soft); }
 .bulk-progress-caption { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ui-color-text-secondary); margin-bottom: 7px; font-variant-numeric: tabular-nums; }
 .bulk-progress { display: block; width: 100%; height: 5px; appearance: none; border: 0; border-radius: 5px; overflow: hidden; background: var(--ui-color-surface-subtle); }
 .bulk-progress::-webkit-progress-bar { background: var(--ui-color-surface-subtle); border-radius: 5px; }
 .bulk-progress::-webkit-progress-value { background: var(--ui-color-brand); border-radius: 5px; }
 .bulk-progress::-moz-progress-bar { background: var(--ui-color-brand); border-radius: 5px; }
+.bulk-progress.is-done::-webkit-progress-value { background: var(--ui-color-success, #126847); }
+.bulk-progress.is-done::-moz-progress-bar { background: var(--ui-color-success, #126847); }
 .bulk-badge { display: inline-flex; white-space: nowrap; align-items: center; border-radius: 4px; padding: 3px 7px; font-size: 11px; background: var(--ui-color-surface-subtle); color: var(--ui-color-text-secondary); font-weight: 550; }
 .bulk-badge.is-success { color: var(--ui-color-success, #126847); background: var(--ui-color-success-soft); }
 .bulk-badge.is-failed { color: var(--ui-color-danger, #a42b35); background: var(--ui-color-danger-soft); }
 .bulk-badge.is-attention_required, .bulk-badge.is-partial_success { color: var(--ui-color-warning, #8b570b); background: var(--ui-color-warning-soft); }
 .bulk-badge.is-running, .bulk-badge.is-active, .bulk-badge.is-preparing { color: var(--ui-color-brand); background: var(--ui-color-brand-soft); }
-.bulk-pager { justify-content: flex-end; padding-top: 16px; }
+.bulk-pager { justify-content: space-between; padding-top: 14px; }
+.bulk-pager-actions { display: flex; gap: 8px; align-items: center; }
 .bulk-pager span { color: var(--ui-color-text-muted); font-size: 11px; }
 /* 详情把结果和下一步操作留在首屏。 */
 .bulk-overview { padding: 18px 20px 16px; }

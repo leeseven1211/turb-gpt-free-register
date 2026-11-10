@@ -201,9 +201,6 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
     bulk_schema.require_readable()
     clauses = ["c.purge_started_at IS NULL"]
     params: list = []
-    if after_id:
-        clauses.append("c.batch_id<%s")
-        params.append(int(after_id))
     if operation_key:
         clauses.append("c.action_key=ANY(%s)")
         params.append([operation_key] if isinstance(operation_key, str) else list(operation_key))
@@ -218,17 +215,40 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
     if filters.get("q"):
         clauses.append("(b.title ILIKE %s OR c.batch_id::text=%s)")
         params.extend(["%" + str(filters["q"])[:120] + "%", str(filters["q"])[:120]])
+    page_clauses = list(clauses)
+    page_params = list(params)
+    if after_id:
+        page_clauses.append("c.batch_id<%s")
+        page_params.append(int(after_id))
     page_size = max(1, min(100, int(limit)))
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""SELECT c.*,b.title AS name FROM {table("operation_batch_controls")} c
-          JOIN {table("operation_batches")} b ON b.id=c.batch_id WHERE {" AND ".join(clauses)}
+          JOIN {table("operation_batches")} b ON b.id=c.batch_id WHERE {" AND ".join(page_clauses)}
           ORDER BY c.batch_id DESC LIMIT %s""",
-            (*params, page_size + 1),
+            (*page_params, page_size + 1),
         )
         rows = [public_batch(dict(x)) for x in cur.fetchall()]
+        summary = {}
+        try:
+            cur.execute(
+                f"""SELECT count(*) AS total_batches,
+              count(*) FILTER (WHERE c.state IN ('active','settling','cancel_requested','stop_requested')) AS active_batches,
+              count(*) FILTER (WHERE c.state='ended') AS ended_batches,
+              coalesce(sum(coalesce(nullif(c.counts->>'failed','')::bigint,0)),0) AS failed_targets,
+              coalesce(sum(coalesce(nullif(c.counts->>'attention_required','')::bigint,0)),0) AS attention_targets
+            FROM {table("operation_batch_controls")} c
+          JOIN {table("operation_batches")} b ON b.id=c.batch_id WHERE {" AND ".join(clauses)}""",
+                tuple(params),
+            )
+            row = cur.fetchone() or {}
+            summary = {key: int(row.get(key) or 0) for key in (
+                "total_batches", "active_batches", "ended_batches", "failed_targets", "attention_targets")}
+        except Exception:
+            summary = {}
         return {
             "items": rows[:page_size],
+            "summary": summary,
             "page": {
                 "has_more": len(rows) > page_size,
                 "next_cursor": rows[page_size - 1]["id"] if len(rows) > page_size else None,
