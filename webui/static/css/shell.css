@@ -4497,3 +4497,62 @@
   #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-sub { margin-top: 1px; }
   #tab-codex .codex-table-v2 .acc-v2-sub { margin-top: 1px; }
 }
+
+/* 手机端单行列表：一屏尽量多条，其余字段进详情/更多 */
+@media (max-width: 860px) {
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
+  #tab-codex .codex-table-v2 tbody tr {
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 8px 10px !important;
+    height: auto !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td,
+  #tab-codex .codex-table-v2 tbody td { min-height: 0 !important; }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-email,
+  #tab-codex .codex-table-v2 tbody td.col-email { flex: 1 1 auto !important; min-width: 0 !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-email,
+  #tab-codex .codex-table-v2 .acc-v2-email {
+    display: block;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-sub,
+  #tab-codex .codex-table-v2 .acc-v2-sub { display: none !important; }
+
+  /* 卡片里只留账号状态，其余字段走详情 */
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-token,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-plan,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-trial,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-2fa,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-status,
+  #tab-codex .codex-table-v2 tbody td.col-plan,
+  #tab-codex .codex-table-v2 tbody td.col-status,
+  #tab-codex .codex-table-v2 tbody td.col-time { display: none !important; }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-account-status,
+  #tab-codex .codex-table-v2 tbody td.col-account { flex: 0 0 auto !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-account-status::before,
+  #tab-codex .codex-table-v2 tbody td.col-account::before { display: none !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-account-status .account-cell-lines,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-account-status .account-cell-line {
+    display: block !important; height: auto !important;
+  }
+
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-actions,
+  #tab-codex .codex-table-v2 tbody td.col-actions { flex: 0 0 auto !important; margin: 0 !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn,
+  #tab-codex .codex-table-v2 .acc-v2-more-btn {
+    min-height: 28px !important; height: 28px !important;
+    padding: 0 9px !important; font-size: 12px !important;
+  }
+  #tab-codex .codex-table-v2 .acc-v2-actions > button.primary {
+    min-height: 28px !important; height: 28px !important;
+    padding: 0 9px !important; font-size: 12px !important;
+  }
+}
