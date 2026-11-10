@@ -433,7 +433,8 @@ function isCompactTableLayout() {
 function applyTablePixelWidth(table, width) {
   if (!table) return;
   if (isCompactTableLayout()) {
-    table.style.removeProperty('width');
+    // 手机端是卡片流，任何像素宽度都会把列表撑出屏幕。
+    table.style.setProperty('width', '100%', 'important');
     return;
   }
   table.style.setProperty('width', `${width}px`, 'important');
@@ -624,10 +625,11 @@ function initResizableTables() {
     document.querySelectorAll('table[data-resizable-table]').forEach(table => {
       const key = table.dataset.resizableTable;
       if (isCompactTableLayout()) {
-        table.style.removeProperty('width');
+        table.style.setProperty('width', '100%', 'important');
         return;
       }
-      if (table.style.getPropertyValue('width')) return;
+      const current = table.style.getPropertyValue('width');
+      if (current && current !== '100%') return;
       const total = readSavedTableTotal(key) || (key === 'accounts' ? 1500 : 0);
       if (total) applyTablePixelWidth(table, total);
     });
