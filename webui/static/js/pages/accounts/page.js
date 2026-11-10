@@ -1472,6 +1472,13 @@ function _accountEmailInvalidBadge(r) {
   const detail = [r.email_invalid_reason || '该账号关联邮箱已标记失效', r.email_invalid_at ? `标记时间：${r.email_invalid_at}` : ''].filter(Boolean).join('；');
   return `<span class="pill status-failed account-email-invalid-badge" title="${esc(detail)}">邮箱失效</span>`;
 }
+function _htmlText(html) {
+  const div = document.createElement('div');
+  div.innerHTML = String(html || '');
+  div.querySelectorAll('button, svg').forEach(node => node.remove());
+  return (div.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
 function _accountRowTone(tr) {
   const cell = tr.querySelector('.col-account-status');
   const html = cell ? cell.innerHTML : '';
@@ -1480,16 +1487,12 @@ function _accountRowTone(tr) {
   return 'ok';
 }
 
-// 手机端双行列表：主行邮箱 + 状态点，次行元信息（来源/套餐/2FA/Codex）。
+// 手机端双行列表：主行邮箱 + 状态点，次行元信息在渲染时拼好。
 function decorateAccountMobileRows(body) {
   if (!body) return;
   body.querySelectorAll('tr').forEach(tr => {
     const emailCell = tr.querySelector('.col-email');
-    if (!emailCell || emailCell.querySelector('.acc-mobile-meta')) return;
-    const text = sel => (tr.querySelector(sel)?.innerText || '').replace(/\s+/g, ' ').trim();
-    const meta = [text('.col-source'), text('.col-plan'), text('.col-small.col-2fa'), text('.col-status')]
-      .filter(value => value && value !== '-')
-      .join(' · ');
+    if (!emailCell) return;
     const link = emailCell.querySelector('.acc-v2-email-link');
     if (link && !link.querySelector('.acc-mobile-dot')) {
       const dot = document.createElement('span');
@@ -1497,12 +1500,8 @@ function decorateAccountMobileRows(body) {
       dot.setAttribute('aria-hidden', 'true');
       link.insertBefore(dot, link.firstChild);
     }
-    if (meta) {
-      const metaEl = document.createElement('div');
-      metaEl.className = 'acc-mobile-meta';
-      metaEl.textContent = meta;
-      emailCell.appendChild(metaEl);
-    }
+    if (tr.dataset.mobileTapBound === '1') return;
+    tr.dataset.mobileTapBound = '1';
     tr.addEventListener('click', ev => {
       if (ev.target.closest('button, a, input, label, .acc-v2-more-menu')) return;
       tr.querySelector('.acc-v2-email-link')?.click();
@@ -1517,6 +1516,12 @@ function renderAccounts() {
   const rowHtmlV2 = (r) => {
     const extractLink = _extractLinkCell(r);
     const codexSummary = r.codex_error || (['queued', 'running', 'cancelling'].includes(r.codex_execution_status) ? '授权处理中' : '');
+    const mobileMeta = [
+      r.email_source,
+      _htmlText(_planCell(r)),
+      r.totp_enabled ? '2FA 已验证' : '2FA 未验证',
+      _htmlText(_codexCellV2(r)),
+    ].filter(value => value && value !== '-').join(' · ');
     return `
     <tr>
       <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
@@ -1526,6 +1531,7 @@ function renderAccounts() {
           <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
         </button>
         <div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span class="account-email-name">${esc(r.user_name || '-')}</span>${_accountEmailInvalidBadge(r)}</div>
+        <div class="acc-mobile-meta">${esc(mobileMeta)}</div>
       </td>
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
