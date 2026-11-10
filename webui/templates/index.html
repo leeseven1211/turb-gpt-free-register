@@ -7,7 +7,7 @@
   <title>GPT 注册控制台</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261109-mobile-pager-1') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261030-layout-v2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261030-layout-v2') }}">
   <style>
@@ -698,6 +698,7 @@
         <button type="button" class="jobs-tb-btn selection-only" id="btnCodexArchiveBulkV2" disabled title="归档选中的 Codex 授权凭证；默认列表不再显示">归档选中</button>
         <button type="button" class="jobs-tb-btn jobs-tb-btn--danger selection-only" id="btnCodexDeleteBulkV2" disabled title="删除数据库中选中的 Codex 凭证及导出状态">删除选中</button>
         <div class="list-toolbar-utilities">
+          <button type="button" class="jobs-tb-btn hidden" id="btnCodexUploadProgressV2" title="打开任务中心查看本次上传的最终结果">查看上传进度</button>
           <button type="button" class="jobs-tb-btn" id="btnResetCodexColumnsV2" title="恢复 Codex 列表默认列宽">恢复列宽</button>
           <button type="button" class="jobs-tb-btn" id="btnRefreshCodexV2" title="重新加载 Codex 凭证列表">刷新</button>
         </div>
@@ -1129,12 +1130,12 @@
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261109-cross-page-selection') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261109-plan-at-recovery') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261110-task-receipts') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261109-delete-evidence-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261105-concurrency-control') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-task-receipts') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>

@@ -497,8 +497,11 @@ async function codexUploadSub2(filenames = null) {
     (r.accepted ? r.queued || [] : r.uploaded || []).forEach(item => CODEX_SELECTED.delete(item.filename));
     const issues = Number(r.failed_count || 0) + Number(r.skipped_count || 0);
     if (r.accepted) {
-      showToast(`手动上传已入队 ${r.queued_count || 0} 个${issues ? `，${issues} 个未入队` : ''}，最终结果在任务回执中更新`);
-      trackAcceptedOperationsV2(r.queued || [], '手动上传');
+      showToast(`手动上传已入队 ${r.queued_count || 0} 个${issues ? `，${issues} 个未入队` : ''}，可点击“查看上传进度”查看最终结果`);
+      trackAcceptedOperationsV2(r.queued || [], '手动上传', {navigate: false});
+      if ((r.queued || []).some(item => item.accepted && Number(item.task_id))) {
+        document.getElementById('btnCodexUploadProgressV2')?.classList.remove('hidden');
+      }
     } else {
       showToast(issues ? `已上传 ${r.uploaded_count || 0} 个，${issues} 个未完成` : `已上传 ${r.uploaded_count || 0} 个到 sub2api`);
       await loadCodex();
@@ -556,6 +559,7 @@ async function codexDeleteBulk() {
   bind('btnCodexRefreshTokenBulkV2', () => codexRefreshTokens());
   bind('btnCodexReauthorizeBulkV2', () => codexReauthorize());
   bind('btnCodexUploadSub2V2', () => codexUploadSub2());
+  bind('btnCodexUploadProgressV2', showOperationReceiptsV2);
   bind('btnCodexArchiveBulkV2', codexArchiveSelected);
   bind('btnCodexDeleteBulkV2', codexDeleteBulk);
   bind('btnResetCodexFiltersV2', () => {

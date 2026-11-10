@@ -33,11 +33,25 @@ function renderOperationReceiptsV2() {
   const done = items.filter(item => OPERATION_RECEIPT_TERMINAL_V2.has(item.status));
   const success = done.filter(item => item.status === 'success').length;
   const failed = done.length - success;
-  panel.innerHTML = `<div class="config-tool-panel-v2"><strong>本次提交的任务回执</strong>
-    <p role="status" aria-live="polite">共 ${items.length} 项 · 等待/执行 ${items.length - done.length} · 成功 ${success} · 失败或待处理 ${failed}${state.error ? `；${esc(state.error)}` : ''}</p>
-    <details${done.length === items.length ? ' open' : ''}><summary>查看任务与最终结果</summary>
-      ${items.map(item => `<p><button type="button" class="btn" data-operation-receipt-task="${item.task_id}" data-operation-receipt-run="${item.run_id || ''}">${esc(item.label)} #${item.task_id} · ${operationReceiptStateLabelV2(item.status)}</button>${item.message ? ` <span>${esc(item.message)}</span>` : ''}</p>`).join('')}
-    </details><button type="button" class="btn" data-operation-receipt-refresh>刷新回执</button></div>`;
+  if (!panel.querySelector('[data-operation-receipt-summary]')) {
+    panel.innerHTML = `<div class="operation-receipts-header-v2"><strong>本次提交的任务回执</strong>
+      <p data-operation-receipt-summary role="status" aria-live="polite"></p>
+      <button type="button" class="jobs-tb-btn" data-operation-receipt-refresh>刷新回执</button></div>
+      <details class="operation-receipts-details-v2"><summary>查看任务与最终结果</summary>
+        <ul class="operation-receipts-list-v2" aria-label="本次提交的任务结果"></ul>
+      </details>`;
+  }
+  panel.querySelector('[data-operation-receipt-summary]').textContent = `共 ${items.length} 项 · 等待/执行 ${items.length - done.length} · 成功 ${success} · 失败或待处理 ${failed}${state.error ? `；${state.error}` : ''}`;
+  const list = panel.querySelector('.operation-receipts-list-v2');
+  const scrollTop = list.scrollTop;
+  const active = document.activeElement;
+  const focusedTask = list.contains(active) ? active.dataset.operationReceiptTask : null;
+  const focusedRun = active?.dataset.operationReceiptRun || '';
+  list.innerHTML = items.map(item => `<li class="operation-receipt-row-v2"><button type="button" class="jobs-tb-btn" data-operation-receipt-task="${item.task_id}" data-operation-receipt-run="${item.run_id || ''}">${esc(item.label)} #${item.task_id} · ${operationReceiptStateLabelV2(item.status)}</button>${item.message ? ` <span class="operation-receipt-message-v2">${esc(item.message)}</span>` : ''}</li>`).join('');
+  if (focusedTask) {
+    Array.from(list.querySelectorAll('[data-operation-receipt-task]')).find(button => button.dataset.operationReceiptTask === focusedTask && button.dataset.operationReceiptRun === focusedRun)?.focus({preventScroll: true});
+  }
+  list.scrollTop = scrollTop;
 }
 
 function scheduleOperationReceiptsV2() {
@@ -79,7 +93,7 @@ async function refreshOperationReceiptsV2() {
   }
 }
 
-function trackAcceptedOperationsV2(references, label = '任务') {
+function trackAcceptedOperationsV2(references, label = '任务', options = {}) {
   const state = OPERATION_RECEIPTS_V2;
   for (const item of references || []) {
     if (!item?.accepted || !Number(item.task_id)) continue;
@@ -100,6 +114,12 @@ function trackAcceptedOperationsV2(references, label = '任务') {
       else refreshOperationReceiptsV2();
     });
   }
+  if (options.navigate !== false) return showOperationReceiptsV2();
+  renderOperationReceiptsV2();
+  refreshOperationReceiptsV2();
+}
+
+function showOperationReceiptsV2() {
   const filter = document.getElementById('accountTaskTypeFilterV2');
   if (filter) filter.value = '';
   activateTab('tasks');
