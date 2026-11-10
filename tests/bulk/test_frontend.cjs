@@ -239,3 +239,16 @@ test('列表日期与结果错误分类面板均有明确关闭入口',()=>{
   ctx.renderListShell();assert.ok(host.innerHTML.includes('aria-label="关闭创建日期筛选"'));
   ctx.renderDetailShell();assert.ok(host.innerHTML.includes('aria-label="关闭错误分类筛选"'));
 });
+
+test('新建批次铺满布局、固定摘要和危险操作二次确认',()=>{
+  const page=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const css=fs.readFileSync(path.join(root,'webui/static/css/pages/bulk.css'),'utf8');
+  for(const marker of ['bulk-create-side','bulk-side-actions','data-bulk-submit','confirmAction','取消排队账号','停止正在执行','已选 ${count} 个（可跨页）'])assert.ok(page.includes(marker),marker);
+  for(const marker of ['grid-template-columns: minmax(0, 1fr) 320px','position: fixed','grid-template-columns: repeat(2, minmax(0, 1fr))'])assert.ok(css.includes(marker),marker);
+});
+test('状态字典不再出现同名展示',()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const line=source.slice(source.indexOf('  const labels ='),source.indexOf('  const terminal =')).split('\n')[0];
+  const values=[...line.matchAll(/:'([^']+)'/g)].map(match=>match[1]);
+  assert.equal(new Set(values).size,values.length);
+});
