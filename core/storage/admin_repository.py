@@ -356,9 +356,12 @@ def account_query_count(spec: dict) -> int:
     except Exception:
         return 0
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {_q(record_store.ACCOUNTS)} a WHERE {sql}", params)
+        cur.execute(f"SELECT COUNT(*) AS count FROM {_q(record_store.ACCOUNTS)} a WHERE {sql}", params)
         row = cur.fetchone()
-        return int(row[0] or 0) if row else 0
+        if not row:
+            return 0
+        value = row.get("count") if isinstance(row, dict) else row[0]
+        return int(value or 0)
 
 
 def list_accounts(
