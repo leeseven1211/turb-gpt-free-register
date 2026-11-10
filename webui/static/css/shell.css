@@ -4388,3 +4388,13 @@
     overflow-wrap: anywhere;
   }
 }
+
+/* 窄屏再收一层：低频字段进详情/更多，避免一张卡占掉半屏 */
+@media (max-width: 560px) {
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-token,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-trial,
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-2fa { display: none !important; }
+  #tab-codex .codex-table-v2 tbody td.col-account { display: none !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
+  #tab-codex .codex-table-v2 tbody tr { gap: 8px 8px !important; padding: 10px 12px !important; }
+}
