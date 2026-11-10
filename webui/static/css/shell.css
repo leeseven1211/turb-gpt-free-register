@@ -4398,3 +4398,80 @@
   #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
   #tab-codex .codex-table-v2 tbody tr { gap: 8px 8px !important; padding: 10px 12px !important; }
 }
+
+/* 手机端工具栏压缩：单行横滑、小按钮，把高度还给列表 */
+@media (max-width: 860px) {
+  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar,
+  #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 6px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    padding: 8px 10px !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar::-webkit-scrollbar,
+  #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar::-webkit-scrollbar { display: none; }
+  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar > *,
+  #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar > * { flex: 0 0 auto !important; margin: 0 !important; }
+  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar .jobs-tb-btn,
+  #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar .jobs-tb-btn {
+    width: auto !important;
+    min-height: 32px !important;
+    height: 32px !important;
+    padding: 0 10px !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+  }
+  #accountsPanelV2 .list-action-toolbar .list-selection-hint,
+  #codexPanelV2 .list-action-toolbar .list-selection-hint { display: none !important; }
+  #accountsPanelV2 .list-toolbar-utilities,
+  #codexPanelV2 .list-toolbar-utilities {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  #accountsPanelV2 .list-toolbar-utilities > *,
+  #codexPanelV2 .list-toolbar-utilities > * { flex: 0 0 auto !important; width: auto !important; height: auto !important; }
+  #accountsPanelV2 .list-toolbar-utilities label { display: inline-flex !important; align-items: center; gap: 4px; font-size: 12px; }
+  #accountsPanelV2 .list-toolbar-utilities select,
+  #codexPanelV2 .list-toolbar-utilities select { min-height: 32px !important; font-size: 12px !important; padding: 0 6px !important; }
+  #btnResetAccountsColumnsV2, #btnResetCodexColumnsV2 { display: none !important; }
+
+  #accountsPanelV2 .jobs-v2-pager,
+  #codexPanelV2 .jobs-v2-pager { padding: 6px 10px !important; min-height: 0 !important; gap: 6px !important; }
+  #accountsPanelV2 .jobs-v2-pager .jobs-tb-btn,
+  #codexPanelV2 .jobs-v2-pager .jobs-tb-btn { min-height: 30px !important; height: 30px !important; padding: 0 10px !important; font-size: 12px !important; }
+
+  /* 卡片操作合并成一个「更多」；详情走点邮箱 */
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-detail { display: none !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-actions,
+  #tab-codex .codex-table-v2 tbody td.col-actions {
+    order: 3 !important;
+    width: auto !important;
+    margin-left: auto !important;
+    margin-top: 0 !important;
+    align-self: center !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-account-status { order: 4 !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-status { order: 5 !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td.col-plan { order: 6 !important; }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-more-btn,
+  #tab-codex .codex-table-v2 .acc-v2-more-btn {
+    min-height: 30px !important;
+    height: 30px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions,
+  #tab-codex .codex-table-v2 .acc-v2-actions { gap: 6px !important; }
+}
