@@ -15,7 +15,8 @@
 .bulk-create-summary { display: grid; gap: 16px; margin-top: 0 !important; }
 .bulk-filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .bulk-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-weight: 600; color: var(--ui-color-text-secondary); font-size: 13px; }
-.bulk-field input, .bulk-field select { min-width: 0; width: 100%; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); padding: 9px 11px; min-height: 40px; font: inherit; font-weight: 400; }
+.bulk-field input:not([type="checkbox"]), .bulk-field select { min-width: 0; width: 100%; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); padding: 9px 11px; min-height: 40px; font: inherit; font-weight: 400; }
+.bulk-page input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; min-height: 16px; padding: 0; margin: 0; flex: 0 0 auto; accent-color: var(--ui-color-brand); }
 .bulk-field input:focus-visible, .bulk-field select:focus-visible, .bulk-page button:focus-visible, .bulk-filter-options input:focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 3px; }
 .bulk-page button { cursor: pointer; touch-action: manipulation; }
 .bulk-page button:disabled { cursor: default; opacity: .5; }
@@ -24,9 +25,9 @@
 .bulk-filter-choice { border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-sm); padding: 10px; min-width: 0; margin: 0; }
 .bulk-filter-choice legend { padding: 0 5px; font-weight: 600; font-size: 13px; }
 .bulk-filter-options { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-.bulk-filter-options label { display: flex; align-items: flex-start; gap: 6px; padding: 6px 0; min-width: 0; cursor: pointer; font-size: 12px; }
-.bulk-filter-options input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--ui-color-brand); }
-.bulk-filter-options span { overflow-wrap: anywhere; }
+.bulk-filter-options label { display: flex; align-items: flex-start; gap: 6px; padding: 6px 0; min-width: 0; max-width: 100%; cursor: pointer; font-size: 12px; }
+.bulk-filter-options input[type="checkbox"] { margin: 2px 0 0; }
+.bulk-filter-options span { min-width: 0; overflow-wrap: break-word; }
 .bulk-inline-fields { margin: 16px 0; }
 .bulk-inline-fields .bulk-field { flex: 0 1 260px; }
 .bulk-muted { color: var(--ui-color-text-secondary); font-size: 12px; line-height: 1.65; }
@@ -71,7 +72,6 @@
 .bulk-retry-toolbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin: 16px 0; padding: 14px; background: var(--ui-color-surface-subtle); border-radius: var(--ui-radius-md); }
 .bulk-retry-toolbar .bulk-muted { flex-basis: 100%; margin: 0; }
 .bulk-check { flex-direction: row; align-items: center; }
-.bulk-check input { width: auto; }
 @media (max-width: 1150px) {
   .bulk-create-grid { grid-template-columns: minmax(0, 1fr) 230px; }
   .bulk-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -84,7 +84,7 @@
   .bulk-heading .bulk-actions { width: 100%; }
   .bulk-heading .bulk-actions button { flex: 1; }
   .bulk-list-filters, .bulk-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .bulk-field input, .bulk-field select { font-size: 16px; min-height: 44px; }
+  .bulk-field input:not([type="checkbox"]), .bulk-field select { font-size: 16px; min-height: 44px; }
   .bulk-page .jobs-tb-btn, .bulk-link { min-height: 44px; }
   .bulk-filter-options label { min-height: 32px; align-items: center; }
   .bulk-table, .bulk-table tbody, .bulk-table tr, .bulk-table td { display: block; width: 100%; }
