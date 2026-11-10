@@ -4475,3 +4475,25 @@
   #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-actions,
   #tab-codex .codex-table-v2 .acc-v2-actions { gap: 6px !important; }
 }
+
+/* 卡片再压一层：字段标签与值同行，行距收紧，一屏多放两条 */
+@media (max-width: 860px) {
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody tr,
+  #tab-codex .codex-table-v2 tbody tr {
+    gap: 6px 10px !important;
+    padding: 9px 11px !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td[data-label],
+  #tab-codex .codex-table-v2 tbody td[data-label] {
+    display: inline-flex !important;
+    align-items: baseline;
+    gap: 4px;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] tbody td[data-label]::before,
+  #tab-codex .codex-table-v2 tbody td[data-label]::before {
+    display: inline !important;
+    margin: 0 !important;
+  }
+  #accountsPanelV2 table[data-resizable-table="accounts"] .acc-v2-sub { margin-top: 1px; }
+  #tab-codex .codex-table-v2 .acc-v2-sub { margin-top: 1px; }
+}
