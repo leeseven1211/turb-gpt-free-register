@@ -1,4 +1,4 @@
-const EXTRACT_WORKBENCH_PAGE_SIZE = 10;
+const EXTRACT_WORKBENCH_PAGE_SIZE = 20;
 let EXTRACT_WORKBENCH_ROOT = null;
 let EXTRACT_WORKBENCH_CONFIG = null;
 let EXTRACT_WORKBENCH_STATE = {page: 1, status: '', provider: '', mode: '', query: '', selectedAccounts: new Set(), items: [], total: 0, counts: {}, batch:'', batches:[], batchPage:1, batchTotal:0, batchInitialized:false, batchDetail:null, cancellingBatch:'', preview:null, previewSignature:'', creating:false, submission:null, batchWorkersInitialized:false};
@@ -6,6 +6,7 @@ let EXTRACT_WORKBENCH_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_BATCHES_AT = 0;
 let EXTRACT_WORKBENCH_BATCHES_PAGE = 0;
 let EXTRACT_WORKBENCH_RENDER_SIGNATURE = "";
+let EXTRACT_WORKBENCH_TABLE_SIGNATURE = "";
 let EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_CONFIG_PROMISE = null;
 let EXTRACT_WORKBENCH_BOUND = false;
@@ -33,11 +34,22 @@ const EXTRACT_WORKBENCH_STATUS_LABELS = {
   confirmed: 'Plus 已确认', plus: 'Plus 已确认', not_confirmed: 'Plus 未确认',
   unknown: '待确认', request_unknown: '结果待确认', unavailable: '未启用', not_applicable: '不适用',
   query_stopped: '已停止查询', waiting_sync: '等待平台同步',
+  awaiting_payment: '待支付', processing_payment: '支付中', expired: '已过期',
+  not_started: '未开始', checking: '核验中', unavailable: '无法确认',
 };
 const EXTRACT_WORKBENCH_FILTERS = [
-  ['', '全部任务'], ['processing', '只看处理中'], ['running', '只看运行中'], ['extraction_succeeded', '成功出链'],
-  ['payment_succeeded', '成功支付'], ['plus_confirmed', 'Plus 已确认'], ['needs_attention', '失败 / 待确认'],
+  ['', '全部'], ['processing', '处理中'], ['awaiting_payment', '待支付'],
+  ['needs_review', '待核对'], ['extraction_succeeded', '已出链'],
+  ['plus_confirmed', '已完成'], ['failed', '失败'],
 ];
+const EXTRACT_WORKBENCH_PAYMENT_PHASE_LABELS = {
+  not_started: '未开始', awaiting_payment: '待支付', processing: '支付中',
+  paid: '已支付', failed: '支付失败', expired: '已过期', unknown: '结果未知',
+};
+const EXTRACT_WORKBENCH_PLUS_STATE_LABELS = {
+  unknown: '未核验', checking: '核验中', confirmed: '已到账',
+  not_confirmed: '未到账', unavailable: '无法确认',
+};
 
 function extractWorkbenchEscape(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -91,6 +103,21 @@ function extractWorkbenchListUrl(filters = {}) {
   });
   if (filters.batch) params.set('batch_id', String(filters.batch));
   return `/api/extract-workbench/tasks?${params.toString()}`;
+}
+
+function extractWorkbenchStageClass(state) {
+  return state === 'done' ? 'success' : state === 'failed' ? 'danger'
+    : state === 'running' ? 'active' : state === 'warning' ? 'warning' : 'muted';
+}
+
+function extractWorkbenchWaitLabel(task) {
+  const start = Date.parse(task?.created_at || '');
+  if (!Number.isFinite(start)) return '—';
+  const finished = ['success', 'failed', 'cancelled', 'stopped', 'interrupted'].includes(String(task?.task_status || ''));
+  const end = finished ? Date.parse(task?.updated_at || '') : Date.now();
+  const minutes = Math.max(0, Math.floor(((Number.isFinite(end) ? end : Date.now()) - start) / 60000));
+  if (minutes < 60) return `${minutes} 分`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
 function extractWorkbenchStatusLabel(value, fallback = '待确认') {
@@ -217,7 +244,42 @@ function renderExtractWorkbenchTaskCard(task) {
   </article>`;
 }
 
-async function extractWorkbenchRequest(endpoint, options = {}) {
+function renderExtractWorkbenchTaskRow(task) {
+  const taskId = extractWorkbenchEscape(task?.task_id || '');
+  const email = extractWorkbenchEscape(task?.email || '账号未记录');
+  const providerId = String(task?.provider_id || 'legacy');
+  const providerLabel = EXTRACT_WORKBENCH_CONFIG?.providers?.find(provider => provider.id === providerId)?.label || EXTRACT_WORKBENCH_PROVIDER_LABELS[providerId] || providerId;
+  const mode = String(task?.mode || 'extract_only');
+  const stages = task?.stages || {};
+  const prepare = stages.prepare || {state: 'pending', status: task?.preflight_status};
+  const run = stages.run || {state: 'pending', status: task?.extraction_status};
+  const verify = stages.verify || {state: 'pending', status: task?.plus_status};
+  const halt = task?.reconcile_halt || {};
+  const prepareLabel = extractWorkbenchStatusLabel(prepare.status, '未开始');
+  const runLabel = halt.halted ? '待核对' : extractWorkbenchStatusLabel(run.status, '未开始');
+  const runDetail = halt.halted
+    ? (halt.label || '已停止自动同步')
+    : ([run.step, run.percent === null || run.percent === undefined || run.percent === '' ? '' : `${run.percent}%`].filter(Boolean).join(' · ') || extractWorkbenchTime(task?.updated_at));
+  const verifyLabel = EXTRACT_WORKBENCH_PLUS_STATE_LABELS[task?.plus_state] || extractWorkbenchStatusLabel(verify.status, '未核验');
+  const paymentLabel = EXTRACT_WORKBENCH_PAYMENT_PHASE_LABELS[task?.payment_phase] || '';
+  const runTone = halt.halted ? 'warning' : extractWorkbenchStageClass(run.state);
+  const canPaymentEntry = task?.has_payment_entry === true || task?.has_qr === true || task?.has_payment_link === true;
+  return `<div class="ew-row extract-workbench-task" role="row" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
+    <div class="ew-cell ew-c1"><b title="${email}">${email}</b><small>#${taskId} · ${extractWorkbenchEscape(extractWorkbenchTime(task?.created_at))}</small></div>
+    <div class="ew-cell ew-c2"><span class="ew-plat"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}"></i>${extractWorkbenchEscape(providerLabel)}</span><small>${extractWorkbenchEscape(extractWorkbenchModeLabel(mode))}</small></div>
+    <div class="ew-cell ew-c3"><b class="ew-${extractWorkbenchStageClass(prepare.state)}">${extractWorkbenchEscape(prepareLabel)}</b><small>${extractWorkbenchEscape(extractWorkbenchTime(task?.updated_at))}</small></div>
+    <div class="ew-cell ew-c4"><b class="ew-${runTone}">${extractWorkbenchEscape(runLabel)}</b><small>${extractWorkbenchEscape(runDetail)}</small></div>
+    <div class="ew-cell ew-c5"><b class="ew-${extractWorkbenchStageClass(verify.state)}">${extractWorkbenchEscape(verifyLabel)}</b><small>${extractWorkbenchEscape(paymentLabel)}</small></div>
+    <div class="ew-cell ew-c6">${extractWorkbenchEscape(extractWorkbenchWaitLabel(task))}</div>
+    <div class="ew-cell ew-c7">
+      <button type="button" class="btn ew-btn" data-workbench-detail="${taskId}" aria-expanded="false">详情</button>
+      ${canPaymentEntry ? `<button type="button" class="btn ew-btn ew-btn--link" data-workbench-payment-entry="${taskId}">支付入口</button>` : ''}
+    </div>
+    <div class="extract-workbench-detail hidden ew-detail" data-workbench-detail-content></div>
+  </div>`;
+}
+
+function extractWorkbenchRequest(endpoint, options = {}) {
   if (typeof window.__EXTRACT_WORKBENCH_DATA_SOURCE__ === 'function') {
     return window.__EXTRACT_WORKBENCH_DATA_SOURCE__(endpoint, options);
   }
@@ -562,8 +624,22 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
   const target = extractWorkbenchNode('[data-workbench-tasks]');
   if (!target) return;
   const items = Array.isArray(EXTRACT_WORKBENCH_STATE.items) ? EXTRACT_WORKBENCH_STATE.items : [];
-  if (quiet) extractWorkbenchSyncTaskCards(target, items);
-  else target.innerHTML = items.length ? items.map(renderExtractWorkbenchTaskCard).join('') : '<p class="extract-workbench-empty">没有匹配的提链任务</p>';
+  const head = '<div class="ew-table" role="table" aria-label="提链任务"><div class="ew-head" role="row">'
+    + '<span role="columnheader">账号 / 任务</span><span role="columnheader">平台 · 模式</span>'
+    + '<span role="columnheader">准备</span><span role="columnheader">运行</span>'
+    + '<span role="columnheader">核验</span><span role="columnheader">已等待</span>'
+    + '<span role="columnheader">操作</span></div>';
+  const signature = JSON.stringify(items.map(task => [
+    task.task_id, task.task_status, task.extraction_status, task.payment_status,
+    task.payment_phase, task.plus_state, task.progress?.percent, task.progress?.label,
+    task.reconcile_halt?.reason, task.has_payment_entry, task.updated_at,
+  ]));
+  if (!(quiet && signature === EXTRACT_WORKBENCH_TABLE_SIGNATURE)) {
+    target.innerHTML = items.length
+      ? head + items.map(renderExtractWorkbenchTaskRow).join('') + '</div>'
+      : '<p class="extract-workbench-empty">没有匹配的提链任务</p>';
+    EXTRACT_WORKBENCH_TABLE_SIGNATURE = signature;
+  }
   const summary = extractWorkbenchNode('[data-workbench-summary]');
   const total = Number(EXTRACT_WORKBENCH_STATE.total || 0);
   const first = items.length ? (EXTRACT_WORKBENCH_STATE.page - 1) * EXTRACT_WORKBENCH_PAGE_SIZE + 1 : 0;

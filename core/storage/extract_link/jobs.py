@@ -514,6 +514,10 @@ _WORKBENCH_STATUS_SQL = {
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
+    "awaiting_payment": "NOT local_reconcile_halted AND payment_status='pending_payment' AND extraction_status='success'",
+    "needs_review": "local_reconcile_halted OR task_status IN ('request_unknown','attention_required') OR extraction_status='unknown'",
+    "failed": "task_status IN ('failed','interrupted') OR extraction_status='failed' OR payment_status='failed'",
+    "cancelled": "task_status IN ('cancelled','stopped')",
     "needs_attention": """local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped','interrupted')
         OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
         OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",

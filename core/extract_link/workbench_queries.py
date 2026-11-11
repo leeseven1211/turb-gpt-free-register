@@ -65,6 +65,79 @@ def workbench_failure_detail(summary: dict) -> str:
     return ""
 
 
+_RECONCILE_HALT_LABELS = {
+    "remote_not_found": "原单连续查询不到，已停止自动续查",
+    "query_failures": "连续查询失败达到上限，已停止自动续查",
+    "timeout": "自动续查超过总时限，已停止",
+    "no_progress": "长时间没有有效进展，已停止自动续查",
+}
+
+_PAYMENT_PROCESSING_HINTS = (
+    "submitting", "awaiting_worker", "claimed", "verifying", "activation_pending",
+    "processing", "checking", "提交扫码", "核验中", "待接单", "扫码中",
+)
+
+_PLUS_CONFIRMED_RAW = {"verified", "confirmed"}
+_PLUS_NOT_CONFIRMED_RAW = {"inferred", "not_confirmed"}
+_PLUS_UNAVAILABLE_RAW = {"check_failed", "not_available", "verification_unavailable"}
+_PLUS_CHECKING_RAW = {"checking", "waiting_for_payment"}
+
+
+def _payment_phase(payment: str, *, mode: str, extraction: str, summary: dict,
+                   has_payment_entry: bool) -> str:
+    """把平台各自的支付说法收敛成 7 个阶段，不再把待支付和结果未知混成一堆。"""
+    if mode == "extract_only" or payment == "unpaid":
+        return "not_started"
+    if payment == "paid":
+        return "paid"
+    raw = " ".join(str(summary.get(key) or "") for key in (
+        "payment_check_status", "automatic_payment_status", "xxsyun_status",
+        "payment_status", "current_step",
+    )).lower()
+    if payment == "failed":
+        return "expired" if ("expired" in raw or "过期" in raw) else "failed"
+    if payment == "request_unknown":
+        return "unknown"
+    if extraction != "success" and not has_payment_entry:
+        return "not_started"
+    if any(token in raw for token in _PAYMENT_PROCESSING_HINTS) or summary.get("payment_order_id") or summary.get("payment_submitted_at"):
+        return "processing"
+    return "awaiting_payment"
+
+
+def _plus_state(plus: str, summary: dict, *, payment_phase: str) -> str:
+    """三家平台的 Plus 说法统一成 5 态，推断值不算确认。"""
+    raw = str(summary.get("platform_plus_status") or summary.get("plus_verification_status") or "").strip().lower()
+    if plus == "confirmed" or raw in _PLUS_CONFIRMED_RAW:
+        return "confirmed"
+    if plus in {"failed", "not_confirmed"} or raw in _PLUS_NOT_CONFIRMED_RAW:
+        return "not_confirmed"
+    if raw in _PLUS_UNAVAILABLE_RAW:
+        return "unavailable"
+    if raw in _PLUS_CHECKING_RAW or plus in {"pending", "queued"}:
+        return "checking"
+    if payment_phase == "paid":
+        return "checking"
+    return "unknown"
+
+
+def _remote_raw(summary: dict) -> dict:
+    """保留平台原话，界面只读不改，排查时才有证据。"""
+    raw = {}
+    for key, label in (
+        ("remote_status", "提链状态"),
+        ("xxsyun_status", "扫码台"),
+        ("automatic_payment_status", "自动支付"),
+        ("payment_check_status", "支付检查"),
+        ("platform_plus_status", "Plus（幻光）"),
+        ("plus_verification_status", "Plus（流光）"),
+    ):
+        value = summary.get(key)
+        if isinstance(value, str) and value.strip():
+            raw[label] = value.strip()[:60]
+    return raw
+
+
 def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     data = row.get("task_data") if isinstance(row.get("task_data"), dict) else {}
     state = row.get("public_state") if isinstance(row.get("public_state"), dict) else {}
@@ -136,6 +209,26 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
             error = detail if detail.startswith("平台提链失败") else f"平台提链失败：{detail}"
             if generic_workbench_failure(message):
                 message = error
+    payment_phase = _payment_phase(
+        payment, mode=mode, extraction=extraction, summary=summary,
+        has_payment_entry=has_payment_entry,
+    )
+    plus_state = _plus_state(plus, summary, payment_phase=payment_phase)
+    halt_reason = str(summary.get("local_reconcile_reason") or "")
+    halted = summary.get("local_reconcile_halted") is True
+    reconcile_halt = {
+        "halted": halted,
+        "reason": halt_reason[:60],
+        "label": _RECONCILE_HALT_LABELS.get(halt_reason, "已停止自动续查，待核对") if halted else "",
+    }
+    prepare_state = {"passed": "done", "success": "done", "failed": "failed", "skipped": "skipped"}.get(preflight, "pending")
+    run_state = {"success": "done", "failed": "failed", "running": "running", "queued": "queued"}.get(extraction, "pending")
+    verify_state = {"confirmed": "done", "not_confirmed": "failed", "unavailable": "warning", "checking": "running"}.get(plus_state, "pending")
+    stages = {
+        "prepare": {"state": prepare_state, "status": preflight},
+        "run": {"state": run_state, "status": extraction, "step": progress.get("label") or "", "percent": progress.get("percent")},
+        "verify": {"state": verify_state, "status": plus_state},
+    }
     created_at = row.get("run_created_at") or row.get("task_created_at")
     updated_at = row.get("job_updated_at") or row.get("task_updated_at") or row.get("run_completed_at") or created_at
     return {
@@ -161,6 +254,11 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
             payment == "paid" and summary.get("payment_confirmation_source") in {"local_plan_check", "platform_order_check"}
         ) else "",
         "plus_status": plus,
+        "payment_phase": payment_phase,
+        "plus_state": plus_state,
+        "remote_raw": _remote_raw(summary),
+        "reconcile_halt": reconcile_halt,
+        "stages": stages,
         "run_count": int(row.get("run_count") or 0),
         "progress": progress,
         "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,

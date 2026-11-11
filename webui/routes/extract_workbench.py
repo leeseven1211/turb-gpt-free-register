@@ -41,6 +41,7 @@ _ITEM_FIELDS = (
     "run_count", "progress", "created_at", "updated_at", "message", "error",
     "has_extract_link", "has_payment_link", "has_payment_entry", "has_qr",
     "local_reconcile_halted", "payment_source", "payment_source_label", "payment_order",
+    "payment_phase", "plus_state", "remote_raw", "reconcile_halt", "stages",
 )
 _PRIVATE_KEY_NAMES = {
     "accesstoken", "refreshtoken", "idtoken", "at", "token", "authorization",

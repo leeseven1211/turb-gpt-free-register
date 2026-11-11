@@ -461,17 +461,17 @@ test('页面刷新查询列表和能力配置，列表不请求敏感链接', as
   assert.ok(requests.every(item => !item.endpoint.startsWith('/api/accounts')));
 });
 
-test('任务列表每页查询 10 条，批次历史仍每页查询 20 条', async () => {
+test('任务列表每页查询 20 条，批次历史仍每页查询 20 条', async () => {
   const {api, requests} = createView();
   const batchSelect = {innerHTML:'', value:''};
   api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-batch-select]' ? batchSelect : null});
   await api.load({force:true});
   const taskRequest = requests.find(item => item.endpoint.startsWith('/api/extract-workbench/tasks?'));
-  assert.equal(new URLSearchParams(taskRequest.endpoint.split('?')[1]).get('page_size'), '10');
+  assert.equal(new URLSearchParams(taskRequest.endpoint.split('?')[1]).get('page_size'), '20');
   assert.ok(requests.some(item => item.endpoint === '/api/extract-workbench/batches?page=1&page_size=20'));
 });
 
-test('31 条任务分为四页，第二页摘要与首尾翻页状态正确', () => {
+test('31 条任务按每页 20 条分为两页，摘要与首尾翻页状态正确', () => {
   const {api} = createView();
   const tasks = {innerHTML:''};
   const summary = {textContent:''};
@@ -482,15 +482,15 @@ test('31 条任务分为四页，第二页摘要与首尾翻页状态正确', ()
     '[data-workbench-page-label]':label, '[data-workbench-page="prev"]':previous, '[data-workbench-page="next"]':next};
   api.setRoot({querySelector: selector => selectors[selector] || null});
   for (const [page, count, range, previousDisabled, nextDisabled] of [
-    [1, 10, '1–10', true, false], [2, 10, '11–20', false, false], [4, 1, '31–31', false, true],
+    [1, 20, '1–20', true, false], [2, 11, '21–31', false, true],
   ]) {
-    api.setState({page, total:31, items:Array.from({length:count}, (_, index) => ({task_id:(page - 1) * 10 + index + 1}))});
+    api.setState({page, total:31, items:Array.from({length:count}, (_, index) => ({task_id:(page - 1) * 20 + index + 1}))});
     api.renderTasks();
     assert.equal(summary.textContent, `显示 ${range} / 31 个任务`);
-    assert.equal(label.textContent, `第 ${page} / 4 页`);
+    assert.equal(label.textContent, `第 ${page} / 2 页`);
     assert.equal(previous.disabled, previousDisabled);
     assert.equal(next.disabled, nextDisabled);
-    assert.equal((tasks.innerHTML.match(/class="extract-workbench-task"/g) || []).length, count);
+    assert.equal((tasks.innerHTML.match(/data-task-id="/g) || []).length, count);
   }
 });
 
@@ -565,7 +565,7 @@ test('取消批次提交整批 API 并刷新摘要和任务，保留当前批次
   assert.equal(filters.get('query'), '查找');
   assert.equal(select.value, '7');
   assert.equal(api.state().batchDetail.status, 'cancelled');
-  assert.match(tasks.innerHTML, /任务 #42/);
+  assert.match(tasks.innerHTML, /#42/);
   assert.match(toasts.at(-1), /取消 147/);
   assert.match(toasts.at(-1), /跳过 3/);
   assert.equal(button.disabled, false);
@@ -839,7 +839,7 @@ test('详情请求未完成时列表刷新立即安排下一轮定时器', async
     return new Promise(resolve => { resolveDetail = resolve; });
   };
   await view.api.load({quiet: true});
-  assert.match(fixture.tasks.innerHTML, /任务 #42/);
+  assert.match(fixture.tasks.innerHTML, /#42/);
   assert.deepEqual(timers.pendingDelays(), [5000]);
   resolveDetail({events: []});
   await new Promise(resolve => setImmediate(resolve));
@@ -910,7 +910,7 @@ test('quiet 网络错误保留旧卡片并安排自动重试', async () => {
   };
   timers.runNext();
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(fixture.tasks.innerHTML, /任务 #42/);
+  assert.match(fixture.tasks.innerHTML, /#42/);
   assert.doesNotMatch(fixture.tasks.innerHTML, /网络暂不可用/);
 });
 
@@ -1177,11 +1177,11 @@ test('顶部标签使用全部统计数，切换状态后不把筛选结果当�
   const {api} = createView();
   const tabs={innerHTML:''};
   api.setRoot({querySelector: selector => selector==='[data-workbench-status-tabs]' ? tabs : null});
-  api.setState({status:'running',total:1,counts:{all:1705,running:7,processing:18}});
+  api.setState({status:'processing',total:1,counts:{all:1705,running:7,processing:18}});
   api.renderTabs();
-  assert.match(tabs.innerHTML,/全部任务<\/strong><span>1,705/);
-  assert.match(tabs.innerHTML,/data-workbench-status-filter="running" aria-pressed="true"/);
-  assert.match(tabs.innerHTML,/只看运行中<\/strong><span>7/);
+  assert.match(tabs.innerHTML,/全部<\/strong><span>1,705/);
+  assert.match(tabs.innerHTML,/data-workbench-status-filter="processing" aria-pressed="true"/);
+  assert.match(tabs.innerHTML,/处理中<\/strong><span>18/);
 });
 
 test('新建批次弹窗打开后才查询候选，重新打开会刷新匹配数量', async () => {
