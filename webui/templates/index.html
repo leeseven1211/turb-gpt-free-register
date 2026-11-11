@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top11') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top12') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -422,6 +422,7 @@
       <div class="extract-workbench-toolbar" role="group" aria-label="提链批次操作">
         <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         <div class="extract-workbench-batch-query">
+          <button type="button" class="btn" data-workbench-export title="按当前筛选导出 CSV（最多 5000 条）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2h16v-2"/></svg><span>导出结果</span></button>
           <label class="extract-workbench-batch-picker"><span>批次查询</span><select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
           <button type="button" class="btn extract-workbench-cancel-batch" data-workbench-cancel-batch disabled aria-busy="false" title="请先选择一个具体批次，全部任务视图不能取消批次">取消批次</button>
           <button type="button" class="btn extract-workbench-all-batches" data-workbench-all-batches>全部任务</button>
@@ -435,6 +436,13 @@
           <select data-workbench-filter-mode aria-label="按模式筛选"><option value="">全部模式</option></select>
           <label class="extract-workbench-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><button type="button" data-workbench-apply-filters aria-label="搜索任务"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"></label>
           <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
+        </div>
+        <div class="ew-batchbar hidden" data-workbench-batchbar>
+          <span class="ew-batchbar-count" data-workbench-selected-count>已选 0 个</span>
+          <button type="button" class="btn" data-workbench-bulk="sync">同步状态</button>
+          <button type="button" class="btn" data-workbench-bulk="links">复制支付链接</button>
+          <button type="button" class="btn" data-workbench-bulk="export">导出所选</button>
+          <button type="button" class="btn ew-batchbar-clear" data-workbench-bulk="clear">清除选择</button>
         </div>
         <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
         <div class="extract-workbench-pagination">
@@ -1248,7 +1256,7 @@
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top11') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top12') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-create-v5') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

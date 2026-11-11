@@ -574,6 +574,59 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @bp.get("/api/extract-workbench/export")
+    def export_extract_workbench():
+        import csv
+        import io
+        from flask import Response
+
+        provider_id = request.args.get("provider_id") or None
+        mode = request.args.get("mode") or None
+        status = request.args.get("status") or ""
+        query = (request.args.get("query") or "").strip()
+        if provider_id is not None and not _valid_identifier(provider_id):
+            return _error("provider_id 参数无效", 400)
+        if mode is not None and mode not in _MODES:
+            return _error("mode 参数无效", 400)
+        if status and not _valid_identifier(status):
+            return _error("status 参数无效", 400)
+        rows = []
+        page = 1
+        try:
+            while len(rows) < 5000:
+                payload = dict(provider_id=provider_id, mode=mode, status=status, query=query,
+                               page=page, page_size=100)
+                if request.args.get("batch_id"):
+                    payload["batch_id"] = int(request.args["batch_id"])
+                result = extract_link_service.list_workbench_tasks(**payload)
+                items = result.get("items") if isinstance(result, dict) else None
+                if not isinstance(items, list) or not items:
+                    break
+                rows.extend(items)
+                if len(rows) >= int(result.get("total") or 0):
+                    break
+                page += 1
+        except Exception as exc:
+            return _service_error("任务导出", exc)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["任务号", "邮箱", "平台", "模式", "任务状态", "提链状态", "支付阶段", "Plus 核验",
+                         "进度", "消息", "创建时间", "更新时间"])
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            writer.writerow([
+                item.get("task_id"), item.get("email"), item.get("provider_id"), item.get("mode"),
+                item.get("task_status"), item.get("extraction_status"), item.get("payment_phase"),
+                item.get("plus_state"), (item.get("progress") or {}).get("label") if isinstance(item.get("progress"), dict) else "",
+                item.get("error") or item.get("message") or "", item.get("created_at"), item.get("updated_at"),
+            ])
+        body = "\ufeff" + buffer.getvalue()
+        response = Response(body, mimetype="text/csv; charset=utf-8")
+        response.headers["Content-Disposition"] = "attachment; filename=extract-workbench.csv"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @bp.get("/api/extract-workbench/tasks/<int:task_id>")
     def extract_workbench_task_detail(task_id: int):
         if task_id < 1:

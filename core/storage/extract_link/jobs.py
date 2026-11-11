@@ -864,17 +864,20 @@ def workbench_summary() -> dict:
             f"""SELECT COALESCE(NULLIF(t.data->>'provider_id', ''), 'legacy') AS provider_id,
                     COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))
                         IN ('queued','running','waiting','cancelling','settling','stopping')) AS active_now,
-                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))='success') AS today_success,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))='queued') AS queued_now,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))='success'
+                        AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_success,
                     COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))
-                        IN ('failed','attention_required','partial_success')) AS today_failed,
+                        IN ('failed','attention_required','partial_success')
+                        AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_failed,
                     AVG(EXTRACT(EPOCH FROM (r.completed_at - r.started_at)))
                         FILTER (WHERE LOWER(COALESCE(r.status, ''))='success'
-                            AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL) AS avg_seconds
+                            AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL
+                            AND COALESCE(t.created_at, now()) >= {today_sql}) AS avg_seconds
                 FROM {operation_store._table('operation_tasks')} t
                 LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
                 WHERE t.task_type='extract_link'
                   AND LOWER(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'
-                  AND COALESCE(t.created_at, now()) >= {today_sql}
                 GROUP BY 1 ORDER BY 1""",
             (),
         )
@@ -886,6 +889,7 @@ def workbench_summary() -> dict:
             providers.append({
                 "provider_id": str(item.get("provider_id") or "legacy"),
                 "active_now": int(item.get("active_now") or 0),
+                "queued_now": int(item.get("queued_now") or 0),
                 "today_success": success,
                 "today_failed": failed,
                 "success_rate": round(success / (success + failed), 4) if success + failed else None,
