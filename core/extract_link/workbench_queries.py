@@ -98,6 +98,9 @@ def _payment_phase(payment: str, *, mode: str, extraction: str, summary: dict,
         return "expired" if ("expired" in raw or "过期" in raw) else "failed"
     if payment == "request_unknown":
         return "unknown"
+    if mode == "manual_payment" and has_payment_entry:
+        # 手动支付：链接/二维码已经交出去，等我们这边的人付，直到真正收款前都算“待支付”。
+        return "awaiting_payment"
     if extraction != "success" and not has_payment_entry:
         return "not_started"
     if any(token in raw for token in _PAYMENT_PROCESSING_HINTS) or summary.get("payment_order_id") or summary.get("payment_submitted_at"):
@@ -169,7 +172,9 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     }.get(payment, "pending_payment")
     preflight = str(state.get("preflight_status") or run_summary.get("preflight_status") or "pending").lower()
     plus = str(state.get("plus_status") or run_summary.get("plus_status") or "unknown").lower()
-    if mode in {"auto_payment", "manual_payment"} and extraction == "success":
+    # 只有真正确认收款后才允许用独立套餐事实补“已到账”，
+    # 否则一个本来就带 Plus 的账号会把“还没付款”显示成“已完成”。
+    if mode in {"auto_payment", "manual_payment"} and extraction == "success" and payment == "paid":
         from core.storage.extract_link.jobs import independent_plus_is_confirmed
         anchor = summary.get("payment_submitted_at") if payment_source == "xxsyun" else row.get("task_created_at")
         if independent_plus_is_confirmed(account, task_created_at=anchor):
@@ -196,7 +201,14 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     )
     message = str(state.get("message") or run_summary.get("message") or error or "")
     quota_stage = str(row.get("progress_stage") or row.get("current_stage") or "")
-    if provider_id == "huanguang" and task_status == "queued" and quota_stage in HUANGUANG_QUOTA_STAGES:
+    quota_hint = str(summary.get("current_step") or "")
+    if provider_id == "huanguang" and quota_hint in HUANGUANG_QUOTA_STAGES:
+        # 平台/旧记录会把额度码直接写进 current_step，界面不能把内部码当文案抛给运营。
+        message = HUANGUANG_QUOTA_STAGES[quota_hint]
+        progress["label"] = message
+        progress["percent"] = None
+        error = ""
+    elif provider_id == "huanguang" and task_status == "queued" and quota_stage in HUANGUANG_QUOTA_STAGES:
         message = HUANGUANG_QUOTA_STAGES[quota_stage]
         progress["label"] = message
         progress["percent"] = None

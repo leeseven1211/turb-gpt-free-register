@@ -821,6 +821,7 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
         FROM raw
     ), projected AS (
         SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
+            AND payment_status='paid'
             AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
             THEN 'confirmed'
             ELSE plus END AS plus_status

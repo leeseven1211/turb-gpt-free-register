@@ -256,7 +256,9 @@ function renderExtractWorkbenchTaskRow(task) {
   const verify = stages.verify || {state: 'pending', status: task?.plus_status};
   const halt = task?.reconcile_halt || {};
   const prepareLabel = extractWorkbenchStatusLabel(prepare.status, '未开始');
-  const runLabel = halt.halted ? '待核对' : extractWorkbenchStatusLabel(run.status, '未开始');
+  // 运行段只说“有没有拿到链”，完成与否由核验段决定，避免“已完成 + 未到账”自相矛盾。
+  const runLabel = halt.halted ? '待核对'
+    : (run.status === 'success' || run.status === 'succeeded' ? '已出链' : extractWorkbenchStatusLabel(run.status, '未开始'));
   const runDetail = halt.halted
     ? (halt.label || '已停止自动同步')
     : ([run.step, run.percent === null || run.percent === undefined || run.percent === '' ? '' : `${run.percent}%`].filter(Boolean).join(' · ') || extractWorkbenchTime(task?.updated_at));
