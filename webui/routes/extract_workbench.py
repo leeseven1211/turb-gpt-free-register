@@ -202,7 +202,7 @@ def _public_config(value: Any) -> dict[str, Any] | None:
             reason = provider.get("unavailable_reason")
             if reason not in {
                 "缺少API地址和平台授权信息", "缺少API地址", "缺少平台授权信息", "连接配置无效",
-                "平台配置暂不可用", "未启用可用运行模式",
+                "平台配置暂不可用", "未启用可用运行模式", "提链工作台已关闭", "平台未启用",
             }:
                 reason = "平台配置暂不可用"
             unavailable_providers.append({

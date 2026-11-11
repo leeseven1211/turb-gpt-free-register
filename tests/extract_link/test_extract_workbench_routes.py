@@ -71,10 +71,10 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
                 "api_base": "https://private.example/api",
                 "cdk": "private-cdk",
             }],
-            "unavailable_providers": [{
-                "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
-                "cdk": "private-cdk",
-            }],
+            "unavailable_providers": [
+                {"id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息", "cdk": "private-cdk"},
+                {"id": "anguang", "label": "暗光", "unavailable_reason": "提链工作台已关闭"},
+            ],
         }
         with patch.object(
             extract_workbench.extract_link_service,
@@ -91,12 +91,13 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual(4, payload["batch_workers_default"])
         self.assertEqual(50, payload["batch_workers_max"])
         self.assertEqual(
-            [{"id": "lumen_flow", "label": "流光", "default_type": "trial", "link_types": ["momo", "pix"], "modes": ["extract_only"]}],
+            [{"id": "lumen_flow", "label": "流光", "concurrency": 1, "default_type": "trial", "link_types": ["momo", "pix"], "modes": ["extract_only"]}],
             payload["providers"],
         )
-        self.assertEqual([{
-            "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
-        }], payload["unavailable_providers"])
+        self.assertEqual([
+            {"id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息"},
+            {"id": "anguang", "label": "暗光", "unavailable_reason": "提链工作台已关闭"},
+        ], payload["unavailable_providers"])
         self.assertNotIn("provider-secret", response.get_data(as_text=True))
         self.assertNotIn("private-cdk", response.get_data(as_text=True))
 

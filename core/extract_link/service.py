@@ -489,68 +489,85 @@ def workbench_config() -> dict:
     """返回工作台可选择的平台与模式，不包含密钥或 API 凭据。"""
     providers = []
     unavailable_providers = []
-    if _bool_setting("EXTRACT_LINK_ENABLED", True):
-        for provider_id, settings in _PROVIDER_SETTINGS.items():
-            if not _provider_enabled(provider_id):
-                continue
-            try:
-                runtime_config = _provider_configuration(provider_id)
-            except ValueError as exc:
-                message = str(exc)
-                if message == "提链平台 API 地址或 CDK 未配置":
-                    config_prefix = settings.get("config_prefix", settings["prefix"])
-                    missing = []
-                    if not _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", "")):
-                        missing.append("API 地址")
-                    credential_name = f"{config_prefix}_API_KEY" if provider_id == "anguang" else f"{config_prefix}_CDK"
-                    if not str(_runtime_setting(credential_name, "") or "").strip():
-                        missing.append("CDK")
-                    if missing == ["API 地址", "CDK"]:
-                        reason = "缺少API地址和平台授权信息"
-                    elif missing == ["API 地址"]:
-                        reason = "缺少API地址"
-                    elif missing == ["CDK"]:
-                        reason = "缺少平台授权信息"
-                    else:
-                        reason = "连接配置无效"
-                else:
-                    reason = "平台配置暂不可用"
-                unavailable_providers.append({
-                    "id": provider_id,
-                    "label": settings["label"],
-                    "unavailable_reason": reason,
-                })
-                continue
-            except TypeError:
-                continue
-            from core.extract_link.independent_payment import configured_source
-            payment_source = "native" if provider_id == "anguang" else configured_source(provider_id, _runtime_setting)
-            modes = [
-                mode for mode in ("extract_only", "manual_payment", "auto_payment")
-                if _provider_mode_enabled(provider_id, mode, payment_source)
-            ]
-            if payment_source == "native" and provider_id == "lumen_flow" and runtime_config.default_type != "momo":
-                modes = [mode for mode in modes if mode != "auto_payment"]
-            if payment_source == "native" and provider_id == "legacy" and runtime_config.default_type != "upi":
-                modes = [mode for mode in modes if mode != "auto_payment"]
-            if not modes:
-                unavailable_providers.append({
-                    "id": provider_id,
-                    "label": settings["label"],
-                    "unavailable_reason": "未启用可用运行模式",
-                })
-                continue
-            providers.append({
+    workspace_enabled = _bool_setting("EXTRACT_LINK_ENABLED", True)
+    for provider_id, settings in _PROVIDER_SETTINGS.items():
+        if not workspace_enabled:
+            unavailable_providers.append({
                 "id": provider_id,
                 "label": settings["label"],
-                "concurrency": _int_setting(settings.get("concurrency_key", ""), 1, 1, 50),
-                "default_type": "upi" if payment_source == "xxsyun" else runtime_config.default_type,
-                "link_types": _provider_link_types(provider_id),
-                "modes": modes,
-                "payment_source": payment_source,
-                "payment_source_label": "XXSYUN" if payment_source == "xxsyun" else "平台自带",
-                "payment_sources": ["native"] if provider_id == "anguang" else ["native", "xxsyun"],
+                "unavailable_reason": "提链工作台已关闭",
             })
+            continue
+        if not _provider_enabled(provider_id):
+            unavailable_providers.append({
+                "id": provider_id,
+                "label": settings["label"],
+                "unavailable_reason": "平台未启用",
+            })
+            continue
+        try:
+            runtime_config = _provider_configuration(provider_id)
+        except ValueError as exc:
+            message = str(exc)
+            if message == "提链平台 API 地址或 CDK 未配置":
+                config_prefix = settings.get("config_prefix", settings["prefix"])
+                missing = []
+                if not _valid_provider_base(_runtime_setting(f"{config_prefix}_API_BASE", "")):
+                    missing.append("API 地址")
+                credential_name = f"{config_prefix}_API_KEY" if provider_id == "anguang" else f"{config_prefix}_CDK"
+                if not str(_runtime_setting(credential_name, "") or "").strip():
+                    missing.append("平台授权信息")
+                if missing == ["API 地址", "平台授权信息"]:
+                    reason = "缺少API地址和平台授权信息"
+                elif missing == ["API 地址"]:
+                    reason = "缺少API地址"
+                elif missing == ["平台授权信息"]:
+                    reason = "缺少平台授权信息"
+                else:
+                    reason = "连接配置无效"
+            else:
+                reason = "平台配置暂不可用"
+            unavailable_providers.append({
+                "id": provider_id,
+                "label": settings["label"],
+                "unavailable_reason": reason,
+            })
+            continue
+        except TypeError:
+            unavailable_providers.append({
+                "id": provider_id,
+                "label": settings["label"],
+                "unavailable_reason": "平台配置暂不可用",
+            })
+            continue
+        from core.extract_link.independent_payment import configured_source
+        payment_source = "native" if provider_id == "anguang" else configured_source(provider_id, _runtime_setting)
+        modes = [
+            mode for mode in ("extract_only", "manual_payment", "auto_payment")
+            if _provider_mode_enabled(provider_id, mode, payment_source)
+        ]
+        if payment_source == "native" and provider_id == "lumen_flow" and runtime_config.default_type != "momo":
+            modes = [mode for mode in modes if mode != "auto_payment"]
+        if payment_source == "native" and provider_id == "legacy" and runtime_config.default_type != "upi":
+            modes = [mode for mode in modes if mode != "auto_payment"]
+        if not modes:
+            unavailable_providers.append({
+                "id": provider_id,
+                "label": settings["label"],
+                "unavailable_reason": "未启用可用运行模式",
+            })
+            continue
+        providers.append({
+            "id": provider_id,
+            "label": settings["label"],
+            "concurrency": _int_setting(settings.get("concurrency_key", ""), 1, 1, 50),
+            "default_type": "upi" if payment_source == "xxsyun" else runtime_config.default_type,
+            "link_types": _provider_link_types(provider_id),
+            "modes": modes,
+            "payment_source": payment_source,
+            "payment_source_label": "XXSYUN" if payment_source == "xxsyun" else "平台自带",
+            "payment_sources": ["native"] if provider_id == "anguang" else ["native", "xxsyun"],
+        })
     default_provider = str(_runtime_setting("EXTRACT_LINK_DEFAULT_PROVIDER", "legacy") or "legacy").strip()
     if not any(item["id"] == default_provider for item in providers):
         default_provider = providers[0]["id"] if providers else ""

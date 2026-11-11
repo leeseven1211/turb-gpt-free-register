@@ -179,6 +179,17 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
                 self.assertEqual(workers, result["batch_workers_default"])
                 self.assertEqual(50, result["batch_workers_max"])
 
+    def test_workbench_config_keeps_every_platform_visible_when_workspace_is_disabled(self):
+        with patch.object(extract_link_service, "_bool_setting", return_value=False):
+            result = extract_link_service.workbench_config()
+        self.assertEqual([], result["providers"])
+        self.assertEqual(
+            {"legacy", "lumen_flow", "huanguang", "anguang"},
+            {item["id"] for item in result["unavailable_providers"]},
+        )
+        self.assertTrue(all(item["unavailable_reason"] == "提链工作台已关闭"
+                            for item in result["unavailable_providers"]))
+
     def test_dispatch_keeps_fifty_workers_in_batch_and_provider_capacity(self):
         with patch.object(
             extract_link_service, "_runtime_setting",
@@ -206,9 +217,10 @@ class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
             result = extract_link_service.workbench_config()
         self.assertEqual(["legacy", "lumen_flow"], [provider["id"] for provider in result["providers"]])
         self.assertEqual(list(extract_link_service.DEFAULT_LINK_TYPE_ORDER), result["providers"][0]["link_types"])
-        self.assertEqual([{
-            "id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息",
-        }], result["unavailable_providers"])
+        self.assertEqual([
+            {"id": "huanguang", "label": "幻光", "unavailable_reason": "缺少API地址和平台授权信息"},
+            {"id": "anguang", "label": "暗光（XXSYUN 一条龙）", "unavailable_reason": "平台未启用"},
+        ], result["unavailable_providers"])
 
     def test_more_than_500_accounts_share_one_batch_and_only_notify_once(self):
         candidates = {"total": 501, "items": [{"account_id": value} for value in range(1, 502)],

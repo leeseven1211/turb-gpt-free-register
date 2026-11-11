@@ -404,7 +404,7 @@ test('新建批次按平台公布的提链类型初始化并提交用户选项',
   assert.equal(api.createPayload([], 'lumen', 'extract_only', 'unknown').type, 'momo');
 });
 
-test('新建批次显示不可用平台原因，平台筛选只显示可用平台', () => {
+test('新建批次禁用不可用平台，历史任务筛选仍可查看已停用平台', () => {
   const {api} = createView();
   const provider = {innerHTML:'', value:''};
   const filter = {innerHTML:'', value:''};
@@ -413,7 +413,8 @@ test('新建批次显示不可用平台原因，平台筛选只显示可用平�
   api.renderProviders();
   assert.match(provider.innerHTML, /幻光提链（缺少平台授权信息）/);
   assert.match(provider.innerHTML, /value="huanguang" disabled/);
-  assert.doesNotMatch(filter.innerHTML, /幻光提链/);
+  assert.match(filter.innerHTML, /幻光提链（已停用）/);
+  assert.doesNotMatch(filter.innerHTML, /value="huanguang" disabled/);
 });
 
 test('候选筛选提交套餐优惠并更新资格说明', () => {

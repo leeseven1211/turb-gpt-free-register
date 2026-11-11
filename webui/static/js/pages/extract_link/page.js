@@ -384,7 +384,12 @@ function extractWorkbenchRenderProviders() {
   const initial = providers.some(provider => provider.id === previous) ? previous
     : providers.some(provider => provider.id === config.default_provider) ? config.default_provider : (providers[0]?.id || '');
   providerSelect.value = initial;
-  filterProvider.innerHTML = '<option value="">全部平台</option>' + providers.map(provider => `<option value="${extractWorkbenchEscape(provider.id)}">${extractWorkbenchEscape(provider.label || provider.id)}</option>`).join('');
+  const historicProviders = [...providers, ...unavailableProviders]
+    .filter((provider, index, values) => values.findIndex(item => item.id === provider.id) === index);
+  filterProvider.innerHTML = '<option value="">全部平台</option>' + historicProviders.map(provider => {
+    const suffix = unavailableProviders.some(item => item.id === provider.id) ? '（已停用）' : '';
+    return `<option value="${extractWorkbenchEscape(provider.id)}">${extractWorkbenchEscape(provider.label || provider.id)}${suffix}</option>`;
+  }).join('');
   filterProvider.value = EXTRACT_WORKBENCH_STATE.provider;
   extractWorkbenchRenderModes();
   extractWorkbenchRenderLinkTypes();
@@ -573,7 +578,10 @@ function extractWorkbenchFormatDurationCompact(seconds) {
 }
 
 async function extractWorkbenchQuotaLine(providerIds) {
-  if (!providerIds.includes('huanguang')) return {};
+  const huanguang = Array.isArray(providerIds)
+    ? providerIds.find(item => typeof item === 'object' && item?.id === 'huanguang')
+    : null;
+  if (!huanguang || huanguang.available !== true) return {};
   if (EXTRACT_WORKBENCH_QUOTA_CACHE.value && Date.now() - EXTRACT_WORKBENCH_QUOTA_CACHE.at < 60_000) {
     return EXTRACT_WORKBENCH_QUOTA_CACHE.value;
   }
@@ -606,34 +614,54 @@ function extractWorkbenchRenderOverview(summary) {
   const health = extractWorkbenchNode('[data-workbench-health]');
   if (!health) return;
   const configProviders = Array.isArray(EXTRACT_WORKBENCH_CONFIG?.providers) ? EXTRACT_WORKBENCH_CONFIG.providers : [];
+  const unavailableProviders = Array.isArray(EXTRACT_WORKBENCH_CONFIG?.unavailable_providers) ? EXTRACT_WORKBENCH_CONFIG.unavailable_providers : [];
   const stats = Array.isArray(summary.providers) ? summary.providers : [];
-  const lumenId = configProviders.some(item => item.id === 'lumen') ? 'lumen'
-    : configProviders.some(item => item.id === 'lumen_flow') ? 'lumen_flow' : 'lumen';
+  const allConfigured = [...configProviders, ...unavailableProviders];
+  const lumenId = allConfigured.some(item => item.id === 'lumen') ? 'lumen'
+    : allConfigured.some(item => item.id === 'lumen_flow') ? 'lumen_flow' : 'lumen_flow';
   // 设计稿固定四格：三个已接平台 + 一个“其他”占位，避免少平台时整排视觉塌陷。
   const ids = ['huanguang', 'anguang', lumenId, 'legacy'];
-  void extractWorkbenchRenderHealthPanels(health, ids, stats);
+  void extractWorkbenchRenderHealthPanels(health, ids, stats, unavailableProviders);
 }
 
-async function extractWorkbenchRenderHealthPanels(host, providerIds, stats) {
+function extractWorkbenchPlatformAvailabilityLabel(reason) {
+  return ({
+    '提链工作台已关闭': '已关闭',
+    '平台未启用': '未启用',
+    '缺少API地址和平台授权信息': '未配置',
+    '缺少API地址': '缺地址',
+    '缺少平台授权信息': '缺授权',
+    '未启用可用运行模式': '无模式',
+    '连接配置无效': '配置无效',
+    '平台配置暂不可用': '不可用',
+  })[String(reason || '')] || '不可用';
+}
+
+async function extractWorkbenchRenderHealthPanels(host, providerIds, stats, unavailableProviders = []) {
   if (!providerIds.length) {
     host.innerHTML = '<span class="ew-health-empty">还没有可用的提链平台</span>';
     return;
   }
-  const quota = await extractWorkbenchQuotaLine(providerIds);
   const byId = new Map(stats.map(item => [String(item.provider_id), item]));
+  const unavailableById = new Map(unavailableProviders.map(item => [String(item.id), item]));
+  const quota = await extractWorkbenchQuotaLine(providerIds.map(id => ({id, available: !unavailableById.has(id)})));
   host.innerHTML = providerIds.map(id => {
     const stat = byId.get(id) || {};
-    const provider = (EXTRACT_WORKBENCH_CONFIG?.providers || []).find(item => item.id === id) || {};
+    const unavailable = unavailableById.get(id) || null;
+    const provider = (EXTRACT_WORKBENCH_CONFIG?.providers || []).find(item => item.id === id) || unavailable || {};
     const label = extractWorkbenchProviderShortLabel(id, provider.label);
     const rate = typeof stat.success_rate === 'number' ? stat.success_rate : null;
-    const tone = id === 'legacy' || rate === null ? 'muted' : rate < 0.6 ? 'warn' : '';
-    const statusText = id === 'legacy' ? '未启用' : rate === null ? '暂无数据' : rate < 0.6 ? '排队偏多' : '正常';
+    const tone = unavailable || id === 'legacy' || rate === null ? 'muted' : rate < 0.6 ? 'warn' : '';
+    const statusText = unavailable ? extractWorkbenchPlatformAvailabilityLabel(unavailable.unavailable_reason)
+      : id === 'legacy' ? '未启用'
+        : rate === null ? '暂无数据'
+          : rate < 0.6 ? '排队偏多' : '正常';
     const quotaText = id === 'huanguang' && quota?.ok === true
       ? Number(quota.extraction?.remaining ?? 0).toLocaleString('zh-CN')
       : '—';
     const quotaLabel = id === 'anguang' ? '可用积分' : id === 'lumen' || id === 'lumen_flow' ? '可用次数' : '可用额度';
     const activityLabel = id === 'anguang' ? '排队' : '在跑';
-    const bar = rate === null ? 0 : Math.max(0, Math.min(100, Math.round(rate * 100)));
+    const bar = unavailable || rate === null ? 0 : Math.max(0, Math.min(100, Math.round(rate * 100)));
     return `<article class="ew-plat-card">
       <div class="ew-plat-card-h"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(id)}"></i>${extractWorkbenchEscape(label)}<span class="ew-plat-st" data-tone="${tone}">${statusText}</span></div>
       <div class="ew-plat-card-g">
@@ -642,6 +670,7 @@ async function extractWorkbenchRenderHealthPanels(host, providerIds, stats) {
         <span>成功率 <b>${rate === null ? '—' : `${Math.round(rate * 100)}%`}</b></span>
         <span>平均 <b>${extractWorkbenchFormatDurationCompact(stat.avg_seconds)}</b></span>
       </div>
+      ${unavailable ? `<small class="ewd-plat-reason">${extractWorkbenchEscape(unavailable.unavailable_reason || '平台配置暂不可用')}</small>` : ''}
       <div class="ew-plat-card-bar"${tone === 'warn' ? ' data-tone="warn"' : ''}><i style="width:${bar}%"></i></div>
     </article>`;
   }).join('');
