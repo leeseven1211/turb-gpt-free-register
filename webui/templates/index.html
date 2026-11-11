@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top12') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top13') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -418,7 +418,7 @@
         <div class="ew-stat ew-stat--warn" data-stat="needs_review"><span class="ew-stat-label">待核对</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">自动续查已停</small></div>
         <div class="ew-stat" data-stat="today_plus_confirmed"><span class="ew-stat-label">Plus 已确认</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">今日到账</small></div>
       </section>
-      <div class="ew-health" data-workbench-health role="status" aria-label="平台健康度"><span class="ew-health-empty">平台健康度加载中…</span></div>
+      <div class="ew-panels" data-workbench-health role="status" aria-label="平台健康度"><span class="ew-health-empty">平台健康度加载中…</span></div>
       <div class="extract-workbench-toolbar" role="group" aria-label="提链批次操作">
         <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         <div class="extract-workbench-batch-query">
@@ -1256,7 +1256,7 @@
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top12') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top13') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-create-v5') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>
