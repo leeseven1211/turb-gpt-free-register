@@ -210,7 +210,20 @@ def _public_config(value: Any) -> dict[str, Any] | None:
             })
     default_provider = value.get("default_provider")
     default_mode = value.get("default_mode")
+    raw_poll = value.get("poll") if isinstance(value.get("poll"), dict) else {}
+
+    def _poll_seconds(name: str, default: int, lower: int, upper: int) -> int:
+        raw_value = raw_poll.get(name)
+        if not isinstance(raw_value, int) or isinstance(raw_value, bool):
+            return default
+        return max(lower, min(upper, raw_value))
+
     return {
+        "poll": {
+            "active_seconds": _poll_seconds("active_seconds", 3, 1, 60),
+            "idle_seconds": _poll_seconds("idle_seconds", 15, 2, 300),
+            "backoff_max_seconds": _poll_seconds("backoff_max_seconds", 300, 30, 1800),
+        },
         "default_provider": default_provider if _valid_identifier(default_provider) else "",
         "default_mode": default_mode if isinstance(default_mode, str) and default_mode in _MODES else "",
         "default_payment_source": "xxsyun" if value.get("default_payment_source") == "xxsyun" else "native",

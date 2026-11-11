@@ -605,15 +605,25 @@ async function extractWorkbenchCancelBatch() {
   }
 }
 
-const EXTRACT_WORKBENCH_POLL_ACTIVE_MS = 3000;
-const EXTRACT_WORKBENCH_POLL_IDLE_MS = 15000;
+/* 轮询节奏由配置页决定：在动 / 静止 / 失败退避封顶，待核对与已结束不自动刷。 */
+function extractWorkbenchPollPolicy() {
+  const poll = EXTRACT_WORKBENCH_CONFIG?.poll || {};
+  const active = Number(poll.active_seconds);
+  const idle = Number(poll.idle_seconds);
+  const backoff = Number(poll.backoff_max_seconds);
+  return {
+    activeMs: Number.isFinite(active) && active > 0 ? Math.min(60, active) * 1000 : 3000,
+    idleMs: Number.isFinite(idle) && idle > 0 ? Math.min(300, idle) * 1000 : 15000,
+    backoffMs: Number.isFinite(backoff) && backoff > 0 ? Math.min(1800, backoff) * 1000 : 300000,
+  };
+}
 
-/* 轮询节奏：在动 3 秒，只有待支付时 15 秒，待核对/已结束不自动刷（手动刷）。 */
 function extractWorkbenchPollDelay() {
   const counts = EXTRACT_WORKBENCH_STATE.counts || {};
   const batchCounts = EXTRACT_WORKBENCH_STATE.batchDetail?.counts || {};
-  if (Number(counts.processing || batchCounts.processing || 0) > 0) return EXTRACT_WORKBENCH_POLL_ACTIVE_MS;
-  if (Number(counts.awaiting_payment || batchCounts.awaiting_payment || 0) > 0) return EXTRACT_WORKBENCH_POLL_IDLE_MS;
+  const policy = extractWorkbenchPollPolicy();
+  if (Number(counts.processing || batchCounts.processing || 0) > 0) return policy.activeMs;
+  if (Number(counts.awaiting_payment || batchCounts.awaiting_payment || 0) > 0) return policy.idleMs;
   return 0;
 }
 
@@ -621,7 +631,7 @@ function extractWorkbenchScheduleRefresh({retry = false} = {}) {
   clearTimeout(EXTRACT_WORKBENCH_POLL_TIMER);
   const tab = document.getElementById('tab-extract-workbench');
   if (!tab || tab.classList.contains('hidden')) return;
-  const delay = retry ? EXTRACT_WORKBENCH_POLL_IDLE_MS : extractWorkbenchPollDelay();
+  const delay = retry ? extractWorkbenchPollPolicy().idleMs : extractWorkbenchPollDelay();
   if (!delay) return;
   EXTRACT_WORKBENCH_POLL_TIMER = setTimeout(() => {
     if (document.hidden) extractWorkbenchScheduleRefresh({retry});

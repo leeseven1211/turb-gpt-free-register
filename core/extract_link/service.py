@@ -561,6 +561,12 @@ def workbench_config() -> dict:
     return {
         "batch_workers_default": _int_setting("EXTRACT_LINK_BATCH_WORKERS", 1, 1, 50),
         "batch_workers_max": 50,
+        # 轮询节奏由公共内核统一调度，配置页改完刷新页面即生效。
+        "poll": {
+            "active_seconds": _int_setting("EXTRACT_LINK_POLL_ACTIVE_SECONDS", 3, 1, 60),
+            "idle_seconds": _int_setting("EXTRACT_LINK_POLL_IDLE_SECONDS", 15, 2, 300),
+            "backoff_max_seconds": _int_setting("EXTRACT_LINK_POLL_BACKOFF_MAX_SECONDS", 300, 30, 1800),
+        },
         "default_provider": default_provider,
         "default_mode": default_mode,
         "default_payment_source": (provider or {}).get("payment_source", "native"),
