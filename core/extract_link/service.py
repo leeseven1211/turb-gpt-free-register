@@ -543,6 +543,7 @@ def workbench_config() -> dict:
             providers.append({
                 "id": provider_id,
                 "label": settings["label"],
+                "concurrency": _int_setting(settings.get("concurrency_key", ""), 1, 1, 50),
                 "default_type": "upi" if payment_source == "xxsyun" else runtime_config.default_type,
                 "link_types": _provider_link_types(provider_id),
                 "modes": modes,

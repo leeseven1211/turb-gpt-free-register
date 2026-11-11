@@ -183,6 +183,8 @@ def _public_config(value: Any) -> dict[str, Any] | None:
         providers.append({
             "id": provider["id"],
             "label": provider.get("label") if isinstance(provider.get("label"), str) else provider["id"],
+            "concurrency": provider.get("concurrency") if isinstance(provider.get("concurrency"), int)
+            and not isinstance(provider.get("concurrency"), bool) and 1 <= provider["concurrency"] <= 50 else 1,
             "default_type": provider.get("default_type") if isinstance(provider.get("default_type"), str) else "",
             "link_types": list(dict.fromkeys(
                 value for value in link_types

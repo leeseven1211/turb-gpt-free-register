@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top9') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top11') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -489,6 +489,24 @@
           <span data-workbench-selection-count>本批计划运行 0 个账号</span>
           <div><button type="button" class="btn" data-workbench-close-create>取消</button><button type="button" class="btn extract-workbench-primary" data-workbench-create disabled>创建并运行批次</button></div>
         </div>
+      </dialog>
+      <div class="ew-drawer-backdrop hidden" data-workbench-drawer-backdrop></div>
+      <aside class="ew-drawer hidden" data-workbench-drawer role="dialog" aria-modal="true" aria-labelledby="ewDrawerTitle" tabindex="-1">
+        <header class="ew-drawer-head">
+          <div class="ew-drawer-title"><h2 id="ewDrawerTitle" data-workbench-drawer-title>任务详情</h2><small data-workbench-drawer-sub></small></div>
+          <button type="button" class="ew-drawer-close" data-workbench-drawer-close aria-label="关闭详情"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </header>
+        <div class="ew-drawer-body" data-workbench-drawer-body></div>
+      </aside>
+      <dialog class="ew-confirm" data-workbench-cancel-dialog aria-labelledby="ewCancelTitle">
+        <h2 id="ewCancelTitle">停止这批任务？</h2>
+        <p data-workbench-cancel-scope>只停还没开始的排队任务。</p>
+        <ul class="ew-confirm-counts" data-workbench-cancel-counts></ul>
+        <p class="ew-confirm-note">覆盖整个批次，不受当前筛选和分页影响；运行中、已完成的任务保留，CDK 额度等待会被一起停掉。</p>
+        <footer class="ew-confirm-actions">
+          <button type="button" class="btn" data-workbench-cancel-close>再想想</button>
+          <button type="button" class="btn ew-btn--danger" data-workbench-cancel-confirm>确认停止</button>
+        </footer>
       </dialog>
     </div>
   </section>
@@ -1230,7 +1248,7 @@
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top9') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top11') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-create-v5') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>
