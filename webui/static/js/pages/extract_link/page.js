@@ -452,6 +452,62 @@ function extractWorkbenchRenderBatchCancel() {
   button.setAttribute('aria-busy', String(cancelling));
 }
 
+function extractWorkbenchOverviewValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number.toLocaleString('zh-CN') : '—';
+}
+
+function extractWorkbenchRenderOverview(summary) {
+  if (!summary) return;
+  const values = {
+    today_extracted: summary.today_extracted,
+    awaiting_payment: summary.awaiting_payment,
+    needs_review: summary.needs_review,
+    today_plus_confirmed: summary.today_plus_confirmed,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    const stat = extractWorkbenchNode(`[data-stat="${key}"]`);
+    if (!stat) continue;
+    const target = stat.querySelector('.ew-stat-value');
+    if (target) target.textContent = extractWorkbenchOverviewValue(value);
+    if (key === 'needs_review') stat.dataset.hot = Number(value) > 0 ? 'true' : 'false';
+  }
+  const health = extractWorkbenchNode('[data-workbench-health]');
+  if (!health) return;
+  const providers = Array.isArray(summary.providers) ? summary.providers : [];
+  if (!providers.length) {
+    health.innerHTML = '<span class="ew-health-empty">今天还没有平台数据</span>';
+    return;
+  }
+  health.innerHTML = providers.map(provider => {
+    const id = String(provider.provider_id || '');
+    const label = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === id)?.label
+      || EXTRACT_WORKBENCH_PROVIDER_LABELS[id] || id;
+    const rate = typeof provider.success_rate === 'number' ? `${Math.round(provider.success_rate * 100)}%` : '—';
+    const avg = typeof provider.avg_seconds === 'number'
+      ? (provider.avg_seconds >= 60 ? `${Math.round(provider.avg_seconds / 60)} 分` : `${provider.avg_seconds} 秒`)
+      : '—';
+    const failed = Number(provider.today_failed || 0);
+    const rateValue = typeof provider.success_rate === 'number' ? provider.success_rate : 1;
+    const tone = failed && rateValue < 0.6 ? 'bad' : failed && rateValue < 0.85 ? 'warn' : '';
+    return `<span class="ew-health-chip"${tone ? ` data-tone="${tone}"` : ''}>`
+      + `<i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(id)}"></i>`
+      + `<span class="ew-health-name">${extractWorkbenchEscape(label)}</span>`
+      + `<span class="ew-health-meta">在跑 ${Number(provider.active_now || 0)} · 成功率 ${rate} · 平均 ${avg}</span></span>`;
+  }).join('');
+}
+
+async function loadExtractWorkbenchSummary() {
+  if (!extractWorkbenchNode('[data-workbench-overview]')) return;
+  try {
+    const summary = await extractWorkbenchRequest('/api/extract-workbench/summary');
+    if (summary?.ok === false) return;
+    extractWorkbenchRenderOverview(summary);
+  } catch (_) {
+    /* 概览失败不影响列表主流程 */
+  }
+}
+
 function extractWorkbenchRenderBatches() {
   const select = extractWorkbenchNode('[data-workbench-batch-select]');
   if (select) {
@@ -708,21 +764,130 @@ function extractWorkbenchFindTaskCard(tasksNode, taskId) {
     .find(card => String(card?.dataset?.taskId || '') === String(taskId)) || null;
 }
 
+function extractWorkbenchStageChip(name, label, stage) {
+  const state = String(stage?.state || 'pending');
+  const tone = state === 'done' ? 'ok' : state === 'failed' ? 'bad' : state === 'warning' ? 'warn' : state === 'running' ? 'run' : 'idle';
+  const mark = {ok:'✓', bad:'✕', warn:'!', run:'●', idle:'○'}[tone];
+  const copy = stage?.step || extractWorkbenchStatusLabel(stage?.status, '') || '';
+  return `<span class="ew-stage ew-stage--${tone}"><i>${mark}</i><b>${extractWorkbenchEscape(label)}</b>${copy ? `<small>${extractWorkbenchEscape(copy)}</small>` : ''}</span>`;
+}
+
 function extractWorkbenchDetailHtml(result) {
+  const item = result?.item || {};
   const events = Array.isArray(result?.events) ? result.events : [];
-  const item = result?.item || result?.task || {};
+  const stages = item.stages || {};
+  const stageRow = [
+    extractWorkbenchStageChip('prepare', '准备', stages.prepare),
+    extractWorkbenchStageChip('run', '运行', stages.run),
+    extractWorkbenchStageChip('verify', '核验', stages.verify),
+  ].join('');
+  const raw = item.remote_raw && typeof item.remote_raw === 'object' ? Object.entries(item.remote_raw) : [];
+  const rawLine = raw.length
+    ? `<details class="ew-raw"><summary>平台原文 ${raw.length} 项</summary><div class="ew-raw-list">${raw.map(([key, value]) => `<span><b>${extractWorkbenchEscape(key)}</b><code>${extractWorkbenchEscape(value)}</code></span>`).join('')}</div></details>`
+    : '';
+  // 支付来源与订单是排查依据，放在三段下面一行常显，不塞进折叠区。
   const source = extractWorkbenchPaymentSourceLabel(item);
-  const order = item.payment_order || result?.payment_order;
-  const summary = [];
-  if (source) summary.push(`自动支付来源：${source}`);
+  const order = item.payment_order;
+  const metaLines = [];
+  if (source) metaLines.push(`自动支付来源：${source}`);
   if (order && typeof order === 'object') {
-    summary.push(`支付订单：${order.remote_order_id || '等待平台回执'}`);
-    if (order.submission_state) summary.push(`支付提交：${({reserved:'等待提交', submitting:'提交中', submitted:'已提交', unknown:'回执待恢复', failed:'提交失败'})[order.submission_state] || extractWorkbenchStatusLabel(order.submission_state)}`);
-    summary.push(`支付状态：${extractWorkbenchStatusLabel(order.payment_state, '待确认')}`);
-    summary.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '待确认')}`);
+    metaLines.push(`支付订单：${order.remote_order_id || '等待平台回执'}`);
+    if (order.submission_state) metaLines.push(`支付提交：${({reserved:'等待提交', submitting:'提交中', submitted:'已提交', unknown:'回执待恢复', failed:'提交失败'})[order.submission_state] || extractWorkbenchStatusLabel(order.submission_state)}`);
+    metaLines.push(`支付状态：${extractWorkbenchStatusLabel(order.payment_state, '待确认')}`);
+    metaLines.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '待确认')}`);
   }
-  const status = summary.map(text => `<p>${extractWorkbenchEscape(text)}</p>`).join('');
-  return status + (events.length ? `<ul>${events.map(event => `<li><strong>${extractWorkbenchEscape(event.label || event.stage || '事件')}</strong><span>${extractWorkbenchEscape(extractWorkbenchStatusLabel(event.status))}</span><p>${extractWorkbenchEscape(event.message || '')}</p></li>`).join('')}</ul>` : '<p>暂无阶段事件</p>');
+  const metaLine = metaLines.length
+    ? `<p class="ew-detail-meta">${metaLines.map(text => `<span>${extractWorkbenchEscape(text)}</span>`).join('')}</p>`
+    : '';
+  const halt = item.reconcile_halt || {};
+  const haltLine = halt.halted
+    ? `<p class="ew-detail-halt">${extractWorkbenchEscape(halt.label || '已停止自动续查，待核对')}${halt.reason ? `<code>${extractWorkbenchEscape(halt.reason)}</code>` : ''}</p>`
+    : '';
+  const timeline = events.length
+    ? `<ol class="ew-timeline">${events.map(event => {
+        const time = extractWorkbenchTime(event.at || event.created_at || event.time);
+        return `<li><span class="ew-timeline-dot"></span><div><b>${extractWorkbenchEscape(event.label || event.stage || '事件')}</b>`
+          + `<small>${extractWorkbenchEscape(extractWorkbenchStatusLabel(event.status, ''))}${time !== '—' ? ` · ${extractWorkbenchEscape(time)}` : ''}</small>`
+          + `${event.message ? `<p>${extractWorkbenchEscape(event.message)}</p>` : ''}</div></li>`;
+      }).join('')}</ol>`
+    : '<p class="extract-workbench-muted">暂无阶段事件</p>';
+  return `<div class="ew-detail-body">
+    ${metaLine}
+    <div class="ew-detail-stages">${stageRow}</div>
+    ${haltLine}
+    <section class="ew-node-a" data-detail-node-a>
+      <div class="ew-node-a-head"><h4>节点 A · 出手的东西</h4><span data-detail-node-a-state>读取中…</span></div>
+      <div class="ew-node-a-body" data-detail-node-a-body></div>
+    </section>
+    ${rawLine}
+    <section class="ew-detail-timeline"><h4>执行时间线</h4>${timeline}</section>
+    <p class="ew-detail-foot">任务 #${extractWorkbenchEscape(item.task_id || '')} · 运行 ${Number(item.run_count || 1)} 次 · 更新 ${extractWorkbenchEscape(extractWorkbenchTime(item.updated_at || item.created_at))}</p>
+  </div>`;
+}
+
+function extractWorkbenchNodeAEmpty(text) {
+  return `<p class="extract-workbench-muted">${extractWorkbenchEscape(text)}</p>`;
+}
+
+function extractWorkbenchNodeAEntry(entry, item) {
+  const qrImage = entry.qr_image_url_png || entry.qr_image_url_svg || '';
+  const pageUrl = entry.payment_page_url || entry.payment_url || '';
+  const qrData = entry.qr_data || '';
+  const parts = [];
+  parts.push(`<div class="ew-node-a-art">${qrImage
+    ? `<img src="${extractWorkbenchEscape(qrImage)}" alt="支付二维码" loading="lazy">`
+    : qrData ? `<code class="ew-qr-text">${extractWorkbenchEscape(qrData)}</code>` : `<span class="extract-workbench-muted">二维码待平台返回</span>`}</div>`);
+  const actions = [];
+  if (pageUrl) actions.push(`<a class="btn" href="${extractWorkbenchEscape(pageUrl)}" target="_blank" rel="noopener noreferrer">打开支付页</a>`);
+  if (qrData) actions.push(`<button type="button" class="btn" data-detail-copy="${extractWorkbenchEscape(qrData)}">复制二维码内容</button>`);
+  if (item.has_extract_link) actions.push(`<button type="button" class="btn" data-workbench-link="extract" data-task-id="${extractWorkbenchEscape(item.task_id || '')}">复制提链链接</button>`);
+  parts.push(`<div class="ew-node-a-meta"><span>有效期</span><b data-detail-countdown>—</b>${entry.amount !== undefined ? `<span>金额</span><b>${extractWorkbenchEscape(entry.amount)}</b>` : ''}</div>`);
+  parts.push(`<div class="ew-node-a-actions">${actions.join('') || '<span class="extract-workbench-muted">没有可复制的链接</span>'}</div>`);
+  return parts.join('');
+}
+
+function extractWorkbenchStartCountdown(root, expiresAt) {
+  const target = root?.querySelector?.('[data-detail-countdown]');
+  if (!target) return;
+  const deadline = Number.isFinite(Number(expiresAt)) && Number(expiresAt) > 10_000_000_000
+    ? Number(expiresAt)
+    : Date.parse(String(expiresAt || ''));
+  if (!Number.isFinite(deadline)) { target.textContent = '—'; return; }
+  const tick = () => {
+    const left = Math.floor((deadline - Date.now()) / 1000);
+    if (left <= 0) { target.textContent = '已过期'; target.dataset.expired = 'true'; return; }
+    target.textContent = `${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
+    target.dataset.expired = 'false';
+    root.__ewCountdown = setTimeout(tick, 1000);
+  };
+  if (root.__ewCountdown) clearTimeout(root.__ewCountdown);
+  tick();
+}
+
+async function extractWorkbenchFillNodeA(root, item) {
+  const body = root?.querySelector?.('[data-detail-node-a-body]');
+  const state = root?.querySelector?.('[data-detail-node-a-state]');
+  if (!body) return;
+  if (!item?.has_payment_entry) {
+    body.innerHTML = extractWorkbenchNodeAEmpty('这一步还没有支付入口');
+    if (state) state.textContent = '无';
+    return;
+  }
+  if (state) state.textContent = '读取中…';
+  try {
+    const result = await extractWorkbenchRequest(
+      `/api/extract-workbench/tasks/${encodeURIComponent(item.task_id)}/payment-entry`,
+      {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})},
+    );
+    const entry = result?.entry;
+    if (!entry) throw new Error('没有支付入口');
+    body.innerHTML = extractWorkbenchNodeAEntry(entry, item);
+    if (state) state.textContent = entry.qr_data || entry.qr_image_url_png || entry.qr_image_url_svg ? '二维码可用' : '支付链接';
+    extractWorkbenchStartCountdown(root, entry.expires_at);
+  } catch (error) {
+    body.innerHTML = extractWorkbenchNodeAEmpty(error?.message || '支付入口读取失败');
+    if (state) state.textContent = '不可用';
+  }
 }
 
 function extractWorkbenchLoadTaskDetail(taskId) {
@@ -818,6 +983,7 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
     EXTRACT_WORKBENCH_RENDER_SIGNATURE = signature;
     const quietSnapshot = quiet && !unchanged ? extractWorkbenchCaptureQuietState(tasksNode) : null;
     extractWorkbenchRenderBatches();
+    void loadExtractWorkbenchSummary();
     const scrollTop = quiet ? tasksNode?.scrollTop || 0 : 0;
     if (quiet && quietSnapshot && tasksNode) quietSnapshot.scrollTop = tasksNode.scrollTop ?? quietSnapshot.scrollTop;
     if (!unchanged) extractWorkbenchRenderTasks({quiet});
@@ -1132,6 +1298,8 @@ async function extractWorkbenchShowDetail(taskId, button, {refresh = false} = {}
   if (!refresh) target.textContent = '正在读取安全任务详情…';
   try {
     target.innerHTML = await extractWorkbenchLoadTaskDetail(taskId);
+    const item = EXTRACT_WORKBENCH_STATE.items.find(task => String(task.task_id) === String(taskId)) || {};
+    void extractWorkbenchFillNodeA(target, item);
   } catch (error) {
     if (!refresh || !target.innerHTML) target.textContent = error?.message || '详情读取失败';
   }

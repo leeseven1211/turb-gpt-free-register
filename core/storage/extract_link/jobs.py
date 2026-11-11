@@ -829,6 +829,79 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
     )"""
 
 
+def workbench_summary() -> dict:
+    """今日产出与当前积压的快照。只做本地聚合，不触发任何远端查询。"""
+    operation_store.init()
+    clauses, params = _workbench_where()
+    projection = _workbench_projection_sql(clauses)
+    today_sql = "date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"
+    with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""WITH {projection}, today AS (
+                    SELECT * FROM projected WHERE task_created_at >= {today_sql}
+                ) SELECT
+                    (SELECT COUNT(*) FROM today WHERE extraction_status='success') AS today_extracted,
+                    (SELECT COUNT(*) FROM today WHERE plus_status='confirmed') AS today_plus_confirmed,
+                    (SELECT COUNT(*) FROM projected
+                        WHERE NOT local_reconcile_halted AND payment_status='pending_payment'
+                          AND extraction_status='success') AS awaiting_payment,
+                    (SELECT COUNT(*) FROM projected
+                        WHERE local_reconcile_halted OR task_status IN ('request_unknown','attention_required')
+                          OR extraction_status='unknown') AS needs_review,
+                    (SELECT COUNT(*) FROM projected
+                        WHERE NOT local_reconcile_halted
+                          AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+                            OR (mode='auto_payment' AND payment_status='pending_payment'
+                                AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted'))
+                            OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))) AS processing,
+                    (SELECT COUNT(*) FROM projected) AS all_tasks""",
+            tuple(params),
+        )
+        row = cur.fetchone()
+        totals = dict(row) if isinstance(row, dict) else dict(zip(
+            ("today_extracted", "today_plus_confirmed", "awaiting_payment", "needs_review", "processing", "all_tasks"), row))
+        cur.execute(
+            f"""SELECT COALESCE(NULLIF(t.data->>'provider_id', ''), 'legacy') AS provider_id,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))
+                        IN ('queued','running','waiting','cancelling','settling','stopping')) AS active_now,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))='success') AS today_success,
+                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))
+                        IN ('failed','attention_required','partial_success')) AS today_failed,
+                    AVG(EXTRACT(EPOCH FROM (r.completed_at - r.started_at)))
+                        FILTER (WHERE LOWER(COALESCE(r.status, ''))='success'
+                            AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL) AS avg_seconds
+                FROM {operation_store._table('operation_tasks')} t
+                LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
+                WHERE t.task_type='extract_link'
+                  AND LOWER(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'
+                  AND COALESCE(t.created_at, now()) >= {today_sql}
+                GROUP BY 1 ORDER BY 1""",
+            (),
+        )
+        providers = []
+        for provider in cur.fetchall():
+            item = dict(provider) if isinstance(provider, dict) else {}
+            success = int(item.get("today_success") or 0)
+            failed = int(item.get("today_failed") or 0)
+            providers.append({
+                "provider_id": str(item.get("provider_id") or "legacy"),
+                "active_now": int(item.get("active_now") or 0),
+                "today_success": success,
+                "today_failed": failed,
+                "success_rate": round(success / (success + failed), 4) if success + failed else None,
+                "avg_seconds": int(round(float(item["avg_seconds"]))) if item.get("avg_seconds") is not None else None,
+            })
+    return {
+        "today_extracted": int(totals.get("today_extracted") or 0),
+        "today_plus_confirmed": int(totals.get("today_plus_confirmed") or 0),
+        "awaiting_payment": int(totals.get("awaiting_payment") or 0),
+        "needs_review": int(totals.get("needs_review") or 0),
+        "processing": int(totals.get("processing") or 0),
+        "all": int(totals.get("all_tasks") or 0),
+        "providers": providers,
+    }
+
+
 def list_workbench_page(
     *, provider_id: str | None = None, mode: str | None = None, query: str = "",
     status: str = "", page: int = 1, page_size: int = 20, batch_id: int | None = None,

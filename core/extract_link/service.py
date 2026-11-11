@@ -2404,6 +2404,10 @@ def list_workbench_tasks(
     )
 
 
+def workbench_summary() -> dict:
+    return _workbench_queries.workbench_summary()
+
+
 def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 100) -> dict:
     return _workbench_queries.preview_workbench_candidates(filters=filters, limit=limit)
 

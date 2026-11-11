@@ -318,6 +318,13 @@ def workbench_status_matches(item: dict, status: str) -> bool:
     return False
 
 
+def workbench_summary() -> dict:
+    """今日产出、当前积压和分平台健康度。"""
+    from core.storage.extract_link import jobs as extract_link_jobs
+
+    return extract_link_jobs.workbench_summary()
+
+
 def list_workbench_tasks(
     *, provider_id: str | None = None, mode: str | None = None,
     status: str = "", query: str = "", page: int = 1, page_size: int = 20,

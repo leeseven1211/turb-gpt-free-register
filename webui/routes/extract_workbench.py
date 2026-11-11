@@ -521,6 +521,44 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             counts[name] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
         return jsonify({"ok": True, **counts}), 202 if counts["started"] else 200
 
+    @bp.get("/api/extract-workbench/summary")
+    def extract_workbench_summary():
+        try:
+            result = extract_link_service.workbench_summary()
+        except Exception as exc:
+            return _service_error("提链概览读取", exc)
+        if not isinstance(result, dict):
+            return _error("提链概览暂不可用", 503)
+        providers = result.get("providers")
+        providers = providers if isinstance(providers, list) else []
+        safe_providers = []
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            provider_id = provider.get("provider_id")
+            if not _valid_identifier(provider_id):
+                continue
+            safe_providers.append({
+                "provider_id": provider_id,
+                "active_now": _safe_count(provider.get("active_now")),
+                "today_success": _safe_count(provider.get("today_success")),
+                "today_failed": _safe_count(provider.get("today_failed")),
+                "success_rate": provider.get("success_rate") if isinstance(provider.get("success_rate"), (int, float)) else None,
+                "avg_seconds": provider.get("avg_seconds") if isinstance(provider.get("avg_seconds"), int) else None,
+            })
+        response = jsonify({
+            "ok": True,
+            "today_extracted": _safe_count(result.get("today_extracted")),
+            "today_plus_confirmed": _safe_count(result.get("today_plus_confirmed")),
+            "awaiting_payment": _safe_count(result.get("awaiting_payment")),
+            "needs_review": _safe_count(result.get("needs_review")),
+            "processing": _safe_count(result.get("processing")),
+            "all": _safe_count(result.get("all")),
+            "providers": safe_providers,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @bp.get("/api/extract-workbench/tasks/<int:task_id>")
     def extract_workbench_task_detail(task_id: int):
         if task_id < 1:
