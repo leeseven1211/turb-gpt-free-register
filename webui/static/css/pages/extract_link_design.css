@@ -194,6 +194,7 @@ body:has(#tab-extract-workbench:not(.hidden)) #tab-extract-workbench {
 .ewd-plats .ew-plat-card-g { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; margin-top: 6px; color: #6b7484; font-size: 10.5px; }
 .ewd-plats .ew-plat-card-g span { min-width: 0; white-space: nowrap; }
 .ewd-plats .ew-plat-card-g b { color: var(--ewd-ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ewd-plats .ewd-plat-reason { display: block; min-height: 15px; margin-top: 5px; overflow: hidden; color: var(--ewd-muted); font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .ewd-plats .ew-plat-card-bar { height: 4px; margin-top: 7px; overflow: hidden; border-radius: 2px; background: var(--ewd-line-soft); }
 .ewd-plats .ew-plat-card-bar i { display: block; height: 100%; border-radius: inherit; background: var(--ewd-brand); }
 .ewd-plats .ew-plat-card-bar[data-tone="warn"] i { background: var(--ewd-amber); }
