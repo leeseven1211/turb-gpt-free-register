@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top21') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link_design.css', v='20261111-workbench-design-03') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link_design.css', v='20261111-workbench-design-04') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -221,6 +221,20 @@
       <span class="system-health-dot" aria-hidden="true"></span>
       <span>服务在线</span>
     </span>
+  </div>
+</header>
+
+<header class="ewd-topbar ewd-global-topbar" id="ewdGlobalTopbar" aria-label="工作区主导航">
+  <div class="ewd-topbar-inner">
+    <button type="button" class="ewd-logo" data-ewd-global-nav="overview" aria-label="返回总览">T</button>
+    <nav class="ewd-nav" aria-label="工作区导航">
+      <button type="button" data-ewd-global-nav="overview">总览</button>
+      <button type="button" data-ewd-global-nav="extract-workbench">提链</button>
+      <button type="button" data-ewd-global-nav="bulk">批次</button>
+      <button type="button" data-ewd-global-nav="accounts">账号</button>
+      <button type="button" data-ewd-global-nav="config">配置</button>
+    </nav>
+    <div class="ewd-service"><i aria-hidden="true"></i><span>服务正常</span><time data-ewd-global-clock></time></div>
   </div>
 </header>
 
@@ -1323,7 +1337,7 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261111-workbench-design-03') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261111-workbench-design-04') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>

@@ -1357,11 +1357,13 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileS
 function updateTopbarClock() {
   const el = $('#topbarClock');
   const configClock = document.querySelector('[data-ewd-config-clock]');
+  const workspaceClock = document.querySelector('[data-ewd-global-clock]');
   const value = new Intl.DateTimeFormat('zh-CN', {
     month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false
   }).format(new Date()).replace('/', ' / ');
   if (el) el.textContent = value;
   if (configClock) configClock.textContent = value;
+  if (workspaceClock) workspaceClock.textContent = value;
 }
 updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
@@ -1388,10 +1390,19 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab !== 'proxy-traffic' && proxyTrafficDialog?.open) proxyTrafficDialog.close();
   ACTIVE_TAB = tab;
   // 提链工作台使用 final-01 ~ final-04 的独立横向工作台壳，不继承通用侧栏布局。
+  const workspaceTabs = new Set(['overview', 'extract-workbench', 'bulk', 'accounts', 'config']);
+  const workspaceMode = workspaceTabs.has(tab);
+  document.body.classList.toggle('ewd-global-workspace-mode', workspaceMode);
   document.body.classList.toggle('extract-workbench-design-mode', tab === 'extract-workbench');
   document.body.classList.toggle('extract-config-design-mode', tab === 'config');
   if (tab === 'config') document.body.dataset.configDesignInitial = '1';
   else delete document.body.dataset.configDesignInitial;
+  document.querySelectorAll('#ewdGlobalTopbar [data-ewd-global-nav]').forEach(button => {
+    const active = button.dataset.ewdGlobalNav === tab;
+    button.classList.toggle('is-active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
   $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;
     x.classList.toggle('active', active);

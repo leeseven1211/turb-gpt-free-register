@@ -670,6 +670,26 @@ body:has(#tab-config:not(.hidden)) .config-save-bar-inner-v2 { width: min(calc(1
   body:has(#tab-config:not(.hidden)) .config-setting-row-v2 { flex-direction: column; }
 }
 
+/* 横向主导航要跨总览 / 提链 / 批次 / 账号 / 配置持续存在，不能只像工作台内的装饰。 */
+body.ewd-global-workspace-mode {
+  padding-left: 0 !important;
+  background: var(--ewd-bg) !important;
+  color: var(--ewd-ink);
+}
+body.ewd-global-workspace-mode :is(.app-sidebar, .app-topbar, .sidebar-scrim) { display: none !important; }
+body.ewd-global-workspace-mode main {
+  display: block !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: calc(100vh - 52px);
+  margin: 0 !important;
+}
+body.ewd-global-workspace-mode main > div:not(.hidden) { display: block !important; }
+.ewd-global-topbar { display: none; }
+body.ewd-global-workspace-mode .ewd-global-topbar { display: block; }
+body.ewd-global-workspace-mode .ewd-shell > .ewd-topbar,
+body.ewd-global-workspace-mode .config-workspace-v2 > .ewd-config-topbar { display: none !important; }
+
 /* 动态配置模板原本把开关按三列铺开；设计稿要的是纵向设置行。 */
 .extract-config-design-mode #tab-config .config-section-v2-body,
 body:has(#tab-config:not(.hidden)) #tab-config .config-section-v2-body,
