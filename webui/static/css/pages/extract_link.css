@@ -616,3 +616,23 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .ew-foot { width: 100%; flex-wrap: nowrap; }
 .extract-workbench-page .ew-foot .extract-workbench-pager { margin-left: 0; }
 .extract-workbench-page .ew-foot .ew-batchbar:not(.hidden) + .extract-workbench-batch-pagination { margin-left: auto; }
+
+/* 工具栏 / 筛选栏防重叠：一律允许换行，控件不收缩、不溢出 */
+.extract-workbench-page .extract-workbench-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 8px; }
+.extract-workbench-page .extract-workbench-batch-query { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; row-gap: 8px; margin-left: auto; min-width: 0; }
+.extract-workbench-page .extract-workbench-toolbar .btn { flex: 0 0 auto; white-space: nowrap; overflow: visible; }
+.extract-workbench-page .extract-workbench-batch-picker { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.extract-workbench-page .extract-workbench-batch-picker > span { flex: 0 0 auto; white-space: nowrap; }
+.extract-workbench-page .extract-workbench-batch-picker select { width: clamp(150px, 22vw, 300px); min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.extract-workbench-page .ew-tabsbar { flex-wrap: wrap; row-gap: 8px; }
+.extract-workbench-page .extract-workbench-status-tabs { flex: 1 1 320px; min-width: 0; }
+.extract-workbench-page .extract-workbench-filters { flex: 0 1 auto; flex-wrap: wrap; row-gap: 8px; min-width: 0; }
+.extract-workbench-page .extract-workbench-filters select { flex: 0 0 auto; max-width: 132px; white-space: nowrap; }
+.extract-workbench-page .extract-workbench-search { flex: 1 1 170px; min-width: 140px; }
+.extract-workbench-page .extract-workbench-search input { width: 100%; min-width: 0; }
+.extract-workbench-page .extract-workbench-result-count { flex: 0 0 auto; }
+@media (max-width: 900px) {
+  .extract-workbench-page .extract-workbench-batch-query { justify-content: flex-start; width: 100%; margin-left: 0; }
+  .extract-workbench-page .extract-workbench-batch-picker { flex: 1 1 100%; }
+  .extract-workbench-page .extract-workbench-batch-picker select { width: 100%; }
+}
