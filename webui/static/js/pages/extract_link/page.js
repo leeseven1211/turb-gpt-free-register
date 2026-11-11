@@ -510,15 +510,28 @@ async function extractWorkbenchCancelBatch() {
   }
 }
 
+const EXTRACT_WORKBENCH_POLL_ACTIVE_MS = 3000;
+const EXTRACT_WORKBENCH_POLL_IDLE_MS = 15000;
+
+/* 轮询节奏：在动 3 秒，只有待支付时 15 秒，待核对/已结束不自动刷（手动刷）。 */
+function extractWorkbenchPollDelay() {
+  const counts = EXTRACT_WORKBENCH_STATE.counts || {};
+  const batchCounts = EXTRACT_WORKBENCH_STATE.batchDetail?.counts || {};
+  if (Number(counts.processing || batchCounts.processing || 0) > 0) return EXTRACT_WORKBENCH_POLL_ACTIVE_MS;
+  if (Number(counts.awaiting_payment || batchCounts.awaiting_payment || 0) > 0) return EXTRACT_WORKBENCH_POLL_IDLE_MS;
+  return 0;
+}
+
 function extractWorkbenchScheduleRefresh({retry = false} = {}) {
   clearTimeout(EXTRACT_WORKBENCH_POLL_TIMER);
   const tab = document.getElementById('tab-extract-workbench');
   if (!tab || tab.classList.contains('hidden')) return;
-  if (!retry && !Number(EXTRACT_WORKBENCH_STATE.batchDetail?.counts?.processing || EXTRACT_WORKBENCH_STATE.counts.processing || 0)) return;
+  const delay = retry ? EXTRACT_WORKBENCH_POLL_IDLE_MS : extractWorkbenchPollDelay();
+  if (!delay) return;
   EXTRACT_WORKBENCH_POLL_TIMER = setTimeout(() => {
     if (document.hidden) extractWorkbenchScheduleRefresh({retry});
     else if (!tab.classList.contains('hidden')) void loadExtractWorkbench({quiet:true});
-  }, 5000);
+  }, delay);
 }
 
 function extractWorkbenchRenderStatusTabs() {

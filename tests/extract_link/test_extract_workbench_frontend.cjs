@@ -840,7 +840,7 @@ test('详情请求未完成时列表刷新立即安排下一轮定时器', async
   };
   await view.api.load({quiet: true});
   assert.match(fixture.tasks.innerHTML, /#42/);
-  assert.deepEqual(timers.pendingDelays(), [5000]);
+  assert.deepEqual(timers.pendingDelays(), [3000]);
   resolveDetail({events: []});
   await new Promise(resolve => setImmediate(resolve));
 });
@@ -860,7 +860,7 @@ test('展开详情不会暂停定时刷新', async () => {
     return {items: [{task_id: 42, task_status: 'running'}], counts: {processing: 1}, total: 1, page: 1};
   };
   view.api.scheduleRefresh();
-  assert.deepEqual(timers.pendingDelays(), [5000]);
+  assert.deepEqual(timers.pendingDelays(), [3000]);
   timers.runNext();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(taskRefreshes, 1);
@@ -902,7 +902,7 @@ test('quiet 网络错误保留旧卡片并安排自动重试', async () => {
   await view.api.load({quiet: true});
   assert.equal(fixture.tasks.innerHTML, oldHtml);
   assert.match(summary.textContent, /重试/);
-  assert.deepEqual(timers.pendingDelays(), [5000]);
+  assert.deepEqual(timers.pendingDelays(), [15000]);
 
   view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
     if (endpoint.startsWith('/api/extract-workbench/tasks?')) return {items: [{task_id: 42, task_status: 'success'}], counts: {}, total: 1, page: 1};
