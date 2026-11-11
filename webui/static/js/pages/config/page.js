@@ -2494,11 +2494,6 @@ function renderConfigLayoutV2() {
     return;
   }
   const savedGroup = localStorage.getItem('gpt_console_config_group');
-  // final-04 的配置入口默认落在“提链”，之后用户切换左侧分组时不再强制跳回。
-  if (document.body.dataset.configDesignInitial === '1' && names.includes('提链')) {
-    CONFIG_ACTIVE_GROUP_V2 = '提链';
-    delete document.body.dataset.configDesignInitial;
-  }
   if (CONFIG_ACTIVE_GROUP_V2) setConfigDestinationV2(CONFIG_ACTIVE_GROUP_V2);
   if (!CONFIG_ACTIVE_GROUP_V2 && savedGroup) setConfigDestinationV2(savedGroup);
   if (!CONFIG_ACTIVE_GROUP_V2 || !names.includes(CONFIG_ACTIVE_GROUP_V2)) CONFIG_ACTIVE_GROUP_V2 = names[0];

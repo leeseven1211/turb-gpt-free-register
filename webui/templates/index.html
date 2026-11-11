@@ -10,8 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top21') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link_design.css', v='20261111-workbench-design-06') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-shell-revert-01') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -224,20 +223,6 @@
   </div>
 </header>
 
-<header class="ewd-topbar ewd-global-topbar" id="ewdGlobalTopbar" aria-label="工作区主导航">
-  <div class="ewd-topbar-inner">
-    <button type="button" class="ewd-logo" data-ewd-global-nav="overview" aria-label="返回总览">T</button>
-    <nav class="ewd-nav" aria-label="工作区导航">
-      <button type="button" data-ewd-global-nav="overview">总览</button>
-      <button type="button" data-ewd-global-nav="extract-workbench">提链</button>
-      <button type="button" data-ewd-global-nav="bulk">批次</button>
-      <button type="button" data-ewd-global-nav="accounts">账号</button>
-      <button type="button" data-ewd-global-nav="config">配置</button>
-    </nav>
-    <div class="ewd-service"><i aria-hidden="true"></i><span>服务正常</span><time data-ewd-global-clock></time></div>
-  </div>
-</header>
-
 <main>
   <!-- ============ 总览 ============ -->
   <div id="tab-overview">
@@ -426,93 +411,58 @@
   </div>
 
   <section id="tab-extract-workbench" class="hidden" aria-label="提链工作台">
-    <div class="extract-workbench-page ewd-shell" id="extractWorkbenchRoot">
-      <header class="ewd-topbar" aria-label="提链工作台导航">
-        <div class="ewd-topbar-inner">
-          <button type="button" class="ewd-logo" data-ewd-nav="overview" aria-label="返回总览">T</button>
-          <nav class="ewd-nav" aria-label="工作台导航">
-            <button type="button" data-ewd-nav="overview">总览</button>
-            <button type="button" class="is-active" data-ewd-nav="extract-workbench" aria-current="page">提链</button>
-            <button type="button" data-ewd-nav="bulk">批次</button>
-            <button type="button" data-ewd-nav="accounts">账号</button>
-            <button type="button" data-ewd-nav="config">配置</button>
-          </nav>
-          <div class="ewd-service"><i aria-hidden="true"></i><span>服务正常</span><time data-ewd-clock></time></div>
+    <div class="extract-workbench-page" id="extractWorkbenchRoot">
+      <section class="ew-overview" data-workbench-overview aria-label="提链概览" aria-live="polite">
+        <div class="ew-stat ew-stat--ok" data-stat="today_extracted"><span class="ew-stat-label">今日出链</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">按任务创建日统计</small></div>
+        <div class="ew-stat ew-stat--warn" data-stat="awaiting_payment"><span class="ew-stat-label">待支付</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">已出链等你付款</small></div>
+        <div class="ew-stat ew-stat--warn" data-stat="needs_review"><span class="ew-stat-label">待核对</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">自动续查已停</small></div>
+        <div class="ew-stat" data-stat="today_plus_confirmed"><span class="ew-stat-label">Plus 已确认</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">今日到账</small></div>
+      </section>
+      <div class="ew-plats" data-workbench-health role="status" aria-label="平台健康度"><span class="ew-health-empty">平台健康度加载中…</span></div>
+      <div class="extract-workbench-toolbar" role="group" aria-label="提链操作">
+        <div class="ew-filters">
+          <select data-workbench-filter-provider aria-label="按平台筛选"><option value="">全部平台</option></select>
+          <select data-workbench-filter-mode aria-label="按模式筛选"><option value="">全部模式</option></select>
+          <select class="ew-batchpicker" data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select>
+          <button type="button" class="btn ew-cancel-batch" data-workbench-cancel-batch disabled aria-busy="false" title="请先选择一个具体批次">取消批次</button>
         </div>
-      </header>
-
-      <div class="ewd-wrap">
-        <div class="ewd-page-head">
-          <div><h1>提链工作台</h1><p>准备 → 运行 → 核验。所有平台同一套看板，差异只在运行段。</p></div>
-          <div class="ewd-head-actions">
-            <button type="button" class="ewd-btn" data-workbench-refresh>刷新</button>
-            <button type="button" class="ewd-btn" data-workbench-export title="按当前筛选导出 CSV（最多 5000 条）">导出结果</button>
-            <button type="button" class="ewd-btn ewd-btn--primary" data-workbench-open-create>+ 新建批次</button>
-          </div>
+        <div class="ew-actions">
+          <button type="button" class="btn" data-workbench-refresh aria-label="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
+          <button type="button" class="btn" data-workbench-export title="按当前筛选导出 CSV（最多 5000 条）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2h16v-2"/></svg><span>导出结果</span></button>
+          <button type="button" class="btn extract-workbench-primary" data-workbench-open-create><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建批次</button>
         </div>
-
-        <section class="ewd-kpis ew-overview" data-workbench-overview aria-label="提链概览" aria-live="polite">
-          <article class="ewd-kpi ewd-kpi--green ew-stat" data-stat="today_extracted"><span class="ew-stat-label">今日出链</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">按任务创建日统计</small></article>
-          <article class="ewd-kpi ewd-kpi--amber ew-stat" data-stat="awaiting_payment"><span class="ew-stat-label">待支付</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">已出链，等待支付</small></article>
-          <article class="ewd-kpi ewd-kpi--amber ew-stat" data-stat="needs_review"><span class="ew-stat-label">待核对</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">自动同步已停，需人工</small></article>
-          <article class="ewd-kpi ew-stat" data-stat="today_plus_confirmed"><span class="ew-stat-label">Plus 已确认</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">今日到账</small></article>
-        </section>
-
-        <section class="ewd-plats" data-workbench-health role="status" aria-label="平台健康度"><span class="ew-health-empty">平台健康度加载中…</span></section>
-
-        <section class="ewd-panel extract-workbench-list" aria-label="提链任务记录">
-          <div class="ewd-panel-toolbar">
-            <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
-            <div class="ewd-list-tools" role="search" aria-label="筛选提链任务">
-              <label class="ewd-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"><button type="button" data-workbench-apply-filters aria-label="搜索任务">⌕</button></label>
-              <details class="ewd-filter-menu">
-                <summary>今天 <span>⌄</span></summary>
-                <div class="ewd-filter-popover">
-                  <label>平台<select data-workbench-filter-provider aria-label="按平台筛选"><option value="">全部平台</option></select></label>
-                  <label>模式<select data-workbench-filter-mode aria-label="按模式筛选"><option value="">全部模式</option></select></label>
-                  <label>批次<select data-workbench-batch-select aria-label="选择提链批次"><option value="">全部任务</option></select></label>
-                  <button type="button" class="ewd-filter-cancel" data-workbench-cancel-batch disabled aria-busy="false">取消批次</button>
-                </div>
-              </details>
-              <span class="extract-workbench-result-count ewd-visually-hidden" data-workbench-summary role="status">加载中…</span>
-            </div>
-          </div>
-
-          <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
-
-          <footer class="ewd-panel-foot ew-foot">
-            <div class="ewd-bulk-copy ew-batchbar hidden" data-workbench-batchbar>
-              <span class="ew-batchbar-count" data-workbench-selected-count>已选 0 项</span><span>：</span>
-              <button type="button" data-workbench-bulk="sync">同步状态</button><span>·</span>
-              <button type="button" data-workbench-bulk="links">复制支付链接</button><span>·</span>
-              <button type="button" data-workbench-bulk="export">导出</button>
-              <button type="button" class="ewd-bulk-clear" data-workbench-bulk="clear" aria-label="清除选择">×</button>
-            </div>
-            <span class="ewd-page-size">每页 20 条</span>
-            <nav class="extract-workbench-pager ewd-pager" aria-label="提链任务分页">
-              <button type="button" data-workbench-page="prev" disabled aria-label="上一页">‹</button>
-              <span data-workbench-page-numbers></span>
-              <button type="button" data-workbench-page="next" disabled aria-label="下一页">›</button>
-              <span class="ewd-page-total" data-workbench-total>共 0 条</span>
-              <span class="ewd-visually-hidden" data-workbench-page-label>第 1 页</span>
-            </nav>
-            <nav class="extract-workbench-batch-pagination ewd-visually-hidden" aria-label="历史提链批次分页"><button type="button" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" data-workbench-batch-page="next" disabled>下一组</button></nav>
-          </footer>
-        </section>
       </div>
-      <dialog class="extract-workbench-create-dialog ewd-create-dialog" data-workbench-create-dialog aria-labelledby="extractWorkbenchCreateTitle" aria-describedby="extractWorkbenchCreateHint">
-        <header class="ewd-create-topbar">
-          <button type="button" class="ewd-logo" data-ewd-create-nav="overview" aria-label="返回总览">T</button>
-          <nav class="ewd-nav" aria-label="工作台导航"><button type="button" data-ewd-create-nav="overview">总览</button><button type="button" class="is-active">提链</button><button type="button" data-ewd-create-nav="bulk">批次</button><button type="button" data-ewd-create-nav="accounts">账号</button><button type="button" data-ewd-create-nav="config">配置</button></nav>
-          <button type="button" class="ewd-create-back" data-workbench-close-create>← 返回列表</button>
-        </header>
-        <div class="ewd-create-wrap">
-        <div class="extract-workbench-section-head ewd-create-head">
+      <section class="extract-workbench-list" aria-label="提链任务记录">
+        <div class="ew-tabsbar">
+          <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
+          <div class="extract-workbench-filters" role="search" aria-label="筛选提链任务">
+            <label class="extract-workbench-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><button type="button" data-workbench-apply-filters aria-label="搜索任务"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"></label>
+            <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
+          </div>
+        </div>
+        <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
+        <div class="ew-foot">
+          <div class="ew-batchbar hidden" data-workbench-batchbar>
+            <span class="ew-batchbar-count" data-workbench-selected-count>已选 0 个</span>
+            <button type="button" class="btn" data-workbench-bulk="sync">同步状态</button>
+            <button type="button" class="btn" data-workbench-bulk="links">复制支付链接</button>
+            <button type="button" class="btn" data-workbench-bulk="export">导出所选</button>
+            <button type="button" class="btn ew-batchbar-clear" data-workbench-bulk="clear">清除选择</button>
+          </div>
+          <nav class="extract-workbench-batch-pagination" aria-label="历史提链批次分页"><span>历史批次</span><button type="button" class="btn" data-workbench-batch-page="prev" disabled>上一组</button><span data-workbench-batch-page-label>第 1 / 1 页</span><button type="button" class="btn" data-workbench-batch-page="next" disabled>下一组</button></nav>
+          <nav class="extract-workbench-pager" aria-label="提链任务分页">
+            <span class="extract-workbench-page-size">每页 20 个</span>
+            <button type="button" class="btn" data-workbench-page="prev" disabled>上一页</button>
+            <span data-workbench-page-label>第 1 页</span>
+            <button type="button" class="btn" data-workbench-page="next" disabled>下一页</button>
+          </nav>
+        </div>
+      </section>
+      <dialog class="extract-workbench-create-dialog" data-workbench-create-dialog aria-labelledby="extractWorkbenchCreateTitle" aria-describedby="extractWorkbenchCreateHint">
+        <div class="extract-workbench-section-head">
           <div><h2 id="extractWorkbenchCreateTitle">新建提链批次</h2><p id="extractWorkbenchCreateHint">筛选账号并设置本批运行数量，一次提交整批任务</p></div>
           <button type="button" class="extract-workbench-dialog-close" data-workbench-close-create aria-label="关闭新建批次"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </div>
-        <div class="ewd-create-grid">
-        <div class="ewd-create-steps">
         <p class="extract-workbench-concurrency-hint" id="extractWorkbenchConcurrencyHint" data-workbench-concurrency-hint>设置本批同时运行的账号数，实际并发还受平台并发限制。</p>
         <section class="ew-step ew-step--1" aria-labelledby="extractWorkbenchCandidateTitle">
         <h3 class="ew-step-head"><i>1</i><span>账号范围</span><small data-workbench-step-scope-hint>先圈定这批要跑哪些账号，不用逐个勾选</small></h3>
@@ -545,24 +495,8 @@
           <label>批次并发<input type="number" data-workbench-batch-workers value="1" min="1" max="50" step="1" inputmode="numeric" aria-describedby="extractWorkbenchConcurrencyHint"></label>
         </div>
         </section>
-        </div>
-        <aside class="ewd-create-summary" aria-label="本批生效摘要">
-          <div class="ewd-create-summary-card">
-            <h3>本批生效</h3>
-            <div class="ewd-create-big"><b data-ewd-create-count>0</b><small>个账号</small></div>
-            <div class="ewd-create-kv"><span>平台</span><b data-ewd-create-provider>—</b></div>
-            <div class="ewd-create-kv"><span>模式</span><b data-ewd-create-mode>—</b></div>
-            <div class="ewd-create-kv"><span>提链类型</span><b data-ewd-create-type>—</b></div>
-            <div class="ewd-create-kv"><span>并发</span><b data-ewd-create-workers>—</b></div>
-            <div class="ewd-create-kv"><span>切片</span><b data-ewd-create-slices>—</b></div>
-            <p>额度、冷却账号和当前并发会在提交时二次校验；超出单批上限会自动切片排队。</p>
-            <button type="button" class="ewd-create-submit" data-workbench-create-summary disabled>提交并开始</button>
-          </div>
-        </aside>
-        </div>
         <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
-        </div>
-        <div class="extract-workbench-dialog-footer ewd-create-bottom">
+        <div class="extract-workbench-dialog-footer">
           <span data-workbench-selection-count>本批计划运行 0 个账号</span>
           <div><button type="button" class="btn" data-workbench-close-create>取消</button><button type="button" class="btn extract-workbench-primary" data-workbench-create disabled>创建并运行批次</button></div>
         </div>
@@ -571,18 +505,9 @@
       <aside class="ew-drawer hidden" data-workbench-drawer role="dialog" aria-modal="true" aria-labelledby="ewDrawerTitle" tabindex="-1">
         <header class="ew-drawer-head">
           <div class="ew-drawer-title"><h2 id="ewDrawerTitle" data-workbench-drawer-title>任务详情</h2><small data-workbench-drawer-sub></small></div>
-          <span class="ewd-drawer-state" data-workbench-drawer-state>读取中</span>
           <button type="button" class="ew-drawer-close" data-workbench-drawer-close aria-label="关闭详情"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </header>
         <div class="ew-drawer-body" data-workbench-drawer-body></div>
-        <footer class="ewd-drawer-foot" data-workbench-drawer-foot>
-          <button type="button" class="ewd-drawer-btn ewd-drawer-btn--primary" data-workbench-drawer-action="sync_status">刷新状态</button>
-          <button type="button" class="ewd-drawer-btn" data-workbench-drawer-action="copy-payment">复制支付链接</button>
-          <button type="button" class="ewd-drawer-btn" data-workbench-drawer-action="copy-at">复制 AT</button>
-          <span class="ewd-drawer-spacer"></span>
-          <button type="button" class="ewd-drawer-btn ewd-drawer-btn--ghost" data-workbench-drawer-action="retry">重试</button>
-          <button type="button" class="ewd-drawer-btn ewd-drawer-btn--ghost" data-workbench-drawer-action="stop">停止任务</button>
-        </footer>
       </aside>
       <dialog class="ew-confirm" data-workbench-cancel-dialog aria-labelledby="ewCancelTitle">
         <h2 id="ewCancelTitle">停止这批任务？</h2>
@@ -1104,21 +1029,6 @@
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <div class="config-workspace-v2" id="configWorkspaceV2">
-      <header class="ewd-topbar ewd-config-topbar" aria-label="配置导航">
-        <div class="ewd-topbar-inner">
-          <button type="button" class="ewd-logo" data-ewd-global-nav="overview" aria-label="返回总览">T</button>
-          <nav class="ewd-nav" aria-label="工作台导航">
-            <button type="button" data-ewd-global-nav="overview">总览</button>
-            <button type="button" data-ewd-global-nav="extract-workbench">提链</button>
-            <button type="button" data-ewd-global-nav="bulk">批次</button>
-            <button type="button" data-ewd-global-nav="accounts">账号</button>
-            <button type="button" class="is-active" data-ewd-global-nav="config" aria-current="page">配置</button>
-          </nav>
-          <div class="ewd-service"><i aria-hidden="true"></i><span>服务正常</span><time data-ewd-config-clock></time></div>
-        </div>
-      </header>
-      <div class="ewd-config-wrap">
-        <div class="ewd-config-page-head"><h1>提链设置</h1><p>这里只放跨平台通用开关；平台专有参数在各平台配置卡内单独维护。</p></div>
       <!-- 配置布局：左侧导航 + 右侧卡片/分区 -->
       <div class="config-layout-v2" id="configLayoutV2">
       <aside class="config-nav-v2" aria-label="配置分组">
@@ -1177,7 +1087,6 @@
             <button type="button" class="btn primary" data-save-config-v2 disabled>已保存</button>
           </div>
         </div>
-      </div>
       </div>
     </div>
   </div>
@@ -1337,7 +1246,7 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261111-workbench-design-04') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261111-workbench-shell-revert-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
@@ -1349,8 +1258,8 @@
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261109-delete-evidence-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261111-workbench-design-03') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-design-06') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261111-workbench-shell-revert-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-shell-revert-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-create-v5') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

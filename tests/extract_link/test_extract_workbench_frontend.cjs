@@ -53,6 +53,7 @@ function createView({timers = null} = {}) {
     cancelBatch: typeof extractWorkbenchCancelBatch === 'function' ? extractWorkbenchCancelBatch : undefined,
     renderBatches: extractWorkbenchRenderBatches,
     renderProviders: extractWorkbenchRenderProviders,
+    renderOverview: extractWorkbenchRenderOverview,
     renderModes: extractWorkbenchRenderModes,
     renderBatchWorkers: extractWorkbenchRenderBatchWorkers,
     renderLinkTypes: extractWorkbenchRenderLinkTypes,
@@ -415,6 +416,23 @@ test('新建批次禁用不可用平台，历史任务筛选仍可查看已停�
   assert.match(provider.innerHTML, /value="huanguang" disabled/);
   assert.match(filter.innerHTML, /幻光提链（已停用）/);
   assert.doesNotMatch(filter.innerHTML, /value="huanguang" disabled/);
+});
+
+test('关闭工作台时平台卡显示关闭原因且不请求幻光额度', async () => {
+  const {api, requests} = createView();
+  const health = {innerHTML: ''};
+  api.setConfig({providers: [], unavailable_providers: [
+    {id: 'legacy', label: '虾扯蛋链', unavailable_reason: '提链工作台已关闭'},
+    {id: 'lumen_flow', label: '流光', unavailable_reason: '提链工作台已关闭'},
+    {id: 'huanguang', label: '幻光', unavailable_reason: '提链工作台已关闭'},
+    {id: 'anguang', label: '暗光', unavailable_reason: '提链工作台已关闭'},
+  ]});
+  api.setRoot({querySelector: selector => selector === '[data-workbench-health]' ? health : null});
+  api.renderOverview({providers: []});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(health.innerHTML, /提链工作台已关闭/);
+  assert.match(health.innerHTML, /已关闭/);
+  assert.equal(requests.some(({endpoint}) => endpoint.includes('/cdk-quota')), false);
 });
 
 test('候选筛选提交套餐优惠并更新资格说明', () => {

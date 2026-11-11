@@ -20,7 +20,6 @@ let EXTRACT_WORKBENCH_QUOTA_CACHE = {at: 0, value: null};
 let EXTRACT_WORKBENCH_PAYMENT_SEQUENCE = 0;
 let EXTRACT_WORKBENCH_PAYMENT_TRIGGER = null;
 const EXTRACT_WORKBENCH_PROVIDER_LABELS = {legacy:'虾扯蛋链', lumen:'Lumen Flow', lumen_flow:'Lumen Flow', huanguang:'幻光提链', anguang:'暗光（XXSYUN 一条龙）'};
-const EXTRACT_WORKBENCH_PROVIDER_SHORT_LABELS = {legacy:'其他', lumen:'流光', lumen_flow:'流光', huanguang:'幻光', anguang:'暗光'};
 const EXTRACT_WORKBENCH_LINK_TYPE_LABELS = {
   pix: 'PIX', upi: 'UPI', gopay: 'GoPay', momo: 'MOMO', gcash: 'GCash',
   paypal: 'PayPal', ideal: 'iDEAL', ideal_short: 'iDEAL Short', kakao_pay: 'Kakao Pay',
@@ -57,32 +56,6 @@ const EXTRACT_WORKBENCH_PLUS_STATE_LABELS = {
 
 function extractWorkbenchEscape(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-}
-
-function extractWorkbenchProviderShortLabel(providerId, fallback = '') {
-  const key = String(providerId || 'legacy');
-  return EXTRACT_WORKBENCH_PROVIDER_SHORT_LABELS[key] || fallback || EXTRACT_WORKBENCH_PROVIDER_LABELS[key] || key;
-}
-
-function extractWorkbenchMaskEmail(value) {
-  const email = String(value || '账号未记录');
-  const at = email.lastIndexOf('@');
-  if (at <= 0) return email;
-  return `${email.slice(0, 1)}***${email.slice(at)}`;
-}
-
-function extractWorkbenchShortTime(value) {
-  const date = new Date(value || '');
-  if (Number.isNaN(date.getTime())) return '—';
-  return new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', hour:'2-digit', minute:'2-digit', hour12:false}).format(date);
-}
-
-function extractWorkbenchRenderDesignClock() {
-  const target = extractWorkbenchNode('[data-ewd-clock]');
-  if (!target) return;
-  target.textContent = new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date()).replaceAll('/', '-');
 }
 
 function extractWorkbenchModesForProvider(provider) {
@@ -276,10 +249,9 @@ function renderExtractWorkbenchTaskCard(task) {
 
 function renderExtractWorkbenchTaskRow(task) {
   const taskId = extractWorkbenchEscape(task?.task_id || '');
-  const email = String(task?.email || '账号未记录');
-  const maskedEmail = extractWorkbenchEscape(extractWorkbenchMaskEmail(email));
+  const email = extractWorkbenchEscape(task?.email || '账号未记录');
   const providerId = String(task?.provider_id || 'legacy');
-  const providerLabel = extractWorkbenchProviderShortLabel(providerId, EXTRACT_WORKBENCH_CONFIG?.providers?.find(provider => provider.id === providerId)?.label);
+  const providerLabel = EXTRACT_WORKBENCH_CONFIG?.providers?.find(provider => provider.id === providerId)?.label || EXTRACT_WORKBENCH_PROVIDER_LABELS[providerId] || providerId;
   const mode = String(task?.mode || 'extract_only');
   const stages = task?.stages || {};
   const prepare = stages.prepare || {state: 'pending', status: task?.preflight_status};
@@ -298,25 +270,17 @@ function renderExtractWorkbenchTaskRow(task) {
   const runTone = halt.halted ? 'warning' : extractWorkbenchStageClass(run.state);
   const canPaymentEntry = task?.has_payment_entry === true || task?.has_qr === true || task?.has_payment_link === true;
   const checked = EXTRACT_WORKBENCH_SELECTED.has(String(task?.task_id));
-  const isFailed = ['failed', 'cancelled', 'stopped', 'interrupted'].includes(String(task?.task_status || ''));
-  const action = isFailed
-    ? `<button type="button" class="btn ew-btn" data-workbench-action="retry">重试</button>`
-    : canPaymentEntry
-      ? `<button type="button" class="btn ew-btn ew-btn--link" data-workbench-payment-entry="${taskId}">链接</button>`
-      : `<button type="button" class="btn ew-btn" data-workbench-action="sync_status">同步</button>`;
-  const prepareDetail = prepare.step || `${extractWorkbenchShortTime(task?.created_at)} · 已刷 AT`;
-  const verifyDetail = paymentLabel || (verify.step || '');
-  return `<div class="ew-row extract-workbench-task" role="row" aria-selected="${checked}" data-selected="${checked}" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
+  return `<div class="ew-row extract-workbench-task" role="row" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
     <div class="ew-cell ew-c0"><input type="checkbox" data-workbench-select="${taskId}" aria-label="选择任务 #${taskId}"${checked ? ' checked' : ''}></div>
-    <div class="ew-cell ew-c1"><b title="${extractWorkbenchEscape(email)}">${maskedEmail}</b><small>#${taskId} · ${extractWorkbenchShortTime(task?.created_at)} 提交</small></div>
+    <div class="ew-cell ew-c1"><b title="${email}">${email}</b><small>#${taskId} · ${extractWorkbenchEscape(extractWorkbenchTime(task?.created_at))}</small></div>
     <div class="ew-cell ew-c2"><span class="ew-plat"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}"></i>${extractWorkbenchEscape(providerLabel)}</span><small>${extractWorkbenchEscape(extractWorkbenchModeLabel(mode))}</small></div>
-    <div class="ew-cell ew-c3"><b class="ew-${extractWorkbenchStageClass(prepare.state)}">${extractWorkbenchEscape(prepareLabel)}</b><small>${extractWorkbenchEscape(prepareDetail)}</small></div>
+    <div class="ew-cell ew-c3"><b class="ew-${extractWorkbenchStageClass(prepare.state)}">${extractWorkbenchEscape(prepareLabel)}</b><small>${extractWorkbenchEscape(extractWorkbenchTime(task?.updated_at))}</small></div>
     <div class="ew-cell ew-c4"><b class="ew-${runTone}">${extractWorkbenchEscape(runLabel)}</b><small>${extractWorkbenchEscape(runDetail)}</small></div>
-    <div class="ew-cell ew-c5"><b class="ew-${extractWorkbenchStageClass(verify.state)}">${extractWorkbenchEscape(verifyLabel)}</b><small>${extractWorkbenchEscape(verifyDetail)}</small></div>
+    <div class="ew-cell ew-c5"><b class="ew-${extractWorkbenchStageClass(verify.state)}">${extractWorkbenchEscape(verifyLabel)}</b><small>${extractWorkbenchEscape(paymentLabel)}</small></div>
     <div class="ew-cell ew-c6">${extractWorkbenchEscape(extractWorkbenchWaitLabel(task))}</div>
     <div class="ew-cell ew-c7">
-      ${action}
       <button type="button" class="btn ew-btn" data-workbench-detail="${taskId}" aria-expanded="false">详情</button>
+      ${canPaymentEntry ? `<button type="button" class="btn ew-btn ew-btn--link" data-workbench-payment-entry="${taskId}">支付入口</button>` : ''}
     </div>
     <div class="extract-workbench-detail hidden ew-detail" data-workbench-detail-content></div>
   </div>`;
@@ -464,31 +428,6 @@ function extractWorkbenchRenderAdmission() {
     ? `<p class="ew-admission-slice">本批 ${limit.toLocaleString('zh-CN')} 个超过单批上限，提交时会自动切成 ${slices} 批 × 约 ${Math.round(limit / slices)} 个。</p>`
     : '';
   target.innerHTML = rows.join('') + sliceHint;
-  extractWorkbenchRenderDesignCreateSummary();
-}
-
-function extractWorkbenchRenderDesignCreateSummary() {
-  const summary = extractWorkbenchNode('[data-ewd-create-count]');
-  if (!summary) return;
-  const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value || '';
-  const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
-  const mode = extractWorkbenchNode('[data-workbench-mode]')?.value || '';
-  const type = extractWorkbenchNode('[data-workbench-type]')?.value || '';
-  const workers = extractWorkbenchBatchWorkers();
-  const previewValid = EXTRACT_WORKBENCH_STATE.previewSignature === extractWorkbenchCandidateSignature();
-  const count = previewValid ? Number(EXTRACT_WORKBENCH_STATE.preview?.selected_count || 0) : 0;
-  const limit = Math.max(0, Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 0));
-  const slices = limit > 5000 ? Math.ceil(limit / 5000) : 1;
-  summary.textContent = count.toLocaleString('zh-CN');
-  const set = (selector, value) => { const node = extractWorkbenchNode(selector); if (node) node.textContent = value || '—'; };
-  set('[data-ewd-create-provider]', provider ? extractWorkbenchProviderShortLabel(provider.id, provider.label) : '—');
-  set('[data-ewd-create-mode]', mode ? extractWorkbenchModeLabel(mode) : '—');
-  set('[data-ewd-create-type]', type ? extractWorkbenchLinkTypeLabel(type) : '—');
-  set('[data-ewd-create-workers]', workers === null ? '—' : String(workers));
-  set('[data-ewd-create-slices]', slices > 1 ? `${slices} 批 · 每批 ≤5000` : '单批');
-  const ready = Boolean(provider && mode && type && count > 0 && workers !== null && !EXTRACT_WORKBENCH_STATE.creating);
-  const summaryButton = extractWorkbenchNode('[data-workbench-create-summary]');
-  if (summaryButton) summaryButton.disabled = !ready;
 }
 
 function extractWorkbenchRenderModes() {
@@ -508,7 +447,6 @@ function extractWorkbenchRenderModes() {
   if (createButton) createButton.disabled = EXTRACT_WORKBENCH_STATE.creating || !provider || !modes.includes(modeSelect.value) || count === 0 || extractWorkbenchBatchWorkers() === null;
   const selectedCount = extractWorkbenchNode('[data-workbench-selection-count]');
   if (selectedCount) selectedCount.textContent = `本批计划运行 ${count.toLocaleString('zh-CN')} 个账号${extractWorkbenchPaymentSourceSuffix({...provider, mode: modeSelect.value})}`;
-  extractWorkbenchRenderDesignCreateSummary();
 }
 
 function extractWorkbenchRenderLinkTypes() {
@@ -571,17 +509,8 @@ function extractWorkbenchFormatDuration(seconds) {
   return seconds >= 60 ? `${Math.round(seconds / 60)} 分` : `${Math.round(seconds)} 秒`;
 }
 
-function extractWorkbenchFormatDurationCompact(seconds) {
-  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—';
-  const whole = Math.round(seconds);
-  return `${Math.floor(whole / 60)}'${String(whole % 60).padStart(2, '0')}"`;
-}
-
-async function extractWorkbenchQuotaLine(providerIds) {
-  const huanguang = Array.isArray(providerIds)
-    ? providerIds.find(item => typeof item === 'object' && item?.id === 'huanguang')
-    : null;
-  if (!huanguang || huanguang.available !== true) return {};
+async function extractWorkbenchQuotaLine(providerIds, unavailableProviderIds = new Set()) {
+  if (!providerIds.includes('huanguang') || unavailableProviderIds.has('huanguang')) return {};
   if (EXTRACT_WORKBENCH_QUOTA_CACHE.value && Date.now() - EXTRACT_WORKBENCH_QUOTA_CACHE.at < 60_000) {
     return EXTRACT_WORKBENCH_QUOTA_CACHE.value;
   }
@@ -614,13 +543,14 @@ function extractWorkbenchRenderOverview(summary) {
   const health = extractWorkbenchNode('[data-workbench-health]');
   if (!health) return;
   const configProviders = Array.isArray(EXTRACT_WORKBENCH_CONFIG?.providers) ? EXTRACT_WORKBENCH_CONFIG.providers : [];
-  const unavailableProviders = Array.isArray(EXTRACT_WORKBENCH_CONFIG?.unavailable_providers) ? EXTRACT_WORKBENCH_CONFIG.unavailable_providers : [];
+  const unavailableProviders = Array.isArray(EXTRACT_WORKBENCH_CONFIG?.unavailable_providers)
+    ? EXTRACT_WORKBENCH_CONFIG.unavailable_providers : [];
   const stats = Array.isArray(summary.providers) ? summary.providers : [];
-  const allConfigured = [...configProviders, ...unavailableProviders];
-  const lumenId = allConfigured.some(item => item.id === 'lumen') ? 'lumen'
-    : allConfigured.some(item => item.id === 'lumen_flow') ? 'lumen_flow' : 'lumen_flow';
-  // 设计稿固定四格：三个已接平台 + 一个“其他”占位，避免少平台时整排视觉塌陷。
-  const ids = ['huanguang', 'anguang', lumenId, 'legacy'];
+  const ids = [...new Set([
+    ...configProviders.map(item => String(item.id)),
+    ...unavailableProviders.map(item => String(item.id)),
+    ...stats.map(item => String(item.provider_id)),
+  ])];
   void extractWorkbenchRenderHealthPanels(health, ids, stats, unavailableProviders);
 }
 
@@ -644,33 +574,29 @@ async function extractWorkbenchRenderHealthPanels(host, providerIds, stats, unav
   }
   const byId = new Map(stats.map(item => [String(item.provider_id), item]));
   const unavailableById = new Map(unavailableProviders.map(item => [String(item.id), item]));
-  const quota = await extractWorkbenchQuotaLine(providerIds.map(id => ({id, available: !unavailableById.has(id)})));
+  const quota = await extractWorkbenchQuotaLine(providerIds, unavailableById);
   host.innerHTML = providerIds.map(id => {
     const stat = byId.get(id) || {};
     const unavailable = unavailableById.get(id) || null;
     const provider = (EXTRACT_WORKBENCH_CONFIG?.providers || []).find(item => item.id === id) || unavailable || {};
-    const label = extractWorkbenchProviderShortLabel(id, provider.label);
+    const label = provider.label || EXTRACT_WORKBENCH_PROVIDER_LABELS[id] || id;
     const rate = typeof stat.success_rate === 'number' ? stat.success_rate : null;
-    const tone = unavailable || id === 'legacy' || rate === null ? 'muted' : rate < 0.6 ? 'warn' : '';
+    const tone = unavailable || rate === null ? 'muted' : rate < 0.6 ? 'warn' : '';
     const statusText = unavailable ? extractWorkbenchPlatformAvailabilityLabel(unavailable.unavailable_reason)
-      : id === 'legacy' ? '未启用'
-        : rate === null ? '暂无数据'
-          : rate < 0.6 ? '排队偏多' : '正常';
+      : rate === null ? '暂无数据' : rate < 0.6 ? '成功率偏低' : '正常';
     const quotaText = id === 'huanguang' && quota?.ok === true
       ? Number(quota.extraction?.remaining ?? 0).toLocaleString('zh-CN')
       : '—';
-    const quotaLabel = id === 'anguang' ? '可用积分' : id === 'lumen' || id === 'lumen_flow' ? '可用次数' : '可用额度';
-    const activityLabel = id === 'anguang' ? '排队' : '在跑';
     const bar = unavailable || rate === null ? 0 : Math.max(0, Math.min(100, Math.round(rate * 100)));
     return `<article class="ew-plat-card">
       <div class="ew-plat-card-h"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(id)}"></i>${extractWorkbenchEscape(label)}<span class="ew-plat-st" data-tone="${tone}">${statusText}</span></div>
       <div class="ew-plat-card-g">
-        <span>${quotaLabel} <b>${quotaText}</b></span>
-        <span>${activityLabel} <b>${Number((id === 'anguang' ? stat.queued_now : stat.active_now) || 0).toLocaleString('zh-CN')}</b></span>
+        <span>可用额度 <b>${quotaText}</b></span>
+        <span>在跑 <b>${Number(stat.active_now || 0).toLocaleString('zh-CN')}</b></span>
         <span>成功率 <b>${rate === null ? '—' : `${Math.round(rate * 100)}%`}</b></span>
-        <span>平均 <b>${extractWorkbenchFormatDurationCompact(stat.avg_seconds)}</b></span>
+        <span>平均 <b>${extractWorkbenchFormatDuration(stat.avg_seconds)}</b></span>
       </div>
-      ${unavailable ? `<small class="ewd-plat-reason">${extractWorkbenchEscape(unavailable.unavailable_reason || '平台配置暂不可用')}</small>` : ''}
+      ${unavailable ? `<small class="extract-workbench-platform-reason">${extractWorkbenchEscape(unavailable.unavailable_reason || '平台配置暂不可用')}</small>` : ''}
       <div class="ew-plat-card-bar"${tone === 'warn' ? ' data-tone="warn"' : ''}><i style="width:${bar}%"></i></div>
     </article>`;
   }).join('');
@@ -907,19 +833,17 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
   const target = extractWorkbenchNode('[data-workbench-tasks]');
   if (!target) return;
   const items = Array.isArray(EXTRACT_WORKBENCH_STATE.items) ? EXTRACT_WORKBENCH_STATE.items : [];
-  const head = '<div class="ew-table ewd-table" role="table" aria-label="提链任务"><div class="ew-head" role="row">'
+  const head = '<div class="ew-table" role="table" aria-label="提链任务"><div class="ew-head" role="row">'
+    + '<span class="ew-c0" role="columnheader"><input type="checkbox" data-workbench-select-all aria-label="全选当前页"></span>'
     + '<span role="columnheader">账号 / 任务</span><span role="columnheader">平台 · 模式</span>'
     + '<span role="columnheader">准备</span><span role="columnheader">运行</span>'
     + '<span role="columnheader">核验</span><span role="columnheader">已等待</span>'
     + '<span role="columnheader">操作</span></div>';
-  const signature = JSON.stringify({
-    items: items.map(task => [
-      task.task_id, task.task_status, task.extraction_status, task.payment_status,
-      task.payment_phase, task.plus_state, task.progress?.percent, task.progress?.label,
-      task.reconcile_halt?.reason, task.has_payment_entry, task.updated_at,
-    ]),
-    selected: [...EXTRACT_WORKBENCH_SELECTED].sort(),
-  });
+  const signature = JSON.stringify(items.map(task => [
+    task.task_id, task.task_status, task.extraction_status, task.payment_status,
+    task.payment_phase, task.plus_state, task.progress?.percent, task.progress?.label,
+    task.reconcile_halt?.reason, task.has_payment_entry, task.updated_at,
+  ]));
   if (!(quiet && signature === EXTRACT_WORKBENCH_TABLE_SIGNATURE)) {
     const filtered = Boolean(EXTRACT_WORKBENCH_STATE.status || EXTRACT_WORKBENCH_STATE.provider
       || EXTRACT_WORKBENCH_STATE.mode || EXTRACT_WORKBENCH_STATE.query || EXTRACT_WORKBENCH_STATE.batch);
@@ -940,25 +864,12 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
   const total = Number(EXTRACT_WORKBENCH_STATE.total || 0);
   const first = items.length ? (EXTRACT_WORKBENCH_STATE.page - 1) * EXTRACT_WORKBENCH_PAGE_SIZE + 1 : 0;
   if (summary) summary.textContent = `显示 ${first}–${first ? first + items.length - 1 : 0} / ${total.toLocaleString('zh-CN')} 个任务${extractWorkbenchPaymentSourceSuffix(EXTRACT_WORKBENCH_STATE.batchDetail)}`;
-  const totalTarget = extractWorkbenchNode('[data-workbench-total]');
-  if (totalTarget) totalTarget.textContent = `共 ${total.toLocaleString('zh-CN')} 条`;
   extractWorkbenchRenderBatchBar();
   extractWorkbenchRenderStatusTabs();
   const page = Number(EXTRACT_WORKBENCH_STATE.page || 1);
   const pages = Math.max(1, Math.ceil(Number(EXTRACT_WORKBENCH_STATE.total || 0) / EXTRACT_WORKBENCH_PAGE_SIZE));
   const label = extractWorkbenchNode('[data-workbench-page-label]');
   if (label) label.textContent = `第 ${page} / ${pages} 页`;
-  const pageNumbers = extractWorkbenchNode('[data-workbench-page-numbers]');
-  if (pageNumbers) {
-    const visible = new Set([1, pages, page - 1, page, page + 1].filter(value => value >= 1 && value <= pages));
-    const ordered = [...visible].sort((a, b) => a - b);
-    let last = 0;
-    pageNumbers.innerHTML = ordered.map(value => {
-      const gap = value - last > 1 ? '<span class="ewd-pager-gap">…</span>' : '';
-      last = value;
-      return `${gap}<button type="button" data-workbench-page-number="${value}"${value === page ? ' aria-current="page"' : ''}>${value}</button>`;
-    }).join('');
-  }
   const previous = extractWorkbenchNode('[data-workbench-page="prev"]');
   const next = extractWorkbenchNode('[data-workbench-page="next"]');
   if (previous) previous.disabled = page <= 1;
@@ -971,7 +882,7 @@ function extractWorkbenchRenderBatchBar() {
   const count = EXTRACT_WORKBENCH_SELECTED.size;
   bar.classList.toggle('hidden', count === 0);
   const label = bar.querySelector('[data-workbench-selected-count]');
-  if (label) label.textContent = `已选 ${count} 项`;
+  if (label) label.textContent = `已选 ${count} 个`;
   const all = extractWorkbenchNode('[data-workbench-select-all]');
   if (all) {
     const ids = (EXTRACT_WORKBENCH_STATE.items || []).map(item => String(item.task_id));
@@ -1124,17 +1035,12 @@ function extractWorkbenchFindTaskCard(tasksNode, taskId) {
     .find(card => String(card?.dataset?.taskId || '') === String(taskId)) || null;
 }
 
-function extractWorkbenchDetailStage(label, stage, fallback = '未开始') {
+function extractWorkbenchStageChip(name, label, stage) {
   const state = String(stage?.state || 'pending');
   const tone = state === 'done' ? 'ok' : state === 'failed' ? 'bad' : state === 'warning' ? 'warn' : state === 'running' ? 'run' : 'idle';
-  const mark = {ok:'✓', bad:'×', warn:'!', run:'●', idle:'○'}[tone];
-  const status = extractWorkbenchStatusLabel(stage?.status, fallback);
-  const detail = stage?.step || '';
-  return `<section class="ewd-detail-stage ewd-detail-stage--${tone}">
-    <div class="ewd-detail-stage-head"><em>${mark}</em>${label}</div>
-    <b>${extractWorkbenchEscape(status)}</b>
-    <small>${extractWorkbenchEscape(detail)}</small>
-  </section>`;
+  const mark = {ok:'✓', bad:'✕', warn:'!', run:'●', idle:'○'}[tone];
+  const copy = stage?.step || extractWorkbenchStatusLabel(stage?.status, '') || '';
+  return `<span class="ew-stage ew-stage--${tone}"><i>${mark}</i><b>${extractWorkbenchEscape(label)}</b>${copy ? `<small>${extractWorkbenchEscape(copy)}</small>` : ''}</span>`;
 }
 
 function extractWorkbenchDetailHtml(result) {
@@ -1142,13 +1048,13 @@ function extractWorkbenchDetailHtml(result) {
   const events = Array.isArray(result?.events) ? result.events : [];
   const stages = item.stages || {};
   const stageRow = [
-    extractWorkbenchDetailStage('准备', stages.prepare, '未开始'),
-    extractWorkbenchDetailStage('运行', stages.run, '未开始'),
-    extractWorkbenchDetailStage('核验', stages.verify, '未开始'),
+    extractWorkbenchStageChip('prepare', '准备', stages.prepare),
+    extractWorkbenchStageChip('run', '运行', stages.run),
+    extractWorkbenchStageChip('verify', '核验', stages.verify),
   ].join('');
   const raw = item.remote_raw && typeof item.remote_raw === 'object' ? Object.entries(item.remote_raw) : [];
   const rawLine = raw.length
-    ? `<details class="ewd-raw"><summary>平台原文 <span>${raw.length} 项</span></summary><div>${raw.map(([key, value]) => `<span><b>${extractWorkbenchEscape(key)}</b><code>${extractWorkbenchEscape(value)}</code></span>`).join('')}</div></details>`
+    ? `<details class="ew-raw"><summary>平台原文 ${raw.length} 项</summary><div class="ew-raw-list">${raw.map(([key, value]) => `<span><b>${extractWorkbenchEscape(key)}</b><code>${extractWorkbenchEscape(value)}</code></span>`).join('')}</div></details>`
     : '';
   // 支付来源与订单是排查依据，放在三段下面一行常显，不塞进折叠区。
   const source = extractWorkbenchPaymentSourceLabel(item);
@@ -1162,36 +1068,36 @@ function extractWorkbenchDetailHtml(result) {
     metaLines.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '待确认')}`);
   }
   const metaLine = metaLines.length
-    ? `<p class="ew-detail-meta ewd-detail-meta">${metaLines.map(text => `<span>${extractWorkbenchEscape(text)}</span>`).join('')}</p>`
+    ? `<p class="ew-detail-meta">${metaLines.map(text => `<span>${extractWorkbenchEscape(text)}</span>`).join('')}</p>`
     : '';
   const halt = item.reconcile_halt || {};
   const haltLine = halt.halted
-    ? `<p class="ewd-detail-halt">${extractWorkbenchEscape(halt.label || '已停止自动续查，待核对')}${halt.reason ? `<code>${extractWorkbenchEscape(halt.reason)}</code>` : ''}</p>`
+    ? `<p class="ew-detail-halt">${extractWorkbenchEscape(halt.label || '已停止自动续查，待核对')}${halt.reason ? `<code>${extractWorkbenchEscape(halt.reason)}</code>` : ''}</p>`
     : '';
   const timeline = events.length
-    ? `<ol class="ewd-timeline">${events.map(event => {
+    ? `<ol class="ew-timeline">${events.map(event => {
         const time = extractWorkbenchTime(event.at || event.created_at || event.time);
-        return `<li class="${String(event.status || '').toLowerCase() === 'success' ? 'is-ok' : ''}"><span></span><div><time>${extractWorkbenchEscape(extractWorkbenchShortTime(event.at || event.created_at || event.time))}</time><b>${extractWorkbenchEscape(event.label || event.stage || '事件')}</b>`
-          + `${event.message ? `<small>${extractWorkbenchEscape(event.message)}</small>` : ''}</div></li>`;
+        return `<li><span class="ew-timeline-dot"></span><div><b>${extractWorkbenchEscape(event.label || event.stage || '事件')}</b>`
+          + `<small>${extractWorkbenchEscape(extractWorkbenchStatusLabel(event.status, ''))}${time !== '—' ? ` · ${extractWorkbenchEscape(time)}` : ''}</small>`
+          + `${event.message ? `<p>${extractWorkbenchEscape(event.message)}</p>` : ''}</div></li>`;
       }).join('')}</ol>`
     : '<p class="extract-workbench-muted">暂无阶段事件</p>';
-  const syncCopy = item?.reconcile_halt?.halted ? '自动同步已停，等待人工核对' : '自动同步按当前轮询策略继续';
-  return `<div class="ewd-detail-body">
+  return `<div class="ew-detail-body">
     ${metaLine}
-    <div class="ewd-detail-stages">${stageRow}</div>
+    <div class="ew-detail-stages">${stageRow}</div>
     ${haltLine}
-    <section class="ewd-node-a" data-detail-node-a>
-      <div class="ewd-node-a-head"><b>节点 A · 提链成功</b><em data-detail-node-a-time>${extractWorkbenchShortTime(item.updated_at || item.created_at)}</em><span data-detail-node-a-state>读取中…</span></div>
+    <section class="ew-node-a" data-detail-node-a>
+      <div class="ew-node-a-head"><h4>节点 A · 出手的东西</h4><span data-detail-node-a-state>读取中…</span></div>
       <div class="ew-node-a-body" data-detail-node-a-body></div>
     </section>
     ${rawLine}
-    <section class="ewd-detail-timeline"><h4>执行时间线</h4>${timeline}</section>
-    <div class="ewd-detail-sync">自动同步 <b>运行 ${Number(item.run_count || 1)} 次</b><span>· ${extractWorkbenchEscape(syncCopy)}</span><button type="button" data-workbench-drawer-action="sync_status">刷新</button></div>
+    <section class="ew-detail-timeline"><h4>执行时间线</h4>${timeline}</section>
+    <p class="ew-detail-foot">任务 #${extractWorkbenchEscape(item.task_id || '')} · 运行 ${Number(item.run_count || 1)} 次 · 更新 ${extractWorkbenchEscape(extractWorkbenchTime(item.updated_at || item.created_at))}</p>
   </div>`;
 }
 
 function extractWorkbenchNodeAEmpty(text) {
-  return `<p class="ewd-node-empty">${extractWorkbenchEscape(text)}</p>`;
+  return `<p class="extract-workbench-muted">${extractWorkbenchEscape(text)}</p>`;
 }
 
 function extractWorkbenchNodeAEntry(entry, item) {
@@ -1199,11 +1105,15 @@ function extractWorkbenchNodeAEntry(entry, item) {
   const pageUrl = entry.payment_page_url || entry.payment_url || '';
   const qrData = entry.qr_data || '';
   const parts = [];
-  parts.push(`<div class="ewd-node-a-grid"><div class="ewd-node-qr">${qrImage
+  parts.push(`<div class="ew-node-a-art">${qrImage
     ? `<img src="${extractWorkbenchEscape(qrImage)}" alt="支付二维码" loading="lazy">`
-    : qrData ? `<code>${extractWorkbenchEscape(qrData)}</code>` : `<span>二维码待平台返回</span>`}</div>`);
-  const row = (label, value, copyValue = value) => `<div class="ewd-node-link"><b>${label}<button type="button" data-detail-copy="${extractWorkbenchEscape(copyValue || '')}" ${copyValue ? '' : 'disabled'}>复制</button></b><span>${extractWorkbenchEscape(value || '平台未返回')}</span></div>`;
-  parts.push(`<div class="ewd-node-links">${row('支付链接', pageUrl || qrData, pageUrl || qrData)}${row('提链链接', item.extract_link || '可从任务链接操作复制', item.extract_link || '')}<div class="ewd-node-expiry">二维码有效期至 <b data-detail-countdown>—</b>${entry.amount !== undefined ? `<span>金额 ${extractWorkbenchEscape(entry.amount)}</span>` : ''}</div></div></div>`);
+    : qrData ? `<code class="ew-qr-text">${extractWorkbenchEscape(qrData)}</code>` : `<span class="extract-workbench-muted">二维码待平台返回</span>`}</div>`);
+  const actions = [];
+  if (pageUrl) actions.push(`<a class="btn" href="${extractWorkbenchEscape(pageUrl)}" target="_blank" rel="noopener noreferrer">打开支付页</a>`);
+  if (qrData) actions.push(`<button type="button" class="btn" data-detail-copy="${extractWorkbenchEscape(qrData)}">复制二维码内容</button>`);
+  if (item.has_extract_link) actions.push(`<button type="button" class="btn" data-workbench-link="extract" data-task-id="${extractWorkbenchEscape(item.task_id || '')}">复制提链链接</button>`);
+  parts.push(`<div class="ew-node-a-meta"><span>有效期</span><b data-detail-countdown>—</b>${entry.amount !== undefined ? `<span>金额</span><b>${extractWorkbenchEscape(entry.amount)}</b>` : ''}</div>`);
+  parts.push(`<div class="ew-node-a-actions">${actions.join('') || '<span class="extract-workbench-muted">没有可复制的链接</span>'}</div>`);
   return parts.join('');
 }
 
@@ -1306,7 +1216,6 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
   if (!root) return;
   EXTRACT_WORKBENCH_ROOT = root;
   extractWorkbenchBindEvents();
-  extractWorkbenchRenderDesignClock();
   const sequence = ++EXTRACT_WORKBENCH_SEQUENCE;
   const tasksNode = extractWorkbenchNode('[data-workbench-tasks]');
   if (tasksNode && !quiet) {
@@ -1636,28 +1545,6 @@ async function extractWorkbenchCopyPaymentEntry(key) {
   catch (_) { window.prompt('复制支付入口内容', value); }
 }
 
-async function extractWorkbenchCopyDrawerPayment(taskId) {
-  try {
-    const result = await extractWorkbenchRequest(`/api/extract-workbench/tasks/${encodeURIComponent(taskId)}/payment-entry`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}),
-    });
-    const entry = result?.entry || {};
-    const value = entry.payment_page_url || entry.payment_url || entry.qr_data || '';
-    if (!value) throw new Error('平台未返回可复制的支付链接');
-    try { await navigator.clipboard.writeText(value); }
-    catch (_) { window.prompt('复制支付链接', value); }
-    showToast?.('支付链接已复制');
-  } catch (error) {
-    showToast?.(error?.message || '支付链接读取失败');
-  }
-}
-
-async function extractWorkbenchCopyDetailValue(value) {
-  if (!value) return;
-  try { await navigator.clipboard.writeText(value); showToast?.('已复制'); }
-  catch (_) { window.prompt('复制内容', value); }
-}
-
 async function extractWorkbenchShowLink(taskId, kind) {
   try {
     const result = await extractWorkbenchRequest(`/api/extract-workbench/tasks/${encodeURIComponent(taskId)}/links`, {
@@ -1678,7 +1565,6 @@ function extractWorkbenchCloseDrawer() {
   const body = extractWorkbenchNode('[data-workbench-drawer-body]');
   if (body?.__ewCountdown) clearTimeout(body.__ewCountdown);
   drawer?.classList.add('hidden');
-  if (drawer) delete drawer.dataset.workbenchDrawerTask;
   backdrop?.classList.add('hidden');
   document.body.classList.remove('ew-drawer-open');
   const trigger = EXTRACT_WORKBENCH_DRAWER_TRIGGER;
@@ -1692,7 +1578,6 @@ async function extractWorkbenchOpenDrawer(taskId, trigger = null) {
   const body = extractWorkbenchNode('[data-workbench-drawer-body]');
   const title = extractWorkbenchNode('[data-workbench-drawer-title]');
   const sub = extractWorkbenchNode('[data-workbench-drawer-sub]');
-  const state = extractWorkbenchNode('[data-workbench-drawer-state]');
   if (!drawer || !body) return;
   const task = EXTRACT_WORKBENCH_STATE.items.find(item => String(item.task_id) === String(taskId)) || {};
   const providerId = String(task.provider_id || 'legacy');
@@ -1701,8 +1586,6 @@ async function extractWorkbenchOpenDrawer(taskId, trigger = null) {
   EXTRACT_WORKBENCH_DRAWER_TRIGGER = trigger;
   if (title) title.textContent = task.email || `任务 #${taskId}`;
   if (sub) sub.textContent = `#${taskId} · ${providerLabel} · ${extractWorkbenchModeLabel(String(task.mode || 'extract_only'))}`;
-  if (state) state.textContent = EXTRACT_WORKBENCH_PAYMENT_PHASE_LABELS[task.payment_phase] || EXTRACT_WORKBENCH_PLUS_STATE_LABELS[task.plus_state] || extractWorkbenchStatusLabel(task.task_status, '读取中');
-  drawer.dataset.workbenchDrawerTask = String(taskId);
   drawer.classList.remove('hidden');
   backdrop?.classList.remove('hidden');
   document.body.classList.add('ew-drawer-open');
@@ -1772,33 +1655,8 @@ function extractWorkbenchBindEvents() {
   if (!root || EXTRACT_WORKBENCH_BOUND) return;
   EXTRACT_WORKBENCH_BOUND = true;
   root.addEventListener('click', event => {
-    const designNav = event.target.closest('[data-ewd-nav]');
-    if (designNav) {
-      const tab = designNav.dataset.ewdNav;
-      document.querySelector(`.sidebar-nav button[data-tab="${tab}"]`)?.click();
-      return;
-    }
-    const createNav = event.target.closest('[data-ewd-create-nav]');
-    if (createNav) {
-      extractWorkbenchNode('[data-workbench-create-dialog]')?.close();
-      document.querySelector(`.sidebar-nav button[data-tab="${createNav.dataset.ewdCreateNav}"]`)?.click();
-      return;
-    }
     const closePayment = event.target.closest('[data-workbench-close-payment]');
     if (closePayment) { extractWorkbenchNode('[data-workbench-payment-dialog]')?.close(); return; }
-    const detailCopy = event.target.closest('[data-detail-copy]');
-    if (detailCopy) { void extractWorkbenchCopyDetailValue(detailCopy.dataset.detailCopy || ''); return; }
-    const drawerAction = event.target.closest('[data-workbench-drawer-action]');
-    if (drawerAction) {
-      const drawer = extractWorkbenchNode('[data-workbench-drawer]');
-      const taskId = String(drawer?.dataset.workbenchDrawerTask || '');
-      const action = drawerAction.dataset.workbenchDrawerAction;
-      if (!taskId) return;
-      if (action === 'copy-payment') { void extractWorkbenchCopyDrawerPayment(taskId); return; }
-      if (action === 'copy-at') { void extractWorkbenchCopy(taskId, 'at'); return; }
-      if (action === 'sync_status' || action === 'retry') { void extractWorkbenchTaskAction(taskId, action, drawerAction); return; }
-      if (action === 'stop') { showToast?.('停止单个任务暂未开放，请在批次筛选后使用取消批次。'); return; }
-    }
     const paymentCopy = event.target.closest('[data-workbench-payment-copy]');
     if (paymentCopy) { void extractWorkbenchCopyPaymentEntry(paymentCopy.dataset.workbenchPaymentCopy); return; }
     const paymentEntry = event.target.closest('[data-workbench-payment-entry]');
@@ -1830,24 +1688,13 @@ function extractWorkbenchBindEvents() {
     if (accountSearch) { void extractWorkbenchLoadAccounts(); return; }
     const create = event.target.closest('[data-workbench-create]');
     if (create) { void extractWorkbenchSubmit(); return; }
-    const summaryCreate = event.target.closest('[data-workbench-create-summary]');
-    if (summaryCreate) { void extractWorkbenchSubmit(); return; }
     const page = event.target.closest('[data-workbench-page]');
     if (page) {
       EXTRACT_WORKBENCH_STATE.page = Math.max(1, EXTRACT_WORKBENCH_STATE.page + (page.dataset.workbenchPage === 'next' ? 1 : -1));
       void loadExtractWorkbench({force:true}); return;
     }
-    const pageNumber = event.target.closest('[data-workbench-page-number]');
-    if (pageNumber) {
-      EXTRACT_WORKBENCH_STATE.page = Math.max(1, Number(pageNumber.dataset.workbenchPageNumber || 1));
-      void loadExtractWorkbench({force:true}); return;
-    }
     const action = event.target.closest('[data-workbench-action]');
-    if (action) {
-      const taskId = action.dataset.taskId || action.closest('.extract-workbench-task')?.dataset.taskId;
-      if (taskId) void extractWorkbenchTaskAction(taskId, action.dataset.workbenchAction, action);
-      return;
-    }
+    if (action) { void extractWorkbenchTaskAction(action.dataset.taskId, action.dataset.workbenchAction, action); return; }
     const link = event.target.closest('[data-workbench-link]');
     if (link) { void extractWorkbenchShowLink(link.dataset.taskId, link.dataset.workbenchLink); return; }
     const detail = event.target.closest('[data-workbench-detail]');
@@ -1866,15 +1713,6 @@ function extractWorkbenchBindEvents() {
       extractWorkbenchNode('[data-workbench-cancel-dialog]')?.close();
       void extractWorkbenchCancelBatch({confirmed: true});
       return;
-    }
-    const row = event.target.closest('.ew-row.extract-workbench-task');
-    if (row && !event.target.closest('button, a, input, select, label, details, summary')) {
-      const id = String(row.dataset.taskId || '');
-      if (!id) return;
-      if (EXTRACT_WORKBENCH_SELECTED.has(id)) EXTRACT_WORKBENCH_SELECTED.delete(id);
-      else EXTRACT_WORKBENCH_SELECTED.add(id);
-      extractWorkbenchRenderTasks({quiet:true});
-      extractWorkbenchRenderBatchBar();
     }
   });
   root.addEventListener('change', event => {
