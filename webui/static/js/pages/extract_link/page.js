@@ -543,32 +543,33 @@ function extractWorkbenchRenderOverview(summary) {
   void extractWorkbenchRenderHealthPanels(health, ids, stats);
 }
 
-async function extractWorkbenchRenderHealthPanels(health, providerIds, stats) {
+async function extractWorkbenchRenderHealthPanels(host, providerIds, stats) {
   if (!providerIds.length) {
-    health.innerHTML = '<span class="ew-health-empty">还没有可用的提链平台</span>';
+    host.innerHTML = '<span class="ew-health-empty">还没有可用的提链平台</span>';
     return;
   }
   const quota = await extractWorkbenchQuotaLine(providerIds);
   const byId = new Map(stats.map(item => [String(item.provider_id), item]));
-  health.innerHTML = providerIds.map(id => {
+  host.innerHTML = providerIds.map(id => {
     const stat = byId.get(id) || {};
-    const label = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === id)?.label
-      || EXTRACT_WORKBENCH_PROVIDER_LABELS[id] || id;
-    const rate = typeof stat.success_rate === 'number' ? `${Math.round(stat.success_rate * 100)}%` : '—';
-    const rateValue = typeof stat.success_rate === 'number' ? stat.success_rate : 1;
-    const failed = Number(stat.today_failed || 0);
-    const tone = failed && rateValue < 0.6 ? 'bad' : failed && rateValue < 0.85 ? 'warn' : '';
-    const quotaLine = id === 'huanguang' && quota?.ok === true
-      ? `提链 ${Number(quota.extraction?.remaining ?? 0)} · 扫码 ${Number(quota.payment?.remaining ?? 0)}`
+    const provider = (EXTRACT_WORKBENCH_CONFIG?.providers || []).find(item => item.id === id) || {};
+    const label = provider.label || EXTRACT_WORKBENCH_PROVIDER_LABELS[id] || id;
+    const rate = typeof stat.success_rate === 'number' ? stat.success_rate : null;
+    const tone = rate === null ? 'muted' : rate < 0.6 ? 'warn' : '';
+    const statusText = rate === null ? '暂无数据' : rate < 0.6 ? '成功率偏低' : '正常';
+    const quotaText = id === 'huanguang' && quota?.ok === true
+      ? Number(quota.extraction?.remaining ?? 0).toLocaleString('zh-CN')
       : '—';
-    return `<article class="ew-panel"${tone ? ` data-tone="${tone}"` : ''}>
-      <header><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(id)}"></i><b>${extractWorkbenchEscape(label)}</b></header>
-      <dl>
-        <div><dt>可用额度</dt><dd>${extractWorkbenchEscape(quotaLine)}</dd></div>
-        <div><dt>成功率</dt><dd>${rate}</dd></div>
-        <div><dt>排队</dt><dd>${Number(stat.queued_now || 0).toLocaleString('zh-CN')}</dd></div>
-        <div><dt>平均耗时</dt><dd>${extractWorkbenchFormatDuration(stat.avg_seconds)}</dd></div>
-      </dl>
+    const bar = rate === null ? 0 : Math.max(0, Math.min(100, Math.round(rate * 100)));
+    return `<article class="ew-plat-card">
+      <div class="ew-plat-card-h"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(id)}"></i>${extractWorkbenchEscape(label)}<span class="ew-plat-st" data-tone="${tone}">${statusText}</span></div>
+      <div class="ew-plat-card-g">
+        <span>可用额度 <b>${quotaText}</b></span>
+        <span>在跑 <b>${Number(stat.active_now || 0).toLocaleString('zh-CN')}</b></span>
+        <span>成功率 <b>${rate === null ? '—' : `${Math.round(rate * 100)}%`}</b></span>
+        <span>平均 <b>${extractWorkbenchFormatDuration(stat.avg_seconds)}</b></span>
+      </div>
+      <div class="ew-plat-card-bar"${tone === 'warn' ? ' data-tone="warn"' : ''}><i style="width:${bar}%"></i></div>
     </article>`;
   }).join('');
 }
@@ -706,7 +707,8 @@ function extractWorkbenchRenderStatusTabs() {
   const counts = EXTRACT_WORKBENCH_STATE.counts || {};
   target.innerHTML = EXTRACT_WORKBENCH_FILTERS.map(([value, label]) => {
     const count = Number(counts[value || 'all'] ?? (value ? 0 : EXTRACT_WORKBENCH_STATE.total) ?? 0);
-    return `<button type="button" class="extract-workbench-status-filter" data-workbench-status-filter="${value}" aria-pressed="${EXTRACT_WORKBENCH_STATE.status === value}"><strong>${label}</strong><span>${count.toLocaleString('zh-CN')}</span></button>`;
+    const warn = (value === 'needs_review' || value === 'failed') && count > 0;
+    return `<button type="button" class="extract-workbench-status-filter" data-workbench-status-filter="${value}" aria-pressed="${EXTRACT_WORKBENCH_STATE.status === value}"${warn ? ' data-warn="true"' : ''}><strong>${label}</strong><span>${count.toLocaleString('zh-CN')}</span></button>`;
   }).join('');
 }
 
