@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261110-bulk-create-v5') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top7') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261111-workbench-top9') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -452,14 +452,9 @@
           <div><h2 id="extractWorkbenchCreateTitle">新建提链批次</h2><p id="extractWorkbenchCreateHint">筛选账号并设置本批运行数量，一次提交整批任务</p></div>
           <button type="button" class="extract-workbench-dialog-close" data-workbench-close-create aria-label="关闭新建批次"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </div>
-        <div class="extract-workbench-create-controls extract-workbench-batch-fields">
-          <label class="extract-workbench-batch-name">批次名称<input type="text" data-workbench-batch-title maxlength="120" placeholder="选填，例如：10 月 14 日账号提链" autocomplete="off"></label>
-          <label>平台<select data-workbench-provider></select></label>
-          <label>提链类型<select data-workbench-type aria-label="选择提链类型"></select></label>
-          <label>运行模式<select data-workbench-mode></select></label>
-          <label>批次并发<input type="number" data-workbench-batch-workers value="1" min="1" max="50" step="1" inputmode="numeric" aria-describedby="extractWorkbenchConcurrencyHint"></label>
-        </div>
         <p class="extract-workbench-concurrency-hint" id="extractWorkbenchConcurrencyHint" data-workbench-concurrency-hint>设置本批同时运行的账号数，实际并发还受平台并发限制。</p>
+        <section class="ew-step ew-step--1" aria-labelledby="extractWorkbenchCandidateTitle">
+        <h3 class="ew-step-head"><i>1</i><span>账号范围</span><small data-workbench-step-scope-hint>先圈定这批要跑哪些账号，不用逐个勾选</small></h3>
         <section class="extract-workbench-candidate-section" aria-labelledby="extractWorkbenchCandidateTitle">
           <div class="extract-workbench-candidate-head"><h3 id="extractWorkbenchCandidateTitle">筛选本批账号</h3><p data-workbench-candidate-hint>仅匹配活跃、未归档且具备任一可提链优惠的 free 账号；提交前仍会在线查活。</p></div>
           <div class="extract-workbench-create-controls extract-workbench-candidate-filters">
@@ -473,6 +468,21 @@
           </div>
           <div class="extract-workbench-candidate-toolbar"><p data-workbench-candidate-summary role="status" aria-live="polite">设置条件后预览匹配账号</p><button type="button" class="btn" data-workbench-search-accounts>预览匹配账号</button></div>
           <div class="extract-workbench-account-results extract-workbench-candidate-preview" data-workbench-accounts aria-live="polite"><p class="extract-workbench-muted">预览会显示匹配数量与部分账号，无需逐个勾选。</p></div>
+        </section>
+        </section>
+        <section class="ew-step ew-step--2" aria-label="平台准入">
+          <h3 class="ew-step-head"><i>2</i><span>平台准入</span><small>提交前先看能不能跑，别等报错</small></h3>
+          <div class="ew-admission" data-workbench-admission aria-live="polite"><p class="extract-workbench-muted">读取平台配置…</p></div>
+        </section>
+        <section class="ew-step ew-step--3" aria-label="模式与支付">
+          <h3 class="ew-step-head"><i>3</i><span>模式与支付</span><small>决定这批是只提链，还是连支付和核验一起跑</small></h3>
+        <div class="extract-workbench-create-controls extract-workbench-batch-fields">
+          <label class="extract-workbench-batch-name">批次名称<input type="text" data-workbench-batch-title maxlength="120" placeholder="选填，例如：10 月 14 日账号提链" autocomplete="off"></label>
+          <label>平台<select data-workbench-provider></select></label>
+          <label>提链类型<select data-workbench-type aria-label="选择提链类型"></select></label>
+          <label>运行模式<select data-workbench-mode></select></label>
+          <label>批次并发<input type="number" data-workbench-batch-workers value="1" min="1" max="50" step="1" inputmode="numeric" aria-describedby="extractWorkbenchConcurrencyHint"></label>
+        </div>
         </section>
         <p class="extract-workbench-feedback" data-workbench-create-feedback role="status" aria-live="polite"></p>
         <div class="extract-workbench-dialog-footer">
@@ -1220,7 +1230,7 @@
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261109-plan-at-recovery') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top7') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261111-workbench-top9') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261110-bulk-create-v5') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

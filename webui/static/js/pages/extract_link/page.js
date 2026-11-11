@@ -383,6 +383,43 @@ function extractWorkbenchPaymentSourceSuffix(item) {
   return label ? ` · 自动支付来源：${label}` : '';
 }
 
+function extractWorkbenchRenderAdmission() {
+  const target = extractWorkbenchNode('[data-workbench-admission]');
+  if (!target) return;
+  const config = EXTRACT_WORKBENCH_CONFIG || {};
+  const providers = Array.isArray(config.providers) ? config.providers : [];
+  const unavailable = Array.isArray(config.unavailable_providers) ? config.unavailable_providers : [];
+  if (!providers.length && !unavailable.length) {
+    target.innerHTML = '<p class="extract-workbench-muted">平台配置读取中…</p>';
+    return;
+  }
+  const workers = Math.max(1, Number(extractWorkbenchNode('[data-workbench-batch-workers]')?.value || 1));
+  const limit = Math.max(0, Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 0));
+  const batchCap = 5000;
+  const rows = [
+    ...providers.map(provider => {
+      const modes = Array.isArray(provider.modes) ? provider.modes.length : 0;
+      return `<div class="ew-admission-row" data-state="ok">
+        <i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(provider.id)}"></i>
+        <span class="ew-admission-name">${extractWorkbenchEscape(provider.label || provider.id)}</span>
+        <span class="ew-admission-state">可用</span>
+        <span class="ew-admission-meta">模式 ${modes} 种 · 本批并发 ${workers} · 单批上限 ${batchCap.toLocaleString('zh-CN')}</span>
+      </div>`;
+    }),
+    ...unavailable.map(provider => `<div class="ew-admission-row" data-state="bad">
+        <i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(provider.id)}"></i>
+        <span class="ew-admission-name">${extractWorkbenchEscape(provider.label || provider.id)}</span>
+        <span class="ew-admission-state">不可用</span>
+        <span class="ew-admission-meta">${extractWorkbenchEscape(provider.unavailable_reason || '连接配置无效')}</span>
+      </div>`),
+  ];
+  const slices = limit > batchCap ? Math.ceil(limit / batchCap) : 0;
+  const sliceHint = slices
+    ? `<p class="ew-admission-slice">本批 ${limit.toLocaleString('zh-CN')} 个超过单批上限，提交时会自动切成 ${slices} 批 × 约 ${Math.round(limit / slices)} 个。</p>`
+    : '';
+  target.innerHTML = rows.join('') + sliceHint;
+}
+
 function extractWorkbenchRenderModes() {
   const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value;
   const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
@@ -1014,6 +1051,7 @@ async function extractWorkbenchOpenCreate() {
   try {
     await extractWorkbenchLoadConfig();
     extractWorkbenchRenderProviders();
+    extractWorkbenchRenderAdmission();
     extractWorkbenchRenderAccountSources();
     await extractWorkbenchLoadAccounts();
   } catch (_) {
@@ -1389,7 +1427,8 @@ function extractWorkbenchBindEvents() {
     if (event.target.matches('[data-workbench-batch-select]')) { void extractWorkbenchSwitchBatch(event.target.value); return; }
     if (event.target.matches('[data-workbench-account-source], [data-workbench-date-from], [data-workbench-date-to], [data-workbench-extract-status], [data-workbench-promotion], [data-workbench-batch-limit]')) extractWorkbenchInvalidatePreview();
     if (event.target.matches('[data-workbench-filter-provider], [data-workbench-filter-mode]')) extractWorkbenchApplyFilters();
-    if (event.target.matches('[data-workbench-provider]')) { extractWorkbenchRenderModes(); extractWorkbenchRenderLinkTypes(); return; }
+    if (event.target.matches('[data-workbench-provider]')) { extractWorkbenchRenderModes(); extractWorkbenchRenderLinkTypes(); extractWorkbenchRenderAdmission(); return; }
+    if (event.target.matches('[data-workbench-batch-workers], [data-workbench-batch-limit]')) { extractWorkbenchRenderAdmission(); return; }
     if (event.target.matches('[data-workbench-mode], [data-workbench-type]')) extractWorkbenchRenderModes();
   });
   root.addEventListener('input', event => {
