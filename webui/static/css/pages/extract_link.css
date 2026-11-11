@@ -636,3 +636,22 @@ body.ew-drawer-open { overflow: hidden; }
   .extract-workbench-page .extract-workbench-batch-picker { flex: 1 1 100%; }
   .extract-workbench-page .extract-workbench-batch-picker select { width: 100%; }
 }
+
+/* 顶部操作行：只放刷新/导出/新建，右对齐（对齐设计稿 page-h .acts） */
+.extract-workbench-page .extract-workbench-toolbar { display: flex; justify-content: flex-end; align-items: center; margin: 0 0 12px; }
+.extract-workbench-page .ew-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.extract-workbench-page .ew-actions .btn { flex: 0 0 auto; white-space: nowrap; height: 32px; padding: 0 13px; border-radius: 8px; border: 1px solid var(--ew-line); background: #fff; color: #3c465c; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.extract-workbench-page .ew-actions .extract-workbench-primary { background: var(--ew-brand); border-color: var(--ew-brand); color: #fff; }
+.extract-workbench-page .ew-batchpicker { flex: 0 0 auto; height: 28px; max-width: 176px; border: 1px solid var(--ew-line); border-radius: 8px; background: #fafbfd; color: #5c6577; font-size: 11.5px; padding: 0 8px; }
+.extract-workbench-page .ew-cancel-batch { display: none; flex: 0 0 auto; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--ew-line); background: #fff; color: #b3261e; font-size: 11px; white-space: nowrap; }
+.extract-workbench-page .ew-cancel-batch:not([disabled]) { display: inline-flex; align-items: center; }
+.extract-workbench-page .extract-workbench-filters select { max-width: 96px; height: 28px; font-size: 11px; padding: 0 6px; }
+.extract-workbench-page .ew-batchpicker { max-width: 138px; }
+.extract-workbench-page .extract-workbench-search { flex: 0 1 158px; min-width: 118px; }
+.extract-workbench-page .extract-workbench-result-count { font-size: 10.5px; }
+.extract-workbench-page .ew-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.extract-workbench-page .ew-filters select { height: 32px; max-width: 132px; border: 1px solid var(--ew-line); border-radius: 8px; background: #fff; color: #3c465c; font-size: 11.5px; padding: 0 8px; }
+.extract-workbench-page .ew-filters .ew-batchpicker { max-width: 190px; }
+.extract-workbench-page .extract-workbench-toolbar { justify-content: space-between; flex-wrap: wrap; row-gap: 8px; }
+.extract-workbench-page .ew-filters { flex-wrap: nowrap; }
+.extract-workbench-page .ew-filters select { flex: 0 0 auto; }
