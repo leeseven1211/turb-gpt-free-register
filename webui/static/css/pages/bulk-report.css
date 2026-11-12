@@ -1,0 +1,91 @@
+/* 查询套餐报告使用控制台共用语义变量，明暗主题均保留相同信息层级。 */
+[data-bulk-plan-report]:not([hidden]) { margin: 16px 0; }
+.bulk-report-load-error { margin-top: 12px; }
+.bulk-report-load-error .jobs-tb-btn { margin-top: 8px; }
+.bulk-plan-report { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); background: var(--ui-color-surface); color: var(--ui-color-text); font-size: 12px; }
+.bulk-report-header, .bulk-report-heading-line, .bulk-report-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bulk-report-header { align-items: flex-start; margin-bottom: 18px; }
+.bulk-report-heading-line { justify-content: flex-start; flex-wrap: wrap; gap: 10px; }
+.bulk-plan-report h3, .bulk-plan-report h4, .bulk-plan-report p, .bulk-plan-report dl, .bulk-plan-report dd { margin: 0; }
+.bulk-plan-report h3 { font-size: 16px; font-weight: 650; line-height: 1.5; }
+.bulk-plan-report h4 { font-size: 13px; font-weight: 650; }
+.bulk-report-header p { margin-top: 5px; color: var(--ui-color-text-secondary); }
+.bulk-report-phase { flex: 0 0 auto; padding: 3px 7px; border-radius: 5px; background: var(--ui-color-brand-soft); color: var(--ui-color-brand); font-size: 11px; }
+.bulk-report-phase.is-completed { background: var(--ui-color-success-soft); color: var(--ui-color-text); }
+.bulk-report-updated { flex: 0 0 auto; color: var(--ui-color-text-secondary); font-size: 11px; line-height: 24px; }
+.bulk-report-outcomes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
+.bulk-report-metric dt { color: var(--ui-color-text-secondary); font-size: 12px; }
+.bulk-report-metric dd { margin-top: 6px; font-size: 28px; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.bulk-report-metric dd > span { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--ui-color-text-secondary); }
+.bulk-report-metric small { display: block; margin-top: 6px; color: var(--ui-color-text-secondary); font-size: 11px; line-height: 1.5; }
+.bulk-report-metric.is-success dd { color: var(--ui-color-success); }
+.bulk-report-metric.is-danger dd { color: var(--ui-color-danger); }
+.bulk-report-metric.is-warning dd { color: var(--ui-color-warning); }
+.bulk-report-metric.is-accent dd { color: var(--ui-color-brand); }
+.bulk-report-outcome-note { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 12px; color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-execution { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 24px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--ui-color-border); }
+.bulk-report-execution > section, .bulk-report-distributions > section { min-width: 0; }
+.bulk-report-section-head { min-height: 22px; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.bulk-report-section-head > span, .bulk-report-section-head p { color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-section-head p { margin-top: 3px; }
+.bulk-report-durations { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 12px; margin-top: 14px !important; }
+.bulk-report-durations dt { color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-durations dd { margin-top: 6px; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.bulk-report-durations .is-average dd { color: var(--ui-color-brand); }
+.bulk-report-note { margin-top: 12px !important; color: var(--ui-color-text-secondary); font-size: 11px; line-height: 1.7; }
+.bulk-report-at-causes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 10px 12px; margin-top: 12px !important; border-radius: var(--ui-radius-sm); background: var(--ui-color-surface-subtle); }
+.bulk-report-minor dt { color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-minor dd { margin-top: 4px; font-size: 17px; font-weight: 600; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.bulk-report-minor dd > span { margin-left: 4px; font-size: 11px; font-weight: 400; color: var(--ui-color-text-secondary); }
+.bulk-report-minor.is-success dd, .bulk-report-minor.is-danger dd { color: var(--ui-color-text); }
+.bulk-report-minor.is-success dd::before, .bulk-report-minor.is-danger dd::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; vertical-align: 3px; background: var(--ui-color-success); }
+.bulk-report-minor.is-danger dd::before { background: var(--ui-color-danger); }
+.bulk-report-at-results { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px !important; }
+.bulk-report-distributions { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--ui-color-border); }
+.bulk-report-offer-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px !important; }
+.bulk-report-offer-totals .bulk-report-metric dd { font-size: 24px; }
+.bulk-report-offer-list { display: grid; gap: 16px; margin-top: 20px; }
+.bulk-report-offer-line { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.bulk-report-offer-line strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.bulk-report-offer-line > span { flex: 0 0 auto; color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-offer-line b { color: var(--ui-color-text); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.bulk-report-rail { display: block; height: 6px; border-radius: 3px; background: var(--ui-color-surface-subtle); overflow: hidden; }
+.bulk-report-rail > span { display: block; height: 100%; border-radius: inherit; background: var(--ui-color-brand); }
+.bulk-report-rail.is-muted > span { background: var(--ui-color-border-strong); }
+.bulk-report-kind-list { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px !important; }
+.bulk-report-kind-list > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.bulk-report-kind-list dt { color: var(--ui-color-text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.bulk-report-kind-list dd { font-size: 12px; font-variant-numeric: tabular-nums; }
+.bulk-report-kind-list dd span { margin-left: 3px; color: var(--ui-color-text-secondary); font-size: 11px; }
+.bulk-report-plans { border-left: 1px solid var(--ui-color-border); padding-left: 28px; }
+.bulk-report-plan-list { display: grid; gap: 14px; margin-top: 18px !important; }
+.bulk-report-plan-list > div { display: grid; grid-template-columns: minmax(60px, 1fr) minmax(0, 2fr); gap: 12px; align-items: center; }
+.bulk-report-plan-list dt { font-weight: 500; overflow-wrap: anywhere; }
+.bulk-report-plan-list dd { display: grid; grid-template-columns: minmax(35px, auto) minmax(0, 1fr); align-items: center; gap: 12px; }
+.bulk-report-plan-list dd > span { text-align: right; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bulk-report-plan-list small { margin-left: 4px; color: var(--ui-color-text-secondary); font-size: 11px; font-weight: 400; }
+.bulk-report-plan-list .is-unknown { color: var(--ui-color-text-secondary); }
+.bulk-report-empty { padding: 12px 0; color: var(--ui-color-text-secondary); font-size: 12px; line-height: 1.6; }
+.bulk-report-placeholder p { margin-top: 10px; color: var(--ui-color-text-secondary); }
+.bulk-report-sync { margin-bottom: 16px !important; padding: 9px 12px; border-radius: var(--ui-radius-sm); color: var(--ui-color-text); background: var(--ui-color-warning-soft); font-size: 12px; }
+@media (max-width: 1100px) {
+  .bulk-report-execution { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .bulk-report-distributions { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .bulk-report-plans { border-left: 0; padding-left: 0; padding-top: 18px; border-top: 1px solid var(--ui-color-border); }
+}
+@media (max-width: 600px) {
+  .bulk-plan-report { padding: 16px; }
+  .bulk-report-header { flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .bulk-report-updated { font-size: 10px; }
+  .bulk-report-outcomes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+  .bulk-report-metric dd { font-size: 25px; }
+  .bulk-report-outcome-note { gap: 6px 12px; }
+  .bulk-report-execution, .bulk-report-distributions { margin-top: 16px; padding-top: 16px; }
+  .bulk-report-durations { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .bulk-report-durations dd { font-size: 15px; }
+  .bulk-report-at-results { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .bulk-report-offer-totals { gap: 10px; }
+  .bulk-report-offer-totals .bulk-report-metric dd { font-size: 21px; }
+  .bulk-report-offer-totals .bulk-report-metric small { font-size: 10px; }
+  .bulk-report-plan-list > div { grid-template-columns: minmax(70px, 1fr) minmax(0, 2fr); }
+}

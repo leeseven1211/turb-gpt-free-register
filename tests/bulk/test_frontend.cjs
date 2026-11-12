@@ -90,7 +90,7 @@ test('超过40轮的历史分页在轮询后继续下一页并保留深链所选
   const state={loading:false,epoch:1,nav:{batch_id:'71',round_id:'1'},rounds:[],roundsCursor:null,targets:{items:[]},detail:null};
   const sandbox={state,Map,Number,String,encodeURIComponent,URLSearchParams,
     busy:value=>{state.loading=value;},detailParams:()=>new URLSearchParams({view:'round',round_id:'1'}),
-    renderDetail:()=>{},loadTargets:async()=>{},clearError:()=>{},report:error=>{throw error;},
+    renderDetail:()=>{},loadTargets:async()=>{},loadPlanReport:async()=>{},clearError:()=>{},report:error=>{throw error;},
     request:async url=>{urls.push(url);if(url.includes('/rounds?'))return url.endsWith('cursor=page2')?{items:rounds(23,4),next_cursor:'page3'}:{items:rounds(3,1),next_cursor:null};return {rounds_head:rounds(43,24),selected_round:{id:'1',round_no:1},rounds_next_cursor:'page2',summary_revision:1};}};
   vm.createContext(sandbox);vm.runInContext(`${load}\n${action}`,sandbox);
   await sandbox.loadDetail();

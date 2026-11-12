@@ -393,6 +393,13 @@ def _plan_result_summary(result: dict) -> dict:
         "country_success_count", "country_total_count", "failed_countries", "auto_refresh_at",
     )
     summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
+    from core.bulk_operations.plan_report_evidence import plan_report_snapshot
+    summary["plan_report_evidence"] = plan_report_snapshot(result)
+    if result.get("ok") is not True:
+        from core.accounts.plans.errors import classify_plan_failure
+        issue = classify_plan_failure(result, local_check_observed=True).get("code")
+        if issue in {"token_missing", "token_local_expired", "token_http_401"}:
+            summary["plan_at_issue"] = issue
     summary.update(_checkout_summary(result))
     from core.accounts.plans.errors import country_failures_from_summary
     summary["country_failures"] = country_failures_from_summary(result)

@@ -249,6 +249,15 @@ def create_bulk_blueprint(_context):
         round_id = service._id(request.args.get("round_id"), "round_id") if view == "round" else None
         return _json(_batch(store.get_batch(batch_id), round_id=round_id))
 
+    @bp.get("/api/bulk/batches/<int:batch_id>/report")
+    @_endpoint
+    def get_plan_report(batch_id):
+        view = request.args.get("view", "current")
+        if view not in {"current", "round"}:
+            raise store.BulkError("parameter_invalid", "结果视图无效。", 422)
+        round_id = service._id(request.args.get("round_id"), "round_id") if view == "round" else None
+        return _json(store.get_plan_report(batch_id, round_id=round_id))
+
     @bp.get("/api/bulk/batches/<int:batch_id>/targets")
     @_endpoint
     def targets(batch_id):
