@@ -2511,11 +2511,11 @@ function restoreC2aReimportTrigger() {
   C2A_REIMPORT_DIALOG.trigger = null;
   C2A_REIMPORT_DIALOG.submitting = false;
   if (typeof trigger?.focus !== 'function') return;
-  // 对话框关闭会使折叠菜单收起；下一帧改将焦点交给仍可见的开关。
+  // 等原生对话框完成关闭，再将焦点恢复到可见的触发入口。
   trigger.focus({preventScroll: true});
   if (typeof requestAnimationFrame !== 'function') return;
   requestAnimationFrame(() => {
-    const moreActions = $('#accountsMoreActionsV2');
+    const moreActions = trigger.closest?.('#accountsMoreActionsV2');
     const fallback = moreActions?.open === false ? moreActions.querySelector('summary') : trigger;
     if (typeof fallback?.focus === 'function') fallback.focus({preventScroll: true});
   });

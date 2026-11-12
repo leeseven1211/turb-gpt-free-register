@@ -221,14 +221,14 @@ test('重新导入 C2A：页面引用带版本的最新脚本资源', () => {
   assert.match(template, /id="c2aReimportConfirmCountV2"/);
   assert.match(template, /id="btnCancelC2aReimportV2"/);
   assert.match(template, /id="btnConfirmC2aReimportV2"/);
-  assert.match(template, /同邮箱.*C2A.*AT/);
+  assert.match(template, /只把本地当前 AT 更新到同邮箱唯一匹配的既有 C2A 账号/);
   assert.match(template, /自动移除异常账号.*自动移除限流账号/);
   assert.match(template, /不会刷新本地 AT/);
   assert.match(template, /异常.*恢复正常/);
-  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261110-[^']*c2a[^']*'/);
+  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261112-c2a-bulk-button-01'/);
 });
 
-test('重新导入 C2A：取消后菜单收起，下一帧焦点回到可见的更多操作开关', async () => {
+test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', async () => {
   const view = setup();
   view.selectTwoPages();
 
@@ -241,7 +241,7 @@ test('重新导入 C2A：取消后菜单收起，下一帧焦点回到可见的�
   assert.equal(view.element('c2aReimportConfirmModal').open, false);
   assert.equal(view.calls.requests.length, 0);
   assert.deepEqual(view.calls.receipts, []);
-  assert.equal(view.calls.focuses.at(-1), 'accountsMoreActionsSummaryV2');
+  assert.equal(view.calls.focuses.at(-1), 'btnReimportSelectedC2aV2');
   assert.equal(view.element('accountsMoreActionsV2').open, false);
 });
 
@@ -254,5 +254,5 @@ test('重新导入 C2A：原生关闭事件同样恢复可见焦点且不发起�
   view.element('accountsMoreActionsV2').open = false;
   view.flushAnimationFrames();
   assert.equal(view.calls.requests.length, 0);
-  assert.equal(view.calls.focuses.at(-1), 'accountsMoreActionsSummaryV2');
+  assert.equal(view.calls.focuses.at(-1), 'btnReimportSelectedC2aV2');
 });

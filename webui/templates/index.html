@@ -525,6 +525,7 @@
       <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
+        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="批量同步选中账号的本地当前 AT，支持跨页选择；只更新唯一同邮箱的 C2A 既有账号">批量同步到 C2A</button>
         <button type="button" class="jobs-tb-btn" id="btnBulkFromAccountFilters" onclick="BulkTasks.fromAccounts(false)">按当前筛选创建批次</button>
         <button type="button" class="jobs-tb-btn" id="btnBulkFromSelectedAccounts" onclick="BulkTasks.fromAccounts(true)">用已选账号创建批次</button>
         <button type="button" class="jobs-tb-btn" id="btnAccountInspection" onclick="openAccountInspectionStart()">一键巡检</button>
@@ -541,7 +542,6 @@
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">操作</span>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="按已保存的刷新驱动获取最新 AT">刷新 AT</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="用本地当前 AT 原位更新唯一同邮箱的 C2A 账号；不会刷新本地 AT">同步到 C2A</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddTwofaSelectedAccountsV2" disabled title="只给选中账号补充 Authenticator 2FA">补 2FA</button>
@@ -643,7 +643,7 @@
       <div class="c2a-reimport-confirm-head">
         <div>
           <p class="c2a-reimport-confirm-kicker">本地 AT · 远端账号更新</p>
-          <h3 id="c2aReimportConfirmTitle">同步到 C2A</h3>
+          <h3 id="c2aReimportConfirmTitle">批量同步到 C2A</h3>
           <p id="c2aReimportConfirmDescription">只把本地当前 AT 更新到同邮箱唯一匹配的既有 C2A 账号。</p>
         </div>
         <button type="button" class="c2a-reimport-confirm-close" id="btnCloseC2aReimportV2" aria-label="关闭 C2A 同步确认窗口">×</button>
@@ -1246,7 +1246,7 @@
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-create-v5') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-codex-phone-option-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-c2a-bulk-button-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261112-task-error-classification-01') }}"></script>
