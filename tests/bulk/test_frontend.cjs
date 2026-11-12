@@ -267,15 +267,15 @@ test('执行摘要等待匹配和正在创建时清除旧数量并阻止重复�
 
 function createBatchContext() {
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
-  const helper=source.slice(source.indexOf('  async function prepareSelection('),source.indexOf('  function renderSelection('));
+  const helper=source.slice(source.indexOf('  function parameters('),source.indexOf('  function renderSelection('));
   const create=source.slice(source.indexOf('  async function createBatch('),source.indexOf('  function renderDetailShell('));
   const calls=[],errors=[],navigation=[];
   const state={epoch:1,nav:{view:'create'},selection:null,creating:false,draft:{name:'本批测试',operation_key:'plan_check',
     query:{filters:{promotion:['none']}},limit:'5',max_concurrency:'3',parameters:{countries:['JP'],auto_refresh_at_enabled:false}}};
   const ctx=context();
   Object.assign(ctx,{state,calls,errors,navigation,
-    $b:()=>({reportValidity:()=>true}),operation:()=>({key:'plan_check',version:1}),
-    parameters:()=>({...state.draft.parameters}),configRevision:()=> 'fixture-v1',
+    $b:()=>({reportValidity:()=>true}),operation:()=>({key:'plan_check',version:1,parameter_schema:{timezone_offset_min:{type:'integer'}}}),
+    configRevision:()=> 'fixture-v1',
     saveSelection:()=>{},saveDraft:()=>{},renderSelection:()=>{},clearError:()=>{},showToast:()=>{},notice:()=>{},
     report:error=>errors.push(error),navigate:(view,extra)=>{state.nav={view,...extra};navigation.push(state.nav);},
     intent:async(scope,path,body)=>{calls.push({method:'POST',scope,path,body:plain(body)});
@@ -293,11 +293,29 @@ test('直接创建会自动固定账号范围并等待就绪，无需先预览�
   assert.deepEqual(ctx.calls[0].body.source.query.filters.promotion,['none']);
   const body=ctx.calls[2].body;
   assert.equal(body.selection_id,'9007199254740993');assert.equal(body.selection_revision,2);
-  assert.deepEqual(body.parameters,{countries:['JP'],auto_refresh_at_enabled:false});
+  assert.deepEqual(body.parameters,{timezone_offset_min:new Date().getTimezoneOffset()});
   assert.equal(body.expected_config_revision,'fixture-v1');
   assert.deepEqual(body.execution,{max_concurrency:3,start_paused:false});
   assert.deepEqual(ctx.navigation,[{view:'detail',batch_id:'9007199254740997'}]);
   assert.equal(ctx.state.creating,false);
+});
+test('旧名单含隐藏操作参数时重新固定范围，纯时区名单仍可恢复',async()=>{
+  for(const overrides of [{request_parameters:{countries:['US']}},{request_parameters:{},parameters:{auto_refresh_at_enabled:false}}]){
+    const ctx=createBatchContext();
+    ctx.state.selection={id:'old-selection',state:'ready',target_count:5,selection_revision:1,...overrides};
+    await ctx.createBatch();
+    assert.equal(ctx.errors.length,0);
+    assert.equal(ctx.calls[0].path,'/selections');
+    assert.deepEqual(ctx.calls[0].body.parameters,{timezone_offset_min:new Date().getTimezoneOffset()});
+    assert.notEqual(ctx.calls.at(-1).body.selection_id,'old-selection');
+  }
+  const ctx=createBatchContext();
+  ctx.state.selection={id:'preserved-selection',state:'ready',target_count:5,selection_revision:1,
+    request_parameters:{timezone_offset_min:0}};
+  await ctx.createBatch();
+  assert.equal(ctx.calls.length,1);
+  assert.equal(ctx.calls[0].body.selection_id,'preserved-selection');
+  assert.deepEqual(ctx.calls[0].body.parameters,{timezone_offset_min:0});
 });
 test('创建并暂停使用同一创建链路并将暂停意图随批次原子提交',async()=>{
   const ctx=createBatchContext();await ctx.createBatch(true);

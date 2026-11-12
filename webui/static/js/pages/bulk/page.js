@@ -69,7 +69,7 @@ window.BulkTasks = (() => {
   async function recover() {
     const saved=pendingRequests()[0];if(!saved)return;const {path,body}=JSON.parse(saved.signature);
     const result=await intent(saved.id.slice('turb_bulk_intent:'.length),path,body);clearError();
-    if(path==='/selections'){restoreSelectionRequest(body,result);navigate('create');notice('已恢复原请求的功能、条件与参数，请核对数量与设置后创建。');}
+    if(path==='/selections'){restoreSelectionRequest(body,result);navigate('create');notice('已找回原账号范围，新批次使用配置页已保存的设置。');}
     else if(path==='/batches'){state.selection=null;saveSelection();navigate('detail',{batch_id:String(result.id||result.batch_id)});}
     else {const match=path.match(/^\/batches\/(\d+)\//);if(match)navigate('detail',{batch_id:match[1]});notice('原请求回执已找回。');}
   }
@@ -192,6 +192,9 @@ window.BulkTasks = (() => {
     if (state.nav.view === 'create') {
       state.draft ||= readSaved('turb_bulk_draft_v1', defaultDraft());
       state.selection ||= readSaved('turb_bulk_selection_v1', null);
+      state.draft.parameters={};
+      if(selectionHasOverrides(state.selection)){state.selection=null;saveSelection();}
+      saveDraft();
       $b('[data-bulk-title]').textContent='新建批次';
       $b('[data-bulk-content]').innerHTML='<div class="bulk-empty" role="status">正在读取操作和筛选配置…</div>';
       const epoch=state.epoch;
@@ -301,9 +304,8 @@ window.BulkTasks = (() => {
           <div class="bulk-operation-grid" role="radiogroup" aria-label="批量操作">${cards}</div>
         </section>
         <section class="bulk-card bulk-create-card">
-          <div class="bulk-step-head"><span class="bulk-step-no">2</span><div><h3>操作与批次设置</h3><p class="bulk-section-note">直接调整本批次使用的设置</p></div></div>
+          <div class="bulk-step-head"><span class="bulk-step-no">2</span><div><h3>批次设置</h3></div></div>
           <p class="bulk-error bulk-operation-warning" data-bulk-operation-warning hidden></p>
-          <div data-bulk-parameters></div>
           <div class="bulk-batch-fields">
             <label class="bulk-field bulk-name-field">批次名称<input name="name" maxlength="120" value="${attrEsc(draft.name||'')}" placeholder="留空自动命名"></label>
             <label class="bulk-field">本批并发上限<input name="max_concurrency" type="number" min="1" max="${Number(state.catalog?.limits?.concurrency_max||128)}" value="${attrEsc(draft.max_concurrency||3)}" required></label>
@@ -329,29 +331,23 @@ window.BulkTasks = (() => {
       </div></aside>
     </form>`;
     AccountFilters.mount($b('[data-bulk-filters]'),draft.query,filterSchema(),value=>{draft.query=value;state.matched=null;invalidateSelection();saveDraft();scheduleFacets();});
-    renderParameters();renderSideSummary();renderSelection();
+    renderOperationAvailability();renderSideSummary();renderSelection();
   }
-  function renderParameters() {
-    const op=operation();const schema=op?.parameter_schema?.properties||op?.parameter_schema||{};
-    const entries=Object.entries(schema).filter(([name,definition])=>definition&&typeof definition==='object'&&name!=='timezone_offset_min');
-    $b('[data-bulk-parameters]').innerHTML=entries.length?`<div class="bulk-filter-grid">${entries.map(([name,definition])=>{
-      const value=state.draft.parameters?.[name]??definition.default??'';const title=definition.label||({driver:'执行驱动'}[name])||name;
-      if(definition.enum)return `<label class="bulk-field">${text(title)}<select data-bulk-parameter="${attrEsc(name)}"><option value="">使用当前配置</option>${definition.enum.map(x=>`<option value="${attrEsc(x)}" ${String(x)===String(value)?'selected':''}>${text(definition.enum_labels?.[x]||x)}</option>`).join('')}</select></label>`;
-      if(definition.type==='boolean')return `<label class="bulk-field bulk-check"><input type="checkbox" data-bulk-parameter="${attrEsc(name)}" ${value===true?'checked':''}>${text(title)}</label>`;
-      const displayValue=Array.isArray(value)?value.join('、'):value;
-      return `<label class="bulk-field">${text(title)}<input data-bulk-parameter="${attrEsc(name)}" ${definition.type==='array'?'data-bulk-array':''} type="${definition.type==='integer'?'number':'text'}" value="${attrEsc(displayValue)}" ${definition.type==='array'?'placeholder="国家代码，如 JP、US；留空沿用账号国家"':''}></label>`;
-    }).join('')}</div>`:'<p class="bulk-section-note">此操作沿用当前已保存的执行配置。</p>';
+  function renderOperationAvailability() {
+    const op=operation();
     const warning=$b('[data-bulk-operation-warning]');
-    if(warning){const unavailable=op?.availability?.available===false&&!Object.keys(state.draft.parameters||{}).length;warning.hidden=!unavailable;warning.textContent=unavailable?`当前默认设置不可用：${op.availability.reason||op.availability.reason_code||'请检查配置'}。可调整本批设置后创建。`:'';}
-    renderSideSummary();
+    if(warning){const unavailable=op?.availability?.available===false;warning.hidden=!unavailable;warning.textContent=unavailable?`当前设置不可用：${op.availability.reason||op.availability.reason_code||'请检查配置'}。请到配置页调整。`:'';}
   }
   function invalidateSelection() {
     state.selection=null;saveSelection();state.epoch++;clearTimeout(state.timer);renderSelection();
   }
   function parameters() {
-    const result={...state.draft.parameters};
+    const result={};
     if(operation()?.parameter_schema?.timezone_offset_min || operation()?.parameter_schema?.properties?.timezone_offset_min)result.timezone_offset_min=new Date().getTimezoneOffset();
     return result;
+  }
+  function selectionHasOverrides(selection) {
+    return [selection?.request_parameters,selection?.parameters].some(values=>Object.keys(values||{}).some(name=>name!=='timezone_offset_min'||state.draft?.operation_key!=='plan_check'));
   }
   async function prepareSelection(epoch) {
     const query=AccountQuery.normalize({...state.draft.query,limit:state.draft.limit||null});
@@ -388,6 +384,7 @@ window.BulkTasks = (() => {
   }
   async function createBatch(startPaused=false) {
     const form=$b('[data-bulk-create-form]');if(state.creating||!form?.reportValidity())return;
+    if(selectionHasOverrides(state.selection)){state.selection=null;saveSelection();}
     clearError();state.creating=true;renderSelection();const epoch=state.epoch;
     try {
       if(!['ready','preparing'].includes(state.selection?.state||state.selection?.status)){
@@ -410,7 +407,7 @@ window.BulkTasks = (() => {
     } catch(e) {
       if(epoch!==state.epoch)return;
       report(e,'创建失败：');
-      if(['config_revision_changed','selection_settings_mismatch'].includes(e.code)){await ensureCatalog(true);invalidateSelection();renderParameters();notice('设置已变化，请查看更新后的设置后重新创建。');}
+      if(['config_revision_changed','selection_settings_mismatch'].includes(e.code)){await ensureCatalog(true);invalidateSelection();renderOperationAvailability();notice('配置已更新，请重新创建批次。');}
       else if(e.code==='selection_consumed'&&e.details.existing_batch_id)notice(`该范围已用于批次 #${e.details.existing_batch_id}`);
       else if(e.code==='selection_expired')invalidateSelection();
     } finally {state.creating=false;if(state.nav.view==='create')renderSelection();}
@@ -598,7 +595,7 @@ window.BulkTasks = (() => {
   function copyBatch(fixed) {
     const data=state.detail;if(!data)return;
     const query=data.selection_summary?.query||data.query_spec||data.selection?.query_spec||{};
-    state.draft={...defaultDraft(),operation_key:data.operation?.key||data.operation_key||data.action_key||'plan_check',query:AccountQuery.normalize(query),parameters:data.parameters||{},source:fixed?{kind:'batch_targets',batch_id:state.nav.batch_id,selection:{kind:'all'}}:null};state.selection=null;saveSelection();saveDraft();navigate('create');
+    state.draft={...defaultDraft(),operation_key:data.operation?.key||data.operation_key||data.action_key||'plan_check',query:AccountQuery.normalize(query),source:fixed?{kind:'batch_targets',batch_id:state.nav.batch_id,selection:{kind:'all'}}:null};state.selection=null;saveSelection();saveDraft();navigate('create');
   }
   async function action(name) {
     if(name==='recover')await recover();
@@ -644,15 +641,15 @@ window.BulkTasks = (() => {
   });
   document.getElementById('tab-bulk')?.addEventListener('input',event=>{
     if(!event.target.closest('[data-bulk-create-form]'))return;
-    const input=event.target;if(!input.name&&!input.dataset.bulkParameter)return;
-    if(input.dataset.bulkParameter){const name=input.dataset.bulkParameter;state.draft.parameters[name]=input.type==='checkbox'?input.checked:input.hasAttribute('data-bulk-array')?input.value.split(/[\s,，、]+/).filter(Boolean):input.type==='number'?Number(input.value):input.value;if(input.value===''&&!input.hasAttribute('data-bulk-array'))delete state.draft.parameters[name];invalidateSelection();}
-    else if(['name','max_concurrency','limit'].includes(input.name)){state.draft[input.name]=input.value;if(input.name==='limit')invalidateSelection();}
+    const input=event.target;
+    if(['name','max_concurrency','limit'].includes(input.name)){state.draft[input.name]=input.value;if(input.name==='limit')invalidateSelection();}
+    else return;
     renderSelection();
     saveDraft();
   });
   document.getElementById('tab-bulk')?.addEventListener('change',event=>{
     const input=event.target;
-    if(input.name==='operation_key'){state.draft.operation_key=input.value;state.draft.parameters={};invalidateSelection();saveDraft();renderParameters();renderSideSummary();}
+    if(input.name==='operation_key'){state.draft.operation_key=input.value;invalidateSelection();saveDraft();renderOperationAvailability();renderSideSummary();}
     if(input.matches('[data-bulk-retry-states]'))updateRetryButton();
     if(input.matches('[data-bulk-view]'))updateNavigation({round_id:input.value==='current'?'':input.value,cursor:''});
     if(input.dataset.bulkTarget){if(input.checked)state.selected.add(input.dataset.bulkTarget);else state.selected.delete(input.dataset.bulkTarget);updateSelected();}

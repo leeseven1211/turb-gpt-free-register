@@ -468,11 +468,8 @@
   .bulk-side-big { font-size: 28px; }
 }
 
-/* 操作参数与批次设置常驻展开，数量统一放在执行摘要。 */
-.bulk-batch-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--ui-color-border); }
-.bulk-create-card [data-bulk-parameters]:not(:empty) { margin-top: 0; }
-.bulk-create-card .bulk-filter-grid { align-items: end; }
-.bulk-create-card .bulk-check { min-height: 38px; align-self: end; }
+/* 批次设置直接展示，数量统一放在执行摘要。 */
+.bulk-batch-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
 .bulk-badge.is-paused { color: var(--ui-color-warning, #8b570b); background: var(--ui-color-warning-soft); }
 .bulk-detail-toolbar > .bulk-actions { flex-wrap: wrap; }
 .bulk-control-strip .bulk-actions { flex-wrap: wrap; }
@@ -487,6 +484,5 @@
 }
 @media (max-width: 600px) {
   .bulk-batch-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .bulk-create-card .bulk-filter-grid { grid-template-columns: minmax(0, 1fr); }
   .bulk-control-strip .bulk-actions .jobs-tb-btn { flex-basis: calc(50% - 8px); }
 }
