@@ -274,7 +274,7 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
                     WHERE active.execution_key=request.execution_key AND active.released_at IS NULL)
                 ORDER BY created_at,execution_key""")
             ready = [row for row in cur.fetchall() if not _capacity_reasons(row["scopes"], counts)
-                     and (row["execution_key"] == execution_key or not set(row["blocked_by"]) & {"account_busy", "not_claimable"})]
+                     and (row["execution_key"] == execution_key or not set(row["blocked_by"]) & {"account_busy", "not_claimable", "batch_paused"})]
             types = sorted({row["task_type"] for row in ready})
             last_type = str(cursor["task_type"] or "")
             next_type = next((item for item in types if item > last_type), types[0] if types else task_type)

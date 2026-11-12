@@ -166,6 +166,7 @@ def _batch(data, *, round_id=None):
         data["selection_summary"] = summary
     data["business_summary"] = data.get("metrics") or {}
     data["control"] = {"state": data.get("control_state", data.get("state")), "revision": data.get("control_revision", 1),
+                       "paused": bool(data.get("is_paused")),
                        "pending": data.get("control_state", data.get("state")) in {"cancel_requested", "stop_requested"}}
     data["view"] = {"kind": "round" if round_id else "current", "round_id": round_id}
     data["effective_settings"] = {**(data.get("config_snapshot") or {}), "config_revision": data.get("config_revision")}

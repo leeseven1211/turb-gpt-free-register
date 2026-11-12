@@ -193,16 +193,42 @@ test('切回缓存筛选时恢复对应匹配数，等待读取时清除旧数�
   assert.equal(calls,2);assert.deepEqual(seen,[null,42,null,3,42]);
 });
 
-test('固定账号名单不展示无关查询的匹配数与大批次提示',()=>{
+function selectionSummaryContext() {
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
-  const helper=source.slice(source.indexOf('  function renderMatch('),source.indexOf('  function renderFilterChips('));
-  const nodes={'[data-bulk-match]':{hidden:true,classList:{toggle:()=>{}}},'[data-bulk-match-count]':{textContent:''},'[data-bulk-side-warning]':{hidden:true,textContent:''}};
-  const ctx={state:{draft:{source:null},matched:500},$b:selector=>nodes[selector]};vm.createContext(ctx);vm.runInContext(helper,ctx);
-  ctx.renderMatch();assert.equal(nodes['[data-bulk-match]'].hidden,false);assert.equal(nodes['[data-bulk-side-warning]'].hidden,false);
-  for(const source of [{kind:'ids',ids:['1','2']},{kind:'batch_targets',batch_id:'71'}]){
-    ctx.state.draft.source=source;ctx.renderMatch();
-    assert.equal(nodes['[data-bulk-match]'].hidden,true);assert.equal(nodes['[data-bulk-side-warning]'].hidden,true);
-  }
+  const helper=source.slice(source.indexOf('  function renderSelection('),source.indexOf('  async function createBatch('));
+  const nodes=Object.fromEntries(['[data-bulk-submit]','[data-bulk-action="create-paused"]',
+    '[data-bulk-create-summary]','[data-bulk-create-hint]','[data-bulk-side-count]','[data-bulk-side-warning]']
+    .map(selector=>[selector,{textContent:'',hidden:false,disabled:false}]));
+  nodes['[data-bulk-create-form]']={querySelectorAll:()=>[]};
+  const ctx={state:{draft:{source:null,limit:''},selection:null,matched:500},nodes,
+    $b:selector=>nodes[selector],renderSideSummary:()=>{}};
+  vm.createContext(ctx);vm.runInContext(helper,ctx);return ctx;
+}
+test('执行摘要按数量上限展示本批数量，零匹配时禁用两种创建入口',()=>{
+  const ctx=selectionSummaryContext();
+  ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'500 个');
+  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,false);
+  ctx.state.draft.limit='50';ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'50 个');
+  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,true);
+  assert.equal(ctx.nodes['[data-bulk-submit]'].disabled,false);
+  ctx.state.matched=0;ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'0 个');
+  assert.equal(ctx.nodes['[data-bulk-submit]'].disabled,true);
+  assert.equal(ctx.nodes['[data-bulk-action="create-paused"]'].disabled,true);
+});
+test('固定账号名单的执行摘要不受无关筛选匹配数和数量上限影响',()=>{
+  const ctx=selectionSummaryContext();
+  ctx.state.draft={source:{kind:'ids',ids:['1','2']},limit:'1'};
+  ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'2 个');
+  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,true);
+  ctx.state.draft.source={kind:'batch_targets',batch_id:'71'};ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'创建时确认');
+  assert.equal(ctx.nodes['[data-bulk-create-hint]'].textContent,'创建时沿用原批次固定名单');
+  ctx.state.selection={state:'ready',target_count:17};ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'17 个');
 });
 
 function queryFilterContext() {
@@ -211,7 +237,7 @@ function queryFilterContext() {
   vm.runInContext(fs.readFileSync(path.join(root,'webui/static/js/shared/account-filters.js'),'utf8'),ctx);
   return ctx;
 }
-test('折叠筛选摘要保留日期、多选、归档及精确文本，不从展示标签重建查询',()=>{
+test('筛选摘要保留日期、多选、归档及精确文本，不从展示标签重建查询',()=>{
   const ctx=queryFilterContext();
   const query=ctx.AccountQuery.normalize({date_from:'2026-10-01',date_to:'2026-10-31',archived:'all',q:'备注:"a/b"',
     plan:['free','plus'],filters:{email:'some+name@example.invalid',promotion:['none','free_trial'],token:['expired'],id:'9007199254740993'}});
@@ -224,22 +250,110 @@ test('折叠筛选摘要保留日期、多选、归档及精确文本，不从�
   assert.ok(chips.some(([key])=>key==='archived'));
   assert.equal(JSON.stringify(query),before);
 });
-test('创建页折叠条件显示完整查询，固定名单时隐藏无关筛选摘要',()=>{
+test('执行摘要等待匹配和正在创建时清除旧数量并阻止重复提交',()=>{
+  const ctx=selectionSummaryContext();
+  ctx.state.matched=null;ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'匹配中');
+  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,true);
+  ctx.state.matched=42;ctx.state.creating=true;ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-submit]'].disabled,true);
+  assert.equal(ctx.nodes['[data-bulk-action="create-paused"]'].disabled,true);
+  assert.equal(ctx.nodes['[data-bulk-create-summary]'].textContent,'正在固定账号范围…');
+  ctx.state.creating=false;ctx.renderSelection();
+  assert.equal(ctx.nodes['[data-bulk-submit]'].disabled,false);
+  assert.equal(ctx.nodes['[data-bulk-action="create-paused"]'].disabled,false);
+});
+
+function createBatchContext() {
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
-  const helper=source.slice(source.indexOf('  function renderFilterChips('),source.indexOf('  function renderSideSummary('));
-  const ctx=queryFilterContext();const host={hidden:false,innerHTML:''};const box={hidden:true};
-  const query=ctx.AccountQuery.normalize({date_from:'2026-10-01',date_to:'2026-10-31',archived:'only',q:'备注:"a/b"',
-    plan:['free','plus'],filters:{id:'71',email:'example.invalid',promotion:['none'],token:['expired']}});
-  const before=JSON.stringify(query);
-  Object.assign(ctx,{state:{draft:{query,source:null}},$b:selector=>selector==='[data-bulk-filter-chips]'?host:box,
-    filterSchema:()=>({fields:[]}),text:String});
-  vm.runInContext(helper,ctx);ctx.renderFilterChips();
-  for(const title of ['2026-10-01','2026-10-31','仅归档账号','备注:"a/b"','free、plus','71','example.invalid','无优惠','已过期','编辑条件'])assert.ok(host.innerHTML.includes(title),title);
-  assert.equal(host.innerHTML.includes('未加条件'),false);assert.equal(JSON.stringify(query),before);
-  ctx.state.draft.source={kind:'ids',ids:['1','2']};ctx.renderFilterChips();
-  assert.equal(host.hidden,true);assert.equal(host.innerHTML,'');
-  ctx.state.draft={query:ctx.AccountQuery.normalize(),source:null};ctx.renderFilterChips();
-  assert.equal(host.hidden,false);assert.ok(host.innerHTML.includes('全部未归档账号'));
+  const helper=source.slice(source.indexOf('  async function prepareSelection('),source.indexOf('  function renderSelection('));
+  const create=source.slice(source.indexOf('  async function createBatch('),source.indexOf('  function renderDetailShell('));
+  const calls=[],errors=[],navigation=[];
+  const state={epoch:1,nav:{view:'create'},selection:null,creating:false,draft:{name:'本批测试',operation_key:'plan_check',
+    query:{filters:{promotion:['none']}},limit:'5',max_concurrency:'3',parameters:{countries:['JP'],auto_refresh_at_enabled:false}}};
+  const ctx=context();
+  Object.assign(ctx,{state,calls,errors,navigation,
+    $b:()=>({reportValidity:()=>true}),operation:()=>({key:'plan_check',version:1}),
+    parameters:()=>({...state.draft.parameters}),configRevision:()=> 'fixture-v1',
+    saveSelection:()=>{},saveDraft:()=>{},renderSelection:()=>{},clearError:()=>{},showToast:()=>{},notice:()=>{},
+    report:error=>errors.push(error),navigate:(view,extra)=>{state.nav={view,...extra};navigation.push(state.nav);},
+    intent:async(scope,path,body)=>{calls.push({method:'POST',scope,path,body:plain(body)});
+      return path==='/selections'?{id:'9007199254740993',state:'preparing'}:{id:'9007199254740997'};},
+    request:async path=>{calls.push({method:'GET',path});return {id:'9007199254740993',state:'ready',target_count:5,selection_revision:2};}});
+  vm.runInContext(helper+'\n'+create,ctx);return ctx;
+}
+test('直接创建会自动固定账号范围并等待就绪，无需先预览账号',async()=>{
+  const ctx=createBatchContext();
+  await ctx.createBatch();
+  assert.equal(ctx.errors.length,0);
+  assert.deepEqual(ctx.calls.map(call=>[call.method,call.path]),[
+    ['POST','/selections'],['GET','/selections/9007199254740993?page_size=1'],['POST','/batches']]);
+  assert.equal(ctx.calls[0].body.source.query.limit,5);
+  assert.deepEqual(ctx.calls[0].body.source.query.filters.promotion,['none']);
+  const body=ctx.calls[2].body;
+  assert.equal(body.selection_id,'9007199254740993');assert.equal(body.selection_revision,2);
+  assert.deepEqual(body.parameters,{countries:['JP'],auto_refresh_at_enabled:false});
+  assert.equal(body.expected_config_revision,'fixture-v1');
+  assert.deepEqual(body.execution,{max_concurrency:3,start_paused:false});
+  assert.deepEqual(ctx.navigation,[{view:'detail',batch_id:'9007199254740997'}]);
+  assert.equal(ctx.state.creating,false);
+});
+test('创建并暂停使用同一创建链路并将暂停意图随批次原子提交',async()=>{
+  const ctx=createBatchContext();await ctx.createBatch(true);
+  assert.equal(ctx.errors.length,0);
+  assert.deepEqual(ctx.calls.at(-1).body.execution,{max_concurrency:3,start_paused:true});
+  assert.equal(ctx.state.selection,null);
+});
+test('固定范围为空时不创建批次并报告分类错误',async()=>{
+  const ctx=createBatchContext();
+  ctx.request=async path=>{ctx.calls.push({method:'GET',path});return {id:'71',state:'ready',target_count:0,selection_revision:1};};
+  await ctx.createBatch();
+  assert.equal(ctx.calls.some(call=>call.path==='/batches'),false);
+  assert.equal(ctx.errors[0].code,'selection_empty');assert.equal(ctx.navigation.length,0);
+  assert.equal(ctx.state.creating,false);
+});
+test('账号范围准备期间重复点击不会创建第二份范围或批次',async()=>{
+  const ctx=createBatchContext();let finishSelection;
+  const original=ctx.intent;
+  ctx.intent=(scope,path,body)=>path==='/selections'?new Promise(resolve=>{finishSelection=()=>resolve({id:'71',state:'ready',target_count:5,selection_revision:1});ctx.calls.push({method:'POST',path,body:plain(body)});}):original(scope,path,body);
+  const first=ctx.createBatch();await ctx.createBatch(true);finishSelection();await first;
+  assert.equal(ctx.errors.length,0);
+  assert.equal(ctx.calls.filter(call=>call.path==='/selections').length,1);
+  assert.equal(ctx.calls.filter(call=>call.path==='/batches').length,1);
+  assert.equal(ctx.calls.at(-1).body.execution.start_paused,false);
+});
+test('创建响应晚于页面切换时保留新草稿和范围，不导航回旧批次',async()=>{
+  const ctx=createBatchContext();let finishBatch;
+  ctx.state.selection={id:'old-selection',state:'ready',target_count:5,selection_revision:1,config_revision:'fixture-v1'};
+  const notices=[];ctx.showToast=message=>notices.push(message);
+  ctx.intent=(scope,path,body)=>new Promise(resolve=>{ctx.calls.push({scope,path,body:plain(body)});finishBatch=resolve;});
+  const pending=ctx.createBatch();
+  const newDraft={name:'刚建立的新草稿',operation_key:'token_refresh',query:{},parameters:{refresh_driver:'roxy'},max_concurrency:2};
+  const newSelection={id:'new-selection',state:'ready',target_count:2};
+  ctx.state.epoch++;
+  ctx.state.draft=newDraft;ctx.state.selection=newSelection;ctx.state.nav={view:'create'};
+  finishBatch({id:'old-batch'});await pending;
+  assert.equal(ctx.errors.length,0);
+  assert.equal(ctx.state.draft,newDraft);assert.equal(ctx.state.selection,newSelection);
+  assert.deepEqual(ctx.state.nav,{view:'create'});assert.equal(ctx.navigation.length,0);
+  assert.equal(ctx.state.creating,false);
+  assert.equal(notices.length,1);assert.ok(notices[0].includes('old-batch'));
+});
+test('查看历史轮次时暂停和继续仍控制整个批次，取消保留当前轮范围',async()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  async function control('),source.indexOf('  function fromAccounts('));
+  const calls=[];let confirms=0;
+  const ctx={state:{nav:{batch_id:'71',round_id:'19'},detail:{control:{revision:7},summary:{queued:3}}},
+    $b:()=>({disabled:false}),clearError:()=>{},notice:()=>{},schedule:()=>{},report:error=>{throw error;},
+    confirmAction:async()=>{confirms++;return true;},intent:async(scope,path,body)=>calls.push({scope,path,body:plain(body)}),
+    loadDetail:async()=>{ctx.state.detail.control.revision++;}};
+  vm.createContext(ctx);vm.runInContext(helper,ctx);
+  await ctx.control('pause');await ctx.control('resume');
+  assert.equal(confirms,0);
+  assert.deepEqual(calls.map(call=>call.body.scope),[{kind:'batch'},{kind:'batch'}]);
+  assert.deepEqual(calls.map(call=>call.body.expected_control_revision),[7,8]);
+  await ctx.control('cancel_not_started');
+  assert.equal(confirms,1);assert.deepEqual(calls[2].body.scope,{kind:'round',round_id:'19'});
 });
 test('动态选项保留正在操作的节点，收起后补入新来源并保留旧选择',()=>{
   const ctx=queryFilterContext();ctx.attrEsc=value=>String(value);ctx.esc=value=>String(value);

@@ -467,3 +467,26 @@
   .bulk-side-sticky { gap: 10px; padding: 14px 16px; }
   .bulk-side-big { font-size: 28px; }
 }
+
+/* 操作参数与批次设置常驻展开，数量统一放在执行摘要。 */
+.bulk-batch-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--ui-color-border); }
+.bulk-create-card [data-bulk-parameters]:not(:empty) { margin-top: 0; }
+.bulk-create-card .bulk-filter-grid { align-items: end; }
+.bulk-create-card .bulk-check { min-height: 38px; align-self: end; }
+.bulk-badge.is-paused { color: var(--ui-color-warning, #8b570b); background: var(--ui-color-warning-soft); }
+.bulk-detail-toolbar > .bulk-actions { flex-wrap: wrap; }
+.bulk-control-strip .bulk-actions { flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .bulk-create-form { padding-bottom: 0; }
+  .bulk-create-side { position: static; margin-top: 12px; }
+  .bulk-side-sticky { max-height: none; overflow: visible; }
+  .bulk-side-meta { display: grid; }
+  .bulk-side-hint { display: block; }
+  .bulk-side-back { display: block; }
+  .bulk-side-foot { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .bulk-batch-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .bulk-create-card .bulk-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .bulk-control-strip .bulk-actions .jobs-tb-btn { flex-basis: calc(50% - 8px); }
+}

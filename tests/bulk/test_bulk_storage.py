@@ -49,7 +49,7 @@ class BulkStorageTests(PostgresTestCase):
         selection = self.selection(self.accounts(count))
         return self.consume(selection)
 
-    def consume(self, selection, key=None):
+    def consume(self, selection, key=None, **execution):
         return bulk.create_batch(
             request_key=key or uuid.uuid4().hex,
             selection_id=selection["id"],
@@ -58,6 +58,7 @@ class BulkStorageTests(PostgresTestCase):
             parameters={},
             config_revision="test-v1",
             max_concurrency=16,
+            **execution,
         )
 
     def submitter(self, conn, targets, context):
@@ -93,6 +94,96 @@ class BulkStorageTests(PostgresTestCase):
                     }
                 )
         return output
+
+    def test_start_paused_survives_restart_and_resumes_same_targets(self):
+        selection = self.selection(self.accounts(3))
+        batch = self.consume(selection, key="create-paused", start_paused=True)
+        replay = self.consume(selection, key="create-paused", start_paused=True)
+        self.assertEqual(batch["id"], replay["id"])
+        self.assertTrue(batch["is_paused"])
+        bulk.reset_ready()
+        bulk.init()
+        self.assertTrue(bulk.get_batch(batch["id"])["is_paused"])
+        self.assertEqual([], bulk.list_active_batches())
+        self.assertEqual(0, bulk.process_batch(batch["id"], self.submitter)["submitted"])
+        self.assertEqual(1, bulk.list_batches(control_state="paused")["summary"]["paused_batches"])
+        self.assertEqual([], bulk.list_batches(control_state="active")["items"])
+        command = bulk.request_control(batch["id"], request_key="resume-created", action="resume", expected_control_revision=1)
+        self.assertEqual("completed", command["state"])
+        self.assertEqual(3, bulk.process_batch(batch["id"], self.submitter)["submitted"])
+        self.assertEqual(0, bulk.process_batch(batch["id"], self.submitter)["submitted"])
+        self.assertFalse(bulk.get_batch(batch["id"])["is_paused"])
+        self.assertEqual(3, bulk.get_batch(batch["id"])["target_count"])
+
+    def test_pause_fences_prepared_targets_and_keeps_retry_paused(self):
+        batch = self.batch(2)
+        bulk.materialize_targets(batch["id"])
+        prepared = bulk.prepare_targets(batch["id"])
+        command = bulk.request_control(batch["id"], request_key="pause-prepared", action="pause", expected_control_revision=1)
+        replay = bulk.request_control(batch["id"], request_key="pause-prepared", action="pause", expected_control_revision=1)
+        self.assertEqual(command["id"], replay["id"])
+        self.assertEqual([], bulk.submit_targets([item["id"] for item in prepared], self.submitter))
+        self.assertEqual([], bulk.prepare_targets(batch["id"]))
+        retry = bulk.create_round(batch["id"], request_key="retry-paused", source={"view": "current"}, selection={"kind": "all"})
+        bulk.freeze_round(retry["id"])
+        self.assertTrue(bulk.get_batch(batch["id"])["is_paused"])
+        self.assertEqual(0, bulk.process_batch(batch["id"], self.submitter)["submitted"])
+        with self.assertRaises(common.BulkError) as stale:
+            bulk.request_control(batch["id"], request_key="resume-stale", action="resume", expected_control_revision=1)
+        self.assertEqual("control_revision_changed", stale.exception.code)
+        with self.assertRaises(common.BulkError) as scoped:
+            bulk.request_control(batch["id"], request_key="pause-one-round", action="pause", expected_control_revision=3, round_id=retry["id"])
+        self.assertEqual("invalid_control_scope", scoped.exception.code)
+
+    def test_paused_queued_run_waits_while_started_chain_can_finish(self):
+        from core.bulk_operations.adapters import submit_chunk
+        from core.storage.operations.permits import ClaimUnavailable
+
+        batch = self.batch(2)
+        bulk.process_batch(batch["id"], submit_chunk)
+        targets = bulk.list_targets(batch["id"])["items"]
+        first_run, queued_run = [item["run_id"] for item in targets]
+        self.assertEqual("running", store.claim_run(first_run, execution_id="started-before-pause", worker_pid=1)["status"])
+        bulk.request_control(batch["id"], request_key="pause-queued", action="pause", expected_control_revision=1)
+        with self.assertRaises(ClaimUnavailable) as waiting:
+            store.claim_run(queued_run, execution_id="must-wait", worker_pid=1)
+        self.assertEqual("batch_paused", waiting.exception.code)
+        self.assertEqual("queued", store.get_run(queued_run)["status"])
+        with common.connect() as conn:
+            self.assertIsNotNone(bulk.ensure_managed_claim(conn, first_run))
+        store.finish_run(first_run, status="failed", error="隔离测试结束")
+        bulk.project_pending()
+        detail = bulk.get_batch(batch["id"])
+        self.assertTrue(detail["is_paused"])
+        self.assertEqual(0, detail["counts"]["cancelled"])
+        self.assertEqual(1, detail["counts"]["failed"])
+        bulk.request_control(batch["id"], request_key="resume-queued", action="resume", expected_control_revision=2)
+        self.assertEqual("running", store.claim_run(queued_run, execution_id="resumed-original-run", worker_pid=1)["status"])
+        bulk.request_control(batch["id"], request_key="pause-last-running", action="pause", expected_control_revision=3)
+        store.finish_run(queued_run, status="failed", error="隔离测试结束")
+        bulk.project_pending()
+        ended = bulk.get_batch(batch["id"])
+        self.assertEqual("ended", ended["control_state"])
+        self.assertFalse(ended["is_paused"])
+
+    def test_paused_batch_can_still_cancel_and_upgrade_old_schema(self):
+        batch = self.batch(1)
+        with common.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"ALTER TABLE {common.table('operation_batch_controls')} DROP COLUMN is_paused")
+            cur.execute(f"ALTER TABLE {common.table('operation_batch_control_commands')} DROP CONSTRAINT ck_bulk_control_command_action_v2")
+            cur.execute(f"ALTER TABLE {common.table('operation_batch_control_commands')} ADD CONSTRAINT operation_batch_control_commands_action_check CHECK (action IN ('cancel_not_started','request_stop'))")
+        bulk.reset_ready()
+        bulk.init()
+        self.assertFalse(bulk.get_batch(batch["id"])["is_paused"])
+        bulk.request_control(batch["id"], request_key="pause-after-upgrade", action="pause", expected_control_revision=1)
+        command = bulk.request_control(batch["id"], request_key="cancel-paused", action="cancel_not_started", expected_control_revision=2)
+        bulk.settle_control(command["id"])
+        detail = bulk.get_batch(batch["id"])
+        self.assertFalse(detail["is_paused"])
+        self.assertEqual(1, detail["counts"]["cancelled"])
+        with self.assertRaises(common.BulkError) as ended:
+            bulk.request_control(batch["id"], request_key="resume-ended", action="resume", expected_control_revision=3)
+        self.assertEqual("batch_not_active", ended.exception.code)
 
     def test_snapshot_idempotency_and_missing_identity(self):
         ids = self.accounts(2)

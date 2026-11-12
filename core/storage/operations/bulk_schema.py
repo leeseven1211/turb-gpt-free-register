@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS operation_batch_controls (
   config_revision TEXT NOT NULL,
   request_key TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('active','cancel_requested','stop_requested','ended')),
+  is_paused BOOLEAN NOT NULL DEFAULT FALSE,
   control_revision BIGINT NOT NULL DEFAULT 1,
   summary_revision BIGINT NOT NULL DEFAULT 0,
   next_round_no BIGINT NOT NULL DEFAULT 2,
@@ -169,7 +170,7 @@ CREATE TABLE IF NOT EXISTS operation_batch_control_commands (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   batch_id BIGINT NOT NULL REFERENCES operation_batch_controls(batch_id) ON DELETE RESTRICT,
   request_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-  action TEXT NOT NULL CHECK (action IN ('cancel_not_started','request_stop')),
+  action TEXT NOT NULL CHECK (action IN ('cancel_not_started','request_stop','pause','resume')),
   scope_kind TEXT NOT NULL CHECK (scope_kind IN ('batch','round')),
   scope_round_id BIGINT REFERENCES operation_batch_rounds(id) ON DELETE RESTRICT,
   through_round_no BIGINT NOT NULL,
@@ -237,6 +238,17 @@ def init() -> None:
             cur.execute(
                 f"ALTER TABLE {store._table('operation_batch_controls')} ADD COLUMN IF NOT EXISTS last_expand_at TIMESTAMPTZ NOT NULL DEFAULT now()"
             )
+            cur.execute(
+                f"ALTER TABLE {store._table('operation_batch_controls')} ADD COLUMN IF NOT EXISTS is_paused BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            command_table = store._table("operation_batch_control_commands")
+            cur.execute(
+                "SELECT 1 FROM pg_constraint WHERE conname=%s AND conrelid=%s::regclass",
+                ("ck_bulk_control_command_action_v2", command_table),
+            )
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE {command_table} DROP CONSTRAINT IF EXISTS operation_batch_control_commands_action_check")
+                cur.execute(f"ALTER TABLE {command_table} ADD CONSTRAINT ck_bulk_control_command_action_v2 CHECK (action IN ('cancel_not_started','request_stop','pause','resume'))")
             cur.execute(
                 f"ALTER TABLE {store._table('operation_batch_target_rounds')} ADD COLUMN IF NOT EXISTS prepare_attempts INTEGER NOT NULL DEFAULT 0"
             )

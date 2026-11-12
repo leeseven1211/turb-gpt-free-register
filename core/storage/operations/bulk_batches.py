@@ -33,11 +33,14 @@ def create_batch(
     config_revision: str,
     name: str = "",
     max_concurrency: int = 1,
+    start_paused: bool = False,
 ) -> dict:
     bulk_schema.init()
     validate_key(request_key)
     if not 1 <= int(max_concurrency) <= 128:
         raise BulkError("invalid_concurrency", "批次并发必须在1到128之间", 422)
+    if not isinstance(start_paused, bool):
+        raise BulkError("parameter_invalid", "创建后暂停必须为布尔值", 422)
     payload = dict(
         selection_id=int(selection_id),
         selection_revision=selection_revision,
@@ -47,6 +50,9 @@ def create_batch(
         name=name,
         max_concurrency=int(max_concurrency),
     )
+    # 默认执行沿用原请求摘要，升级前已经受理的请求仍能找回。
+    if start_paused:
+        payload["start_paused"] = True
     hashed = digest(payload)
     with connect() as conn, conn.cursor() as cur:
         request_guard(cur, "batch", request_key)
@@ -104,8 +110,8 @@ def create_batch(
         cur.execute(
             f"""INSERT INTO {table("operation_batch_controls")}
           (batch_id,manager_version,selection_id,action_key,action_version,result_version,parameters,
-           config_snapshot,config_revision,request_key,request_hash,state,desired_workers,counts)
-          VALUES (%s,1,%s,%s,%s,1,%s::jsonb,%s::jsonb,%s,%s,%s,'active',%s,%s::jsonb)""",
+           config_snapshot,config_revision,request_key,request_hash,state,desired_workers,counts,is_paused)
+          VALUES (%s,1,%s,%s,%s,1,%s::jsonb,%s::jsonb,%s,%s,%s,'active',%s,%s::jsonb,%s)""",
             (
                 batch_id,
                 selection_id,
@@ -118,6 +124,7 @@ def create_batch(
                 hashed,
                 max_concurrency,
                 dumps(counts(total=total)),
+                start_paused,
             ),
         )
         cur.execute(
@@ -206,8 +213,17 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
         params.append([operation_key] if isinstance(operation_key, str) else list(operation_key))
     if filters.get("control_state"):
         values = filters["control_state"]
-        clauses.append("c.state=ANY(%s)")
-        params.append([values] if isinstance(values, str) else values)
+        values = [values] if isinstance(values, str) else values
+        state_clauses = []
+        for value in values:
+            if value == "paused":
+                state_clauses.append("(c.state='active' AND c.is_paused)")
+            elif value == "active":
+                state_clauses.append("(c.state='active' AND NOT c.is_paused)")
+            else:
+                state_clauses.append("c.state=%s")
+                params.append(value)
+        clauses.append("(" + " OR ".join(state_clauses) + ")")
     for key, op in (("created_from", ">="), ("created_to", "<=")):
         if filters.get(key):
             clauses.append(f"c.created_at {op} %s")
@@ -233,7 +249,8 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
         try:
             cur.execute(
                 f"""SELECT count(*) AS total_batches,
-              count(*) FILTER (WHERE c.state IN ('active','settling','cancel_requested','stop_requested')) AS active_batches,
+              count(*) FILTER (WHERE c.state IN ('active','settling','cancel_requested','stop_requested') AND NOT c.is_paused) AS active_batches,
+              count(*) FILTER (WHERE c.state='active' AND c.is_paused) AS paused_batches,
               count(*) FILTER (WHERE c.state='ended') AS ended_batches,
               coalesce(sum(coalesce(nullif(c.counts->>'failed','')::bigint,0)),0) AS failed_targets,
               coalesce(sum(coalesce(nullif(c.counts->>'attention_required','')::bigint,0)),0) AS attention_targets
@@ -243,7 +260,7 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             )
             row = cur.fetchone() or {}
             summary = {key: int(row.get(key) or 0) for key in (
-                "total_batches", "active_batches", "ended_batches", "failed_targets", "attention_targets")}
+                "total_batches", "active_batches", "paused_batches", "ended_batches", "failed_targets", "attention_targets")}
         except Exception:
             summary = {}
         return {
@@ -261,6 +278,7 @@ def list_active_batches(*, limit: int = 20) -> list[dict]:
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""SELECT c.* FROM {table("operation_batch_controls")} c WHERE c.purge_started_at IS NULL
+          AND NOT c.is_paused
           AND EXISTS(SELECT 1 FROM {table("operation_batch_rounds")} r WHERE r.batch_id=c.batch_id AND r.state IN ('active','settling'))
           ORDER BY c.last_expand_at,c.batch_id LIMIT %s""",
             (max(1, min(512, limit)),),

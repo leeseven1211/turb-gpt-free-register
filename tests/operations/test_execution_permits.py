@@ -164,6 +164,23 @@ class ExecutionPermitTests(PostgresTestCase):
         self.assertIn("fairness_turn", self.admit("batch-zero", "token_refresh", batch_key="b0", batch_limit=3).blocked_by)
         self.assertTrue(self.admit("batch-one", "token_refresh", batch_key="b1", batch_limit=3))
 
+    def test_paused_batch_does_not_block_other_type_or_batch(self):
+        self.policy(GLOBAL_TASK_WORKERS=4)
+
+        def paused(conn, execution_id):
+            raise permits.ClaimUnavailable("batch_paused")
+
+        waiting = self.admit("paused", "live_check", batch_key="a", batch_limit=2, claim=paused)
+        self.assertEqual(("batch_paused",), waiting.blocked_by)
+        self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
+        other_type = self.admit("other-type", "plan_check")
+        self.assertTrue(other_type)
+        concurrency.release_execution(other_type.context)
+        other_batch = self.admit("other-batch", "live_check", batch_key="b", batch_limit=2)
+        self.assertTrue(other_batch)
+        concurrency.release_execution(other_batch.context)
+        self.assertTrue(self.admit("paused", "live_check", batch_key="a", batch_limit=2))
+
     def test_recovery_keeps_live_owner_despite_stale_heartbeat(self):
         self.policy(GLOBAL_TASK_WORKERS=1)
         admitted = self.admit("live-owner")

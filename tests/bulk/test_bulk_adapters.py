@@ -77,7 +77,7 @@ class BulkResultTests(TestCase):
             with self.assertRaises(catalog.ParameterError):
                 catalog.normalize_parameters("plan_check", {"timezone_offset_min": value})
         with self.assertRaises(catalog.ParameterError):
-            catalog.normalize_parameters("plan_check", {"countries": ["JP"]})
+            catalog.normalize_parameters("plan_check", {"countries": ["RAND"]})
         self.assertEqual(catalog.normalize_parameters("plan_check"), {})
 
     def test_failed_query_does_not_count_previous_no_offer(self):

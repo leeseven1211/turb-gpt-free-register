@@ -51,9 +51,10 @@ def ensure_managed_claim(conn, run_id: int) -> dict | None:
         if not identity:
             return None
         cur.execute(
-            f"SELECT batch_id FROM {table('operation_batch_controls')} WHERE batch_id=%s FOR SHARE NOWAIT",
+            f"SELECT batch_id,is_paused FROM {table('operation_batch_controls')} WHERE batch_id=%s FOR SHARE NOWAIT",
             (identity["batch_id"],),
         )
+        controls = cur.fetchone()
         target = require_row(
             cur,
             f"SELECT * FROM {table('operation_batch_target_rounds')} WHERE id=%s FOR UPDATE NOWAIT",
@@ -63,6 +64,10 @@ def ensure_managed_claim(conn, run_id: int) -> dict | None:
         action = cur.fetchone()["control_action"]
         if action == "request_stop" or (action == "cancel_not_started" and target["chain_started_at"] is None):
             raise BulkError("bulk_claim_cancelled", "该轮次已请求取消，不能开始新的执行")
+        if controls["is_paused"] and target["chain_started_at"] is None:
+            from core.storage.operations.permits import ClaimUnavailable
+
+            raise ClaimUnavailable("batch_paused")
         if target["chain_state"] == "closed":
             raise BulkError("bulk_chain_closed", "该账号链已经结束")
         if _earlier_chain_open(cur, target):
@@ -229,11 +234,12 @@ def prepare_targets(batch_id: int, *, limit: int = 100) -> list[dict]:
           root.ordinal AS root_ordinal
           FROM {table("operation_batch_target_rounds")} tr
           JOIN {table("operation_batch_rounds")} r ON r.id=tr.round_id
+          JOIN {table("operation_batch_controls")} c ON c.batch_id=tr.batch_id
           JOIN {table("operation_selection_targets")} m ON m.id=tr.member_target_id
           JOIN {table("operation_selection_targets")} root ON root.id=tr.canonical_target_id
           LEFT JOIN {table("operation_runs")} source ON source.id=m.source_run_id_snapshot
           WHERE tr.batch_id=%s AND tr.admission_state IN ('pending_submit','waiting_account')
-            AND tr.chain_state='not_started' AND tr.next_prepare_at<=now() AND r.control_action='none'
+            AND tr.chain_state='not_started' AND tr.next_prepare_at<=now() AND r.control_action='none' AND NOT c.is_paused
           ORDER BY tr.next_prepare_at,tr.id LIMIT %s""",
             (batch_id, max(1, min(1000, limit))),
         )
@@ -257,6 +263,8 @@ def submit_targets(target_round_ids, submitter) -> list[dict]:
         context = require_row(
             cur, f"SELECT * FROM {table('operation_batch_controls')} WHERE batch_id=%s FOR SHARE", (batches[0],)
         )
+        if context["is_paused"]:
+            return []
         capacity = _submission_capacity(cur, context["batch_id"], context["desired_workers"])
         cur.execute(
             f"""SELECT tr.*,tr.id AS target_round_id,m.target_id,m.target_id AS account_id,m.baseline,

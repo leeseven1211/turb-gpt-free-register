@@ -2373,6 +2373,7 @@ _CONCURRENCY_WAIT_REASONS = {
     "executor_capacity": "等待当前业务执行承载空位",
     "global_capacity": "等待部署全局执行空位",
     "type_capacity": "等待本任务类型执行空位",
+    "batch_paused": "批次已暂停，等待继续执行",
     "batch_capacity": "等待当前批次执行空位",
     "provider_capacity": "等待当前平台执行空位",
     "account_busy": "账号正由其他任务使用",

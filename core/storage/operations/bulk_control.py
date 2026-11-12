@@ -29,8 +29,10 @@ def request_control(
 ) -> dict:
     bulk_schema.init()
     validate_key(request_key)
-    if action not in ("cancel_not_started", "request_stop"):
+    if action not in ("cancel_not_started", "request_stop", "pause", "resume"):
         raise BulkError("invalid_control_action", "不支持的批次控制动作", 422)
+    if action in ("pause", "resume") and round_id is not None:
+        raise BulkError("invalid_control_scope", "暂停和继续仅支持整个批次", 422)
     hashed = digest({"action": action, "expected_control_revision": expected_control_revision, "round_id": round_id})
     with connect() as conn, conn.cursor() as cur:
         request_guard(cur, f"control:{batch_id}", request_key)
@@ -50,6 +52,8 @@ def request_control(
                 "批次控制状态已变化，请刷新",
                 detail={"control_revision": controls["control_revision"]},
             )
+        if action in ("pause", "resume") and controls["state"] != "active":
+            raise BulkError("batch_not_active", "仅执行中的批次可以暂停或继续，请刷新批次状态")
         if round_id:
             require_row(
                 cur,
@@ -75,6 +79,19 @@ def request_control(
             ),
         )
         command = dict(cur.fetchone(), reused=False)
+        if action in ("pause", "resume"):
+            # 暂停与派发共用 controls 行锁；返回后不能再开始新的账号链。
+            cur.execute(
+                f"""UPDATE {table('operation_batch_controls')} SET is_paused=%s,
+                control_revision=%s,updated_at=now() WHERE batch_id=%s""",
+                (action == "pause", revision, batch_id),
+            )
+            cur.execute(
+                f"""UPDATE {table('operation_batch_control_commands')} SET state='completed',completed_at=now()
+                WHERE id=%s RETURNING *""",
+                (command["id"],),
+            )
+            return dict(cur.fetchone(), reused=False)
         cur.execute(
             f"""UPDATE {table("operation_batch_rounds")} SET control_action=CASE WHEN control_action='request_stop'
           THEN control_action ELSE %s END,control_command_id=%s,control_revision=control_revision+1
@@ -85,8 +102,9 @@ def request_control(
         cur.execute(
             f"""UPDATE {table("operation_batch_controls")} SET control_revision=%s,
           state=CASE WHEN %s::bigint IS NOT NULL THEN state WHEN %s='request_stop' THEN 'stop_requested' ELSE 'cancel_requested' END,
+          is_paused=CASE WHEN %s::bigint IS NULL THEN FALSE ELSE is_paused END,
           updated_at=now() WHERE batch_id=%s""",
-            (revision, round_id, action, batch_id),
+            (revision, round_id, action, round_id, batch_id),
         )
         return command
 

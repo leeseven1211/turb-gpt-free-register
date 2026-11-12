@@ -38,7 +38,7 @@ class BulkApiTests(PostgresTestCase):
         self.assertEqual(response.status_code, 200, response.json)
         return response.json["data"]
 
-    def create(self, source=None):
+    def create(self, source=None, execution=None):
         settings = self.get("/catalog")["operations"][0]
         revision = str(settings["effective_settings"]["config_revision"])
         selection_response = self.post("/selections", {"operation": {"key": "plan_check", "version": 1},
@@ -51,7 +51,7 @@ class BulkApiTests(PostgresTestCase):
         self.assertEqual(selection["state"], "ready", selection)
         body = {"operation": {"key": "plan_check", "version": 1}, "selection_id": selection_id,
                 "selection_revision": selection["selection_revision"], "parameters": {}, "expected_config_revision": revision,
-                "execution": {"max_concurrency": 3}}
+                "execution": execution or {"max_concurrency": 3}}
         key = uuid.uuid4().hex
         response = self.post("/batches", body, key)
         self.assertEqual(response.status_code, 202, response.json)
@@ -59,6 +59,33 @@ class BulkApiTests(PostgresTestCase):
         self.assertEqual(replay.status_code, 202, replay.json)
         self.assertEqual(response.json["data"]["id"], replay.json["data"]["id"])
         return response.json["data"]
+
+    def test_create_paused_and_control_require_batch_scope(self):
+        batch = self.create(execution={"max_concurrency": 3, "start_paused": True})
+        self.assertTrue(batch["control"]["paused"])
+        detail = self.get(f'/batches/{batch["id"]}')
+        self.assertTrue(detail["control"]["paused"])
+        self.assertEqual(5, detail["summary"]["pending_submit"])
+        invalid = self.post(f'/batches/{batch["id"]}/control', {"action": "pause",
+            "expected_control_revision": 1, "scope": {"kind": "round", "round_id": batch["round_id"]}})
+        self.assertEqual(422, invalid.status_code)
+        self.assertEqual("parameter_invalid", invalid.json["error"]["code"])
+        for revision, action in enumerate(("resume", "pause"), 1):
+            body = {"action": action, "expected_control_revision": revision, "scope": {"kind": "batch"}}
+            key = uuid.uuid4().hex
+            response = self.post(f'/batches/{batch["id"]}/control', body, key)
+            replay = self.post(f'/batches/{batch["id"]}/control', body, key)
+            self.assertEqual(202, response.status_code, response.json)
+            self.assertEqual(response.json["data"]["id"], replay.json["data"]["id"])
+            self.assertEqual("completed", response.json["data"]["state"])
+            self.assertEqual(action == "pause", self.get(f'/batches/{batch["id"]}')["control"]["paused"])
+
+    def test_start_paused_rejects_non_boolean(self):
+        for value in (1, "true", None):
+            response = self.post("/batches", {"operation": {"key": "plan_check", "version": 1},
+                "selection_revision": 1, "execution": {"start_paused": value}})
+            self.assertEqual(422, response.status_code)
+            self.assertEqual("parameter_invalid", response.json["error"]["code"])
 
     def test_create_read_and_cancel_fixed_targets(self):
         batch = self.create()

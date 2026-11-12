@@ -297,7 +297,7 @@ def _complete_rounds(cur, batch_id: int) -> None:
         (batch_id,),
     )
     cur.execute(
-        f"""UPDATE {table("operation_batch_controls")} c SET state='ended'
+        f"""UPDATE {table("operation_batch_controls")} c SET state='ended',is_paused=FALSE
       WHERE c.batch_id=%s AND NOT EXISTS(SELECT 1 FROM {table("operation_batch_rounds")} r
         WHERE r.batch_id=c.batch_id AND r.state IN ('preparing','active','settling'))""",
         (batch_id,),

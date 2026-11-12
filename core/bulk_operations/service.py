@@ -157,8 +157,11 @@ def create_batch(payload: dict, request_key: str) -> dict:
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
         raise _error("parameter_invalid", "请提供有效的名单修订。", field="selection_revision")
     execution = payload.get("execution") or {}
-    if not isinstance(execution, Mapping) or set(execution) - {"max_concurrency"}:
+    if not isinstance(execution, Mapping) or set(execution) - {"max_concurrency", "start_paused"}:
         raise _error("parameter_invalid", "批次执行设置无效。")
+    start_paused = execution.get("start_paused", False)
+    if not isinstance(start_paused, bool):
+        raise _error("parameter_invalid", "创建后暂停必须为布尔值。", field="execution.start_paused")
     maximum = execution.get("max_concurrency", 1)
     if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 128:
         raise _error("parameter_invalid", "本批并发上限必须为 1 至 128 的整数。")
@@ -170,7 +173,8 @@ def create_batch(payload: dict, request_key: str) -> dict:
         selection_id=_id(payload.get("selection_id"), "selection_id"),
         selection_revision=revision, operation_key=key,
         parameters=parameters, config_revision=str(payload.get("expected_config_revision") or ""),
-        name=name.strip() or f"{_catalog().OPERATIONS[key]}批量任务", max_concurrency=maximum)
+        name=name.strip() or f"{_catalog().OPERATIONS[key]}批量任务", max_concurrency=maximum,
+        start_paused=start_paused)
     wake()
     return result
 
@@ -195,12 +199,14 @@ def create_round(batch_id: int, payload: dict, request_key: str) -> dict:
 
 def request_control(batch_id: int, payload: dict, request_key: str) -> dict:
     action = payload.get("action")
-    if action not in {"cancel_not_started", "request_stop"}:
+    if action not in {"cancel_not_started", "request_stop", "pause", "resume"}:
         raise _error("parameter_invalid", "不支持的批次控制动作。")
     scope = payload.get("scope") or {"kind": "batch"}
     if not isinstance(scope, Mapping) or set(scope) - {"kind", "round_id"} or scope.get("kind") not in {"batch", "round"}:
         raise _error("parameter_invalid", "控制范围无效。")
     round_id = _id(scope.get("round_id"), "round_id") if scope["kind"] == "round" else None
+    if action in {"pause", "resume"} and scope["kind"] != "batch":
+        raise _error("parameter_invalid", "暂停和继续仅支持整个批次。")
     if scope["kind"] == "batch" and scope.get("round_id") is not None:
         raise _error("parameter_invalid", "整批控制不能同时指定执行轮次。")
     revision = payload.get("expected_control_revision")
