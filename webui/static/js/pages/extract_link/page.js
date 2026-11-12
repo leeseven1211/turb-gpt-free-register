@@ -46,9 +46,10 @@ const EXTRACT_WORKBENCH_STATUS_LABELS = {
   not_started: '未开始', checking: '核验中', unavailable: '无法确认',
 };
 const EXTRACT_WORKBENCH_FILTERS = [
-  ['', '全部'], ['processing', '处理中'], ['awaiting_payment', '待支付'],
-  ['needs_review', '待核对'], ['extraction_succeeded', '已出链'],
-  ['plus_confirmed', '已完成'], ['failed', '失败'],
+  ['', '全部'], ['queued', '排队中'], ['extracting', '进行中'],
+  ['scanning', '扫码中'], ['paused', '已暂停'], ['cancelled', '已停止'],
+  ['extraction_succeeded', '已出链'], ['payment_succeeded', '扫码完成'],
+  ['failed', '失败'], ['needs_review', '待核对'],
 ];
 const EXTRACT_WORKBENCH_PAYMENT_PHASE_LABELS = {
   not_started: '未开始', awaiting_payment: '待支付', processing: '支付中',

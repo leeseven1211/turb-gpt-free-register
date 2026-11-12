@@ -1328,11 +1328,14 @@ test('顶部标签使用全部统计数，切换状态后不把筛选结果当�
   const {api} = createView();
   const tabs={innerHTML:''};
   api.setRoot({querySelector: selector => selector==='[data-workbench-status-tabs]' ? tabs : null});
-  api.setState({status:'processing',total:1,counts:{all:1705,running:7,processing:18}});
+  api.setState({status:'extracting',total:1,counts:{all:1705,extracting:7,scanning:18,payment_succeeded:6,plus_confirmed:2}});
   api.renderTabs();
   assert.match(tabs.innerHTML,/全部<\/strong><span>1,705/);
-  assert.match(tabs.innerHTML,/data-workbench-status-filter="processing" aria-pressed="true"/);
-  assert.match(tabs.innerHTML,/处理中<\/strong><span>18/);
+  assert.match(tabs.innerHTML,/data-workbench-status-filter="extracting" aria-pressed="true"/);
+  assert.match(tabs.innerHTML,/进行中<\/strong><span>7/);
+  assert.match(tabs.innerHTML,/扫码中<\/strong><span>18/);
+  assert.match(tabs.innerHTML,/扫码完成<\/strong><span>6/);
+  assert.doesNotMatch(tabs.innerHTML,/data-workbench-status-filter="plus_confirmed"/);
 });
 
 test('新建批次弹窗打开后才查询候选，重新打开会刷新匹配数量', async () => {

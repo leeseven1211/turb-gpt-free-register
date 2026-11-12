@@ -512,6 +512,19 @@ _WORKBENCH_STATUS_SQL = {
             AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted'))
         OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))""",
     "running": "NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')",
+    "queued": """NOT local_reconcile_halted
+        AND task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+        AND (extraction_status='queued' OR
+            (task_status IN ('queued','waiting') AND extraction_status IN ('pending','not_started','unknown')))""",
+    "extracting": """NOT local_reconcile_halted
+        AND task_status IN ('queued','running','waiting','cancelling','settling','stopping')
+        AND (extraction_status='running' OR
+            (task_status IN ('running','cancelling','settling','stopping')
+                AND extraction_status IN ('pending','not_started','unknown')))""",
+    "scanning": """NOT local_reconcile_halted AND mode='auto_payment'
+        AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted','paused')
+        AND extraction_status='success' AND payment_status='pending_payment' AND payment_processing""",
+    "paused": "task_status='paused'",
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
@@ -526,6 +539,23 @@ _WORKBENCH_STATUS_SQL = {
         OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
         OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",
 }
+
+
+def _workbench_payment_processing_sql(summary_sql: str) -> str:
+    """只用已保存的扫码进度或提交记录判定处理中，不把待支付当作扫码中。"""
+    from core.extract_link.workbench_queries import _PAYMENT_PROCESSING_HINTS
+
+    raw = "LOWER(CONCAT_WS(' ', " + ", ".join(
+        f"({summary_sql})->>'{key}'" for key in (
+            "payment_check_status", "automatic_payment_status", "xxsyun_status", "payment_status", "current_step",
+        )
+    ) + "))"
+    hints = " OR ".join(f"STRPOS({raw}, '{hint}')>0" for hint in _PAYMENT_PROCESSING_HINTS)
+    submitted = " OR ".join(
+        f"COALESCE(({summary_sql})->'{key}' NOT IN ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb), FALSE)"
+        for key in ("payment_order_id", "payment_submitted_at")
+    )
+    return f"({hints} OR {submitted})"
 
 
 def workbench_status_conditions(*, public_status: bool = False) -> dict[str, str]:
@@ -779,12 +809,16 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
     task_status_sql = (public_result_status_sql(task_status, "r.result_summary") if public_status else
                        f"CASE WHEN {task_status}='attention_required' THEN 'request_unknown' ELSE {task_status} END")
     active_statuses = "'queued','running','waiting','cancelling','settling','stopping'"
-    extraction_failure_sql = (f"WHEN extraction IN ('unknown','pending','') AND task_status NOT IN ({active_statuses},'cancelled','stopped') THEN 'failed' "
+    extraction_failure_sql = (f"WHEN extraction IN ('unknown','pending','') AND task_status NOT IN ({active_statuses},'cancelled','stopped','paused') THEN 'failed' "
                               f"WHEN extraction='unknown' AND task_status IN ({active_statuses}) THEN 'pending' "
                               if public_status else "")
     payment_unknown_sql = (f"CASE WHEN task_status IN ({active_statuses}) THEN 'pending_payment' ELSE 'failed' END"
                            if public_status else "'request_unknown'")
     payment_unknown_condition = "payment IN ('unknown','request_unknown')" if public_status else "payment='unknown'"
+    payment_processing_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
+    payment_processing_exclusions = "'unknown','not_started','failed','succeeded','success','paid'" + (
+        ",'request_unknown'" if public_status else ""
+    )
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
@@ -813,6 +847,9 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
                 THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
                     NULLIF(r.result_summary->>'extraction_status', ''), '')) END AS extraction,
             LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) AS payment,
+            {payment_processing_sql} AND LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
+                NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) NOT IN
+                ({payment_processing_exclusions}) AS payment_processing,
             LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
             COALESCE(r.result_summary->'has_link' NOT IN
                 ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)

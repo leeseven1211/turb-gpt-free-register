@@ -333,12 +333,15 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
                 COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded
                 FROM projected GROUP BY batch_id""", tuple(params))
             return {int(row['batch_id']): dict(row) for row in cur.fetchall()}
-    from core.storage.extract_link.jobs import _WORKBENCH_STATUS_SQL, _workbench_timestamp_sql
+    from core.storage.extract_link.jobs import (
+        _WORKBENCH_STATUS_SQL, _workbench_payment_processing_sql, _workbench_timestamp_sql,
+    )
 
     operation.init()
     accounts = admin_repository._q(record_store.ACCOUNTS)
     checked_at_sql = _workbench_timestamp_sql("COALESCE(NULLIF(BTRIM(account.data->>'plan_checked_at'), ''), NULLIF(BTRIM(account.plan_last_success_at), ''), NULLIF(BTRIM(fallback.data->>'plan_checked_at'), ''), NULLIF(BTRIM(fallback.plan_last_success_at), ''))")
     payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
+    payment_processing_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}"
                      for name, condition in _WORKBENCH_STATUS_SQL.items()]
     with operation._connect() as conn, conn.cursor() as cur:
@@ -356,6 +359,9 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
                             NULLIF(run.result_summary->>'extraction_status', ''), '')) END AS extraction,
                     LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
                         NULLIF(run.result_summary->>'payment_status', ''), 'not_started')) AS payment,
+                    {payment_processing_sql} AND LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
+                        NULLIF(run.result_summary->>'payment_status', ''), 'not_started')) NOT IN
+                        ('unknown','not_started','failed','succeeded','success','paid') AS payment_processing,
                     LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''),
                         NULLIF(run.result_summary->>'plus_status', ''), 'unknown')) AS plus,
                     COALESCE((run.result_summary->>'has_link')::boolean, FALSE)

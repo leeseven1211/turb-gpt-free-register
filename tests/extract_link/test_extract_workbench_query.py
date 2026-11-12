@@ -109,6 +109,92 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         self.assertEqual('attention_required', operation.get_run(task['run']['id'])['status'])
         self.assertEqual('request_unknown', extract_link_service.list_workbench_tasks()['items'][0]['task_status'])
 
+    def test_activity_filters_keep_database_counts_pages_batches_and_projection_consistent(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="任务动态分类", requested_count=23,
+                                               data={"workbench_batch": True, "submission_complete": True})
+        expected = {status: set() for status in ("queued", "extracting", "scanning", "paused")}
+        scenarios = (
+            ("queued", "pending", "not_started", {}, "queued"),
+            ("running", "queued", "not_started", {}, "queued"),
+            ("waiting", "pending", "not_started", {}, "queued"),
+            ("running", "pending", "not_started", {}, "extracting"),
+            ("running", "running", "pending", {}, "extracting"),
+            ("waiting", "running", "not_started", {}, "extracting"),
+            ("running", "succeeded", "pending", {"automatic_payment_status": "claimed"}, "scanning"),
+            ("success", "succeeded", "pending", {"xxsyun_status": "verifying"}, "scanning"),
+            ("waiting", "succeeded", "pending", {"payment_order_id": 1}, "scanning"),
+            ("success", "succeeded", "pending", {"payment_submitted_at": "2026-11-12T00:00:00Z"}, "scanning"),
+            ("running", "succeeded", "pending", {"current_step": "扫码中"}, "scanning"),
+            ("paused", "pending", "not_started", {}, "paused"),
+            ("success", "succeeded", "pending", {}, None),
+            ("success", "succeeded", "pending", {"automatic_payment_status": "READY"}, None),
+            ("success", "succeeded", "pending", {"automatic_payment_status": "AWAITING_SLOT"}, None),
+            ("success", "succeeded", "pending", {"payment_order_id": 0}, None),
+            ("running", "succeeded", "unknown", {"automatic_payment_status": "claimed"}, None),
+            ("success", "succeeded", "succeeded", {"automatic_payment_status": "completed"}, None),
+            ("failed", "succeeded", "pending", {"automatic_payment_status": "claimed"}, None),
+            ("cancelled", "succeeded", "pending", {"automatic_payment_status": "claimed"}, None),
+            ("running", "succeeded", "not_started", {"automatic_payment_status": "claimed"}, None),
+            ("running", "pending", "pending", {"local_reconcile_halted": True}, None),
+            ("running", "succeeded", "pending", {"local_reconcile_halted": True, "automatic_payment_status": "claimed"}, None),
+        )
+        for status, extraction, payment, summary, bucket in scenarios:
+            task = self.task(provider="huanguang", status=status, mode="auto_payment", batch_id=batch["id"], state={
+                "extraction_state": extraction, "payment_state": payment, "plus_status": "not_applicable", "summary": summary,
+            })
+            if bucket:
+                expected[bucket].add(task["id"])
+        for public_status in (False, True):
+            all_items = extract_link_service.list_workbench_tasks(batch_id=batch["id"], page_size=100,
+                                                                 public_status=public_status)["items"]
+            grouped = extract_link_batches.batch_task_counts([batch["id"]], public_status=public_status)[batch["id"]]
+            for bucket, task_ids in expected.items():
+                with self.subTest(bucket=bucket, public_status=public_status):
+                    page = extract_link_service.list_workbench_tasks(status=bucket, batch_id=batch["id"], page_size=1,
+                                                                    public_status=public_status)
+                    self.assertEqual(len(task_ids), page["total"])
+                    self.assertEqual(len(task_ids), page["counts"][bucket])
+                    self.assertEqual(len(task_ids), grouped[bucket])
+                    self.assertEqual(task_ids, {item["task_id"] for item in all_items
+                        if extract_link_service._workbench_status_matches(item, bucket, public_status=public_status)})
+                    returned = set()
+                    for number in range(1, len(task_ids) + 1):
+                        part = extract_link_service.list_workbench_tasks(status=bucket, batch_id=batch["id"],
+                            page=number, page_size=1, public_status=public_status)
+                        returned.update(item["task_id"] for item in part["items"])
+                        self.assertEqual(page["counts"], part["counts"])
+                    self.assertEqual(task_ids, returned)
+                    empty = extract_link_service.list_workbench_tasks(status=bucket, batch_id=batch["id"],
+                        page=len(task_ids) + 1, page_size=1, public_status=public_status)
+                    self.assertEqual([], empty["items"])
+                    self.assertEqual(page["counts"], empty["counts"])
+
+    def test_activity_export_uses_same_scan_filter_as_database_list(self):
+        import csv
+        import io
+        import logging
+        from flask import Flask
+        from webui.routes.extract_workbench import create_extract_workbench_blueprint
+        from webui.runtime import WebUIContext
+
+        scanning = self.task(status="running", mode="auto_payment", state={
+            "extraction_state": "succeeded", "payment_state": "pending", "plus_status": "unknown",
+            "summary": {"automatic_payment_status": "claimed"},
+        })
+        self.task(status="running", mode="manual_payment", state={
+            "extraction_state": "succeeded", "payment_state": "pending", "plus_status": "unknown",
+            "payment_links": ["https://pay.example.test/checkout"], "summary": {"automatic_payment_status": "claimed"},
+        })
+        self.task(status="running", mode="auto_payment", state={
+            "extraction_state": "running", "payment_state": "pending", "plus_status": "unknown",
+        })
+        app = Flask("extract-activity-export")
+        app.register_blueprint(create_extract_workbench_blueprint(WebUIContext(app, logging.getLogger(__name__))))
+        response = app.test_client().get("/api/extract-workbench/export?status=scanning")
+        self.assertEqual(200, response.status_code)
+        rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True).lstrip("\ufeff"))))
+        self.assertEqual({str(scanning["id"])}, {row["任务号"] for row in rows})
+
     def test_public_projection_preserves_active_waiting_links_paid_and_plus_facts(self):
         active = self.task(status="running", mode="auto_payment", state={
             "extraction_state": "unknown", "payment_state": "unknown", "plus_status": "pending",

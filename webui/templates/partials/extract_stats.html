@@ -1,0 +1,20 @@
+<section id="tab-extract-stats" class="hidden">
+  <div id="extractStatsRoot" class="extract-stats-page" aria-busy="false">
+    <header class="es-page-header">
+      <div><h1>提链统计</h1><p>查看任务产出、支付转化与失败原因</p></div>
+      <span class="es-timezone">北京时间 · 每个任务的最新结果</span>
+    </header>
+    <div class="es-toolbar" role="group" aria-label="筛选提链统计">
+      <div class="es-periods" role="group" aria-label="统计时间范围">
+        <button type="button" data-extract-stats-days="7" aria-pressed="false">近 7 天</button>
+        <button type="button" data-extract-stats-days="30" aria-pressed="true">近 30 天</button>
+        <button type="button" data-extract-stats-days="90" aria-pressed="false">近 90 天</button>
+      </div>
+      <label class="es-provider-label">平台<select data-extract-stats-provider aria-label="按提链平台筛选"><option value="">全部平台</option></select></label>
+      <button type="button" class="es-refresh" data-extract-stats-refresh><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg><span>刷新</span></button>
+      <span class="es-load-status" data-extract-stats-status role="status" aria-live="polite">准备加载统计</span>
+    </div>
+    <div class="es-notice" data-extract-stats-notice role="alert" hidden></div>
+    <div data-extract-stats-content></div>
+  </div>
+</section>
