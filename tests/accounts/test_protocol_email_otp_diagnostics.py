@@ -270,7 +270,328 @@ class LegacyOtpDiagnosticBehaviorTests(unittest.TestCase):
         sender.assert_not_called()
 
 
+class AtOtpRetryBehaviorTests(unittest.TestCase):
+    """独立 AT 最多等待两轮，取码超时和网络换线各自保留分类。"""
+
+    def setUp(self):
+        from core.accounts.liveness.protocol import legacy
+        from core.network.at_transport_recovery import AtRecoveryScope
+
+        self.legacy = legacy
+        self.scope = AtRecoveryScope()
+        self.session = object()
+
+    def no_mail(self, *, status=None):
+        return EmailButlerClientError(
+            "inbound_code_timeout: 等待验证码超时",
+            error_code="inbound_code_timeout", status_code=status,
+        )
+
+    def test_first_no_mail_resends_in_same_session_then_uses_new_time_window(self):
+        from core.network.at_transport_recovery import network_failure
+
+        for status in (None, 408):
+            with self.subTest(status=status):
+                error = self.no_mail(status=status)
+                trace = []
+                clock = {"now": 100.0}
+                result = {"continue_url": AUTH + "/authorize/continue"}
+
+                def wait(*_args, **_kwargs):
+                    trace.append("wait")
+                    if trace.count("wait") == 1:
+                        clock["now"] = 200.0
+                        raise error
+                    # 重发返回前已投递的邮件仍属于本次挑战窗口。
+                    self.assertLessEqual(_kwargs["after_ts"], 200.5)
+                    return "654321"
+
+                def resend(session):
+                    self.assertIs(self.session, session)
+                    trace.append("send")
+                    clock["now"] = 201.0
+
+                def validate(session, *_args, **_kwargs):
+                    self.assertIs(self.session, session)
+                    trace.append("validate")
+                    return result
+
+                with (
+                    patch.object(self.legacy, "wait_for_otp", side_effect=wait) as waiter,
+                    patch.object(self.legacy, "send_email_otp", side_effect=resend) as sender,
+                    patch.object(self.legacy, "validate_email_otp", side_effect=validate) as validator,
+                    patch.object(self.legacy.time, "time", side_effect=lambda: clock["now"]),
+                    patch.object(self.legacy.time, "sleep"),
+                    self.scope.activate(),
+                ):
+                    self.assertIsNone(network_failure(error=error))
+                    self.assertIs(result, self.legacy._validate_with_retry(self.session, EMAIL, 100.0))
+
+                self.assertEqual(["wait", "send", "wait", "validate"], trace)
+                self.assertEqual([100.0, 200.0], [item.kwargs["after_ts"] for item in waiter.call_args_list])
+                sender.assert_called_once_with(self.session)
+                validator.assert_called_once_with(self.session, "654321", sentinel_header=None, so_header=None)
+
+    def test_repeated_no_mail_has_two_waits_and_one_resend_even_with_larger_limit(self):
+        for options in ({}, {"max_otp_attempts": 5}):
+            with self.subTest(options=options):
+                failures = [self.no_mail() for _ in range(3)]
+                with (
+                    patch.object(self.legacy, "wait_for_otp", side_effect=failures) as waiter,
+                    patch.object(self.legacy, "send_email_otp") as sender,
+                    patch.object(self.legacy, "validate_email_otp") as validate,
+                    patch.object(self.legacy.time, "time", return_value=201.0),
+                    patch.object(self.legacy.time, "sleep") as sleep,
+                    self.scope.activate(),
+                    self.assertRaises(EmailButlerClientError) as caught,
+                ):
+                    self.legacy._validate_with_retry(self.session, EMAIL, 100.0, **options)
+
+                self.assertIs(failures[1], caught.exception)
+                self.assertEqual("email_otp", caught.exception._otp_operation)
+                self.assertEqual(2, waiter.call_count)
+                self.assertEqual([100.0, 201.0], [item.kwargs["after_ts"] for item in waiter.call_args_list])
+                sender.assert_called_once_with(self.session)
+                sleep.assert_called_once_with(1)
+                validate.assert_not_called()
+
+    def test_invalid_codes_also_stop_after_second_wait_and_validation(self):
+        from core.auth.protocol.openai_auth import EmailOtpInvalidError
+
+        failures = [EmailOtpInvalidError("验证码无效") for _ in range(3)]
+        with (
+            patch.object(self.legacy, "wait_for_otp", side_effect=["654321", "123456", "345678"]) as waiter,
+            patch.object(self.legacy, "send_email_otp") as sender,
+            patch.object(self.legacy, "validate_email_otp", side_effect=failures) as validate,
+            patch.object(self.legacy.time, "time", return_value=201.0),
+            patch.object(self.legacy.time, "sleep"),
+            self.scope.activate(),
+            self.assertRaises(EmailOtpInvalidError) as caught,
+        ):
+            self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+        self.assertIs(failures[1], caught.exception)
+        self.assertEqual("email_otp_validate", caught.exception._otp_operation)
+        self.assertEqual(2, waiter.call_count)
+        self.assertEqual(2, validate.call_count)
+        self.assertEqual([100.0, 201.0], [item.kwargs["after_ts"] for item in waiter.call_args_list])
+        sender.assert_called_once_with(self.session)
+
+    def test_invalid_code_resend_keeps_mail_delivered_before_send_response(self):
+        from core.auth.protocol.openai_auth import EmailOtpInvalidError
+
+        clock = {"now": 100.0}
+        reads = []
+
+        def wait(_email, *, after_ts, **_kwargs):
+            reads.append(after_ts)
+            if len(reads) == 1:
+                clock["now"] = 200.0
+                return "654321"
+            self.assertLessEqual(after_ts, 200.5)
+            return "123456"
+
+        def resend(_session):
+            clock["now"] = 201.0
+
+        success = {"continue_url": AUTH + "/authorize/continue"}
+        with (
+            patch.object(self.legacy, "wait_for_otp", side_effect=wait),
+            patch.object(self.legacy, "send_email_otp", side_effect=resend) as sender,
+            patch.object(self.legacy, "validate_email_otp", side_effect=[EmailOtpInvalidError("验证码无效"), success]),
+            patch.object(self.legacy.time, "time", side_effect=lambda: clock["now"]),
+            patch.object(self.legacy.time, "sleep"),
+            self.scope.activate(),
+        ):
+            self.assertIs(success, self.legacy._validate_with_retry(self.session, EMAIL, 100.0))
+
+        self.assertEqual([100.0, 200.0], reads)
+        sender.assert_called_once_with(self.session)
+
+    def test_mailbox_rejections_ambiguity_and_http_failure_do_not_resend(self):
+        for code, status in (
+            ("source_authentication_failed", None),
+            ("recipient_mismatch", None),
+            ("inbound_code_ambiguous", None),
+            ("inbound_code_timeout", 503),
+            ("inbound_code_timeout", 429),
+        ):
+            with self.subTest(code=code, status=status):
+                error = EmailButlerClientError(
+                    "取码失败，timeout", error_code=code, status_code=status,
+                )
+                with (
+                    patch.object(self.legacy, "wait_for_otp", side_effect=error) as waiter,
+                    patch.object(self.legacy, "send_email_otp") as sender,
+                    patch.object(self.legacy, "validate_email_otp") as validate,
+                    patch.object(self.legacy.time, "sleep") as sleep,
+                    self.scope.activate(),
+                    self.assertRaises(EmailButlerClientError) as caught,
+                ):
+                    self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+                self.assertIs(error, caught.exception)
+                self.assertEqual("email_otp", caught.exception._otp_operation)
+                waiter.assert_called_once()
+                sender.assert_not_called()
+                validate.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_no_mail_code_from_validation_cannot_trigger_wait_retry(self):
+        error = self.no_mail()
+        with (
+            patch.object(self.legacy, "wait_for_otp", return_value="654321") as waiter,
+            patch.object(self.legacy, "send_email_otp") as sender,
+            patch.object(self.legacy, "validate_email_otp", side_effect=error) as validate,
+            self.scope.activate(),
+            self.assertRaises(EmailButlerClientError) as caught,
+        ):
+            self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+        self.assertIs(error, caught.exception)
+        self.assertEqual("email_otp_validate", caught.exception._otp_operation)
+        waiter.assert_called_once()
+        validate.assert_called_once()
+        sender.assert_not_called()
+
+    def test_resend_failure_keeps_send_classification_and_never_starts_another_wait(self):
+        from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
+        from core.auth.protocol.openai_auth import EmailOtpInvalidError, EmailOtpSendError
+
+        for trigger in ("no_mail", "invalid_code"):
+            for reason, status in (("http_error", 503), ("rejected", 200), ("unconfirmed", 200)):
+                with self.subTest(trigger=trigger, reason=reason):
+                    error = EmailOtpSendError(reason, status)
+                    wait_error = self.no_mail() if trigger == "no_mail" else None
+                    with (
+                        patch.object(self.legacy, "wait_for_otp", return_value="654321", side_effect=wait_error) as waiter,
+                        patch.object(self.legacy, "validate_email_otp", side_effect=EmailOtpInvalidError("验证码无效")) as validate,
+                        patch.object(self.legacy, "send_email_otp", side_effect=error) as sender,
+                        patch.object(self.legacy.time, "sleep") as sleep,
+                        self.scope.activate(),
+                        self.assertRaises(EmailOtpSendError) as caught,
+                    ):
+                        self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+                    self.assertIs(error, caught.exception)
+                    diagnostics = otp_failure_diagnostics(caught.exception)
+                    self.assertEqual("email_otp_send", diagnostics["operation"])
+                    self.assertEqual(reason, diagnostics["failure_kind"])
+                    self.assertEqual(status, diagnostics["http_status"])
+                    waiter.assert_called_once()
+                    self.assertEqual(trigger == "invalid_code", validate.called)
+                    sender.assert_called_once_with(self.session)
+                    sleep.assert_not_called()
+
+    def test_explicit_one_attempt_keeps_smaller_limit(self):
+        from core.auth.protocol.openai_auth import EmailOtpInvalidError
+
+        for trigger in ("no_mail", "invalid_code"):
+            with self.subTest(trigger=trigger):
+                error = self.no_mail() if trigger == "no_mail" else EmailOtpInvalidError("验证码无效")
+                with (
+                    patch.object(self.legacy, "wait_for_otp", return_value="654321",
+                                 side_effect=error if trigger == "no_mail" else None) as waiter,
+                    patch.object(self.legacy, "validate_email_otp", side_effect=error) as validate,
+                    patch.object(self.legacy, "send_email_otp") as sender,
+                    self.scope.activate(),
+                    self.assertRaises(type(error)) as caught,
+                ):
+                    self.legacy._validate_with_retry(self.session, EMAIL, 100.0, max_otp_attempts=1)
+
+                self.assertIs(error, caught.exception)
+                waiter.assert_called_once()
+                self.assertEqual(trigger == "invalid_code", validate.called)
+                sender.assert_not_called()
+
+    def test_control_timeout_is_propagated_without_resend(self):
+        from core.network.at_transport_recovery import AtRecoveryTimeout
+
+        error = AtRecoveryTimeout("AT 网络恢复总预算已耗尽")
+        with (
+            patch.object(self.legacy, "wait_for_otp", side_effect=error) as waiter,
+            patch.object(self.legacy, "send_email_otp") as sender,
+            patch.object(self.legacy, "validate_email_otp") as validate,
+            self.scope.activate(),
+            self.assertRaises(AtRecoveryTimeout) as caught,
+        ):
+            self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+        self.assertIs(error, caught.exception)
+        waiter.assert_called_once()
+        sender.assert_not_called()
+        validate.assert_not_called()
+
+    def test_control_checkpoint_after_wait_prevents_resend_for_both_retry_triggers(self):
+        from core.auth.protocol.openai_auth import EmailOtpInvalidError
+        from core.network.at_transport_recovery import AtRecoveryScope, AtRecoveryTimeout
+
+        for trigger in ("no_mail", "invalid_code"):
+            with self.subTest(trigger=trigger):
+                error = AtRecoveryTimeout("AT 网络恢复总预算已耗尽")
+                checkpoint = MagicMock(side_effect=[None, error])
+                scope = AtRecoveryScope(checkpoint=checkpoint)
+                with (
+                    patch.object(self.legacy, "wait_for_otp", return_value="654321",
+                                 side_effect=self.no_mail() if trigger == "no_mail" else None) as waiter,
+                    patch.object(self.legacy, "validate_email_otp", side_effect=EmailOtpInvalidError("验证码无效")) as validate,
+                    patch.object(self.legacy, "send_email_otp") as sender,
+                    patch.object(self.legacy.time, "sleep") as sleep,
+                    scope.activate(),
+                    self.assertRaises(AtRecoveryTimeout) as caught,
+                ):
+                    self.legacy._validate_with_retry(self.session, EMAIL, 100.0)
+
+                self.assertIs(error, caught.exception)
+                self.assertEqual(2, checkpoint.call_count)
+                waiter.assert_called_once()
+                self.assertEqual(trigger == "invalid_code", validate.called)
+                sender.assert_not_called()
+                sleep.assert_not_called()
+
+
 class ProtocolOtpDiagnosticIntegrationTests(unittest.TestCase):
+    def test_at_scope_and_v2_callback_recovery_resend_after_first_no_mail(self):
+        from core.accounts.liveness.protocol import legacy, v2
+        from core.network.at_transport_recovery import AtRecoveryScope
+
+        session = MagicMock()
+        error = EmailButlerClientError(
+            "inbound_code_timeout: 等待验证码超时", error_code="inbound_code_timeout",
+        )
+        continue_url = AUTH + "/authorize/continue"
+        # 保留真实 v2 邮箱阶段和重试循环，仅替换外部认证、取码及会话读取。
+        with (
+            patch.object(v2, "get_account_login_credentials", return_value=("fixture-password", "")),
+            patch.object(v2, "account_email_is_invalid", return_value=False),
+            patch.object(v2, "_network_preflight_with_retry", return_value=(session, AUTH + "/authorize")),
+            patch.object(v2, "follow_authorize", return_value=AUTH + "/email-verification"),
+            patch.object(v2, "_open_offered_password_login", return_value=AUTH + "/email-verification"),
+            patch.object(v2, "_password_verify") as password,
+            patch.object(v2, "_start_email_session") as restart,
+            patch.object(v2, "send_email_otp") as initial_send,
+            patch.object(legacy, "wait_for_otp", side_effect=[error, "654321"]) as waiter,
+            patch.object(legacy, "send_email_otp") as retry_send,
+            patch.object(legacy, "validate_email_otp", return_value={"continue_url": continue_url}) as validate,
+            patch.object(v2, "_follow_and_fetch", return_value={"accessToken": "fixture-fresh"}) as fetch,
+            patch.object(legacy.time, "sleep"),
+            AtRecoveryScope().activate(),
+        ):
+            result = v2.refresh_access_token(EMAIL, proxy="", callback_recovery=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("email_otp", result["auth_method"])
+        self.assertEqual("success", result["email_otp_status"])
+        self.assertEqual(["email_otp"], result["challenge_chain"])
+        self.assertEqual(2, waiter.call_count)
+        retry_send.assert_called_once_with(session)
+        validate.assert_called_once_with(session, "654321", sentinel_header=None, so_header=None)
+        fetch.assert_called_once_with(session, continue_url, referer=AUTH + "/email-verification")
+        initial_send.assert_not_called()
+        password.assert_not_called()
+        restart.assert_not_called()
+        session.session.close.assert_called_once()
+
     def test_v2_failure_result_keeps_mailbox_cause_and_original_behavior_flags(self):
         from core.accounts.liveness.protocol import legacy, v2
 

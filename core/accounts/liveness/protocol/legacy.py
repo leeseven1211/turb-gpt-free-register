@@ -14,6 +14,7 @@ from core.auth.protocol.session import BrowserSession
 from core.auth.protocol.chatgpt_auth import get_csrf_token, get_providers, probe_auth_session, signin_openai
 from core.auth.protocol.openai_auth import follow_authorize, network_preflight, send_email_otp, validate_email_otp, EmailOtpInvalidError, AccountUnusableError, detect_account_unusable_text
 from core.accounts.export import follow_oauth_callback, fetch_session
+from core.email.email_butler.client import EmailButlerClientError
 from core.email.provider import wait_for_otp
 from core.accounts.credentials import account_email_is_invalid
 from core.accounts.liveness.protocol.otp_diagnostics import mark_otp_failure
@@ -375,6 +376,12 @@ def _validate_with_retry(
     max_otp_attempts: int = 3,
     email_source: str | None = None,
 ) -> dict:
+    from core.network.at_transport_recovery import current_scope
+
+    at_scope = current_scope()
+    if at_scope is not None:
+        # 独立 AT 刷新只等两轮；其他共享认证入口保留原有次数。
+        max_otp_attempts = min(max_otp_attempts, 2)
     current_otp = None
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
@@ -398,28 +405,44 @@ def _validate_with_retry(
             if attempt >= max_otp_attempts:
                 break
             logger.warning("[查活] OTP 无效/过期，重新发送后再取：%s", str(exc)[:180])
+            if at_scope is not None:
+                at_scope.check()
+            resend_started_at = time.time() if at_scope is not None else None
             try:
                 send_email_otp(session)
             except Exception as send_exc:
                 mark_otp_failure(send_exc, "email_otp_send")
                 raise
-            # 以“重新发送请求完成后”为新基准，避免刚刚失败的上一封旧码再次被 after 容忍窗口命中。
-            otp_after_ts = time.time()
+            # AT 从发码前收件，避免漏掉请求返回前已投递的新码；其他入口沿用原时间窗。
+            otp_after_ts = resend_started_at if resend_started_at is not None else time.time()
             current_otp = None
             time.sleep(1)
         except Exception as exc:
             mark_otp_failure(exc, otp_operation)
-            # 提交 OTP 后的网络抖动（连接断开/超时/代理波动）：同一会话重发验证码再验证一次。
-            if attempt >= max_otp_attempts or not _is_retryable_network_error(exc):
+            # 无邮件超时允许在原会话重发，不作为 OpenAI 代理的网络故障。
+            no_mail_timeout = (
+                at_scope is not None
+                and otp_operation == "email_otp"
+                and isinstance(exc, EmailButlerClientError)
+                and exc.error_code == "inbound_code_timeout"
+                and exc.status_code in (None, 408)
+            )
+            if attempt >= max_otp_attempts or not (no_mail_timeout or _is_retryable_network_error(exc)):
                 raise
+            if at_scope is not None:
+                at_scope.check()
             last_exc = exc
-            logger.warning("[查活] 邮箱验证码阶段失败，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
+            if no_mail_timeout:
+                logger.warning("[查活] 等待登录验证码超时，在原会话重新发送后继续等待（%s/%s）", attempt, max_otp_attempts)
+            else:
+                logger.warning("[查活] 邮箱验证码阶段失败，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
+            resend_started_at = time.time() if at_scope is not None else None
             try:
                 send_email_otp(session)
             except Exception as send_exc:
                 mark_otp_failure(send_exc, "email_otp_send")
                 raise
-            otp_after_ts = time.time()
+            otp_after_ts = resend_started_at if resend_started_at is not None else time.time()
             current_otp = None
             time.sleep(1)
     raise last_exc if last_exc else RuntimeError("OTP 验证失败")
