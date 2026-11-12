@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-bulk-all-matches-01') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-local-review-01') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-workbench-single-row-01') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
     :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -413,12 +413,11 @@
   <section id="tab-extract-workbench" class="hidden" aria-label="提链工作台">
     <div class="extract-workbench-page" id="extractWorkbenchRoot">
       <section class="ew-overview" data-workbench-overview aria-label="提链概览" aria-live="polite">
-        <div class="ew-stat ew-stat--ok" data-stat="today_extracted"><span class="ew-stat-label">今日出链</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">按任务创建日统计</small></div>
-        <div class="ew-stat ew-stat--warn" data-stat="awaiting_payment"><span class="ew-stat-label">待支付</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">已出链等你付款</small></div>
-        <div class="ew-stat ew-stat--warn" data-stat="needs_review"><span class="ew-stat-label">待核对</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">自动续查已停</small></div>
-        <div class="ew-stat" data-stat="today_plus_confirmed"><span class="ew-stat-label">Plus 已确认</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">今日到账</small></div>
+        <div class="ew-stat ew-stat--ok" data-stat="today_extracted"><span class="ew-stat-label">今日任务出链</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">北京时间今日创建 · 最新结果</small></div>
+        <div class="ew-stat ew-stat--warn" data-stat="awaiting_payment"><span class="ew-stat-label">待支付</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">全部历史任务 · 当前待支付</small></div>
+        <div class="ew-stat ew-stat--warn" data-stat="needs_review"><span class="ew-stat-label">待核对</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">全部历史任务 · 结果仍待确认</small></div>
+        <div class="ew-stat" data-stat="today_plus_confirmed"><span class="ew-stat-label">今日任务 Plus</span><strong class="ew-stat-value">—</strong><small class="ew-stat-hint">北京时间今日创建 · 已确认到账</small></div>
       </section>
-      <div class="ew-plats" data-workbench-health role="status" aria-label="平台健康度"><span class="ew-health-empty">平台健康度加载中…</span></div>
       <div class="extract-workbench-toolbar" role="group" aria-label="提链操作">
         <div class="ew-filters">
           <select data-workbench-filter-provider aria-label="按平台筛选"><option value="">全部平台</option></select>
@@ -440,7 +439,7 @@
             <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
           </div>
         </div>
-        <div class="extract-workbench-task-list" data-workbench-tasks aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
+        <div class="extract-workbench-task-list" data-workbench-tasks tabindex="0" aria-label="提链任务列表，可左右滚动查看全部列" aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
         <div class="ew-foot">
           <div class="ew-batchbar hidden" data-workbench-batchbar>
             <span class="ew-batchbar-count" data-workbench-selected-count>已选 0 个</span>
@@ -1259,7 +1258,7 @@
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261112-task-error-classification-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-task-error-classification-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-workbench-parallel-load-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261112-bulk-all-matches-01') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

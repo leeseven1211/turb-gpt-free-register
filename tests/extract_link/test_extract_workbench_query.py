@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from core import account_task_store, db
@@ -129,6 +129,67 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
             self.assertEqual(filtered['counts'][bucket], filtered['total'])
         summary = extract_link_service.workbench_summary(public_status=True)
         self.assertEqual(result['counts']['processing'], summary['processing'])
+
+    def test_public_review_excludes_failures_and_keeps_halted_or_paid_unconfirmed_tasks(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="待核对口径", requested_count=12,
+                                               data={"workbench_batch": True, "submission_complete": True})
+        expected = set()
+        scenarios = (
+            ("failed", "failed", "failed", "failed", False, False),
+            ("interrupted", "failed", "not_started", "unknown", False, False),
+            ("attention_required", "unknown", "unknown", "unknown", False, False),
+            ("request_unknown", "pending", "unknown", "not_applicable", False, False),
+            ("partial_success", "succeeded", "failed", "not_confirmed", False, False),
+            ("success", "succeeded", "not_started", "failed", False, False),
+            ("success", "succeeded", "succeeded", "failed", False, True),
+            ("success", "succeeded", "succeeded", "not_confirmed", False, True),
+            ("success", "succeeded", "succeeded", "unknown", False, True),
+            ("success", "succeeded", "succeeded", "confirmed", False, False),
+            ("success", "succeeded", "succeeded", "pending", False, False),
+            ("failed", "succeeded", "pending", "unknown", True, True),
+        )
+        for status, extraction, payment, plus, halted, needs_review in scenarios:
+            task = self.task(provider="legacy", status=status, mode="auto_payment", batch_id=batch["id"], state={
+                "extraction_state": extraction, "payment_state": payment, "plus_status": plus,
+                "summary": {"local_reconcile_halted": halted, "local_reconcile_reason": "no_progress"},
+            })
+            if needs_review:
+                expected.add(task["id"])
+        reviewed = extract_link_service.list_workbench_tasks(status="needs_review", public_status=True)
+        self.assertEqual(expected, {item["task_id"] for item in reviewed["items"]})
+        self.assertEqual(len(expected), reviewed["counts"]["needs_review"])
+        self.assertEqual(len(expected), extract_link_jobs.workbench_summary(public_status=True)["needs_review"])
+        self.assertEqual(len(expected), extract_link_batches.batch_task_counts([batch["id"]], public_status=True)[batch["id"]]["needs_review"])
+        all_items = extract_link_service.list_workbench_tasks(public_status=True)["items"]
+        self.assertEqual(expected, {item["task_id"] for item in all_items
+                                   if extract_link_service._workbench_status_matches(item, "needs_review", public_status=True)})
+        processing = extract_link_service.list_workbench_tasks(status="processing", public_status=True)
+        self.assertNotIn(next(item["task_id"] for item in all_items
+                             if item["payment_status"] == "paid" and item["plus_status"] == "unknown"),
+                         {item["task_id"] for item in processing["items"]})
+
+    def test_summary_uses_shanghai_task_creation_day_and_latest_run_only(self):
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai' AS day_start")
+            day_start = cur.fetchone()["day_start"]
+        tasks = []
+        for offset, deleted in ((-1, False), (0, False), (12 * 3600, False), (24 * 3600, False), (0, True)):
+            task = self.task(provider="legacy", status="success", mode="auto_payment", state={
+                "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "confirmed",
+            })
+            tasks.append(task)
+            with operation._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {operation._table('operation_tasks')} SET created_at=%s, data=data || %s::jsonb WHERE id=%s",
+                            (day_start + timedelta(seconds=offset), json.dumps({"deleted_by_user": deleted}), task["id"]))
+        summary = extract_link_jobs.workbench_summary(public_status=True)
+        self.assertEqual((2, 2, 4), (summary["today_extracted"], summary["today_plus_confirmed"], summary["all"]))
+        latest = operation.retry_runtime_task(tasks[2]["id"])
+        extract_link_jobs.save_provider_job(latest["id"], "legacy", "new-attempt", {
+            "extraction_state": "pending", "payment_state": "not_started", "plus_status": "unknown",
+        }, {})
+        summary = extract_link_jobs.workbench_summary(public_status=True)
+        self.assertEqual((1, 1, 4), (summary["today_extracted"], summary["today_plus_confirmed"], summary["all"]))
+        self.assertEqual(2, extract_link_service.extract_workbench_task_detail(tasks[2]["id"], public_status=True)["item"]["run_count"])
 
     def test_public_missing_response_preserves_known_transport_error_and_failure_stage(self):
         task = self.task(status='attention_required', mode='auto_payment', summary={

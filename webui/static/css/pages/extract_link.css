@@ -529,21 +529,6 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .ew-stat--bad .ew-stat-value { color: var(--ew-red); }
 .extract-workbench-page .ew-stat--warn[data-hot="true"] { border-color: #e8cf9a; background: #fffdf7; }
 
-/* 平台条 */
-.extract-workbench-page .ew-plats { display: grid; grid-template-columns: repeat(auto-fit, minmax(198px, 1fr)); gap: 12px; margin: 0 0 16px; }
-.extract-workbench-page .ew-plat-card { background: #fff; border: 1px solid var(--ew-line); border-radius: 12px; padding: 11px 13px; }
-.extract-workbench-page .ew-plat-card-h { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ew-ink); }
-.extract-workbench-page .ew-plat-card-h i { width: 6px; height: 6px; border-radius: 50%; background: #2fa36b; }
-.extract-workbench-page .ew-plat-card-h .ew-plat-st { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--ew-green); }
-.extract-workbench-page .ew-plat-card-h .ew-plat-st[data-tone="warn"] { color: var(--ew-amber); }
-.extract-workbench-page .ew-plat-card-h .ew-plat-st[data-tone="muted"] { color: var(--ew-muted); }
-.extract-workbench-page .ew-plat-card-g { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 8px; font-size: 10.5px; color: #6b7484; }
-.extract-workbench-page .ew-plat-card-g b { color: var(--ew-ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-.extract-workbench-page .extract-workbench-platform-reason { display: block; margin-top: 6px; overflow: hidden; color: var(--ew-muted); font-size: 10.5px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-.extract-workbench-page .ew-plat-card-bar { height: 4px; border-radius: 2px; background: var(--ew-line2); margin-top: 9px; overflow: hidden; }
-.extract-workbench-page .ew-plat-card-bar i { display: block; height: 100%; background: var(--ew-brand); border-radius: 2px; }
-.extract-workbench-page .ew-plat-card-bar[data-tone="warn"] i { background: var(--ew-amber); }
-
 /* 面板 */
 .extract-workbench-page .extract-workbench-list { background: #fff; border: 1px solid var(--ew-line); border-radius: 12px; box-shadow: 0 1px 2px rgba(16,24,40,.04); overflow: hidden; padding: 0; }
 .extract-workbench-page .ew-tabsbar { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--ew-line2); flex-wrap: wrap; }
@@ -566,25 +551,41 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .extract-workbench-search button { background: transparent; border: 0; display: inline-flex; }
 .extract-workbench-page .extract-workbench-result-count { font-size: 11px; color: var(--ew-muted); white-space: nowrap; }
 
-/* 表格 */
-.extract-workbench-page .ew-table { border: 0; border-radius: 0; background: transparent; }
-.extract-workbench-page .ew-head { height: 32px; padding: 0 12px; background: #fafbfd; border-bottom: 1px solid var(--ew-line2); font-size: 10.5px; font-weight: 600; color: #98a1b0; letter-spacing: .2px; }
-.extract-workbench-page .ew-row { padding: 9px 12px; border-bottom: 1px solid var(--ew-line2); }
+/* 单行表格使用内容列宽，超出可视范围时在列表内横向滚动。 */
+.extract-workbench-page .ew-table { display: table; width: max-content; min-width: 100%; border: 0; border-radius: 0; background: transparent; border-collapse: collapse; }
+.extract-workbench-page .ew-head,
+.extract-workbench-page .ew-row { display: table-row; height: 42px; padding: 0; }
+.extract-workbench-page .ew-head { height: 34px; color: #6b7484; background: #fafbfd; font-size: 11px; font-weight: 600; }
+.extract-workbench-page .ew-head > span,
+.extract-workbench-page .ew-cell { display: table-cell; min-width: 86px; padding: 8px 12px; vertical-align: middle; border-bottom: 1px solid var(--ew-line2); white-space: nowrap; }
+.extract-workbench-page .ew-head > span { position: sticky; top: 0; z-index: 1; background: #fafbfd; }
 .extract-workbench-page .ew-row:hover { background: #fbfcfe; }
-.extract-workbench-page .ew-cell > b { font-size: 12.5px; font-weight: 600; color: var(--ew-ink); }
-.extract-workbench-page .ew-cell > small { font-size: 10.5px; color: var(--ew-muted); margin-top: 2px; }
-.extract-workbench-page .ew-plat { font-size: 11.5px; color: #3c465c; display: inline-flex; align-items: center; gap: 5px; }
+.extract-workbench-page .ew-cell > b { display: inline; overflow: visible; font-size: 12px; font-weight: 600; color: var(--ew-ink); text-overflow: clip; white-space: nowrap; }
+.extract-workbench-page .ew-c0 { min-width: 38px; width: 38px; padding-inline: 12px; text-align: center; }
+.extract-workbench-page .ew-c1 { min-width: 260px; }
+.extract-workbench-page .ew-time { min-width: 170px; }
+.extract-workbench-page :is(.ew-meta, .ew-time, .ew-run-detail, .ew-mode, .ew-payment, .ew-c6) { color: #6b7484; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.extract-workbench-page .ew-run-detail { min-width: 190px; }
+.extract-workbench-page .ew-plat { font-size: 11.5px; color: #3c465c; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .extract-workbench-page .ew-c3 > b, .extract-workbench-page .ew-c4 > b, .extract-workbench-page .ew-c5 > b { font-size: 11.5px; font-weight: 600; }
-.extract-workbench-page .ew-c3 > small, .extract-workbench-page .ew-c4 > small, .extract-workbench-page .ew-c5 > small { font-size: 10px; }
 .extract-workbench-page .ew-ok { color: var(--ew-green) !important; }
 .extract-workbench-page .ew-warn { color: var(--ew-amber) !important; }
 .extract-workbench-page .ew-bad { color: var(--ew-red) !important; }
 .extract-workbench-page .ew-run { color: var(--ew-brand) !important; }
 .extract-workbench-page .ew-idle { color: var(--ew-muted) !important; }
-.extract-workbench-page .ew-c6 { font-size: 11.5px; color: #6b7484; }
-.extract-workbench-page .ew-c7 { gap: 6px; }
-.extract-workbench-page .ew-btn { height: 24px; padding: 0 8px; border: 1px solid var(--ew-line); border-radius: 6px; background: #fff; color: #3c465c; font-size: 11px; }
+.extract-workbench-page .ew-c7 { min-width: 140px; text-align: right; }
+.extract-workbench-page .ew-c7 .btn + .btn { margin-left: 6px; }
+.extract-workbench-page .ew-btn { height: 26px; padding: 0 8px; border: 1px solid var(--ew-line); border-radius: 6px; background: #fff; color: #3c465c; font-size: 11px; }
 .extract-workbench-page .ew-btn--link { color: var(--ew-brand); border-color: #e0defb; background: #f8f8ff; }
+@media (pointer: fine) {
+  #extractWorkbenchRoot .ew-row .ew-btn { min-height: 28px; height: 28px; }
+  #extractWorkbenchRoot .ew-row .ew-c0 input { min-height: 14px; height: 14px; }
+  .extract-workbench-page .ew-cell { padding-block: 6px; }
+}
+@media (pointer: coarse) {
+  #extractWorkbenchRoot .ew-row .ew-btn { min-height: 44px; }
+}
+
 
 /* 底栏：选中项 + 分页 */
 .extract-workbench-page .ew-foot { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: #fafbfd; border-top: 1px solid var(--ew-line2); font-size: 11.5px; color: #6b7484; flex-wrap: wrap; }
@@ -603,8 +604,7 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .extract-workbench-toolbar .extract-workbench-primary { background: var(--ew-brand); border-color: var(--ew-brand); color: #fff; }
 .extract-workbench-page .extract-workbench-batch-picker select { height: 32px; border-radius: 8px; border: 1px solid var(--ew-line); background: #fff; font-size: 12px; color: #3c465c; }
 .extract-workbench-page .extract-workbench-batch-picker { color: var(--ew-muted); font-size: 11.5px; }
-.extract-workbench-page .ew-head,
-.extract-workbench-page .ew-row { grid-template-columns: 26px minmax(150px, 1fr) 124px 140px 168px 140px 70px 92px; }
+
 .extract-workbench-page .ew-foot { flex-wrap: nowrap; overflow-x: auto; }
 .extract-workbench-page .extract-workbench-batch-pagination { margin-left: auto; }
 .extract-workbench-page .extract-workbench-batch-pagination .btn { height: 26px; padding: 0 8px; border: 1px solid var(--ew-line); border-radius: 6px; background: #fff; font-size: 11px; }
@@ -657,40 +657,27 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .ew-filters { flex-wrap: nowrap; }
 .extract-workbench-page .ew-filters select { flex: 0 0 auto; }
 
-/* 窄屏规则与桌面表格保持相同优先级，避免固定八列覆盖移动布局并裁掉操作。 */
-@media (max-width: 1120px) {
-  .extract-workbench-page .ew-head { display: none; }
-  .extract-workbench-page .ew-row { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); }
-}
 @media (max-width: 720px) {
-  .extract-workbench-page .ew-row { grid-template-columns: 24px minmax(0, 1fr); }
   .extract-workbench-page .ew-filters,
   .extract-workbench-page .ew-foot { flex-wrap: wrap; }
 }
 .extract-workbench-page .ew-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 
-/* 工作台已有概览、平台、操作、列表四段，列表独立滚动，前面三段按实际内容占高。 */
-.extract-workbench-page { grid-template-rows: auto auto auto minmax(0, 1fr); }
-.extract-workbench-page .ew-plats { min-width: 0; align-items: start; }
+/* 概览与操作栏按内容占高，剩余空间用于可双向滚动的任务列表。 */
+.extract-workbench-page { grid-template-rows: auto auto minmax(0, 1fr); }
 .extract-workbench-page .extract-workbench-list { display: flex; flex-direction: column; }
 .extract-workbench-page .ew-tabsbar,
 .extract-workbench-page .ew-foot { flex: 0 0 auto; }
 .extract-workbench-page .extract-workbench-task-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .extract-workbench-page .ew-row.extract-workbench-task {
-  min-height: 0; height: auto; border: 0; border-bottom: 1px solid var(--ew-line2);
+  min-height: 0; height: 42px; border: 0;
   border-radius: 0; box-shadow: none;
 }
 
-/* 手机按页面自然滚动，避免平台卡和筛选占满视口后把任务列表挤成零高度。 */
+/* 手机按页面自然滚动，表格维持单行并独立横向滚动。 */
 @media (max-width: 860px) {
   #tab-extract-workbench { height: auto; overflow: visible; }
   .extract-workbench-page { display: block; height: auto; }
   .extract-workbench-page .ew-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .extract-workbench-page .ew-plats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .extract-workbench-page .ew-plat-card { min-width: 0; padding: 10px; }
-  .extract-workbench-page .ew-plat-card-h { flex-wrap: wrap; }
-  .extract-workbench-page .extract-workbench-task-list { overflow: visible; }
-}
-@media (max-width: 340px) {
-  .extract-workbench-page .ew-plats { grid-template-columns: minmax(0, 1fr); }
+  .extract-workbench-page .extract-workbench-task-list { overflow: auto; }
 }

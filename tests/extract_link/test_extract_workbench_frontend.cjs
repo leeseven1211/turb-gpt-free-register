@@ -424,21 +424,22 @@ test('新建批次禁用不可用平台，历史任务筛选仍可查看已停�
   assert.doesNotMatch(filter.innerHTML, /value="huanguang" disabled/);
 });
 
-test('关闭工作台时平台卡显示关闭原因且不请求幻光额度', async () => {
+test('概览只更新任务统计，不再渲染平台卡或读取幻光额度', async () => {
   const {api, requests} = createView();
-  const health = {innerHTML: ''};
-  api.setConfig({providers: [], unavailable_providers: [
-    {id: 'legacy', label: '虾扯蛋链', unavailable_reason: '提链工作台已关闭'},
-    {id: 'lumen_flow', label: '流光', unavailable_reason: '提链工作台已关闭'},
-    {id: 'huanguang', label: '幻光', unavailable_reason: '提链工作台已关闭'},
-    {id: 'anguang', label: '暗光', unavailable_reason: '提链工作台已关闭'},
-  ]});
-  api.setRoot({querySelector: selector => selector === '[data-workbench-health]' ? health : null});
-  api.renderOverview({providers: []});
+  const values = {};
+  const stats = Object.fromEntries(['today_extracted', 'awaiting_payment', 'needs_review', 'today_plus_confirmed'].map(key => {
+    values[key] = {textContent: ''};
+    return [key, {dataset: {}, querySelector: () => values[key]}];
+  }));
+  api.setConfig({providers: [{id: 'huanguang', label: '幻光'}]});
+  api.setRoot({querySelector: selector => stats[selector.match(/^\[data-stat="([^"]+)"\]$/)?.[1]] || null});
+  api.renderOverview({today_extracted: 8, awaiting_payment: 3, needs_review: 2, today_plus_confirmed: 1, providers: [{provider_id: 'huanguang'}]});
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(health.innerHTML, /提链工作台已关闭/);
-  assert.match(health.innerHTML, /已关闭/);
-  assert.equal(requests.some(({endpoint}) => endpoint.includes('/cdk-quota')), false);
+  assert.equal(values.today_extracted.textContent, '8');
+  assert.equal(values.needs_review.textContent, '2');
+  assert.equal(requests.length, 0);
+  const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
+  assert.doesNotMatch(template, /data-workbench-health/);
 });
 
 test('候选筛选提交套餐优惠并更新资格说明', () => {
@@ -484,6 +485,124 @@ test('页面刷新查询列表和能力配置，列表不请求敏感链接', as
   assert.ok(requests.some(item => item.endpoint.startsWith('/api/extract-workbench/tasks?')));
   assert.ok(requests.every(item => !item.endpoint.endsWith('/links')));
   assert.ok(requests.every(item => !item.endpoint.startsWith('/api/accounts')));
+});
+
+test('配置、批次和概览迟迟未返回时，任务首屏仍先完成渲染', async () => {
+  const {api, window} = createView({timers: createFakeTimers()});
+  const tasks = {innerHTML: '', scrollTop: 0, scrollLeft: 0};
+  const batches = {innerHTML: '', value: ''};
+  const nodes = {'[data-workbench-tasks]': tasks, '[data-workbench-batch-select]': batches, '[data-workbench-overview]': {}};
+  api.setRoot({addEventListener() {}, querySelector: selector => nodes[selector] || null});
+  const pending = new Map();
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint.includes('/tasks?')) return Promise.resolve({items: [{task_id: 17, email: 'single-row@example.invalid'}], total: 1, counts: {}, page: 1});
+    return new Promise(resolve => pending.set(endpoint, resolve));
+  };
+  const loading = api.load({force: true});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(tasks.innerHTML, /single-row@example.invalid/);
+  assert.equal(api.state().batch, '');
+  assert.equal(pending.has('/api/extract-workbench/config'), true);
+  assert.equal(pending.has('/api/extract-workbench/batches?page=1&page_size=20'), true);
+  assert.equal(pending.has('/api/extract-workbench/summary'), true);
+  pending.get('/api/extract-workbench/config')({providers: []});
+  pending.get('/api/extract-workbench/batches?page=1&page_size=20')({items: [{batch_id: 8}], total: 1});
+  pending.get('/api/extract-workbench/summary')({});
+  await loading;
+  assert.equal(api.state().batch, '');
+  assert.equal(batches.value, '');
+});
+
+test('配置与批次读取失败时保留任务列表和已有筛选', async () => {
+  const {api, window} = createView({timers: createFakeTimers()});
+  const tasks = {innerHTML: '', scrollTop: 0};
+  api.setRoot({addEventListener() {}, querySelector: selector => ({'[data-workbench-tasks]': tasks, '[data-workbench-batch-select]': {innerHTML: ''}})[selector] || null});
+  api.setState({provider: 'anguang', query: 'example'});
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
+    if (endpoint.includes('/tasks?')) return {items: [{task_id: 18}], total: 1, counts: {}, page: 1};
+    throw new Error('读取超时');
+  };
+  await api.load({force: true});
+  assert.match(tasks.innerHTML, /data-task-id="18"/);
+  assert.equal(api.state().provider, 'anguang');
+  assert.equal(api.state().query, 'example');
+});
+
+test('批次导航跨多轮静默刷新仍接收结果，并复用未完成请求', async () => {
+  const {api, window} = createView({timers: createFakeTimers()});
+  const tasks = {innerHTML: '', scrollTop: 0};
+  const batches = {innerHTML: '', value: ''};
+  api.setConfig({providers: []});
+  api.setRoot({addEventListener() {}, querySelector: selector => ({'[data-workbench-tasks]': tasks, '[data-workbench-batch-select]': batches})[selector] || null});
+  let finishBatches;
+  let batchReads = 0;
+  let taskReads = 0;
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint.includes('/batches?')) {
+      batchReads += 1;
+      return new Promise(resolve => { finishBatches = resolve; });
+    }
+    taskReads += 1;
+    return Promise.resolve({items: [{task_id: taskReads}], total: 1, counts: {processing: 1}, page: 1});
+  };
+  const first = api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+  const second = api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(taskReads, 2);
+  assert.equal(batchReads, 1);
+  finishBatches({items: [{batch_id: 9, title: '慢速批次'}], total: 1});
+  await Promise.all([first, second]);
+  assert.match(batches.innerHTML, /慢速批次/);
+  assert.equal(api.state().items[0].task_id, 2);
+  assert.equal(api.state().batchTotal, 1);
+});
+
+test('当前批次详情跨静默刷新不会被任务请求作废或重复读取', async () => {
+  const {api, window} = createView({timers: createFakeTimers()});
+  const tasks = {innerHTML: '', scrollTop: 0};
+  api.setConfig({providers: []});
+  api.setState({batch: '7', batchInitialized: true});
+  api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-tasks]' ? tasks : null});
+  let finishDetail;
+  let detailReads = 0;
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint === '/api/extract-workbench/batches/7') {
+      detailReads += 1;
+      return new Promise(resolve => { finishDetail = resolve; });
+    }
+    return Promise.resolve({items: [{task_id: 17}], total: 1, counts: {processing: 1}, page: 1});
+  };
+  const first = api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+  const second = api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(detailReads, 1);
+  assert.match(tasks.innerHTML, /data-task-id="17"/);
+  finishDetail({item: {batch_id: 7, title: '慢速详情'}});
+  await Promise.all([first, second]);
+  assert.equal(api.state().batchDetail.title, '慢速详情');
+});
+
+test('历史批次翻页后忽略上一页迟到导航响应', async () => {
+  const {api, window} = createView({timers: createFakeTimers()});
+  const batches = {innerHTML: '', value: ''};
+  api.setConfig({providers: []});
+  api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-batch-select]' ? batches : null});
+  const pending = new Map();
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => endpoint.includes('/batches?')
+    ? new Promise(resolve => pending.set(endpoint, resolve))
+    : Promise.resolve({items: [], total: 0, counts: {}, page: 1});
+  const first = api.load({quiet: true});
+  api.setState({batchPage: 2});
+  const second = api.load({quiet: true});
+  pending.get('/api/extract-workbench/batches?page=2&page_size=20')({items: [{batch_id: 22, title: '第二页'}], total: 30});
+  await second;
+  pending.get('/api/extract-workbench/batches?page=1&page_size=20')({items: [{batch_id: 11, title: '第一页'}], total: 30});
+  await first;
+  assert.match(batches.innerHTML, /第二页/);
+  assert.doesNotMatch(batches.innerHTML, /第一页/);
+  assert.equal(api.state().batchPage, 2);
 });
 
 test('任务列表每页查询 20 条，批次历史仍每页查询 20 条', async () => {
@@ -732,25 +851,29 @@ test('DOM 同步处理空文本子节点时不会重复删除已清空节点', (
   assert.equal(oldCard.querySelector('[data-progress]').textContent, '');
 });
 
-test('主动刷新与切换批次重置卡片滚动，自动刷新保留最新滚动位置', async () => {
+test('主动刷新与切换批次重置滚动，自动刷新保留最新横向和纵向位置', async () => {
   const {api, window} = createView();
-  const tasks = {scrollTop:140, innerHTML:''};
+  const tasks = {scrollTop:140, scrollLeft:320, innerHTML:''};
   api.setConfig({providers:[]});
   api.setRoot({addEventListener() {}, querySelector: selector => selector === '[data-workbench-tasks]' ? tasks : null});
   api.setState({page:2, status:'running'});
   await api.load({force:true});
   assert.equal(tasks.scrollTop, 0);
+  assert.equal(tasks.scrollLeft, 0);
   tasks.scrollTop = 140;
+  tasks.scrollLeft = 320;
   await api.switchBatch('22');
   assert.equal(tasks.scrollTop, 0);
-  Object.defineProperty(tasks, 'innerHTML', {set(value) { this.html = value; this.scrollTop = 0; }, get() { return this.html; }});
+  assert.equal(tasks.scrollLeft, 0);
+  Object.defineProperty(tasks, 'innerHTML', {set(value) { this.html = value; this.scrollTop = 0; this.scrollLeft = 0; }, get() { return this.html; }});
   tasks.scrollTop = 140;
   window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
-    if (endpoint.startsWith('/api/extract-workbench/tasks?')) tasks.scrollTop = 185;
+    if (endpoint.startsWith('/api/extract-workbench/tasks?')) { tasks.scrollTop = 185; tasks.scrollLeft = 375; }
     return {items:[{task_id:1}], counts:{}, total:1, page:1};
   };
   await api.load({quiet:true});
   assert.equal(tasks.scrollTop, 185);
+  assert.equal(tasks.scrollLeft, 375);
 });
 
 test('quiet 刷新继续同步其他卡片，并保留展开详情、安全内容、滚动和焦点', async () => {

@@ -358,7 +358,7 @@ def workbench_status_matches(item: dict, status: str, *, public_status: bool = F
             task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
             or (item.get("mode") == "auto_payment" and payment == "pending_payment"
                 and task_status not in {"attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted"})
-            or (payment == "paid" and plus in {"unknown", "pending", "queued"})
+            or (payment == "paid" and plus in ({"pending", "queued"} if public_status else {"unknown", "pending", "queued"}))
         )
     if status == "running":
         return task_status in {"running", "cancelling", "settling", "stopping"}
@@ -375,10 +375,11 @@ def workbench_status_matches(item: dict, status: str, *, public_status: bool = F
             and (payment == "pending_payment" or (item.get("mode") == "manual_payment" and payment == "unpaid"))
         )
     if status == "needs_review":
+        if public_status:
+            return item.get("local_reconcile_halted") is True or (
+                payment == "paid" and plus in {"failed", "not_confirmed", "unknown"}
+            )
         return (
-            (public_status and (task_status in {"failed", "partial_success", "interrupted"}
-                                or extraction == "failed" or payment == "failed"))
-            or
             item.get("local_reconcile_halted") is True
             or task_status in {"request_unknown", "attention_required"}
             or extraction == "unknown" or payment == "request_unknown"

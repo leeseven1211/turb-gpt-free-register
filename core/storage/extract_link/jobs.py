@@ -529,10 +529,13 @@ _WORKBENCH_STATUS_SQL = {
 
 
 def workbench_status_conditions(*, public_status: bool = False) -> dict[str, str]:
-    """公开结果按失败归类，保留已支付和已出链的独立统计维度。"""
+    """公开失败与待核对分开，保留已支付和已出链的独立统计维度。"""
     result = dict(_WORKBENCH_STATUS_SQL)
     if public_status:
-        result["needs_review"] = "(" + result["needs_review"] + ") OR task_status IN ('failed','partial_success','interrupted') OR extraction_status='failed' OR payment_status='failed'"
+        # 缺少平台响应已由公开投影归类为失败；不能把全部失败再次算成待核对。
+        # 仅已停止自动续查，或收款已确认但 Plus 尚未确认的任务需要核对。
+        result["needs_review"] = "local_reconcile_halted OR (payment_status='paid' AND plus_status IN ('failed','not_confirmed','unknown'))"
+        result["processing"] = result["processing"].replace("('unknown','pending','queued')", "('pending','queued')")
     return result
 
 
@@ -762,7 +765,7 @@ def _workbench_timestamp_sql(value_sql: str) -> str:
         ELSE NULL END"""
 
 
-def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False) -> str:
+def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False, materialized: bool = False) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
     # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
@@ -841,7 +844,7 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
                 WHEN payment='not_started' THEN 'unpaid' WHEN payment='failed' THEN 'failed'
                 WHEN {payment_unknown_condition} THEN {payment_unknown_sql} ELSE 'pending_payment' END AS payment_status
         FROM raw
-    ), projected AS (
+    ), projected AS {"MATERIALIZED " if materialized else ""}(
         SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
             AND payment_status='paid'
             AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
@@ -852,10 +855,11 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
 
 
 def workbench_summary(*, public_status: bool = False) -> dict:
-    """今日产出与当前积压的快照。只做本地聚合，不触发任何远端查询。"""
+    """北京时间今日创建的未删除任务按最新 Run 统计产出，积压统计全部日期。"""
     operation_store.init()
     clauses, params = _workbench_where()
-    projection = _workbench_projection_sql(clauses, public_status=public_status)
+    # 多个统计共享一次状态归一化，防止内联后每个 FILTER 重复计算 JSON 与套餐表达式。
+    projection = _workbench_projection_sql(clauses, public_status=public_status, materialized=True)
     status_conditions = workbench_status_conditions(public_status=public_status)
     provider_status = "LOWER(COALESCE(r.status, t.status, ''))"
     provider_failure_status = (
@@ -864,22 +868,17 @@ def workbench_summary(*, public_status: bool = False) -> dict:
     today_sql = "date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"""WITH {projection}, today AS (
-                    SELECT * FROM projected WHERE task_created_at >= {today_sql}
-                ) SELECT
-                    (SELECT COUNT(*) FROM today WHERE extraction_status='success') AS today_extracted,
-                    (SELECT COUNT(*) FROM today WHERE plus_status='confirmed') AS today_plus_confirmed,
-                    (SELECT COUNT(*) FROM projected
-                        WHERE {status_conditions["awaiting_payment"]}) AS awaiting_payment,
-                    (SELECT COUNT(*) FROM projected
-                        WHERE {status_conditions["needs_review"]}) AS needs_review,
-                    (SELECT COUNT(*) FROM projected
-                        WHERE NOT local_reconcile_halted
-                          AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-                            OR (mode='auto_payment' AND payment_status='pending_payment'
-                                AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted'))
-                            OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))) AS processing,
-                    (SELECT COUNT(*) FROM projected) AS all_tasks""",
+            f"""WITH {projection} SELECT
+                    COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
+                        AND task_created_at < {today_sql} + INTERVAL '1 day'
+                        AND extraction_status='success') AS today_extracted,
+                    COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
+                        AND task_created_at < {today_sql} + INTERVAL '1 day'
+                        AND plus_status='confirmed') AS today_plus_confirmed,
+                    COUNT(*) FILTER (WHERE {status_conditions["awaiting_payment"]}) AS awaiting_payment,
+                    COUNT(*) FILTER (WHERE {status_conditions["needs_review"]}) AS needs_review,
+                    COUNT(*) FILTER (WHERE {status_conditions["processing"]}) AS processing,
+                    COUNT(*) AS all_tasks FROM projected""",
             tuple(params),
         )
         row = cur.fetchone()
@@ -941,7 +940,7 @@ def list_workbench_page(
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
     clauses, params = _workbench_where(provider_id=provider_id, mode=mode, query=query, batch_id=batch_id)
-    projection = _workbench_projection_sql(clauses, public_status=public_status)
+    projection = _workbench_projection_sql(clauses, public_status=public_status, materialized=True)
     status_conditions = workbench_status_conditions(public_status=public_status)
     predicate = status_conditions.get(status, "FALSE") if status else "TRUE"
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in status_conditions.items()]
@@ -952,11 +951,16 @@ def list_workbench_page(
             tuple(params),
         )
         totals = dict(cur.fetchone() or {})
-        cur.execute(
-            f"""WITH {projection}, selected AS (
+        # 全部状态只需按任务与最新 Run 排序取当前页，避免重复归一化全量任务及账号套餐。
+        selected_sql = (f"""SELECT t.id AS task_id FROM {operation_store._table('operation_tasks')} t
+                LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"""
+            if not status else f"""WITH {_workbench_projection_sql(clauses, public_status=public_status)}
                 SELECT task_id FROM projected WHERE {predicate}
-                ORDER BY sort_created_at DESC, task_id DESC LIMIT %s OFFSET %s
-            )
+                ORDER BY sort_created_at DESC, task_id DESC LIMIT %s OFFSET %s""")
+        cur.execute(
+            f"""WITH selected AS ({selected_sql})
             SELECT {_workbench_columns()} {_workbench_joins()}
             JOIN selected ON selected.task_id=t.id
             ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC""",
