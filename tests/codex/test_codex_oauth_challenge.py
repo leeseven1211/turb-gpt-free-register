@@ -352,40 +352,80 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         select.assert_not_called()
         phone.assert_not_called()
 
-    def test_untrusted_continue_location_is_rejected_without_echo(self):
-        response = SimpleNamespace(
+    def test_cross_origin_continue_follows_relative_location_without_echo(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        responses = [SimpleNamespace(
             status_code=302,
             url="https://auth.openai.com/api/accounts/continue",
-            headers={"Location": "https://untrusted.example/private-code?state=private-state"},
+            headers={"Location": "//login.example.test/api/accounts/continue?state=private-state"},
             json=lambda: {},
-        )
+        ), SimpleNamespace(
+            status_code=302,
+            url="https://login.example.test/api/accounts/continue?state=private-state",
+            headers={"Location": "../../authorize/continue?state=private-state"},
+            json=lambda: {},
+        ), SimpleNamespace(
+            status_code=302,
+            url="https://login.example.test/authorize/continue?state=private-state",
+            headers={"Location": callback},
+            json=lambda: {},
+        )]
         session = SimpleNamespace(
             get_auth_navigate_headers=Mock(return_value={}),
-            get=Mock(return_value=response),
+            get=Mock(side_effect=responses),
         )
         with self.assertLogs(codex_oauth.logger, level="INFO") as captured:
-            with self.assertRaises(RuntimeError) as raised:
-                codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state")
-        self.assertNotIn("private-code", str(raised.exception))
-        self.assertNotIn("private-state", str(raised.exception))
+            result = codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state")
+        self.assertEqual(result, ("callback", callback))
         self.assertNotIn("private-code", "\n".join(captured.output))
         self.assertNotIn("private-state", "\n".join(captured.output))
-        session.get.assert_called_once()
+        self.assertEqual([call.args[0] for call in session.get.call_args_list], [
+            "https://auth.openai.com/api/accounts/continue",
+            "https://login.example.test/api/accounts/continue?state=private-state",
+            "https://login.example.test/authorize/continue?state=private-state",
+        ])
 
-    def test_untrusted_response_origin_is_rejected_before_metadata_cache(self):
+    def test_cross_origin_response_can_continue_to_callback(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
         response = SimpleNamespace(
             status_code=200,
-            url="https://untrusted.example/api/accounts/continue",
+            url="https://login.example.test/api/accounts/continue",
             headers={},
-            json=lambda: {"auth_session": {"workspaces": [{"id": "private-workspace"}]}},
+            json=lambda: {"continue_url": callback},
         )
         session = SimpleNamespace(
             get_auth_navigate_headers=Mock(return_value={}),
             get=Mock(return_value=response),
         )
-        with self.assertRaises(RuntimeError):
-            codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state")
-        self.assertFalse(hasattr(session, "_codex_auth_session_payload"))
+        self.assertEqual(
+            codex_oauth._follow_login_continue_step(session, "/api/accounts/continue", "state"),
+            ("callback", callback),
+        )
+
+    def test_workspace_cross_origin_next_reaches_callback_with_safe_diagnostics(self):
+        callback = "http://localhost:1455/auth/callback?code=private-code&state=state"
+        target = "https://login.example.test/api/accounts/continue?state=private-state"
+        for source in ("Location", "continue_url"):
+            with self.subTest(source=source):
+                session = self._consent_session([{"id": "one"}])
+                session.post.return_value = SimpleNamespace(
+                    status_code=302 if source == "Location" else 200,
+                    headers={"Location": target} if source == "Location" else {},
+                    json=lambda: {"continue_url": target} if source == "continue_url" else {},
+                )
+                session.get.return_value = SimpleNamespace(
+                    status_code=302, url=target,
+                    headers={"Location": callback}, json=lambda: {},
+                )
+                with self.assertLogs(codex_oauth.logger, level="INFO") as captured:
+                    actual = codex_oauth._select_workspace_and_get_callback(session, "state", workspace_id="one")
+                self.assertEqual(actual, callback)
+                session.get.assert_called_once()
+                diagnostic = "\n".join(captured.output)
+                for field in ('"host": "login.example.test"', '"scheme": "https"', '"query_keys": ["state"]'):
+                    self.assertIn(field, diagnostic)
+                for secret in ("private-code", "private-state"):
+                    self.assertNotIn(secret, diagnostic)
 
     def test_callback_error_does_not_echo_query(self):
         location = "http://localhost:1455/auth/callback?state=private-state&trace=private-value"
@@ -478,11 +518,10 @@ class CodexOAuthChallengeTests(unittest.TestCase):
         self.assertNotIn("private-token", str(raised.exception))
         self.assertIn("status=502", str(raised.exception))
 
-    def test_unknown_or_untrusted_step_does_not_send_email(self):
+    def test_unknown_or_conflicting_step_does_not_send_email(self):
         for payload in (
             {},
             {"page": {"type": "email_otp_send"}},
-            {"continue_url": "https://untrusted.example/api/accounts/email-otp/send"},
             {"continue_url": "https://auth.openai.com:bad/email-verification"},
             {"page": {"type": "login_password"}, "continue_url": "/api/accounts/email-otp/send"},
             {"page": {"type": "phone_verification"}, "continue_url": "/sign-in-with-chatgpt/codex/consent"},

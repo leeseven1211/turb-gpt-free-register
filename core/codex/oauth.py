@@ -14,7 +14,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlparse, parse_qs, quote
+from urllib.parse import urlencode, urlparse, parse_qs, quote, urljoin
 
 # 用模块属性方式访问 config，支持 WebUI 热加载（config.reload_all()）。
 # 协议级常量（CLIENT_ID/URL/SCOPE/OUTPUT_DIRNAME）虽然不会改，统一从 _cfg 读，
@@ -852,7 +852,7 @@ def _authorize_login_step(result: dict) -> tuple[str, str]:
     path = ""
     trusted_callback = False
     if continue_url:
-        trusted_url, trusted_callback = _trusted_login_target(continue_url)
+        trusted_url, trusted_callback = _login_target(continue_url)
         parsed = urlparse(trusted_url)
         path = parsed.path.rstrip("/").lower()
 
@@ -1395,39 +1395,49 @@ def _url_path_for_log(value: str | None) -> str:
         return "-"
 
 
-def _trusted_login_target(value: str) -> tuple[str, bool]:
-    """仅允许 Auth 同源页面或本次本地 callback；返回规范 URL 和 callback 标记。"""
+def _login_target(value: str, *, base_url: str = "https://auth.openai.com/") -> tuple[str, bool]:
+    """沿服务端返回地址继续登录，不按域名白名单阻断后续跳转。"""
     raw = str(value or "").strip()
     if not raw or "\\" in raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
         raise RuntimeError("[Codex] 登录后续地址格式无效")
-    if raw.startswith("/") and not raw.startswith("//"):
-        raw = "https://auth.openai.com" + raw
     try:
+        raw = urljoin(base_url, raw)
         parsed = urlparse(raw)
-        auth = (
-            parsed.scheme.lower() == "https"
-            and (parsed.hostname or "").lower() == "auth.openai.com"
-            and parsed.port in (None, 443)
-        )
+        port = parsed.port
         callback = (
             parsed.scheme.lower() == "http"
             and (parsed.hostname or "").lower() in ("localhost", "127.0.0.1")
-            and parsed.port == 1455
+            and port == 1455
             and parsed.path == "/auth/callback"
         )
-        if parsed.username is not None or parsed.password is not None or parsed.fragment:
-            auth = callback = False
     except ValueError:
         raise RuntimeError("[Codex] 登录后续地址格式无效") from None
-    if not (auth or callback):
-        raise RuntimeError("[Codex] 登录后续地址不是受信任的 OpenAI Auth 地址")
     return raw, callback
+
+
+def _login_target_for_log(value: str, *, base_url: str = "https://auth.openai.com/") -> str:
+    """记录跳转结构，省略凭据、查询值及未知路径中的动态标识。"""
+    try:
+        url, _ = _login_target(value, base_url=base_url)
+        parsed = urlparse(url)
+        detail = {
+            "scheme": parsed.scheme,
+            "host": parsed.hostname,
+            "port": parsed.port,
+            "path": _safe_login_path(url),
+            "query_keys": sorted(parse_qs(parsed.query, keep_blank_values=True)),
+            "fragment_present": bool(parsed.fragment),
+            "userinfo_present": parsed.username is not None or parsed.password is not None,
+        }
+    except (RuntimeError, ValueError):
+        detail = {"format": "invalid"}
+    return json.dumps(detail, ensure_ascii=False, sort_keys=True)
 
 
 def _safe_login_path(value: str | None) -> str:
     """诊断仅保留已知路径，动态挑战 ID 与查询参数一律不写日志。"""
     try:
-        url, callback = _trusted_login_target(str(value or ""))
+        url, callback = _login_target(str(value or ""))
         path = urlparse(url).path.rstrip("/").lower()
     except RuntimeError:
         return "-"
@@ -1477,7 +1487,7 @@ def _follow_login_continue_step(
     """逐跳识别登录后续；工作区步骤可携带授权页已确认的 ID。"""
     if not continue_url:
         raise RuntimeError("[Codex] 登录后续响应缺少可跟随地址")
-    url, callback = _trusted_login_target(continue_url)
+    url, callback = _login_target(continue_url)
     for hop in range(_MAX_REDIRECTS):
         if callback:
             _extract_code(url, state)
@@ -1489,7 +1499,7 @@ def _follow_login_continue_step(
             referer="https://auth.openai.com/", user_initiated=True
         )
         resp = session.get(url, headers=headers, allow_redirects=False)
-        final_url, final_callback = _trusted_login_target(str(getattr(resp, "url", "") or url))
+        final_url, final_callback = _login_target(str(getattr(resp, "url", "") or url))
         _cache_auth_session_metadata(session, resp)
         try:
             status = int(getattr(resp, "status_code", 0) or 0)
@@ -1510,6 +1520,12 @@ def _follow_login_continue_step(
             raise RuntimeError(f"[Codex] 登录后续请求未成功 status={status}")
         next_url = location or _extract_continue_url(payload)
         if next_url:
+            logger.info(
+                "[Codex] 登录后续跳转 hop=%s status=%s source=%s target=%s",
+                hop, status, "Location" if location else "JSON",
+                _login_target_for_log(next_url, base_url=final_url),
+            )
+            next_url, _ = _login_target(next_url, base_url=final_url)
             next_result = {"continue_url": next_url}
             if not location and isinstance(payload.get("page"), dict):
                 next_result["page"] = payload["page"]
@@ -1517,12 +1533,12 @@ def _follow_login_continue_step(
             if next_step in ("workspace", "phone"):
                 return next_step, ""
             if next_step == "callback":
-                callback_url, _ = _trusted_login_target(next_url)
+                callback_url, _ = _login_target(next_url)
                 _extract_code(callback_url, state)
                 return "callback", callback_url
             if next_step not in ("continue", "consent"):
                 raise RuntimeError("[Codex] 登录后续返回未支持的验证挑战，已停止继续")
-            url, callback = _trusted_login_target(next_url)
+            url, callback = _login_target(next_url)
             continue
         if final_callback:
             _extract_code(final_url, state)
@@ -1570,8 +1586,14 @@ def _select_workspace_and_get_callback(
 
     # 1) 直接带 Location 头命中 callback
     loc = resp.headers.get("location") or resp.headers.get("Location")
+    response_url = str(getattr(resp, "url", "") or "https://auth.openai.com/api/accounts/workspace/select")
+    logger.info("[Codex] 工作区选择响应 status=%s", resp.status_code)
     if loc:
-        trusted_loc, callback = _trusted_login_target(loc)
+        logger.info(
+            "[Codex] 工作区后续跳转 source=Location target=%s",
+            _login_target_for_log(loc, base_url=response_url),
+        )
+        trusted_loc, callback = _login_target(loc, base_url=response_url)
         if callback:
             _extract_code(trusted_loc, state)
             report_stage("workspace", "工作区选择已确认并收到有效 OAuth 回调", state="success")
@@ -1581,10 +1603,12 @@ def _select_workspace_and_get_callback(
     data = _resp_json(resp)
     data = data if isinstance(data, dict) else {}
     next_url = None
+    next_source = "Location"
     for key in ("redirect_url", "continue_url", "url", "next", "location"):
         v = data.get(key)
         if isinstance(v, str) and v:
             next_url = v
+            next_source = key
             break
 
     # 3) 没给 URL 但有 Location（非 callback）→ 从 Location 起跟
@@ -1593,6 +1617,13 @@ def _select_workspace_and_get_callback(
 
     if not next_url:
         raise RuntimeError(f"[Codex] workspace/select 后找不到下一跳 URL: status={resp.status_code}")
+
+    logger.info(
+        "[Codex] 工作区后续跳转 source=%s target=%s",
+        next_source,
+        _login_target_for_log(next_url, base_url=response_url),
+    )
+    next_url, _ = _login_target(next_url, base_url=response_url)
 
     # 跟随重定向链直到命中 callback
     callback_url = _follow_until_callback(session, next_url, state)
@@ -2112,7 +2143,7 @@ def run_codex_oauth(
                 )
                 break
             elif login_step == "callback":
-                callback_url, is_callback = _trusted_login_target(login_continue)
+                callback_url, is_callback = _login_target(login_continue)
                 if not is_callback:
                     raise RuntimeError("[Codex] 服务端 callback 地址未获确认")
                 break
