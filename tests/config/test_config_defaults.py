@@ -247,7 +247,11 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
         self.assertEqual("账号补全", fields["OPENAI_PROTOCOL_VERSION"]["group"])
         self.assertEqual("str", fields["OPENAI_PROTOCOL_VERSION"]["type"])
         self.assertEqual("刷新 AT 协议版本", fields["OPENAI_PROTOCOL_VERSION"]["label"])
-        self.assertIn("仅在刷新 AT 驱动为协议时选择 v1/v2", fields["OPENAI_PROTOCOL_VERSION"]["help"])
+        help_text = fields["OPENAI_PROTOCOL_VERSION"]["help"]
+        for version in ("v1", "v2", "v3"):
+            self.assertIn(version, help_text)
+        self.assertIn("仅影响协议刷新 AT", help_text)
+        self.assertIn("Roxy、注册、2FA、套餐和普通查活不读取此配置", help_text)
         self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", fields)
         self.assertNotIn("ACCOUNT_AUTH_V2_ENABLED", fields)
         self.assertEqual("v1", openai_protocol_config.OPENAI_PROTOCOL_VERSION)
@@ -674,18 +678,21 @@ class ConfigDefaultFallbackTests(unittest.TestCase):
             self.assertEqual(module.REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS, 45)
         importlib.reload(importlib.import_module("config.registration_debug"))
 
-    def test_icloud_hme_fields_are_webui_editable(self):
+    def test_icloud_hme_inbox_fields_are_editable_and_supply_fields_are_retired(self):
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         expected = {
-            "ICLOUD_HME_API_BASE", "ICLOUD_HME_ACCOUNT_ID", "ICLOUD_HME_API_TOKEN",
-            "ICLOUD_HME_REQUEST_TIMEOUT", "ICLOUD_HME_SYNC_TTL",
+            "ICLOUD_HME_API_BASE", "ICLOUD_HME_API_TOKEN", "ICLOUD_HME_REQUEST_TIMEOUT",
             "ICLOUD_HME_INBOX_MODE", "ICLOUD_HME_FORWARD_IMAP_SERVER",
             "ICLOUD_HME_BUTLER_BRIDGE_ENABLED",
             "ICLOUD_HME_FORWARD_IMAP_PORT", "ICLOUD_HME_FORWARD_IMAP_EMAIL",
             "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
-            "ICLOUD_HME_AUTO_CREATE", "ICLOUD_HME_CREATE_LABEL_PREFIX",
         }
         self.assertTrue(expected.issubset(fields))
+        retired = {
+            "ICLOUD_HME_ACCOUNT_ID", "ICLOUD_HME_SYNC_TTL",
+            "ICLOUD_HME_AUTO_CREATE", "ICLOUD_HME_CREATE_LABEL_PREFIX",
+        }
+        self.assertTrue(retired.isdisjoint(fields))
         self.assertEqual(fields["ICLOUD_HME_API_BASE"]["group"], "邮箱 / OTP")
         self.assertTrue(fields["ICLOUD_HME_API_TOKEN"]["secret"])
         self.assertTrue(fields["ICLOUD_HME_FORWARD_IMAP_PASSWORD"]["secret"])

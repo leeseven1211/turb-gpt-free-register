@@ -44,8 +44,9 @@ class FeatureAvailabilityTests(PostgresTestCase):
         empty = {name: {'enabled': False, 'available': 0} for name in
                  ('email_butler', 'cloudflare', 'icloud_hide')}
         with patch.object(feature_availability, '_email_source_features', return_value=empty), patch.multiple(
-            'config.email', EMAIL_BUTLER_API_BASE='https://butler.example/v1',
-            EMAIL_BUTLER_API_KEY='test-key', ICLOUD_HME_API_BASE='',
+            'config.email', EMAIL_BUTLER_API_BASE='', EMAIL_BUTLER_API_KEY='',
+            CLOUDFLARE_API_BASE='https://cloudflare.example.test',
+            CLOUDFLARE_SIGNAL_API_KEY='test-key', ICLOUD_HME_API_BASE='',
         ):
             result = feature_availability.feature_availability()
         self.assertTrue(result['features']['deactivation_mail']['enabled'])
@@ -54,9 +55,9 @@ class FeatureAvailabilityTests(PostgresTestCase):
     def test_fixed_read_profile_keeps_historical_scan_available(self):
         from core.storage import records as record_store
         record_store.insert_row(record_store.EMAIL_INBOX_PROFILES, {
-            'inbox_key': 'historical-only', 'connector': 'forward_butler',
+            'inbox_key': 'historical-only', 'connector': 'forward_imap',
             'credential_ref': 'HISTORICAL_READ_TEST_KEY', 'revision': 1, 'state': 'active',
-            'inbox_locator': {'api_base': 'https://old.example/v1', 'mailbox_email': 'final@example.test'},
+            'inbox_locator': {'server': 'imap.example.test', 'email': 'final@example.test'},
         })
         with patch.object(feature_availability, '_email_source_features', return_value={}), patch.multiple(
             'config.email', EMAIL_BUTLER_API_BASE='', EMAIL_BUTLER_API_KEY='',
