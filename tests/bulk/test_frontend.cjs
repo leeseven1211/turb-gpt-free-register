@@ -54,15 +54,32 @@ test('导航与轮次保留超出JS安全整数的字符串ID',()=>{
   const ctx=context();ctx.BulkTasks.restoreNavigation({tab:'bulk',view:'detail',batch_id:'9007199254740993',round_id:'9007199254740997'});
   assert.equal(ctx.BulkTasks.navigationState().batch_id,'9007199254740993');assert.equal(ctx.BulkTasks.navigationState().round_id,'9007199254740997');
 });
-test('找回预览同时恢复原功能范围和参数，不把旧名单装入新筛选',()=>{
+test('旧详情筛选链接清除不匹配的游标，保留状态轮次和列表搜索',()=>{
+  const ctx=context();
+  for(const filters of [{q:'旧账号搜索'},{reason_code:'oauth_callback_exchange_timeout'},{q:'旧账号搜索',reason_code:'password_verify_http_error'}]){
+    ctx.BulkTasks.restoreNavigation({view:'detail',batch_id:'9007199254740993',round_id:'7',result_state:'failed',cursor:'old-filter-cursor',...filters});
+    const nav=ctx.BulkTasks.navigationState();
+    assert.equal(nav.cursor,'');assert.equal('q' in nav,false);assert.equal('reason_code' in nav,false);
+    assert.equal(nav.batch_id,'9007199254740993');assert.equal(nav.round_id,'7');assert.equal(nav.result_state,'failed');
+  }
+  ctx.BulkTasks.restoreNavigation({view:'detail',batch_id:'1',cursor:'current-cursor'});
+  assert.equal(ctx.BulkTasks.navigationState().cursor,'current-cursor');
+  ctx.BulkTasks.restoreNavigation({view:'list',q:'保留批次搜索',cursor:'list-cursor'});
+  assert.equal(ctx.BulkTasks.navigationState().q,'保留批次搜索');assert.equal(ctx.BulkTasks.navigationState().cursor,'list-cursor');
+});
+test('找回旧范围保留筛选和参数，移除数量上限并重新匹配全部账号',()=>{
   const ctx=context();
   const body={operation:{key:'plan_check',version:1},source:{kind:'query',query:{date_from:'2026-10-01',date_to:'2026-10-31',filters:{promotion:['none']},limit:500}},parameters:{timezone_offset_min:-480},expected_config_revision:'old'};
   ctx.BulkTasks.restoreSelectionRequest(body,{id:'71',state:'ready',target_count:500});
   const draft=JSON.parse(ctx.sessionStorage.getItem('turb_bulk_draft_v1'));
   const selected=JSON.parse(ctx.sessionStorage.getItem('turb_bulk_selection_v1'));
   assert.equal(draft.operation_key,'plan_check');assert.equal(draft.query.date_from,'2026-10-01');
-  assert.deepEqual(draft.query.filters.promotion,['none']);assert.equal(draft.limit,500);
-  assert.equal(draft.parameters.timezone_offset_min,-480);assert.equal(selected.id,'71');
+  assert.deepEqual(draft.query.filters.promotion,['none']);assert.equal(draft.query.limit,null);
+  assert.equal('limit' in draft,false);
+  assert.equal(draft.parameters.timezone_offset_min,-480);assert.equal(selected,null);
+  body.source.query.limit=null;
+  ctx.BulkTasks.restoreSelectionRequest(body,{id:'72',state:'ready',target_count:700});
+  assert.equal(JSON.parse(ctx.sessionStorage.getItem('turb_bulk_selection_v1')).id,'72');
 });
 test('超过40轮的历史分页在轮询后继续下一页并保留深链所选轮',async()=>{
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
@@ -201,18 +218,19 @@ function selectionSummaryContext() {
     '[data-bulk-create-summary]','[data-bulk-create-hint]','[data-bulk-side-count]','[data-bulk-side-warning]']
     .map(selector=>[selector,{textContent:'',hidden:false,disabled:false}]));
   nodes['[data-bulk-create-form]']={querySelectorAll:()=>[]};
-  const ctx={state:{draft:{source:null,limit:''},selection:null,matched:500},nodes,
+  const ctx={state:{draft:{source:null},selection:null,matched:500},nodes,
     $b:selector=>nodes[selector],renderSideSummary:()=>{}};
   vm.createContext(ctx);vm.runInContext(helper,ctx);return ctx;
 }
-test('执行摘要按数量上限展示本批数量，零匹配时禁用两种创建入口',()=>{
+test('执行摘要展示全部匹配数量，旧草稿上限不截断且零匹配禁用创建入口',()=>{
   const ctx=selectionSummaryContext();
   ctx.renderSelection();
   assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'500 个');
   assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,false);
   ctx.state.draft.limit='50';ctx.renderSelection();
-  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'50 个');
-  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,true);
+  assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'500 个');
+  assert.equal(ctx.nodes['[data-bulk-side-warning]'].hidden,false);
+  assert.equal(ctx.nodes['[data-bulk-create-hint]'].textContent,'当前条件匹配 500 个账号，将全部执行');
   assert.equal(ctx.nodes['[data-bulk-submit]'].disabled,false);
   ctx.state.matched=0;ctx.renderSelection();
   assert.equal(ctx.nodes['[data-bulk-side-count]'].textContent,'0 个');
@@ -271,7 +289,7 @@ function createBatchContext() {
   const create=source.slice(source.indexOf('  async function createBatch('),source.indexOf('  function renderDetailShell('));
   const calls=[],errors=[],navigation=[];
   const state={epoch:1,nav:{view:'create'},selection:null,creating:false,draft:{name:'本批测试',operation_key:'plan_check',
-    query:{filters:{promotion:['none']}},limit:'5',max_concurrency:'3',parameters:{countries:['JP'],auto_refresh_at_enabled:false}}};
+    query:{filters:{promotion:['none']}},max_concurrency:'3',parameters:{countries:['JP'],auto_refresh_at_enabled:false}}};
   const ctx=context();
   Object.assign(ctx,{state,calls,errors,navigation,
     $b:()=>({reportValidity:()=>true}),operation:()=>({key:'plan_check',version:1,parameter_schema:{timezone_offset_min:{type:'integer'}}}),
@@ -285,11 +303,13 @@ function createBatchContext() {
 }
 test('直接创建会自动固定账号范围并等待就绪，无需先预览账号',async()=>{
   const ctx=createBatchContext();
+  ctx.state.draft.limit='5';ctx.state.draft.query.limit=2;
   await ctx.createBatch();
   assert.equal(ctx.errors.length,0);
   assert.deepEqual(ctx.calls.map(call=>[call.method,call.path]),[
     ['POST','/selections'],['GET','/selections/9007199254740993?page_size=1'],['POST','/batches']]);
-  assert.equal(ctx.calls[0].body.source.query.limit,5);
+  assert.equal(ctx.calls[0].body.source.query.limit,null);
+  assert.equal('limit' in ctx.state.draft,false);
   assert.deepEqual(ctx.calls[0].body.source.query.filters.promotion,['none']);
   const body=ctx.calls[2].body;
   assert.equal(body.selection_id,'9007199254740993');assert.equal(body.selection_revision,2);
@@ -298,6 +318,17 @@ test('直接创建会自动固定账号范围并等待就绪，无需先预览�
   assert.deepEqual(body.execution,{max_concurrency:3,start_paused:false});
   assert.deepEqual(ctx.navigation,[{view:'detail',batch_id:'9007199254740997'}]);
   assert.equal(ctx.state.creating,false);
+});
+test('旧草稿含数量上限时不复用已截断的固定范围',async()=>{
+  for(const oldLimit of [{limit:'5'},{query:{filters:{promotion:['none']},limit:5}}]){
+    const ctx=createBatchContext();Object.assign(ctx.state.draft,oldLimit);
+    ctx.state.selection={id:'limited-selection',state:'ready',target_count:5,selection_revision:1};
+    await ctx.createBatch();
+    assert.equal(ctx.errors.length,0);
+    assert.equal(ctx.calls[0].path,'/selections');
+    assert.equal(ctx.calls[0].body.source.query.limit,null);
+    assert.notEqual(ctx.calls.at(-1).body.selection_id,'limited-selection');
+  }
 });
 test('旧名单含隐藏操作参数时重新固定范围，纯时区名单仍可恢复',async()=>{
   for(const overrides of [{request_parameters:{countries:['US']}},{request_parameters:{},parameters:{auto_refresh_at_enabled:false}}]){
@@ -405,7 +436,7 @@ test('清空条件和退出固定名单后重新加载对应范围的可选项',
   }
   assert.equal(scheduled,2);
 });
-test('列表日期与结果错误分类面板均有明确关闭入口',()=>{
+test('列表日期筛选保留关闭入口，账号明细直接衔接状态标签与表格',()=>{
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
   const helper=source.slice(source.indexOf('  function popoverHeader('),source.indexOf('  function renderListShell('));
   const list=source.slice(source.indexOf('  function renderListShell('),source.indexOf('  async function loadList('));
@@ -413,7 +444,8 @@ test('列表日期与结果错误分类面板均有明确关闭入口',()=>{
   const host={innerHTML:''};const ctx={state:{nav:{}},host,$b:()=>host,operationNames:{},labels:{},terminal:[],
     optionsMarkup:()=>'',text:String,attrEsc:String,label:String};vm.createContext(ctx);vm.runInContext(helper+list+detail,ctx);
   ctx.renderListShell();assert.ok(host.innerHTML.includes('aria-label="关闭创建日期筛选"'));
-  ctx.renderDetailShell();assert.ok(host.innerHTML.includes('aria-label="关闭错误分类筛选"'));
+  ctx.renderDetailShell();assert.ok(!host.innerHTML.includes('data-bulk-results-form'));
+  assert.ok(host.innerHTML.includes('bulk-state-strip"></div><div data-bulk-targets'));
 });
 
 test('新建批次铺满布局、固定摘要和危险操作二次确认',()=>{

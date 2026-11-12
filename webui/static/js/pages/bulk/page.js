@@ -21,7 +21,7 @@ window.BulkTasks = (() => {
   function readSaved(key, fallback) { try {return JSON.parse(sessionStorage.getItem(key)) || fallback;} catch (_) {return fallback;} }
   function saveDraft() { try {sessionStorage.setItem('turb_bulk_draft_v1', JSON.stringify(state.draft));} catch (_) {} }
   function saveSelection() { try {if(state.selection)sessionStorage.setItem('turb_bulk_selection_v1',JSON.stringify(state.selection));else sessionStorage.removeItem('turb_bulk_selection_v1');} catch (_) {} }
-  function defaultDraft() {return {name:'',operation_key:'plan_check',query:AccountQuery.normalize(),source:null,parameters:{},max_concurrency:3,limit:''};}
+  function defaultDraft() {return {name:'',operation_key:'plan_check',query:AccountQuery.normalize(),source:null,parameters:{},max_concurrency:3};}
   function key() {return globalThis.crypto?.randomUUID?.() || `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`;}
   async function request(path, options = {}) {
     const response = await fetch(`/api/bulk${path}`, {credentials:'same-origin', ...options});
@@ -62,8 +62,9 @@ window.BulkTasks = (() => {
     const source=body.source||{};
     const query=AccountQuery.normalize(source.kind==='query'?source.query:{});
     state.draft={...defaultDraft(),operation_key:body.operation.key,query,
-      source:source.kind==='query'?null:source,parameters:{...(body.parameters||{})},limit:query.limit??''};
+      source:source.kind==='query'?null:source,parameters:{...(body.parameters||{})}};
     state.selection={...result,request_parameters:body.parameters||{},config_revision:body.expected_config_revision};
+    clearDraftLimit();
     saveDraft();saveSelection();
   }
   async function recover() {
@@ -135,6 +136,10 @@ window.BulkTasks = (() => {
   function navigationState() {return {...state.nav};}
   function restoreNavigation(nav) {
     state.nav = {...nav,result_state:resultState(nav.result_state),tab:'bulk',view:['list','create','detail'].includes(nav.view) ? nav.view : 'list'};
+    if(state.nav.view==='detail'){
+      if(state.nav.q||state.nav.reason_code)state.nav.cursor='';
+      delete state.nav.q;delete state.nav.reason_code;
+    }
     state.epoch++; state.loading=false;state.listCursor=nav.view==='list'?(nav.cursor||''):'';state.listPrev=[]; state.targetPrev=[];state.selected.clear();state.targets=null;state.detail=null;state.rounds=[];state.roundsCursor=null;
   }
   function navigate(view, extra = {}) {
@@ -182,9 +187,16 @@ window.BulkTasks = (() => {
   function operationLabel(value) {return operations().find(item=>item.key===value)?.label || operationNames[value] || value || '批量操作';}
   function shell() {
     const root=document.getElementById('tab-bulk');
-    root.innerHTML=`<div class="bulk-page"><header class="bulk-heading"><div class="bulk-heading-copy"><button type="button" class="bulk-back" data-bulk-action="list" aria-label="返回批次列表" ${state.nav.view==='list'?'hidden':''}>←</button><div><h2 data-bulk-title>批次列表</h2><p data-bulk-subtitle></p></div></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="refresh">刷新</button><button type="button" class="jobs-tb-btn ${state.nav.view==='list'?'jobs-tb-btn--primary':''}" data-bulk-action="new">新建批次</button></div></header><p class="bulk-error" data-bulk-error role="alert" hidden></p><p class="bulk-notice" data-bulk-notice role="status" hidden></p><div class="bulk-notice bulk-inline-fields" data-bulk-recovery hidden></div><div data-bulk-content></div><dialog class="bulk-confirm" data-bulk-confirm aria-labelledby="bulkConfirmTitle"><form method="dialog" class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkConfirmTitle" data-bulk-confirm-title>确认操作</strong><button type="button" class="bulk-confirm-close" data-bulk-confirm-cancel aria-label="关闭">×</button></div><p class="bulk-confirm-body" data-bulk-confirm-body></p><ul class="bulk-confirm-list" data-bulk-confirm-list hidden></ul><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-confirm-cancel>返回</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-confirm-ok>确认</button></div></form></dialog></div>`;
+    root.innerHTML=`<div class="bulk-page"><header class="bulk-heading"><div class="bulk-heading-copy"><button type="button" class="bulk-back" data-bulk-action="list" aria-label="返回批次列表" ${state.nav.view==='list'?'hidden':''}>←</button><div><h2 data-bulk-title>批次列表</h2><p data-bulk-subtitle></p></div></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="refresh">刷新</button><button type="button" class="jobs-tb-btn ${state.nav.view==='list'?'jobs-tb-btn--primary':''}" data-bulk-action="new">新建批次</button></div></header><p class="bulk-error" data-bulk-error role="alert" hidden></p><p class="bulk-notice" data-bulk-notice role="status" hidden></p><div class="bulk-notice bulk-inline-fields" data-bulk-recovery hidden></div><div data-bulk-content></div><dialog class="bulk-confirm" data-bulk-confirm aria-labelledby="bulkConfirmTitle"><form method="dialog" class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkConfirmTitle" data-bulk-confirm-title>确认操作</strong><button type="button" class="bulk-confirm-close" data-bulk-confirm-cancel aria-label="关闭">×</button></div><p class="bulk-confirm-body" data-bulk-confirm-body></p><ul class="bulk-confirm-list" data-bulk-confirm-list hidden></ul><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-confirm-cancel>返回</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-confirm-ok>确认</button></div></form></dialog><dialog class="bulk-confirm bulk-result-dialog" data-bulk-result-dialog aria-labelledby="bulkResultDetailTitle"><div class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkResultDetailTitle" data-bulk-result-title></strong><button type="button" class="bulk-confirm-close" data-bulk-action="close-cell-detail" aria-label="关闭完整内容">×</button></div><pre class="bulk-result-detail-content" data-bulk-result-content></pre><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="close-cell-detail">关闭</button></div></div></dialog></div>`;
     const dialog=$b('[data-bulk-confirm]');
     dialog?.addEventListener('click',event=>{if(event.target===dialog){dialog.returnValue='cancel';dialog.close();}});
+    const resultDialog=$b('[data-bulk-result-dialog]');
+    resultDialog?.addEventListener('click',event=>{if(event.target===resultDialog)resultDialog.close();});
+    resultDialog?.addEventListener('close',()=>{
+      const row=Array.from($b('[data-bulk-targets]')?.querySelectorAll('[data-bulk-row-target]')||[]).find(item=>item.dataset.bulkRowTarget===resultDialog.dataset.bulkRowTarget);
+      const trigger=Array.from(row?.querySelectorAll('[data-bulk-cell-detail]')||[]).find(item=>item.dataset.bulkCellDetail===resultDialog.dataset.bulkCellDetail);
+      (trigger||$b('[data-bulk-select-page]'))?.focus({preventScroll:true});
+    });
   }
   async function activate() {
     clearTimeout(state.timer);
@@ -192,6 +204,7 @@ window.BulkTasks = (() => {
     if (state.nav.view === 'create') {
       state.draft ||= readSaved('turb_bulk_draft_v1', defaultDraft());
       state.selection ||= readSaved('turb_bulk_selection_v1', null);
+      clearDraftLimit();
       state.draft.parameters={};
       if(selectionHasOverrides(state.selection)){state.selection=null;saveSelection();}
       saveDraft();
@@ -224,7 +237,7 @@ window.BulkTasks = (() => {
   function optionsMarkup(items, selected='') {return items.map(([value,name])=>`<option value="${attrEsc(value)}" ${value===selected?'selected':''}>${text(name)}</option>`).join('');}
   function popoverHeader(title) {return `<div class="bulk-filter-popover-heading"><strong>${text(title)}</strong><button type="button" data-bulk-close-popover aria-label="关闭${attrEsc(title)}筛选">完成</button></div>`;}
   function renderListShell() {
-    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-list-card"><div class="bulk-kpis" data-bulk-kpis hidden></div><form class="bulk-list-filters" data-bulk-list-form><label class="bulk-field bulk-search-field"><span class="bulk-sr-only">名称或批次号</span><input name="q" type="search" value="${attrEsc(state.nav.q||'')}" placeholder="搜索批次名称或编号"></label><label class="bulk-field"><span class="bulk-sr-only">操作</span><select name="operation" aria-label="操作"><option value="">全部操作</option>${optionsMarkup(Object.entries(operationNames),state.nav.operation||'')}</select></label><label class="bulk-field"><span class="bulk-sr-only">状态</span><select name="state" aria-label="状态"><option value="">全部状态</option>${optionsMarkup(['active','paused','cancel_requested','stop_requested','ended'].map(x=>[x,label(x)]),state.nav.state||'')}</select></label><details class="bulk-filter-popover bulk-list-dates"><summary>创建日期${state.nav.created_from||state.nav.created_to?'<span class="bulk-filter-dot"></span>':''}</summary><div class="bulk-filter-popover-panel">${popoverHeader("创建日期")}<label class="bulk-field">创建日期从<input type="date" name="created_from" value="${attrEsc(state.nav.created_from||'')}"></label><label class="bulk-field">创建日期至<input type="date" name="created_to" value="${attrEsc(state.nav.created_to||'')}"></label></div></details><div class="bulk-filter-actions"><button type="button" class="bulk-link" data-bulk-action="reset-filters">重置</button><button class="jobs-tb-btn" type="submit">查询</button></div></form><div data-bulk-list class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载批次…</div></div><nav class="bulk-pager" aria-label="批次分页"><span data-list-page>第 1 页</span><div class="bulk-pager-actions"><button class="jobs-tb-btn" data-bulk-action="list-prev" disabled>上一页</button><button class="jobs-tb-btn" data-bulk-action="list-next" disabled>下一页</button></div></nav></section>`;
+    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-list-card"><div class="bulk-kpis" data-bulk-kpis hidden></div><form class="bulk-list-filters" data-bulk-list-form><label class="bulk-field bulk-search-field"><span class="bulk-sr-only">名称或批次号</span><input name="q" type="search" value="${attrEsc(state.nav.q||'')}" placeholder="搜索批次名称或编号"></label><label class="bulk-field"><span class="bulk-sr-only">操作</span><select name="operation" aria-label="操作"><option value="">全部操作</option>${optionsMarkup(Object.entries(operationNames),state.nav.operation||'')}</select></label><label class="bulk-field"><span class="bulk-sr-only">状态</span><select name="state" aria-label="状态"><option value="">全部状态</option>${optionsMarkup(['active','paused','cancel_requested','stop_requested','ended'].map(x=>[x,label(x)]),state.nav.state||'')}</select></label><details class="bulk-filter-popover bulk-list-dates"><summary>创建日期${state.nav.created_from||state.nav.created_to?'<span class="bulk-filter-dot"></span>':''}</summary><div class="bulk-filter-popover-panel">${popoverHeader("创建日期")}<label class="bulk-field">创建日期从<input type="date" name="created_from" value="${attrEsc(state.nav.created_from||'')}"></label><label class="bulk-field">创建日期至<input type="date" name="created_to" value="${attrEsc(state.nav.created_to||'')}"></label></div></details><div class="bulk-filter-actions"><button type="button" class="bulk-link" data-bulk-action="reset-filters">重置</button><button class="jobs-tb-btn" type="submit">查询</button></div></form><div data-bulk-list class="bulk-table-wrap" tabindex="0" role="region" aria-label="批次列表"><div class="bulk-empty" role="status">正在加载批次…</div></div><nav class="bulk-pager" aria-label="批次分页"><span data-list-page>第 1 页</span><div class="bulk-pager-actions"><button class="jobs-tb-btn" data-bulk-action="list-prev" disabled>上一页</button><button class="jobs-tb-btn" data-bulk-action="list-next" disabled>下一页</button></div></nav></section>`;
   }
   async function loadList(force) {
     if(state.loading)return;busy(true);const epoch=state.epoch;
@@ -261,11 +274,12 @@ window.BulkTasks = (() => {
     const updated=state.listFetchedAt?new Date(state.listFetchedAt).toLocaleTimeString('zh-CN',{hour12:false}):'—';
     renderKpis(data);
     const subtitle=$b('[data-bulk-subtitle]');
-    if(subtitle){const summary=data.summary||{};subtitle.textContent=[`${Number(summary.total_batches??rows.length)} 个批次`,Number(summary.active_batches)?`${summary.active_batches} 个执行中`:''].filter(Boolean).join(' · ');}
-    preserveMarkup(host,rows.length?`<table class="bulk-table bulk-batch-table"><thead><tr><th>批次</th><th>状态</th><th>完成进度</th><th>当前结果</th><th>创建时间</th><th><span class="bulk-sr-only">操作</span></th></tr></thead><tbody>${rows.map(item=>{
+    if(subtitle)subtitle.textContent='';
+    preserveMarkup(host,rows.length?`<table class="bulk-table bulk-batch-table"><thead><tr><th>ID</th><th>批次名称</th><th>操作类型</th><th>状态</th><th>完成进度</th><th>当前结果</th><th>创建时间</th><th><span class="bulk-sr-only">操作</span></th></tr></thead><tbody>${rows.map(item=>{
       const counts=resultCounts(item.summary||item.counts||{});const done=terminal.reduce((sum,k)=>sum+Number(counts[k]||0),0);const total=Number(item.target_count||0);const progress=total?Math.min(100,Math.round(done/total*100)):0;const finished=progress>=100||String(item.control?.state||item.control_state||item.state)==='ended';
       const pill=(key,className,title)=>{const n=Number(counts[key]||0);return `<button class="bulk-pill ${className}${n?'':' is-zero'}" data-bulk-open="${attrEsc(item.id)}" data-result-state="${key}" ${n?'':'disabled'}>${title} <b>${n}</b></button>`;};
-      return `<tr><td class="bulk-cell-name" data-label="批次"><button class="bulk-batch-name" data-bulk-open="${attrEsc(item.id)}">${text(item.name||item.title||`批次 #${item.id}`)}</button><small>#${text(item.id)} · ${text(operationLabel(item.operation?.key||item.operation_key||item.action_key))}</small></td><td class="bulk-cell-state" data-label="状态">${badge(item.control?.paused||item.is_paused?'paused':item.control?.state||item.control_state||item.state)}</td><td class="bulk-cell-progress" data-label="完成进度"><div class="bulk-progress-caption"><span>${done} / ${total}</span><span>${progress}%</span></div><progress class="bulk-progress${finished?' is-done':''}" value="${done}" max="${Math.max(1,total)}" aria-label="已结束 ${done} 个，共 ${total} 个"></progress></td><td class="bulk-cell-result" data-label="当前结果"><div class="bulk-result-links">${pill('success','is-success','成功')}${pill('failed','is-failed','失败')}</div></td><td class="bulk-cell-date" data-label="创建时间">${text(shortDate(item.created_at))}</td><td class="bulk-cell-open" data-label="操作"><button class="bulk-open-arrow" data-bulk-open="${attrEsc(item.id)}" aria-label="打开批次详情">→</button></td></tr>`;
+      const name=item.name||item.title||`批次 #${item.id}`;
+      return `<tr><td class="bulk-cell-id" data-label="ID" title="#${attrEsc(item.id)}">#${text(item.id)}</td><td class="bulk-cell-name" data-label="批次名称"><button class="bulk-batch-name" data-bulk-open="${attrEsc(item.id)}" title="${attrEsc(name)}">${text(name)}</button></td><td class="bulk-cell-operation" data-label="操作类型">${text(operationLabel(item.operation?.key||item.operation_key||item.action_key))}</td><td class="bulk-cell-state" data-label="状态">${badge(item.control?.paused||item.is_paused?'paused':item.control?.state||item.control_state||item.state)}</td><td class="bulk-cell-progress" data-label="完成进度"><div class="bulk-batch-progress"><span class="bulk-progress-count">${done} / ${total}</span><progress class="bulk-progress${finished?' is-done':''}" value="${done}" max="${Math.max(1,total)}" aria-label="已结束 ${done} 个，共 ${total} 个"></progress><span class="bulk-progress-percent">${progress}%</span></div></td><td class="bulk-cell-result" data-label="当前结果"><div class="bulk-result-links">${pill('success','is-success','成功')}${pill('failed','is-failed','失败')}</div></td><td class="bulk-cell-date" data-label="创建时间">${text(shortDate(item.created_at))}</td><td class="bulk-cell-open" data-label="操作"><button class="bulk-open-arrow" data-bulk-open="${attrEsc(item.id)}" aria-label="打开批次详情">→</button></td></tr>`;
     }).join('')}</tbody></table>`:`<div class="bulk-empty"><strong>还没有${state.nav.q||state.nav.operation||state.nav.state?'匹配的':''}批次</strong><p>选择操作和账号范围，即可集中执行与追踪结果。</p><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new">新建批次</button></div>`);
     $b('[data-bulk-action="list-prev"]').disabled=!state.listPrev.length;
     $b('[data-bulk-action="list-next"]').disabled=!data.next_cursor;
@@ -284,7 +298,6 @@ window.BulkTasks = (() => {
     else if(source?.kind==='batch_targets')scope=`批次 #${source.batch_id} 的固定名单`;
     else if(draft.query?.filters?.email)scope=`邮箱含「${draft.query.filters.email}」`;
     set('[data-bulk-side-scope]',scope);
-    set('[data-bulk-side-limit]',source?'按固定名单':draft.limit?`${Number(draft.limit)} 个`:'全部匹配');
     set('[data-bulk-side-concurrency]',String(Number(draft.max_concurrency||3)));
   }
   function renderCreate() {
@@ -315,14 +328,13 @@ window.BulkTasks = (() => {
           <div class="bulk-step-head"><span class="bulk-step-no">3</span><div><h3>账号范围</h3><p class="bulk-section-note">与账号列表使用同一套筛选</p></div><button type="button" class="bulk-link" data-bulk-action="clear-filters">清空条件</button></div>
           ${source?`<div class="bulk-source-banner"><span>${source.kind==='ids'?'使用已选账号':'沿用批次 #'+text(source.batch_id)+' 的账号名单'}</span><button type="button" class="bulk-link" data-bulk-action="use-query">改为按条件筛选</button></div>`:''}
           <div data-bulk-filters ${source?'hidden':''}></div>
-          <div class="bulk-range-row" ${source?'hidden':''}><label class="bulk-field bulk-limit-field">最多处理数量<input name="limit" type="number" min="1" max="${Number(state.catalog?.limits?.target_limit_max||100000)}" value="${attrEsc(draft.limit||'')}" placeholder="全部匹配"></label><p class="bulk-muted">留空表示全部匹配账号；按账号 ID 从大到小固定。</p></div>
         </section>
       </div>
       <aside class="bulk-card bulk-create-side"><div class="bulk-side-sticky">
         <div class="bulk-side-heading"><div><span class="bulk-side-kicker">执行摘要</span><strong data-bulk-create-summary>正在匹配账号数量…</strong></div></div>
         <div class="bulk-side-big" data-bulk-side-count role="status" aria-live="polite" aria-atomic="true">匹配中</div>
         <p class="bulk-side-hint" data-bulk-create-hint>根据当前筛选统计账号数量</p>
-        <dl class="bulk-side-meta"><div><dt>操作</dt><dd data-bulk-side-operation>—</dd></div><div><dt>范围</dt><dd data-bulk-side-scope>—</dd></div><div><dt>数量上限</dt><dd data-bulk-side-limit>全部匹配</dd></div><div><dt>本批并发</dt><dd data-bulk-side-concurrency>3</dd></div></dl>
+        <dl class="bulk-side-meta"><div><dt>操作</dt><dd data-bulk-side-operation>—</dd></div><div><dt>范围</dt><dd data-bulk-side-scope>—</dd></div><div><dt>本批并发</dt><dd data-bulk-side-concurrency>3</dd></div></dl>
         <p class="bulk-side-warning" data-bulk-side-warning hidden></p>
         <p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p>
         <div class="bulk-side-actions"><button type="submit" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-submit>创建并执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="create-paused">创建并暂停</button></div>
@@ -346,11 +358,18 @@ window.BulkTasks = (() => {
     if(operation()?.parameter_schema?.timezone_offset_min || operation()?.parameter_schema?.properties?.timezone_offset_min)result.timezone_offset_min=new Date().getTimezoneOffset();
     return result;
   }
+  function clearDraftLimit() {
+    const draft=state.draft;if(!draft)return;
+    const limitedQuery=!draft.source&&(draft.limit||draft.query?.limit);
+    delete draft.limit;
+    draft.query=AccountQuery.normalize({...draft.query,limit:null});
+    if(limitedQuery){state.selection=null;saveSelection();}
+  }
   function selectionHasOverrides(selection) {
     return [selection?.request_parameters,selection?.parameters].some(values=>Object.keys(values||{}).some(name=>name!=='timezone_offset_min'||state.draft?.operation_key!=='plan_check'));
   }
   async function prepareSelection(epoch) {
-    const query=AccountQuery.normalize({...state.draft.query,limit:state.draft.limit||null});
+    const query=AccountQuery.normalize({...state.draft.query,limit:null});
     const body={operation:{key:state.draft.operation_key,version:operation()?.version||1},source:state.draft.source||{kind:'query',query},parameters:parameters(),expected_config_revision:configRevision()};
     const result=await intent('selection','/selections',body);
     if(epoch!==state.epoch)return false;
@@ -368,14 +387,14 @@ window.BulkTasks = (() => {
     const selection=state.selection;const status=selection?.state||selection?.status;
     const ready=status==='ready';const source=state.draft?.source;
     const matched=source?.kind==='ids'?source.ids.length:source?null:state.matched;
-    const count=ready?Number(selection.target_count??selection.total_count):matched==null?null:source?Number(matched):Math.min(Number(matched),Number(state.draft?.limit)||Infinity);
+    const count=ready?Number(selection.target_count??selection.total_count):matched==null?null:Number(matched);
     const creating=Boolean(state.creating);
     const disabled=creating||count===0;
     const submit=$b('[data-bulk-submit]');if(submit){submit.disabled=disabled;submit.textContent=creating?'正在创建批次…':'创建并执行';}
     const paused=$b('[data-bulk-action="create-paused"]');if(paused){paused.disabled=disabled;paused.textContent=creating?'正在创建批次…':'创建并暂停';}
     const summary=$b('[data-bulk-create-summary]');if(summary)summary.textContent=creating?'正在固定账号范围…':ready?'账号范围已固定':count===0?'没有匹配账号':'匹配账号数量';
     const hint=$b('[data-bulk-create-hint]');
-    if(hint)hint.textContent=creating?'正在准备本批次，请稍候':ready?'将使用这份固定名单创建批次':count===0?'请调整账号筛选条件':source?.kind==='batch_targets'?'创建时沿用原批次固定名单':source?.kind==='ids'?'将使用已选账号创建批次':matched==null?'正在统计，创建时会核对最终数量':`当前条件匹配 ${matched} 个账号${state.draft?.limit?'，已应用数量上限':''}`;
+    if(hint)hint.textContent=creating?'正在准备本批次，请稍候':ready?'将使用这份固定名单创建批次':count===0?'请调整账号筛选条件':source?.kind==='batch_targets'?'创建时沿用原批次固定名单':source?.kind==='ids'?'将使用已选账号创建批次':matched==null?'正在统计，创建时会核对最终数量':`当前条件匹配 ${matched} 个账号，将全部执行`;
     const sideCount=$b('[data-bulk-side-count]');if(sideCount)sideCount.textContent=count==null?(source?'创建时确认':'匹配中'):`${count} 个`;
     const warn=$b('[data-bulk-side-warning]');if(warn){warn.hidden=count==null||count<200;warn.textContent=count>=200?`本批将处理 ${count} 个账号。`:'';}
     const form=$b('[data-bulk-create-form]');
@@ -384,6 +403,7 @@ window.BulkTasks = (() => {
   }
   async function createBatch(startPaused=false) {
     const form=$b('[data-bulk-create-form]');if(state.creating||!form?.reportValidity())return;
+    clearDraftLimit();
     if(selectionHasOverrides(state.selection)){state.selection=null;saveSelection();}
     clearError();state.creating=true;renderSelection();const epoch=state.epoch;
     try {
@@ -413,7 +433,7 @@ window.BulkTasks = (() => {
     } finally {state.creating=false;if(state.nav.view==='create')renderSelection();}
   }
   function renderDetailShell() {
-    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-overview"><div class="bulk-detail-toolbar"><div data-bulk-detail-meta></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select data-bulk-view aria-label="结果视图"><option value="current">当前结果</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" disabled>更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query">复制条件新建</button></div></div><div class="bulk-control-strip" data-bulk-control-strip><div class="bulk-control-copy"><strong>运行控制</strong><span data-bulk-control-note>只影响当前批次，已开始执行会协作收尾</span></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="pause">暂停批次</button><button type="button" class="jobs-tb-btn" data-bulk-action="resume" disabled>继续批次</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="cancel">取消排队账号</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="stop">停止正在执行</button></div></div><div data-bulk-stats class="bulk-summary-grid"></div><p class="bulk-view-note" data-bulk-view-note></p><div data-bulk-business></div></section><section class="bulk-card bulk-results-card"><div class="bulk-results-heading"><h3>账号明细 <span data-bulk-selected></span><button type="button" class="bulk-link" data-bulk-action="clear-selection" disabled>清空选择</button></h3><div class="bulk-retry-toolbar"><select data-bulk-retry-states aria-label="重跑范围">${optionsMarkup([['failed','失败'],['partial_success','部分成功'],['not_executed','未执行'],['cancelled','已取消'],['unsuccessful','全部未成功']])}</select><button class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="retry">重跑失败</button><button class="jobs-tb-btn" data-bulk-action="retry-selected" disabled>重跑勾选</button></div></div><p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p><div data-bulk-state-strip class="bulk-state-strip"></div><form data-bulk-results-form class="bulk-results-filters"><label class="bulk-field bulk-search-field"><span class="bulk-sr-only">账号搜索</span><input type="search" name="q" value="${attrEsc(state.nav.q||'')}" placeholder="搜索本批账号"></label><label class="bulk-field bulk-state-picker"><span class="bulk-sr-only">结果</span><select name="state" aria-label="结果"><option value="">全部结果</option>${optionsMarkup(Object.entries(labels).filter(([k])=>['pending_submit','waiting_account','queued','running','waiting',...terminal].includes(k)),state.nav.result_state||'')}</select></label><details class="bulk-filter-popover"><summary>错误分类${state.nav.reason_code?'<span class="bulk-filter-dot"></span>':''}</summary><div class="bulk-filter-popover-panel">${popoverHeader("错误分类")}<label class="bulk-field">原因码<input name="reason_code" value="${attrEsc(state.nav.reason_code||'')}" placeholder="输入原因码"></label></div></details><button class="jobs-tb-btn" type="submit">筛选</button></form><div data-bulk-targets class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载账号结果…</div></div><nav class="bulk-pager" aria-label="账号结果分页"><button class="jobs-tb-btn" data-bulk-action="target-prev" disabled>上一页</button><span data-target-page>第 1 页</span><button class="jobs-tb-btn" data-bulk-action="target-next" disabled>下一页</button></nav></section>`;
+    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-overview"><div class="bulk-detail-toolbar"><div data-bulk-detail-meta></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select data-bulk-view aria-label="结果视图"><option value="current">当前结果</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" disabled>更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query">复制条件新建</button></div></div><div class="bulk-control-strip" data-bulk-control-strip><div class="bulk-control-copy"><strong>运行控制</strong><span data-bulk-control-note>只影响当前批次，已开始执行会协作收尾</span></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="pause">暂停批次</button><button type="button" class="jobs-tb-btn" data-bulk-action="resume" disabled>继续批次</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="cancel">取消排队账号</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="stop">停止正在执行</button></div></div><div data-bulk-stats class="bulk-summary-grid"></div><p class="bulk-view-note" data-bulk-view-note></p><div data-bulk-business></div></section><section class="bulk-card bulk-results-card"><div class="bulk-results-heading"><h3>账号明细 <span data-bulk-selected></span><button type="button" class="bulk-link" data-bulk-action="clear-selection" disabled>清空选择</button></h3><div class="bulk-retry-toolbar"><select data-bulk-retry-states aria-label="重跑范围">${optionsMarkup([['failed','失败'],['partial_success','部分成功'],['not_executed','未执行'],['cancelled','已取消'],['unsuccessful','全部未成功']])}</select><button class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="retry">重跑失败</button><button class="jobs-tb-btn" data-bulk-action="retry-selected" disabled>重跑勾选</button></div></div><p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p><div data-bulk-state-strip class="bulk-state-strip"></div><div data-bulk-targets class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载账号结果…</div></div><nav class="bulk-pager" aria-label="账号结果分页"><button class="jobs-tb-btn" data-bulk-action="target-prev" disabled>上一页</button><span data-target-page>第 1 页</span><button class="jobs-tb-btn" data-bulk-action="target-next" disabled>下一页</button></nav></section>`;
   }
   function detailParams() {
     const params=new URLSearchParams({view:state.nav.round_id?'round':'current'});
@@ -494,8 +514,6 @@ window.BulkTasks = (() => {
   async function loadTargets(epoch=state.epoch,force=true) {
     const params=detailParams();params.set('page_size','50');if(state.nav.cursor)params.set('cursor',state.nav.cursor);
     if(state.nav.result_state)params.set('state[]',state.nav.result_state);
-    if(state.nav.reason_code)params.set('reason_code[]',state.nav.reason_code);
-    if(state.nav.q)params.set('q',state.nav.q);
     const data=await request(`/batches/${encodeURIComponent(state.nav.batch_id)}/targets?${params}`);
     if(epoch!==state.epoch)return;
     const changed=Boolean(state.targets&&JSON.stringify((data.items||[]).map(targetId))!==JSON.stringify((state.targets.items||[]).map(targetId)));
@@ -527,12 +545,20 @@ window.BulkTasks = (() => {
     const rows=state.targets?.items||[];
     const focused=document.activeElement?.dataset.bulkTarget;
     const selectedCount=rows.filter(row=>state.selected.has(targetId(row))).length;
-    preserveMarkup(host,rows.length?`<table class="bulk-table bulk-target-table"><thead><tr><th><input type="checkbox" data-bulk-select-page aria-label="选择当前页目标" ${selectedCount===rows.length&&rows.length?'checked':''}></th><th>账号</th><th>结果 / 阶段</th><th>结果摘要</th><th>错误分类</th><th>操作</th></tr></thead><tbody>${rows.map(row=>{
+    const detailCell=(title,value,content=value,className='')=>`<button type="button" class="bulk-cell-detail ${className}" data-bulk-cell-detail="${attrEsc(title)}" data-bulk-cell-content="${attrEsc(content)}" title="${attrEsc(value)}" aria-label="查看完整${attrEsc(title)}：${attrEsc(value)}">${text(value)}</button>`;
+    preserveMarkup(host,rows.length?`<table class="bulk-table bulk-target-table"><thead><tr><th><input type="checkbox" data-bulk-select-page aria-label="选择当前页目标" ${selectedCount===rows.length&&rows.length?'checked':''}></th><th>ID</th><th>账号</th><th>结果 / 阶段</th><th>结果摘要</th><th>错误分类</th><th>操作</th></tr></thead><tbody>${rows.map(row=>{
       const id=targetId(row);const projected=row.result||{};const result=projected.result||row.result_summary||projected;const error=row.reason||projected.reason||row.error||row.error_info||{};const display=row.display_snapshot||row.display||{};
+      const accountId=row.account_id||display.account_id||display.id||row.entity_id||id;
+      const account=display.email||row.email||`账号 #${accountId}`;
       const taskId=row.task_id||row.owned_task_id||row.execution?.task_id||row.owned_runs?.[0]?.task_id;const runId=row.owned_run_id||row.run_id||row.execution?.run_id||row.owned_runs?.[0]?.run_id;
-      const summary=result.summary||result.message||row.result_label||row.summary_text||resultText(result);
+      const summary=result.summary||result.message||row.result_label||row.summary_text||resultText(result)||'等待本轮结果';
+      const capabilities=result.capabilities?Object.entries(result.capabilities).map(([k,v])=>`${operationLabel(k)}：${label(v.state||v.status)}`).join('\n'):'';
       const reason=error.summary||error.cause_summary||error.label||error.message||row.reason_label||row.reason_code||error.code||'';
-      return `<tr><td class="bulk-target-check" data-label="选择"><input type="checkbox" data-bulk-target="${attrEsc(id)}" ${state.selected.has(id)?'checked':''} aria-label="选择账号 ${attrEsc(display.email||row.account_id||id)}"></td><td class="bulk-target-account" data-label="账号"><strong>${text(display.email||row.email||`账号 #${row.account_id||display.account_id||id}`)}</strong><small>#${text(row.account_id||display.account_id||display.id||row.entity_id||id)}</small></td><td class="bulk-target-state" data-label="结果 / 阶段">${badge(row.state||row.outcome||row.status)}<small>${text(row.stage_label||row.current_stage_label||row.stage||'')}</small></td><td class="bulk-target-summary" data-label="结果摘要">${text(summary||'等待本轮结果')}${result.capabilities?`<details><summary>分项结果</summary>${Object.entries(result.capabilities).map(([k,v])=>`<p>${text(operationLabel(k))}：${text(label(v.state||v.status))}</p>`).join('')}</details>`:''}</td><td class="bulk-target-reason" data-label="错误分类">${reason?`<details><summary>${text(short(reason,60))}</summary><p class="bulk-error-detail">${text(error.summary||error.cause_summary||error.message||row.error_message||reason)}</p><small>${text(error.display_code||error.code||row.reason_code)}</small></details>`:'—'}</td><td class="bulk-target-actions" data-label="操作">${taskId?`<button type="button" class="jobs-tb-btn" data-bulk-task="${attrEsc(taskId)}" data-bulk-run="${attrEsc(runId||'')}">查看执行</button>`:'尚未创建执行'}${row.blocker_task_id?`<button class="bulk-link" data-bulk-task="${attrEsc(row.blocker_task_id)}">查看占用任务（其他执行）</button>`:''}</td></tr>`;
+      const reasonContent=[error.summary||error.cause_summary||error.message||row.error_message||reason,error.display_code||error.code||row.reason_code].filter(Boolean).join('\n');
+      const stage=String(row.stage_label||row.current_stage_label||row.stage||'').trim();
+      const hasStage=stage&&stage!=='—'&&stage!=='-';
+      const status=row.state||row.outcome||row.status;
+      return `<tr data-bulk-row-target="${attrEsc(id)}"><td class="bulk-target-check" data-label="选择"><input type="checkbox" data-bulk-target="${attrEsc(id)}" ${state.selected.has(id)?'checked':''} aria-label="选择账号 ${attrEsc(account)}"></td><td class="bulk-target-id" data-label="ID">${detailCell('账号 ID',`#${accountId}`)}</td><td class="bulk-target-account" data-label="账号">${detailCell('账号',account,`账号 ID：${accountId}\n${account}`)}</td><td class="bulk-target-state" data-label="结果 / 阶段"><div class="bulk-target-status-line">${badge(status)}${hasStage?detailCell('当前阶段',stage,`${label(status)} · ${stage}`,'bulk-target-stage'):''}</div></td><td class="bulk-target-summary" data-label="结果摘要">${detailCell('结果摘要',summary,[summary,capabilities].filter(Boolean).join('\n'))}</td><td class="bulk-target-reason" data-label="错误分类">${reason?detailCell('错误分类',reason,reasonContent):'—'}</td><td class="bulk-target-actions" data-label="操作"><div class="bulk-target-action-line">${taskId?`<button type="button" class="jobs-tb-btn" data-bulk-task="${attrEsc(taskId)}" data-bulk-run="${attrEsc(runId||'')}">查看执行</button>`:'尚未创建执行'}${row.blocker_task_id?`<button type="button" class="bulk-link" data-bulk-task="${attrEsc(row.blocker_task_id)}" title="查看占用任务（其他执行）">查看占用</button>`:''}</div></td></tr>`;
     }).join('')}</tbody></table>`:'<div class="bulk-empty">当前条件下没有目标。更改结果筛选不会改变本批固定名单。</div>');
     if(focused)Array.from(host.querySelectorAll('[data-bulk-target]')).find(x=>x.dataset.bulkTarget===focused)?.focus({preventScroll:true});
     const pageBox=$b('[data-bulk-select-page]');if(pageBox){pageBox.checked=Boolean(rows.length)&&selectedCount===rows.length;pageBox.indeterminate=selectedCount>0&&selectedCount<rows.length;}
@@ -598,13 +624,14 @@ window.BulkTasks = (() => {
     state.draft={...defaultDraft(),operation_key:data.operation?.key||data.operation_key||data.action_key||'plan_check',query:AccountQuery.normalize(query),source:fixed?{kind:'batch_targets',batch_id:state.nav.batch_id,selection:{kind:'all'}}:null};state.selection=null;saveSelection();saveDraft();navigate('create');
   }
   async function action(name) {
-    if(name==='recover')await recover();
+    if(name==='close-cell-detail')$b('[data-bulk-result-dialog]')?.close();
+    else if(name==='recover')await recover();
     else if(name==='new'){state.draft=defaultDraft();state.selection=null;saveSelection();saveDraft();navigate('create');}
     else if(name==='list')navigate('list');
     else if(name==='refresh'){clearError();if(state.nav.view==='list')await loadList(true);else if(state.nav.view==='detail')await loadDetail(true);else{await ensureCatalog(true);renderCreate();if(state.selection)await pollSelection();scheduleFacets();}}
     else if(name==='create-paused')await createBatch(true);
     else if(name==='all-results')updateNavigation({result_state:'',cursor:''});
-    else if(name==='clear-filters'||name==='use-query'){state.draft.query=AccountQuery.normalize();state.draft.source=null;state.draft.limit='';state.matched=null;invalidateSelection();saveDraft();renderCreate();scheduleFacets();}
+    else if(name==='clear-filters'||name==='use-query'){state.draft.query=AccountQuery.normalize();state.draft.source=null;state.matched=null;invalidateSelection();saveDraft();renderCreate();scheduleFacets();}
     else if(name==='reset-filters'){state.nav={...state.nav,q:'',operation:'',state:'',created_from:'',created_to:'',cursor:''};state.listCursor='';state.listPrev=[];recordNavigationHistory('replace');renderListShell();void loadList(true);}
     else if(name==='list-next'&&state.list?.next_cursor){state.listPrev.push(state.listCursor);state.listCursor=state.list.next_cursor;state.nav.cursor=state.listCursor;recordNavigationHistory('replace');await loadList(true);}
     else if(name==='list-prev'){state.listCursor=state.listPrev.pop()||'';state.nav.cursor=state.listCursor;recordNavigationHistory('replace');await loadList(true);}
@@ -623,6 +650,7 @@ window.BulkTasks = (() => {
   document.getElementById('tab-bulk')?.addEventListener('click',event=>{
     const button=event.target.closest('button');if(!button||button.disabled)return;
     if(button.hasAttribute('data-bulk-close-popover')){const details=button.closest('details');details.open=false;details.querySelector('summary').focus({preventScroll:true});return;}
+    if(button.dataset.bulkCellDetail){const dialog=$b('[data-bulk-result-dialog]');if(dialog){dialog.dataset.bulkRowTarget=button.closest('[data-bulk-row-target]')?.dataset.bulkRowTarget||'';dialog.dataset.bulkCellDetail=button.dataset.bulkCellDetail;$b('[data-bulk-result-title]').textContent=button.dataset.bulkCellDetail;$b('[data-bulk-result-content]').textContent=button.dataset.bulkCellContent;dialog.showModal();}return;}
     if(button.dataset.bulkAction){event.preventDefault();Promise.resolve(action(button.dataset.bulkAction)).catch(e=>report(e));}
     else if(button.dataset.bulkOpen)navigate('detail',{batch_id:button.dataset.bulkOpen,result_state:button.dataset.resultState||''});
     else if(button.dataset.bulkStat)updateNavigation({result_state:state.nav.result_state===button.dataset.bulkStat?'':button.dataset.bulkStat,cursor:''});
@@ -637,12 +665,11 @@ window.BulkTasks = (() => {
     event.preventDefault();const form=event.target;
     if(form.matches('[data-bulk-create-form]'))void createBatch();
     if(form.matches('[data-bulk-list-form]')){const values=Object.fromEntries(new FormData(form));state.nav={tab:'bulk',view:'list',...values};state.epoch++;state.loading=false;state.listCursor='';state.listPrev=[];recordNavigationHistory('push');void loadList(true);}
-    if(form.matches('[data-bulk-results-form]')){const values=Object.fromEntries(new FormData(form));updateNavigation({result_state:values.state,q:values.q,reason_code:values.reason_code,cursor:''});}
   });
   document.getElementById('tab-bulk')?.addEventListener('input',event=>{
     if(!event.target.closest('[data-bulk-create-form]'))return;
     const input=event.target;
-    if(['name','max_concurrency','limit'].includes(input.name)){state.draft[input.name]=input.value;if(input.name==='limit')invalidateSelection();}
+    if(['name','max_concurrency'].includes(input.name)){state.draft[input.name]=input.value;}
     else return;
     renderSelection();
     saveDraft();
