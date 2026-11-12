@@ -668,3 +668,29 @@ body.ew-drawer-open { overflow: hidden; }
   .extract-workbench-page .ew-foot { flex-wrap: wrap; }
 }
 .extract-workbench-page .ew-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+
+/* 工作台已有概览、平台、操作、列表四段，列表独立滚动，前面三段按实际内容占高。 */
+.extract-workbench-page { grid-template-rows: auto auto auto minmax(0, 1fr); }
+.extract-workbench-page .ew-plats { min-width: 0; align-items: start; }
+.extract-workbench-page .extract-workbench-list { display: flex; flex-direction: column; }
+.extract-workbench-page .ew-tabsbar,
+.extract-workbench-page .ew-foot { flex: 0 0 auto; }
+.extract-workbench-page .extract-workbench-task-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.extract-workbench-page .ew-row.extract-workbench-task {
+  min-height: 0; height: auto; border: 0; border-bottom: 1px solid var(--ew-line2);
+  border-radius: 0; box-shadow: none;
+}
+
+/* 手机按页面自然滚动，避免平台卡和筛选占满视口后把任务列表挤成零高度。 */
+@media (max-width: 860px) {
+  #tab-extract-workbench { height: auto; overflow: visible; }
+  .extract-workbench-page { display: block; height: auto; }
+  .extract-workbench-page .ew-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .extract-workbench-page .ew-plats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .extract-workbench-page .ew-plat-card { min-width: 0; padding: 10px; }
+  .extract-workbench-page .ew-plat-card-h { flex-wrap: wrap; }
+  .extract-workbench-page .extract-workbench-task-list { overflow: visible; }
+}
+@media (max-width: 340px) {
+  .extract-workbench-page .ew-plats { grid-template-columns: minmax(0, 1fr); }
+}
