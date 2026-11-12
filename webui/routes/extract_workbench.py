@@ -13,6 +13,7 @@ from flask import jsonify, request
 
 from core.extract_link import service as extract_link_service
 from core.extract_link.contracts import safe_payment_artifact
+from core.extract_link.workbench_analytics import workbench_analytics
 from core.extract_link.workbench_queries import public_workbench_item
 from core.operations.presentation import public_result_status
 from webui.blueprint import LegacyEndpointBlueprint
@@ -34,7 +35,7 @@ _EXTRACT_STATUSES = {"not_succeeded", "all", "failed", "never", "success"}
 _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", "other_promo", "none", "all"}
 _NEVER_PROVIDERS = {"", "legacy", "lumen_flow", "huanguang", "anguang"}
 _BATCH_COUNT_FIELDS = (
-    "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
+    "all", "processing", "running", "queued", "extracting", "scanning", "paused", "extraction_succeeded", "payment_succeeded",
     "plus_confirmed", "needs_attention", "awaiting_payment", "needs_review", "failed", "cancelled",
 )
 _ITEM_FIELDS = (
@@ -541,6 +542,22 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             value = result.get(name, 0)
             counts[name] = value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
         return jsonify({"ok": True, **counts}), 202 if counts["started"] else 200
+
+    @bp.get("/api/extract-workbench/analytics")
+    def extract_workbench_analytics():
+        raw_days = request.args.get("days", "7")
+        if raw_days not in {"7", "30", "90"}:
+            return _error("days 仅支持 7、30 或 90", 400)
+        provider_id = request.args.get("provider_id") or None
+        if provider_id is not None and not _valid_identifier(provider_id):
+            return _error("provider_id 参数无效", 400)
+        try:
+            result = workbench_analytics(days=int(raw_days), provider_id=provider_id)
+        except Exception as exc:
+            return _service_error("提链统计读取", exc)
+        response = jsonify({"ok": True, **result})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.get("/api/extract-workbench/summary")
     def extract_workbench_summary():

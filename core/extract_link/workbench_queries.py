@@ -308,7 +308,7 @@ def public_workbench_item(item: dict, *, summary: dict | None = None) -> dict:
     active = status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
     stage = None
     extraction = result.get("extraction_status")
-    if extraction in {"unknown", "pending", ""} and not active and status not in {"cancelled", "stopped"}:
+    if extraction in {"unknown", "pending", ""} and not active and status not in {"cancelled", "stopped", "paused"}:
         result['internal_extraction_status'] = extraction
         result['extraction_status'] = 'failed'
         stage = 'extraction'
@@ -362,6 +362,27 @@ def workbench_status_matches(item: dict, status: str, *, public_status: bool = F
         )
     if status == "running":
         return task_status in {"running", "cancelling", "settling", "stopping"}
+    if status in {"queued", "extracting", "scanning"}:
+        if item.get("local_reconcile_halted") is True:
+            return False
+        active = task_status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
+        if status == "queued":
+            return active and (extraction == "queued" or (
+                task_status in {"queued", "waiting"} and extraction in {"pending", "not_started", "unknown"}
+            ))
+        if status == "extracting":
+            return active and (extraction == "running" or (
+                task_status in {"running", "cancelling", "settling", "stopping"}
+                and extraction in {"pending", "not_started", "unknown"}
+            ))
+        return (
+            item.get("mode") == "auto_payment" and extraction == "success" and payment == "pending_payment"
+            and task_status not in {"attention_required", "request_unknown", "failed", "cancelled", "stopped", "interrupted", "paused"}
+            and item.get("payment_phase") == "processing"
+            and item.get("internal_payment_status") not in {"unknown", "request_unknown"}
+        )
+    if status == "paused":
+        return task_status == "paused"
     if status == "extraction_succeeded":
         return extraction == "success"
     if status == "payment_succeeded":

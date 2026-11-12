@@ -454,15 +454,15 @@ test('候选筛选提交套餐优惠并更新资格说明', () => {
   assert.equal(api.candidateFilters().promotion, 'eligible');
 });
 
-test('无优惠筛选按本地结果预览并提交', async () => {
+test('无优惠筛选按本地结果统计匹配数量并保留提交资格', async () => {
   const {api, window} = createView();
   const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
   assert.match(template, /<option value="none">无优惠<\/option>/);
   const promotion = {value:'none'};
   const hint = {textContent:''};
-  const accounts = {innerHTML:''};
+  const summary = {textContent:''};
   const selectors = {'[data-workbench-promotion]':promotion, '[data-workbench-candidate-hint]':hint,
-    '[data-workbench-accounts]':accounts};
+    '[data-workbench-candidate-summary]':summary};
   api.setRoot({querySelector:selector => selectors[selector] || null});
   let requested = '';
   window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async endpoint => {
@@ -474,7 +474,9 @@ test('无优惠筛选按本地结果预览并提交', async () => {
   assert.match(hint.textContent, /上次查询.*无优惠/);
   await api.loadAccounts();
   assert.equal(new URLSearchParams(requested.split('?')[1]).get('promotion'), 'none');
-  assert.match(accounts.innerHTML, /<td>无优惠<\/td>/);
+  assert.equal(summary.textContent, '匹配 1 个可用账号，本批计划运行 1 个。');
+  assert.equal(api.state().preview.selected_count, 1);
+  assert.equal(api.state().previewSignature, api.candidateSignature());
 });
 
 test('页面刷新查询列表和能力配置，列表不请求敏感链接', async () => {
@@ -1326,26 +1328,29 @@ test('顶部标签使用全部统计数，切换状态后不把筛选结果当�
   const {api} = createView();
   const tabs={innerHTML:''};
   api.setRoot({querySelector: selector => selector==='[data-workbench-status-tabs]' ? tabs : null});
-  api.setState({status:'processing',total:1,counts:{all:1705,running:7,processing:18}});
+  api.setState({status:'extracting',total:1,counts:{all:1705,extracting:7,scanning:18,payment_succeeded:6,plus_confirmed:2}});
   api.renderTabs();
   assert.match(tabs.innerHTML,/全部<\/strong><span>1,705/);
-  assert.match(tabs.innerHTML,/data-workbench-status-filter="processing" aria-pressed="true"/);
-  assert.match(tabs.innerHTML,/处理中<\/strong><span>18/);
+  assert.match(tabs.innerHTML,/data-workbench-status-filter="extracting" aria-pressed="true"/);
+  assert.match(tabs.innerHTML,/进行中<\/strong><span>7/);
+  assert.match(tabs.innerHTML,/扫码中<\/strong><span>18/);
+  assert.match(tabs.innerHTML,/扫码完成<\/strong><span>6/);
+  assert.doesNotMatch(tabs.innerHTML,/data-workbench-status-filter="plus_confirmed"/);
 });
 
 test('新建批次弹窗打开后才查询候选，重新打开会刷新匹配数量', async () => {
   const {api,requests}=createView();
   const dialog={open:false, showModal(){this.open=true;},close(){this.open=false;}};
-  const accounts={innerHTML:''};
+  const summary={textContent:''};
   api.setConfig({providers:[]});
-  api.setRoot({querySelector:selector=>({'[data-workbench-create-dialog]':dialog,'[data-workbench-accounts]':accounts})[selector] || null});
+  api.setRoot({querySelector:selector=>({'[data-workbench-create-dialog]':dialog,'[data-workbench-candidate-summary]':summary})[selector] || null});
   assert.equal(requests.length,0);
   await api.openCreate();
   assert.equal(dialog.open,true);
   dialog.close();
   await api.openCreate();
   assert.equal(requests.filter(item=>item.endpoint.startsWith('/api/extract-workbench/candidates?')).length,2);
-  assert.doesNotMatch(accounts.innerHTML,/type="checkbox"/);
+  assert.equal(summary.textContent, '匹配 0 个可用账号，本批计划运行 0 个。');
 });
 
 test('复制 AT 只在点击时读取指定账号密钥，不写入任务卡片或状态', async () => {
@@ -1386,20 +1391,22 @@ test('账号搜索的新响应先返回后，旧的成功或失败响应都不�
   for (const staleReject of [false,true]) {
     const {api,window}=createView();
     const query={value:'older'};
-    const accounts={innerHTML:''};
-    api.setRoot({querySelector:selector=>({'[data-workbench-account-query]':query,'[data-workbench-accounts]':accounts})[selector] || null});
+    const summary={textContent:''};
+    api.setRoot({querySelector:selector=>({'[data-workbench-account-query]':query,'[data-workbench-candidate-summary]':summary})[selector] || null});
     const deferred=[];
     window.__EXTRACT_WORKBENCH_DATA_SOURCE__=()=>new Promise((resolve,reject)=>deferred.push({resolve,reject}));
     const older=api.loadAccounts();
     query.value='newer';
     const newer=api.loadAccounts();
-    deferred[1].resolve({items:[{id:2,email:'newer@example.test'}]});
+    deferred[1].resolve({total:12,selected_count:10,items:[]});
     await newer;
     if (staleReject) deferred[0].reject(new Error('旧搜索失败'));
-    else deferred[0].resolve({items:[{id:1,email:'older@example.test'}]});
+    else deferred[0].resolve({total:3,selected_count:3,items:[]});
     await older;
-    assert.match(accounts.innerHTML,/newer@example.test/);
-    assert.doesNotMatch(accounts.innerHTML,/older@example.test|旧搜索失败/);
+    assert.equal(summary.textContent, '匹配 12 个可用账号，本批计划运行 10 个。');
+    assert.equal(api.state().preview.total, 12);
+    assert.equal(api.state().preview.selected_count, 10);
+    assert.equal(api.state().previewSignature, api.candidateSignature());
   }
 });
 
@@ -1450,7 +1457,7 @@ test('筛选条件变更后预览失效，提交不会沿用旧匹配数量', as
   await api.submit();
   assert.equal(api.state().preview,null);
   assert.equal(requests.length,0);
-  assert.match(feedback.textContent,/重新预览/);
+  assert.match(feedback.textContent,/刷新匹配数量/);
 });
 
 test('切换批次后旧批次任务和摘要的迟到响应均被忽略', async () => {
