@@ -284,6 +284,64 @@ class PlanReportTests(PostgresTestCase):
             cur.execute(f"SELECT count(*) AS n FROM {common.table('operation_runs')}")
             self.assertEqual(cur.fetchone()["n"], 0)
 
+    def test_all_other_catalog_operations_share_counts_timing_and_scope_metrics(self):
+        cases = {
+            "token_refresh": "account.token_refresh.unconfirmed",
+            "password_setup": "account.password_setup.confirmed",
+            "twofa_setup": "account.twofa_setup.confirmed",
+            "codex_retry": "account.codex.credential_confirmed",
+            "account_completion": "step.password.confirmed",
+        }
+        with patch("core.storage.operations.bulk_report._load_historical_promotions",
+                   side_effect=AssertionError("非套餐报告不应读取优惠事件")), \
+             patch("core.bulk_operations.plan_report_evidence.normalize_plan_report_evidence",
+                   side_effect=AssertionError("非套餐报告不应归一化套餐证据")):
+            for operation, metric in cases.items():
+                with self.subTest(operation=operation):
+                    batch = self.batch(2, operation=operation)
+                    bulk.materialize_targets(batch["id"])
+                    targets = self.rows(batch["id"])
+                    self.attach(targets[0], seconds=10)
+                    self.attach(targets[1], state="failed", seconds=30)
+                    self.complete(batch)
+                    with common.connect() as conn, conn.cursor() as cur:
+                        cur.execute(f"UPDATE {common.table('operation_batch_controls')} SET metrics=%s::jsonb WHERE batch_id=%s",
+                                    (common.dumps({metric: 2}), batch["id"]))
+                        cur.execute(f"UPDATE {common.table('operation_batch_rounds')} SET metrics=%s::jsonb WHERE id=%s",
+                                    (common.dumps({metric: 1}), batch["round_id"]))
+                    report = bulk.get_task_report(batch["id"])
+                    self.assertEqual(report["operation_key"], operation)
+                    self.assertEqual(report["phase"], "completed")
+                    self.assertEqual(report["totals"], {"accounts": 2, "success": 1, "failed": 1,
+                        "partial_success": 0, "not_executed": 0, "cancelled": 0, "completed": 2, "active": 0})
+                    self.assertEqual(report["duration"]["avg_seconds"], 20)
+                    public_metric = metric.replace(".unconfirmed", ".failed")
+                    self.assertEqual(report["business_summary"], {public_metric: 2})
+                    historical = bulk.get_task_report(batch["id"], round_id=batch["round_id"])
+                    self.assertEqual(historical["business_summary"], {public_metric: 1})
+                    self.assertEqual(historical["view"]["round_id"], batch["round_id"])
+                    for key in ("plans", "offers", "at_refresh"):
+                        self.assertNotIn(key, report)
+
+    def test_generic_route_serves_nonplan_scope_and_rejects_unknown_operation(self):
+        batch = self.batch(1, operation="password_setup")
+        other = self.batch(1, operation="twofa_setup")
+        client = create_app(auth_code="report-isolated-test").test_client()
+        path = f'/api/bulk/batches/{batch["id"]}/report'
+        headers = {"X-Auth-Code": "report-isolated-test"}
+        self.assertNotEqual(client.get(path).status_code, 200)
+        response = client.get(path + f'?view=round&round_id={batch["round_id"]}', headers=headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.json["data"]["operation_key"], "password_setup")
+        self.assertEqual(response.json["data"]["view"]["round_id"], str(batch["round_id"]))
+        wrong_scope = client.get(path + f'?view=round&round_id={other["round_id"]}', headers=headers)
+        self.assertEqual(wrong_scope.status_code, 404)
+        with common.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {common.table('operation_batch_controls')} SET action_key='unsupported_future' WHERE batch_id=%s", (batch["id"],))
+        unsupported = client.get(path, headers=headers)
+        self.assertEqual(unsupported.status_code, 422)
+        self.assertEqual(unsupported.json["error"]["code"], "report_operation_unsupported")
+
 
 def test_elapsed_accepts_zero_and_rejects_naive_or_unfinished_intervals():
     stamp = datetime(2026, 11, 1, tzinfo=timezone.utc)

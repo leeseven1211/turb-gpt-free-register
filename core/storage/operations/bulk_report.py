@@ -1,4 +1,4 @@
-"""查套餐批次的只读报告：固定名单、所属轮次与 Run 证据。"""
+"""批量任务的只读报告：固定名单、所属轮次与 Run 证据。"""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -10,7 +10,7 @@ import time
 
 from core.operations.presentation import public_result_status
 from core.storage.operations import bulk_schema, store
-from core.storage.operations.bulk_common import BulkError, OWNED, TERMINAL, connect, require_row, table
+from core.storage.operations.bulk_common import BulkError, OWNED, TERMINAL, connect, public_metrics, require_row, table
 
 _CACHE: dict[tuple, tuple[float, dict]] = {}
 _CACHE_LOCK = threading.Lock()
@@ -49,7 +49,9 @@ def _duration(runs: list[dict], state: str, *, has_execution: bool) -> tuple[flo
 
 def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projection: dict) -> dict:
     """纯聚合入口，绝不读取账号表中的历史套餐或令牌。"""
-    from core.bulk_operations.plan_report_evidence import normalize_plan_report_evidence
+    operation_key = batch["action_key"]
+    if operation_key == "plan_check":
+        from core.bulk_operations.plan_report_evidence import normalize_plan_report_evidence
 
     buckets = Counter()
     plans = Counter()
@@ -71,6 +73,8 @@ def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projectio
         if duration is not None:
             elapsed.append(duration)
         missing_times += int(missing)
+        if operation_key != "plan_check":
+            continue
         evidence = normalize_plan_report_evidence(runs, state=state,
             projected_result=(target.get("result") or {}).get("result") or {})
         plans[evidence.get("plan") or "unknown"] += 1
@@ -94,8 +98,8 @@ def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projectio
     complete = (scope.get("state") in {"completed", "ended", "failed"} and completed == total
                 and projection["state"] == "current")
     phase = "preparing" if scope.get("state") == "preparing" else "completed" if complete else "running"
-    return {
-        "schema_version": _REPORT_VERSION, "batch_id": batch["batch_id"], "operation_key": "plan_check",
+    report = {
+        "schema_version": _REPORT_VERSION, "batch_id": batch["batch_id"], "operation_key": operation_key,
         "view": {"kind": scope["kind"], "round_id": scope.get("round_id"), "round_no": scope.get("round_no")},
         "phase": phase, "population_ready": scope.get("target_count") is not None,
         "summary_revision": scope["summary_revision"], "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -107,6 +111,11 @@ def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projectio
                      "min_seconds": round(min(elapsed), 3) if elapsed else None,
                      "max_seconds": round(max(elapsed), 3) if elapsed else None,
                      "measurement": "account_execution_elapsed"},
+        "business_summary": public_metrics(scope.get("metrics") or {}),
+    }
+    if operation_key != "plan_check":
+        return report
+    report.update({
         "plans": [{"plan": plan, "accounts": count} for plan, count in sorted(plans.items())],
         "offers": {**{key: offers.get(key, 0) for key in
                      ("with_offer_accounts", "confirmed_no_offer_accounts", "unknown_accounts")},
@@ -117,7 +126,8 @@ def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projectio
         "at_refresh": {f"{key}_accounts": refresh.get(f"{key}_accounts", 0) for key in
                        ("expired", "invalid", "missing_token", "attempted", "succeeded", "failed", "pending",
                         "not_needed", "unknown", "not_executed")},
-    }
+    })
+    return report
 
 
 def _load_historical_promotions(cur, targets: list[dict]) -> None:
@@ -159,14 +169,16 @@ def _load_historical_promotions(cur, targets: list[dict]) -> None:
         candidates[row["run_id"]].setdefault("promotion_query_records", []).append(row["detail"])
 
 
-def get_plan_report(batch_id: int, *, round_id: int | None = None) -> dict:
+def _get_task_report(batch_id: int, *, round_id: int | None = None, required_operation: str | None = None) -> dict:
     """一次固定快照读取；短缓存保护运行中报告，详情轮询不触发逐条扫描。"""
     bulk_schema.require_readable()
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         batch = require_row(cur, f"SELECT * FROM {table('operation_batch_controls')} WHERE batch_id=%s", (batch_id,))
-        if batch["action_key"] != "plan_check":
-            raise BulkError("report_operation_unsupported", "当前批次不支持套餐查询报告。", 422)
+        from core.bulk_operations.catalog import OPERATIONS
+
+        if batch["action_key"] not in OPERATIONS or required_operation and batch["action_key"] != required_operation:
+            raise BulkError("report_operation_unsupported", "当前批次不支持此任务报告。", 422)
         if round_id is not None:
             row = require_row(cur, f"SELECT * FROM {table('operation_batch_rounds')} WHERE id=%s AND batch_id=%s",
                               (round_id, batch_id))
@@ -178,7 +190,8 @@ def get_plan_report(batch_id: int, *, round_id: int | None = None) -> dict:
             selection_id, join_round, join_args = batch["selection_id"], "COALESCE(m.latest_requested_round_id,%s)", [batch["initial_round_id"]]
             outcome = "COALESCE(tr.outcome,(SELECT e.key FROM jsonb_each_text(m.current_contribution) e WHERE e.value::bigint=1 LIMIT 1),'pending_submit')"
         database = hashlib.sha256(store.postgres_store.database_url().encode()).hexdigest()
-        key = (database, store._schema_name(), batch_id, round_id, scope["summary_revision"], batch["control_revision"],
+        key = (database, store._schema_name(), batch["action_key"], required_operation, batch_id, round_id,
+               scope["summary_revision"], batch["control_revision"],
                scope["state"], scope.get("target_count"), _REPORT_VERSION)
         with _CACHE_LOCK:
             cached = _CACHE.get(key)
@@ -205,7 +218,8 @@ def get_plan_report(batch_id: int, *, round_id: int | None = None) -> dict:
                 by_target[row["target_round_id"]].append(dict(row))
         for target in targets:
             target["runs"] = by_target[target["target_round_id"]]
-        _load_historical_promotions(cur, targets)
+        if batch["action_key"] == "plan_check":
+            _load_historical_promotions(cur, targets)
         cur.execute(f"""SELECT count(DISTINCT e.target_round_id) AS pending,bool_or(e.error_code IS NOT NULL) AS failed
           FROM {table('operation_projection_outbox')} e
           JOIN {table('operation_batch_target_rounds')} tr ON tr.id=e.target_round_id
@@ -220,3 +234,13 @@ def get_plan_report(batch_id: int, *, round_id: int | None = None) -> dict:
             _CACHE.pop(min(_CACHE, key=lambda item: _CACHE[item][0]))
         _CACHE[key] = (time.monotonic(), deepcopy(report))
     return report
+
+
+def get_task_report(batch_id: int, *, round_id: int | None = None) -> dict:
+    """六种已支持批量任务共用执行报告，套餐任务追加证据统计。"""
+    return _get_task_report(batch_id, round_id=round_id)
+
+
+def get_plan_report(batch_id: int, *, round_id: int | None = None) -> dict:
+    """保留套餐专用调用的操作校验，不把其他报告伪装为套餐报告。"""
+    return _get_task_report(batch_id, round_id=round_id, required_operation="plan_check")

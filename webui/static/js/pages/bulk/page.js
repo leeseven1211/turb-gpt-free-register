@@ -12,7 +12,7 @@ window.BulkTasks = (() => {
   const operationNames = {plan_check:'查询套餐',token_refresh:'刷新 AT',password_setup:'补密码',twofa_setup:'补 2FA',codex_retry:'补 Codex',account_completion:'组合补全'};
   const state = {nav:{tab:'bulk',view:'list'}, epoch:0, catalog:null, timer:null, loading:false,
     list:null, detail:null, targets:null, rounds:[], listCursor:'', listPrev:[], targetPrev:[], selection:null,
-    draft:null, creating:false, planReport:null, reportError:'', reportLoading:false, reportLoadedAt:0, reportScope:'', facetsCache:new Map(), selected:new Set(), pendingRound:null, roundsCursor:null};
+    draft:null, creating:false, planReport:null, reportError:'', reportLoading:false, reportLoadedAt:0, reportScope:'', reportFocusPending:false, reportFocusStarted:false, facetsCache:new Map(), selected:new Set(), pendingRound:null, roundsCursor:null};
   const $b = selector => document.querySelector(`#tab-bulk ${selector}`);
   const text = value => esc(value == null ? '—' : String(value));
   const date = value => value ? formatDateTime(value) : '—';
@@ -143,8 +143,9 @@ window.BulkTasks = (() => {
     resetPlanReport();
     state.epoch++; state.loading=false;state.listCursor=nav.view==='list'?(nav.cursor||''):'';state.listPrev=[]; state.targetPrev=[];state.selected.clear();state.targets=null;state.detail=null;state.rounds=[];state.roundsCursor=null;
   }
-  function navigate(view, extra = {}) {
+  function navigate(view, extra = {}, focusReport=false) {
     restoreNavigation({tab:'bulk',view,...extra});
+    state.reportFocusPending=focusReport;
     activateTab('bulk',true,'none'); recordNavigationHistory('push');
   }
   function updateNavigation(extra) {
@@ -189,7 +190,7 @@ window.BulkTasks = (() => {
   function operationLabel(value) {return operations().find(item=>item.key===value)?.label || operationNames[value] || value || '批量操作';}
   function shell() {
     const root=document.getElementById('tab-bulk');
-    root.innerHTML=`<div class="bulk-page"><header class="bulk-heading"><div class="bulk-heading-copy"><button type="button" class="bulk-back" data-bulk-action="list" aria-label="返回批次列表" ${state.nav.view==='list'?'hidden':''}>←</button><div><h2 data-bulk-title>批次列表</h2><p data-bulk-subtitle></p></div></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="refresh">刷新</button><button type="button" class="jobs-tb-btn ${state.nav.view==='list'?'jobs-tb-btn--primary':''}" data-bulk-action="new">新建批次</button></div></header><p class="bulk-error" data-bulk-error role="alert" hidden></p><p class="bulk-notice" data-bulk-notice role="status" hidden></p><div class="bulk-notice bulk-inline-fields" data-bulk-recovery hidden></div><div data-bulk-content></div><dialog class="bulk-confirm" data-bulk-confirm aria-labelledby="bulkConfirmTitle"><form method="dialog" class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkConfirmTitle" data-bulk-confirm-title>确认操作</strong><button type="button" class="bulk-confirm-close" data-bulk-confirm-cancel aria-label="关闭">×</button></div><p class="bulk-confirm-body" data-bulk-confirm-body></p><ul class="bulk-confirm-list" data-bulk-confirm-list hidden></ul><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-confirm-cancel>返回</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-confirm-ok>确认</button></div></form></dialog><dialog class="bulk-confirm bulk-result-dialog" data-bulk-result-dialog aria-labelledby="bulkResultDetailTitle"><div class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkResultDetailTitle" data-bulk-result-title></strong><button type="button" class="bulk-confirm-close" data-bulk-action="close-cell-detail" aria-label="关闭完整内容">×</button></div><pre class="bulk-result-detail-content" data-bulk-result-content></pre><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="close-cell-detail">关闭</button></div></div></dialog></div>`;
+    root.innerHTML=`<div class="bulk-page"><header class="bulk-heading"><div class="bulk-heading-copy"><button type="button" class="bulk-back" data-bulk-action="list" aria-label="返回批次列表" ${state.nav.view==='list'?'hidden':''}>←</button><div><h2 data-bulk-title>批次列表</h2><p data-bulk-subtitle></p></div></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="view-report" hidden>查看报告</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh">刷新</button><button type="button" class="jobs-tb-btn ${state.nav.view==='list'?'jobs-tb-btn--primary':''}" data-bulk-action="new">新建批次</button></div></header><p class="bulk-error" data-bulk-error role="alert" hidden></p><p class="bulk-notice" data-bulk-notice role="status" hidden></p><div class="bulk-notice bulk-inline-fields" data-bulk-recovery hidden></div><div data-bulk-content></div><dialog class="bulk-confirm" data-bulk-confirm aria-labelledby="bulkConfirmTitle"><form method="dialog" class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkConfirmTitle" data-bulk-confirm-title>确认操作</strong><button type="button" class="bulk-confirm-close" data-bulk-confirm-cancel aria-label="关闭">×</button></div><p class="bulk-confirm-body" data-bulk-confirm-body></p><ul class="bulk-confirm-list" data-bulk-confirm-list hidden></ul><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-confirm-cancel>返回</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-confirm-ok>确认</button></div></form></dialog><dialog class="bulk-confirm bulk-result-dialog" data-bulk-result-dialog aria-labelledby="bulkResultDetailTitle"><div class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkResultDetailTitle" data-bulk-result-title></strong><button type="button" class="bulk-confirm-close" data-bulk-action="close-cell-detail" aria-label="关闭完整内容">×</button></div><pre class="bulk-result-detail-content" data-bulk-result-content></pre><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="close-cell-detail">关闭</button></div></div></dialog></div>`;
     const dialog=$b('[data-bulk-confirm]');
     dialog?.addEventListener('click',event=>{if(event.target===dialog){dialog.returnValue='cancel';dialog.close();}});
     const resultDialog=$b('[data-bulk-result-dialog]');
@@ -281,7 +282,7 @@ window.BulkTasks = (() => {
       const counts=resultCounts(item.summary||item.counts||{});const done=terminal.reduce((sum,k)=>sum+Number(counts[k]||0),0);const total=Number(item.target_count||0);const progress=total?Math.min(100,Math.round(done/total*100)):0;const finished=progress>=100||String(item.control?.state||item.control_state||item.state)==='ended';
       const pill=(key,className,title)=>{const n=Number(counts[key]||0);return `<button class="bulk-pill ${className}${n?'':' is-zero'}" data-bulk-open="${attrEsc(item.id)}" data-result-state="${key}" ${n?'':'disabled'}>${title} <b>${n}</b></button>`;};
       const name=item.name||item.title||`批次 #${item.id}`;
-      return `<tr><td class="bulk-cell-id" data-label="ID" title="#${attrEsc(item.id)}">#${text(item.id)}</td><td class="bulk-cell-name" data-label="批次名称"><button class="bulk-batch-name" data-bulk-open="${attrEsc(item.id)}" title="${attrEsc(name)}">${text(name)}</button></td><td class="bulk-cell-operation" data-label="操作类型">${text(operationLabel(item.operation?.key||item.operation_key||item.action_key))}</td><td class="bulk-cell-state" data-label="状态">${badge(item.control?.paused||item.is_paused?'paused':item.control?.state||item.control_state||item.state)}</td><td class="bulk-cell-progress" data-label="完成进度"><div class="bulk-batch-progress"><span class="bulk-progress-count">${done} / ${total}</span><progress class="bulk-progress${finished?' is-done':''}" value="${done}" max="${Math.max(1,total)}" aria-label="已结束 ${done} 个，共 ${total} 个"></progress><span class="bulk-progress-percent">${progress}%</span></div></td><td class="bulk-cell-result" data-label="当前结果"><div class="bulk-result-links">${pill('success','is-success','成功')}${pill('failed','is-failed','失败')}</div></td><td class="bulk-cell-date" data-label="创建时间">${text(shortDate(item.created_at))}</td><td class="bulk-cell-open" data-label="操作"><button class="bulk-open-arrow" data-bulk-open="${attrEsc(item.id)}" aria-label="打开批次详情">→</button></td></tr>`;
+      return `<tr><td class="bulk-cell-id" data-label="ID" title="#${attrEsc(item.id)}">#${text(item.id)}</td><td class="bulk-cell-name" data-label="批次名称"><button class="bulk-batch-name" data-bulk-open="${attrEsc(item.id)}" title="${attrEsc(name)}">${text(name)}</button></td><td class="bulk-cell-operation" data-label="操作类型">${text(operationLabel(item.operation?.key||item.operation_key||item.action_key))}</td><td class="bulk-cell-state" data-label="状态">${badge(item.control?.paused||item.is_paused?'paused':item.control?.state||item.control_state||item.state)}</td><td class="bulk-cell-progress" data-label="完成进度"><div class="bulk-batch-progress"><span class="bulk-progress-count">${done} / ${total}</span><progress class="bulk-progress${finished?' is-done':''}" value="${done}" max="${Math.max(1,total)}" aria-label="已结束 ${done} 个，共 ${total} 个"></progress><span class="bulk-progress-percent">${progress}%</span></div></td><td class="bulk-cell-result" data-label="当前结果"><div class="bulk-result-links">${pill('success','is-success','成功')}${pill('failed','is-failed','失败')}</div></td><td class="bulk-cell-date" data-label="创建时间">${text(shortDate(item.created_at))}</td><td class="bulk-cell-open" data-label="操作"><div class="bulk-batch-actions"><button type="button" class="jobs-tb-btn bulk-report-button" data-bulk-report="${attrEsc(item.id)}">查看报告</button><button class="bulk-open-arrow" data-bulk-open="${attrEsc(item.id)}" aria-label="打开批次详情">→</button></div></td></tr>`;
     }).join('')}</tbody></table>`:`<div class="bulk-empty"><strong>还没有${state.nav.q||state.nav.operation||state.nav.state?'匹配的':''}批次</strong><p>选择操作和账号范围，即可集中执行与追踪结果。</p><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new">新建批次</button></div>`);
     $b('[data-bulk-action="list-prev"]').disabled=!state.listPrev.length;
     $b('[data-bulk-action="list-next"]').disabled=!data.next_cursor;
@@ -435,7 +436,7 @@ window.BulkTasks = (() => {
     } finally {state.creating=false;if(state.nav.view==='create')renderSelection();}
   }
   function renderDetailShell() {
-    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-overview"><div class="bulk-detail-toolbar"><div data-bulk-detail-meta></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select data-bulk-view aria-label="结果视图"><option value="current">当前结果</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" disabled>更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query">复制条件新建</button></div></div><div class="bulk-control-strip" data-bulk-control-strip><div class="bulk-control-copy"><strong>运行控制</strong><span data-bulk-control-note>只影响当前批次，已开始执行会协作收尾</span></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="pause">暂停批次</button><button type="button" class="jobs-tb-btn" data-bulk-action="resume" disabled>继续批次</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="cancel">取消排队账号</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="stop">停止正在执行</button></div></div><div data-bulk-stats class="bulk-summary-grid"></div><p class="bulk-view-note" data-bulk-view-note></p><div data-bulk-business></div></section><div data-bulk-plan-report hidden></div><section class="bulk-card bulk-results-card"><div class="bulk-results-heading"><h3>账号明细 <span data-bulk-selected></span><button type="button" class="bulk-link" data-bulk-action="clear-selection" disabled>清空选择</button></h3><div class="bulk-retry-toolbar"><select data-bulk-retry-states aria-label="重跑范围">${optionsMarkup([['failed','失败'],['partial_success','部分成功'],['not_executed','未执行'],['cancelled','已取消'],['unsuccessful','全部未成功']])}</select><button class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="retry">重跑失败</button><button class="jobs-tb-btn" data-bulk-action="retry-selected" disabled>重跑勾选</button></div></div><p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p><div data-bulk-state-strip class="bulk-state-strip"></div><div data-bulk-targets class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载账号结果…</div></div><nav class="bulk-pager" aria-label="账号结果分页"><button class="jobs-tb-btn" data-bulk-action="target-prev" disabled>上一页</button><span data-target-page>第 1 页</span><button class="jobs-tb-btn" data-bulk-action="target-next" disabled>下一页</button></nav></section>`;
+    $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-overview"><div class="bulk-detail-toolbar"><div data-bulk-detail-meta></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select data-bulk-view aria-label="结果视图"><option value="current">当前结果</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" disabled>更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query">复制条件新建</button></div></div><div class="bulk-control-strip" data-bulk-control-strip><div class="bulk-control-copy"><strong>运行控制</strong><span data-bulk-control-note>只影响当前批次，已开始执行会协作收尾</span></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="pause">暂停批次</button><button type="button" class="jobs-tb-btn" data-bulk-action="resume" disabled>继续批次</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="cancel">取消排队账号</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="stop">停止正在执行</button></div></div><div data-bulk-stats class="bulk-summary-grid"></div><p class="bulk-view-note" data-bulk-view-note></p><div data-bulk-business></div></section><div data-bulk-plan-report class="bulk-report-target" tabindex="-1" role="region" aria-label="批次报告" hidden></div><section class="bulk-card bulk-results-card"><div class="bulk-results-heading"><h3>账号明细 <span data-bulk-selected></span><button type="button" class="bulk-link" data-bulk-action="clear-selection" disabled>清空选择</button></h3><div class="bulk-retry-toolbar"><select data-bulk-retry-states aria-label="重跑范围">${optionsMarkup([['failed','失败'],['partial_success','部分成功'],['not_executed','未执行'],['cancelled','已取消'],['unsuccessful','全部未成功']])}</select><button class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="retry">重跑失败</button><button class="jobs-tb-btn" data-bulk-action="retry-selected" disabled>重跑勾选</button></div></div><p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p><div data-bulk-state-strip class="bulk-state-strip"></div><div data-bulk-targets class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载账号结果…</div></div><nav class="bulk-pager" aria-label="账号结果分页"><button class="jobs-tb-btn" data-bulk-action="target-prev" disabled>上一页</button><span data-target-page>第 1 页</span><button class="jobs-tb-btn" data-bulk-action="target-next" disabled>下一页</button></nav></section>`;
   }
   function detailParams() {
     const params=new URLSearchParams({view:state.nav.round_id?'round':'current'});
@@ -474,10 +475,11 @@ window.BulkTasks = (() => {
     preserveMarkup($b('[data-bulk-stats]'),`<div class="bulk-summary-item"><span>账号总数</span><strong>${total??'—'}</strong></div><div class="bulk-summary-item"><span>进行中</span><strong>${active}</strong></div><div class="bulk-summary-item is-success"><span>成功</span><strong>${Number(counts.success||0)}</strong></div><div class="bulk-summary-item ${unsuccessful?'is-warning':''}"><span>未成功</span><strong>${unsuccessful}</strong></div>`);
     const chip=k=>`<button type="button" class="bulk-state-chip ${state.nav.result_state===k?'is-selected':''}" data-bulk-stat="${k}" aria-label="${attrEsc(`${label(k)} ${Number(counts[k]||0)}`)}" aria-pressed="${state.nav.result_state===k}">${text(label(k))}<strong>${Number(counts[k]||0)}</strong></button>`;
     preserveMarkup($b('[data-bulk-state-strip]'),`<button type="button" class="bulk-state-chip ${!state.nav.result_state?'is-selected':''}" data-bulk-action="all-results" aria-pressed="${!state.nav.result_state}">全部<strong>${total??'—'}</strong></button>${['running','queued','success','failed','partial_success','pending_submit','waiting_account','waiting','not_executed','cancelled'].map(chip).join('')}`);
-    const isPlan=op==='plan_check';
-    $b('[data-bulk-stats]').hidden=isPlan;
-    $b('[data-bulk-business]').hidden=isPlan;
-    if(!isPlan)renderBusiness(data.business_summary||data.metrics||{});
+    const hasReport=Object.hasOwn(operationNames,op);
+    $b('[data-bulk-action="view-report"]').hidden=!hasReport;
+    $b('[data-bulk-stats]').hidden=hasReport;
+    $b('[data-bulk-business]').hidden=hasReport;
+    if(!hasReport)renderBusiness(data.business_summary||data.metrics||{});
     renderPlanReport();
     updateRetryButton();
     $b('[data-bulk-action="copy-query"]').disabled=!data.selection_summary?.query&&!data.query_spec&&!data.selection?.query_spec;
@@ -493,22 +495,26 @@ window.BulkTasks = (() => {
     }
   }
   function resetPlanReport() {
-    state.planReport=null;state.reportError='';state.reportLoading=false;state.reportLoadedAt=0;state.reportScope='';
+    state.planReport=null;state.reportError='';state.reportLoading=false;state.reportLoadedAt=0;state.reportScope='';state.reportFocusPending=false;state.reportFocusStarted=false;
   }
   function renderPlanReport() {
     const host=$b('[data-bulk-plan-report]');if(!host)return;
     const op=state.detail?.operation?.key||state.detail?.operation_key||state.detail?.action_key;
-    host.hidden=op!=='plan_check';if(host.hidden)return;
+    host.hidden=!Object.hasOwn(operationNames,op);if(host.hidden)return;
     const renderer=window.BulkPlanReport;
     if(!renderer){host.innerHTML='<p class="bulk-error" role="alert">报告组件未加载，请刷新页面。</p>';return;}
     const retry='<button type="button" class="jobs-tb-btn" data-bulk-action="report-refresh">重新读取报告</button>';
     const error=state.reportError?`<div class="bulk-report-load-error"><p class="bulk-error" role="alert">${text(state.reportError)}</p>${retry}</div>`:'';
-    preserveMarkup(host,state.planReport?renderer.render(state.planReport)+error:state.reportError?renderer.error(state.reportError)+retry:renderer.loading());
+    preserveMarkup(host,state.planReport?renderer.render(state.planReport,businessMarkup(state.planReport.business_summary||{},true))+error:state.reportError?renderer.error(state.reportError,op)+retry:renderer.loading(op));
+    if(state.reportFocusPending&&(!state.reportFocusStarted||state.planReport||state.reportError)){
+      host.focus({preventScroll:true});host.scrollIntoView({block:'start'});state.reportFocusStarted=true;
+      if(state.planReport||state.reportError){state.reportFocusPending=false;state.reportFocusStarted=false;}
+    }
   }
   async function loadPlanReport({force=false,epoch=state.epoch}={}) {
     const detail=state.detail;
     const op=detail?.operation?.key||detail?.operation_key||detail?.action_key;
-    if(op!=='plan_check'||state.reportLoading)return;
+    if(!Object.hasOwn(operationNames,op)||state.reportLoading)return;
     const scope=`${state.nav.batch_id}:${state.nav.round_id||'current'}`;
     const completed=['ended','completed'].includes(detail.control?.state||detail.control_state)||detail.selected_round?.state==='completed';
     const reportComplete=state.planReport?.phase==='completed';
@@ -525,7 +531,8 @@ window.BulkTasks = (() => {
       state.reportError=errorText(error,'读取报告失败：');renderPlanReport();
     }finally{if(epoch===state.epoch&&scope===state.reportScope)state.reportLoading=false;}
   }
-  function renderBusiness(metrics) {
+  function renderBusiness(metrics) {preserveMarkup($b('[data-bulk-business]'),businessMarkup(metrics));}
+  function businessMarkup(metrics,expanded=false) {
     metrics={...metrics};
     if(Object.prototype.hasOwnProperty.call(metrics,'account.token_refresh.unconfirmed')){
       metrics['account.token_refresh.failed']=Number(metrics['account.token_refresh.failed']||0)+Number(metrics['account.token_refresh.unconfirmed']||0);
@@ -549,7 +556,8 @@ window.BulkTasks = (() => {
       }else if(v&&typeof v==='object')walk(v,title,depth+1);
     }}
     walk(metrics);
-    preserveMarkup($b('[data-bulk-business]'),groups.size?`<details class="bulk-business-details"><summary>功能统计<span>展开查看</span></summary><div class="bulk-business-groups">${[...groups].map(([name,rows])=>`<section class="bulk-business-group"><h4>${text(name)} · ${name==='国家查询项'?'项':'账号数'}</h4><dl class="bulk-business-metrics">${rows.map(([title,value])=>`<div><dt>${text(title)}</dt><dd>${value}</dd></div>`).join('')}</dl></section>`).join('')}</div></details>`:'');
+    const content=`<div class="bulk-business-groups">${[...groups].map(([name,rows])=>`<section class="bulk-business-group"><h4>${text(name)} · ${name==='国家查询项'?'项':'账号数'}</h4><dl class="bulk-business-metrics">${rows.map(([title,value])=>`<div><dt>${text(title)}</dt><dd>${value}</dd></div>`).join('')}</dl></section>`).join('')}</div>`;
+    return groups.size?(expanded?content:`<details class="bulk-business-details"><summary>功能统计<span>展开查看</span></summary>${content}</details>`):'';
   }
   async function loadTargets(epoch=state.epoch,force=true) {
     const params=detailParams();params.set('page_size','50');if(state.nav.cursor)params.set('cursor',state.nav.cursor);
@@ -666,6 +674,7 @@ window.BulkTasks = (() => {
   async function action(name) {
     if(name==='close-cell-detail')$b('[data-bulk-result-dialog]')?.close();
     else if(name==='recover')await recover();
+    else if(name==='view-report'){state.reportFocusPending=true;state.reportFocusStarted=false;renderPlanReport();if(!state.planReport)await loadPlanReport({force:true});}
     else if(name==='report-refresh')await loadPlanReport({force:true});
     else if(name==='new'){state.draft=defaultDraft();state.selection=null;saveSelection();saveDraft();navigate('create');}
     else if(name==='list')navigate('list');
@@ -693,6 +702,7 @@ window.BulkTasks = (() => {
     if(button.hasAttribute('data-bulk-close-popover')){const details=button.closest('details');details.open=false;details.querySelector('summary').focus({preventScroll:true});return;}
     if(button.dataset.bulkCellDetail){const dialog=$b('[data-bulk-result-dialog]');if(dialog){dialog.dataset.bulkRowTarget=button.closest('[data-bulk-row-target]')?.dataset.bulkRowTarget||'';dialog.dataset.bulkCellDetail=button.dataset.bulkCellDetail;$b('[data-bulk-result-title]').textContent=button.dataset.bulkCellDetail;$b('[data-bulk-result-content]').textContent=button.dataset.bulkCellContent;dialog.showModal();}return;}
     if(button.dataset.bulkAction){event.preventDefault();Promise.resolve(action(button.dataset.bulkAction)).catch(e=>report(e));}
+    else if(button.dataset.bulkReport)navigate('detail',{batch_id:button.dataset.bulkReport},true);
     else if(button.dataset.bulkOpen)navigate('detail',{batch_id:button.dataset.bulkOpen,result_state:button.dataset.resultState||''});
     else if(button.dataset.bulkStat)updateNavigation({result_state:state.nav.result_state===button.dataset.bulkStat?'':button.dataset.bulkStat,cursor:''});
     else if(button.dataset.bulkTask)openAccountTaskLog(button.dataset.bulkTask,button.dataset.bulkRun||null);

@@ -123,16 +123,18 @@
 .bulk-table td small { display: block; margin-top: 4px; color: var(--ui-color-text-muted); font-size: 11px; line-height: 1.5; }
 .bulk-table tbody tr:last-child td { border-bottom: 0; }
 .bulk-table tbody tr:hover { background: var(--ui-color-surface-subtle); }
-.bulk-batch-table { min-width: 1100px; }
+.bulk-batch-table { min-width: 1180px; }
 .bulk-batch-table th, .bulk-batch-table td { padding: 7px 10px; white-space: nowrap; line-height: 1.5; }
 .bulk-batch-table th:nth-child(1) { width: 7%; }
-.bulk-batch-table th:nth-child(2) { width: 23%; }
+.bulk-batch-table th:nth-child(2) { width: 21%; }
 .bulk-batch-table th:nth-child(3) { width: 8%; }
 .bulk-batch-table th:nth-child(4) { width: 9%; }
-.bulk-batch-table th:nth-child(5) { width: 20%; }
-.bulk-batch-table th:nth-child(6) { width: 16%; }
-.bulk-batch-table th:nth-child(7) { width: 13%; }
-.bulk-batch-table th:nth-child(8) { width: 44px; }
+.bulk-batch-table th:nth-child(5) { width: 17%; }
+.bulk-batch-table th:nth-child(6) { width: 14%; }
+.bulk-batch-table th:nth-child(7) { width: 12%; }
+.bulk-batch-table th:nth-child(8) { width: 132px; }
+.bulk-batch-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
+.bulk-batch-actions .bulk-report-button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
 .bulk-batch-table .bulk-cell-id { overflow: hidden; text-overflow: ellipsis; color: var(--ui-color-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .bulk-batch-table .bulk-batch-name { display: block; width: 100%; min-height: 28px; line-height: 28px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 .bulk-batch-table .bulk-result-links { flex-wrap: nowrap; gap: 6px; }
@@ -256,6 +258,8 @@
   .bulk-heading-copy { align-items: flex-start; gap: 8px; }
   .bulk-heading p { font-size: 12px; }
   .bulk-heading > .bulk-actions { gap: 6px; flex-wrap: nowrap; }
+  .bulk-heading:has([data-bulk-action="view-report"]:not([hidden])) { flex-wrap: wrap; }
+  .bulk-heading:has([data-bulk-action="view-report"]:not([hidden])) > .bulk-actions { flex-wrap: wrap; }
   .bulk-back { min-height: 44px; flex-basis: 34px; }
   .bulk-page .jobs-tb-btn, .bulk-field input:not([type="checkbox"]), .bulk-field select, .bulk-round-picker select, .bulk-retry-toolbar select { min-height: 44px; }
   .bulk-field input:not([type="checkbox"]), .bulk-field select { font-size: 16px; }
@@ -297,6 +301,7 @@
   .bulk-list-filters .bulk-list-dates > summary { justify-content: center; }
   .bulk-list-filters > .bulk-field input, .bulk-list-filters > .bulk-field select, .bulk-list-dates > summary, .bulk-list-filters .jobs-tb-btn, .bulk-list-filters .bulk-link, .bulk-list-card > .bulk-pager .jobs-tb-btn { height: 44px; min-height: 44px; }
   .bulk-batch-table .bulk-batch-name, .bulk-batch-table .bulk-pill, .bulk-batch-table .bulk-open-arrow { min-height: 44px; }
+  .bulk-batch-actions .bulk-report-button { min-height: 44px; }
   .bulk-list-card > .bulk-pager { flex-wrap: wrap; gap: 8px; }
   .bulk-list-card .bulk-pager-actions { margin-left: auto; }
   .bulk-count-link { min-height: 44px; font-size: 12px; }

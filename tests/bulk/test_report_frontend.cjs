@@ -73,7 +73,7 @@ test('不可信套餐和优惠标签、错误文本均转义，宽度由有限�
   assert.match(html,/&lt;script&gt;bad\(\)&lt;\/script&gt;/);
   assert.match(html,/&quot; onclick=&quot;bad\(\)/);assert.match(html,/width:0\.000%/);
   assert.match(ui.error('<script>error</script>'),/&lt;script&gt;error&lt;\/script&gt;/);
-  assert.match(ui.loading(),/role="status"/);assert.equal(ui.render({operation_key:'token_refresh'}),'');
+  assert.match(ui.loading(),/role="status"/);assert.equal(ui.render({operation_key:'unknown'}),'');
 });
 test('名单尚未固定不把准备中误显示为零账号，汇总延迟有明确提示',()=>{
   const data=fixture();data.population_ready=false;data.phase='preparing';data.totals.accounts=0;
@@ -82,4 +82,32 @@ test('名单尚未固定不把准备中误显示为零账号，汇总延迟有�
   data.phase='completed';assert.match(renderer().render(data),/该轮名单未固定，无法生成账号统计/);
   data.population_ready=true;data.phase='running';data.projection={state:'syncing'};
   html=renderer().render(data);assert.match(html,/执行结果正在汇总，以下统计尚未收齐/);
+});
+test('六种任务均展示正确报告标题，共用结果耗时并保留独立功能统计',()=>{
+  const names={plan_check:'查套餐',token_refresh:'刷新 AT',password_setup:'补密码',twofa_setup:'补 2FA',codex_retry:'补 Codex',account_completion:'组合补全'};
+  const ui=renderer();
+  for(const [key,name] of Object.entries(names)){
+    const data=fixture();data.operation_key=key;
+    const business='<dl data-test-business><dt>凭证已确认</dt><dd>18</dd></dl>';
+    let html=ui.render(data,business);
+    assert.ok(html.includes(`${name}完成报告`));assert.match(html,/<dt>成功<\/dt><dd>80/);assert.match(html,/平均耗时/);
+    if(key==='plan_check'){
+      assert.match(html,/AT 检查与自动刷新/);assert.match(html,/优惠结果/);assert.match(html,/data-test-business/);assert.match(html,/更多查询统计/);
+    }else{
+      assert.match(html,/data-test-business/);assert.match(html,/功能统计/);
+      assert.doesNotMatch(html,/AT 检查与自动刷新|有优惠账号|当前订阅套餐/);
+      html=ui.render(data);assert.match(html,/暂无已确认的功能统计/);
+    }
+    data.phase='running';assert.ok(ui.render(data,business).includes(`${name}实时报告`));
+    data.population_ready=false;assert.ok(ui.render(data).includes(`aria-label="${name}报告"`));
+    assert.ok(ui.loading(key).includes(`${name}报告`));assert.ok(ui.error('读取失败',key).includes(`${name}报告`));
+  }
+});
+test('通用报告的缺失统计保持未知，准备和投影失败提示不冒充完成',()=>{
+  const data=fixture();data.operation_key='codex_retry';data.totals={accounts:2,failed:0};data.duration={};
+  data.phase='running';data.projection={state:'failed'};
+  const html=renderer().render(data);
+  assert.match(html,/补 Codex实时报告/);assert.match(html,/<dt>成功<\/dt><dd>—/);assert.match(html,/<dt>失败<\/dt><dd>0/);
+  assert.match(html,/<dt>平均耗时<\/dt><dd>—/);assert.match(html,/结果汇总暂时失败/);
+  assert.doesNotMatch(html,/NaN|undefined|查套餐|优惠结果/);
 });

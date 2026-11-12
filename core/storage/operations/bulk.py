@@ -33,7 +33,7 @@ from core.storage.operations.bulk_runtime import (
     inherit_managed_run,
 )
 from core.storage.operations.bulk_projection import project_pending, project_batch
-from core.storage.operations.bulk_report import get_plan_report
+from core.storage.operations.bulk_report import get_plan_report, get_task_report
 from core.storage.operations.bulk_control import (
     request_control,
     settle_control,
@@ -74,6 +74,7 @@ __all__ = [
     "project_pending",
     "project_batch",
     "get_plan_report",
+    "get_task_report",
     "request_control",
     "settle_control",
     "claim_work",

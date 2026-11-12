@@ -1,5 +1,7 @@
-/* 查询套餐报告使用控制台共用语义变量，明暗主题均保留相同信息层级。 */
+/* 批次报告使用控制台共用语义变量，明暗主题均保留相同信息层级。 */
 [data-bulk-plan-report]:not([hidden]) { margin: 16px 0; }
+.bulk-report-target { scroll-margin-top: 72px; }
+.bulk-report-target:focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 3px; border-radius: var(--ui-radius-lg); }
 .bulk-report-load-error { margin-top: 12px; }
 .bulk-report-load-error .jobs-tb-btn { margin-top: 8px; }
 .bulk-plan-report { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); background: var(--ui-color-surface); color: var(--ui-color-text); font-size: 12px; }
@@ -24,6 +26,7 @@
 .bulk-report-metric.is-accent dd { color: var(--ui-color-brand); }
 .bulk-report-outcome-note { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 12px; color: var(--ui-color-text-secondary); font-size: 11px; }
 .bulk-report-execution { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 24px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--ui-color-border); }
+.bulk-report-execution .bulk-business-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .bulk-report-execution > section, .bulk-report-distributions > section { min-width: 0; }
 .bulk-report-section-head { min-height: 22px; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
 .bulk-report-section-head > span, .bulk-report-section-head p { color: var(--ui-color-text-secondary); font-size: 11px; }
@@ -74,6 +77,7 @@
   .bulk-report-plans { border-left: 0; padding-left: 0; padding-top: 18px; border-top: 1px solid var(--ui-color-border); }
 }
 @media (max-width: 600px) {
+  .bulk-report-execution .bulk-business-groups { grid-template-columns: minmax(0, 1fr); }
   .bulk-plan-report { padding: 16px; }
   .bulk-report-header { flex-direction: column; gap: 6px; margin-bottom: 16px; }
   .bulk-report-updated { font-size: 10px; }

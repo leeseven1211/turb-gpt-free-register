@@ -10,6 +10,7 @@ function setup(request) {
   const host={innerHTML:'',hidden:false};let now=100000;
   const ctx={state,Date:{now:()=>now},window:{BulkPlanReport:{render:report=>JSON.stringify(report),loading:()=>'<loading>',error:message=>message}},
     $b:()=>host,preserveMarkup:(node,html)=>{node.innerHTML=html;},request,
+    operationNames:{plan_check:'查询套餐',token_refresh:'刷新 AT',password_setup:'补密码',twofa_setup:'补2FA',codex_retry:'补Codex',account_completion:'组合补全'},businessMarkup:()=>'',
     detailParams:()=>new URLSearchParams({view:state.nav.round_id?'round':'current',...(state.nav.round_id?{round_id:state.nav.round_id}:{})}),
     encodeURIComponent,text:String,errorText:(error,prefix)=>prefix+error.message};
   vm.createContext(ctx);vm.runInContext(helper,ctx);ctx.resetPlanReport();return {ctx,state,host,advance:()=>{now+=11000;}};
