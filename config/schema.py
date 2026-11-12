@@ -534,6 +534,7 @@ _DEFAULTS: dict[str, Any] = {
     "CPA_REQUEST_TIMEOUT": 30,
     "CPA_CREDENTIAL_CONFIRM_TIMEOUT": 12,
     "CPA_SAVE_CALLBACK_RECEIPT": True,
+    "CODEX_PHONE_ENABLED": True,
     "SMS_PROVIDER": "l",
     "SMS_COUNTRY": "10",
     "SMS_SERVICE": "openai",
@@ -643,7 +644,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ENABLE_CODEX_AUTO", "file": "codex.py", "type": "bool", "group": "注册主链路",
-        "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权（全新session+接码），落盘 codex-邮箱.json",
+        "label": "启用 Codex OAuth", "help": "注册成功后自动跑 Codex 授权，凭证保存到数据库；手机验证按接码开关处理",
     },
     {
         "key": "ACCOUNT_AT_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
@@ -1797,6 +1798,10 @@ _FIELD_DEFINITIONS = [
         "label": "保存CPA回执", "help": "CPA/sub2 未返回完整授权文件时，在数据库单独保存 callback 回执，不作为可用凭证",
     },
 
+    {
+        "key": "CODEX_PHONE_ENABLED", "file": "codex.py", "type": "bool", "group": "接码平台",
+        "label": "启用手机接码", "help": "默认开启；关闭后仍可启动 Codex OAuth，遇到手机号或手机短信验证时明确报错退出，不取号、不等短信。接码配置只在开启且实际需要手机验证时检查",
+    },
     {
         "key": "SMS_PROVIDER", "file": "codex.py", "type": "str", "group": "接码平台",
         "label": "接码通道", "help": "grizzly / l / h；l 的接口约定见 README“本地 L 接码服务”，h 使用 H_API.md 定义的本地取号服务",

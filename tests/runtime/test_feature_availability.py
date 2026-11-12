@@ -7,6 +7,33 @@ from webui.app import create_app
 from tests.support_pg import PostgresTestCase
 
 
+class CodexReadinessTests(unittest.TestCase):
+    def test_codex_without_sms_credentials_is_available_for_either_phone_setting(self):
+        for phone_enabled in (True, False):
+            for provider in ("grizzly", "h", "l", "unconfigured"):
+                with self.subTest(phone_enabled=phone_enabled, provider=provider), patch.multiple(
+                    "config.codex", CODEX_OAUTH_DRIVER="protocol", CODEX_AUTH_URL_SOURCE="local",
+                    SMS_PROVIDER=provider, SMS_API_KEY="", H_API_BASE="", H_ADMIN_AUTH_CODE="",
+                    L_API_BASE="", L_ADMIN_AUTH_CODE="",
+                ), patch("config.codex.CODEX_PHONE_ENABLED", phone_enabled, create=True), patch.object(
+                    feature_availability, "proxy_configuration_status", return_value={"ok": True},
+                ):
+                    result = feature_availability._codex_retry_status()
+                    enabled, _ = feature_availability.require_feature("codex_retry", driver="protocol")
+                self.assertTrue(result["enabled"], result)
+                self.assertEqual("", result["reason"])
+                self.assertTrue(enabled)
+
+    def test_codex_without_sms_credentials_still_requires_auth_source_configuration(self):
+        with patch.multiple(
+            "config.codex", CODEX_OAUTH_DRIVER="protocol", CODEX_AUTH_URL_SOURCE="cpa",
+            CPA_MANAGEMENT_URL="", CPA_MANAGEMENT_KEY="", SMS_API_KEY="",
+        ), patch.object(feature_availability, "proxy_configuration_status", return_value={"ok": True}):
+            result = feature_availability._codex_retry_status()
+        self.assertFalse(result["enabled"])
+        self.assertIn("CPA_MANAGEMENT_URL", result["reason"])
+
+
 class FeatureAvailabilityTests(PostgresTestCase):
     def test_retired_management_capabilities_are_disabled(self):
         result = feature_availability.feature_availability()

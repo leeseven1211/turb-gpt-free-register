@@ -461,11 +461,11 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             ),
             patch(
                 "core.codex.roxy.oauth._do_phone_verification_if_present",
-                side_effect=lambda _driver: order.append("phone"),
+                side_effect=lambda _driver, **_kwargs: order.append("phone"),
             ),
             patch(
                 "core.codex.roxy.oauth._finish_consent_workspace",
-                side_effect=lambda _driver, email="": order.append("callback") or "http://localhost/callback?code=code-1&state=state-1",
+                side_effect=lambda _driver, email="", **_kwargs: order.append("callback") or "http://localhost/callback?code=code-1&state=state-1",
             ),
             patch("core.codex.roxy.oauth.human_delay"),
         ):
@@ -997,7 +997,7 @@ class RoxyPhoneCountryTests(unittest.TestCase):
             result = _finish_consent_workspace(driver, email="test@example.com")
 
         self.assertEqual(result, callback)
-        phone_flow.assert_called_once_with(driver)
+        phone_flow.assert_called_once_with(driver, phone_enabled=None)
 
     def test_consent_retry_helper_recognizes_try_again_button(self):
         with patch.object(roxy_codex_oauth, "_click_if_present", return_value=True) as click:

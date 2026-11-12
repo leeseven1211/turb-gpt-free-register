@@ -287,7 +287,9 @@ class CodexOAuthChallengeTests(unittest.TestCase):
             "continue", "/sign-in-with-chatgpt/codex/consent",
             follow_result=("workspace", "confirmed-workspace"),
         )
-        self.assertEqual(select.call_args.kwargs, {"workspace_id": "confirmed-workspace"})
+        self.assertEqual(select.call_args.kwargs, {
+            "workspace_id": "confirmed-workspace", "phone_enabled": None,
+        })
         phone.assert_not_called()
 
     def test_only_successful_exact_consent_page_can_select_cached_workspace(self):

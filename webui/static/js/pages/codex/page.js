@@ -193,7 +193,7 @@ function renderCodex() {
     const exported = (r.exported_count || 0) > 0;
     const moreItems = [
       `<button type="button" class="good" data-codex-download="${esc(r.filename)}" title="从数据库生成 Codex OAuth JSON 并下载">下载凭证</button>`,
-      `<button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；会消耗邮箱 OTP 和接码短信">重跑授权</button>`,
+      `<button type="button" data-codex-reauthorize="${esc(r.filename)}" title="重新执行 Codex OAuth 授权；按实际验证要求使用邮箱 OTP 和手机接码">重跑授权</button>`,
       `<button type="button" class="good" data-codex-download-cpa="${esc(r.filename)}" title="按邮箱从 CPA auth-files 下载真实 Codex JSON">从CPA下载</button>`,
       `<button type="button" class="good" data-codex-refresh-token="${esc(r.filename)}" title="使用 refresh_token 换新 access token，不需要邮箱或短信验证码">刷新 OAuth Token</button>`,
       `<button type="button" class="good" data-codex-upload-sub2="${esc(r.filename)}" title="把这份本地 Codex OAuth 凭证上传到 sub2api">上传 sub2api</button>`,
@@ -465,7 +465,7 @@ async function codexReauthorize(filenames = null) {
   if (!selected.length) return;
   const workers = getAccountOperationWorkers();
   const note = `确定为选中的 ${selected.length} 个账号重新执行 Codex OAuth 授权吗？\n\n` +
-               `每个账号将消耗：\n  • 1 封邮箱 OTP\n  • 1 个接码短信\n\n` +
+               `按实际验证要求使用邮箱 OTP。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n` +
                `账号操作公共并发：${workers}\n\n` +
                `授权成功后会更新本地 Codex 凭证；若“授权后自动上传并启用 sub2api”开关开启，将自动上传并恢复调度；关闭时需在成功后手工点击“上传 sub2api”。`;
   if (!confirm(note)) return;

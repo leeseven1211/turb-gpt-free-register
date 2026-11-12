@@ -3723,10 +3723,10 @@ def _sleep_before_phone_retry(
     cancellable_sleep(seconds)
 
 
-def _do_phone_verification_if_present(driver) -> None:
+def _do_phone_verification_if_present(driver, *, phone_enabled: bool | None = None) -> None:
     """如果页面要求手机号验证，则用当前 sms_provider 自动完成。"""
     provider = str(getattr(sms_provider._cfg, "SMS_PROVIDER", "") or "").strip().lower() if hasattr(sms_provider, "_cfg") else ""
-    http = sms_provider._http()
+    http = None
     max_retries = int(getattr(sms_provider._cfg, "SMS_MAX_RETRIES", 10) or 10) if hasattr(sms_provider, "_cfg") else 10
     total_budget = max(30, int(getattr(sms_provider._cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
     deadline = time.monotonic() + total_budget
@@ -3750,6 +3750,11 @@ def _do_phone_verification_if_present(driver) -> None:
         except Exception:
             logger.info("[Codex][Browser] 未检测到手机号验证页，跳过手机步骤")
             return
+
+        from core.codex.oauth import _ensure_phone_verification_enabled
+
+        _ensure_phone_verification_enabled(phone_enabled)
+        http = sms_provider._http()
 
         # 通道是整个授权页的能力，不是某个接码号码的属性。若页面明确只提供
         # WhatsApp，在购买 SMS 号码之前就终止；换国家/换号也无法解决。
@@ -4011,12 +4016,13 @@ def _do_phone_verification_if_present(driver) -> None:
         raise RuntimeError(f"Roxy 手机验证重试 {max_retries} 次仍失败，最后错误：{last_err}")
     finally:
         try:
-            http.close()
+            if http is not None:
+                http.close()
         except Exception:
             pass
 
 
-def _finish_consent_workspace(driver, email: str = "") -> str:
+def _finish_consent_workspace(driver, email: str = "", *, phone_enabled: bool | None = None) -> str:
     """点击 Codex consent/workspace 页面里的继续/允许按钮，直到 callback。
 
     手机验证页可能在最初 8 秒探测窗口之后才出现。Callback 循环必须持续识别
@@ -4036,7 +4042,7 @@ def _finish_consent_workspace(driver, email: str = "") -> str:
                 "[Codex][Browser] Callback 等待期间检测到延迟出现的手机号验证页，立即处理：path=%s",
                 _auth_path_for_log(current),
             )
-            _do_phone_verification_if_present(driver)
+            _do_phone_verification_if_present(driver, phone_enabled=phone_enabled)
             continue
         if consent_retry_attempts < max_consent_retry_attempts and _click_consent_retry_button(driver):
             consent_retry_attempts += 1
@@ -4121,6 +4127,7 @@ def _run_roxy_codex_oauth_once(
     before_oauth_setup=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    phone_enabled: bool | None = None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口。
 
@@ -4263,10 +4270,10 @@ def _run_roxy_codex_oauth_once(
         human_delay("api")
         logger.info("[Codex][Browser] 检查是否需要手机号验证")
         report_stage("phone_check", "检查是否需要手机验证")
-        _do_phone_verification_if_present(driver)
+        _do_phone_verification_if_present(driver, phone_enabled=phone_enabled)
         report_stage("phone_check", "手机验证已完成或无需验证", state="success")
         logger.info("[Codex][Browser] 手机验证处理完成/无需处理，等待授权确认和 callback")
-        callback_url = _finish_consent_workspace(driver, email=email)
+        callback_url = _finish_consent_workspace(driver, email=email, phone_enabled=phone_enabled)
         report_stage("callback", "已捕获 OAuth callback", state="success")
         code = proto._extract_code(callback_url, state)
         logger.info("[Codex][Browser] 已捕获 OAuth callback code")
@@ -4321,6 +4328,9 @@ def _run_roxy_codex_oauth_once(
             email_permanently_unusable=True,
             account_unusable_error_code=exc.error_code or "account_deactivated",
         )
+    except proto.CodexPhoneVerificationDisabled as exc:
+        logger.warning("[Codex][Browser] %s", exc)
+        return proto._phone_verification_disabled_result(email, exc)
     except Exception as exc:
         logger.warning("[Codex][Browser] 授权失败：%s", type(exc).__name__)
         code = getattr(exc, "code", "")
@@ -4528,6 +4538,7 @@ def run_roxy_codex_oauth(
     before_oauth_setup=None,
     allow_password_reset: bool = False,
     on_password_reset_submitted=None,
+    phone_enabled: bool | None = None,
 ) -> dict:
     """指纹浏览器 Codex OAuth 入口；可恢复错误时重新开启一轮授权。"""
     from core.codex import oauth as proto
@@ -4554,6 +4565,7 @@ def run_roxy_codex_oauth(
             before_oauth_setup=before_oauth_setup,
             allow_password_reset=allow_password_reset,
             on_password_reset_submitted=on_password_reset_submitted,
+            phone_enabled=phone_enabled,
         )
         last_result = result
         if result.get("ok"):

@@ -39,6 +39,39 @@ class CodexConsentUnverifiableError(RuntimeError):
     """授权确认页缺少可确认的单一工作区，需交由浏览器处理。"""
 
 
+class CodexPhoneVerificationDisabled(RuntimeError):
+    """授权要求手机验证，但任务已关闭接码。"""
+
+    code = "codex_phone_verification_disabled"
+
+    def __init__(self):
+        super().__init__("Codex OAuth 需要手机号验证，但手机接码已关闭，已退出授权")
+
+
+def _ensure_phone_verification_enabled(phone_enabled: bool | None = None) -> None:
+    """只在已确认手机挑战后检查开关，任务快照优先于当前配置。"""
+    enabled = getattr(_cfg, "CODEX_PHONE_ENABLED", True) if phone_enabled is None else phone_enabled
+    if not enabled:
+        error = CodexPhoneVerificationDisabled()
+        report_stage("phone_check", str(error), state="failed", detail={"cause_code": error.code})
+        raise error
+
+
+def _phone_verification_disabled_result(email: str, exc: CodexPhoneVerificationDisabled) -> dict:
+    """保留明确的配置失败；手机和凭据授权均未继续提交，可直接重跑。"""
+    return {
+        **_codex_result(status="failed", email=email, message=str(exc)),
+        "error_code": exc.code,
+        "cause_code": exc.code,
+        "error_category": "configuration",
+        "remote_write_rejected": True,
+        "auth_diagnostics": {
+            "operation": "phone_verification",
+            "failure_kind": "phone_verification_disabled",
+        },
+    }
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # 跟重定向链时的最大跳数，防死循环
@@ -866,7 +899,7 @@ def _authorize_login_step(result: dict) -> tuple[str, str]:
     password_path = path in ("/log-in/password", "/create-account/password")
     mfa_path = path.startswith("/mfa-challenge")
     email_path = path in ("/api/accounts/email-otp/send", "/email-verification")
-    phone_path = path in ("/add-phone", "/api/accounts/add-phone/send")
+    phone_path = path in ("/add-phone", "/phone-verification", "/api/accounts/add-phone/send")
     workspace_path = path == "/api/accounts/workspace/select"
     consent_path = path == "/sign-in-with-chatgpt/codex/consent"
     if (
@@ -1155,7 +1188,7 @@ def _sleep_before_phone_retry(
     cancellable_sleep(seconds)
 
 
-def _do_phone_verification(session: BrowserSession) -> dict:
+def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | None = None) -> dict:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
     一个号收不到码或被 OpenAI 拒就取消换号，最多 SMS_MAX_RETRIES 次（热加载）。
@@ -1164,6 +1197,7 @@ def _do_phone_verification(session: BrowserSession) -> dict:
         - SMS_PROVIDER="grizzly"：GrizzlySMS handler_api.php
         - SMS_PROVIDER="l"：README“本地 L 接码服务”约定的 JSON 接口
     """
+    _ensure_phone_verification_enabled(phone_enabled)
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
     provider = _sms_provider_name()
@@ -1451,7 +1485,7 @@ def _safe_login_path(value: str | None) -> str:
         return "/sign-in-with-chatgpt/*"
     if path in {
         "/authorize/continue", "/api/accounts/continue", "/api/accounts/workspace/select",
-        "/email-verification", "/add-phone", "/api/accounts/add-phone/send",
+        "/email-verification", "/add-phone", "/phone-verification", "/api/accounts/add-phone/send",
         "/log-in/password",
     }:
         return path
@@ -1552,7 +1586,7 @@ def _follow_login_continue_step(
                 logger.info("[Codex] 已确认授权页及单一工作区，继续工作区选择")
                 return "workspace", workspace_id
             return "consent", ""
-        if final_path in ("/add-phone", "/api/accounts/add-phone/send"):
+        if final_path in ("/add-phone", "/phone-verification", "/api/accounts/add-phone/send"):
             return "phone", ""
         if payload:
             step, _ = _authorize_login_step(payload)
@@ -1570,6 +1604,7 @@ def _follow_login_continue(session: BrowserSession, continue_url: str, state: st
 
 def _select_workspace_and_get_callback(
     session: BrowserSession, state: str, *, workspace_id: str | None = None,
+    phone_enabled: bool | None = None,
 ) -> str:
     """
     POST workspace/select，然后跟随后续重定向/响应里的 URL 直到命中 localhost:1455 callback。
@@ -1626,15 +1661,19 @@ def _select_workspace_and_get_callback(
     next_url, _ = _login_target(next_url, base_url=response_url)
 
     # 跟随重定向链直到命中 callback
-    callback_url = _follow_until_callback(session, next_url, state)
+    callback_url = _follow_until_callback(session, next_url, state, phone_enabled=phone_enabled)
     _extract_code(callback_url, state)
     report_stage("workspace", "工作区选择已确认并收到有效 OAuth 回调", state="success")
     return callback_url
 
 
-def _follow_until_callback(session: BrowserSession, url: str, state: str) -> str:
+def _follow_until_callback(
+    session: BrowserSession, url: str, state: str, *, phone_enabled: bool | None = None,
+) -> str:
     """从给定 URL 起逐跳跟随，命中 localhost:1455 callback 时返回其 Location。"""
     step, callback = _follow_login_continue_step(session, url, state)
+    if step == "phone":
+        _ensure_phone_verification_enabled(phone_enabled)
     if step != "callback":
         raise RuntimeError("[Codex] 工作区选择后尚未确认 OAuth callback，已停止继续")
     return callback
@@ -1939,6 +1978,7 @@ def run_codex_oauth(
     *,
     login_password: str | None = None,
     login_totp_secret: str | None = None,
+    phone_enabled: bool | None = None,
 ) -> dict:
     """
     Codex OAuth 授权入口。Protocol 使用独立 BrowserSession，并根据服务端
@@ -1952,6 +1992,7 @@ def run_codex_oauth(
         force: True 时跳过 ENABLE_CODEX_AUTO 开关限制，供手动补跑使用
         login_password: 新注册本轮已知的 OpenAI 密码，仅在内存中传递。
         login_totp_secret: 新注册本轮启用的 TOTP secret，仅在内存中传递。
+        phone_enabled: 入队时的手机接码开关；未传时读取当前配置。
 
     Returns:
         结构化结果 dict。已提交验证但结果未知时返回 attention_required。
@@ -1992,6 +2033,7 @@ def run_codex_oauth(
                 on_password_reset_submitted=on_password_reset_submitted,
                 login_password=login_password,
                 login_totp_secret=login_totp_secret,
+                phone_enabled=phone_enabled,
             )
         finally:
             route.release(reason=f"codex-oauth-{email}")
@@ -2016,6 +2058,7 @@ def run_codex_oauth(
                 force=True,
                 allow_password_reset=allow_password_reset,
                 on_password_reset_submitted=on_password_reset_submitted,
+                phone_enabled=phone_enabled,
             )
         if oauth_driver not in ("protocol", "api", "http"):
             raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，当前仅支持 protocol / roxy / same_as_registration")
@@ -2122,7 +2165,7 @@ def run_codex_oauth(
                     raise RuntimeError("[Codex] 手机验证后仍停留在同一挑战，已停止重复提交")
                 phone_ran = True
                 report_stage("phone_check", "服务端要求手机号验证")
-                phone_result = _do_phone_verification(session)
+                phone_result = _do_phone_verification(session, phone_enabled=phone_enabled)
                 if phone_result:
                     login_step, login_continue = _authorize_login_step(phone_result)
                 else:
@@ -2140,6 +2183,7 @@ def run_codex_oauth(
                 human_delay("post_auth")
                 callback_url = _select_workspace_and_get_callback(
                     session, state, workspace_id=login_continue or None,
+                    phone_enabled=phone_enabled,
                 )
                 break
             elif login_step == "callback":
@@ -2237,6 +2281,9 @@ def run_codex_oauth(
             "outcome": "request_unknown",
             "reconcile_required": True,
         }
+    except CodexPhoneVerificationDisabled as exc:
+        logger.warning("[Codex] %s", exc)
+        return _phone_verification_disabled_result(email, exc)
     except CodexConsentUnverifiableError as exc:
         logger.warning("[Codex] 授权确认页无法确认单一工作区，需使用浏览器驱动")
         return {
@@ -2267,6 +2314,7 @@ def run_codex_oauth(
                 on_password_reset_submitted=on_password_reset_submitted,
                 login_password=login_password,
                 login_totp_secret=login_totp_secret,
+                phone_enabled=phone_enabled,
             )
         logger.warning(f"[Codex] 失败：{email}，{type(exc).__name__}: {str(exc)[:200]}")
         logger.debug("[Codex] 失败详情:", exc_info=True)

@@ -378,8 +378,8 @@ function proxyConfigSectionForKey(key) {
 }
 
 function smsConfigSectionForKey(key) {
-  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_AUTO_SELECT_COUNTRY','SMS_AUTO_COUNTRY_MIN_RATIO','SMS_MAX_RETRIES','SMS_CODE_WAIT','CODEX_PHONE_TOTAL_TIMEOUT'].includes(key)) {
-    return ['通用接码', '接码通道选择、国家/服务代码、批次成功率选国、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
+  if (['CODEX_PHONE_ENABLED','SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_PRICE','SMS_AUTO_SELECT_COUNTRY','SMS_AUTO_COUNTRY_MIN_RATIO','SMS_MAX_RETRIES','SMS_CODE_WAIT','CODEX_PHONE_TOTAL_TIMEOUT'].includes(key)) {
+    return ['通用接码', '手机接码关闭时，Codex OAuth 遇到手机验证会报错退出；接码配置只在开启且实际需要时检查。H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];
@@ -635,7 +635,7 @@ function configSectionIntro(name) {
   if (name === 'RoxyBrowser') return 'RoxyBrowser API、环境与代理相关设置。';
   if (name === 'Codex') return '配置 Codex 授权地址来源、CPA 与 sub2api；Token 自动刷新归入系统设置的定时任务。';
   if (name === '邮箱 / OTP') return '邮箱来源、OTP 等待与各邮箱服务商参数。';
-  if (name === '接码平台') return '接码通道、国家代码与本地取号服务参数。';
+  if (name === '接码平台') return '手机接码开关、接码通道、国家代码与本地取号服务参数。';
   if (name === '定时任务') return '后台周期任务的开关与执行间隔。上次执行时间保存在数据库中，重启服务会按剩余时间接续，不会重复执行。';
   if (name === '人工节奏') return '配置流程操作的随机停顿节奏，适用于协议全链路和浏览器操作。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';

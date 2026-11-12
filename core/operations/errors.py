@@ -1174,6 +1174,9 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "codex_consent_unverifiable": (
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
     ),
+    "codex_phone_verification_disabled": (
+        "CFG-CODEX-PHONE-001", "Codex OAuth 需要手机号验证，但手机接码已关闭，已退出授权",
+    ),
     "email_otp_failed": ("MAIL-OTP-001", "邮箱验证码验证未完成"),
     "email_otp_code_rejected": ("OA-OTP-CODE-001", "验证码被远端拒绝（wrong_email_otp_code）"),
     "email_otp_send_failed": ("MAIL-SEND-001", "验证码发送请求失败"),
@@ -2156,6 +2159,8 @@ def _cause_error_projection(
     if cause["cause_code"] == "local_config_schema_mismatch":
         projection.update(source="internal", source_label="本地配置", remote_state_impact="unknown",
                           next_action="restart_and_retry")
+    if cause["cause_code"] == "codex_phone_verification_disabled":
+        projection.update(remote_state_impact="not_started", next_action="fix_configuration")
     if error_code:
         projection["original_error_code"] = error_code
     return projection

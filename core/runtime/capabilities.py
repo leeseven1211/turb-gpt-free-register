@@ -197,22 +197,8 @@ def _codex_retry_status(driver_override: str | None = None) -> dict[str, Any]:
     if not ok:
         return _feature(False, reason)
 
-    provider = str(getattr(codex, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
-    if provider == "grizzly":
-        ok, reason = _all_present([("SMS_API_KEY", getattr(codex, "SMS_API_KEY", ""))])
-    elif provider == "h":
-        ok, reason = _all_present([
-            ("H_API_BASE", getattr(codex, "H_API_BASE", "")),
-            ("H_ADMIN_AUTH_CODE", getattr(codex, "H_ADMIN_AUTH_CODE", "")),
-        ])
-    elif provider == "l":
-        ok, reason = _all_present([
-            ("L_API_BASE", getattr(codex, "L_API_BASE", "")),
-            ("L_ADMIN_AUTH_CODE", getattr(codex, "L_ADMIN_AUTH_CODE", "")),
-        ])
-    else:
-        ok, reason = False, f"不支持的 SMS_PROVIDER={provider}"
-    return _feature(ok, reason)
+    # OAuth 不一定要求手机号；接码开关和平台配置在实际进入手机验证时检查。
+    return _feature(True)
 
 
 def feature_availability() -> dict[str, Any]:

@@ -75,8 +75,8 @@ CODEX_OAUTH_AUTO_UPLOAD_SUB2API: bool = schema_default("CODEX_OAUTH_AUTO_UPLOAD_
 #
 # 旧方案"复用注册的已登录 session"会撞 /choose-an-account 卡死；
 # 新方案用全新干净 session 从头登录，走 OpenAI 标准风控路径
-# （邮箱 OTP → 手机短信验证 → 选 workspace → 拿 code），
-# 手机验证靠接码平台 GrizzlySMS 自动收码。
+# （邮箱 OTP → 按需手机短信验证 → 选 workspace → 拿 code），
+# 手机验证由 CODEX_PHONE_ENABLED 决定是否使用接码平台自动收码。
 # ============================================================
 
 # 注册成功后是否自动跑 Codex 授权（True=自动，False=跳过）
@@ -136,13 +136,16 @@ CPA_SAVE_CALLBACK_RECEIPT: bool = schema_default("CPA_SAVE_CALLBACK_RECEIPT")
 #   "h"       = 本地 H 取号服务，接口说明见 H_API.md
 # ============================================================
 
+# 关闭后仍可启动 Codex OAuth；遇到手机号或手机短信验证时明确报错退出。
+CODEX_PHONE_ENABLED: bool = schema_default("CODEX_PHONE_ENABLED")
+
 SMS_PROVIDER: str = schema_default("SMS_PROVIDER")
 
 # 接码 API 基址（GET handler）
 SMS_API_BASE: str = "https://api.grizzlysms.com/stubs/handler_api.php"
 
 # 接码 API 密钥（在 GrizzlySMS 后台 → 设置 获取）
-# 留空时 Codex 授权的手机验证步会失败；如不需要 Codex 自动授权，把 ENABLE_CODEX_AUTO=False。
+# 只在开启手机接码且实际进入 GrizzlySMS 手机验证时检查；留空不阻止启动 OAuth。
 SMS_API_KEY: str = schema_default("SMS_API_KEY")
 
 # 服务代码：OpenAI = "dr"

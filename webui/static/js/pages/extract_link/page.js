@@ -402,43 +402,6 @@ function extractWorkbenchPaymentSourceSuffix(item) {
   return label ? ` · 自动支付来源：${label}` : '';
 }
 
-function extractWorkbenchRenderAdmission() {
-  const target = extractWorkbenchNode('[data-workbench-admission]');
-  if (!target) return;
-  const config = EXTRACT_WORKBENCH_CONFIG || {};
-  const providers = Array.isArray(config.providers) ? config.providers : [];
-  const unavailable = Array.isArray(config.unavailable_providers) ? config.unavailable_providers : [];
-  if (!providers.length && !unavailable.length) {
-    target.innerHTML = '<p class="extract-workbench-muted">平台配置读取中…</p>';
-    return;
-  }
-  const workers = Math.max(1, Number(extractWorkbenchNode('[data-workbench-batch-workers]')?.value || 1));
-  const limit = Math.max(0, Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 0));
-  const batchCap = 5000;
-  const rows = [
-    ...providers.map(provider => {
-      const modes = Array.isArray(provider.modes) ? provider.modes.length : 0;
-      return `<div class="ew-admission-row" data-state="ok">
-        <i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(provider.id)}"></i>
-        <span class="ew-admission-name">${extractWorkbenchEscape(provider.label || provider.id)}</span>
-        <span class="ew-admission-state">可用</span>
-        <span class="ew-admission-meta">模式 ${modes} 种 · 平台并发上限 ${Number(provider.concurrency || 0) || '—'} · 本批并发 ${workers} · 单批上限 ${batchCap.toLocaleString('zh-CN')}</span>
-      </div>`;
-    }),
-    ...unavailable.map(provider => `<div class="ew-admission-row" data-state="bad">
-        <i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(provider.id)}"></i>
-        <span class="ew-admission-name">${extractWorkbenchEscape(provider.label || provider.id)}</span>
-        <span class="ew-admission-state">不可用</span>
-        <span class="ew-admission-meta">${extractWorkbenchEscape(provider.unavailable_reason || '连接配置无效')}</span>
-      </div>`),
-  ];
-  const slices = limit > batchCap ? Math.ceil(limit / batchCap) : 0;
-  const sliceHint = slices
-    ? `<p class="ew-admission-slice">本批 ${limit.toLocaleString('zh-CN')} 个超过单批上限，提交时会自动切成 ${slices} 批 × 约 ${Math.round(limit / slices)} 个。</p>`
-    : '';
-  target.innerHTML = rows.join('') + sliceHint;
-}
-
 function extractWorkbenchRenderModes() {
   const providerId = extractWorkbenchNode('[data-workbench-provider]')?.value;
   const provider = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId);
@@ -781,7 +744,7 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
       ? '<p class="extract-workbench-empty">没有匹配的提链任务，换个筛选条件试试。</p>'
       : `<div class="ew-empty">
           <h3>还没有提链任务</h3>
-          <p>建第一个批次，流程就三步：圈账号 → 看平台准入 → 选模式提交。提交后这里会按「处理中 / 待支付 / 待核对 / 已出链 / 已完成 / 失败」自动分桶。</p>
+          <p>建第一个批次，先筛选账号，再选模式提交。提交后这里会按「处理中 / 待支付 / 待核对 / 已出链 / 已完成 / 失败」自动分桶。</p>
           <ul><li>只提链：拿到链接就结束</li><li>手动支付：出二维码，等人扫码</li><li>自动支付 + 核验：付完自动确认 Plus 是否到账</li></ul>
           <button type="button" class="btn extract-workbench-primary" data-workbench-open-create>新建批次</button>
         </div>`;
@@ -1278,7 +1241,6 @@ async function extractWorkbenchOpenCreate() {
   try {
     await extractWorkbenchLoadConfig();
     extractWorkbenchRenderProviders();
-    extractWorkbenchRenderAdmission();
     extractWorkbenchRenderAccountSources();
     await extractWorkbenchLoadAccounts();
   } catch (_) {
@@ -1288,10 +1250,10 @@ async function extractWorkbenchOpenCreate() {
 }
 
 async function extractWorkbenchLoadAccounts() {
-  const target = extractWorkbenchNode('[data-workbench-accounts]');
-  if (!target) return;
+  const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
+  if (!summary) return;
   const sequence = ++EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE;
-  target.innerHTML = '<p class="extract-workbench-muted">正在统计符合条件的账号…</p>';
+  summary.textContent = '正在统计符合条件的账号…';
   const filters = extractWorkbenchCandidateFilters();
   const limit = Number(extractWorkbenchNode('[data-workbench-batch-limit]')?.value || 100);
   const signature = extractWorkbenchCandidateSignature();
@@ -1303,25 +1265,14 @@ async function extractWorkbenchLoadAccounts() {
     if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new Error('本批运行数量须为 1 至 5000 的整数');
     const result = await extractWorkbenchRequest(`/api/extract-workbench/candidates?${params.toString()}`);
     if (sequence !== EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE) return;
-    const accounts = Array.isArray(result?.items) ? result.items : [];
     EXTRACT_WORKBENCH_STATE.accountsLoaded = true;
     EXTRACT_WORKBENCH_STATE.preview = result;
     EXTRACT_WORKBENCH_STATE.previewSignature = signature;
-    const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
-    if (summary) summary.textContent = `匹配 ${Number(result?.total || 0).toLocaleString('zh-CN')} 个可用账号，本批计划运行 ${Number(result?.selected_count || 0).toLocaleString('zh-CN')} 个；预览前 ${accounts.length} 个。`;
-    target.innerHTML = accounts.length ? `<table><thead><tr><th>账号</th><th>来源</th><th>注册时间</th><th>套餐优惠</th><th>提链状态</th></tr></thead><tbody>${accounts.map(account => {
-      const email = extractWorkbenchEscape(account.email || '账号未记录');
-      const source = extractWorkbenchAccountSources()[account.email_source] || account.email_source || '未记录';
-      const promotion = ['free_trial', 'half_price', 'other_discount', 'other_promo', 'none'].includes(String(account.account_promotion_value || ''))
-        ? extractWorkbenchPromotionLabel(account.account_promotion_value) : '—';
-      return `<tr><td title="${email}">${email}</td><td>${extractWorkbenchEscape(source)}</td><td>${extractWorkbenchEscape(String(account.created_at || '').slice(0, 10) || '—')}</td><td>${extractWorkbenchEscape(promotion)}</td><td>${extractWorkbenchEscape(account.extract_link_status ? extractWorkbenchStatusLabel(account.extract_link_status) : '尚未提链')}</td></tr>`;
-    }).join('')}</tbody></table>` : '<p class="extract-workbench-empty">没有匹配的可用账号，请调整筛选条件</p>';
+    summary.textContent = `匹配 ${Number(result?.total || 0).toLocaleString('zh-CN')} 个可用账号，本批计划运行 ${Number(result?.selected_count || 0).toLocaleString('zh-CN')} 个。`;
     extractWorkbenchRenderModes();
   } catch (error) {
     if (sequence !== EXTRACT_WORKBENCH_ACCOUNT_SEQUENCE) return;
-    target.innerHTML = `<p class="extract-workbench-error">账号列表加载失败：${extractWorkbenchEscape(error?.message || '请重试')}</p>`;
-    const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
-    if (summary) summary.textContent = '预览未完成，请检查筛选条件后重试。';
+    summary.textContent = `匹配数量统计失败：${error?.message || '请重试'}。请检查筛选条件后重试。`;
   }
 }
 
@@ -1340,7 +1291,7 @@ function extractWorkbenchInvalidatePreview() {
   EXTRACT_WORKBENCH_STATE.preview = null;
   EXTRACT_WORKBENCH_STATE.previewSignature = '';
   const summary = extractWorkbenchNode('[data-workbench-candidate-summary]');
-  if (summary) summary.textContent = '筛选条件已变更，请重新预览匹配账号。';
+  if (summary) summary.textContent = '筛选条件已变更，请刷新匹配数量。';
   extractWorkbenchRenderCandidatePromotion();
   extractWorkbenchRenderModes();
 }
@@ -1738,8 +1689,7 @@ function extractWorkbenchBindEvents() {
     if (event.target.matches('[data-workbench-batch-select]')) { void extractWorkbenchSwitchBatch(event.target.value); return; }
     if (event.target.matches('[data-workbench-account-source], [data-workbench-date-from], [data-workbench-date-to], [data-workbench-extract-status], [data-workbench-promotion], [data-workbench-batch-limit]')) extractWorkbenchInvalidatePreview();
     if (event.target.matches('[data-workbench-filter-provider], [data-workbench-filter-mode]')) extractWorkbenchApplyFilters();
-    if (event.target.matches('[data-workbench-provider]')) { extractWorkbenchRenderModes(); extractWorkbenchRenderLinkTypes(); extractWorkbenchRenderAdmission(); return; }
-    if (event.target.matches('[data-workbench-batch-workers], [data-workbench-batch-limit]')) { extractWorkbenchRenderAdmission(); return; }
+    if (event.target.matches('[data-workbench-provider]')) { extractWorkbenchRenderModes(); extractWorkbenchRenderLinkTypes(); return; }
     if (event.target.matches('[data-workbench-mode], [data-workbench-type]')) extractWorkbenchRenderModes();
   });
   root.addEventListener('input', event => {

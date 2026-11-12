@@ -19,6 +19,15 @@ from tests.support_pg import PostgresTestCase
 
 
 class CodexCredentialSemanticsTests(unittest.TestCase):
+    def test_phone_setting_snapshot_preserves_disabled_choice(self):
+        for values in ({"CODEX_PHONE_ENABLED": False}, {"phone_enabled": False}):
+            with self.subTest(values=values):
+                snapshot = codex_operation_service._project_config_snapshot(values, 17)
+                self.assertIs(False, snapshot["phone_enabled"])
+        self.assertIs(True, codex_operation_service._project_config_snapshot({}, None)["phone_enabled"])
+        with patch("config.codex.CODEX_PHONE_ENABLED", False):
+            self.assertIs(False, codex_operation_service._legacy_config_snapshot()["phone_enabled"])
+
     def test_account_deactivated_result_is_terminal_even_when_wrapped_as_attention(self):
         status, credential_state, error = classify_codex_operation_result(
             {
@@ -197,7 +206,7 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         account_task_store.init()
 
-    def _execute_failed_consent(self, diagnostics, *, cause_code="codex_consent_unverifiable", error_category="auth"):
+    def _execute_oauth_result(self, result, *, snapshot=None):
         account_id = record_store.insert_row(record_store.ACCOUNTS, {
             "email": "consent@example.test",
             "codex_status": "failed",
@@ -206,27 +215,79 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         store = codex_operation_service.operation_task_store
         task = store.create_runtime_task(
             task_type="codex_retry", account_id=account_id, email="consent@example.test",
-            data={"config_snapshot": {"oauth_driver": "protocol"}},
+            data={"config_snapshot": snapshot or {"oauth_driver": "protocol"}},
         )
         route = Mock(proxy_url=None, provider="test", mode="direct", region="")
         route.public_dict.return_value = {"network_route": "test-direct"}
         with (
             patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
             patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
-            patch.object(codex_oauth, "run_codex_oauth", return_value={
-                "ok": False,
-                "status": "failed",
-                "message": "Codex 授权确认页无法继续，需浏览器驱动",
-                "cause_code": cause_code,
-                "error_category": error_category,
-                "auth_diagnostics": diagnostics,
-                "raw_response": "synthetic-private-response",
-            }),
+            patch.object(codex_oauth, "run_codex_oauth", return_value=result) as authorize,
         ):
             returned = codex_operation_service._execute_run(int(task["run"]["id"]))
+        self.authorize_call = authorize.call_args
         detail = store.get_task(int(task["id"]))
         run = store.get_run(int(task["run"]["id"]))
         return returned, detail, run
+
+    def _execute_failed_consent(self, diagnostics, *, cause_code="codex_consent_unverifiable", error_category="auth"):
+        return self._execute_oauth_result({
+            "ok": False,
+            "status": "failed",
+            "message": "Codex 授权确认页无法继续，需浏览器驱动",
+            "cause_code": cause_code,
+            "error_category": error_category,
+            "auth_diagnostics": diagnostics,
+            "raw_response": "synthetic-private-response",
+        })
+
+    def test_disabled_phone_failure_is_classified_terminal_and_can_retry(self):
+        code = "codex_phone_verification_disabled"
+        message = "Codex OAuth 需要手机号验证，但手机接码已关闭，已退出授权"
+        expected = {"operation": "phone_verification", "failure_kind": "phone_verification_disabled"}
+        with patch("config.codex.CODEX_PHONE_ENABLED", True):
+            returned, detail, run = self._execute_oauth_result({
+                "ok": False, "status": "failed", "message": message,
+                "error_code": code, "cause_code": code, "error_category": "configuration",
+                "remote_write_rejected": True,
+                "auth_diagnostics": {**expected, "response_body": "synthetic-private-body"},
+            }, snapshot={"oauth_driver": "protocol", "phone_enabled": False})
+
+        self.assertIs(False, self.authorize_call.kwargs["phone_enabled"])
+        self.assertEqual("failed", returned["status"])
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("failed", detail["status"])
+        for summary in (run["result_summary"], detail["result_summary"]):
+            self.assertEqual(code, summary["cause_code"])
+            self.assertEqual("configuration", summary["error_category"])
+            self.assertEqual(expected, summary["auth_diagnostics"])
+            self.assertNotIn("reconcile_required", summary)
+            self.assertNotEqual("request_unknown", summary.get("outcome"))
+            self.assertNotIn("synthetic-private-", json.dumps(summary))
+        projection = classify_task_error(
+            detail["error_message"], task_type=detail["task_type"],
+            task_status=detail["status"], error_code=detail["error_code"],
+            result_summary=detail["result_summary"],
+        )
+        self.assertEqual(code, projection["code"])
+        self.assertEqual("CFG-CODEX-PHONE-001", projection["display_code"])
+        self.assertEqual("configuration", projection["source"])
+        self.assertEqual("conditional", projection["retryability"])
+        self.assertEqual("fix_configuration", projection["next_action"])
+        self.assertNotIn("reconcile_required", projection)
+        with (
+            patch.object(codex_operation_service, "_config_snapshot", return_value={
+                "oauth_driver": "protocol", "phone_enabled": True,
+            }),
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch.object(codex_operation_service, "_dispatch"),
+        ):
+            retried = codex_operation_service.retry_task(detail["id"])
+        self.assertTrue(retried["accepted"])
+        self.assertEqual("queued", retried["status"])
+        self.assertNotEqual(run["id"], retried["run_id"])
+        new_run = codex_operation_service.operation_task_store.get_run(retried["run_id"])
+        self.assertIs(True, new_run["data"]["config_snapshot"]["phone_enabled"])
 
     def test_consent_cause_survives_run_and_task_projection_without_secret_fields(self):
         expected = {

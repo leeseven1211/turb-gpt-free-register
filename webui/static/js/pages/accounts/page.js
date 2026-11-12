@@ -1063,7 +1063,7 @@ function _codexAction(r) {
   }
   if (s === 'deactivated') return '';
   const label = s === 'success' ? '重新补跑 Codex' : '补跑 Codex';
-  return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权（会消耗 1 封邮箱 OTP + 1 个接码短信）">${label}</button>`;
+  return `<button data-codex-retry="${esc(r.email)}" title="重新跑一次 Codex 授权；按实际验证要求使用邮箱 OTP 和手机接码">${label}</button>`;
 }
 function _liveCheckHttpStatus(r) {
   const direct = Number.parseInt(r?.live_check_http_status, 10);
@@ -1907,7 +1907,7 @@ async function onAccountsBodyClick(e) {
   const btn = e.target.closest('[data-codex-retry]');
   if (!btn) return;
   const email = btn.dataset.codexRetry;
-  if (!confirm(`重新跑 Codex 授权？\n\n${email}\n\n将消耗：\n  • 1 封邮箱 OTP（自动收）\n  • 1 个接码短信（约 $0.13）\n\n补跑会在后台进行（~1-2 分钟），完成后状态自动更新。`)) return;
+  if (!confirm(`重新跑 Codex 授权？\n\n${email}\n\n按实际验证要求使用邮箱 OTP（自动收）。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑会在后台进行，完成后状态自动更新。`)) return;
   btn.disabled = true;
   try {
     const r = await api('/api/codex/retry', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email}) });
@@ -3032,7 +3032,7 @@ async function retrySelectedCodex() {
 
 并发线程数：${workers}
 
-将按账号消耗邮箱 OTP 和接码短信。
+按实际验证要求使用邮箱 OTP。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。
 
 补跑中和已废号账号会自动跳过。`;
   if (!confirm(msg)) return;

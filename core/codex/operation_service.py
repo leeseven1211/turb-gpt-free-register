@@ -51,6 +51,14 @@ _CODEX_FAILURE_DIAGNOSTICS = {
         "oauth_driver": "protocol",
         "page_path": "/sign-in-with-chatgpt/codex/consent",
     },
+    "codex_phone_verification_disabled": {
+        "operation": "phone_verification",
+        "failure_kind": "phone_verification_disabled",
+    },
+}
+_CODEX_FAILURE_CATEGORIES = {
+    "codex_consent_unverifiable": "auth",
+    "codex_phone_verification_disabled": "configuration",
 }
 
 # C's schema snapshot is intentionally broad because it is also consumed by
@@ -83,8 +91,9 @@ def _safe_codex_failure_details(result: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(cause_code, str) or cause_code not in _CODEX_FAILURE_DIAGNOSTICS:
         return {}
     safe: dict[str, Any] = {"cause_code": cause_code}
-    if result.get("error_category") == "auth":
-        safe["error_category"] = "auth"
+    category = _CODEX_FAILURE_CATEGORIES[cause_code]
+    if result.get("error_category") == category:
+        safe["error_category"] = category
     diagnostics = result.get("auth_diagnostics")
     if isinstance(diagnostics, Mapping):
         allowed = _CODEX_FAILURE_DIAGNOSTICS[cause_code]
@@ -180,6 +189,7 @@ def _legacy_config_snapshot(driver_override: str | None = None) -> dict:
         "oauth_driver": driver,
         "auth_source": str(getattr(cfg, "CODEX_AUTH_URL_SOURCE", "cpa") or "cpa").strip().lower(),
         "auto_upload_sub2api": bool(getattr(cfg, "CODEX_OAUTH_AUTO_UPLOAD_SUB2API", False)),
+        "phone_enabled": bool(getattr(cfg, "CODEX_PHONE_ENABLED", True)),
         "sms_provider": str(getattr(cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower(),
         "sms_country": str(getattr(cfg, "SMS_COUNTRY", "") or ""),
         "account_proxy_mode": str(
@@ -350,6 +360,9 @@ def _project_config_snapshot(
             "cpa",
             lower=True,
         ),
+        "phone_enabled": bool(_snapshot_value(
+            values, "CODEX_PHONE_ENABLED", "phone_enabled", default=True,
+        )),
         "sms_provider": _snapshot_text(
             _snapshot_value(values, "SMS_PROVIDER", "sms_provider", default="grizzly"),
             "grizzly",
@@ -1024,6 +1037,7 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                     proxy=route.proxy_url if route is not None else None,
                     force=True,
                     driver_override=driver,
+                    phone_enabled=snapshot.get("phone_enabled"),
                     allow_password_reset=allow_password_reset,
                     on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
                 )
