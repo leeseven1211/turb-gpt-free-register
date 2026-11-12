@@ -46,7 +46,7 @@ test('批量删除展示各类跳过原因，只取消已移除项的勾选', as
   assert.deepEqual(screen.refreshes, ['list', 'summary']);
   assert.match(screen.confirmations[0], /本地邮箱池移除/);
   assert.match(screen.confirmations[0], /保留使用历史/);
-  assert.match(screen.confirmations[0], /注册结果未确认时保留原租约/);
+  assert.match(screen.confirmations[0], /缺少注册完成回执时保留原租约/);
   assert.match(screen.confirmations[0], /确认账号未创建后才可退还/);
 });
 
@@ -70,7 +70,7 @@ test('单条删除展示保留原租约的后端说明', async () => {
   assert.deepEqual(screen.toasts, [message]);
   assert.deepEqual([...screen.selected], ['outlook|success@example.test']);
   assert.deepEqual(screen.refreshes, ['list', 'summary']);
-  assert.match(screen.confirmations[0], /注册结果未确认时保留原租约/);
+  assert.match(screen.confirmations[0], /缺少注册完成回执时保留原租约/);
 });
 
 test('单条删除展示活跃注册延后退租的后端说明', async () => {

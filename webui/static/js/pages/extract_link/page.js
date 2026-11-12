@@ -35,8 +35,8 @@ const EXTRACT_WORKBENCH_STATUS_LABELS = {
   pending: '等待执行', queued: '排队中', running: '运行中', success: '已完成', failed: '失败',
   passed: '预检通过', succeeded: '已完成', waiting: '等待中', settling: '收尾中', cancelling: '取消中', cancelled: '已取消',
   skipped: '已跳过', paid: '支付成功', unpaid: '未支付', pending_payment: '待支付',
-  confirmed: 'Plus 已确认', plus: 'Plus 已确认', not_confirmed: 'Plus 未确认',
-  unknown: '待确认', request_unknown: '结果待确认', unavailable: '未启用', not_applicable: '不适用',
+  confirmed: 'Plus 已确认', plus: 'Plus 已确认', not_confirmed: 'Plus 未到账',
+  unknown: '响应记录缺失', request_unknown: '失败', attention_required: '失败', unavailable: '未启用', not_applicable: '不适用',
   query_stopped: '已停止查询', waiting_sync: '等待平台同步',
   awaiting_payment: '待支付', processing_payment: '支付中', expired: '已过期',
   not_started: '未开始', checking: '核验中', unavailable: '无法确认',
@@ -48,7 +48,7 @@ const EXTRACT_WORKBENCH_FILTERS = [
 ];
 const EXTRACT_WORKBENCH_PAYMENT_PHASE_LABELS = {
   not_started: '未开始', awaiting_payment: '待支付', processing: '支付中',
-  paid: '已支付', failed: '支付失败', expired: '已过期', unknown: '结果未知',
+  paid: '已支付', failed: '支付失败', expired: '已过期', unknown: '支付响应缺失',
 };
 const EXTRACT_WORKBENCH_PLUS_STATE_LABELS = {
   unknown: '未核验', checking: '核验中', confirmed: '已到账',
@@ -124,7 +124,7 @@ function extractWorkbenchWaitLabel(task) {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
-function extractWorkbenchStatusLabel(value, fallback = '待确认') {
+function extractWorkbenchStatusLabel(value, fallback = '状态记录缺失') {
   const key = String(value || '').toLowerCase();
   return EXTRACT_WORKBENCH_STATUS_LABELS[key] || key || fallback;
 }
@@ -138,7 +138,7 @@ function renderExtractWorkbenchStage(stage, label, status) {
     : stage === 'preflight' && ['success', 'passed'].includes(key) ? '预检通过'
     : stage === 'payment' && ['success', 'paid'].includes(key) ? '支付成功'
     : stage === 'plus' && ['success', 'confirmed', 'plus'].includes(key) ? 'Plus 已到账'
-    : stage === 'plus' && ['pending', 'unknown', 'not_confirmed'].includes(key) ? 'Plus 待确认'
+    : stage === 'plus' && ['pending', 'unknown', 'not_confirmed'].includes(key) ? (key === 'not_confirmed' ? 'Plus 未到账' : 'Plus 尚未核验')
     : extractWorkbenchStatusLabel(status);
   return `<div class="extract-workbench-data-row" data-stage="${stage}">
     <span class="extract-workbench-data-label">${label}</span><span class="extract-workbench-data-value extract-workbench-data-value--${tone}">${extractWorkbenchEscape(stageLabel)}</span>
@@ -166,9 +166,9 @@ function extractWorkbenchOutcome(task) {
   if (paid && confirmed) return {tone:'success', state:'完成', title:'支付成功 · 到账已核实', copy:task?.payment_confirmation_source === 'local_plan_check' ? '扫码订单已完成，独立套餐查询已确认 Plus 到账' : task?.payment_confirmation_source === 'platform_order_check' ? '支付平台已核验 Plus 到账' : '平台状态与本地套餐核实分别记录', icon:'check'};
   if (paid) return {tone:'warning', state:'待核实', title:'支付成功 · 到账待核实', copy:'已记录支付成功，等待本地 Plus 到账核验', icon:'dots'};
   if (task?.payment_status === 'failed' && ['success', 'succeeded'].includes(extraction)) return {tone:'danger', state:'支付失败', title:'提链完成 · 支付失败', copy:'提链结果与支付结果分别记录，可查看任务详情', icon:'warning'};
-  if (confirmed && ['auto_payment', 'manual_payment'].includes(task?.mode) && ['success', 'succeeded'].includes(extraction)) return {tone:'success', state:'Plus 已到账', title:'Plus 已到账 · 支付待确认', copy:'本地套餐已核实，平台支付结果仍待确认', icon:'check'};
+  if (confirmed && ['auto_payment', 'manual_payment'].includes(task?.mode) && ['success', 'succeeded'].includes(extraction)) return {tone:'success', state:'Plus 已到账', title:'Plus 已到账 · 支付响应缺失', copy:'本地套餐已核实，平台支付响应记录缺失', icon:'check'};
   if (['success', 'succeeded'].includes(extraction)) {
-    if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'提链成功 · 后续结果待确认', copy:'提链结果已保留，请查看后续处理详情', icon:'warning'};
+    if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'后续失败', title:'提链成功 · 后续处理失败', copy:task?.error_info?.summary || '提链结果已保留，后续处理响应记录缺失', icon:'warning'};
     if (['failed', 'cancelled', 'stopped'].includes(status)) return {tone:'warning', state:'待处理', title:status === 'failed' ? '提链成功 · 后续处理失败' : '提链成功 · 任务已停止', copy:'提链结果已保留，后续处理状态单独记录', icon:'warning'};
     if (task?.mode !== 'extract_only' && ['running', 'queued', 'pending_payment'].includes(task?.payment_status)) return {tone:'active', state:'支付中', title:'支付处理中', copy:'出链完成与支付结果分开统计', icon:'dots'};
     return {tone:'success', state:'完成', title:'提链成功', copy:task?.mode === 'extract_only' ? '仅提链已完成，未发起支付' : '支付链接已生成，等待完成支付', icon:'check'};
@@ -176,7 +176,7 @@ function extractWorkbenchOutcome(task) {
   const syncState = extractWorkbenchSyncState(task);
   if (syncState === 'query_stopped') return {tone:'warning', state:'等待同步', title:'已停止查询 · 等待同步', copy:'远端任务已保留，可继续同步原任务状态', icon:'dots'};
   if (syncState === 'waiting_sync') return {tone:'muted', state:'等待同步', title:'等待平台同步', copy:'原任务已保留，到期后继续查询平台结果', icon:'dots'};
-  if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'待确认', title:'平台结果 · 等待确认', copy:'请查看任务详情或同步原任务状态', icon:'warning'};
+  if (['request_unknown', 'attention_required'].includes(status)) return {tone:'warning', state:'失败', title:'提链失败', copy:task?.error_info?.summary || '平台响应记录缺失，可查看任务详情或同步原任务状态', icon:'warning'};
   if (['failed', 'cancelled', 'stopped'].includes(status) || extraction === 'failed') return {tone:'danger', state:status === 'cancelled' ? '已取消' : '失败', title:status === 'cancelled' ? '任务已取消' : '提链未完成', copy:'保留本次运行记录，可查看原因后重跑', icon:'warning'};
   if (status === 'queued' || status === 'waiting') return {tone:'muted', state:'排队中', title:'等待开始提链', copy:'执行前会在线查活并检查 AT', icon:'dots'};
   return {tone:'active', state:'运行中', title:'正在获取支付链接', copy:'出链完成后将显示对应平台结果', icon:'dots'};
@@ -221,7 +221,7 @@ function renderExtractWorkbenchTaskCard(task) {
   const linkType = task?.link_type ? ` · ${extractWorkbenchEscape(String(task.link_type).toUpperCase())}` : '';
   const paymentSource = mode === 'auto_payment' ? extractWorkbenchPaymentSourceLabel(task) : '';
   return `<article class="extract-workbench-task" data-task-id="${taskId}" data-payment="${extractWorkbenchEscape(task?.payment_status || 'unpaid')}">
-    <header class="extract-workbench-top"><div class="extract-workbench-id-line"><span class="extract-workbench-number">任务 #${taskId}</span><span class="extract-workbench-state extract-workbench-state--${outcome.tone}">${outcome.state}</span></div><span class="extract-workbench-percent">${percent === null ? '—' : `${percent}%`}</span></header>
+    <header class="extract-workbench-top"><div class="extract-workbench-id-line"><span class="extract-workbench-number">任务 #${taskId}</span><span class="extract-workbench-state extract-workbench-state--${outcome.tone}">${extractWorkbenchEscape(outcome.state)}</span></div><span class="extract-workbench-percent">${percent === null ? '—' : `${percent}%`}</span></header>
     <div class="extract-workbench-identity"><span class="extract-workbench-email" title="${email}">${email}</span><button type="button" class="extract-workbench-copy-mini" data-workbench-copy-email="${taskId}" aria-label="复制邮箱">复制</button></div>
     <div class="extract-workbench-data-rows">
       <div class="extract-workbench-data-row"><span class="extract-workbench-data-label">提链平台</span><span class="extract-workbench-data-value extract-workbench-provider-mark"><i class="extract-workbench-provider-dot extract-workbench-provider-dot--${extractWorkbenchEscape(providerId)}" aria-hidden="true"></i>${extractWorkbenchEscape(providerLabel)}${linkType}</span></div>
@@ -234,7 +234,7 @@ function renderExtractWorkbenchTaskCard(task) {
     </div>
     <div class="extract-workbench-note extract-workbench-note--${outcome.tone}" title="${note}">${note}</div>
     <div class="extract-workbench-progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100"${percent === null ? ' aria-valuetext="尚无进度信息"' : ` aria-valuenow="${percent}"`}><div class="extract-workbench-progress-fill extract-workbench-progress-fill--${outcome.tone}" style="width:${percent ?? 0}%"></div></div>
-    <div class="extract-workbench-outcome"><span class="extract-workbench-outcome-symbol extract-workbench-outcome-symbol--${outcome.tone}">${extractWorkbenchIcon(outcome.icon)}</span><strong class="extract-workbench-outcome-title extract-workbench-outcome-title--${outcome.tone}">${outcome.title}</strong><span class="extract-workbench-outcome-copy">${outcome.copy}</span></div>
+    <div class="extract-workbench-outcome"><span class="extract-workbench-outcome-symbol extract-workbench-outcome-symbol--${outcome.tone}">${extractWorkbenchIcon(outcome.icon)}</span><strong class="extract-workbench-outcome-title extract-workbench-outcome-title--${outcome.tone}">${extractWorkbenchEscape(outcome.title)}</strong><span class="extract-workbench-outcome-copy">${extractWorkbenchEscape(outcome.copy)}</span></div>
     <div class="extract-workbench-card-actions">
       <button type="button" class="btn" data-workbench-payment-entry="${taskId}"${canPaymentEntry ? '' : ' disabled'}>${extractWorkbenchIcon('external')}支付入口</button>
       ${linkButton('extract', '复制链接', 'copy', canExtractLink)}
@@ -485,7 +485,7 @@ function extractWorkbenchRenderCandidatePromotion() {
 }
 
 function extractWorkbenchBatchStatus(status) {
-  return ({queued:'排队中',running:'运行中',success:'已完成',partial_success:'部分成功',partial:'部分完成',partial_submission:'部分入队',failed:'失败',attention_required:'待处理',cancelled:'已取消',completed:'已完成'})[status] || extractWorkbenchStatusLabel(status);
+  return ({queued:'排队中',running:'运行中',success:'已完成',partial_success:'部分成功',partial:'部分完成',partial_submission:'部分入队',failed:'失败',attention_required:'失败',cancelled:'已取消',completed:'已完成'})[status] || extractWorkbenchStatusLabel(status);
 }
 
 function extractWorkbenchRenderBatchCancel() {
@@ -1076,8 +1076,8 @@ function extractWorkbenchDetailHtml(result) {
   if (order && typeof order === 'object') {
     metaLines.push(`支付订单：${order.remote_order_id || '等待平台回执'}`);
     if (order.submission_state) metaLines.push(`支付提交：${({reserved:'等待提交', submitting:'提交中', submitted:'已提交', unknown:'回执待恢复', failed:'提交失败'})[order.submission_state] || extractWorkbenchStatusLabel(order.submission_state)}`);
-    metaLines.push(`支付状态：${extractWorkbenchStatusLabel(order.payment_state, '待确认')}`);
-    metaLines.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '待确认')}`);
+    metaLines.push(`支付状态：${extractWorkbenchStatusLabel(order.payment_state, '支付响应缺失')}`);
+    metaLines.push(`Plus 到账核验：${extractWorkbenchStatusLabel(item.plus_status, '尚未核验')}`);
   }
   const metaLine = metaLines.length
     ? `<p class="ew-detail-meta">${metaLines.map(text => `<span>${extractWorkbenchEscape(text)}</span>`).join('')}</p>`
@@ -1462,8 +1462,8 @@ function extractWorkbenchPaymentQrSources(entry) {
 function extractWorkbenchPaymentStatus(value, {plus = false} = {}) {
   const key = String(value ?? '').toLowerCase();
   const labels = plus
-    ? {true:'平台显示已开通', confirmed:'平台显示已开通', plus:'平台显示已开通', active:'平台显示已开通', activated:'平台显示已开通', success:'平台显示已开通', succeeded:'平台显示已开通', false:'平台尚未确认', waiting_for_payment:'等待支付后核验', pending:'平台待核验', unknown:'平台待核验', not_started:'平台尚未核验', not_confirmed:'平台尚未确认', failed:'平台核验失败', not_applicable:'不适用'}
-    : {paid:'支付成功', succeeded:'支付成功', success:'支付成功', pending:'待支付', unpaid:'未支付', not_started:'未发起支付', pending_payment:'待支付', requires_action:'等待扫码或付款', requires_confirmation:'等待支付确认', requires_payment_method:'需要支付方式', running:'支付处理中', processing:'支付处理中', failed:'支付失败', canceled:'已取消', cancelled:'已取消', expired:'已过期', unknown:'待确认'};
+    ? {true:'平台显示已开通', confirmed:'平台显示已开通', plus:'平台显示已开通', active:'平台显示已开通', activated:'平台显示已开通', success:'平台显示已开通', succeeded:'平台显示已开通', false:'平台未返回开通结果', waiting_for_payment:'等待支付后核验', pending:'等待平台核验', unknown:'平台核验结果缺失', not_started:'平台尚未核验', not_confirmed:'平台未返回开通结果', failed:'平台核验失败', not_applicable:'不适用'}
+    : {paid:'支付成功', succeeded:'支付成功', success:'支付成功', pending:'待支付', unpaid:'未支付', not_started:'未发起支付', pending_payment:'待支付', requires_action:'等待扫码或付款', requires_confirmation:'等待支付确认', requires_payment_method:'需要支付方式', running:'支付处理中', processing:'支付处理中', failed:'支付失败', canceled:'已取消', cancelled:'已取消', expired:'已过期', unknown:'支付响应缺失'};
   return labels[key] || (key ? String(value) : '平台未返回');
 }
 

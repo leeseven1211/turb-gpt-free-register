@@ -2420,16 +2420,16 @@ def create_workbench_tasks(
 def list_workbench_tasks(
     *, provider_id: str | None = None, mode: str | None = None,
     status: str = "", query: str = "", page: int = 1, page_size: int = 20,
-    batch_id: int | None = None,
+    batch_id: int | None = None, public_status: bool = False,
 ) -> dict:
     return _workbench_queries.list_workbench_tasks(
         provider_id=provider_id, mode=mode, status=status, query=query,
-        page=page, page_size=page_size, batch_id=batch_id,
+        page=page, page_size=page_size, batch_id=batch_id, public_status=public_status,
     )
 
 
-def workbench_summary() -> dict:
-    return _workbench_queries.workbench_summary()
+def workbench_summary(*, public_status: bool = False) -> dict:
+    return _workbench_queries.workbench_summary(public_status=public_status)
 
 
 def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 100) -> dict:
@@ -2513,12 +2513,12 @@ def create_workbench_batch(
     return {"batch_id": batch_id, "requested": len(ids), "started": started, "skipped": skipped, "failed": failed}
 
 
-def list_workbench_batches(*, page: int = 1, page_size: int = 20) -> dict:
-    return _workbench_queries.list_workbench_batches(page=page, page_size=page_size)
+def list_workbench_batches(*, page: int = 1, page_size: int = 20, public_status: bool = False) -> dict:
+    return _workbench_queries.list_workbench_batches(page=page, page_size=page_size, public_status=public_status)
 
 
-def workbench_batch_detail(batch_id: int) -> dict | None:
-    return _workbench_queries.workbench_batch_detail(batch_id)
+def workbench_batch_detail(batch_id: int, *, public_status: bool = False) -> dict | None:
+    return _workbench_queries.workbench_batch_detail(batch_id, public_status=public_status)
 
 
 def cancel_workbench_batch(batch_id: int) -> dict | None:
@@ -2687,8 +2687,8 @@ def extract_workbench_task_payment_entry(task_id: int) -> dict | None:
     return entry
 
 
-def extract_workbench_task_detail(task_id: int) -> dict | None:
-    return _workbench_queries.extract_workbench_task_detail(task_id)
+def extract_workbench_task_detail(task_id: int, *, public_status: bool = False) -> dict | None:
+    return _workbench_queries.extract_workbench_task_detail(task_id, public_status=public_status)
 
 
 def perform_extract_workbench_action(task_id: int, action: str) -> dict:

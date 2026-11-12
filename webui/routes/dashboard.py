@@ -104,7 +104,7 @@ def create_dashboard_blueprint(context: WebUIContext):
         from core.email.provider import EMAIL_SOURCE_LABELS, parse_email_sources
         from core.proxy.pool import pool_source
         from core.proxy.provider import active_proxy_leases
-        aggregates = admin_repository.dashboard_aggregates()
+        aggregates = admin_repository.dashboard_aggregates(public_status=True)
         account_counts = aggregates["accounts"]
         job_counts = dict(aggregates["jobs"]["counts"])
         job_counts["active"] = sum(int(job_counts.get(key, 0) or 0) for key in ("pending", "running", "stopping"))

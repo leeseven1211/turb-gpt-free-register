@@ -17,6 +17,7 @@ from typing import Any, Iterable
 
 from core.storage import postgres as postgres_store
 from core.operations import run_log as task_run_log
+from core.operations.presentation import public_result_status, public_result_status_sql
 from core.operations.stages import normalize_step_state
 
 _LOCK = threading.RLock()
@@ -546,7 +547,7 @@ def recover_interrupted(
     return len(rows)
 
 
-def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "", q: str = "") -> dict:
+def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "", q: str = "", public_status: bool = False) -> dict:
     init()
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
@@ -556,8 +557,9 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
         where.append("task_type=%s")
         params.append(str(task_type))
     if status:
-        where.append("status=%s")
-        params.append(str(status))
+        expression = public_result_status_sql("status", "result_summary") if public_status else "status"
+        where.append(f"({expression})=%s")
+        params.append(public_result_status(status) if public_status else str(status))
     if q:
         where.append("(email_snapshot ILIKE %s OR CAST(account_id AS TEXT) ILIKE %s OR CAST(id AS TEXT) ILIKE %s)")
         needle = f"%{str(q).strip()}%"
@@ -576,7 +578,14 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
             (*params, page_size, offset),
         )
         rows = cur.fetchall()
-    return {"ok": True, "items": [_decode_row(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+    items = [_decode_row(row) for row in rows]
+    if public_status:
+        for item in items:
+            original = item.get('status')
+            projected = public_result_status(original, item.get('result_summary'))
+            if original != projected:
+                item.update(status=projected, internal_status=original)
+    return {"ok": True, "items": items, "total": total, "page": page, "page_size": page_size}
 
 
 def get_task(task_id: int) -> dict | None:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.operations.presentation import public_result_status
 from core.storage import records
 from core.storage.operations import bulk_schema
 from core.storage.operations.bulk_common import (
@@ -18,6 +19,10 @@ from core.storage.operations.bulk_common import (
     positive_ids,
     require_row,
     public_selection,
+    target_status_sql,
+    source_summary_sql,
+    plan_query_outcome_sql,
+    public_reason_target_ids,
 )
 
 
@@ -164,7 +169,7 @@ def freeze_selection(
             if source.get("view") == "round":
                 scope["round_id"] = source.get("round_id")
             validate_member_scope(cur, scope, basis)
-            subset, subset_args = _source_target_filter(scope, basis)
+            subset, subset_args = _source_target_filter(scope, basis, cur=cur)
             query = f"""SELECT root.target_id AS id,row_number() OVER(ORDER BY root.ordinal) AS ordinal,{account_select}
                 FROM {table("operation_selection_targets")} root
                 LEFT JOIN {account_table} a ON a.id=root.target_id
@@ -239,7 +244,7 @@ def freeze_selection(
         return public_selection(frozen)
 
 
-def _source_target_filter(selection: dict, basis: dict, alias: str = "root") -> tuple[str, list]:
+def _source_target_filter(selection: dict, basis: dict, alias: str = "root", *, cur=None) -> tuple[str, list]:
     kind = selection.get("kind", "all")
     round_id = selection.get("round_id")
     round_scope = (
@@ -264,7 +269,10 @@ def _source_target_filter(selection: dict, basis: dict, alias: str = "root") -> 
             outcomes = [outcomes]
         if not outcomes:
             raise BulkError("invalid_result_filter", "必须选择结果分类", 422)
-        result_conditions, result_args = result_predicate(selection, "tr")
+        outcomes = list(dict.fromkeys(public_result_status(value) for value in outcomes))
+        reason_ids = (public_reason_target_ids(cur, basis["batch_id"], selection["reason_codes"])
+                      if cur is not None and selection.get("reason_codes") else None)
+        result_conditions, result_args = result_predicate(selection, "tr", reason_target_ids=reason_ids)
         if round_id:
             return (
                 f"""EXISTS(SELECT 1 FROM {table("operation_batch_rounds")} source_round
@@ -275,20 +283,18 @@ def _source_target_filter(selection: dict, basis: dict, alias: str = "root") -> 
                     AND tr.canonical_target_id=COALESCE(source_member.canonical_target_id,source_member.id)
                   WHERE source_round.id=%s AND source_round.batch_id=%s
                     AND COALESCE(source_member.canonical_target_id,source_member.id)={alias}.id
-                    AND COALESCE(tr.outcome,source_round.unmaterialized_bucket)=ANY(%s)
+                    AND {target_status_sql('COALESCE(tr.outcome,source_round.unmaterialized_bucket)')}=ANY(%s)
                     AND ({result_conditions}))""",
                 [int(round_id), basis["batch_id"], outcomes, *result_args],
             )
-        if result_args:
-            return (
-                f"""EXISTS(SELECT 1 FROM {table("operation_batch_target_rounds")} tr
-              WHERE tr.canonical_target_id={alias}.id AND tr.round_id=COALESCE({alias}.latest_requested_round_id,%s)
-              AND tr.outcome=ANY(%s) AND ({result_conditions}))""",
-                [basis["initial_round_id"], outcomes, *result_args],
-            )
+        current_outcome = f"COALESCE(tr.outcome,(SELECT e.key FROM jsonb_each_text({alias}.current_contribution) e WHERE e.value::bigint>0 LIMIT 1),'pending_submit')"
         return (
-            f"EXISTS(SELECT 1 FROM jsonb_each_text({alias}.current_contribution) e WHERE e.key=ANY(%s) AND e.value::bigint>0)",
-            [outcomes],
+            f"""EXISTS(SELECT 1 FROM {table("operation_batch_rounds")} source_round
+              LEFT JOIN {table("operation_batch_target_rounds")} tr
+                ON tr.canonical_target_id={alias}.id AND tr.round_id=source_round.id
+              WHERE source_round.id=COALESCE({alias}.latest_requested_round_id,%s)
+              AND {target_status_sql(current_outcome)}=ANY(%s) AND ({result_conditions}))""",
+            [basis["initial_round_id"], outcomes, *result_args],
         )
     raise BulkError("invalid_result_filter", "不支持的批次成员筛选", 422)
 
@@ -360,7 +366,7 @@ _RESULT_FILTERS = {
 }
 
 
-def result_predicate(spec: dict, alias: str = "tr") -> tuple[str, list]:
+def result_predicate(spec: dict, alias: str = "tr", *, reason_target_ids=None) -> tuple[str, list]:
     clauses = []
     args = []
     reasons = spec.get("reason_codes")
@@ -371,8 +377,8 @@ def result_predicate(spec: dict, alias: str = "tr") -> tuple[str, list]:
             or any(not isinstance(value, str) or not value or len(value) > 120 for value in reasons)
         ):
             raise BulkError("invalid_result_filter", "错误分类必须是最多30项的字符串数组", 422)
-        clauses.append(f"{alias}.reason_code=ANY(%s)")
-        args.append(list(reasons))
+        clauses.append(f"{alias}.id=ANY(%s::bigint[])" if reason_target_ids is not None else f"{alias}.reason_code=ANY(%s)")
+        args.append(reason_target_ids if reason_target_ids is not None else list(reasons))
     filters = spec.get("result_filters") or {}
     if not isinstance(filters, dict) or set(filters) - _RESULT_FILTERS:
         raise BulkError("invalid_result_filter", "包含不支持的结果字段", 422)
@@ -382,8 +388,30 @@ def result_predicate(spec: dict, alias: str = "tr") -> tuple[str, list]:
             raise BulkError("invalid_result_filter", "结果条件数量无效", 422)
         if any(not isinstance(value, (str, int, float, bool)) or len(str(value)) > 200 for value in values):
             raise BulkError("invalid_result_filter", "结果条件必须为有限长度的标量值", 422)
-        clauses.append(f"{alias}.result->'result'->>%s=ANY(%s)")
-        args.extend([key, [str(x).lower() if isinstance(x, bool) else str(x) for x in values]])
+        expression = f"{alias}.result->'result'->>%s"
+        if key in {"query_outcome", "refresh_outcome", "attempt_outcome", "confirmation", "credential_confirmation"}:
+            state = target_status_sql(f"{alias}.outcome", alias)
+            if key == "query_outcome":
+                converted = plan_query_outcome_sql(state, source_summary_sql(alias))
+            elif key == "attempt_outcome":
+                converted = state
+            else:
+                not_executed = (f"WHEN ({state}) IN ('not_executed','cancelled') THEN 'not_executed' "
+                                if key == "refresh_outcome" else
+                                f"WHEN ({state})='not_executed' OR (({state})='cancelled' AND "
+                                f"{alias}.result->>'schema' LIKE 'token_refresh.%%') THEN 'not_executed' "
+                                if key == "confirmation" else "")
+                converted = (f"CASE WHEN ({state}) IN ('queued','running','waiting','pending_submit','waiting_account') THEN 'pending' "
+                             f"{not_executed}ELSE 'failed' END")
+            expression = (f"CASE WHEN ({expression}) IN ('attention_required','request_unknown','unconfirmed','unknown','not_confirmed') "
+                          f"THEN ({converted}) ELSE ({expression}) END")
+            # 字段键在 CASE 中出现两次，参数顺序必须与 SQL 占位符相同。
+            args.extend([key] * expression.count("%s"))
+            values = [public_result_status(value) for value in values]
+        else:
+            args.append(key)
+        clauses.append(f"{expression}=ANY(%s)")
+        args.append([str(x).lower() if isinstance(x, bool) else str(x) for x in values])
     return " AND ".join(clauses) if clauses else "TRUE", args
 
 

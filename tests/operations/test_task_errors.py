@@ -5,6 +5,67 @@ from core.operations.errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_failed_records_without_registered_details_are_classified_by_saved_stage(self):
+        for status in ("failed", "attention_required", "partial_success"):
+            original = {"failure_stage": "email_otp", "failure_evidence": "unconfirmed"}
+            info = classify_task_error(
+                "opaque_failure_123", stage="complete", task_type="token_refresh", task_status=status,
+                result_summary=original,
+            )
+            self.assertEqual("email_otp_failure_diagnostics_missing", info["code"])
+            self.assertEqual("email_otp", info["stage"])
+            self.assertEqual("邮箱验证阶段失败，诊断记录缺少错误细项", info["summary"])
+            self.assertEqual("internal", info["source"])
+            self.assertNotIn("opaque_failure_123", str(info))
+            self.assertNotIn("reconcile_required", info)
+            self.assertEqual({"failure_stage": "email_otp", "failure_evidence": "unconfirmed"}, original)
+
+    def test_only_registered_request_operations_can_supply_a_missing_failure_stage(self):
+        for operation, expected in (("session_fetch", "token"), ("email_otp_validate", "email_otp"),
+                                    ("mfa_issue_challenge", "mfa_challenge")):
+            info = classify_task_error(
+                "", stage="complete", task_type="token_refresh", task_status="failed",
+                result_summary={"auth_diagnostics": {"operation": operation}},
+            )
+            self.assertEqual(expected, info["stage"])
+            self.assertEqual(f"{expected}_failure_diagnostics_missing", info["code"])
+        info = classify_task_error("", stage="private@example.test", task_type="token_refresh", task_status="failed",
+                                   result_summary={"failure_stage": "private@example.test",
+                                                   "auth_diagnostics": {"operation": "private@example.test"}})
+        self.assertEqual("token_refresh_failure_diagnostics_missing", info["code"])
+        self.assertNotIn("private@example.test", str(info))
+
+    def test_concrete_structured_errors_survive_empty_or_generic_messages(self):
+        cases = (
+            ("password_result_unknown", {"operation": "password_verify", "failure_kind": "http_error",
+                                         "http_status": 409, "auth_error": {"code": "invalid_state"}},
+             "password_verify_http_error", "OA-PWD-409"),
+            ("email_otp_failed", {"operation": "email_otp", "failure_kind": "no_mail",
+                                  "mailbox_error_code": "inbound_code_timeout"}, "email_otp_failed", "MAIL-OTP-002"),
+            ("access_token_missing", {"operation": "session_fetch", "failure_kind": "missing_token",
+                                      "http_status": 200}, "access_token_missing", "AUTH-AT-001"),
+        )
+        for cause, diagnostics, expected, display in cases:
+            for message in ("", "远端结果待确认"):
+                original = {"cause_code": cause, "auth_diagnostics": diagnostics, "outcome": "request_unknown"}
+                info = classify_task_error(message, task_type="token_refresh", task_status="attention_required",
+                                           result_summary=original, stage="complete")
+                self.assertEqual(expected, info["code"])
+                self.assertEqual(display, info["display_code"])
+                self.assertTrue(info["reconcile_required"])
+                self.assertEqual("request_unknown", original["outcome"])
+                self.assertFalse(any(word in info["summary"] for word in ("待确认", "未确认", "待核验")))
+
+    def test_bulk_contract_failures_have_registered_local_causes(self):
+        for code in ("refresh_confirmation_missing", "plan_result_confirmation_missing", "setup_confirmation_missing",
+                     "codex_credential_confirmation_missing", "completion_confirmation_missing", "adapter_status_unmapped",
+                     "adapter_operation_unmapped", "diagnostic_cause_unresolved"):
+            info = classify_task_error("", error_code=code, task_status="failed")
+            self.assertEqual(code, info["code"])
+            self.assertEqual("internal", info["source"])
+            self.assertTrue(info["display_code"].startswith("SYS-BULK-"))
+            self.assertFalse(any(word in info["summary"] for word in ("待确认", "未确认", "待核验")))
+
     def test_preflight_partial_response_timeout_keeps_transport_cause(self):
         for kind in ("runtime_exception", "transport_error"):
             with self.subTest(kind=kind):
@@ -310,7 +371,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
         )
         self.assertEqual("account_create_user_already_exists", info["error_code"])
         self.assertEqual("OA-REG-EXISTS-001", info["display_code"])
-        self.assertEqual("远端提示账号已存在，完整登录态尚未确认", info["summary"])
+        self.assertEqual("远端提示账号已存在，本次未取得完整登录会话", info["summary"])
         self.assertTrue(info["reconcile_required"])
 
     def test_existing_account_cause_survives_registration_fact_allowlist(self):
@@ -487,7 +548,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
             ("email_otp_send_failed", "email_otp_send", "rejected", {"http_status": 403},
              "MAIL-SEND-002", "验证码发送请求被拒绝"),
             ("email_otp_send_failed", "email_otp_send", "unconfirmed", {},
-             "MAIL-SEND-003", "验证码发送结果未获确认"),
+             "MAIL-SEND-003", "验证码发送请求缺少有效发码回执"),
         )
         for code, operation, kind, extra, display, message in cases:
             with self.subTest(code=code, operation=operation, kind=kind):
@@ -726,7 +787,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 "auth_diagnostics": {"operation": "password_sentinel", "exception_type": "secret@example.test"},
             },
         )
-        self.assertEqual("registration_receipt_missing", info["code"])
+        self.assertEqual("login_password_receipt_missing", info["code"])
         self.assertNotIn("secret@example.test", str(info))
 
     def test_generic_receipt_message_does_not_invent_a_failure_from_stage_name(self):
@@ -1180,11 +1241,13 @@ class TaskErrorClassificationTests(unittest.TestCase):
 
     def test_unknown_error_has_safe_short_fallback(self):
         info = classify_task_error("某个尚未建立映射的内部异常：opaque_failure_123")
-        self.assertEqual("unknown.unclassified", info["code"])
-        self.assertEqual("UNK-000", info["display_code"])
-        self.assertEqual("诊断证据不足，无法确认具体原因", info["summary"])
-        self.assertEqual("诊断证据不足", info["source_label"])
-        self.assertEqual("具体原因未确认", info["kind_label"])
+        self.assertEqual("task_failure_diagnostics_missing", info["code"])
+        self.assertEqual("SYS-DIAG-001", info["display_code"])
+        self.assertEqual("任务失败，诊断记录缺少错误细项", info["summary"])
+        self.assertEqual("内部错误", info["source_label"])
+        self.assertEqual("任务失败，诊断记录缺少错误细项", info["kind_label"])
+        self.assertEqual("manual_only", info["retryability"])
+        self.assertEqual("manual_reconcile", info["next_action"])
         self.assertNotIn("opaque_failure_123", info["summary"])
 
     def test_old_account_task_known_errors_no_longer_show_unknown(self):
@@ -1205,7 +1268,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual(display_code, info["display_code"])
                 self.assertNotEqual("unknown.unclassified", info["code"])
         self.assertEqual(
-            "unknown.unclassified",
+            "password_setup_failure_diagnostics_missing",
             classify_task_error("HTTP 403", task_type="password_setup")["code"],
         )
 
@@ -1220,7 +1283,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual("LINK-HTTP-403", info["display_code"])
                 self.assertEqual("提链创建请求被远端拒绝（HTTP 403）", info["summary"])
         self.assertEqual(
-            "unknown.unclassified",
+            "extract_link_failure_diagnostics_missing",
             classify_task_error("提链创建请求 HTTP 403", task_type="extract_link")["code"],
         )
 
@@ -1271,7 +1334,7 @@ class TaskErrorClassificationTests(unittest.TestCase):
         ):
             with self.subTest(message=message, task_type=task_type):
                 info = classify_task_error(message, task_type=task_type)
-                self.assertEqual("unknown.unclassified", info["code"])
+                self.assertEqual(f"{task_type}_failure_diagnostics_missing", info["code"])
 
     def test_email_change_begin_local_prepare_has_specific_code(self):
         info = classify_task_error(
@@ -1420,20 +1483,20 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("OA-EMAIL-VERIFY-001", info["display_code"])
         self.assertEqual("OA-EMAIL-VERIFY-001", info["cause_display_code"])
         self.assertEqual(
-            "新邮箱验证请求在本地准备阶段失败；begin 已接受，待核验",
+            "新邮箱验证请求在本地准备阶段失败；begin 已接受，验证未执行",
             info["cause_summary"],
         )
 
     def test_registration_unknown_shows_only_confirmed_stage_cause(self):
         causes = {
-            "user_register_result_unknown": "账号创建请求结果未确认，未保留失败细项",
+            "user_register_result_unknown": "账号创建请求缺少有效响应和失败细项",
             "registration_checkpoint_failed": "注册检查点本地写入失败",
             "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
             "email_otp_send_rejected": "验证码发送请求被拒绝",
             "email_otp_send_failed": "验证码发送请求失败",
-            "email_otp_send_unconfirmed": "验证码发送结果未获确认",
+            "email_otp_send_unconfirmed": "验证码发送请求缺少有效发码回执",
             "email_otp_send_no_response": "验证码发送请求未收到响应",
-            "email_otp_send_unknown": "验证码发送结果未确认",
+            "email_otp_send_unknown": "验证码发送请求缺少响应记录",
             "email_otp_no_mail": "等待窗口内未取得符合条件的验证码",
             "post_register_failure": "注册请求之后流程失败（细项未记录）",
         }
@@ -1477,7 +1540,7 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
         )
         self.assertEqual("cf_proxy_new_ip_unverified", info["code"])
         self.assertEqual("NET-ROXY-CF-001", info["display_code"])
-        self.assertEqual("CF 换线未确认新的出口 IP", info["summary"])
+        self.assertEqual("CF 换线后未取得新的出口 IP 证据", info["summary"])
         self.assertTrue(info["reconcile_required"])
         self.assertEqual("manual_only", info["retryability"])
         self.assertEqual("unknown", info["remote_state_impact"])
@@ -1490,7 +1553,7 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
         )
         self.assertEqual("cf_proxy_new_ip_unverified", info["cause_code"])
         self.assertEqual("NET-ROXY-CF-001", info["display_code"])
-        self.assertEqual("CF 换线未确认新的出口 IP", info["summary"])
+        self.assertEqual("CF 换线后未取得新的出口 IP 证据", info["summary"])
         self.assertFalse(info.get("reconcile_required", False))
 
     def test_cloudflare_challenge_requires_structured_failure_evidence(self):
@@ -1562,17 +1625,17 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
             (
                 "_EmailSubmissionUnknown: request_unknown: 邮箱提交结果在共享预算内未确认，未重复点击或发送认证请求",
                 "registration_receipt_missing", "email_submit_unconfirmed", "FLOW-EMAIL-001",
-                "邮箱提交后未确认下一步", True,
+                "邮箱提交后未取得下一步页面或有效响应", True,
             ),
             (
                 "_EmailSubmissionUnknown: request_unknown: 邮箱提交后阶段预算耗尽，远端结果未确认",
                 "registration_receipt_missing", "email_submit_unconfirmed", "FLOW-EMAIL-001",
-                "邮箱提交后未确认下一步", True,
+                "邮箱提交后未取得下一步页面或有效响应", True,
             ),
             (
                 "_PasswordTransitionTimeout: request_unknown: 已触发密码提交操作，等待 120 秒仍未确认远端结果",
                 "external.network", "password_result_unknown", "AUTH-PWD-004",
-                "密码提交结果未确认", True,
+                "密码提交后未取得有效响应或下一步页面", True,
             ),
             (
                 "RuntimeError: request_unknown: 资料提交后的会话读取未完成，已保留原提交",
@@ -1582,7 +1645,7 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
             (
                 "RuntimeError: request_unknown: 资料提交后的会话尚未确认登录态，已保留原提交",
                 "registration_receipt_missing", "profile_session_unconfirmed", "FLOW-PROFILE-002",
-                "资料提交后的登录态未确认", True,
+                "资料提交后未取得有效登录会话", True,
             ),
             (
                 "RuntimeError: request_unknown: 资料提交后进入认证错误页，账号创建结果未确认",

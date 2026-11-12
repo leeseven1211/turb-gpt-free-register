@@ -769,7 +769,7 @@ _DISPLAY_SUMMARIES = {
     "workflow.password_settings_entry_unavailable": "账号设置页没有添加密码入口",
     "workflow.retry_blocked": "原邮箱不可用，不能安全重试",
     "workflow.unsupported": "当前功能不支持",
-    "unknown.unclassified": "诊断证据不足，无法确认具体原因",
+    "unknown.unclassified": "诊断记录缺少错误细项",
 }
 
 
@@ -853,11 +853,11 @@ _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'state_transition_invalid': ('FLOW-PWD-REC-021', '密码恢复检查点不允许本次状态推进'),
     'checkpoint_missing': ('FLOW-PWD-REC-022', '密码恢复尚未建立私有检查点'),
     'owner_missing': ('FLOW-PWD-REC-023', '密码恢复缺少当前操作执行或原账号归属'),
-    'identity_unconfirmed': ('FLOW-PWD-REC-024', '密码恢复尚未确认原邮箱登录入口，候选已保留且未提交重置'),
+    'identity_unconfirmed': ('FLOW-PWD-REC-024', '密码恢复未取得原邮箱登录入口，候选已保留且未提交重置'),
     'candidate_login_context_invalid': ('FLOW-PWD-REC-025', '候选密码认证上下文或私有候选与当前注册续跑不匹配，请保留候选并核对执行归属'),
     'candidate_login_receipt_invalid': ('FLOW-PWD-REC-026', '候选密码认证回执缺少有效配对成功证据，请保留候选并核对本次密码提交回执'),
     'candidate_login_fact_invalid': ('FLOW-PWD-REC-027', '候选密码认证的持久化提交事实不匹配，请保留候选并核对同 Run 提交记录'),
-    'recovery_intent_conflict': ('FLOW-PWD-REC-028', '存在另一种密码操作的待确认候选，请继续原操作'),
+    'recovery_intent_conflict': ('FLOW-PWD-REC-028', '存在另一种密码操作的候选检查点，请继续原操作'),
     'password_add_context_invalid': ('FLOW-PWD-REC-029', '添加密码回执与当前补密码候选不匹配'),
     'password_login_confirmation_not_prepared': ('FLOW-PWD-REC-030', '上次密码候选已提交，不能用原密码登录结果确认候选'),
     'password_login_confirmation_mismatch': ('FLOW-PWD-REC-031', '本轮验证的原密码与检查点保存值不匹配'),
@@ -865,9 +865,9 @@ _PASSWORD_RECOVERY_WORKFLOW_CAUSES = {
     'session_context_invalid': ('FLOW-PWD-REC-033', '密码恢复会话或 Token 与目标账号身份无法对应'),
 }
 _PASSWORD_RECOVERY_UNKNOWN_CAUSES = {
-    'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),
+    'unconfirmed': ('AUTH-PWD-REC-001', '密码恢复候选未取得有效认证回执，已保留私有检查点'),
     'candidate_login_unconfirmed': ('AUTH-PWD-REC-002', '密码恢复候选认证缺少本次配对成功响应，已保留私有检查点'),
-    'reset_result_unknown': ('AUTH-PWD-REC-003', '密码恢复新密码已提交，远端结果尚未确认，已保留私有检查点'),
+    'reset_result_unknown': ('AUTH-PWD-REC-003', '密码恢复新密码提交后未取得重置回执，已保留私有检查点'),
 }
 
 
@@ -904,7 +904,7 @@ def _password_recovery_error_projection(
         code = f'workflow.password_recovery.{suffix}'
     elif suffix in _PASSWORD_RECOVERY_UNKNOWN_CAUSES:
         display, message = _PASSWORD_RECOVERY_UNKNOWN_CAUSES[suffix]
-        code = 'request_unknown'
+        code = f'workflow.password_recovery.{suffix}'
     else:
         # 将来出现未登记固定码时仍明确归为本地诊断遗漏，不冒充远端改密失败。
         suffix = 'cause_unregistered'
@@ -1170,7 +1170,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "auth_route_rejected": ("OA-AUTH-000", "授权路由被拒绝"),
     "auth_cloudflare_challenge": ("OA-AUTH-CF-CHALLENGE", "认证请求被 Cloudflare 挑战阻断"),
     "browser_auth_navigation_failed": ("NET-AUTH-NAVIGATION", "浏览器认证导航失败"),
-    "cf_proxy_new_ip_unverified": ("NET-ROXY-CF-001", "CF 换线未确认新的出口 IP"),
+    "cf_proxy_new_ip_unverified": ("NET-ROXY-CF-001", "CF 换线后未取得新的出口 IP 证据"),
     "codex_consent_unverifiable": (
         "OA-CODEX-CONSENT-001", "Codex 授权确认页无法继续，需浏览器驱动",
     ),
@@ -1178,12 +1178,12 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "email_otp_code_rejected": ("OA-OTP-CODE-001", "验证码被远端拒绝（wrong_email_otp_code）"),
     "email_otp_send_failed": ("MAIL-SEND-001", "验证码发送请求失败"),
     "email_otp_send_rejected": ("MAIL-SEND-002", "验证码发送请求被拒绝"),
-    "email_otp_send_unconfirmed": ("MAIL-SEND-003", "验证码发送结果未获确认"),
+    "email_otp_send_unconfirmed": ("MAIL-SEND-003", "验证码发送请求缺少有效发码回执"),
     "email_otp_send_no_response": ("MAIL-SEND-004", "验证码发送请求未收到响应"),
-    "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送结果未确认"),
+    "email_otp_send_unknown": ("MAIL-SEND-005", "验证码发送请求缺少响应记录"),
     "email_otp_no_mail": ("MAIL-OTP-005", "等待窗口内未取得符合条件的验证码"),
     "email_otp_mailbox_failed": ("MAIL-OTP-READ", "验证码邮箱读取失败"),
-    "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未确认下一步"),
+    "email_submit_unconfirmed": ("FLOW-EMAIL-001", "邮箱提交后未取得下一步页面或有效响应"),
     "email_transition_timeout": ("FLOW-EMAIL-002", "邮箱提交或认证跳转预算耗尽"),
     "email_entry_not_ready": ("FLOW-EMAIL-003", "邮箱输入框或邮箱入口尚未就绪"),
     "browser_stage_timeout": ("FLOW-STAGE-001", "浏览器阶段等待预算耗尽，具体原因证据不足"),
@@ -1194,6 +1194,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "extract_create_missing_job_id": ("OA-EXTRACT-002", "提链创建响应缺少任务 ID"),
     "extract_create_http_unknown": ("OA-EXTRACT-HTTP", "提链创建请求返回 HTTP 错误"),
     "extract_create_transport_error": ("NET-EXTRACT-001", "提链创建网络请求中断"),
+    "extract_provider_response_missing": ("LINK-RESPONSE-MISSING", "提链平台请求未收到响应"),
+    "payment_provider_response_missing": ("PAYMENT-RESPONSE-MISSING", "支付平台请求未收到响应"),
     "extract_provider_failed": ("LINK-FAILED", "平台提链失败"),
     "extract_order_not_found": ("LINK-ORDER-404", "提链原单查询连续返回 HTTP 404"),
     "extract_order_polling_timeout": ("LINK-ORDER-TIMEOUT", "提链原单自动续查达到总时限"),
@@ -1254,7 +1256,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "auth_context_missing": ("AUTH-PAGE-CONTEXT", "登录上下文缺失，需要重新发起登录"),
     "roxy_password_prepare_timeout": ("AUTH-PWD-PREPARE", "密码表单准备超时"),
     "password_rejected_email_fallback_failed": ("AUTH-PWD-003", "密码被拒且邮箱兜底未完成"),
-    "password_result_unknown": ("AUTH-PWD-004", "密码提交结果未确认"),
+    "password_result_unknown": ("AUTH-PWD-004", "密码提交后未取得有效响应或下一步页面"),
     "password_sentinel_failed": ("AUTH-PWD-005", "密码认证前置检查失败"),
     "password_verify_failed": ("AUTH-PWD-006", "密码验证请求未完成"),
     "password_verify_invalid_response": ("AUTH-PWD-007", "密码验证响应无效"),
@@ -1266,13 +1268,13 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_entry_not_offered": ("FLOW-PWD-007", "认证下一步未提供可识别入口"),
     "registration_password_entry_unavailable": ("FLOW-REG-PWD-001", "强制密码步骤未能进入创建或验证页面"),
     "registration_password_create_rejected": ("OA-REG-PWD-001", "远端拒绝了本轮强制密码创建请求"),
-    "registration_password_unconfirmed": ("AUTH-REG-PWD-001", "注册认证已完成，强制密码尚未确认"),
+    "registration_password_unconfirmed": ("AUTH-REG-PWD-001", "注册认证已完成，强制密码步骤缺少有效回执"),
     "registration_auth_state_unrecognized": ("FLOW-REG-AUTH-001", "注册认证返回未支持的页面状态"),
     "registration_session_invalid_response": ("AUTH-REG-SESSION-001", "注册认证未返回可核验的完整会话"),
     "password_setup_result_unconfirmed": ("AUTH-PWD-SETUP-001", "密码已提交，尚未取得明确设置成功证据"),
     "password_setup_already_set": ("AUTH-PWD-SETUP-002", "远端账号已有密码，添加密码请求被拒绝"),
     "password_setup_execution_fence_missing": ("FLOW-PWD-SETUP-001", "补密码缺少当前执行租约"),
-    "password_setup_unconfirmed": ("AUTH-PWD-SETUP-003", "添加密码请求尚未得到确认"),
+    "password_setup_unconfirmed": ("AUTH-PWD-SETUP-003", "添加密码请求缺少有效回执"),
     "password_setup_session_missing": ("AUTH-PWD-SETUP-004", "补密码登录未取得有效会话"),
     "password_setup_auth_failed": ("AUTH-PWD-SETUP-005", "补密码登录认证未完成"),
     "password_setup_runtime_failed": ("SYS-PWD-SETUP-001", "补密码执行异常，候选与已有密码已保留"),
@@ -1293,7 +1295,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_setup_otp_invalid": ("MAIL-PWD-SETUP-001", "补密码邮箱验证码格式无效"),
     "password_setup_otp_rejected": ("MAIL-PWD-SETUP-002", "补密码邮箱验证码被远端拒绝"),
     "password_setup_otp_unavailable": ("MAIL-PWD-SETUP-003", "补密码未取得本轮邮箱验证码"),
-    "password_setup_request_unknown": ("AUTH-PWD-SETUP-009", "添加密码请求已发出，远端响应未确认"),
+    "password_setup_request_unknown": ("AUTH-PWD-SETUP-009", "添加密码请求已发出，未取得有效远端响应"),
     "password_setup_response_invalid": ("AUTH-PWD-SETUP-010", "补密码接口响应格式无法确认"),
     "password_setup_mfa_rejected": ("AUTH-PWD-SETUP-MFA-001", "补密码 2FA 验证未通过"),
     "password_setup_mfa_factor_missing": ("AUTH-PWD-SETUP-MFA-002", "补密码重新验证缺少有效的 2FA 挑战"),
@@ -1301,7 +1303,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_setup_otp_send_unconfirmed": ("MAIL-PWD-SETUP-004", "补密码验证码发送未取得有效的发码回执"),
     "password_setup_otp_context_invalid": ("AUTH-PWD-SETUP-OTP-001", "补密码邮箱验证上下文缺失或与目标账号不一致"),
     "password_setup_otp_context_changed": ("AUTH-PWD-SETUP-OTP-002", "补密码邮箱验证会话已变化，当前发码步骤未执行"),
-    "password_setup_previous_result_unknown": ("AUTH-PWD-SETUP-011", "原密码已验证，上次密码提交结果仍待核验"),
+    "password_setup_previous_result_unknown": ("AUTH-PWD-SETUP-011", "原密码已验证，上次密码提交缺少有效回执"),
     "password_setup_password_reset_required": ("AUTH-PWD-SETUP-RESET", "远端要求重置密码，原密码当前无法用于登录"),
     "password_setup_password_rejected": ("AUTH-PWD-SETUP-012", "补密码登录时原密码被拒绝"),
     "password_setup_email_otp_failed": ("MAIL-PWD-SETUP-005", "补密码登录邮箱验证码验证未完成"),
@@ -1309,18 +1311,18 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_setup_access_token_missing": ("AUTH-PWD-SETUP-013", "补密码登录未取得有效 Token"),
     "password_setup_protocol_network_error": ("NET-PWD-SETUP-003", "补密码登录网络请求未完成"),
     "profile_session_read_failed": ("FLOW-PROFILE-001", "资料提交后的会话读取未完成"),
-    "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后的登录态未确认"),
+    "profile_session_unconfirmed": ("FLOW-PROFILE-002", "资料提交后未取得有效登录会话"),
     "profile_auth_error": ("FLOW-PROFILE-003", "资料阶段进入认证错误页"),
     "account_create_invalid_state": ("OA-REG-SESSION-001", "资料提交时认证会话已失效"),
     "post_register_failure": ("OA-REG-POST-001", "注册请求之后流程失败（细项未记录）"),
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
-    "protocol_v3_unknown_error": ("AUTH-PROTOCOL-003", "协议 v3 认证发生未确认异常"),
+    "protocol_v3_unknown_error": ("AUTH-PROTOCOL-003", "协议 v3 认证异常，诊断记录缺少错误细项"),
     "identity_mismatch": ("AUTH-IDENTITY-001", "认证返回的账号身份与目标账号不一致"),
     "identity_unconfirmed": ("AUTH-IDENTITY-002", "认证响应缺少可核验的账号身份"),
     "account_reference_mismatch": ("AUTH-IDENTITY-003", "本地账号与刷新目标邮箱不一致"),
     "session_identity_mismatch": ("AUTH-IDENTITY-004", "认证后的 Session 身份与目标账号不一致"),
-    "access_token_expired": ("AUTH-SESSION-003", "认证返回的 AT 已过期，未确认为刷新成功"),
+    "access_token_expired": ("AUTH-SESSION-003", "认证返回的 AT 已过期，刷新失败"),
     "auth_context_ambiguous": ("AUTH-PAGE-AMBIGUOUS", "认证 Cookie 上下文存在冲突，无法确认当前挑战"),
     "workspace_ambiguous": ("AUTH-WORKSPACE-001", "存在多个工作区，无法确认目标工作区"),
     "workspace_missing": ("AUTH-WORKSPACE-002", "认证响应缺少可用工作区"),
@@ -1361,16 +1363,24 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "remote_response_missing": ("REQ-RESPONSE-001", "远端响应缺失"),
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
-    "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求结果未确认，未保留失败细项"),
-    "account_create_user_already_exists": ("OA-REG-EXISTS-001", "远端提示账号已存在，完整登录态尚未确认"),
+    "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求缺少有效响应和失败细项"),
+    "account_create_user_already_exists": ("OA-REG-EXISTS-001", "远端提示账号已存在，本次未取得完整登录会话"),
     "protocol_preauth_transport_failed": ("NET-REG-PREAUTH", "协议认证前置请求发生传输错误"),
     "protocol_post_otp_transport_failed": ("NET-REG-OTP", "已取得邮箱验证码，后续认证请求发生传输错误"),
     "protocol_auth_transport_failed": ("NET-REG-AUTH", "协议认证请求发生传输错误"),
-    "protocol_auth_rejected_before_password": ("OA-REG-AUTH-PWD", "密码尚未确认时认证请求被拒绝"),
+    "protocol_auth_rejected_before_password": ("OA-REG-AUTH-PWD", "认证请求在取得密码验证回执前被拒绝"),
     "protocol_auth_http_failed": ("OA-REG-AUTH-HTTP", "协议认证请求返回 HTTP 错误"),
     "protocol_session_incomplete": ("FLOW-REG-SESSION", "注册资料已确认，后续登录态尚未取得"),
     "protocol_failure_evidence_missing": ("FLOW-REG-EVIDENCE", "协议失败未保留足够请求证据，无法确认具体原因"),
     "local_config_schema_mismatch": ("SYS-CONFIG-SCHEMA", "配置 schema 不匹配，请重启后重跑"),
+    "refresh_confirmation_missing": ("SYS-BULK-AT-RECEIPT", "AT 刷新成功记录缺少本轮认证或写回凭据"),
+    "plan_result_confirmation_missing": ("SYS-BULK-PLAN-RESULT", "套餐查询成功记录缺少完整查询结果"),
+    "setup_confirmation_missing": ("SYS-BULK-SETUP-RECEIPT", "配置任务成功记录缺少设置回执"),
+    "codex_credential_confirmation_missing": ("SYS-BULK-CODEX-CREDENTIAL", "Codex 授权成功记录缺少有效凭据"),
+    "completion_confirmation_missing": ("SYS-BULK-COMPLETION-RESULT", "账号补全成功记录缺少必需步骤结果"),
+    "adapter_status_unmapped": ("SYS-BULK-ADAPTER-STATUS", "任务适配器返回未登记状态"),
+    "adapter_operation_unmapped": ("SYS-BULK-ADAPTER-OPERATION", "批量任务操作类型未登记"),
+    "diagnostic_cause_unresolved": ("SYS-BULK-DIAGNOSTICS", "失败记录未保存错误原因"),
 }
 
 
@@ -1832,7 +1842,7 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
         return {
             "cause_code": code,
             "cause_display_code": "OA-EMAIL-VERIFY-001",
-            "cause_summary": "新邮箱验证请求在本地准备阶段失败；begin 已接受，待核验",
+            "cause_summary": "新邮箱验证请求在本地准备阶段失败；begin 已接受，验证未执行",
         }
     if code in _CAUSE_DETAILS:
         display_code, cause_summary = _CAUSE_DETAILS[code]
@@ -1978,7 +1988,7 @@ def _classify_raw_task_error(
         TaskErrorCode.UNKNOWN.value,
         "unknown",
         _SOURCE_LABELS["unknown"],
-        "具体原因未确认",
+        "错误诊断记录缺失",
         stage=stage,
         error_code=error_code,
         raw=raw,
@@ -2004,6 +2014,69 @@ _RECEIPT_TASK_LABELS = {
     "plan_check": ("OA-PLAN-RECEIPT", "套餐查询"),
     "deactivation_mail": ("MAIL-SCAN-RECEIPT", "停用邮件检查"),
 }
+
+
+_AUTH_OPERATION_STAGES = {
+    "network_preflight": "network",
+    "password_sentinel": "login_password",
+    "password_verify": "login_password",
+    "mfa_issue_challenge": "mfa_challenge",
+    "mfa_verify": "mfa_challenge",
+    "email_otp": "email_otp",
+    "email_otp_send": "email_otp",
+    "email_otp_validate": "email_otp",
+    "oauth_callback": "callback",
+    "session_fetch": "token",
+    "profile_submit": "profile",
+}
+_RESULT_STAGES = {"result", "complete", "queued", "interrupted"}
+
+
+def _failure_stage(stage: str, summary: dict[str, Any]) -> str:
+    """优先使用持久化失败位置，终态收口和任意诊断字符串不作为失败阶段。"""
+    saved = normalize_stage(str(summary.get("failure_stage") or ""))
+    if saved in STAGES and saved not in _RESULT_STAGES:
+        return saved
+    current = normalize_stage(stage) if stage else ""
+    if current in STAGES and current not in _RESULT_STAGES:
+        return current
+    for key in ("auth_diagnostics", "cause_diagnostics"):
+        diagnostic = summary.get(key)
+        if isinstance(diagnostic, dict):
+            operation = diagnostic.get("cause_operation") or diagnostic.get("operation")
+            if isinstance(operation, str) and operation in _AUTH_OPERATION_STAGES:
+                return _AUTH_OPERATION_STAGES[operation]
+    registration = safe_registration_diagnostics(summary.get("registration_diagnostics"))
+    saved = str(registration.get("failure_stage") or "")
+    if saved in STAGES and saved not in _RESULT_STAGES:
+        return saved
+    return current if current in STAGES else ""
+
+
+def _failure_diagnostics_missing_cause(
+    *, stage: str, task_type: str,
+) -> dict[str, str]:
+    """将诊断记录缺失归到实际阶段，不假定上游错误或远端请求结果。"""
+    stage_key = normalize_stage(stage) if stage else ""
+    if stage_key in STAGES and stage_key not in _RESULT_STAGES:
+        return {
+            "cause_code": f"{stage_key}_failure_diagnostics_missing",
+            "cause_display_code": f"SYS-DIAG-{stage_key.upper().replace('_', '-')}",
+            "cause_summary": f"{STAGES[stage_key]['label']}阶段失败，诊断记录缺少错误细项",
+        }
+    task_key = str(task_type or "").strip().lower()
+    if task_key in _RECEIPT_TASK_LABELS:
+        _, label = _RECEIPT_TASK_LABELS[task_key]
+        return {
+            "cause_code": f"{task_key}_failure_diagnostics_missing",
+            "cause_display_code": f"SYS-DIAG-{task_key.upper().replace('_', '-')}",
+            "cause_summary": f"{label}任务失败，诊断记录缺少错误细项",
+        }
+    return {
+        "cause_code": "task_failure_diagnostics_missing",
+        "cause_display_code": "SYS-DIAG-001",
+        "cause_summary": "任务失败，诊断记录缺少错误细项",
+    }
 
 
 def _receipt_missing_cause(
@@ -2274,7 +2347,7 @@ _SUB2API_ERROR_DETAILS = {
     "sub2api_import_result_invalid": ("contract", "SUB2-CONTRACT-003", "Sub2API 导入回执无法唯一确认成功账号"),
     "sub2api_response_invalid": ("contract", "SUB2-CONTRACT-004", "Sub2API 响应格式无效"),
     "sub2api_pagination_limit": ("contract", "SUB2-CONTRACT-005", "Sub2API 分页读取达到保护上限"),
-    "sub2api_sync_unconfirmed": ("confirmation", "SUB2-CONFIRM-001", "Sub2API 凭证更新或调度启用尚未确认"),
+    "sub2api_sync_unconfirmed": ("confirmation", "SUB2-CONFIRM-001", "Sub2API 凭证更新或调度启用缺少有效回执"),
     "sub2api_account_deactivated": ("local_policy", "SUB2-POLICY-001", "关联账号已确认停用，手动上传未执行"),
     "sub2api_target_archived": ("local_policy", "SUB2-POLICY-002", "关联账号或凭证已归档"),
     "sub2api_oauth_incomplete": ("credential", "SUB2-CRED-003", "账号尚未完成 Codex OAuth"),
@@ -2333,7 +2406,7 @@ _C2A_ERROR_DETAILS = {
     "c2a_local_at_identity_mismatch": ("identity", "C2A-ID-001", "本地 AT 身份与账号邮箱不一致"),
     "c2a_local_identity_changed": ("identity", "C2A-ID-002", "本地账号邮箱已变化，未覆盖原 C2A 目标"),
     "c2a_account_deactivated": ("local_policy", "C2A-POLICY-001", "关联账号已确认停用，未更新 C2A"),
-    "c2a_local_receipt_writeback_failed": ("local_writeback", "C2A-LOCAL-004", "C2A 更新已确认，但本地回执写回未确认"),
+    "c2a_local_receipt_writeback_failed": ("local_writeback", "C2A-LOCAL-004", "C2A 更新已确认，但本地回执写回失败"),
     "c2a_manual_execution_failed": ("local_execution", "C2A-LOCAL-005", "C2A 重新导入本地执行异常，具体阶段已保留"),
     "c2a_client_error": ("local_execution", "C2A-LOCAL-006", "C2A 客户端处理异常，尚无更多远端证据"),
     "c2a_manual_queue_failed": ("local_execution", "C2A-LOCAL-007", "C2A 重新导入任务入队失败"),
@@ -2352,7 +2425,7 @@ def _c2a_error_projection(raw: str, *, error_code: str, stage: str, summary: dic
     c2a_stage = str(summary.get("stage") or stage or "c2a_update")
     if code == "c2a_timeout":
         write_may_have_started = bool(summary.get("remote_update_started")) and c2a_stage in {"c2a_update", "update_account"}
-        message = "C2A 更新请求超时，远端结果待确认" if write_may_have_started else "C2A 请求超时，未更新远端账号"
+        message = "C2A 更新请求超时，未收到更新回执" if write_may_have_started else "C2A 请求超时，未更新远端账号"
     projection = _error_projection(
         f"external.c2a.{category}", "c2a", "C2A", message,
         stage=c2a_stage, error_code=code,
@@ -2471,6 +2544,7 @@ def classify_task_error(
     """具体原因优先展示；回执缺失只约束后续操作，不充当通用主错误。"""
     raw = str(message or "").strip()
     summary_data = result_summary if isinstance(result_summary, dict) else {}
+    stage = _failure_stage(stage, summary_data)
     concurrency_projection = _concurrency_error_projection(raw, error_code, summary_data, stage)
     if concurrency_projection is not None:
         return concurrency_projection
@@ -2513,6 +2587,8 @@ def classify_task_error(
             })
         return recovery_projection
     cause = _stored_specific_error_cause(raw, task_type, summary_data, error_code=error_code) or _specific_error_cause(summary_data)
+    if cause is None and str(error_code or "").strip() in _CAUSE_DETAILS:
+        cause = _specific_error_cause({**summary_data, "cause_code": str(error_code).strip()})
     if cause and cause["cause_code"] == "email_otp_evidence_missing":
         # 阶段兜底只补充缺失信息；调用方保存的明确错误码始终优先。
         explicit_code = str(error_code or "").strip()
@@ -2600,9 +2676,18 @@ def classify_task_error(
         projection = _cause_error_projection(cause, stage=stage, error_code=error_code, raw=raw)
     else:
         projection = raw_projection or _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
-        if reconcile_required and (projection is None or projection["code"] == TaskErrorCode.UNKNOWN.value):
-            cause = _receipt_missing_cause(stage=stage, task_type=task_type, summary=summary_data)
+        if (projection is None or projection["code"] == TaskErrorCode.UNKNOWN.value) and (
+            raw or error_code or reconcile_required or str(task_status or "").strip().lower() in {
+                "failed", "attention_required", "request_unknown", "partial_success", "deactivated",
+            }
+        ):
+            cause = (_receipt_missing_cause(stage=stage, task_type=task_type, summary=summary_data)
+                     if reconcile_required else _failure_diagnostics_missing_cause(stage=stage, task_type=task_type))
+            previous = projection
             projection = _cause_error_projection(cause, stage=stage, error_code=error_code, raw=raw)
+            for name in ("retryability", "remote_state_impact", "next_action"):
+                if name in (previous or {}):
+                    projection[name] = previous[name]
     if str(task_type or "").strip().lower() == "plan_check":
         projection = _plan_failure_projection(
             raw, summary_data, stage=stage, task_status=task_status, previous=projection,

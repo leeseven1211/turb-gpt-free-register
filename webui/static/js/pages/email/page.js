@@ -70,7 +70,7 @@ function renderEmailDerivationAllocations(result) {
       <td class="col-email" title="${attrEsc(item.email)}"><strong>${esc(item.email || '-')}</strong></td>
       <td class="col-parent" title="${attrEsc(item.parent_email)}"><span>${esc(item.parent_email || '-')}</span><small>母资源 #${esc(item.parent_id || '-')}</small></td>
       <td class="col-source">${esc(poolLabel(item.source))}</td>
-      <td class="col-status"><span class="pool-usage ${statusClass}">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态待确认')}</span></td>
+      <td class="col-status"><span class="pool-usage ${statusClass}">${esc(EMAIL_DERIVATION_STATE_LABELS[item.state] || item.state || '状态记录缺失')}</span></td>
       <td class="col-related">${esc(ownership)}</td>
       <td class="col-time">${esc(formatDateTime(item.created_at))}</td>
       <td class="col-actions"><span class="sub-cell">只读</span></td>
@@ -258,7 +258,7 @@ const POOL_USAGE_LABELS = {
   failed: '失败',
   disabled: '已停用',
 };
-function poolUsageLabel(state) { return POOL_USAGE_LABELS[state] || state || '状态待确认'; }
+function poolUsageLabel(state) { return POOL_USAGE_LABELS[state] || state || '状态记录缺失'; }
 function _poolUsageCell(r) {
   const state = r.usage_state || r.status || '';
   const label = poolUsageLabel(state);
@@ -589,7 +589,7 @@ async function onOutlookBodyClick(e) {
   const source = t.dataset.source || getPoolSource();
   try {
     if (poolAct === 'delete') {
-      if (!confirm(`确定从本地邮箱池移除 ${email}？\n\n保留使用历史；注册结果未确认时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
+      if (!confirm(`确定从本地邮箱池移除 ${email}？\n\n保留使用历史；缺少注册完成回执时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
       const result = await api('/api/outlook/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, source}) });
       if (!result.deleted) { showToast(result.reason || '邮箱未移除'); return; }
       OUTLOOK_SELECTED.delete(`${source}|${email}`);
@@ -913,7 +913,7 @@ async function deleteSelectedOutlook() {
     return {source, email: rest.join('|')};
   });
   if (items.length === 0) { showToast('请先选择邮箱'); return; }
-  if (!confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n保留使用历史；注册结果未确认时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱会跳过。`)) return;
+  if (!confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n保留使用历史；缺少注册完成回执时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱会跳过。`)) return;
   const delBtn = document.getElementById('btnDeleteSelectedOutlookV2'); if (delBtn) delBtn.disabled = true;
   try {
     const r = await api('/api/outlook/delete-bulk', {

@@ -44,7 +44,7 @@ test('远端每一种记录有独立含义，旧数据和未识别值不追认�
   const page = view();
   for (const [status, label] of [
     ['verified', '登录验证通过'], ['accepted', '创建密码被接受'], ['rejected', '密码被拒绝'],
-    ['unknown', '未确认'], ['skipped', '未提交'], [undefined, '未验证'], ['success', '未验证'], ['constructor', '未验证'],
+    ['unknown', '密码验证记录不完整'], ['skipped', '未提交'], [undefined, '未验证'], ['success', '未验证'], ['constructor', '未验证'],
   ]) {
     const html = page._accountDetailMarkup({id: 8, has_account_password: true,
       has_access_token: true, last_auth_method: 'password', last_password_auth_status: status});

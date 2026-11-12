@@ -249,7 +249,7 @@ function _codexCell(r) {
   if (s === 'retrying') return `<span class="pill status-running">补跑中</span>`;
   if (s === 'stopped') return `<span class="pill status-used"${titleAttr}>已停止</span>`;
   if (s === 'failed') return `<span class="pill status-failed"${titleAttr}>失败</span>`;
-  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="pill status-used"${titleAttr}>待确认</span>`;
+  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="pill status-used"${titleAttr}>凭据核验缺失</span>`;
   if (s === 'skipped') return `<span class="pill status-used">已跳过</span>`;
   if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="muted">-</span>`;
@@ -265,7 +265,7 @@ function _codexCellV2(r) {
   if (s === 'retrying') return `<span class="acc-v2-codex is-run"${titleAttr}>补跑中</span>`;
   if (s === 'stopped') return `<span class="acc-v2-codex is-mute"${titleAttr}>已停止</span>`;
   if (s === 'failed') return `<span class="acc-v2-codex is-fail"${titleAttr}>失败</span>`;
-  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="acc-v2-codex is-mute"${titleAttr}>待确认</span>`;
+  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="acc-v2-codex is-mute"${titleAttr}>凭据核验缺失</span>`;
   if (s === 'skipped') return `<span class="acc-v2-codex is-skip"${titleAttr}>已跳过</span>`;
   if (s === 'deactivated') return `<span class="acc-v2-codex is-fail" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="acc-v2-muted">-</span>`;
@@ -805,8 +805,8 @@ function _accountPromotionLabel(item) {
     const discount = percentage === 50 ? '五折' : (Number.isFinite(percentage) && percentage > 0 && percentage < 100 ? `减 ${percentage}%` : '折扣');
     return `${discount}${duration}`;
   }
-  const labels = {other_promo: '其他优惠', none: '无优惠', unknown: '待核验', pending: '待查询', failed: '查询失败', cancelled: '已取消', not_applicable: '不适用'};
-  return labels[item.kind] || '待核验';
+  const labels = {other_promo: '其他优惠', none: '无优惠', unknown: '待复查', pending: '待查询', failed: '查询失败', cancelled: '已取消', not_applicable: '不适用'};
+  return labels[item.kind] || '待复查';
 }
 function _accountPromotionDetail(item, context = '') {
   const label = `${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`;
@@ -1116,7 +1116,7 @@ function _accountPasswordAuthDisplay(r) {
     verified: {label: '登录验证通过', cellLabel: '已验证', tone: 'success'},
     accepted: {label: '创建密码被接受', cellLabel: '创建已接受', tone: 'success'},
     rejected: {label: '密码被拒绝', cellLabel: '被拒绝', tone: 'danger'},
-    unknown: {label: '未确认', cellLabel: '未确认', tone: 'warning'},
+    unknown: {label: '密码验证记录不完整', cellLabel: '记录不完整', tone: 'warning'},
     skipped: {label: '未提交', cellLabel: '未提交', tone: 'neutral'},
   };
   const status = String(r.last_password_auth_status || '');
@@ -1289,7 +1289,7 @@ function _accountCountryDetailMarkup(r, displays) {
       ? (overallStatus === 'queued' ? '新任务排队中' : '新任务正在执行')
       : overallAborted && ['queued', 'running'].includes(status)
         ? (overallStatus === 'cancelled' ? '已取消' : '查询中断')
-        : statusLabels[status] || '结果待确认';
+        : statusLabels[status] || '查询结果记录缺失';
     const context = [statusText, _accountCountryPromotionDetail(display)].filter(Boolean).join('；');
     return _accountDetailState(`${display.country} 优惠`, _accountPromotionGroupLabel({plan: best.plan, items: [best], lead: best}), _accountPromotionTone(best), context);
   }).join('')}${_accountDetailState('多国套餐检查', summary, allFailed || overallAborted ? 'danger' : partial || active ? 'warning' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}`;
@@ -1307,7 +1307,7 @@ function _accountDetailMarkup(r) {
   const promotionDisplay = _accountPromotionDisplay(r);
   const countryDisplays = _accountCountryPromotionDisplays(r);
   const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
-  const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '待确认', skipped: '已跳过' };
+  const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '凭据核验缺失', skipped: '已跳过' };
   const codex = codexLabels[codexRaw] || '未授权';
   const codexTone = ['success', 'completed'].includes(codexRaw) ? 'success' : (['failed', 'deactivated'].includes(codexRaw) ? 'danger' : (['running', 'queued', 'cancelling', 'retrying'].includes(codexRaw) ? 'warning' : 'neutral'));
   const risk = r.deactivation_mail_detected ? '发现封号邮件' : (r.deactivation_mail_scan_status === 'success' ? '未发现封号邮件' : '待扫描');

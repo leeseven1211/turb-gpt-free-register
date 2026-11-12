@@ -98,7 +98,7 @@ function renderButlerImportControls() {
   if (close) close.textContent = butlerImportRunning() || state.resumePending ? '关闭，后台继续' : '关闭';
   if (state.request && !state.batch) {
     const title = butlerImportElement('butlerImportStatusTitle');
-    if (title) title.textContent = state.busy ? '正在提交导入' : '导入请求待确认';
+    if (title) title.textContent = state.busy ? '正在提交导入' : '导入请求响应缺失';
     const hint = butlerImportElement('butlerImportStatusHint');
     if (hint) hint.textContent = '可以关闭窗口，已保存原请求；重新打开后可恢复结果。';
   }
@@ -109,7 +109,7 @@ function renderButlerImportControls() {
     pageStatus.hidden = !state.request || !!modal?.open || butlerImportSucceeded(state.batch?.status) || butlerImportCancelled();
     pageStatus.textContent = state.batch
       ? `Butler 导入${butlerImportRunning() ? '中' : '结果'} · 已导入 ${Number(state.batch.imported || 0)} / ${Number(state.batch.total || 0)} · 查看进度`
-      : 'Butler 导入请求待确认 · 查看进度';
+      : 'Butler 导入请求响应缺失 · 查看进度';
   }
   for (const id of ['btnOpenButlerImport', 'btnOpenButlerImportPool']) {
     const opener = butlerImportElement(id);
@@ -166,7 +166,7 @@ async function openButlerImportModal() {
   renderButlerImportControls();
   if (BUTLER_IMPORT_STATE.storageError) butlerImportError('无法读取浏览器中的导入记录；请先恢复浏览器存储后再导入。');
   else if (BUTLER_IMPORT_STATE.batch) await pollButlerImport();
-  else if (BUTLER_IMPORT_STATE.request) butlerImportError('上次导入响应尚未确认，请重试原请求恢复结果。');
+  else if (BUTLER_IMPORT_STATE.request) butlerImportError('上次导入未收到响应，请重试原请求恢复结果。');
   else {
     await loadButlerImportOptions();
     if (!BUTLER_IMPORT_STATE.storageError) await previewButlerImport();
@@ -244,17 +244,17 @@ function renderButlerImportBatch() {
   if (!batch) return;
   const labels = {pending: '等待导入', queued: '等待导入', running: '正在导入', processing: '正在导入',
     partial: batch.can_retry ? '部分完成，可继续原批次' : '本批次已结束（部分失败）', completed: '导入完成', succeeded: '导入完成', done: '导入完成',
-    failed: '导入失败', rejected: '导入未开始', unknown: '结果待确认', cancelled: '本批次已终止'};
+    failed: '导入失败', rejected: '导入未开始', unknown: '导入失败', cancelled: '本批次已终止'};
   const total = Number(batch.total || 0);
   const imported = Number(batch.imported || 0), skipped = Number(batch.skipped || 0), failed = Number(batch.failed || 0), unknown = Number(batch.unknown || 0);
   const processed = imported + skipped + failed + unknown;
   const title = butlerImportElement('butlerImportStatusTitle');
-  if (title) title.textContent = BUTLER_IMPORT_STATE.resumePending ? '正在恢复原批次' : labels[batch.status] || '等待确认';
+  if (title) title.textContent = BUTLER_IMPORT_STATE.resumePending ? '正在恢复原批次' : labels[batch.status] || '状态记录缺失';
   const hint = butlerImportElement('butlerImportStatusHint');
   const waitingLabels = {global_capacity: '等待全局业务空位', type_capacity: '等待邮箱导入空位', batch_capacity: '等待当前导入批次空位', fairness_turn: '等待其他类型或批次轮转', scheduler_store_unavailable: '等待数据库恢复后继续准入', concurrency_policy_migration_required: '等待保存部署并发策略', concurrency_policy_invalid: '等待修正并发策略', concurrency_policy_missing: '等待补齐邮箱导入并发策略'};
   const waitingReasons = (Array.isArray(batch.blocked_by) ? batch.blocked_by : []).map(code => waitingLabels[code] || `等待准入（${code}）`);
   if (hint) hint.textContent = butlerImportCancelled()
-    ? '已停止后续导入。已导入邮箱、原租约和待确认记录均保留；已发出的请求仍会保存结果。可以关闭窗口或新建导入。'
+    ? '已停止后续导入。已导入邮箱、原租约和失败记录均保留；已发出的请求仍会保存结果。可以关闭窗口或新建导入。'
     : butlerImportRunning() || BUTLER_IMPORT_STATE.resumePending
     ? `${waitingReasons.length ? `${waitingReasons.join('；')}。` : ''}可以关闭窗口，导入会在后台继续。右下角可随时查看进度，刷新页面也能恢复。`
     : batch.can_retry ? '可继续原批次处理剩余邮箱，已导入的邮箱会保留。'
@@ -262,12 +262,12 @@ function renderButlerImportBatch() {
   const bar = butlerImportElement('butlerImportProgressBar');
   if (bar) { bar.max = Math.max(total, 1); bar.value = Math.min(processed, total); }
   const stats = butlerImportElement('butlerImportStats');
-  if (stats) stats.innerHTML = [['已导入', imported], ['待处理', Number(batch.pending || 0)], ['租用中', Number(batch.submitting || 0)], ['已跳过', skipped], ['待确认', unknown], ['失败', failed]]
+  if (stats) stats.innerHTML = [['已导入', imported], ['待处理', Number(batch.pending || 0)], ['租用中', Number(batch.submitting || 0)], ['已跳过', skipped], ['失败', failed + unknown]]
     .map(([label, count]) => `<div class="butler-import-stat"><strong>${count}</strong>${label}</div>`).join('');
   const progress = butlerImportElement('butlerImportProgress');
   if (progress) progress.textContent = `已处理 ${processed} / ${total} 个，本次请求 ${Number(batch.requested || 0)} 个。`;
   const reasons = butlerImportElement('butlerImportReasons');
-  const errorLabels = {local_email_conflict: '本地已有或被其他任务占用', handoff_rejected: 'Butler 拒绝交接', handoff_unconfirmed: '远端交接结果待确认，可继续原批次核实', import_interrupted: '服务重启导致中断，可继续原批次', original_route_unavailable: '原 Butler 连接或收件配置不可用', fixed_route_unavailable: '原固定收件配置不可用', butler_remote_unavailable: '无法连接 Butler，稍后可继续原批次', handoff_contract_unsupported: 'Butler 消费身份或交接能力不匹配', import_storage_unavailable: '本地数据库暂时不可用，可继续原批次', import_internal_error: '本地导入处理异常，可继续原批次'};
+  const errorLabels = {local_email_conflict: '本地已有或被其他任务占用', handoff_rejected: 'Butler 拒绝交接', handoff_unconfirmed: 'Butler 交接请求未收到回执，可继续原批次恢复', import_interrupted: '服务重启导致中断，可继续原批次', original_route_unavailable: '原 Butler 连接或收件配置不可用', fixed_route_unavailable: '原固定收件配置不可用', butler_remote_unavailable: '无法连接 Butler，稍后可继续原批次', handoff_contract_unsupported: 'Butler 消费身份或交接能力不匹配', import_storage_unavailable: '本地数据库暂时不可用，可继续原批次', import_internal_error: '本地导入处理异常，可继续原批次'};
   Object.assign(errorLabels, {
     handoff_timeout: 'Butler 响应超时，可继续原批次核实',
     permission_denied: '当前 Key 缺少操作权限，请检查 Butler 授权',
@@ -279,7 +279,7 @@ function renderButlerImportBatch() {
     lease_not_found: '未找到本人原租约，请检查迁移映射',
     idempotency_conflict: '原请求编号与内容冲突，已保留原意图',
     idempotency_result_expired: '原请求回执已过期，须核对原租约后恢复',
-    request_unknown: '远端结果待确认，继续原批次恢复同一请求',
+    request_unknown: 'Butler 请求未收到回执，继续原批次恢复同一请求',
     request_timeout: 'Butler 请求超时，继续原批次恢复同一请求',
     transport_error: 'Butler 连接异常，继续原批次恢复同一请求',
     butler_availability_invalid: 'Butler 可用数量响应无效',
@@ -291,7 +291,7 @@ function renderButlerImportBatch() {
     inventory_batch_invalid: 'Butler 批量请求格式无效',
     inventory_import_item_invalid: 'Butler 原邮箱交接参数无效',
     inventory_policy_forbidden: 'Butler 消费策略不允许交接此邮箱',
-    inventory_client_required: 'Butler 未确认消费客户端身份',
+    inventory_client_required: 'Butler 未返回有效的消费客户端身份',
     icloud_identity_not_found: 'Butler 未找到原完整邮箱身份',
     inventory_candidate_unavailable: 'Butler 原邮箱库存当前不可交接',
     acquisition_owner_mismatch: 'Butler 原交接归属不一致',
@@ -330,7 +330,7 @@ async function refreshButlerImportInventory() {
 async function acceptButlerImportBatch(data) {
   const state = BUTLER_IMPORT_STATE;
   if (data.ok === false || !data.batch?.batch_id) throw new Error(data.error || '服务端未返回导入批次');
-  if (state.batch && state.batch.batch_id !== data.batch.batch_id) throw new Error('服务端返回了不同批次，保留原批次等待确认');
+  if (state.batch && state.batch.batch_id !== data.batch.batch_id) throw new Error('服务端返回了不同批次，保留原批次恢复原请求');
   // 终止是不可逆终态；其他标签页或较早发出的查询不能重新激活该批次。
   let cancelled = butlerImportCancelled();
   try {
@@ -396,7 +396,7 @@ async function retryButlerImport() {
         butlerImportError(`导入尚未开始：${error.message}。请重新预览。`);
       } catch (_) { butlerImportError('导入尚未开始，但原记录暂未清除；请恢复浏览器存储后重试原请求。'); }
     } else {
-      butlerImportError(`导入结果尚未确认：${error.message}。请${state.batch ? '继续原批次' : '重试原请求'}恢复，已保留原编号。`);
+      butlerImportError(`导入请求失败：${error.message}。请${state.batch ? '继续原批次' : '重试原请求'}恢复，已保留原编号。`);
     }
   } finally { state.busy = false; renderButlerImportControls(); scheduleButlerImportPoll(); }
 }
@@ -410,12 +410,12 @@ async function terminateButlerImport() {
   try {
     const data = await api(`/api/email-butler/imports/${encodeURIComponent(state.batch.batch_id)}/cancel`, {method: 'POST'});
     await acceptButlerImportBatch(data);
-    if (data.batch?.status !== 'cancelled' && !butlerImportSucceeded(data.batch?.status)) throw new Error('服务端尚未确认终止');
+    if (data.batch?.status !== 'cancelled' && !butlerImportSucceeded(data.batch?.status)) throw new Error('服务端未返回终止回执');
     state.pollVersion += 1;
     state.polling = false;
     butlerImportElement('btnNewButlerImport')?.focus();
   } catch (error) {
-    butlerImportError(`终止尚未确认：${error.message}。已保留原批次，请重试终止或查看原批次状态。`);
+    butlerImportError(`终止请求失败：${error.message}。已保留原批次，请重试终止或查看原批次状态。`);
   } finally {
     state.busy = state.cancelling = false;
     renderButlerImportControls();

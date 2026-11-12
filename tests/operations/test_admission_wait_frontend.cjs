@@ -34,7 +34,7 @@ test('原因仅用于排队展示，执行或业务失败保留原状态', () =>
 
 test('新增原因保留证据并待核验，输出转义', () => {
   const markup = context.accountTaskAdmissionWaitMarkup({status: 'queued', admission_wait_reason: '<script>'});
-  assert.match(markup, /等待原因待核验/);
+  assert.match(markup, /调度等待原因未登记/);
   assert.doesNotMatch(markup, /<script>/);
   assert.match(markup, /&lt;script&gt;/);
 });

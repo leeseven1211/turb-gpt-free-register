@@ -24,6 +24,7 @@ from core import operation_task_store
 from core.accounts.plans import service as plan_check_service
 from core.registration import service as svc
 from core.operations.errors import classify_task_error
+from core.operations.presentation import public_progress_snapshot, public_result_status
 from core.operations.stages import DIAGNOSTIC_CONTEXT_FIELDS, ERROR_FIELDS, EVENT_BASE_FIELDS, EVENT_TYPES, STAGE_EVENT_FIELDS, WAIT_REASONS
 from config import codex as codex_config
 from webui import config_editor
@@ -151,6 +152,7 @@ def create_jobs_blueprint(context: WebUIContext):
                 },
             ),
             progress_batch_id=progress_batch_id,
+            public_status=True,
             **({"view": view} if view else {}),
             **({"include_facets": False} if request.args.get("include_facets", "1").lower() in {"0", "false", "no"} else {}),
         )
@@ -170,9 +172,9 @@ def create_jobs_blueprint(context: WebUIContext):
                 row.update(snapshots.get(int(row.get("id") or 0), {}))
         for row in rows:
             row["manual_otp_required"] = manual_otp_required
-        result["items"] = [_compact_job_for_list(row, include_progress=view != "table") for row in rows]
+        result["items"] = [_compact_job_for_list(row, include_progress=view != "table", public_status=True) for row in rows]
         if view != "table":
-            result["progress_batch"] = _latest_progress_batch(progress_rows, summarize_routes=view == "batch")
+            result["progress_batch"] = _latest_progress_batch(progress_rows, summarize_routes=view == "batch", public_status=True)
             result = _attach_projection_status(result)
         else:
             result.pop("progress_batches", None)
@@ -693,7 +695,13 @@ def create_jobs_blueprint(context: WebUIContext):
         job = db.get_job(job_id)
         if not job:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
-        error_info = _job_error_info(job)
+        error_info = _job_error_info(job, public_status=True)
+        job = dict(job)
+        job["status"] = public_result_status(job.get("status"), job)
+        if job.get("display_status"):
+            job["display_status"] = public_result_status(job["display_status"], job)
+        if isinstance(job.get("progress"), dict):
+            job["progress"] = public_progress_snapshot(job["progress"])
         if error_info:
             job["error_info"] = error_info
         return jsonify({

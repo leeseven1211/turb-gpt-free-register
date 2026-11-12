@@ -97,7 +97,7 @@
 .bulk-loading-dot { width: 8px; height: 8px; background: var(--ui-color-brand); border-radius: 50%; }
 /* 列表与明细。 */
 .bulk-list-card { padding: 16px 20px; }
-.bulk-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-bottom: 14px; }
+.bulk-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding-bottom: 14px; }
 .bulk-kpi { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--ui-color-border); border-radius: 10px; background: var(--ui-color-surface-subtle); }
 .bulk-kpi > span { font-size: 11px; color: var(--ui-color-text-secondary); }
 .bulk-kpi > b { font-size: 20px; font-weight: 700; line-height: 1.25; font-variant-numeric: tabular-nums; }

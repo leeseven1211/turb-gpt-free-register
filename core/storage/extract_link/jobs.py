@@ -15,6 +15,7 @@ from core.storage import records as record_store
 from core.extract_link.contracts import safe_links, safe_payment_artifact
 from core.extract_link.payment_confirmation import payment_scan_completed
 from core.storage.operations import store as operation_store
+from core.operations.presentation import public_result_status_sql
 
 
 logger = logging.getLogger('core.storage.extract_link_jobs')
@@ -527,6 +528,14 @@ _WORKBENCH_STATUS_SQL = {
 }
 
 
+def workbench_status_conditions(*, public_status: bool = False) -> dict[str, str]:
+    """公开结果按失败归类，保留已支付和已出链的独立统计维度。"""
+    result = dict(_WORKBENCH_STATUS_SQL)
+    if public_status:
+        result["needs_review"] = "(" + result["needs_review"] + ") OR task_status IN ('failed','partial_success','interrupted') OR extraction_status='failed' OR payment_status='failed'"
+    return result
+
+
 _WORKBENCH_TIMESTAMP_PATTERN = (
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ](0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
     r"([.][0-9]{1,6})?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])?$"
@@ -753,7 +762,7 @@ def _workbench_timestamp_sql(value_sql: str) -> str:
         ELSE NULL END"""
 
 
-def _workbench_projection_sql(clauses: list[str]) -> str:
+def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
     # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
@@ -763,8 +772,18 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
             ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{}'::jsonb), FALSE) AS subscribed"""
     checked_at_sql = _workbench_timestamp_sql("COALESCE(by_id.plan_checked_at, by_email.plan_checked_at)")
     payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
+    task_status = "LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))"
+    task_status_sql = (public_result_status_sql(task_status, "r.result_summary") if public_status else
+                       f"CASE WHEN {task_status}='attention_required' THEN 'request_unknown' ELSE {task_status} END")
+    active_statuses = "'queued','running','waiting','cancelling','settling','stopping'"
+    extraction_failure_sql = (f"WHEN extraction IN ('unknown','pending','') AND task_status NOT IN ({active_statuses},'cancelled','stopped') THEN 'failed' "
+                              f"WHEN extraction='unknown' AND task_status IN ({active_statuses}) THEN 'pending' "
+                              if public_status else "")
+    payment_unknown_sql = (f"CASE WHEN task_status IN ({active_statuses}) THEN 'pending_payment' ELSE 'failed' END"
+                           if public_status else "'request_unknown'")
+    payment_unknown_condition = "payment IN ('unknown','request_unknown')" if public_status else "payment='unknown'"
     return f"""filtered_tasks AS MATERIALIZED (
-        SELECT t.id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
+        SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
             COALESCE(t.data->>'payment_source', 'native') AS task_payment_source
         FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
@@ -779,11 +798,10 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
             AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
         GROUP BY LOWER(fallback_account.email)
     ), raw AS (
-        SELECT t.id AS task_id, t.created_at AS task_created_at,
+        SELECT t.id AS task_id, t.batch_id, t.created_at AS task_created_at,
             CASE WHEN t.task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE t.created_at END AS plus_freshness_anchor,
             COALESCE(r.created_at, t.created_at) AS sort_created_at,
-            CASE WHEN LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))='attention_required'
-                THEN 'request_unknown' ELSE LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued')) END AS task_status,
+            {task_status_sql} AS task_status,
             COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
             COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
             COALESCE(job.provider_id IN ('huanguang', 'legacy')
@@ -813,14 +831,15 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
     ), normalized AS (
         SELECT *, CASE
             WHEN extraction IN ('succeeded','success') THEN 'success'
-            WHEN extraction IN ('queued','running','failed','pending','unknown','not_started') THEN extraction
             WHEN extraction='' AND provider_id='legacy' AND task_status='success' AND legacy_succeeded THEN 'success'
+            {extraction_failure_sql}
+            WHEN extraction IN ('queued','running','failed','pending','unknown','not_started') THEN extraction
             WHEN extraction='' AND provider_id='legacy' AND task_status IN ('failed','request_unknown','cancelled','stopped') THEN 'failed'
             WHEN extraction='' THEN 'pending' ELSE 'unknown' END AS extraction_status,
             CASE WHEN mode='extract_only' THEN 'unpaid'
                 WHEN payment IN ('succeeded','success','paid') THEN 'paid'
                 WHEN payment='not_started' THEN 'unpaid' WHEN payment='failed' THEN 'failed'
-                WHEN payment='unknown' THEN 'request_unknown' ELSE 'pending_payment' END AS payment_status
+                WHEN {payment_unknown_condition} THEN {payment_unknown_sql} ELSE 'pending_payment' END AS payment_status
         FROM raw
     ), projected AS (
         SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
@@ -832,11 +851,16 @@ def _workbench_projection_sql(clauses: list[str]) -> str:
     )"""
 
 
-def workbench_summary() -> dict:
+def workbench_summary(*, public_status: bool = False) -> dict:
     """今日产出与当前积压的快照。只做本地聚合，不触发任何远端查询。"""
     operation_store.init()
     clauses, params = _workbench_where()
-    projection = _workbench_projection_sql(clauses)
+    projection = _workbench_projection_sql(clauses, public_status=public_status)
+    status_conditions = workbench_status_conditions(public_status=public_status)
+    provider_status = "LOWER(COALESCE(r.status, t.status, ''))"
+    provider_failure_status = (
+        public_result_status_sql(provider_status, "r.result_summary") if public_status else provider_status
+    )
     today_sql = "date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -846,9 +870,9 @@ def workbench_summary() -> dict:
                     (SELECT COUNT(*) FROM today WHERE extraction_status='success') AS today_extracted,
                     (SELECT COUNT(*) FROM today WHERE plus_status='confirmed') AS today_plus_confirmed,
                     (SELECT COUNT(*) FROM projected
-                        WHERE {_WORKBENCH_STATUS_SQL["awaiting_payment"]}) AS awaiting_payment,
+                        WHERE {status_conditions["awaiting_payment"]}) AS awaiting_payment,
                     (SELECT COUNT(*) FROM projected
-                        WHERE {_WORKBENCH_STATUS_SQL["needs_review"]}) AS needs_review,
+                        WHERE {status_conditions["needs_review"]}) AS needs_review,
                     (SELECT COUNT(*) FROM projected
                         WHERE NOT local_reconcile_halted
                           AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
@@ -868,7 +892,7 @@ def workbench_summary() -> dict:
                     COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))='queued') AS queued_now,
                     COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))='success'
                         AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_success,
-                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))
+                    COUNT(*) FILTER (WHERE ({provider_failure_status})
                         IN ('failed','attention_required','partial_success')
                         AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_failed,
                     AVG(EXTRACT(EPOCH FROM (r.completed_at - r.started_at)))
@@ -910,15 +934,17 @@ def workbench_summary() -> dict:
 def list_workbench_page(
     *, provider_id: str | None = None, mode: str | None = None, query: str = "",
     status: str = "", page: int = 1, page_size: int = 20, batch_id: int | None = None,
+    public_status: bool = False,
 ) -> dict:
     """数据库内统计、筛选和分页，仅返回当前页的公开任务明细。"""
     operation_store.init()
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
     clauses, params = _workbench_where(provider_id=provider_id, mode=mode, query=query, batch_id=batch_id)
-    projection = _workbench_projection_sql(clauses)
-    predicate = _WORKBENCH_STATUS_SQL.get(status, "FALSE") if status else "TRUE"
-    count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in _WORKBENCH_STATUS_SQL.items()]
+    projection = _workbench_projection_sql(clauses, public_status=public_status)
+    status_conditions = workbench_status_conditions(public_status=public_status)
+    predicate = status_conditions.get(status, "FALSE") if status else "TRUE"
+    count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in status_conditions.items()]
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""WITH {projection} SELECT COUNT(*) AS all,
@@ -956,12 +982,15 @@ def get_workbench_detail_rows(task_id: int) -> dict | None:
         item = _workbench_rows([row])[0]
         cur.execute(
             f"""SELECT r.id AS run_id, r.run_no, r.status, r.source_system,
-                COALESCE(NULLIF(job.provider_id, ''), NULLIF(r.data->>'provider_id', ''), 'legacy') AS provider_id,
+                COALESCE(NULLIF(job.provider_id, ''), NULLIF(r.data->>'provider_id', ''),
+                    NULLIF(t.data->>'provider_id', ''), 'legacy') AS provider_id,
+                COALESCE(NULLIF(r.data->>'mode', ''), NULLIF(t.data->>'mode', ''), 'extract_only') AS mode,
                 COALESCE(NULLIF(job.public_state->>'extraction_state', ''), 'unknown') AS extraction_status,
                 COALESCE(NULLIF(job.public_state->>'payment_state', ''), 'not_started') AS payment_status,
-                r.created_at, r.completed_at, r.error_message,
+                r.result_summary, job.public_state, r.created_at, r.completed_at, r.error_message,
                 {operation_store._compatibility_run_projection_sql(run_alias='r')}
                 FROM {operation_store._table('operation_runs')} r
+                JOIN {operation_store._table('operation_tasks')} t ON t.id=r.task_id
                 {operation_store._compatibility_run_joins_sql(run_alias='r')}
                 LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
                 WHERE r.task_id=%s ORDER BY r.run_no, r.id""",

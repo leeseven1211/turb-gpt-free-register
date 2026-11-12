@@ -26,7 +26,7 @@ class TokenRefreshResultTests(TestCase):
         self.assertEqual(value["result"]["refresh_outcome"], "success")
         self.assertEqual(value["contribution"]["dimensions"], {"account.token_refresh.confirmed": 1})
 
-    def test_success_without_refresh_or_confirmed_writeback_is_attention(self):
+    def test_success_without_refresh_or_confirmed_writeback_is_failed(self):
         variants = [{"force_refresh": False}, {"force_refresh": None},
                     {"remote_intent": {"action": "other_action", "receipt_state": "confirmed"}},
                     {"remote_intent": {"action": "token_refresh", "receipt_state": "local_commit_required"}}]
@@ -35,20 +35,20 @@ class TokenRefreshResultTests(TestCase):
                 evidence = self.evidence()
                 evidence["run"]["data"].update(change)
                 value = results.project_one(evidence, operation_key="token_refresh")
-                self.assertEqual(value["state"], "attention_required")
+                self.assertEqual(value["state"], "failed")
                 self.assertEqual(value["reason"]["code"], "refresh_confirmation_missing")
                 self.assertNotIn("account.token_refresh.confirmed", value["contribution"]["dimensions"])
         for change in ({"ok": False}, {"validation_method": "access_token"}, {"reconcile_required": True}, {"manual_reconcile": True}):
             with self.subTest(change=change):
                 evidence = self.evidence()
                 evidence["run"]["result_summary"].update(change)
-                self.assertEqual(results.project_one(evidence, operation_key="token_refresh")["state"], "attention_required")
+                self.assertEqual(results.project_one(evidence, operation_key="token_refresh")["state"], "failed")
 
     def test_pending_failure_cancel_and_unknown_do_not_reuse_cached_success(self):
         for status, outcome, dimensions in (("queued", "pending", {}), ("running", "pending", {}),
                 ("cancelled", "not_executed", {}), ("not_executed", "not_executed", {}),
                 ("failed", "failed", {"account.token_refresh.failed": 1}),
-                ("request_unknown", "unconfirmed", {"account.token_refresh.unconfirmed": 1})):
+                ("request_unknown", "failed", {"account.token_refresh.failed": 1})):
             with self.subTest(status=status):
                 evidence = self.evidence()
                 evidence["run"]["status"] = status
@@ -271,7 +271,7 @@ class TokenRefreshStoreTests(PostgresTestCase):
         self.assertTrue(rows[0]["data"]["force_refresh"])
         self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["live_check_status"], "queued")
 
-    def test_unknown_remote_result_preserves_prior_token_and_counts_unconfirmed(self):
+    def test_missing_remote_response_preserves_prior_token_and_counts_failed(self):
         batch = self.make_batch()
         run_id, _task_id = self.submit(batch)
         self.run_mocked_refresh(run_id, {"ok": False, "status": "failed", "error": "response_missing",
@@ -279,6 +279,103 @@ class TokenRefreshStoreTests(PostgresTestCase):
             "live_check_driver": "protocol_v2", "roxy_fallback_allowed": False})
         bulk.project_pending()
         detail = bulk.get_batch(batch["id"])
-        self.assertEqual(detail["counts"]["attention_required"], 1)
-        self.assertEqual(detail["metrics"]["account.token_refresh.unconfirmed"], 1)
+        self.assertEqual(detail["counts"]["failed"], 1)
+        self.assertEqual(detail["metrics"]["account.token_refresh.failed"], 1)
         self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["access_token"], "old-synthetic-at")
+
+    def test_historical_receipt_failure_matches_counts_filters_and_retry_members(self):
+        from psycopg.types.json import Jsonb
+        batch = self.make_batch()
+        run_id, _task_id = self.submit(batch)
+        self.run_mocked_refresh(run_id, {"ok": False, "status": "failed", "error": "email_otp_failed",
+            "live_check_driver": "protocol_v2", "roxy_fallback_allowed": False,
+            "auth_diagnostics": {"operation": "email_otp", "failure_kind": "no_mail",
+                                 "mailbox_error_code": "inbound_code_timeout"}})
+        bulk.project_pending()
+        target = bulk.list_targets(batch["id"])["items"][0]
+        legacy = target["result"]
+        legacy.update(state="attention_required", source_status="attention_required")
+        legacy["result"].update(refresh_outcome="unconfirmed", confirmation="unconfirmed")
+        legacy["contribution"] = {"state": "attention_required", "dimensions": {"account.token_refresh.unconfirmed": 1}}
+        legacy["_metrics"] = {"account.token_refresh.unconfirmed": 1}
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_batch_target_rounds')} SET outcome='attention_required',result=%s WHERE id=%s",
+                        (Jsonb(legacy), target["target_round_id"]))
+            for table in ("operation_batch_controls", "operation_batch_rounds"):
+                cur.execute(f"UPDATE {store._table(table)} SET counts=%s,metrics=%s WHERE batch_id=%s",
+                            (Jsonb({"attention_required": 1}), Jsonb({"account.token_refresh.unconfirmed": 1}), batch["id"]))
+            cur.execute(f"UPDATE {store._table('operation_selection_targets')} SET current_contribution=%s WHERE id=%s",
+                        (Jsonb({"attention_required": 1}), target["id"]))
+        detail = bulk.get_batch(batch["id"])
+        self.assertEqual(detail["counts"]["failed"], 1)
+        self.assertNotIn("attention_required", detail["counts"])
+        self.assertEqual(detail["metrics"]["account.token_refresh.failed"], 1)
+        self.assertEqual(bulk.get_round(batch["id"], batch["round_id"])["counts"]["failed"], 1)
+        self.assertEqual(bulk.list_rounds(batch["id"])["items"][0]["counts"]["failed"], 1)
+        self.assertEqual(bulk.list_batches()["summary"]["failed_targets"], 1)
+        filtered = bulk.list_targets(batch["id"], outcomes=["failed"], result_filters={"refresh_outcome": "failed"})["items"]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["result"]["result"]["refresh_outcome"], "failed")
+        self.assertEqual(filtered[0]["result"]["reason"]["summary"], "未收到新的验证码邮件")
+        for source in ({"view": "current"}, {"view": "round", "round_id": batch["round_id"]}):
+            retry = bulk.create_round(batch["id"], request_key=uuid.uuid4().hex, source=source,
+                selection={"kind": "result_filter", "states": ["failed"],
+                           "result_filters": {"refresh_outcome": "failed"}})
+            self.assertEqual(bulk.freeze_round(retry["id"])["target_count"], 1)
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT outcome FROM {store._table('operation_batch_target_rounds')} WHERE id=%s", (target["target_round_id"],))
+            self.assertEqual(cur.fetchone()["outcome"], "attention_required")
+        self.assertEqual(store.get_run(run_id)["status"], "attention_required")
+
+    def test_historical_generic_reason_uses_current_classifier_for_filter_and_retry(self):
+        from psycopg.types.json import Jsonb
+        batch = self.make_batch()
+        run_id, _task_id = self.submit(batch)
+        self.run_mocked_refresh(run_id, {"ok": False, "status": "failed", "error": "email_otp_failed",
+            "live_check_driver": "protocol_v2", "roxy_fallback_allowed": False,
+            "auth_diagnostics": {"operation": "email_otp", "failure_kind": "no_mail",
+                                 "mailbox_error_code": "inbound_code_timeout"}})
+        bulk.project_pending()
+        row = bulk.list_targets(batch["id"])["items"][0]
+        stored = row["result"]
+        stored["reason"]["code"] = "request_unknown"
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_batch_target_rounds')} SET reason_code='request_unknown',result=%s WHERE id=%s",
+                        (Jsonb(stored), row["target_round_id"]))
+        filtered = bulk.list_targets(batch["id"], outcomes=["failed"], reason_codes=["email_otp_failed"])["items"]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["result"]["reason"]["summary"], "未收到新的验证码邮件")
+        for source in ({"view": "current"}, {"view": "round", "round_id": batch["round_id"]}):
+            retry = bulk.create_round(batch["id"], request_key=uuid.uuid4().hex, source=source,
+                selection={"kind": "result_filter", "states": ["failed"], "reason_codes": ["email_otp_failed"]})
+            self.assertEqual(bulk.freeze_round(retry["id"])["target_count"], 1)
+
+    def test_historical_partial_result_matches_current_round_and_global_counts(self):
+        from psycopg.types.json import Jsonb
+        batch = self.make_batch()
+        run_id, _task_id = self.submit(batch)
+        self.run_mocked_refresh(run_id, {"ok": False, "status": "failed", "error": "email_otp_failed",
+            "live_check_driver": "protocol_v2", "roxy_fallback_allowed": False})
+        bulk.project_pending()
+        target = bulk.list_targets(batch["id"])["items"][0]
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_runs')} SET result_summary=result_summary || %s::jsonb WHERE id=%s",
+                        (Jsonb({"requested_status": "partial_success"}), run_id))
+            cur.execute(f"UPDATE {store._table('operation_batch_target_rounds')} SET outcome='attention_required',applied_contribution=%s WHERE id=%s",
+                        (Jsonb({"attention_required": 1}), target["target_round_id"]))
+            cur.execute(f"UPDATE {store._table('operation_selection_targets')} SET current_contribution=%s WHERE id=%s",
+                        (Jsonb({"attention_required": 1}), target["id"]))
+            for table in ("operation_batch_controls", "operation_batch_rounds"):
+                cur.execute(f"UPDATE {store._table(table)} SET counts=%s WHERE batch_id=%s",
+                            (Jsonb({"attention_required": 1}), batch["id"]))
+        self.assertEqual(bulk.get_batch(batch["id"])["counts"]["partial_success"], 1)
+        self.assertEqual(bulk.get_round(batch["id"], batch["round_id"])["counts"]["partial_success"], 1)
+        self.assertEqual(bulk.list_batches()["summary"]["failed_targets"], 0)
+        self.assertEqual(bulk.list_rounds(batch["id"])["items"][0]["counts"]["partial_success"], 1)
+        for round_id in (None, batch["round_id"]):
+            rows = bulk.list_targets(batch["id"], round_id=round_id, outcomes=["partial_success"])["items"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["result"]["state"], "partial_success")
+        retry = bulk.create_round(batch["id"], request_key=uuid.uuid4().hex, source={"view": "current"},
+            selection={"kind": "result_filter", "states": ["partial_success"]})
+        self.assertEqual(bulk.freeze_round(retry["id"])["target_count"], 1)

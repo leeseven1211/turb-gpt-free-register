@@ -357,9 +357,9 @@ test('统计按实际批次数量显示进度，并区分失败、跳过和待�
   const summary = `${content(h.node('butlerImportStats'))} ${content(h.node('butlerImportProgress'))}`;
   assert.match(summary, /已导入.*2|2.*已导入/);
   assert.match(summary, /跳过.*1|1.*跳过/);
-  assert.match(summary, /失败.*1|1.*失败/);
-  assert.match(summary, /待确认.*1|1.*待确认/);
-  assert.match(content(h.node('butlerImportStatusTitle')), /部分|待确认/);
+  assert.match(summary, /失败.*2|2.*失败/);
+  assert.doesNotMatch(summary, /待确认|未确认/);
+  assert.match(content(h.node('butlerImportStatusTitle')), /部分/);
   assert.equal(h.node('btnRetryButlerImport').hidden, false);
 });
 
@@ -590,7 +590,7 @@ test('终止请求显示等待，阻止重复点击；失败保留原批次和�
   assert.equal(h.node('btnRetryButlerImport').hidden, false);
   assert.equal(h.node('btnNewButlerImport').hidden, true);
   assert.equal(h.node('btnTerminateButlerImport').disabled, false);
-  assert.match(h.node('butlerImportError').textContent, /终止尚未确认.*保留原批次/);
+  assert.match(h.node('butlerImportError').textContent, /终止请求失败.*保留原批次/);
 });
 
 test('刷新已终止批次不复活提示，旧状态响应也不能覆盖终止状态', async () => {
@@ -673,4 +673,30 @@ test('新版支持四种来源和自动分配，只提交来源与数量', async
   assert.doesNotMatch(modal, /id="butlerImport(?:Identity|Domain|Group)"/);
   assert.match(modal, /for="butlerImportProvider"/);
   assert.match(modal, /for="butlerImportCount"/);
+});
+
+
+test('导入和终止收到明确拒绝时展示原原因，不误报响应丢失或更换请求', async () => {
+  const original = {request_id:'same-request', preview_token:'same-preview'};
+  const denied = () => Object.assign(new Error('当前 Key 缺少操作权限'), {status:403, code:'permission_denied'});
+  const create = createView({saved:original, handler() {throw denied();}});
+  await create.settle();
+  await create.view.retry();
+  const createError = create.node('butlerImportError').textContent;
+  assert.match(createError, /导入请求失败：当前 Key 缺少操作权限/);
+  assert.doesNotMatch(createError, /响应缺失|未收到响应/);
+  assert.equal(create.requests.at(-1).body.request_id, original.request_id);
+  assert.equal(create.view.state.request.request_id, original.request_id);
+  const batch = {batch_id:'same-batch', status:'partial', can_retry:true, can_cancel:true};
+  const stop = createView({saved:{...original, batch_id:batch.batch_id}, handler(call) {
+    if (call.url.endsWith('/cancel')) throw denied();
+    return {ok:true, batch};
+  }});
+  await stop.settle();
+  await stop.view.terminate();
+  const stopError = stop.node('butlerImportError').textContent;
+  assert.match(stopError, /终止请求失败：当前 Key 缺少操作权限/);
+  assert.doesNotMatch(stopError, /响应缺失|未收到响应/);
+  assert.equal(stop.view.state.batch.batch_id, batch.batch_id);
+  assert.equal(stop.view.state.request.request_id, original.request_id);
 });

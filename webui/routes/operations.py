@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 import zipfile
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -28,12 +29,50 @@ from core.accounts.plans import service as plan_check_service
 from core.registration import service as svc
 from core.operations import task_gateway
 from core.operations.errors import classify_task_error
+from core.operations.presentation import public_progress_snapshot, public_result_status
 from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
 logger = logging.getLogger(__name__)
+
+
+def _public_operation_record(record: dict, *, task_type: str = "") -> dict:
+    """只调整公开结果，原始状态和回执继续供执行器与排障使用。"""
+    result = deepcopy(record)
+    summary = result.get("result_summary") if isinstance(result.get("result_summary"), dict) else {}
+    original_status = result.get("internal_status", result.get("status"))
+    for key in ("status", "target_status"):
+        original = result.get(f"internal_{key}", result.get(key))
+        projected = public_result_status(original, summary)
+        if original is not None and projected != original:
+            result[f"internal_{key}"] = original
+            result[key] = projected
+    if result.get("error_message") or result.get("status") in {"failed", "partial_success", "interrupted", "deactivated"}:
+        info = classify_task_error(
+            result.get("error_message") or result.get("error"),
+            stage=str(result.get("failure_stage") or summary.get("failure_stage") or
+                      (result.get("data") or {}).get("failure_stage") or
+                      result.get("current_stage") or result.get("progress_stage") or ""),
+            task_type=str(result.get("task_type") or task_type),
+            error_code=str(result.get("error_code") or ""),
+            result_summary=summary,
+            task_status=str(original_status or ""),
+        )
+        if info:
+            result["error_info"] = info
+    return result
+
+
+def _attach_public_registration_actions(items: list[dict]) -> None:
+    """注册重跑能力始终用内部事实核验，完成后再恢复公开结果。"""
+    for task in items:
+        for key in ("status", "target_status"):
+            if f"internal_{key}" in task:
+                task[key] = task[f"internal_{key}"]
+    svc.attach_registration_resume_retry_info(items)
+
 
 def create_operations_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("operations", __name__)
@@ -176,6 +215,7 @@ def create_operations_blueprint(context: WebUIContext):
     def api_account_tasks():
         """账号操作任务实例列表；结果与事件均不包含账号凭据。"""
         result = account_task_store.list_tasks(
+            public_status=True,
             page=request.args.get("page", default=1, type=int),
             page_size=request.args.get("page_size", default=50, type=int),
             task_type=str(request.args.get("type") or "").strip(),
@@ -189,10 +229,11 @@ def create_operations_blueprint(context: WebUIContext):
                 task_type=str(task.get("task_type") or ""),
                 error_code=str(task.get("error_code") or ""),
                 result_summary=task.get("result_summary"),
-                task_status=str(task.get("status") or ""),
+                task_status=str(task.get("internal_status") or task.get("status") or ""),
             )
             if error_info:
                 task["error_info"] = error_info
+        result["items"] = [_public_operation_record(task) for task in result.get("items") or []]
         from core.accounts.token_refresh import settings as token_refresh_settings
         result["token_refresh"] = token_refresh_settings()
         result["codex_token_refresh"] = codex_token_refresh_service.settings()
@@ -213,6 +254,7 @@ def create_operations_blueprint(context: WebUIContext):
         )
         if error_info:
             task["error_info"] = error_info
+        task = _public_operation_record(task)
         return jsonify({"ok": True, "task": task})
 
     @bp.post("/api/account-tasks/<int:task_id>/retry")
@@ -227,6 +269,7 @@ def create_operations_blueprint(context: WebUIContext):
         include_batches = str(request.args.get("include_batches") or "1").lower() not in {"0", "false", "no"}
         result = operation_task_store.list_tasks(
             include_facets=include_facets,
+            public_status=True,
             page=request.args.get("page", default=1, type=int),
             page_size=request.args.get("page_size", default=50, type=int),
             task_type=str(request.args.get("type") or "").strip(),
@@ -249,22 +292,14 @@ def create_operations_blueprint(context: WebUIContext):
             result.pop("batches", None)
         if not include_facets:
             result.pop("facets", None)
-        svc.attach_registration_resume_retry_info(result.get("items") or [])
-        for task in result.get("items") or []:
-            if task.get("error_message"):
-                task["error_info"] = classify_task_error(
-                    task.get("error_message"),
-                    stage=str(task.get("failure_stage") or (task.get("result_summary") or {}).get("failure_stage") or task.get("current_stage") or ""),
-                    task_type=str(task.get("task_type") or ""),
-                    error_code=str(task.get("error_code") or ""),
-                    result_summary=task.get("result_summary"),
-                    task_status=str(task.get("status") or ""),
-                )
+        _attach_public_registration_actions(result.get("items") or [])
+        result["items"] = [_public_operation_record(task) for task in result.get("items") or []]
         if include_batches:
             # 批次导航只读取标识和显示属性，配置/提交目标留在详情接口。
             fields = {"id", "batch_uuid", "title", "batch_type", "status", "created_at"}
             result["batches"] = [
-                {key: value for key, value in batch.items() if key in fields}
+                {key: public_result_status(value) if key == "status" else value
+                 for key, value in batch.items() if key in fields}
                 for batch in operation_task_store.list_batches(limit=50)
             ]
         result["revision"] = hashlib.sha256(json.dumps(
@@ -281,25 +316,12 @@ def create_operations_blueprint(context: WebUIContext):
         if not task:
             return jsonify({"ok": False, "error": "任务不存在"}), 404
         svc.attach_registration_resume_retry_info([task])
-        if task.get("error_message"):
-            task["error_info"] = classify_task_error(
-                task.get("error_message"),
-                stage=str(task.get("failure_stage") or (task.get("result_summary") or {}).get("failure_stage") or task.get("current_stage") or ""),
-                task_type=str(task.get("task_type") or ""),
-                error_code=str(task.get("error_code") or ""),
-                result_summary=task.get("result_summary"),
-                task_status=str(task.get("status") or ""),
-            )
+        task = _public_operation_record(task)
+        task["runs"] = [_public_operation_record(run, task_type=str(task.get("task_type") or ""))
+                        for run in task.get("runs") or []]
+        if isinstance(task.get("parent"), dict):
+            task["parent"] = _public_operation_record(task["parent"])
         for run in task.get("runs") or []:
-            if run.get("error_message"):
-                run["error_info"] = classify_task_error(
-                    run.get("error_message"),
-                    stage=str((run.get("result_summary") or {}).get("failure_stage") or (run.get("data") or {}).get("failure_stage") or run.get("progress_stage") or ""),
-                    task_type=str(task.get("task_type") or ""),
-                    error_code=str(run.get("error_code") or ""),
-                    result_summary=run.get("result_summary"),
-                    task_status=str(run.get("status") or ""),
-                )
             if task.get("source_system") == "native_operations":
                 from core.operations import debug as operation_debug
 
@@ -346,10 +368,10 @@ def create_operations_blueprint(context: WebUIContext):
     @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/progress")
     def api_operation_run_progress(task_id: int, run_id: int):
         try:
-            progress = operation_task_store.get_run_progress(task_id, run_id)
+            progress = operation_task_store.get_run_progress(task_id, run_id, public_status=True)
         except LookupError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404
-        return jsonify({"ok": True, "progress": progress})
+        return jsonify({"ok": True, "progress": public_progress_snapshot(progress)})
 
     @bp.get("/api/operations/<int:task_id>/runs/<int:run_id>/events")
     def api_operation_run_events(task_id: int, run_id: int):

@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 
 from core.storage import postgres as postgres_store, records as record_store
 from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search
+from core.operations.presentation import public_result_status, public_result_status_sql
 
 
 @dataclass(frozen=True)
@@ -630,7 +631,7 @@ def _progress_data_sql(has_operation_runs: bool) -> str:
     END"""
 
 
-def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
+def _job_where(filters: dict[str, str], *, public_status: bool = False) -> tuple[list[str], list[Any]]:
     where: list[str] = []
     params: list[Any] = []
     value = _text(filters.get("q"))
@@ -667,17 +668,21 @@ def _job_where(filters: dict[str, str]) -> tuple[list[str], list[Any]]:
         params.append(value[:10])
     value = _text(filters.get("status")).lower()
     if value:
-        where.append(f"({_JOB_DISPLAY_STATUS}) = %s")
-        params.append(value)
+        status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
+        where.append(f"({status_sql}) = %s")
+        params.append(public_result_status(value) if public_status else value)
     return where, params
 
 
-def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "", include_facets: bool = True) -> dict:
+def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = "", include_facets: bool = True,
+              public_status: bool = False) -> dict:
     from core.registration import service as service
 
     jobs = _q(record_store.JOBS)
     accounts = _q(record_store.ACCOUNTS)
-    where, params = _job_where(request.filters)
+    display_status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
+    batch_status_sql = public_result_status_sql("j.status", "j.data") if public_status else "j.status"
+    where, params = _job_where(request.filters, public_status=public_status)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     from_sql = f" FROM {jobs} j LEFT JOIN {accounts} a ON a.id = j.account_id"
     raw_page = []
@@ -699,21 +704,22 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
             cur.execute(
                 f"SELECT COUNT(*) AS total, MAX(j.updated_at) AS latest, "
                 f"(SELECT to_regclass(%s)) AS operation_runs_relation{from_sql}{clause}",
-                (*params, operation_runs_relation),
+                (operation_runs_relation, *params),
             )
             aggregate = cur.fetchone()
             cur.execute(
-                f"SELECT j.*, ({_JOB_DISPLAY_STATUS}) AS projected_display_status{from_sql}{clause} "
+                f"SELECT j.*, ({display_status_sql}) AS projected_display_status{from_sql}{clause} "
                 "ORDER BY j.id DESC LIMIT %s OFFSET %s",
                 (*params, request.limit, request.offset),
             )
             raw_page = cur.fetchall()
             if include_facets:
-                facet_where, facet_params = _job_where({key: value for key, value in request.filters.items() if key != "status"})
+                facet_where, facet_params = _job_where(
+                    {key: value for key, value in request.filters.items() if key != "status"}, public_status=public_status)
                 facet_clause = f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
                 cur.execute(
                     f"""
-                    SELECT 'status' AS facet, ({_JOB_DISPLAY_STATUS}) AS value, COUNT(*) AS count
+                    SELECT 'status' AS facet, ({display_status_sql}) AS value, COUNT(*) AS count
                       {from_sql}{facet_clause} GROUP BY 2
                     UNION ALL
                     SELECT 'email_source', LOWER(COALESCE(j.job_email_source, '')), COUNT(*)
@@ -766,7 +772,7 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
             cur.execute(
                 f"""
                 WITH mapped AS (
-                    SELECT j.id, j.status,
+                    SELECT j.id, {batch_status_sql} AS status,
                            COALESCE(j.job_retry_attempt, 0) AS retry_attempt,
                            COALESCE(root.batch_id, j.batch_id) AS effective_batch_id,
                            MAX(j.id) OVER (PARTITION BY COALESCE(root.batch_id, j.batch_id)) AS batch_latest_job_id,
@@ -812,6 +818,9 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                     key: int(batch.get(key) or 0)
                     for key in ("success", "failed", "partial_success", "request_unknown", "manual_reconcile", "stopped", "cancelled", "running", "stopping", "pending")
                 }
+                if public_status:
+                    counts.pop("request_unknown", None)
+                    counts.pop("manual_reconcile", None)
                 counts["active"] = sum(counts[key] for key in ("running", "stopping", "pending"))
                 progress_batches.append({
                     "batch_id": str(batch.get("batch_id") or ""),
@@ -849,6 +858,14 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
         row.update(info)
         if not info.get("display_status"):
             row["display_status"] = projected.get(int(row.get("id") or 0), row.get("status"))
+    if public_status:
+        # 恢复资格始终使用上面的原始记录计算，公开状态只在返回前收口。
+        for row in page_rows:
+            row["status"] = projected.get(int(row.get("id") or 0)) or public_result_status(row.get("status"), row)
+            row["display_status"] = row["status"]
+        for row in progress_rows:
+            row["status"] = public_result_status(row.get("status"), row)
+            row["display_status"] = public_result_status(row.get("display_status"), row)
     total = int(aggregate["total"] or 0)
     status_counts = {item["value"]: int(item["count"]) for item in facets.get("status", [])}
     status_counts["active"] = (
@@ -1212,7 +1229,7 @@ def list_codex(request: PageRequest) -> dict:
     }
 
 
-def dashboard_aggregates() -> dict:
+def dashboard_aggregates(*, public_status: bool = False) -> dict:
     accounts = _q(record_store.ACCOUNTS)
     jobs = _q(record_store.JOBS)
     codex = _q(record_store.CODEX_CREDENTIALS)
@@ -1253,8 +1270,9 @@ def dashboard_aggregates() -> dict:
             """
         )
         plans = {str(row["plan"]): int(row["count"]) for row in cur.fetchall()}
+        status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
         projected_jobs = (
-            f"SELECT {_JOB_DISPLAY_STATUS} AS status, j.created_at FROM {jobs} j "
+            f"SELECT {status_sql} AS status, j.created_at FROM {jobs} j "
             f"LEFT JOIN {accounts} a ON a.id = j.account_id"
         )
         cur.execute(f"SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM ({projected_jobs}) p GROUP BY 1")
