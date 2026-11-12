@@ -532,7 +532,7 @@ function extractWorkbenchSwitchBatch(batchId) {
     if (node) node.value = '';
   }
   extractWorkbenchRenderBatchCancel();
-  return loadExtractWorkbench({force:true});
+  return loadExtractWorkbench();
 }
 
 function extractWorkbenchOpenCancelDialog() {
@@ -1148,9 +1148,11 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
   if (!root) return;
   EXTRACT_WORKBENCH_ROOT = root;
   extractWorkbenchBindEvents();
+  clearTimeout(EXTRACT_WORKBENCH_POLL_TIMER);
   const sequence = ++EXTRACT_WORKBENCH_SEQUENCE;
   const tasksNode = extractWorkbenchNode('[data-workbench-tasks]');
   if (tasksNode && !quiet) {
+    EXTRACT_WORKBENCH_TABLE_SIGNATURE = '';
     tasksNode.innerHTML = '<p class="extract-workbench-muted">加载任务中…</p>';
     tasksNode.scrollTop = 0;
     tasksNode.scrollLeft = 0;
@@ -1162,7 +1164,7 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
   void loadExtractWorkbenchSummary();
   const batchId = EXTRACT_WORKBENCH_STATE.batch;
   const batchPage = EXTRACT_WORKBENCH_STATE.batchPage;
-  const refreshBatches = force || !quiet || EXTRACT_WORKBENCH_BATCHES_PAGE !== batchPage || Date.now() - EXTRACT_WORKBENCH_BATCHES_AT >= 30000;
+  const refreshBatches = force || EXTRACT_WORKBENCH_BATCHES_PAGE !== batchPage || Date.now() - EXTRACT_WORKBENCH_BATCHES_AT >= 30000;
   const batchesLoad = (async () => {
     let batchItems = EXTRACT_WORKBENCH_STATE.batches || [];
     if (extractWorkbenchNode('[data-workbench-batch-select]') && refreshBatches) {
@@ -1178,7 +1180,8 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
       extractWorkbenchRenderBatches();
     }
     if (batchId !== EXTRACT_WORKBENCH_STATE.batch) return;
-    const batchSummary = refreshBatches ? batchItems.find(batch => String(batch?.batch_id || '') === String(batchId || '')) || null : null;
+    // 切换、筛选和翻页复用导航缓存；静默轮询仍读取当前整批详情，保持后台进度实时更新。
+    const batchSummary = refreshBatches || !quiet ? batchItems.find(batch => String(batch?.batch_id || '') === String(batchId || '')) || null : null;
     let detail = batchSummary ? {item: batchSummary} : null;
     if (batchId && !batchSummary) {
       const request = extractWorkbenchReadBatchDetail(batchId);
@@ -1224,12 +1227,12 @@ async function loadExtractWorkbench({force = false, quiet = false} = {}) {
     if (quiet) {
       const summary = extractWorkbenchNode('[data-workbench-summary]');
       if (summary) summary.textContent = '任务暂时无法加载，正在重试…';
-      extractWorkbenchScheduleRefresh({retry: true});
     } else {
       if (tasksNode) tasksNode.innerHTML = `<p class="extract-workbench-error">${extractWorkbenchEscape(error?.message || '加载失败，请刷新后重试')}</p>`;
       const summary = extractWorkbenchNode('[data-workbench-summary]');
       if (summary) summary.textContent = '任务暂时无法加载';
     }
+    extractWorkbenchScheduleRefresh({retry: true});
   }
   await Promise.allSettled([configLoad, batchesLoad]);
   return EXTRACT_WORKBENCH_STATE;
@@ -1578,7 +1581,7 @@ function extractWorkbenchApplyFilters(status = EXTRACT_WORKBENCH_STATE.status) {
     mode: extractWorkbenchNode('[data-workbench-filter-mode]')?.value || '',
     query: extractWorkbenchNode('[data-workbench-query]')?.value?.trim() || '',
   };
-  void loadExtractWorkbench({force:true});
+  void loadExtractWorkbench();
 }
 
 async function extractWorkbenchCopy(taskId, kind) {
@@ -1625,7 +1628,7 @@ function extractWorkbenchBindEvents() {
     const batchPage = event.target.closest('[data-workbench-batch-page]');
     if (batchPage) {
       EXTRACT_WORKBENCH_STATE.batchPage = Math.max(1, EXTRACT_WORKBENCH_STATE.batchPage + (batchPage.dataset.workbenchBatchPage === 'next' ? 1 : -1));
-      void loadExtractWorkbench({force:true}); return;
+      void loadExtractWorkbench(); return;
     }
     const openCreate = event.target.closest('[data-workbench-open-create]');
     if (openCreate) { void extractWorkbenchOpenCreate(); return; }
@@ -1648,7 +1651,7 @@ function extractWorkbenchBindEvents() {
     const page = event.target.closest('[data-workbench-page]');
     if (page) {
       EXTRACT_WORKBENCH_STATE.page = Math.max(1, EXTRACT_WORKBENCH_STATE.page + (page.dataset.workbenchPage === 'next' ? 1 : -1));
-      void loadExtractWorkbench({force:true}); return;
+      void loadExtractWorkbench(); return;
     }
     const action = event.target.closest('[data-workbench-action]');
     if (action) { void extractWorkbenchTaskAction(action.dataset.taskId, action.dataset.workbenchAction, action); return; }

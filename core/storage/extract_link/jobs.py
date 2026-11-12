@@ -819,6 +819,7 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
     payment_processing_exclusions = "'unknown','not_started','failed','succeeded','success','paid'" + (
         ",'request_unknown'" if public_status else ""
     )
+    # 最后只保留统计和分页所需标量，物化时无需为无关任务计算套餐时间等中间列。
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
@@ -882,7 +883,9 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
                 WHEN {payment_unknown_condition} THEN {payment_unknown_sql} ELSE 'pending_payment' END AS payment_status
         FROM raw
     ), projected AS {"MATERIALIZED " if materialized else ""}(
-        SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
+        SELECT task_id, batch_id, task_created_at, sort_created_at, task_status, provider_id, mode,
+            local_reconcile_halted, extraction_status, payment_status, payment_processing,
+            CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
             AND payment_status='paid'
             AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
             THEN 'confirmed'
@@ -904,6 +907,8 @@ def workbench_summary(*, public_status: bool = False) -> dict:
     )
     today_sql = "date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"
     with operation_store._connect() as conn, conn.cursor() as cur:
+        # 交互聚合的 JIT 编译成本高于执行收益；仅作用于本次只读事务。
+        cur.execute("SET LOCAL jit = off")
         cur.execute(
             f"""WITH {projection} SELECT
                     COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
@@ -982,6 +987,7 @@ def list_workbench_page(
     predicate = status_conditions.get(status, "FALSE") if status else "TRUE"
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in status_conditions.items()]
     with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL jit = off")
         cur.execute(
             f"""WITH {projection} SELECT COUNT(*) AS all,
                 {', '.join(count_columns)}, COUNT(*) FILTER (WHERE {predicate}) AS total FROM projected""",
