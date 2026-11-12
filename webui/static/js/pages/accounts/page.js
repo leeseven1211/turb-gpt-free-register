@@ -1589,6 +1589,95 @@ function updateAccountRowDensity() {
   window.addEventListener('resize', updateAccountRowDensity);
 })();
 
+// ---------- 常用账号操作 ----------
+const ACCOUNT_ACTION_USAGE_KEY = 'turb_account_action_usage_v1';
+const ACCOUNT_QUICK_ACTION_DEFAULTS = [
+  'btnCheckSelectedLiveV2', 'btnCheckSelectedPlansV2', 'btnRefreshSelectedTokenV2',
+  'btnExtractSelectedLinksV2', 'btnAddTwofaSelectedAccountsV2',
+];
+const ACCOUNT_QUICK_ACTIONS = {entries: new Map(), usage: {}, signature: '', pending: false};
+
+function accountActionUsageCounts(actionIds) {
+  let saved = ACCOUNT_QUICK_ACTIONS.usage;
+  try {
+    const raw = localStorage.getItem(ACCOUNT_ACTION_USAGE_KEY);
+    if (raw !== null) saved = JSON.parse(raw);
+  } catch (_) {}
+  const counts = {};
+  for (const id of actionIds) {
+    const count = saved && typeof saved === 'object' && !Array.isArray(saved) ? saved[id] : 0;
+    counts[id] = Number.isSafeInteger(count) && count > 0 ? count : 0;
+  }
+  return counts;
+}
+
+function rankAccountQuickActions(actionIds, counts) {
+  const order = [...ACCOUNT_QUICK_ACTION_DEFAULTS, ...actionIds.filter(id => !ACCOUNT_QUICK_ACTION_DEFAULTS.includes(id))];
+  return [...actionIds].sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || order.indexOf(a) - order.indexOf(b)).slice(0, 5);
+}
+
+function refreshAccountQuickActions() {
+  const {entries} = ACCOUNT_QUICK_ACTIONS;
+  const quick = $('#accountsQuickActionsV2');
+  if (!quick || !entries.size) return;
+  const toolbar = $('#accountsToolbarV2');
+  const more = $('#accountsMoreActionsV2');
+  // 操作中保持按钮位置稳定，待菜单、弹窗和工具栏焦点退出后再排序。
+  if (more?.open || document.querySelector('dialog[open]') || toolbar?.contains(document.activeElement)) {
+    ACCOUNT_QUICK_ACTIONS.pending = true;
+    return;
+  }
+  const ids = Array.from(entries.keys());
+  const counts = accountActionUsageCounts(ids);
+  const ranked = rankAccountQuickActions(ids, counts);
+  const signature = ranked.join(',');
+  ACCOUNT_QUICK_ACTIONS.usage = counts;
+  ACCOUNT_QUICK_ACTIONS.pending = false;
+  if (signature === ACCOUNT_QUICK_ACTIONS.signature) return;
+  for (const {button, home} of entries.values()) home.parentNode.insertBefore(button, home.nextSibling);
+  for (const id of ranked) quick.appendChild(entries.get(id).button);
+  ACCOUNT_QUICK_ACTIONS.signature = signature;
+}
+
+function scheduleAccountQuickActionsRefresh() {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refreshAccountQuickActions);
+  else refreshAccountQuickActions();
+}
+
+function recordAccountActionUse(button) {
+  if (!button || !ACCOUNT_QUICK_ACTIONS.entries.has(button.id) || button.disabled
+      || button.classList.contains('feature-unavailable') || button.getAttribute('aria-disabled') === 'true') return;
+  const ids = Array.from(ACCOUNT_QUICK_ACTIONS.entries.keys());
+  const counts = accountActionUsageCounts(ids);
+  counts[button.id] = Math.min(Number.MAX_SAFE_INTEGER, counts[button.id] + 1);
+  ACCOUNT_QUICK_ACTIONS.usage = counts;
+  try { localStorage.setItem(ACCOUNT_ACTION_USAGE_KEY, JSON.stringify(counts)); } catch (_) {}
+  ACCOUNT_QUICK_ACTIONS.pending = true;
+  scheduleAccountQuickActionsRefresh();
+}
+
+function initAccountQuickActions() {
+  const toolbar = $('#accountsToolbarV2');
+  const more = $('#accountsMoreActionsV2');
+  const quick = $('#accountsQuickActionsV2');
+  if (!toolbar || !more || !quick || ACCOUNT_QUICK_ACTIONS.entries.size) return;
+  const buttons = Array.from(more.querySelectorAll('.toolbar-overflow-menu button[id]'));
+  if (!buttons.length) return;
+  for (const button of buttons) {
+    const home = document.createComment(`账号操作位置：${button.id}`);
+    button.parentNode.insertBefore(home, button);
+    ACCOUNT_QUICK_ACTIONS.entries.set(button.id, {button, home});
+  }
+  toolbar.addEventListener('click', event => recordAccountActionUse(event.target.closest('button[id]')), true);
+  toolbar.addEventListener('focusout', scheduleAccountQuickActionsRefresh);
+  more.addEventListener('toggle', scheduleAccountQuickActionsRefresh);
+  document.addEventListener('close', scheduleAccountQuickActionsRefresh, true);
+  window.addEventListener('storage', event => {
+    if (event.key === ACCOUNT_ACTION_USAGE_KEY) scheduleAccountQuickActionsRefresh();
+  });
+  refreshAccountQuickActions();
+}
+
 function updateAccountSelectionUi(pageRows = null) {
   for (const id of ACCOUNT_SELECTED_EMAILS.keys()) {
     if (!ACCOUNT_SELECTED.has(id)) ACCOUNT_SELECTED_EMAILS.delete(id);
@@ -1630,6 +1719,7 @@ function updateAccountSelectionUi(pageRows = null) {
     cbAll.indeterminate = checkedCount > 0 && checkedCount < pageIds.length;
     cbAll.disabled = pageIds.length === 0;
   }
+  if (ACCOUNT_QUICK_ACTIONS.pending) refreshAccountQuickActions();
 }
 
 // ---------- 查活日志面板 ----------
@@ -3275,4 +3365,5 @@ async function copySelectedAccountTokens() {
   bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
   bind('btnMarkSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, true, event.currentTarget));
   bind('btnClearSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, false, event.currentTarget));
+  initAccountQuickActions();
 })();

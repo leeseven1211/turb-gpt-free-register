@@ -22,7 +22,7 @@ class C2AConfigTests(unittest.TestCase):
                 field = schema.CONFIG_SCHEMA[key]
                 self.assertEqual(default, schema.schema_default(key))
                 self.assertEqual("config.c2a", field.module)
-                self.assertEqual("Codex", field.group)
+                self.assertEqual("C2A", field.group)
                 self.assertEqual(value_type, field.type)
                 self.assertEqual(secret, field.secret)
                 self.assertEqual(storage, field.storage)

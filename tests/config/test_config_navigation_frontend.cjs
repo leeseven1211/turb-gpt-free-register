@@ -163,6 +163,34 @@ test('搜索授权后自动上传开关会定位 sub2api 子节并呈现独立�
   assert.ok(!markup.includes('data-key="CODEX_AUTH_URL_SOURCE"'));
 });
 
+test('C2A 在服务集成中独立呈现，搜索或直接打开会定位连接配置', () => {
+  const fields = [
+    field('CODEX_AUTH_URL_SOURCE', 'Codex'),
+    field('C2A_API_BASE', 'C2A', {label: 'C2A API 基址', help: '仅定位同邮箱既有账号并更新 AT。'}),
+    field('C2A_API_KEY', 'C2A', {label: 'C2A 管理员 Key', secret: true, configured: false}),
+    field('C2A_API_TIMEOUT', 'C2A', {label: 'C2A 超时', type: 'int', value: 20}),
+  ];
+  const {view, storage} = createConfigView(fields);
+  const groups = view.groups();
+  view.open('C2A');
+  assert.equal(view.state().menu, '服务集成');
+  assert.equal(view.state().domains['服务集成'], 'C2A');
+  assert.equal(storage.get('gpt_console_config_group'), 'C2A');
+  const markup = view.render('服务集成', groups['服务集成']);
+  assert.match(markup, /data-config-domain-v2="Codex"/);
+  assert.match(markup, /data-config-domain-v2="C2A"[^>]*aria-pressed="true"/);
+  assert.match(markup, /data-config-section="C2A"/);
+  for (const key of ['C2A_API_BASE', 'C2A_API_KEY', 'C2A_API_TIMEOUT']) {
+    assert.match(markup, new RegExp(`data-key="${key}"`));
+  }
+  assert.match(markup, /仅定位同邮箱既有账号并更新 AT。/);
+  assert.doesNotMatch(markup, /data-key="CODEX_AUTH_URL_SOURCE"/);
+  view.destination('Codex');
+  view.search('C2A_API_KEY');
+  assert.equal(view.state().menu, '服务集成');
+  assert.equal(view.state().domains['服务集成'], 'C2A');
+});
+
 const xxsyunKey = 'EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY';
 function createXxsyunQuotaControl(controls, {value = '', clear = false} = {}) {
   const status = {textContent: ''};

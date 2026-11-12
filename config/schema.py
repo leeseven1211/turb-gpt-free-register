@@ -1748,15 +1748,15 @@ _FIELD_DEFINITIONS = [
         "label": "sub2 超时", "help": "sub2api 请求超时秒数",
     },
     {
-        "key": "C2A_API_BASE", "file": "c2a.py", "type": "str", "group": "Codex",
+        "key": "C2A_API_BASE", "file": "c2a.py", "type": "str", "group": "C2A",
         "label": "C2A API 基址", "help": "ChatGPT2API/C2A 管理服务地址，例如 https://c2a.example.com；仅用于定位同邮箱既有账号并更新 AT。C2A 会按自身规则处理凭据错误，异常账号可能恢复正常；更新前要求已关闭自动移除异常/限流账号。",
     },
     {
-        "key": "C2A_API_KEY", "file": "c2a.py", "type": "str", "group": "Codex",
+        "key": "C2A_API_KEY", "file": "c2a.py", "type": "str", "group": "C2A",
         "label": "C2A 管理员 Key", "help": "C2A 管理接口管理员 Key；仅保存在 .env（C2A_API_KEY），请求头使用 Authorization: Bearer <key>。", "storage": "env", "secret": True,
     },
     {
-        "key": "C2A_API_TIMEOUT", "file": "c2a.py", "type": "int", "group": "Codex",
+        "key": "C2A_API_TIMEOUT", "file": "c2a.py", "type": "int", "group": "C2A",
         "label": "C2A 超时", "help": "C2A 查询账号及更新 AT 的单次 HTTP 超时秒数。",
     },
     {"key": "SUB2API_UPLOAD_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "目标分组 ID", "help": "多个分组用逗号分隔；留空保留远端分组，巡检检查全部分组"},

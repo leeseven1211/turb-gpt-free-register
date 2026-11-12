@@ -3281,6 +3281,9 @@
       background: #6264e8; box-shadow: 0 0 0 3px rgba(98,100,232,.12);
     }
     .accounts-command-deck #accountsToolbarV2 .toolbar-selection-primary { border-right: 0; padding-right: 0; }
+    .accounts-command-deck #accountsToolbarV2 .account-quick-actions {
+      display: inline-flex; flex: 0 0 auto; flex-wrap: nowrap; border-right: 0;
+    }
     .accounts-command-deck #accountsToolbarV2 .toolbar-page-actions { display: inline-flex; }
     .accounts-command-deck #accountsToolbarV2.has-selection .toolbar-page-actions { display: none; }
     .accounts-command-deck #accountsToolbarV2 .toolbar-page-actions .acc-v2-btn-group-title {
@@ -3483,6 +3486,15 @@
       #tab-config .config-layout-v2 { height: auto; min-height: 0; overflow: visible; }
       #tab-config .config-nav-v2 { position: sticky; top: var(--topbar-height); z-index: 45; max-height: 210px; }
       #tab-config .config-main-v2 { max-height: none; overflow: visible; padding-right: 0; }
+      /* 菜单按视口定位，避开横向滚动工具栏的裁切和滤镜包含块。 */
+      .accounts-command-deck { backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .toolbar-overflow-menu {
+        position: fixed; top: calc(var(--topbar-height) + var(--module-subnav-height) + 58px);
+        right: var(--page-gutter); left: var(--page-gutter); width: auto;
+        max-height: calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 82px);
+        grid-template-columns: 1fr; overflow-y: auto; overscroll-behavior: contain;
+      }
+      .toolbar-overflow-section--wide { grid-column: auto; }
     }
     @media (max-width: 560px) {
       :root { --page-gutter: 12px; }
@@ -3506,13 +3518,6 @@
       .butler-lease-panel { grid-template-columns: 1fr; }
       .butler-lease-list { grid-column: auto; }
       .accounts-command-deck #accountsToolbarV2 { max-height: none; }
-      .toolbar-overflow-menu {
-        position: fixed; top: calc(var(--topbar-height) + var(--module-subnav-height) + 58px);
-        right: 12px; left: 12px; width: auto;
-        max-height: calc(100vh - var(--topbar-height) - var(--module-subnav-height) - 82px);
-        grid-template-columns: 1fr; overflow-y: auto; overscroll-behavior: contain;
-      }
-      .toolbar-overflow-section--wide { grid-column: auto; }
       .stat { min-height: 100px; padding: 14px; }
       .stat strong { font-size: 22px; }
       .job-launcher { padding: 11px; }
@@ -4401,6 +4406,10 @@
 
 /* 手机端工具栏压缩：单行横滑、小按钮，把高度还给列表 */
 @media (max-width: 860px) {
+  #accountsPanelV2 #accountsToolbarV2 .account-quick-actions {
+    display: inline-flex !important; flex-wrap: nowrap !important; width: auto !important;
+    gap: 6px; padding: 0; border: 0;
+  }
   #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar,
   #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar {
     display: flex !important;

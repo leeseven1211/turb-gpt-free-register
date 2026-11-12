@@ -225,7 +225,7 @@ test('重新导入 C2A：页面引用带版本的最新脚本资源', () => {
   assert.match(template, /自动移除异常账号.*自动移除限流账号/);
   assert.match(template, /不会刷新本地 AT/);
   assert.match(template, /异常.*恢复正常/);
-  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261112-c2a-bulk-button-01'/);
+  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261112-account-actions-c2a-01'/);
 });
 
 test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', async () => {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg', v='20261030-layout-v2') }}" type="image/svg+xml">
   <title>GPT 注册控制台</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261110-list-pattern-a-1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261112-account-actions-c2a-01') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-task-report-button-01') }}">
@@ -525,23 +525,17 @@
       <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="批量同步选中账号的本地当前 AT，支持跨页选择；只更新唯一同邮箱的 C2A 既有账号">批量同步到 C2A</button>
-        <button type="button" class="jobs-tb-btn" id="btnBulkFromAccountFilters" onclick="BulkTasks.fromAccounts(false)">按当前筛选创建批次</button>
-        <button type="button" class="jobs-tb-btn" id="btnBulkFromSelectedAccounts" onclick="BulkTasks.fromAccounts(true)">用已选账号创建批次</button>
-        <button type="button" class="jobs-tb-btn" id="btnAccountInspection" onclick="openAccountInspectionStart()">一键巡检</button>
-        <button type="button" class="jobs-tb-btn" onclick="openAccountInspectionHistory()">巡检历史</button>
-        <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()">删除已废</button>
-        <div class="acc-v2-btn-group toolbar-selection-primary selection-only">
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnEmailChangeSelectedV2" disabled title="为选中账号批量领取新邮箱并执行协议换绑">批量换绑邮箱</button>
-        </div>
-        <details class="toolbar-overflow selection-only" id="accountsMoreActionsV2">
+        <div class="acc-v2-btn-group account-quick-actions" id="accountsQuickActionsV2" role="group" aria-label="常用账号操作，按此浏览器使用次数排序" title="显示此浏览器使用次数最多的五项操作，批量操作一次算一次"></div>
+        <details class="toolbar-overflow" id="accountsMoreActionsV2">
           <summary>更多操作</summary>
           <div class="toolbar-overflow-menu">
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">操作</span>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="按已保存的刷新驱动获取最新 AT">刷新 AT</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="批量同步选中账号的本地当前 AT，支持跨页选择；只更新唯一同邮箱的 C2A 既有账号">批量同步到 C2A</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnEmailChangeSelectedV2" disabled title="为选中账号批量领取新邮箱并执行协议换绑">批量换绑邮箱</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddTwofaSelectedAccountsV2" disabled title="只给选中账号补充 Authenticator 2FA">补 2FA</button>
@@ -551,6 +545,13 @@
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedRegistrationV2" disabled title="找到选中账号的原注册任务，按当前进度继续注册或补跑缺失步骤">重跑注册</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRetrySelectedCodexV2" disabled title="给选中的账号批量补跑 Codex 授权">补 Codex</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnExtractSelectedLinksV2" disabled title="仅给已确认 Plus 免费试用资格的 free 账号批量提链；折扣优惠会跳过">提链</button>
+            </div>
+            <div class="toolbar-overflow-section toolbar-overflow-section--wide">
+              <span class="toolbar-overflow-section-title">批次与巡检</span>
+              <button type="button" class="jobs-tb-btn" id="btnBulkFromAccountFilters" onclick="BulkTasks.fromAccounts(false)">按当前筛选创建批次</button>
+              <button type="button" class="jobs-tb-btn" id="btnBulkFromSelectedAccounts" onclick="BulkTasks.fromAccounts(true)">用已选账号创建批次</button>
+              <button type="button" class="jobs-tb-btn" id="btnAccountInspection" onclick="openAccountInspectionStart()">一键巡检</button>
+              <button type="button" class="jobs-tb-btn" id="btnAccountInspectionHistory" onclick="openAccountInspectionHistory()">巡检历史</button>
             </div>
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">复制与导出</span>
@@ -572,6 +573,7 @@
               <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnStopSelectedCodexV2" disabled title="停止选中账号中正在补跑的 Codex 授权">停止 Codex</button>
               <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()">删除已废</button>
             </div>
           </div>
         </details>
@@ -1246,14 +1248,14 @@
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-create-v5') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-c2a-bulk-button-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-account-actions-c2a-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261112-codex-phone-option-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261112-codex-phone-option-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261112-c2a-config-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-workbench-performance-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/extract_link/stats.js', v='20261112-workbench-stats-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
