@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const sourcePath = path.join(__dirname, '../../webui/static/js/pages/extract_link/page.js');
 const source = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
 
-function createView({timers = null} = {}) {
+function createView({timers = null, now = null} = {}) {
   const nodes = new Map();
   const requests = [];
   const copied = [];
@@ -31,6 +31,7 @@ function createView({timers = null} = {}) {
   const context = {document, window, URL, URLSearchParams, fetch: (...args) => window.fetch(...args), setTimeout:timerApi.setTimeout, clearTimeout:timerApi.clearTimeout,
     LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
     navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast(message) { toasts.push(message); }};
+  if (now) context.Date = class extends Date { static now() { return now(); } };
   vm.createContext(context);
   vm.runInContext(`${source}\n;globalThis.workbench = {
     renderCard: typeof renderExtractWorkbenchTaskCard === 'function' ? renderExtractWorkbenchTaskCard : undefined,
@@ -487,6 +488,138 @@ test('页面刷新查询列表和能力配置，列表不请求敏感链接', as
   assert.ok(requests.some(item => item.endpoint.startsWith('/api/extract-workbench/tasks?')));
   assert.ok(requests.every(item => !item.endpoint.endsWith('/links')));
   assert.ok(requests.every(item => !item.endpoint.startsWith('/api/accounts')));
+});
+
+function createNavigationPerformanceView({now = null} = {}) {
+  const timers = createFakeTimers();
+  const view = createView({timers, now});
+  const listeners = {};
+  const tasks = {innerHTML: '', scrollTop: 0, scrollLeft: 0};
+  const batches = {innerHTML: '', value: ''};
+  const selectors = {'[data-workbench-tasks]': tasks, '[data-workbench-batch-select]': batches};
+  view.api.setRoot({addEventListener(name, callback) { listeners[name] = callback; },
+    querySelector: selector => selectors[selector] || null});
+  view.nodes.set('tab-extract-workbench', {classList: {contains: () => false}});
+  const batchItems = [{batch_id: 11, title: '运行批次', counts: {processing: 1}},
+    {batch_id: 22, title: '已结束批次', counts: {processing: 0}}];
+  view.window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = async (endpoint, options = {}) => {
+    view.requests.push({endpoint, options});
+    if (endpoint.endsWith('/config')) return {providers: []};
+    if (endpoint.includes('/batches?')) return {items: batchItems, total: 2};
+    if (endpoint.includes('/tasks?')) {
+      const batchId = new URLSearchParams(endpoint.split('?')[1]).get('batch_id');
+      return {items: [{task_id: Number(batchId || 1)}], total: 1, counts: {processing: batchId === '11' ? 1 : 0}, page: 1};
+    }
+    throw new Error(`出现多余读取：${endpoint}`);
+  };
+  return {...view, timers, listeners, tasks, batches};
+}
+
+test('连续切换批次、筛选和任务翻页只读取任务，手动刷新仍更新配置与批次', async () => {
+  const {api, requests, listeners} = createNavigationPerformanceView();
+  await api.load({force: true});
+  requests.length = 0;
+  await api.switchBatch('11');
+  assert.equal(api.state().batchDetail.batch_id, 11);
+  await api.switchBatch('22');
+  assert.equal(api.state().batchDetail.batch_id, 22);
+  const click = (selector, dataset) => listeners.click({target: {dataset,
+    closest: candidate => candidate === selector ? {dataset} : null}});
+  click('[data-workbench-status-filter]', {workbenchStatusFilter: 'failed'});
+  await new Promise(resolve => setImmediate(resolve));
+  click('[data-workbench-page]', {workbenchPage: 'next'});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(item => item.endpoint.startsWith('/api/extract-workbench/tasks?')));
+  const last = new URLSearchParams(requests.at(-1).endpoint.split('?')[1]);
+  assert.equal(last.get('batch_id'), '22');
+  assert.equal(last.get('status'), 'failed');
+  assert.equal(last.get('page'), '2');
+  requests.length = 0;
+  click('[data-workbench-refresh]', {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(requests.some(item => item.endpoint.endsWith('/config')));
+  assert.ok(requests.some(item => item.endpoint.includes('/batches?')));
+  assert.ok(requests.some(item => item.endpoint.includes('/tasks?')));
+});
+
+test('缓存内切换批次仍使旧详情失效，静默轮询保留当前整批实时读取', async () => {
+  const {api, window, timers, requests} = createNavigationPerformanceView();
+  await api.load({force: true});
+  await api.switchBatch('11');
+  assert.deepEqual(timers.pendingDelays(), [3000]);
+  const source = window.__EXTRACT_WORKBENCH_DATA_SOURCE__;
+  let finishDetail;
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint === '/api/extract-workbench/batches/11') {
+      requests.push({endpoint});
+      return new Promise(resolve => { finishDetail = resolve; });
+    }
+    return source(endpoint);
+  };
+  const polling = api.load({quiet: true});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finishDetail, 'function');
+  await api.switchBatch('22');
+  finishDetail({item: {batch_id: 11, title: '旧批次迟到响应', counts: {processing: 9}}});
+  await polling;
+  assert.equal(api.state().batch, '22');
+  assert.equal(api.state().batchDetail.batch_id, 22);
+  assert.equal(api.state().items[0].task_id, 22);
+  assert.deepEqual(timers.pendingDelays(), []);
+});
+
+test('活动批次交互读取短暂失败后按闲置周期重试并恢复轮询，离页时不安排请求', async () => {
+  const {api, window, tasks, timers, requests, nodes} = createNavigationPerformanceView();
+  await api.load({force: true});
+  await api.switchBatch('11');
+  assert.deepEqual(timers.pendingDelays(), [3000]);
+  const source = window.__EXTRACT_WORKBENCH_DATA_SOURCE__;
+  let failOnce = true;
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => {
+    if (endpoint === '/api/extract-workbench/batches/11') return Promise.resolve({item: {batch_id: 11, counts: {processing: 1}}});
+    if (endpoint.includes('/tasks?') && failOnce) {
+      failOnce = false;
+      return Promise.reject(new Error('网络暂时中断'));
+    }
+    return source(endpoint);
+  };
+  await api.switchBatch('11');
+  assert.match(tasks.innerHTML, /网络暂时中断/);
+  assert.deepEqual(timers.pendingDelays(), [15000]);
+  requests.length = 0;
+  timers.runNext();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(requests.some(item => item.endpoint.includes('/tasks?')));
+  assert.match(tasks.innerHTML, /data-task-id="11"/);
+  assert.deepEqual(timers.pendingDelays(), [3000]);
+  nodes.get('tab-extract-workbench').classList.contains = () => true;
+  requests.length = 0;
+  timers.runNext();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 0);
+  assert.deepEqual(timers.pendingDelays(), []);
+  api.setRoot(null);
+  await api.load();
+  assert.equal(requests.length, 0);
+  assert.deepEqual(timers.pendingDelays(), []);
+});
+
+test('批次导航缓存满 30 秒时重新读取，缓存有效期内切换不刷新导航', async () => {
+  let clock = 100000;
+  const {api, requests} = createNavigationPerformanceView({now: () => clock});
+  await api.load({force: true});
+  requests.length = 0;
+  clock += 29999;
+  await api.switchBatch('11');
+  assert.ok(requests.every(item => item.endpoint.includes('/tasks?')));
+  requests.length = 0;
+  clock += 1;
+  await api.switchBatch('22');
+  assert.equal(requests.filter(item => item.endpoint.includes('/batches?')).length, 1);
+  assert.equal(requests.filter(item => item.endpoint.includes('/tasks?')).length, 1);
+  assert.ok(requests.every(item => !item.endpoint.endsWith('/config')));
+  assert.equal(api.state().batchDetail.batch_id, 22);
 });
 
 test('配置、批次和概览迟迟未返回时，任务首屏仍先完成渲染', async () => {

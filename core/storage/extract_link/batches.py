@@ -324,10 +324,11 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
 
         operation.init()
         clauses, params = _workbench_where(batch_ids=batch_ids)
-        projection = _workbench_projection_sql(clauses, public_status=True)
+        projection = _workbench_projection_sql(clauses, public_status=True, materialized=True)
         conditions = workbench_status_conditions(public_status=True)
         columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in conditions.items()]
         with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute("SET LOCAL jit = off")
             cur.execute(f"""WITH {projection} SELECT batch_id,COUNT(*) AS all,
                 {','.join(columns)},COUNT(*) FILTER (WHERE task_status='queued') AS task_queued,
                 COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded

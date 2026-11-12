@@ -359,6 +359,45 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         self.assertEqual([], empty["items"])
         self.assertEqual(result["counts"], empty["counts"])
 
+    def test_interactive_aggregates_disable_jit_only_within_their_read_transaction(self):
+        from psycopg import Cursor
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+        from core.storage import postgres
+
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="读取事务隔离", requested_count=1,
+                                               data={"workbench_batch": True, "submission_complete": True})
+        self.task(status="success", batch_id=batch["id"], state={
+            "extraction_state": "succeeded", "payment_state": "not_started", "plus_status": "unknown",
+        })
+        execute = Cursor.execute
+        query_settings = []
+
+        def observe(cur, query, *args, **kwargs):
+            result = execute(cur, query, *args, **kwargs)
+            if str(query).startswith("WITH "):
+                with cur.connection.cursor() as settings:
+                    execute(settings, "SHOW jit")
+                    query_settings.append(settings.fetchone()["jit"])
+            return result
+
+        # 专用单连接池确保三次读取和恢复检查落在同一条连接，不改变共享池配置。
+        with ConnectionPool(postgres.database_url(), min_size=1, max_size=1,
+                            kwargs={"row_factory": dict_row, "options": "-c jit=on"}) as pool:
+            with patch.object(operation, "_connect", side_effect=pool.connection), patch.object(Cursor, "execute", observe):
+                for read in (
+                    lambda: extract_link_jobs.list_workbench_page(public_status=True),
+                    lambda: extract_link_jobs.workbench_summary(public_status=True),
+                    lambda: extract_link_batches.batch_task_counts([batch["id"]], public_status=True),
+                ):
+                    before = len(query_settings)
+                    read()
+                    self.assertGreater(len(query_settings), before)
+                    self.assertEqual({"off"}, set(query_settings[before:]))
+                    with pool.connection() as conn, conn.cursor() as cur:
+                        cur.execute("SHOW jit")
+                        self.assertEqual("on", cur.fetchone()["jit"])
+
     def test_sql_filters_preserve_independent_payment_plus_and_legacy_states(self):
         plus_account, free_account = self.seed(record_store.ACCOUNTS, [
             {"email": "plus@example.test", "plan_check_status": "success", "current_plan_type": "plus", "plan_checked_at": "2026-10-23T13:01:00Z"},
