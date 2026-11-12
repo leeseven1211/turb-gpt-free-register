@@ -13,6 +13,8 @@ from flask import jsonify, request
 
 from core.extract_link import service as extract_link_service
 from core.extract_link.contracts import safe_payment_artifact
+from core.extract_link.workbench_queries import public_workbench_item
+from core.operations.presentation import public_result_status
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
@@ -42,6 +44,8 @@ _ITEM_FIELDS = (
     "has_extract_link", "has_payment_link", "has_payment_entry", "has_qr",
     "local_reconcile_halted", "payment_source", "payment_source_label", "payment_order",
     "payment_phase", "plus_state", "remote_raw", "reconcile_halt", "stages",
+    "error_code", "error_info", "failure_stage", "internal_task_status",
+    "internal_extraction_status", "internal_payment_status",
 )
 _PRIVATE_KEY_NAMES = {
     "accesstoken", "refreshtoken", "idtoken", "at", "token", "authorization",
@@ -97,6 +101,7 @@ def _safe_tree(value: Any) -> Any:
 def _public_item(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    value = public_workbench_item(value)
     return _safe_tree({key: value[key] for key in _ITEM_FIELDS if key in value})
 
 
@@ -111,7 +116,7 @@ def _public_batch(value: Any) -> dict[str, Any] | None:
     result = {"batch_id": value["batch_id"], "workers": workers if _valid_batch_workers(workers) else None}
     for field in ("title", "provider_id", "mode", "status", "created_at", "payment_source", "payment_source_label"):
         if field in value:
-            result[field] = value[field]
+            result[field] = public_result_status(value[field]) if field == "status" else value[field]
     for field in ("requested_count", "started_count", "skipped_count", "submission_failed_count"):
         result[field] = _safe_count(value.get(field))
     result["submission_incomplete"] = value.get("submission_incomplete") is True
@@ -322,7 +327,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         if page is None or page_size is None:
             return _error("分页参数无效", 400)
         try:
-            result = extract_link_service.list_workbench_batches(page=page, page_size=page_size)
+            result = extract_link_service.list_workbench_batches(page=page, page_size=page_size, public_status=True)
         except Exception as exc:
             return _service_error("批次读取", exc)
         if not isinstance(result, dict) or not isinstance(result.get("items"), list):
@@ -340,7 +345,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         if batch_id < 1:
             return _error("batch_id 参数无效", 400)
         try:
-            result = extract_link_service.workbench_batch_detail(batch_id)
+            result = extract_link_service.workbench_batch_detail(batch_id, public_status=True)
         except Exception as exc:
             return _service_error("批次详情读取", exc)
         if result is None:
@@ -450,6 +455,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
                 query=query,
                 page=page,
                 page_size=page_size,
+                public_status=True,
             )
             if batch_id is not None:
                 payload["batch_id"] = batch_id
@@ -539,7 +545,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
     @bp.get("/api/extract-workbench/summary")
     def extract_workbench_summary():
         try:
-            result = extract_link_service.workbench_summary()
+            result = extract_link_service.workbench_summary(public_status=True)
         except Exception as exc:
             return _service_error("提链概览读取", exc)
         if not isinstance(result, dict):
@@ -595,7 +601,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         try:
             while len(rows) < 5000:
                 payload = dict(provider_id=provider_id, mode=mode, status=status, query=query,
-                               page=page, page_size=100)
+                               page=page, page_size=100, public_status=True)
                 if request.args.get("batch_id"):
                     payload["batch_id"] = int(request.args["batch_id"])
                 result = extract_link_service.list_workbench_tasks(**payload)
@@ -632,7 +638,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         if task_id < 1:
             return _error("task_id 参数无效", 400)
         try:
-            result = extract_link_service.extract_workbench_task_detail(task_id)
+            result = extract_link_service.extract_workbench_task_detail(task_id, public_status=True)
         except Exception as exc:
             return _service_error("任务详情读取", exc)
         if result is None:
@@ -650,7 +656,7 @@ def create_extract_workbench_blueprint(context: WebUIContext):
             events = []
         return jsonify({
             "item": item,
-            "history": _safe_tree(history),
+            "history": _safe_tree([public_workbench_item(row) if isinstance(row, dict) else row for row in history]),
             "events": _safe_tree(events),
         })
 

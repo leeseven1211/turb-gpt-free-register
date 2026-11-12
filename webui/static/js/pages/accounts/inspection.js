@@ -65,7 +65,7 @@ async function submitAccountInspection(event) {
     showToast(result.created ? '巡检已加入统一任务队列' : '已有本次巡检记录，已打开历史');
     openAccountInspectionHistory();
   } catch (error) {
-    document.getElementById('accountInspectionStartError').textContent = `启动结果待确认：${error.message}。可查看巡检历史，或使用当前提交再次确认。`;
+    document.getElementById('accountInspectionStartError').textContent = `巡检启动请求失败：${error.message}。可查看巡检历史，或使用当前提交再次确认。`;
   } finally { accountInspectionStarting = false; button.disabled = false; }
 }
 function openAccountInspectionHistory() {
@@ -143,7 +143,7 @@ async function refreshAccountInspectionFailures() {
   try {
     const result = await accountInspectionRequest(`/api/accounts/inspections/${id}/failures?page=${page}`);
     if (id !== accountInspectionFailureId || page !== accountInspectionFailurePage || version !== accountInspectionFailureVersion) return;
-    const names = {deactivated_skipped: '已废跳过', rejected: '未能入队', failed: '查活失败', error: '执行异常', attention_required: '结果待确认', interrupted: '执行中断'};
+    const names = {deactivated_skipped: '已废跳过', rejected: '未能入队', failed: '查活失败', error: '执行异常', attention_required: '执行失败', interrupted: '执行中断'};
     const rows = (result.items || []).map(r => `<tr><td>#${Number(r.account_id)}</td><td>${esc(r.email)}</td><td>${esc(names[r.status] || r.status)}</td><td>${esc(formatDateTime(r.failed_at))}</td><td class="inspection-error-reason">${esc(r.error)}</td></tr>`).join('');
     accountInspectionRender('accountInspectionFailuresContent', rows ? accountInspectionTable(['账号', '邮箱', '类型', '时间', '原因'], rows) : '<p>本轮暂无查活失败或已废跳过。</p>', `failures:${id}:${page}`);
     document.getElementById('accountInspectionFailuresPageLabel').textContent = `共 ${Number(result.total)} 条 · 第 ${page} 页`;
@@ -175,7 +175,7 @@ async function deleteDeactivatedAccounts() {
     const result = await accountInspectionRequest('/api/accounts/delete-deactivated', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({archived})});
     ACCOUNT_SELECTED.clear();
     showToast(`已删除 ${Number(result.deleted_count || 0)} 个已废账号`);
-  } catch (error) { showToast(`删除结果待确认，请刷新核实：${error.message}`); }
+  } catch (error) { showToast(`删除请求失败，请刷新核实：${error.message}`); }
   finally { deletingDeactivatedAccounts = false; button.disabled = false; void loadAccounts(); void loadSummary(); }
 }
 setInterval(() => {

@@ -56,8 +56,8 @@ const VIEW_REFRESH_MAX_AGE_MS = 15000;
 const LIST_FACET_LABELS = {
   status: {
     queued:'排队中', pending:'排队中', running:'运行中', waiting:'等待中', stopping:'停止中', cancelling:'停止中', settling:'收尾中',
-    failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
-    deactivated:'已停用', unsupported:'不支持', attention_required:'结果待确认', request_unknown:'待确认', manual_reconcile:'结果待确认',
+    failed:'失败', partial_success:'部分成功', password_confirmation_pending:'失败', success:'成功', stopped:'已停止', cancelled:'已取消', interrupted:'执行中断',
+    deactivated:'已停用', unsupported:'不支持', attention_required:'失败', request_unknown:'失败', manual_reconcile:'失败',
     available:'可用', used:'已使用', pending_sync:'导入处理中', tombstone:'本地已删除', replaced:'换绑后邮箱', disabled:'停用', exported:'已导出', unexported:'未导出', archived:'已归档',
   },
   source: {
@@ -82,7 +82,7 @@ const LIST_FACET_LABELS = {
     pending:'待查询', failed:'查询失败', not_applicable:'不适用',
   },
   codex: {success:'已通过', retrying:'进行中', failed:'失败', stopped:'已停止', deactivated:'已停用', skipped:'已跳过', missing:'缺失'},
-  account_status: {active:'未废号', deactivated:'已废号', unknown:'待确认'},
+  account_status: {active:'未废号', deactivated:'已废号', unknown:'未查活'},
   task_type: {
     registration:'注册', registration_resume:'继续邮箱验证', twofa_retry:'2FA 配置补跑',
     account_setup_retry:'账号配置补跑', password_setup:'补密码', twofa_setup:'补 2FA', account_completion:'补全账号',
@@ -97,10 +97,10 @@ const LIST_FACET_LABELS = {
   },
   target_status: {
     not_created:'尚未创建', in_progress:'处理中', email_verification_pending:'待邮箱验证或资料补全',
-    account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭证待确认',
-    attention_required:'结果待确认', deactivated:'账号已停用', account_deactivated:'账号已停用',
-    cancelled:'已取消', failed:'失败', pending:'等待执行', request_unknown:'结果待确认',
-    manual_reconcile:'结果待确认', completed:'已完成', unknown:'状态待确认',
+    account_available:'账号可用', credential_valid:'凭证有效', credential_pending_confirmation:'凭据核验缺失',
+    attention_required:'失败', deactivated:'账号已停用', account_deactivated:'账号已停用',
+    cancelled:'已取消', failed:'失败', pending:'等待执行', request_unknown:'失败',
+    manual_reconcile:'失败', completed:'已完成', unknown:'状态记录缺失',
   },
   stage: {
     queued:'进入队列', running:'执行中', preflight:'配置预检', network:'分配网络', network_route:'分配网络',
@@ -120,15 +120,15 @@ const LIST_FACET_LABELS = {
 // display_status 映射成可读文字；这些语义不能只依赖颜色表达。
 const TASK_PROGRESS_STATUS_LABELS = {
   pending: '未开始', running: '执行中', success: '已完成', skipped: '已跳过', failed: '失败',
-  recovered: '重试已恢复', unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
+  recovered: '重试已恢复', unconfirmed: '响应记录缺失', not_executed: '未执行', request_unknown: '失败',
   record_incomplete: '记录不完整', debug_paused: '调试暂停',
-  stopped: '已中断', attention_required: '结果待确认', partial_success: '部分完成',
-  unknown: '结果待确认', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '结果待确认', password_confirmation_pending: '密码待确认',
-  cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '待确认',
+  stopped: '已中断', attention_required: '失败', partial_success: '部分完成',
+  unknown: '状态记录缺失', deactivated: '已停用', unsupported: '不支持', manual_reconcile: '失败', password_confirmation_pending: '密码响应缺失',
+  cancelled: '已取消', interrupted: '已中断', deferred: '已延后', awaiting_confirmation: '等待响应',
 };
 function taskProgressStatusLabel(value) {
   const key = String(value || 'pending').trim().toLowerCase();
-  return TASK_PROGRESS_STATUS_LABELS[key] || LIST_FACET_LABELS.status?.[key] || key || '未确认';
+  return TASK_PROGRESS_STATUS_LABELS[key] || LIST_FACET_LABELS.status?.[key] || key || '状态记录缺失';
 }
 function taskProgressStepStatus(step) {
   return String(step?.display_status || step?.state || 'pending').trim().toLowerCase();
@@ -1003,7 +1003,7 @@ function short(v, n=40) { const s = v || ''; return s.length > n ? s.slice(0,n) 
 function copyId(v) { if (!v) return ''; const id = 'c'+(++copySeq); copyStore.set(id, v); return id; }
 function cbtn(label, value, cls='') { const id = copyId(value); return `<button class="${cls}" data-copy-id="${id}" ${id?'':'disabled'}>${label}</button>`; }
 function pill(status) {
-  const map = { available:'可用', used:'已用', pending_sync:'导入处理中', tombstone:'本地已删除', replaced:'换绑后邮箱', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'待确认 · 密码已提交', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'待确认', manual_reconcile:'结果待确认' };
+  const map = { available:'可用', used:'已用', pending_sync:'导入处理中', tombstone:'本地已删除', replaced:'换绑后邮箱', failed:'失败', partial_success:'部分成功', password_confirmation_pending:'失败', disabled:'已停用', pending:'排队', running:'运行中', debug_paused:'调试暂停', stopping:'停止中', stopped:'已停止', success:'成功', cancelled:'已取消', request_unknown:'失败', manual_reconcile:'失败' };
   return `<span class="pill status-${esc(status)}">${esc(map[status]||status||'-')}</span>`;
 }
 function pillV2(status, group = 'status') {

@@ -163,6 +163,32 @@ def _parse_email_pool_import(text: str, source: str, *, include_account_fields: 
     }
 
 
+def _public_butler_import_batch(value):
+    """导入失败按本地结果汇总，保留原批次的重跑能力和错误原因。"""
+    if not isinstance(value, dict):
+        return value
+    from copy import deepcopy
+    from core.operations.presentation import public_result_status
+
+    result = deepcopy(value)
+    counts = dict(result.get('counts') or {})
+    unknown = int(counts.get('unknown', result.get('unknown')) or 0)
+    if unknown:
+        counts['failed'] = int(counts.get('failed', result.get('failed')) or 0) + unknown
+        counts['unknown'] = 0
+        result.update({'failed': counts['failed'], 'unknown': 0, 'counts': counts})
+        result['internal_unknown_count'] = unknown
+    original = result.get('status')
+    result['status'] = public_result_status(original)
+    if unknown and original in {'partial', 'completed'} and not (
+        int(counts.get('pending') or 0) or int(counts.get('submitting') or 0)
+    ):
+        result['status'] = 'partial_success' if int(counts.get('imported') or 0) else 'failed'
+    if result['status'] != original:
+        result['internal_status'] = original
+    return result
+
+
 def create_email_pool_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("email_pool", __name__)
     logger = context.logger
@@ -425,6 +451,8 @@ def create_email_pool_blueprint(context: WebUIContext):
             args = (data,)
         try:
             result = getattr(service, action)(*args)
+            if batch:
+                result = _public_butler_import_batch(result)
             return jsonify({"ok": True, "batch": result} if batch else result), status
         except v2.ButlerV2Error as exc:
             remote_messages = {
@@ -457,7 +485,7 @@ def create_email_pool_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": messages.get(code, '导入条件无效，请检查选项或重新预览。'), "code": code, "error_code": code}), 409 if conflict else 400
         except Exception as exc:
             logger.error("Butler manual import action %s failed (%s)", action, type(exc).__name__)
-            return jsonify({"ok": False, "error": "导入操作暂未确认，请保留当前批次后重试", "code": "import_internal_error", "error_code": "import_internal_error"}), 500
+            return jsonify({"ok": False, "error": "导入处理发生内部异常，请保留当前批次后重试", "code": "import_internal_error", "error_code": "import_internal_error"}), 500
 
     @bp.get("/api/email-butler/import-options")
     def api_butler_import_options():

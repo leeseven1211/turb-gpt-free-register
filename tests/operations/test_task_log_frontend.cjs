@@ -189,8 +189,8 @@ test('flow_version2 失败摘要显示具体原因和结果状态，并折叠技
     accountTaskStepFilter: null,
     ACCOUNT_TASK_PROGRESS_STATUS_LABELS: {
       pending: '未开始', running: '执行中', success: '已完成', failed: '失败',
-      unconfirmed: '未确认', not_executed: '未执行', request_unknown: '结果待确认',
-      stopped: '已中断', attention_required: '待人工处理',
+      unconfirmed: '响应记录缺失', not_executed: '未执行', request_unknown: '失败',
+      stopped: '已中断', attention_required: '失败',
     },
     TASK_PROGRESS_STATUS_LABELS: {},
     esc: htmlEscape,
@@ -202,15 +202,16 @@ test('flow_version2 失败摘要显示具体原因和结果状态，并折叠技
   assert.match(sandbox.result.failure, /失败位置：Codex 授权 · oauth/);
   assert.match(sandbox.result.failure, /事件 evt-9/);
   assert.match(sandbox.result.failure, /远端结果待确认/);
-  assert.match(sandbox.result.failure, /<span>原因：密码验证请求返回 HTTP 401<\/span>/);
+  assert.match(sandbox.result.failure, /<span>密码验证请求返回 HTTP 401<\/span>/);
+  assert.doesNotMatch(sandbox.result.failure.split('<details>')[0], /待确认|未确认/);
   assert.match(sandbox.result.failure, /远端结果待确认/);
   assert.doesNotMatch(sandbox.result.failure, /需要对账/);
   assert.match(sandbox.result.failure, /查看技术详情/);
   assert.doesNotMatch(sandbox.result.failure, /<远端结果待确认>/);
-  assert.match(sandbox.result.inferred, /待确认位置/);
-  assert.doesNotMatch(sandbox.result.inferred, /失败位置/);
-  assert.match(sandbox.result.inferred, /错误：待确认/);
-  assert.deepEqual(JSON.parse(sandbox.result.labels), ['未确认', '未执行', '结果待确认', '已中断', '待人工处理']);
+  assert.match(sandbox.result.inferred, /历史失败位置/);
+  assert.match(sandbox.result.inferred, /阶段记录缺失/);
+  assert.match(sandbox.result.inferred, /失败诊断记录缺失/);
+  assert.deepEqual(JSON.parse(sandbox.result.labels), ['响应记录缺失', '未执行', '失败', '已中断', '失败']);
 });
 
 test('待确认状态不要求人工处理，并保留可重跑提示', () => {
@@ -225,11 +226,11 @@ test('待确认状态不要求人工处理，并保留可重跑提示', () => {
     remoteSync: LIST_FACET_LABELS.stage.remote_sync,
     job: progressJobResult({status:'manual_reconcile', retryable:true}).label,
   };`);
-  assert.equal(sandbox.result.status, '结果待确认');
-  assert.equal(sandbox.result.reconcile, '结果待确认');
-  assert.equal(sandbox.result.progress, '结果待确认');
+  assert.equal(sandbox.result.status, '失败');
+  assert.equal(sandbox.result.reconcile, '失败');
+  assert.equal(sandbox.result.progress, '失败');
   assert.equal(sandbox.result.remoteSync, '原单状态查询');
-  assert.equal(sandbox.result.job, '结果待确认（可重跑）');
+  assert.equal(sandbox.result.job, '失败（可重跑）');
 });
 
 test('详情失败位置优先采用有具体证据纠正的阶段', () => {
@@ -603,4 +604,21 @@ test('任务步骤入口统一称为阶段事件，不把事件条数写成尝�
   assert.doesNotMatch(accountsSource, /尝试记录/);
   assert.match(accountsSource, /悬浮查看时间与阶段事件/);
   assert.match(accountsSource, /查看阶段事件/);
+});
+
+
+test('历史泛化回执消息不能覆盖失败红条的具体 HTTP 或取码原因', () => {
+  for (const error_info of [
+    {code:'password_verify_http_error', summary:'远端结果待确认', cause_summary:'密码验证请求返回 HTTP 409（invalid_state）'},
+    {code:'email_otp_failed', summary:'未收到新的验证码邮件'},
+  ]) {
+    const failure = {label:'登录与身份验证', stage:'authenticate', evidence:'explicit',
+      message:'远端结果待确认，请核对原请求', error_info};
+    const sandbox = runVm(`${progressFunctions}\nresult = accountTaskProgressBrief({failure});`, {
+      failure, esc:htmlEscape, attrEsc:htmlEscape,
+    });
+    assert.match(sandbox.result, /HTTP 409|未收到新的验证码邮件/);
+    assert.doesNotMatch(sandbox.result, /待确认|未确认|核对原请求/);
+    assert.equal(failure.message, '远端结果待确认，请核对原请求');
+  }
 });

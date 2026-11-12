@@ -2154,11 +2154,11 @@ function concurrencyWaitTextV2(reason) {
     global_capacity: '等待全局空位', type_capacity: '等待本类空位',
     batch_capacity: '等待当前批次空位', provider_capacity: '等待平台空位',
     account_busy: '账号正由其他任务使用', remote_order_capacity: '等待远端订单名额',
-    not_due: '等待下次平台查询', concurrency_policy_migration_required: '等待确认并发迁移策略',
-    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行所有者待核验',
+    not_due: '等待下次平台查询', concurrency_policy_migration_required: '等待配置并发迁移策略',
+    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行许可归属已变化',
     execution_active: '上一执行仍在退出或清理', fairness_turn: '等待公平调度轮次',
   };
-  return labels[code] ? labels[code] + count : `等待原因待核验（${code || '缺少原因代码'}）`;
+  return labels[code] ? labels[code] + count : `调度等待原因未登记（${code || '缺少原因代码'}）`;
 }
 
 function concurrencyTypeV2(key) {

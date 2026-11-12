@@ -64,7 +64,7 @@ def test_callback_http_errors_do_not_imply_credentials_rejected_or_account_deact
     ("session_fetch", "invalid_response", "session_invalid_response", "AUTH-SESSION-002", "认证后的登录会话响应无效"),
     ("session_fetch", "missing_token", "access_token_missing", "AUTH-AT-001", "认证后的 Session 响应缺少 AT，登录态尚未建立"),
     ("session_fetch", "identity_mismatch", "session_identity_mismatch", "AUTH-IDENTITY-004", "认证后的 Session 身份与目标账号不一致"),
-    ("session_fetch", "token_expired", "access_token_expired", "AUTH-SESSION-003", "认证返回的 AT 已过期，未确认为刷新成功"),
+    ("session_fetch", "token_expired", "access_token_expired", "AUTH-SESSION-003", "认证返回的 AT 已过期，刷新失败"),
     ("oauth_callback", "redirect_invalid", "auth_redirect_invalid", "AUTH-URL-002", "认证跳转缺少有效目标地址"),
     ("oauth_callback", "redirect_limit", "auth_redirect_limit", "AUTH-URL-003", "认证跳转超出本次处理次数"),
 ])

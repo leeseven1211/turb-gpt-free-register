@@ -10,6 +10,7 @@ from core import db
 from core.auth.fingerprint import clean_safe_fingerprint_summary
 from core.accounts.plans.promotion import promotion_kind_from_record
 from core.operations.errors import classify_task_error
+from core.operations.presentation import public_progress_snapshot, public_result_status
 
 def _feature_unavailable(name: str, *, driver: str | None = None):
     """配置不完整时返回统一 503；页面禁用之外再做后端兜底。"""
@@ -370,13 +371,20 @@ def _account_login_password(row: dict) -> str:
     return _account_password(row)
 
 
-def _job_error_info(row: dict) -> dict | None:
+def _job_error_info(row: dict, *, public_status: bool = False) -> dict | None:
     """只用同一 Roxy 任务保存的明确诊断细化展示，不改写任务结果。"""
     message = row.get("error_message")
     kwargs = {
         "stage": str(row.get("progress_stage") or ""),
         "task_type": str(row.get("job_type") or "registration"),
     }
+    if public_status:
+        summary = row.get("result_summary")
+        kwargs.update({
+            "error_code": str(row.get("error_code") or ""),
+            "result_summary": summary if isinstance(summary, dict) else row,
+            "task_status": str(row.get("status") or ""),
+        })
     info = classify_task_error(message, **kwargs)
     snapshot = row.get("config_snapshot")
     if not isinstance(snapshot, dict):
@@ -384,7 +392,8 @@ def _job_error_info(row: dict) -> dict | None:
         snapshot = data.get("config_snapshot") if isinstance(data, dict) else {}
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     if (
-        (info or {}).get("code") in {"unknown.unclassified", "password_page_error"}
+        ((info or {}).get("code") in {"unknown.unclassified", "password_page_error"}
+         or str((info or {}).get("code") or "").endswith("_failure_diagnostics_missing"))
         and row.get("job_type") in {"registration", "registration_resume"}
         and row.get("status") in {"failed", "request_unknown"}
         and (snapshot.get("registration_driver") or row.get("registration_driver")) == "roxy"
@@ -454,11 +463,12 @@ def _job_error_info(row: dict) -> dict | None:
     return info
 
 
-def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize_routes: bool = False) -> dict:
+def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize_routes: bool = False,
+                          public_status: bool = False) -> dict:
     """注册任务列表轻量对象：只返回表格展示和按钮判断需要的字段。"""
     out = {
         "id": row.get("id"),
-        "status": row.get("status"),
+        "status": public_result_status(row.get("status"), row) if public_status else row.get("status"),
     }
     config_snapshot = row.get("config_snapshot")
     if not isinstance(config_snapshot, dict):
@@ -492,13 +502,17 @@ def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize
         if not include_progress and key in {"progress", "progress_steps", "route_attempts"}:
             continue
         value = row.get(key)
+        if public_status and key == "display_status":
+            value = public_result_status(value, row)
         if value is not None and value != "" and value is not False:
             out[key] = value
     err = str(row.get("error_message") or "").strip()
     if err:
         # 列表只需要摘要；完整错误和堆栈看“任务日志”。
         out["error_message"] = err[:240] + ("…" if len(err) > 240 else "")
-        out["error_info"] = _job_error_info(row)
+        out["error_info"] = _job_error_info(row, public_status=public_status)
+    elif public_status and out["status"] == "failed":
+        out["error_info"] = _job_error_info(row, public_status=True)
     if (
         str(row.get("status") or "") == "success"
         and "代理线路瞬时失败，准备换线重试" in err
@@ -533,13 +547,17 @@ def _compact_job_for_list(row: dict, *, include_progress: bool = True, summarize
             "routes": [{key: value for key, value in route.items() if key != "steps"}
                        for route in progress.get("routes") or []],
         }
+    if public_status and isinstance(out.get("progress"), dict):
+        out["progress"] = public_progress_snapshot(out["progress"])
     return out
 
 
-def _job_status_counts(rows: list[dict]) -> dict:
+def _job_status_counts(rows: list[dict], *, public_status: bool = False) -> dict:
     counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
+        if public_status:
+            status = public_result_status(status, row)
         counts[status] = counts.get(status, 0) + 1
     counts["active"] = sum(int(counts.get(s, 0) or 0) for s in ("pending", "running", "stopping"))
     return counts
@@ -583,7 +601,7 @@ def _current_progress_jobs(rows: list[dict]) -> list[dict]:
     return [_current_slot_attempt(attempts) for attempts in _progress_batch_slots(rows)[2].values()]
 
 
-def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False) -> dict | None:
+def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False, public_status: bool = False) -> dict | None:
     """构造批次 TaskSlot 进度；人工重试不重复增加批次任务数。"""
     batch_id, roots, slot_rows = _progress_batch_slots(rows)
     if not batch_id:
@@ -596,15 +614,15 @@ def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False) 
         current = _current_slot_attempt(attempts)
         root = roots.get(root_id) or attempts[0]
         selected_rows.append(current)
-        compact = _compact_job_for_list(current, summarize_routes=summarize_routes)
+        compact = _compact_job_for_list(current, summarize_routes=summarize_routes, public_status=public_status)
         attempt_items = []
         for row in attempts:
-            attempt_compact = _compact_job_for_list(row, include_progress=False)
+            attempt_compact = _compact_job_for_list(row, include_progress=False, public_status=public_status)
             attempt_items.append({
                 "id": int(row.get("id") or 0),
                 "retry_attempt": int(row.get("retry_attempt") or 0),
                 "job_type": str(row.get("job_type") or "registration"),
-                "status": str(row.get("status") or "pending"),
+                "status": str(attempt_compact.get("status") or "pending"),
                 "started_at": row.get("started_at"),
                 "completed_at": row.get("completed_at"),
                 "error_message": str(attempt_compact.get("error_message") or "")[:240] or None,
@@ -624,7 +642,7 @@ def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False) 
 
     items.sort(key=lambda row: (int(row.get("batch_index") or 0), int(row.get("root_job_id") or 0)))
     selected_rows.sort(key=lambda row: int((roots.get(int(row.get("root_job_id") or row.get("id") or 0)) or row).get("batch_index") or 0))
-    counts = _job_status_counts(selected_rows)
+    counts = _job_status_counts(selected_rows, public_status=public_status)
     stage_counts: dict[str, dict] = {}
     failure_counts: dict[str, dict] = {}
     for item in items:
@@ -633,7 +651,7 @@ def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False) 
             if not location:
                 continue
             key = str(location.get("step_id") or "unknown")
-            bucket = target.setdefault(key, {"step_id": key, "label": location.get("label") or "位置待确认", "count": 0})
+            bucket = target.setdefault(key, {"step_id": key, "label": location.get("label") or "失败位置未记录", "count": 0})
             bucket["count"] += 1
     all_terminal = all(str(row.get("status") or "") not in {"pending", "running", "stopping"} for row in selected_rows)
     return {

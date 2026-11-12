@@ -9,6 +9,7 @@ import re
 
 from core import db
 from core.operations import run_log as task_run_log
+from core.operations.presentation import public_result_status
 
 HUANGUANG_QUOTA_STAGES = {
     "quota_extraction_exhausted": "提链 CDK 次数已用完，等待补充额度",
@@ -143,7 +144,7 @@ def _remote_raw(summary: dict) -> dict:
     return raw
 
 
-def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
+def workbench_task_item(row: dict, *, account: dict | None = None, public_status: bool = False) -> dict:
     data = row.get("task_data") if isinstance(row.get("task_data"), dict) else {}
     state = row.get("public_state") if isinstance(row.get("public_state"), dict) else {}
     summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
@@ -165,6 +166,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     extraction = str(extraction_value or "pending").lower()
     extraction = provider_status_label(extraction)
     payment = str(state.get("payment_state") or run_summary.get("payment_status") or "not_started").lower()
+    payment_request_unknown = public_status and payment == 'request_unknown'
     if mode == "extract_only":
         payment = "not_started"
     payment = {
@@ -172,6 +174,8 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "not_started": "unpaid", "failed": "failed",
         "pending": "pending_payment", "unknown": "request_unknown",
     }.get(payment, "pending_payment")
+    if payment_request_unknown and mode != 'extract_only':
+        payment = 'request_unknown'
     preflight = str(state.get("preflight_status") or run_summary.get("preflight_status") or "pending").lower()
     plus = str(state.get("plus_status") or run_summary.get("plus_status") or "unknown").lower()
     # 只有真正确认收款后才允许用独立套餐事实补“已到账”，
@@ -245,7 +249,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
     }
     created_at = row.get("run_created_at") or row.get("task_created_at")
     updated_at = row.get("job_updated_at") or row.get("task_updated_at") or row.get("run_completed_at") or created_at
-    return {
+    result = {
         "task_id": int(row.get("task_id") or 0),
         "run_id": int(row.get("run_id") or 0) or None,
         "account_id": int(row.get("account_id") or 0) or None,
@@ -285,9 +289,62 @@ def workbench_task_item(row: dict, *, account: dict | None = None) -> dict:
         "has_qr": bool(artifact.get("qr_data") or artifact.get("qr_image_url_png") or artifact.get("qr_image_url_svg")),
         "local_reconcile_halted": provider_id in {"huanguang", "legacy"} and summary.get("local_reconcile_halted") is True,
     }
+    return public_workbench_item(result, summary={**run_summary, **summary}) if public_status else result
 
 
-def workbench_status_matches(item: dict, status: str) -> bool:
+def public_workbench_item(item: dict, *, summary: dict | None = None) -> dict:
+    """只投影本地任务结果，提链、支付与 Plus 的独立成功事实保持原值。"""
+    from copy import deepcopy
+    from core.operations.errors import classify_task_error
+
+    result = deepcopy(item)
+    summary = summary or {}
+    original = result.get("task_status") or result.get("status")
+    key = "task_status" if "task_status" in result else "status"
+    status = public_result_status(original, summary)
+    if status != original:
+        result[f"internal_{key}"] = original
+        result[key] = status
+    active = status in {"queued", "running", "waiting", "cancelling", "settling", "stopping"}
+    stage = None
+    extraction = result.get("extraction_status")
+    if extraction in {"unknown", "pending", ""} and not active and status not in {"cancelled", "stopped"}:
+        result['internal_extraction_status'] = extraction
+        result['extraction_status'] = 'failed'
+        stage = 'extraction'
+    elif extraction == 'unknown' and active:
+        result['internal_extraction_status'] = extraction
+        result['extraction_status'] = 'pending'
+    payment = result.get('payment_status')
+    if payment in {'request_unknown', 'unknown'}:
+        result['internal_payment_status'] = payment
+        result['payment_status'] = 'pending_payment' if active else 'failed'
+        result['payment_phase'] = 'processing' if active else 'failed'
+        if not active and stage is None:
+            stage = 'payment'
+    if stage:
+        code = 'extract_provider_response_missing' if stage == 'extraction' else 'payment_provider_response_missing'
+        message = '提链请求未取得有效响应' if stage == 'extraction' else '支付请求未取得有效响应'
+        evidence = {**summary, 'failure_stage': summary.get('failure_stage') or stage}
+        info = classify_task_error(result.get('error'), task_type='extract_link',
+                                   error_code=str(evidence.get('cause_code') or ''), result_summary=evidence,
+                                   task_status=str(original or ''), stage=stage) if result.get('error') or evidence.get('cause_code') else None
+        specific_code = str((info or {}).get('code') or '')
+        if not specific_code or specific_code in {'unknown', 'unknown.unclassified', 'request_unknown', 'remote_response_missing'} or specific_code.endswith(('_failure_diagnostics_missing', '_receipt_missing')):
+            evidence['cause_code'] = code
+            info = classify_task_error(result.get('error') or message, task_type='extract_link',
+                                       error_code=code, result_summary=evidence,
+                                       task_status=str(original or ''), stage=stage)
+        result.update(error=info['summary'] if info else message, error_code=info['code'] if info else code,
+                      failure_stage=evidence['failure_stage'])
+        if info:
+            result['error_info'] = info
+        if isinstance(result.get('stages'), dict) and stage == 'extraction':
+            result['stages']['run'].update(state='failed', status='failed')
+    return result
+
+
+def workbench_status_matches(item: dict, status: str, *, public_status: bool = False) -> bool:
     if not status:
         return True
     task_status = str(item.get("task_status") or "")
@@ -319,6 +376,9 @@ def workbench_status_matches(item: dict, status: str) -> bool:
         )
     if status == "needs_review":
         return (
+            (public_status and (task_status in {"failed", "partial_success", "interrupted"}
+                                or extraction == "failed" or payment == "failed"))
+            or
             item.get("local_reconcile_halted") is True
             or task_status in {"request_unknown", "attention_required"}
             or extraction == "unknown" or payment == "request_unknown"
@@ -337,17 +397,17 @@ def workbench_status_matches(item: dict, status: str) -> bool:
     return False
 
 
-def workbench_summary() -> dict:
+def workbench_summary(*, public_status: bool = False) -> dict:
     """今日产出、当前积压和分平台健康度。"""
     from core.storage.extract_link import jobs as extract_link_jobs
 
-    return extract_link_jobs.workbench_summary()
+    return extract_link_jobs.workbench_summary(public_status=public_status)
 
 
 def list_workbench_tasks(
     *, provider_id: str | None = None, mode: str | None = None,
     status: str = "", query: str = "", page: int = 1, page_size: int = 20,
-    batch_id: int | None = None,
+    batch_id: int | None = None, public_status: bool = False,
 ) -> dict:
     """按现有筛选和分页规则读取工作台任务并投影当前页。"""
     from core.storage.extract_link import jobs as extract_link_jobs
@@ -355,12 +415,13 @@ def list_workbench_tasks(
     result = extract_link_jobs.list_workbench_page(
         provider_id=provider_id, mode=mode, query=query, status=status,
         page=page, page_size=page_size,
+        public_status=public_status,
         **({"batch_id": int(batch_id)} if batch_id is not None else {}),
     )
-    return {**result, "items": workbench_project_rows(result["items"])}
+    return {**result, "items": workbench_project_rows(result["items"], public_status=public_status)}
 
 
-def workbench_project_rows(rows: list[dict]) -> list[dict]:
+def workbench_project_rows(rows: list[dict], *, public_status: bool = False) -> list[dict]:
     account_rows = db.get_accounts_for_jobs([
         {
             "id": int(row.get("task_id") or 0),
@@ -370,7 +431,7 @@ def workbench_project_rows(rows: list[dict]) -> list[dict]:
         for row in rows
     ])
     return [
-        workbench_task_item(row, account=account_rows.get(int(row.get("task_id") or 0)))
+        workbench_task_item(row, account=account_rows.get(int(row.get("task_id") or 0)), public_status=public_status)
         for row in rows
     ]
 
@@ -432,35 +493,35 @@ def workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
     }
 
 
-def list_workbench_batches(*, page: int = 1, page_size: int = 20) -> dict:
+def list_workbench_batches(*, page: int = 1, page_size: int = 20, public_status: bool = False) -> dict:
     """读取批次分页与存储层汇总统计。"""
     from core.storage.extract_link import batches as extract_link_batches
 
     result = extract_link_batches.batch_rows(page=page, page_size=page_size)
     batches = result.get("items") or []
-    grouped = extract_link_batches.batch_task_counts([int(batch["id"]) for batch in batches])
+    grouped = extract_link_batches.batch_task_counts([int(batch["id"]) for batch in batches], public_status=public_status)
     return {**result, "items": [workbench_batch_summary(batch, grouped.get(int(batch["id"]), {})) for batch in batches]}
 
 
-def workbench_batch_detail(batch_id: int) -> dict | None:
+def workbench_batch_detail(batch_id: int, *, public_status: bool = False) -> dict | None:
     """读取单个批次及对应汇总。"""
     from core.storage.extract_link import batches as extract_link_batches
 
     batches = extract_link_batches.batch_rows(batch_id=int(batch_id)).get("items") or []
     if not batches:
         return None
-    counts = extract_link_batches.batch_task_counts([int(batch_id)])
+    counts = extract_link_batches.batch_task_counts([int(batch_id)], public_status=public_status)
     return workbench_batch_summary(batches[0], counts.get(int(batch_id), {}))
 
 
-def extract_workbench_task_detail(task_id: int) -> dict | None:
+def extract_workbench_task_detail(task_id: int, *, public_status: bool = False) -> dict | None:
     """读取任务详情、执行历史与事件展示字段。"""
     from core.storage.extract_link import jobs as extract_link_jobs
 
     detail = extract_link_jobs.get_workbench_detail_rows(int(task_id))
     if detail is None:
         return None
-    item = workbench_project_rows([detail["item"]])[0]
+    item = workbench_project_rows([detail["item"]], public_status=public_status)[0]
     history = []
     for run in detail["history"]:
         history.append({
@@ -474,6 +535,26 @@ def extract_workbench_task_detail(task_id: int) -> dict | None:
             "completed_at": run.get("completed_at"),
             "message": task_run_log.redact_text(str(run.get("error_message") or ""), 500),
         })
+        if public_status:
+            # 每个历史 Run 使用自己的回执与 Provider 状态，不能拿当前账号或
+            # 缺省 unknown 覆盖已经出链、收款或部分成功的历史成果。
+            task_data = detail["item"].get("task_data")
+            task_data = dict(task_data) if isinstance(task_data, dict) else {}
+            task_data.update(provider_id=run["provider_id"], mode=run["mode"])
+            projected = workbench_task_item({
+                "task_id": task_id, "run_id": run["run_id"], "run_status": run.get("status"),
+                "task_data": task_data, "result_summary": run.get("result_summary") or {},
+                "public_state": run.get("public_state") or {}, "error_message": run.get("error_message"),
+                "run_created_at": run.get("created_at"), "run_completed_at": run.get("completed_at"),
+            }, public_status=True)
+            history[-1].update(status=projected["task_status"], mode=projected["mode"],
+                               extraction_status=projected["extraction_status"],
+                               payment_status=projected["payment_status"], plus_status=projected["plus_status"])
+            for key in ("error_code", "error_info", "failure_stage", "internal_extraction_status", "internal_payment_status"):
+                if key in projected:
+                    history[-1][key] = projected[key]
+            if "internal_task_status" in projected:
+                history[-1]["internal_status"] = projected["internal_task_status"]
     events = []
     for event in detail["events"]:
         message = task_run_log.redact_text(str(event.get("message") or ""), 500)

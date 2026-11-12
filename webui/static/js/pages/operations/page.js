@@ -20,7 +20,7 @@ function operationReceiptsVisibleV2() {
 function operationReceiptStateLabelV2(status) {
   return ({queued: '排队', running: '执行中', stopping: '停止清理中', cancelling: '停止清理中',
     success: '成功', partial_success: '部分成功', failed: '失败', cancelled: '已取消', stopped: '已停止',
-    interrupted: '已中断', attention_required: '结果待确认', deactivated: '已停用', unsupported: '不支持'})[status] || '等待状态更新';
+    interrupted: '已中断', attention_required: '失败', request_unknown: '失败', manual_reconcile: '失败', deactivated: '已停用', unsupported: '不支持'})[status] || '等待状态更新';
 }
 
 function renderOperationReceiptsV2() {
@@ -159,11 +159,11 @@ function accountTaskAdmissionReasonText(reason) {
     batch_paused: '等待批次继续', batch_capacity: '等待当前批次空位', provider_capacity: '等待平台空位',
     account_busy: '账号正由其他任务使用', remote_order_capacity: '等待远端订单名额',
     not_due: '等待下次平台查询', execution_active: '上一执行仍在退出或清理',
-    fairness_turn: '等待公平调度轮次', concurrency_policy_migration_required: '等待确认并发迁移策略',
-    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行所有者待核验',
+    fairness_turn: '等待公平调度轮次', concurrency_policy_migration_required: '等待配置并发迁移策略',
+    scheduler_store_unavailable: '调度存储暂不可用', permit_owner_lost: '执行许可归属已变化',
   };
   const counts = reason?.occupied != null && reason?.limit != null ? `（${reason.occupied}/${reason.limit}）` : '';
-  return labels[code] ? labels[code] + counts : `等待原因待核验（${code || '缺少原因代码'}）`;
+  return labels[code] ? labels[code] + counts : `调度等待原因未登记（${code || '缺少原因代码'}）`;
 }
 function accountTaskAdmissionWaitMarkup(task) {
   const reasons = accountTaskAdmissionReasons(task);
@@ -186,23 +186,23 @@ function accountTaskResultText(task, compact = false) {
       const label = `提链成功${result.link_type ? ` · ${String(result.link_type).toUpperCase()}` : ''}`;
       if (['failed', 'error'].includes(payment)) return `${label} · 支付失败`;
       if (['succeeded', 'success', 'paid'].includes(payment)) return `${label} · 支付成功`;
-      if (['unknown', 'request_unknown', 'attention_required'].includes(payment)) return `${label} · 支付待确认`;
+      if (['unknown', 'request_unknown', 'attention_required'].includes(payment)) return `${label} · 支付响应缺失`;
       if (['pending', 'pending_payment', 'processing'].includes(payment)) {
-        return `${label} · ${result.mode === 'manual_payment' ? '等待手动支付' : '支付待确认'}`;
+        return `${label} · ${result.mode === 'manual_payment' ? '等待手动支付' : '支付处理中'}`;
       }
       if (result.mode === 'manual_payment' && payment === 'not_started') return `${label} · 等待手动支付`;
-      if (['request_unknown', 'attention_required', 'partial_success'].includes(status)) return `${label} · 后续处理待确认`;
+      if (['request_unknown', 'attention_required', 'partial_success'].includes(status)) return `${label} · 后续处理失败`;
       if (['cancelled', 'stopped', 'interrupted'].includes(status)) return `${label} · 任务已中断`;
       if (status === 'failed') return `${label} · 后续处理失败`;
       return label;
     }
     if (['failed', 'error'].includes(extraction)) return '提链失败';
-    if (['unknown', 'request_unknown', 'attention_required'].includes(extraction)) return '提链结果待确认';
+    if (['unknown', 'request_unknown', 'attention_required'].includes(extraction)) return task.error_info?.summary || '提链失败 · 平台响应记录缺失';
     if (['pending', 'queued'].includes(extraction)) return '等待提链';
     if (extraction === 'running') return '提链中';
     if (status === 'cancelled') return '任务已取消';
     if (['stopped', 'interrupted'].includes(status)) return '任务已中断';
-    if (['request_unknown', 'attention_required', 'partial_success', 'unknown'].includes(status)) return '提链结果待确认';
+    if (['request_unknown', 'attention_required', 'partial_success', 'unknown'].includes(status)) return task.error_info?.summary || '提链失败 · 平台响应记录缺失';
     if (task.error_message) return accountTaskErrorDisplayText(task.error_info, task.error_message);
     if (Object.prototype.hasOwnProperty.call(result, 'ok')) {
       return result.message || result.status || (result.ok ? '提炼完成' : '提炼失败');
@@ -229,14 +229,14 @@ function accountTaskResultText(task, compact = false) {
     if (!Object.prototype.hasOwnProperty.call(result, 'detected')) return '-';
     return result.detected ? '发现封号邮件' : '未发现封号邮件';
   }
-  if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : (result.status || '-');
+  if (task.task_type === 'live_check' || task.task_type === 'token_refresh') return result.ok ? '账号正常' : task.task_type === 'token_refresh' ? 'AT 刷新失败' : '查活失败';
   if (task.task_type === 'email_change') {
     if (result.email_change_confirmed) {
       return result.post_change_live_check?.accepted ? '邮箱已换绑 · AT 刷新已排队' : '邮箱已换绑 · AT 刷新待处理';
     }
     return result.message || result.status || '邮箱换绑未完成';
   }
-  if (['account_setup_retry','password_setup','password_change','twofa_setup','twofa_change','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || result.status || '账号配置操作失败');
+  if (['account_setup_retry','password_setup','password_change','twofa_setup','twofa_change','account_completion'].includes(task.task_type)) return result.ok ? (result.message || '账号配置操作已完成') : (result.message || '账号配置操作失败');
   if (task.task_type === 'codex_retry') {
     if (result.ok) {
       const syncStatus = result.sub2api_sync?.status;
@@ -245,7 +245,7 @@ function accountTaskResultText(task, compact = false) {
       if (syncStatus === 'cancelled') return '授权成功 · sub2api 同步已停止';
       return result.credential_confirmed ? '授权成功 · 凭证已确认' : '授权成功';
     }
-    if (result.status === 'attention_required') return 'Callback 已接收 · 凭证待确认';
+    if (['attention_required','request_unknown'].includes(result.status)) return '授权失败 · 未取得有效凭据';
     return result.message || result.status || '补跑失败';
   }
   if (task.task_type === 'codex_token_refresh') {
@@ -266,9 +266,9 @@ const ACCOUNT_TASK_STEP_STATE_LABELS = {
 };
 const ACCOUNT_TASK_PROGRESS_STATUS_LABELS = {
   pending:'未开始', running:'执行中', success:'已完成', skipped:'已跳过', failed:'失败',
-  unconfirmed:'未确认', not_executed:'未执行', request_unknown:'结果待确认', stopped:'已中断',
-  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'结果待确认',
-  deferred:'已延后', awaiting_confirmation:'待确认', record_incomplete:'记录不完整'
+  unconfirmed:'响应记录缺失', not_executed:'未执行', request_unknown:'失败', stopped:'已中断',
+  partial_success:'部分完成', cancelled:'已取消', interrupted:'已中断', attention_required:'失败',
+  deferred:'已延后', awaiting_confirmation:'等待响应', record_incomplete:'记录不完整'
 };
 function accountTaskEventStepState(event) {
   const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
@@ -318,7 +318,7 @@ function accountTaskFailureLocation(failure) {
     && classifiedStage !== failure.stage ? classifiedStage : '';
   return correctedStage
     ? (typeof facetLabel === 'function' ? facetLabel('stage', correctedStage) : correctedStage)
-    : [failure.label || failure.step_id || '位置待确认', failure.stage].filter(Boolean).join(' · ');
+    : [failure.label || failure.step_id || '阶段记录缺失', failure.stage].filter(Boolean).join(' · ');
 }
 function accountTaskCountryFailures(progress) {
   const rows = Array.isArray(progress?.failure?.country_failures) ? progress.failure.country_failures : [];
@@ -330,13 +330,15 @@ function accountTaskFailureSummary(progress) {
   const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
   if (!failure) return '';
   const location = accountTaskFailureLocation(failure);
-  const message = failure.message || (typeof failure.evidence === 'string' ? failure.evidence : '') || '失败位置待确认';
+  const detail = failure.error_info?.cause_summary || failure.error_info?.summary || failure.message || '';
+  const message = /^(?:远端)?(?:结果)?(?:待确认|未确认|待核验|未知)$/.test(detail) ? '失败诊断记录缺失' : detail || '失败诊断记录缺失';
   const countries = accountTaskCountryFailures(progress);
   const reconcile = failure.reconcile_required || ['request_unknown', 'attention_required'].includes(String(progress?.outcome?.status || '').toLowerCase());
   const inferred = failure.inferred === true || failure.evidence?.inferred === true || failure.evidence?.source === 'inferred' || failure.evidence?.kind === 'inferred' || failure.evidence === 'inferred' || failure.evidence === 'legacy' || failure.evidence === 'unobserved';
-  const locationTitle = inferred || (!failure.step_id && !failure.label && !failure.event_id) ? '待确认位置' : '失败位置';
+  const locationTitle = inferred || (!failure.step_id && !failure.label && !failure.event_id) ? '历史失败位置' : '失败位置';
   const event = failure.event_id ? `<span>事件 ${esc(failure.event_id)}</span>` : '';
-  const errorSummary = failure.error_info?.summary || failure.error_info?.display_code || '';
+  const classified = failure.error_info?.cause_summary || failure.error_info?.summary || failure.error_info?.display_code || '';
+  const errorSummary = /^(?:远端)?(?:结果)?(?:待确认|未确认|待核验|未知)$/.test(classified) ? '' : classified;
   const cause = String(failure.error_info?.cause_summary || '').trim();
   const causeHtml = cause && !String(errorSummary).includes(cause) && !String(message).includes(cause)
     ? `<span>原因：${esc(cause)}</span>` : '';
@@ -344,7 +346,7 @@ function accountTaskFailureSummary(progress) {
     ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
     : '';
   const primary = !countries || failure.error_info?.auto_refresh_at_failed ? `<span>${esc(message)}</span>` : '';
-  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${primary}${countries}${errorSummary && errorSummary !== message ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">远端结果待确认</span>' : ''}${technical}</div>`;
+  return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${primary}${countries}${errorSummary && errorSummary !== message ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">原请求证据已保留</span>' : ''}${technical}</div>`;
 }
 function accountTaskStepTooltipText(step) {
   return taskProgressStepTooltip(step);
@@ -471,10 +473,9 @@ function accountTaskProgressBrief(progress) {
   const failure = progress?.failure;
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
   const location = failure ? accountTaskFailureLocation(failure) : '';
-  const roxyLoginSummary = String(failure?.error_info?.code || '').startsWith('roxy_login_') ? failure.error_info.summary : '';
-  const message = roxyLoginSummary || failure?.message || '';
+  const message = failure?.error_info?.cause_summary || failure?.error_info?.summary || failure?.message || '';
   const inferred = failure?.inferred === true || failure?.evidence?.inferred === true || ['inferred', 'legacy', 'unobserved'].includes(failure?.evidence) || ['inferred'].includes(failure?.evidence?.source || failure?.evidence?.kind);
-  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '待确认位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
+  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '历史失败位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
 }
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
@@ -501,7 +502,7 @@ function renderAccountTaskProgressSnapshot(progress) {
     : current
     ? `当前：${current.label || current.step_id}${current.child_label ? ` · ${current.child_label}` : ''}`
     : `结果：${taskProgressStatusLabel(progress.outcome?.status || 'pending')}`;
-  const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : progress.source === 'insufficient_evidence' ? '记录不足，步骤状态未确认' : '';
+  const sourceText = progress.source === 'legacy_derived' ? '历史记录按已有结构化事件还原' : progress.source === 'insufficient_evidence' ? '步骤诊断记录缺失' : '';
   const activeElement = document.activeElement;
   const focusedFilter = activeElement?.getAttribute?.('data-account-task-step-filter');
   const focusedDetails = activeElement?.getAttribute?.('data-account-task-step-details');
@@ -1162,7 +1163,7 @@ async function operationIntent(scope, url, body) {
   const storageKey=`turb_operation_intent:${scope}`;
   const signature=JSON.stringify({url,body:body||null});
   let saved=null;try{saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');}catch(_){}
-  if(saved&&saved.signature!==signature)throw new Error('上次重跑回执尚未确认，请保持原选择重试以找回原请求。');
+  if(saved&&saved.signature!==signature)throw new Error('上次重跑未收到回执，请保持原选择重试以找回原请求。');
   saved ||= {key:globalThis.crypto?.randomUUID?.()||`operation-${Date.now()}-${Math.random().toString(36).slice(2)}`,signature};
   sessionStorage.setItem(storageKey,JSON.stringify(saved));
   try {
@@ -1194,7 +1195,7 @@ async function terminateAccountTask(taskId, button) {
   try {
     const result = await api(`/api/operations/${encodeURIComponent(taskId)}/terminate`, {method:'POST'});
     const state = String(result.state || '');
-    showToast(state === 'cancelled' ? '任务已取消' : state === 'attention_required' ? '任务已终止，但远端结果待核验' : '任务已终止');
+    showToast(state === 'cancelled' ? '任务已取消' : state === 'attention_required' ? '任务已终止，原请求证据已保留' : '任务已终止');
     loadAccountTasks();
   } catch (e) {
     showToast(`${label}失败: ` + e.message);
@@ -1290,7 +1291,7 @@ function updateAccountTaskFilters(facets = {}) {
   });
   syncFacetSelect('accountTaskStatusFilterV2', facets.status, {
     group: 'status',
-    values: ['queued', 'running', 'success', 'partial_success', 'failed', 'deactivated', 'unsupported', 'attention_required', 'request_unknown', 'interrupted', 'stopped', 'cancelled'],
+    values: ['queued', 'running', 'success', 'partial_success', 'failed', 'deactivated', 'unsupported', 'interrupted', 'stopped', 'cancelled'],
   });
   syncFacetSelect('accountTaskTargetStatusFilterV2', facets.target_status, {group: 'target_status'});
   syncFacetSelect('accountTaskRunCountFilterV2', facets.run_count, {group: 'run_count', values: ['0', '1', '2', '3', '4+']});

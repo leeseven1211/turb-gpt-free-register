@@ -29,7 +29,7 @@ STORE_CASES = [
     ('recovery_not_found', 'workflow.password_recovery.recovery_not_found', 'FLOW-PWD-REC-015', '密码恢复私有检查点不存在'),
     ('recovery_owner_mismatch', 'workflow.password_recovery.recovery_owner_mismatch', 'FLOW-PWD-REC-016', '密码恢复检查点执行归属不匹配'),
     ('attempt_password_conflict', 'workflow.password_recovery.attempt_password_conflict', 'FLOW-PWD-REC-017', '密码恢复时原注册 Attempt 密码版本冲突'),
-    ('recovery_intent_conflict', 'workflow.password_recovery.recovery_intent_conflict', 'FLOW-PWD-REC-028', '存在另一种密码操作的待确认候选，请继续原操作'),
+    ('recovery_intent_conflict', 'workflow.password_recovery.recovery_intent_conflict', 'FLOW-PWD-REC-028', '存在另一种密码操作的候选检查点，请继续原操作'),
     ('password_add_context_invalid', 'workflow.password_recovery.password_add_context_invalid', 'FLOW-PWD-REC-029', '添加密码回执与当前补密码候选不匹配'),
     ('state_invalid', 'workflow.password_recovery.state_invalid', 'FLOW-PWD-REC-018', '密码恢复目标状态无效'),
     ('confirmation_invalid', 'workflow.password_recovery.confirmation_invalid', 'FLOW-PWD-REC-019', '密码恢复缺少有效的明确确认类型'),
@@ -93,8 +93,8 @@ def test_database_failures_are_local_storage_errors_without_inventing_remote_pas
 
 @pytest.mark.parametrize('cause,code,display,summary', [
     ('password_recovery_owner_missing', 'workflow.password_recovery.owner_missing', 'FLOW-PWD-REC-023', '密码恢复缺少当前操作执行或原账号归属'),
-    ('password_recovery_unconfirmed', 'request_unknown', 'AUTH-PWD-REC-001', '密码恢复候选尚未完成认证确认，已保留私有检查点'),
-    ('password_recovery_identity_unconfirmed', 'workflow.password_recovery.identity_unconfirmed', 'FLOW-PWD-REC-024', '密码恢复尚未确认原邮箱登录入口，候选已保留且未提交重置'),
+    ('password_recovery_unconfirmed', 'workflow.password_recovery.unconfirmed', 'AUTH-PWD-REC-001', '密码恢复候选未取得有效认证回执，已保留私有检查点'),
+    ('password_recovery_identity_unconfirmed', 'workflow.password_recovery.identity_unconfirmed', 'FLOW-PWD-REC-024', '密码恢复未取得原邮箱登录入口，候选已保留且未提交重置'),
 ])
 def test_browser_and_adapter_failures_are_stable_without_overwriting_original_outcome(cause, code, display, summary):
     original = {'cause_code': cause, 'outcome': 'request_unknown', 'reconcile_required': True}
@@ -111,7 +111,7 @@ def test_candidate_login_proof_unknown_keeps_password_recovery_reason():
         'PasswordResetTransitionUnknown: request_unknown: 候选密码认证未取得本次配对成功响应，保留恢复检查点',
         task_type='registration_resume', error_code='request_unknown', stage='login_password',
     )
-    assert info['code'] == 'request_unknown'
+    assert info['code'] == 'workflow.password_recovery.candidate_login_unconfirmed'
     assert info['cause_code'] == 'password_recovery_candidate_login_unconfirmed'
     assert info['display_code'] == 'AUTH-PWD-REC-002'
     assert info['summary'] == '密码恢复候选认证缺少本次配对成功响应，已保留私有检查点'

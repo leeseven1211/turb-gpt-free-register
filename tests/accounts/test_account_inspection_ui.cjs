@@ -40,9 +40,17 @@ vm.runInContext(common.slice(common.indexOf('function formatDateTime('), common.
   element('accountInspectionWorkers').value = '2';
   nextError = new Error('模拟请求超时');
   await vm.runInContext('submitAccountInspection({preventDefault(){}})', context);
-  assert.match(element('accountInspectionStartError').textContent, /启动结果待确认/);
+  assert.match(element('accountInspectionStartError').textContent, /巡检启动请求失败/);
   assert.equal(element('btnConfirmAccountInspection').disabled, false);
   const firstKey = JSON.parse(requests[0].options.body).idempotency_key;
+  for (const status of [400, 403, 409]) {
+    nextError = Object.assign(new Error(`请求被拒绝（HTTP ${status}）`), {status});
+    await vm.runInContext('submitAccountInspection({preventDefault(){}})', context);
+    const error = element('accountInspectionStartError').textContent;
+    assert.match(error, /巡检启动请求失败：请求被拒绝/);
+    assert.doesNotMatch(error, /未收到响应|响应缺失/);
+    assert.equal(JSON.parse(requests.at(-1).options.body).idempotency_key, firstKey);
+  }
   reply = url => url.includes('?page=') ? {items: [], total: 0, active: null} : {created: true, task: {id: 1}};
   await vm.runInContext('submitAccountInspection({preventDefault(){}})', context);
   assert.equal(JSON.parse(requests[1].options.body).idempotency_key, firstKey);

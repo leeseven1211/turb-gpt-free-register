@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from core.operations.presentation import public_result_status
 from core.storage.operations import bulk_schema
 from core.storage.operations.bulk_common import (
     BulkError,
@@ -19,6 +20,11 @@ from core.storage.operations.bulk_common import (
     validate_key,
     require_row,
     public_batch,
+    public_round,
+    public_target_result,
+    target_status_sql,
+    public_reason_target_ids,
+    preserve_partial_counts,
 )
 from core.storage.operations.bulk_selections import _source_target_filter, result_predicate, validate_member_scope
 
@@ -162,9 +168,9 @@ def get_batch(batch_id: int) -> dict:
             f"SELECT * FROM {table('operation_batch_rounds')} WHERE batch_id=%s ORDER BY round_no DESC LIMIT 21",
             (batch_id,),
         )
-        result = public_batch(row)
         rounds = [dict(x) for x in cur.fetchall()]
-        result["rounds"] = rounds[:20]
+        result = public_batch(preserve_partial_counts(cur, row))
+        result["rounds"] = [public_round(preserve_partial_counts(cur, value, round_id=value["id"])) for value in rounds[:20]]
         result["rounds_has_more"] = len(rounds) > 20
         result["rounds_next_after_no"] = rounds[19]["round_no"] if len(rounds) > 20 else None
         cur.execute(
@@ -244,7 +250,8 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
           ORDER BY c.batch_id DESC LIMIT %s""",
             (*page_params, page_size + 1),
         )
-        rows = [public_batch(dict(x)) for x in cur.fetchall()]
+        raw_rows = [dict(x) for x in cur.fetchall()]
+        rows = [public_batch(preserve_partial_counts(cur, row)) for row in raw_rows]
         summary = {}
         try:
             cur.execute(
@@ -261,6 +268,14 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             row = cur.fetchone() or {}
             summary = {key: int(row.get(key) or 0) for key in (
                 "total_batches", "active_batches", "paused_batches", "ended_batches", "failed_targets", "attention_targets")}
+            summary["failed_targets"] += summary.pop("attention_targets", 0)
+            cur.execute(f"""SELECT c.* FROM {table('operation_batch_controls')} c
+              JOIN {table('operation_batches')} b ON b.id=c.batch_id
+              WHERE {" AND ".join(clauses)} AND coalesce((c.counts->>'attention_required')::bigint,0)>0""", tuple(params))
+            historical = [dict(value) for value in cur.fetchall()]
+            for value in historical:
+                corrected = preserve_partial_counts(cur, value)
+                summary["failed_targets"] -= int(value["counts"].get("attention_required", 0)) - int(corrected["counts"].get("attention_required", 0))
         except Exception:
             summary = {}
         return {
@@ -387,7 +402,7 @@ def freeze_round(round_id: int, *, owner_id: str | None = None, fence: int | Non
         if src.get("view") == "round":
             spec["round_id"] = src.get("round_id")
         validate_member_scope(cur, spec, controls)
-        predicate, args = _source_target_filter(spec, controls)
+        predicate, args = _source_target_filter(spec, controls, cur=cur)
         # 原轮查询和当前视图均在同一投影锁下固定；固定成功之前不切换current指针。
         cur.execute(
             f"""WITH members AS MATERIALIZED (
@@ -613,15 +628,18 @@ def list_targets(
             join_round = "COALESCE(m.latest_requested_round_id,%s)"
             join_args = [controls["initial_round_id"]]
             outcome = "COALESCE(tr.outcome,(SELECT e.key FROM jsonb_each_text(m.current_contribution) e WHERE e.value::bigint=1 LIMIT 1),'pending_submit')"
+        outcome = target_status_sql(outcome)
         clauses = ["m.selection_id=%s", "m.ordinal>%s"]
         args = [*join_args, selection_id, after_ordinal]
         if outcomes:
             clauses.append(f"{outcome}=ANY(%s)")
-            args.append([outcomes] if isinstance(outcomes, str) else outcomes)
+            args.append([public_result_status(value) for value in ([outcomes] if isinstance(outcomes, str) else outcomes)])
         if q:
             clauses.append("(m.display_snapshot->>'email' ILIKE %s OR m.target_id::text=%s)")
             args.extend(["%" + str(q)[:120] + "%", str(q)[:120]])
-        extra, extra_args = result_predicate({"reason_codes": reason_codes, "result_filters": result_filters})
+        reason_ids = public_reason_target_ids(cur, batch_id, reason_codes) if reason_codes else None
+        extra, extra_args = result_predicate({"reason_codes": reason_codes, "result_filters": result_filters},
+                                             reason_target_ids=reason_ids)
         clauses.append(extra)
         args.extend(extra_args)
         cur.execute(
@@ -638,14 +656,24 @@ def list_targets(
         target_ids = [x["target_round_id"] for x in rows[:size] if x["target_round_id"]]
         if target_ids:
             cur.execute(
-                f"""SELECT DISTINCT ON(target_round_id) target_round_id,task_id_snapshot AS task_id,run_id_snapshot AS run_id
-              FROM {table("operation_batch_run_links")} WHERE target_round_id=ANY(%s) AND relation IN ('owned_root','owned_continuation')
-              ORDER BY target_round_id,execution_generation DESC,id DESC""",
+                f"""SELECT DISTINCT ON(link.target_round_id) link.target_round_id,link.task_id_snapshot AS task_id,
+              link.run_id_snapshot AS run_id,r.result_summary AS source_summary,r.error_message AS source_message,
+              r.error_code AS source_error_code
+              FROM {table("operation_batch_run_links")} link LEFT JOIN {table("operation_runs")} r ON r.id=link.run_id_snapshot
+              WHERE link.target_round_id=ANY(%s) AND link.relation IN ('owned_root','owned_continuation')
+              ORDER BY link.target_round_id,link.execution_generation DESC,link.id DESC""",
                 (target_ids,),
             )
             links = {x["target_round_id"]: dict(x) for x in cur.fetchall()}
             for item in rows:
                 item.update(links.get(item["target_round_id"], {}))
+        for item in rows:
+            source_summary = item.pop("source_summary", None)
+            item["result"] = public_target_result(dict(item["result"], state=item["outcome"]),
+                summary=source_summary, message=item.pop("source_message", None),
+                error_code=item.pop("source_error_code", None))
+            if item["result"].get("reason"):
+                item["reason_code"] = item["result"]["reason"]["code"]
         return {
             "items": rows[:size],
             "summary_revision": controls["summary_revision"],
@@ -659,9 +687,10 @@ def list_targets(
 def get_round(batch_id: int, round_id: int) -> dict:
     bulk_schema.require_readable()
     with connect() as conn, conn.cursor() as cur:
-        return require_row(
+        row = require_row(
             cur, f"SELECT * FROM {table('operation_batch_rounds')} WHERE id=%s AND batch_id=%s", (round_id, batch_id)
         )
+        return public_round(preserve_partial_counts(cur, row, round_id=round_id))
 
 
 def list_rounds(batch_id: int, *, limit: int = 100, after_round_no: int | None = None) -> dict:
@@ -674,7 +703,8 @@ def list_rounds(batch_id: int, *, limit: int = 100, after_round_no: int | None =
           AND (%s::bigint IS NULL OR round_no<%s) ORDER BY round_no DESC LIMIT %s""",
             (batch_id, after_round_no, after_round_no, size + 1),
         )
-        rows = [dict(row) for row in cur.fetchall()]
+        raw_rows = [dict(row) for row in cur.fetchall()]
+        rows = [public_round(preserve_partial_counts(cur, row, round_id=row["id"])) for row in raw_rows]
         return {
             "items": rows[:size],
             "page": {

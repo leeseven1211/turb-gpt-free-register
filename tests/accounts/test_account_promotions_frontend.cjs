@@ -432,7 +432,7 @@ test('各国尚未查询只显示待查询，未知 Plus 不受 Go 免费影响'
     {country: 'JP', status: 'success', result: {account_promotions: [goTrial]}},
   ]});
   assertSinglePromotion(unknown, '待查询');
-  assert.match(promotionTooltip(unknown), /Plus: 待核验|Plus: 待查询/);
+  assert.match(promotionTooltip(unknown), /Plus: 待复查|Plus: 待查询/);
   assert.doesNotMatch(promotionTooltip(unknown), /Go:/);
 });
 
@@ -641,7 +641,7 @@ test('多国任务精简结果只显示套餐和最佳优惠，完整浮窗保�
   assert.doesNotMatch(tooltip, /国家查询|个国家成功|3\/3/);
 });
 
-test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询与待核验', () => {
+test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询与待复查', () => {
   const compact = account_promotions => view.accountTaskResultText({
     task_type: 'plan_check', status: 'success', result_summary: {...checked, account_promotions},
   }, true);
@@ -652,7 +652,7 @@ test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询�
   ]), /^free · Plus:? 五折 2个月$/);
   assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'none'}]), /^无优惠$/);
   assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'pending'}]), /待查询/);
-  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'unknown'}]), /待核验/);
+  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'unknown'}]), /待复查/);
   assert.doesNotMatch(view._accountTaskPromotionSummary([
     {...goTrial, plan: 'plus', stale: true}, {...goTrial, plan: 'plus', stale: false},
   ]), /历史/);

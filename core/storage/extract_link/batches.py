@@ -313,10 +313,26 @@ def batch_rows(*, page: int = 1, page_size: int = 20, batch_id: int | None = Non
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
+def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> dict[int, dict]:
     """按每个逻辑任务的最新 Run 聚合，不载入账号令牌、任务配置或历史 Run。"""
     if not batch_ids:
         return {}
+    if public_status:
+        from core.storage.extract_link.jobs import (
+            _workbench_projection_sql, _workbench_where, workbench_status_conditions,
+        )
+
+        operation.init()
+        clauses, params = _workbench_where(batch_ids=batch_ids)
+        projection = _workbench_projection_sql(clauses, public_status=True)
+        conditions = workbench_status_conditions(public_status=True)
+        columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in conditions.items()]
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""WITH {projection} SELECT batch_id,COUNT(*) AS all,
+                {','.join(columns)},COUNT(*) FILTER (WHERE task_status='queued') AS task_queued,
+                COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded
+                FROM projected GROUP BY batch_id""", tuple(params))
+            return {int(row['batch_id']): dict(row) for row in cur.fetchall()}
     from core.storage.extract_link.jobs import _WORKBENCH_STATUS_SQL, _workbench_timestamp_sql
 
     operation.init()

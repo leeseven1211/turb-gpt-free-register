@@ -22,7 +22,7 @@ class BulkResultTests(TestCase):
         for key in catalog.OPERATIONS:
             with self.subTest(key=key):
                 value = results.project_one({"run": {"status": "success"}}, operation_key=key)
-                self.assertEqual(value["state"], "attention_required")
+                self.assertEqual(value["state"], "failed")
                 self.assertTrue(value["reason"]["code"].endswith("missing"))
 
     def test_setup_receipt_list_is_confirmed_without_guessing_change_kind(self):

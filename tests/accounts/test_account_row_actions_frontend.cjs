@@ -16,7 +16,7 @@ function render(name, row) {
 }
 
 function loadFunctions(names, dependencies = {}) {
-  const context = {...dependencies};
+  const context = {accountTaskAdmissionReasons: () => [], accountTaskAdmissionWaitMarkup: () => '', ...dependencies};
   vm.createContext(context);
   for (const name of names) {
     const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
@@ -65,8 +65,8 @@ test('已出链后支付失败或待确认保留提链成功事实，包括带�
   });
   for (const [payment, status, expected] of [
     ['failed', 'failed', '提链成功 · 支付失败'],
-    ['unknown', 'attention_required', '提链成功 · 支付待确认'],
-    ['pending', 'partial_success', '提链成功 · 支付待确认'],
+    ['unknown', 'attention_required', '提链成功 · 支付响应缺失'],
+    ['pending', 'partial_success', '提链成功 · 支付处理中'],
     ['succeeded', 'success', '提链成功 · 支付成功'],
   ]) {
     assert.equal(context.accountTaskResultText({
@@ -85,8 +85,8 @@ test('空摘要和未确认状态不会误报提链失败，明确失败优先�
   for (const [status, expected] of [
     ['queued', '等待执行'], ['running', '执行中'], ['cancelled', '任务已取消'],
     ['stopped', '任务已中断'], ['interrupted', '任务已中断'],
-    ['request_unknown', '提链结果待确认'], ['attention_required', '提链结果待确认'],
-    ['partial_success', '提链结果待确认'], ['unknown', '提链结果待确认'],
+    ['request_unknown', '提链失败 · 平台响应记录缺失'], ['attention_required', '提链失败 · 平台响应记录缺失'],
+    ['partial_success', '提链失败 · 平台响应记录缺失'], ['unknown', '提链失败 · 平台响应记录缺失'],
     ['success', '提链结果未记录'], ['', '提链结果未记录'], ['failed', '提链失败'],
   ]) {
     assert.equal(context.accountTaskResultText({task_type: 'extract_link', status}), expected);
@@ -98,7 +98,7 @@ test('空摘要和未确认状态不会误报提链失败，明确失败优先�
   assert.equal(context.accountTaskResultText({
     task_type: 'extract_link', status: 'success',
     result_summary: {extraction_status: 'unknown', ok: false},
-  }), '提链结果待确认');
+  }), '提链失败 · 平台响应记录缺失');
 });
 
 test('旧提链摘要继续识别成功、失败和已有消息', () => {
@@ -132,7 +132,7 @@ test('任务列表支付异常仍显示提链成功并保留错误徽标和详�
   });
   for (const [task_type, result_summary, expected] of [
     ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功 · 支付失败'],
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功 · 支付待确认'],
+    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功 · 支付响应缺失'],
     ['extract_link', {extraction_status: 'failed'}, '支付&lt;失败&gt;'],
     ['live_check', {}, '支付&lt;失败&gt;'],
   ]) {

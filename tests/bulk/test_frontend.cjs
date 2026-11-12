@@ -120,6 +120,7 @@ test('旧任务中心批量重跑不明回执不能换目标重发，明确拒�
 function renderingContext() {
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
   const labels=source.slice(source.indexOf('  const labels ='),source.indexOf('  const terminal ='));
+  const stateHelpers=source.slice(source.indexOf('  const failedAliases ='),source.indexOf('  const operationNames ='));
   const label=source.slice(source.indexOf('  const label ='),source.indexOf('  const busy ='));
   const business=source.slice(source.indexOf('  function renderBusiness('),source.indexOf('  async function loadTargets('));
   const result=source.slice(source.indexOf('  function resultText('),source.indexOf('  function targetId('));
@@ -127,7 +128,7 @@ function renderingContext() {
   const sandbox={Object,Number,String,host,$b:()=>host,preserveMarkup:(element,markup)=>{element.innerHTML=markup;},
     text:value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])),
     facetLabel:(_field,value)=>({none:'无优惠',free_trial:'免费试用',other_promo:'其他优惠'}[value]||value)};
-  vm.createContext(sandbox);vm.runInContext(`${labels}\n${label}\n${business}\n${result}`,sandbox);return sandbox;
+  vm.createContext(sandbox);vm.runInContext(`${labels}\n${stateHelpers}\n${label}\n${business}\n${result}`,sandbox);return sandbox;
 }
 test('五类功能的服务端统计维度都展示中文且保留数量，不泄露内部键',()=>{
   const ctx=renderingContext();
@@ -151,16 +152,16 @@ test('套餐明细区分真实优惠变化和不可比较，待执行不显示�
   assert.equal(incomparable.includes('优惠变化'),false);assert.equal(incomparable.includes('not_comparable'),false);
   assert.equal(ctx.resultText({...result,query_outcome:'pending',comparison:'new_offer'}),'等待本轮查询结果');
   const unconfirmed=ctx.resultText({query_outcome:'unconfirmed',plus_offer_kind:'unknown',comparison:'not_comparable'});
-  assert.equal(unconfirmed,'查询待确认');
+  assert.equal(unconfirmed,'查询失败');
 });
 test('AT 刷新展示本轮结果，确认与失败统计不显示内部字段名',()=>{
   const ctx=renderingContext();
-  for(const [outcome,title]of Object.entries({pending:'等待本轮 AT 刷新',success:'本轮 AT 刷新成功',failed:'本轮 AT 刷新失败',unconfirmed:'本轮 AT 刷新待确认',not_executed:'本轮未执行 AT 刷新'})){
+  for(const [outcome,title]of Object.entries({pending:'等待本轮 AT 刷新',success:'本轮 AT 刷新成功',failed:'本轮 AT 刷新失败',unconfirmed:'本轮 AT 刷新失败',not_executed:'本轮未执行 AT 刷新'})){
     assert.equal(ctx.resultText({refresh_outcome:outcome,confirmation:'unconfirmed'}),title);
   }
   ctx.renderBusiness({'account.token_refresh.confirmed':8,'account.token_refresh.unconfirmed':2,'account.token_refresh.failed':3});
   assert.ok(ctx.host.innerHTML.includes('刷新'));
-  for(const value of [8,2,3])assert.ok(ctx.host.innerHTML.includes(`<dd>${value}</dd>`));
+  for(const value of [8,5])assert.ok(ctx.host.innerHTML.includes(`<dd>${value}</dd>`));
   assert.equal(ctx.host.innerHTML.includes('account.token_refresh'),false);
 });
 
@@ -344,7 +345,7 @@ test('查看历史轮次时暂停和继续仍控制整个批次，取消保留�
   const helper=source.slice(source.indexOf('  async function control('),source.indexOf('  function fromAccounts('));
   const calls=[];let confirms=0;
   const ctx={state:{nav:{batch_id:'71',round_id:'19'},detail:{control:{revision:7},summary:{queued:3}}},
-    $b:()=>({disabled:false}),clearError:()=>{},notice:()=>{},schedule:()=>{},report:error=>{throw error;},
+    $b:()=>({disabled:false}),resultCounts:value=>value,clearError:()=>{},notice:()=>{},schedule:()=>{},report:error=>{throw error;},
     confirmAction:async()=>{confirms++;return true;},intent:async(scope,path,body)=>calls.push({scope,path,body:plain(body)}),
     loadDetail:async()=>{ctx.state.detail.control.revision++;}};
   vm.createContext(ctx);vm.runInContext(helper,ctx);
@@ -408,4 +409,40 @@ test('状态字典不再出现同名展示',()=>{
   const line=source.slice(source.indexOf('  const labels ='),source.indexOf('  const terminal =')).split('\n')[0];
   const values=[...line.matchAll(/:'([^']+)'/g)].map(match=>match[1]);
   assert.equal(new Set(values).size,values.length);
+});
+
+
+test('历史回执异常统一计入失败，旧深链也进入失败筛选',()=>{
+  const ctx=renderingContext();
+  assert.deepEqual(plain(ctx.resultCounts({success:3,failed:2,attention_required:4,request_unknown:1,unconfirmed:2})),{success:3,failed:9});
+  const page=context();
+  page.BulkTasks.restoreNavigation({view:'detail',batch_id:'71',result_state:'attention_required'});
+  assert.equal(page.BulkTasks.navigationState().result_state,'failed');
+  for(const result of [{confirmation:'unconfirmed'},{credential_confirmation:'failed'},{refresh_outcome:'unconfirmed'},{query_outcome:'unconfirmed'}]){
+    assert.doesNotMatch(ctx.resultText(result),/待确认|未确认|待核验|结果未知/);
+    assert.match(ctx.resultText(result),/失败/);
+  }
+});
+
+test('失败账号明细优先展示中文错误原因和分类码，诊断文案转义',()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helpers=source.slice(source.indexOf('  function targetId('),source.indexOf('  function updateSelected('));
+  const badge=source.slice(source.indexOf('  function badge('),source.indexOf('  function badge(')+source.slice(source.indexOf('  function badge(')).indexOf('\n'));
+  const ctx=renderingContext();const host=ctx.host;
+  ctx.state={targets:{items:[{id:'4',account_id:'2413',state:'attention_required',task_id:'19',result:{result:{refresh_outcome:'unconfirmed'},reason:{code:'password_verify_http_error',display_code:'OA-PWD-409',summary:'密码验证返回 HTTP 409（invalid_state）<诊断>'}}}]},selected:new Set(),targetPrev:[]};
+  ctx.document={activeElement:null};ctx.window={getSelection:()=>null};
+  ctx.$b=selector=>selector==='[data-bulk-targets]'?host:selector==='[data-bulk-select-page]'?null:{};
+  ctx.attrEsc=ctx.text;ctx.short=value=>value;ctx.updateSelected=()=>{};
+  vm.runInContext(`${badge}\n${helpers}`,ctx);ctx.renderTargets();
+  assert.match(host.innerHTML,/密码验证返回 HTTP 409（invalid_state）&lt;诊断&gt;/);
+  assert.match(host.innerHTML,/OA-PWD-409/);
+  assert.doesNotMatch(host.innerHTML,/待确认|未确认|<诊断>/);
+});
+
+
+test('设置和授权仍在排队或执行时显示等待结果，保留已有凭据事实',()=>{
+  const ctx=renderingContext();
+  assert.equal(ctx.resultText({confirmation:'pending'}),'等待本轮设置结果');
+  assert.equal(ctx.resultText({credential_confirmation:'pending',existing_asset_preserved:true}),'等待本轮授权结果');
+  assert.equal(ctx.resultText({credential_confirmation:'failed',existing_asset_preserved:true}),'本轮授权失败 · 已有可用凭证保留');
 });

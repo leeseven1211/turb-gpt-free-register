@@ -368,7 +368,7 @@ test('任务卡分别呈现预检、提链、支付和 Plus 状态', () => {
   assert.match(html, /预检/);
   assert.match(html, /提链成功/);
   assert.match(html, /支付成功/);
-  assert.match(html, /Plus 待确认/);
+  assert.match(html, /Plus 尚未核验/);
   assert.match(html, /data-stage="payment"/);
   assert.match(html, /data-stage="plus"/);
 });
@@ -957,7 +957,7 @@ test('支付成功待核验、出链成功未支付和提链失败呈现不同�
   assert.equal(api.outcome({task_status:'success',mode:'extract_only',extraction_status:'success',payment_status:'unpaid'}).title,'提链成功');
   assert.equal(api.outcome({task_status:'failed',extraction_status:'failed',payment_status:'unpaid'}).title,'提链未完成');
   assert.equal(api.outcome({task_status:'failed',extraction_status:'failed',payment_status:'failed'}).title,'提链未完成');
-  assert.equal(api.outcome({task_status:'request_unknown',extraction_status:'failed',payment_status:'unpaid'}).title,'平台结果 · 等待确认');
+  assert.equal(api.outcome({task_status:'request_unknown',extraction_status:'failed',payment_status:'unpaid'}).title,'提链失败');
 });
 
 test('独立套餐已核实的 Plus 到账与平台支付待确认分别展示', () => {
@@ -966,16 +966,17 @@ test('独立套餐已核实的 Plus 到账与平台支付待确认分别展示',
     extraction_status:'success', payment_status:'request_unknown', plus_status:'confirmed'};
   const outcome = api.outcome(task);
   assert.equal(outcome.state, 'Plus 已到账');
-  assert.equal(outcome.title, 'Plus 已到账 · 支付待确认');
+  assert.equal(outcome.title, 'Plus 已到账 · 支付响应缺失');
   assert.match(outcome.copy, /本地套餐已核实/);
   const html = api.renderCard(task);
   assert.match(html, /Plus 已到账/);
-  assert.match(html, /结果待确认/);
+  assert.match(html, /支付响应缺失/);
+  assert.doesNotMatch(html, /待确认|未确认/);
   assert.doesNotMatch(html, /支付成功/);
-  assert.equal(api.outcome({...task, plus_status:'not_applicable'}).title, '提链成功 · 后续结果待确认');
-  assert.equal(api.outcome({...task, mode:'extract_only'}).title, '提链成功 · 后续结果待确认');
+  assert.equal(api.outcome({...task, plus_status:'not_applicable'}).title, '提链成功 · 后续处理失败');
+  assert.equal(api.outcome({...task, mode:'extract_only'}).title, '提链成功 · 后续处理失败');
   assert.equal(api.outcome({...task, payment_status:'failed'}).title, '提链完成 · 支付失败');
-  assert.equal(api.outcome({...task, extraction_status:'failed'}).title, '平台结果 · 等待确认');
+  assert.equal(api.outcome({...task, extraction_status:'failed'}).title, '提链失败');
 });
 
 test('停止查询的远端运行快照不再显示本地运行中', () => {
@@ -1043,7 +1044,7 @@ test('支付平台核验到账与仅支付成功分别展示', () => {
 
 test('提链成功事实独立于任务后续失败和待确认，结果区不反写提链失败', () => {
   const {api} = createView();
-  for (const [status, title] of [['failed','提链成功 · 后续处理失败'], ['attention_required','提链成功 · 后续结果待确认'], ['request_unknown','提链成功 · 后续结果待确认']]) {
+  for (const [status, title] of [['failed','提链成功 · 后续处理失败'], ['attention_required','提链成功 · 后续处理失败'], ['request_unknown','提链成功 · 后续处理失败']]) {
     const task = {task_status:status, extraction_status:'success', payment_status:'unpaid', has_extract_link:true};
     assert.equal(api.outcome(task).title, title);
     assert.doesNotMatch(api.renderCard(task), /提链未完成/);
@@ -1631,4 +1632,17 @@ test('节点 A 迟到的付款信息不能覆盖当前任务，复制二维码�
   events.click({target: {closest: selector => selector === '[data-detail-copy]' ? {dataset: {detailCopy: '当前任务二维码'}} : null}});
   await Promise.resolve();
   assert.deepEqual(copied, ['当前任务二维码']);
+});
+
+
+test('提链失败和后续失败卡片将错误摘要作为文本转义，保留原诊断', () => {
+  const {api} = createView();
+  const summary = '<img src=x onerror="alert(1)">&<svg/onload=alert(2)>';
+  for (const extraction_status of ['failed', 'success']) {
+    const task = {task_id:'safe-task', task_status:'attention_required', extraction_status, error_info:{summary}};
+    const html = api.renderCard(task);
+    assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;&amp;&lt;svg\/onload=alert\(2\)&gt;/);
+    assert.doesNotMatch(html, /<img|<svg\/onload|onerror="alert/);
+    assert.equal(task.error_info.summary, summary);
+  }
 });

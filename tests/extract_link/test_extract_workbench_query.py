@@ -86,6 +86,92 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         self.assertEqual(expected_ids, {item["task_id"] for item in all_items
                                        if extract_link_service._workbench_status_matches(item, "awaiting_payment")})
 
+    def test_public_missing_response_is_failed_in_filter_counts_detail_and_batch(self):
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="提链响应失败", requested_count=1,
+                                               data={"workbench_batch": True, "submission_complete": True})
+        task = self.task(status="attention_required", batch_id=batch['id'], mode="auto_payment", state={
+            "extraction_state": "pending", "payment_state": "unknown", "plus_status": "not_applicable",
+        })
+        result = extract_link_service.list_workbench_tasks(status="failed", public_status=True, page_size=1)
+        self.assertEqual(1, result['total'])
+        self.assertEqual(1, result['counts']['failed'])
+        item = result['items'][0]
+        self.assertEqual(task['id'], item['task_id'])
+        self.assertEqual(('failed', 'failed', 'failed'),
+                         (item['task_status'], item['extraction_status'], item['payment_status']))
+        self.assertEqual('extraction', item['failure_stage'])
+        self.assertTrue(item['error_code'])
+        detail = extract_link_service.extract_workbench_task_detail(task['id'], public_status=True)
+        self.assertEqual(item['task_status'], detail['item']['task_status'])
+        self.assertEqual('failed', detail['history'][0]['status'])
+        grouped = extract_link_service.workbench_batch_detail(batch['id'], public_status=True)
+        self.assertEqual(result['counts']['failed'], grouped['counts']['failed'])
+        self.assertEqual('attention_required', operation.get_run(task['run']['id'])['status'])
+        self.assertEqual('request_unknown', extract_link_service.list_workbench_tasks()['items'][0]['task_status'])
+
+    def test_public_projection_preserves_active_waiting_links_paid_and_plus_facts(self):
+        active = self.task(status="running", mode="auto_payment", state={
+            "extraction_state": "unknown", "payment_state": "unknown", "plus_status": "pending",
+        })
+        paid = self.task(status="attention_required", mode="auto_payment", state={
+            "extraction_state": "succeeded", "payment_state": "succeeded", "plus_status": "confirmed",
+            "links": ["https://pay.example.test/link"],
+        })
+        result = extract_link_service.list_workbench_tasks(public_status=True)
+        items = {item['task_id']: item for item in result['items']}
+        self.assertEqual(('running', 'pending', 'pending_payment'), (
+            items[active['id']]['task_status'], items[active['id']]['extraction_status'], items[active['id']]['payment_status']))
+        self.assertEqual(('success', 'paid', 'confirmed'), (
+            items[paid['id']]['extraction_status'], items[paid['id']]['payment_status'], items[paid['id']]['plus_status']))
+        self.assertTrue(items[paid['id']]['has_extract_link'])
+        for bucket in ('processing', 'failed', 'payment_succeeded', 'extraction_succeeded', 'plus_confirmed', 'needs_review'):
+            filtered = extract_link_service.list_workbench_tasks(status=bucket, public_status=True)
+            self.assertEqual(filtered['counts'][bucket], filtered['total'])
+        summary = extract_link_service.workbench_summary(public_status=True)
+        self.assertEqual(result['counts']['processing'], summary['processing'])
+
+    def test_public_missing_response_preserves_known_transport_error_and_failure_stage(self):
+        task = self.task(status='attention_required', mode='auto_payment', summary={
+            'failure_stage': 'access_token', 'extraction_status': 'pending', 'payment_status': 'unknown',
+        })
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET error_message=%s WHERE id=%s",
+                        ('TimeoutError: connection timed out', task['run']['id']))
+        item = extract_link_service.list_workbench_tasks(public_status=True)['items'][0]
+        self.assertEqual('external.network', item['error_code'])
+        self.assertEqual('access_token', item['failure_stage'])
+
+    def test_public_history_preserves_legacy_links_partial_success_and_each_run_payment_facts(self):
+        legacy = self.task(provider="legacy", status="success", summary={
+            "has_link": True, "remote_job_id": "saved-link", "private_candidate": "private-run-candidate",
+        })
+        legacy_detail = extract_link_service.extract_workbench_task_detail(legacy["id"], public_status=True)
+        self.assertEqual("success", legacy_detail["item"]["extraction_status"])
+        self.assertEqual("success", legacy_detail["history"][0]["extraction_status"])
+        self.assertEqual("success", legacy_detail["history"][0]["status"])
+        self.assertNotIn("error_code", legacy_detail["history"][0])
+        self.assertNotIn("private-run-candidate", repr(legacy_detail))
+
+        partial = self.task(provider="huanguang", status="attention_required", mode="auto_payment", summary={
+            "requested_status": "partial_success", "cause_code": "refresh_local_commit_failed",
+        }, state={"extraction_state": "failed", "payment_state": "succeeded", "plus_status": "confirmed",
+                  "summary": {"extraction_ever_succeeded": True}, "links": ["https://pay.example.test/saved"]})
+        first_run = partial["run"]["id"]
+        second = operation.retry_runtime_task(partial["id"])
+        extract_link_jobs.save_provider_job(second["id"], "huanguang", "new-run", {
+            "extraction_state": "pending", "payment_state": "not_started", "plus_status": "unknown",
+        }, {})
+        detail = extract_link_service.extract_workbench_task_detail(partial["id"], public_status=True)
+        first, current = detail["history"]
+        self.assertEqual(("partial_success", "success", "paid", "confirmed"), (
+            first["status"], first["extraction_status"], first["payment_status"], first["plus_status"]))
+        self.assertEqual("auto_payment", first["mode"])
+        self.assertEqual(("queued", "pending", "unpaid"), (
+            current["status"], current["extraction_status"], current["payment_status"]))
+        self.assertEqual("attention_required", operation.get_run(first_run)["status"])
+        self.assertEqual("partial_success", operation.get_run(first_run)["result_summary"]["requested_status"])
+        self.assertNotIn("private-marker", repr(detail))
+
     def test_payment_unknown_and_plus_failures_remain_in_needs_review_list_and_summary(self):
         expected_ids = set()
         scenarios = (

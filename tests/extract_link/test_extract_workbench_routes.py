@@ -152,6 +152,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             query="person",
             page=2,
             page_size=25,
+            public_status=True,
         )
         payload = response.get_json()
         self.assertEqual(1, payload["total"])
@@ -208,6 +209,7 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             query="",
             page=1,
             page_size=20,
+            public_status=True,
         )
 
     def test_task_list_filters_batch_and_keeps_batch_reference(self):
@@ -427,8 +429,8 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
             response = self.client.get("/api/extract-workbench/batches?page=2&page_size=10")
             detail_response = self.client.get("/api/extract-workbench/batches/7")
         self.assertEqual(200, response.status_code)
-        list_batches.assert_called_once_with(page=2, page_size=10)
-        detail.assert_called_once_with(7)
+        list_batches.assert_called_once_with(page=2, page_size=10, public_status=True)
+        detail.assert_called_once_with(7, public_status=True)
         item = response.get_json()["items"][0]
         self.assertEqual(4, item["workers"])
         self.assertEqual(98, item["counts"]["all"])

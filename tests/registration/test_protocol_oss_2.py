@@ -336,7 +336,9 @@ def test_known_profile_rejection_preserves_safe_cause_and_unknown_account_result
     for summary in ({}, result):
         info = classify_task_error(result["error"], task_type="registration", result_summary=summary)
         assert info["code"] == cause_code
-        assert info["summary"] == description
+        assert info["summary"] == (
+            "远端提示账号已存在，本次未取得完整登录会话" if cause_code == "account_create_user_already_exists" else description
+        )
 
 
 @pytest.mark.parametrize("status,code", [

@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261110-list-pattern-a-1') }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-bulk-controls-v1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-bulk-errors-integrated-01') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-local-review-01') }}">
   <style>
@@ -471,7 +471,7 @@
           <div class="extract-workbench-create-controls extract-workbench-candidate-filters">
           <label class="extract-workbench-account-search">账号搜索<input type="search" data-workbench-account-query placeholder="搜索邮箱" autocomplete="off"></label>
           <label>邮箱来源<select data-workbench-account-source><option value="">全部来源</option></select></label>
-          <label>提链状态<select data-workbench-extract-status><option value="not_succeeded">未成功提链</option><option value="all">全部可用账号</option><option value="failed">失败 / 待确认</option><option value="never">从未提链</option><option value="success">已成功提链</option></select></label>
+          <label>提链状态<select data-workbench-extract-status><option value="not_succeeded">未成功提链</option><option value="all">全部可用账号</option><option value="failed">失败</option><option value="never">从未提链</option><option value="success">已成功提链</option></select></label>
           <label>套餐优惠<select data-workbench-promotion><option value="eligible" selected>全部可提链优惠</option><option value="all">全部（有无优惠）</option><option value="free_trial">免费试用</option><option value="half_price">半价</option><option value="other_discount">其他折扣</option><option value="other_promo">其他优惠</option><option value="none">无优惠</option></select></label>
           <label>注册日期从<input type="date" data-workbench-date-from></label>
           <label>注册日期至<input type="date" data-workbench-date-to></label>
@@ -1246,20 +1246,20 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261111-workbench-shell-revert-01') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261109-registration-workers') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-create-v5') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261110-list-pattern-a-c2a-3') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-paused-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-task-error-classification-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261109-delete-evidence-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261109-butler-availability-stop') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261112-task-error-classification-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261112-task-error-classification-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261110-list-pattern-a-1') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261111-workbench-shell-revert-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-local-review-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261112-task-error-classification-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261112-bulk-controls-v1') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>

@@ -26,6 +26,7 @@ from core.bulk_operations import execution as bulk_execution
 from core.operations.runtime import OperationAccountDeactivated
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES, classify_task_error
 from core.operations.progress import build_progress_snapshot
+from core.operations.presentation import public_result_status, public_result_status_sql
 from core.operations.stages import flow_for, normalize_stage, normalize_step_state, resolve_step, stage_label
 
 
@@ -2881,7 +2882,7 @@ def _operation_task_where(
     batch_id: int | None = None, task_id: str = "", target: str = "",
     target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
-    exclude: str = "", run_count_expression: str | None = None,
+    exclude: str = "", run_count_expression: str | None = None, public_status: bool = False,
 ) -> tuple[list[str], list[Any]]:
     """Build the shared task-list predicate, optionally leaving one facet unfiltered."""
     where: list[str] = ["COALESCE(t.data->>'deleted_by_user','false') <> 'true'"]
@@ -2899,7 +2900,12 @@ def _operation_task_where(
             add("task_type", "t.task_type = ANY(%s)", selected_types)
     # ``r`` is the current run selected by the list query below.  Filtering on
     # it keeps a logical task out of terminal facets while a retry is active.
-    add("status", "COALESCE(r.effective_status, t.status)=%s", str(status)) if status else None
+    status_expression = "COALESCE(r.effective_status, t.status)"
+    target_expression = "t.target_status"
+    if public_status:
+        status_expression = public_result_status_sql(status_expression, "r.result_summary")
+        target_expression = public_result_status_sql(target_expression, "r.result_summary")
+    add("status", f"({status_expression})=%s", public_result_status(status) if public_status else str(status)) if status else None
     add("source", "t.source_system=%s", str(source)) if source else None
     add("batch_id", "t.batch_id=%s", int(batch_id)) if batch_id else None
 
@@ -2931,7 +2937,7 @@ def _operation_task_where(
             needle, needle, needle, needle,
         )
     if target_status:
-        add("target_status", "t.target_status=%s", str(target_status))
+        add("target_status", f"({target_expression})=%s", public_result_status(target_status) if public_status else str(target_status))
     if batch:
         needle = f"%{str(batch).strip()}%"
         add(
@@ -3071,7 +3077,7 @@ def list_tasks(
     source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
     target: str = "", target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
-    include_facets: bool = True,
+    include_facets: bool = True, public_status: bool = False,
 ) -> dict:
     init()
     page = max(1, int(page or 1))
@@ -3082,6 +3088,7 @@ def list_tasks(
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
         run_count_expression="COALESCE(run_counts.run_count, 0)",
+        public_status=public_status,
     )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
 
@@ -3091,6 +3098,8 @@ def list_tasks(
             or result
             or (status and exclude != "status")
             or (stage and exclude != "stage")
+            or (public_status and target_status and exclude != "target_status")
+            or (public_status and facet_name == "target_status")
             or facet_name in {"status", "stage"}
         )
 
@@ -3166,6 +3175,13 @@ def list_tasks(
             if current_run["id"] is not None:
                 current_run = _normalize_compatibility_run(current_run)
                 _apply_current_run_projection(item, current_run)
+            if public_status:
+                for key in ("status", "target_status"):
+                    original = item.get(key)
+                    projected = public_result_status(original, item.get("result_summary"))
+                    if original is not None and projected != original:
+                        item[f"internal_{key}"] = original
+                        item[key] = projected
             items.append(item)
         if items and not run_count:
             # 显示次数只需当前页；不为50条响应聚合所有历史Run。
@@ -3174,10 +3190,12 @@ def list_tasks(
             page_run_counts = {int(row["task_id"]): int(row["n"]) for row in cur.fetchall()}
             for item in items:
                 item["run_count"] = page_run_counts.get(int(item["id"]), 0)
+        public_status_expression = public_result_status_sql("COALESCE(r.effective_status, t.status)", "r.result_summary")
+        public_target_expression = public_result_status_sql("t.target_status", "r.result_summary")
         facet_specs = (
             ("task_type", "t.task_type", "task_type"),
-            ("status", "COALESCE(r.effective_status, t.status)", "status"),
-            ("target_status", "t.target_status", "target_status"),
+            ("status", public_status_expression if public_status else "COALESCE(r.effective_status, t.status)", "status"),
+            ("target_status", public_target_expression if public_status else "t.target_status", "target_status"),
             (
                 "stage",
                 "LOWER(COALESCE(r.effective_progress_stage, CASE WHEN r.effective_status='queued' THEN 'queued' ELSE t.current_stage END, ''))",
@@ -3200,6 +3218,7 @@ def list_tasks(
                 run_count=run_count, stage=stage, created_from=created_from,
                 created_to=created_to, result=result, exclude=exclude,
                 run_count_expression=run_count_expression,
+                public_status=public_status,
             )
             facet_where.append(f"NULLIF({expression}, '') IS NOT NULL")
             facet_clause = f" WHERE {' AND '.join(facet_where)}"
@@ -3214,7 +3233,7 @@ def list_tasks(
             facets[facet_name] = []
         if facet_queries:
             # 各列自排除条件分别保留；当前Run与次数在同一语句仅物化一次。
-            search_columns = "effective_error_message,result_summary" if q or result else "NULL::text AS effective_error_message,NULL::jsonb AS result_summary"
+            search_columns = "effective_error_message,result_summary" if q or result or public_status else "NULL::text AS effective_error_message,NULL::jsonb AS result_summary"
             cur.execute(
                 f"WITH facet_current_runs AS MATERIALIZED ("
                 f"SELECT task_id,effective_status,effective_progress_stage,{search_columns} "
@@ -3436,7 +3455,7 @@ def delete_tasks(task_ids: Iterable[int]) -> dict[str, Any]:
     }
 
 
-def get_run_progress(task_id: int, run_id: int) -> dict:
+def get_run_progress(task_id: int, run_id: int, *, public_status: bool = False) -> dict:
     """Build progress from the complete selected Run, independent of event pages."""
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -3469,13 +3488,19 @@ def get_run_progress(task_id: int, run_id: int) -> dict:
         events = [_normalize_compatibility_event(_read_event(dict(row))) for row in cur.fetchall()]
         events.sort(key=_event_time_sort_key)
     run = _normalize_compatibility_run(_row(dict(run_row)) or {})
-    return build_progress_snapshot(
+    internal_status = run.get("status")
+    if public_status:
+        run["status"] = public_result_status(internal_status, run.get("result_summary"))
+    result = build_progress_snapshot(
         int(task["id"]),
         int(run["id"]),
         str(task["task_type"] or ""),
         run,
         events,
     )
+    if public_status and internal_status != run.get("status"):
+        result["outcome"]["internal_status"] = internal_status
+    return result
 
 
 def _progress_cache_key(run: dict, last_event_id: int) -> tuple:

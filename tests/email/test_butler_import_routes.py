@@ -53,6 +53,24 @@ class ButlerImportRoutesTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/email-butler/imports/fixture/retry', json={}).status_code, 202)
         self.service.retry.assert_called_once_with('fixture')
 
+    def test_import_missing_response_is_failed_without_changing_retry_or_counts(self):
+        original = {'batch_id': 'fixture', 'status': 'partial', 'total': 3, 'completed': 3,
+                    'unknown': 2, 'failed': 0, 'imported': 1, 'can_retry': True,
+                    'counts': {'pending': 0, 'submitting': 0, 'unknown': 2, 'imported': 1, 'failed': 0},
+                    'error_counts': {'request_timeout': 2}}
+        self.service.get.return_value = original
+        response = self.client.get('/api/email-butler/imports/fixture')
+        batch = response.json['batch']
+        self.assertEqual('partial_success', batch['status'])
+        self.assertEqual(2, batch['failed'])
+        self.assertEqual(0, batch['unknown'])
+        self.assertEqual(3, sum(batch['counts'].values()))
+        self.assertEqual({'request_timeout': 2}, batch['error_counts'])
+        self.assertTrue(batch['can_retry'])
+        self.assertEqual(2, original['unknown'])
+        self.assertEqual('partial', original['status'])
+        self.service.retry.assert_not_called()
+
     def test_invalid_json_shapes_do_not_reach_service(self):
         for endpoint in ('import-preview', 'imports'):
             for body in ([], ['bad'], 'bad', None):

@@ -65,7 +65,8 @@ class C2AErrorClassificationTests(unittest.TestCase):
             },
             task_status="attention_required",
         )
-        self.assertIn("远端结果待确认", result["summary"])
+        self.assertEqual("C2A 更新请求超时，未收到更新回执", result["summary"])
+        self.assertTrue(result["reconcile_required"])
         self.assertNotIn("未更新远端账号", result["summary"])
 
     def test_arbitrary_remote_text_does_not_create_a_specific_c2a_cause(self):

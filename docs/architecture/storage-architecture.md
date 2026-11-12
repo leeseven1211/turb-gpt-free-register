@@ -56,6 +56,12 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `account_protocol_sessions` | v3 刷新 AT 使用的加密登录 Cookie、设备画像和已验证身份，绑定账号及当前邮箱，默认保存 24 小时 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
+### 公开结果与远端回执
+
+执行器保存的原始状态、远端 intent、回执、注册 Attempt 和恢复检查点独立保留。公开任务 API 通过 `core/operations/presentation.py` 将历史 `attention_required`、`request_unknown` 等终态投影为失败；只有持久化 `requested_status=partial_success` 才保留部分成功。该投影不修改注册步骤、执行状态流转、重试能力、邮箱租约或原始业务结果。
+
+列表 SQL 的状态条件、分页计数、facet 和详情使用同一公开口径。错误分类优先读取同次执行的具体 HTTP、邮箱、MFA、回调、Session 或存储证据；没有保存细项时明确标记对应阶段的诊断记录缺失，不据此推断账号停用或密码错误。批量平台历史汇总在读取时合并失败计数，按错误分类筛选时批量读取原 Run 证据，确保展示原因与重跑名单一致；正在排队或执行的请求保持等待语义。
+
 ### 批量任务
 
 批量平台复用 `operation_batches/tasks/runs`，另用上面八张表记录名单、轮次、归属与投影。账号列表和新建批次使用同一 `AccountQuery` 谓词；名单在一个数据库快照内固定，后续账号变化不改变本批成员。创建批次不逐个创建 Run，后台按窗口集合提交，账号忙时保留等待与退避。
