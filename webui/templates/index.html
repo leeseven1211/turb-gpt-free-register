@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-bulk-all-matches-01') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-workbench-integrated-01') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-workbench-search-inline-01') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_stats.css', v='20261112-workbench-stats-01') }}">
   <style>
     #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
@@ -435,8 +435,8 @@
         <div class="ew-tabsbar">
           <div class="extract-workbench-status-tabs" data-workbench-status-tabs role="group" aria-label="按任务结果筛选"></div>
           <div class="extract-workbench-filters" role="search" aria-label="筛选提链任务">
-            <label class="extract-workbench-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><button type="button" data-workbench-apply-filters aria-label="搜索任务"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"></label>
             <span class="extract-workbench-result-count" data-workbench-summary role="status">加载中…</span>
+            <label class="extract-workbench-search"><span class="extract-workbench-sr-only">搜索邮箱或任务号</span><button type="button" data-workbench-apply-filters aria-label="搜索任务"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><input type="search" data-workbench-query placeholder="搜索邮箱或任务号" autocomplete="off"></label>
           </div>
         </div>
         <div class="extract-workbench-task-list" data-workbench-tasks tabindex="0" aria-label="提链任务列表，可左右滚动查看全部列" aria-live="polite"><p class="extract-workbench-muted">加载任务中…</p></div>
