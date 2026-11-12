@@ -144,9 +144,11 @@ window.BulkTasks = (() => {
   }
   async function ensureFacets() {
     const query=AccountQuery.normalize(state.draft?.query);const signature=JSON.stringify(query);
-    const cached=state.facetsCache.get(signature);if(cached&&Date.now()-cached.at<30000){state.facets=cached.value;return;}
+    const cached=state.facetsCache.get(signature);
+    if(cached&&Date.now()-cached.at<30000){state.facets=cached.value;state.matched=cached.matched??null;if(typeof renderMatch==='function')renderMatch();return;}
+    state.matched=null;if(typeof renderMatch==='function')renderMatch();
     const data=await request(`/query-facets?query=${encodeURIComponent(signature)}`);
-    const value=data.facets||data;state.facetsCache.set(signature,{value,at:Date.now()});
+    const value=data.facets||data;state.facetsCache.set(signature,{value,matched:data.matched??null,at:Date.now()});
     if(signature===JSON.stringify(AccountQuery.normalize(state.draft?.query))){state.facets=value;state.matched=data.matched??null;if(typeof renderMatch==='function')renderMatch();}
     if(state.facetsCache.size>10)state.facetsCache.delete(state.facetsCache.keys().next().value);
   }
@@ -273,26 +275,23 @@ window.BulkTasks = (() => {
   }
   function renderMatch() {
     const bar=$b('[data-bulk-match]');if(!bar)return;
-    const count=state.matched;
-    if(count==null){bar.hidden=true;return;}
+    const count=state.draft?.source?null:state.matched;
+    const warn=$b('[data-bulk-side-warning]');
+    if(count==null){bar.hidden=true;if(warn)warn.hidden=true;return;}
     bar.hidden=false;
     const node=$b('[data-bulk-match-count]');if(node)node.textContent=String(count);
     bar.classList.toggle('is-zero',Number(count)===0);
-    const warn=$b('[data-bulk-side-warning]');
     if(warn){const big=Number(count)>=200;warn.hidden=!big;warn.textContent=big?`一次影响 ${count} 个账号，建议先限制 50 个试跑，确认结果后再放开。`:'';}
   }
   function renderFilterChips() {
     const host=$b('[data-bulk-filter-chips]');if(!host)return;
-    const filters=state.draft?.query?.filters||{};const chips=[];
-    for(const [key,value] of Object.entries(filters)){
-      if(value==null||value==='')continue;
-      if(Array.isArray(value)&&!value.length)continue;
-      chips.push(`<span class="bulk-chip">${text(facetLabel(key))} <b>${text(Array.isArray(value)?value.join('、'):value)}</b></span>`);
-      if(chips.length>=4)break;
-    }
+    host.hidden=Boolean(state.draft?.source);
+    if(host.hidden){host.innerHTML='';return;}
+    const query=AccountQuery.normalize(state.draft?.query);
+    const chips=AccountFilters.chips(query,filterSchema()).map(([,title])=>`<span class="bulk-chip">${text(title)}</span>`);
     const box=$b('[data-bulk-filter-editor]');const open=box?!box.hidden:false;
     const label=open?'收起条件':(chips.length?'编辑条件':'+ 添加条件');
-    host.innerHTML=(chips.join('')||'<span class="bulk-chip is-empty">未加条件，默认全部账号</span>')+`<button type="button" class="bulk-chip is-add" data-bulk-action="toggle-filters">${label}</button>`;
+    host.innerHTML=(chips.join('')||'<span class="bulk-chip is-empty">全部未归档账号</span>')+`<button type="button" class="bulk-chip is-add" data-bulk-action="toggle-filters">${label}</button>`;
   }
   function renderSideSummary(){
     const draft=state.draft;if(!draft)return;

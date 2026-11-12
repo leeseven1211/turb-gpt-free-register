@@ -415,7 +415,8 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
     def test_batches_list_and_detail_return_only_safe_summary(self):
         summary = {"batch_id": 7, "title": "提链批次", "provider_id": "lumen_flow", "mode": "extract_only",
                    "requested_count": 100, "started_count": 98, "skipped_count": 2, "submission_failed_count": 0, "workers": 4,
-                   "status": "running", "counts": {"all": 98, "running": 3, "cdk": "must-not-project", "paid": True},
+                   "status": "running", "counts": {"all": 98, "running": 3, "awaiting_payment": 5, "needs_review": 2,
+                       "failed": 1, "cancelled": 4, "cdk": "must-not-project", "paid": True},
                    "private_data": {"cdk": "must-not-project"}}
         with (
             patch.object(extract_workbench.extract_link_service, "list_workbench_batches", create=True,
@@ -432,6 +433,8 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         self.assertEqual(4, item["workers"])
         self.assertEqual(98, item["counts"]["all"])
         self.assertEqual(3, item["counts"]["running"])
+        for field, count in (("awaiting_payment", 5), ("needs_review", 2), ("failed", 1), ("cancelled", 4)):
+            self.assertEqual(count, item["counts"][field])
         self.assertNotIn("cdk", item["counts"])
         self.assertNotIn("paid", item["counts"])
         self.assertEqual(item, detail_response.get_json()["item"])

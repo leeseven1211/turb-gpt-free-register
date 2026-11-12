@@ -1356,11 +1356,11 @@ def _dependency_tick() -> int:
     # Do not claim a large ready backlog while the shared account-operation
     # budget is already full. The callback still rechecks the budget because
     # another producer can win the race between this snapshot and submit.
-    slots = _executor().available_slots()
-    if slots <= 0:
-        return 0
     claimed_count = 0
     try:
+        slots = _executor().available_slots()
+        if slots <= 0:
+            return 0
         candidates = _operation().list_ready_task_dependencies(
             limit=min(_DEPENDENCY_BATCH_SIZE, slots),
             initialize=False,
@@ -1409,8 +1409,8 @@ def _dependency_tick() -> int:
                     )
                 finally:
                     concurrency.release_execution(admission.context, reason="executor_submit_failed")
-    except Exception:
-        logger.exception("持久父任务依赖 dispatcher 轮询失败")
+    except Exception as exc:
+        logger.exception("dependency_scheduler_unavailable：父任务依赖调度暂不可用，保留持久队列：error_type=%s", type(exc).__name__)
     return claimed_count
 
 

@@ -81,6 +81,8 @@ class WebUIRuntimeTests(unittest.TestCase):
                 patch.object(runtime.account_task_store, "recover_interrupted", return_value=1)
             )
             init_operations = stack.enter_context(patch.object(runtime.operation_task_store, "init"))
+            init_bulk = stack.enter_context(patch("core.storage.operations.bulk.init"))
+            start_bulk = stack.enter_context(patch("core.bulk_operations.service.start_workers"))
             start_proxy_pool = stack.enter_context(patch("core.proxy.pool.start"))
             start_projection = stack.enter_context(
                 patch.object(runtime.operation_task_store, "start_projection_worker")
@@ -159,6 +161,8 @@ class WebUIRuntimeTests(unittest.TestCase):
             self.assertLess(startup_order.index("recover_plans"), startup_order.index("resume_extract"))
 
         for mock in (
+            init_bulk,
+            start_bulk,
             recover_jobs,
             recover_accounts,
             start_projection,
@@ -938,7 +942,19 @@ class WebUIRuntimeTests(unittest.TestCase):
         )
 
     def test_plan_check_failure_keeps_completed_account_steps_as_partial(self):
+        # 终态按持久账号字段读回，模拟 2FA 已写入而套餐查询仍失败。
+        account = {
+            "id": 593, "email": "mixed@example.test", "access_token": "test-access-token",
+            "totp_secret": "test-confirmed-totp", "plan_check_status": "failed",
+        }
+        settings = {
+            "password_enabled": False, "plan_check_enabled": True, "twofa_enabled": True,
+            "codex_enabled": False, "refresh_at_enabled": False,
+        }
+        plan_result = {"status": "failed", "ok": False, "message": "AT 已过期"}
+        twofa_result = {"status": "success", "ok": True, "message": "Authenticator 2FA 已启用"}
         with (
+            patch.object(runtime.db, "get_account", return_value=account),
             patch.object(runtime.account_task_store, "start_task"),
             patch.object(runtime.account_task_store, "append_event"),
             patch.object(runtime.account_task_store, "finish_task") as finish_task,
@@ -946,10 +962,12 @@ class WebUIRuntimeTests(unittest.TestCase):
                 runtime.codex_retry_service,
                 "run_twofa_worker",
                 return_value={
-                    "status": "success",
-                    "ok": True,
-                    "message": "Authenticator 2FA 已启用",
-                    "plan_check": {"status": "failed", "ok": False, "message": "AT 已过期"},
+                    "status": "partial_success",
+                    "ok": False,
+                    "message": "AT 已过期",
+                    "plan_check": plan_result,
+                    "twofa_setup": twofa_result,
+                    "step_results": {"plan_check": plan_result, "twofa": twofa_result},
                 },
             ),
             patch.object(runtime.codex_retry_service, "release"),
@@ -960,11 +978,12 @@ class WebUIRuntimeTests(unittest.TestCase):
                 task_id=1005,
                 task_trigger="manual_account_completion",
                 planned_steps=["plan_check", "twofa"],
-                settings={},
+                settings=settings,
             )
 
         self.assertEqual("partial_success", finish_task.call_args.kwargs["status"])
         self.assertEqual(["plan_check"], finish_task.call_args.kwargs["result_summary"]["pending_steps"])
+        self.assertEqual(["twofa"], finish_task.call_args.kwargs["result_summary"]["completed_steps"])
 
     def test_unsupported_account_setup_finishes_parent_as_unsupported(self):
         with (

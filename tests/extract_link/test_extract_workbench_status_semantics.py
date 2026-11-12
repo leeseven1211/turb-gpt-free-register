@@ -69,3 +69,26 @@ class ExtractWorkbenchStatusSemanticsTests(TestCase):
         item = self.item(task_status="queued", local_reconcile_halted=True)
         self.assertFalse(service._workbench_status_matches(item, "processing"))
         self.assertTrue(service._workbench_status_matches(item, "needs_attention"))
+
+    def test_manual_payment_entry_is_awaiting_payment_before_any_payment_submission(self):
+        for payment, expected in (("not_started", "awaiting_payment"), ("pending", "awaiting_payment"),
+                                  ("succeeded", "paid"), ("failed", "failed"), ("unknown", "unknown")):
+            with self.subTest(payment=payment):
+                item = service._workbench_task_item({
+                    "task_id": 1, "run_status": "success",
+                    "task_data": {"provider_id": "legacy", "mode": "manual_payment"},
+                    "public_state": {"extraction_state": "succeeded", "payment_state": payment,
+                                     "payment_links": ["https://pay.example.test/checkout"]},
+                })
+                self.assertEqual(expected, item["payment_phase"])
+
+    def test_payment_entry_does_not_start_extract_only_or_missing_manual_entry(self):
+        for mode, links in (("extract_only", ["https://pay.example.test/checkout"]), ("manual_payment", [])):
+            with self.subTest(mode=mode):
+                item = service._workbench_task_item({
+                    "task_id": 1, "run_status": "success",
+                    "task_data": {"provider_id": "legacy", "mode": mode},
+                    "public_state": {"extraction_state": "succeeded", "payment_state": "not_started",
+                                     "payment_links": links},
+                })
+                self.assertEqual("not_started", item["payment_phase"])

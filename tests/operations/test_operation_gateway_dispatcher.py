@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import os
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 from cryptography.fernet import Fernet
@@ -197,6 +198,36 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
         self.assertTrue(status["started"])
         self.assertEqual("operation-dependency-dispatcher", status["claim_owner"])
         self.assertTrue(task_gateway.stop_dependency_dispatcher(timeout=2))
+
+    def test_dependency_dispatcher_recovers_after_capacity_store_error(self):
+        """容量读取短暂失败后，原调度线程仍会继续轮询容量。"""
+        from core.operations import task_gateway
+        from core.storage.runtime_config import RuntimeConfigStoreError
+
+        recovered = threading.Event()
+        calls = []
+
+        def available_slots():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeConfigStoreError("database_OperationalError")
+            recovered.set()
+            return 0
+
+        operation = SimpleNamespace(recover_stale_task_dependencies=lambda: 0)
+        with (
+            patch.object(task_gateway, "_operation", return_value=operation),
+            patch.object(task_gateway, "_executor", return_value=SimpleNamespace(available_slots=available_slots)),
+            self.assertLogs(task_gateway.logger, level="ERROR") as captured,
+        ):
+            task_gateway.set_dependency_ready_handler(lambda _row: None)
+            self.assertTrue(task_gateway.start_dependency_dispatcher(interval_seconds=0.05))
+            try:
+                self.assertTrue(recovered.wait(2), "读取恢复后调度线程没有继续轮询")
+                self.assertTrue(task_gateway.dependency_dispatcher_status()["alive"])
+            finally:
+                task_gateway.stop_dependency_dispatcher(timeout=2)
+        self.assertIn("dependency_scheduler_unavailable", captured.output[0])
 
     def test_single_slot_rotates_initial_and_huanguang_continuation(self):
         from core.operations import task_gateway

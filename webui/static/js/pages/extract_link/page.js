@@ -15,6 +15,7 @@ let EXTRACT_WORKBENCH_POLL_TIMER = null;
 let EXTRACT_WORKBENCH_DETAIL_REQUESTS = new Map();
 let EXTRACT_WORKBENCH_PAYMENT_ENTRY = null;
 let EXTRACT_WORKBENCH_DRAWER_TRIGGER = null;
+let EXTRACT_WORKBENCH_DRAWER_SEQUENCE = 0;
 const EXTRACT_WORKBENCH_SELECTED = new Set();
 let EXTRACT_WORKBENCH_QUOTA_CACHE = {at: 0, value: null};
 let EXTRACT_WORKBENCH_PAYMENT_SEQUENCE = 0;
@@ -843,6 +844,7 @@ function extractWorkbenchRenderTasks({quiet = false} = {}) {
     task.task_id, task.task_status, task.extraction_status, task.payment_status,
     task.payment_phase, task.plus_state, task.progress?.percent, task.progress?.label,
     task.reconcile_halt?.reason, task.has_payment_entry, task.updated_at,
+    EXTRACT_WORKBENCH_SELECTED.has(String(task.task_id)),
   ]));
   if (!(quiet && signature === EXTRACT_WORKBENCH_TABLE_SIGNATURE)) {
     const filtered = Boolean(EXTRACT_WORKBENCH_STATE.status || EXTRACT_WORKBENCH_STATE.provider
@@ -921,7 +923,7 @@ async function extractWorkbenchExport(filtered = true) {
   for (const key of ['provider', 'mode', 'status', 'query', 'batch']) {
     const stateKey = key === 'provider' ? 'provider' : key === 'batch' ? 'batch' : key;
     const value = EXTRACT_WORKBENCH_STATE[stateKey];
-    if (value) params.set(key === 'batch' ? 'batch_id' : key, String(value));
+    if (value) params.set(key === 'batch' ? 'batch_id' : key === 'provider' ? 'provider_id' : key, String(value));
   }
   try {
     const response = await fetch(`/api/extract-workbench/export?${params.toString()}`, {credentials: 'same-origin'});
@@ -1045,6 +1047,16 @@ function extractWorkbenchStageChip(name, label, stage) {
 
 function extractWorkbenchDetailHtml(result) {
   const item = result?.item || {};
+  const taskId = extractWorkbenchEscape(item.task_id || '');
+  const active = ['queued', 'running', 'waiting', 'settling', 'cancelling'].includes(item.task_status);
+  const actionButton = (action, label) => `<button type="button" class="btn" data-workbench-action="${action}" data-task-id="${taskId}"${active ? ' disabled' : ''}>${label}</button>`;
+  const actions = taskId ? `<div class="ew-detail-actions" role="group" aria-label="任务操作">
+    ${actionButton('sync_status', '同步状态')}${actionButton('retry', '重跑')}
+    ${item.mode === 'auto_payment' && item.payment_status !== 'paid' ? actionButton('auto_payment', '查询自动支付') : ''}
+    <button type="button" class="btn" data-workbench-copy-email="${taskId}">复制邮箱</button>
+    ${Number(item.account_id) > 0 ? `<button type="button" class="btn" data-workbench-copy-at="${taskId}">复制 AT</button>` : ''}
+    ${item.has_extract_link ? `<button type="button" class="btn" data-workbench-link="extract" data-task-id="${taskId}">复制提链链接</button>` : ''}
+  </div>` : '';
   const events = Array.isArray(result?.events) ? result.events : [];
   const stages = item.stages || {};
   const stageRow = [
@@ -1083,6 +1095,7 @@ function extractWorkbenchDetailHtml(result) {
       }).join('')}</ol>`
     : '<p class="extract-workbench-muted">暂无阶段事件</p>';
   return `<div class="ew-detail-body">
+    ${actions}
     ${metaLine}
     <div class="ew-detail-stages">${stageRow}</div>
     ${haltLine}
@@ -1136,6 +1149,7 @@ function extractWorkbenchStartCountdown(root, expiresAt) {
 }
 
 async function extractWorkbenchFillNodeA(root, item) {
+  const sequence = root ? (root.__ewEntrySequence = (root.__ewEntrySequence || 0) + 1) : 0;
   const body = root?.querySelector?.('[data-detail-node-a-body]');
   const state = root?.querySelector?.('[data-detail-node-a-state]');
   if (!body) return;
@@ -1150,12 +1164,14 @@ async function extractWorkbenchFillNodeA(root, item) {
       `/api/extract-workbench/tasks/${encodeURIComponent(item.task_id)}/payment-entry`,
       {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})},
     );
+    if (sequence !== root.__ewEntrySequence) return;
     const entry = result?.entry;
     if (!entry) throw new Error('没有支付入口');
     body.innerHTML = extractWorkbenchNodeAEntry(entry, item);
     if (state) state.textContent = entry.qr_data || entry.qr_image_url_png || entry.qr_image_url_svg ? '二维码可用' : '支付链接';
     extractWorkbenchStartCountdown(root, entry.expires_at);
   } catch (error) {
+    if (sequence !== root.__ewEntrySequence) return;
     body.innerHTML = extractWorkbenchNodeAEmpty(error?.message || '支付入口读取失败');
     if (state) state.textContent = '不可用';
   }
@@ -1560,9 +1576,11 @@ async function extractWorkbenchShowLink(taskId, kind) {
 }
 
 function extractWorkbenchCloseDrawer() {
+  EXTRACT_WORKBENCH_DRAWER_SEQUENCE += 1;
   const drawer = extractWorkbenchNode('[data-workbench-drawer]');
   const backdrop = extractWorkbenchNode('[data-workbench-drawer-backdrop]');
   const body = extractWorkbenchNode('[data-workbench-drawer-body]');
+  if (body) body.__ewEntrySequence = (body.__ewEntrySequence || 0) + 1;
   if (body?.__ewCountdown) clearTimeout(body.__ewCountdown);
   drawer?.classList.add('hidden');
   backdrop?.classList.add('hidden');
@@ -1579,6 +1597,9 @@ async function extractWorkbenchOpenDrawer(taskId, trigger = null) {
   const title = extractWorkbenchNode('[data-workbench-drawer-title]');
   const sub = extractWorkbenchNode('[data-workbench-drawer-sub]');
   if (!drawer || !body) return;
+  const sequence = ++EXTRACT_WORKBENCH_DRAWER_SEQUENCE;
+  body.__ewEntrySequence = (body.__ewEntrySequence || 0) + 1;
+  if (body.__ewCountdown) clearTimeout(body.__ewCountdown);
   const task = EXTRACT_WORKBENCH_STATE.items.find(item => String(item.task_id) === String(taskId)) || {};
   const providerId = String(task.provider_id || 'legacy');
   const providerLabel = EXTRACT_WORKBENCH_CONFIG?.providers?.find(item => item.id === providerId)?.label
@@ -1591,9 +1612,12 @@ async function extractWorkbenchOpenDrawer(taskId, trigger = null) {
   document.body.classList.add('ew-drawer-open');
   body.innerHTML = '<p class="extract-workbench-muted">正在读取安全任务详情…</p>';
   try {
-    body.innerHTML = await extractWorkbenchLoadTaskDetail(taskId);
+    const html = await extractWorkbenchLoadTaskDetail(taskId);
+    if (sequence !== EXTRACT_WORKBENCH_DRAWER_SEQUENCE) return;
+    body.innerHTML = html;
     void extractWorkbenchFillNodeA(body, task);
   } catch (error) {
+    if (sequence !== EXTRACT_WORKBENCH_DRAWER_SEQUENCE) return;
     body.innerHTML = `<p class="extract-workbench-error">${extractWorkbenchEscape(error?.message || '详情读取失败')}</p>`;
   }
   drawer.focus?.();
@@ -1655,6 +1679,13 @@ function extractWorkbenchBindEvents() {
   if (!root || EXTRACT_WORKBENCH_BOUND) return;
   EXTRACT_WORKBENCH_BOUND = true;
   root.addEventListener('click', event => {
+    const detailCopy = event.target.closest('[data-detail-copy]');
+    if (detailCopy) {
+      void navigator.clipboard.writeText(detailCopy.dataset.detailCopy || '')
+        .then(() => showToast?.('二维码内容已复制'))
+        .catch(() => window.prompt('复制二维码内容', detailCopy.dataset.detailCopy || ''));
+      return;
+    }
     const closePayment = event.target.closest('[data-workbench-close-payment]');
     if (closePayment) { extractWorkbenchNode('[data-workbench-payment-dialog]')?.close(); return; }
     const paymentCopy = event.target.closest('[data-workbench-payment-copy]');

@@ -479,8 +479,8 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
 .ew-admission-slice { margin: 2px 0 0; font-size: 12px; color: #8a5a00; background: #fffaf0; border: 1px solid #ecd29b; border-radius: 8px; padding: 6px 10px; }
 
 /* 右侧抽屉 640px：不动列表，详情独立成层 */
-.ew-drawer-backdrop { position: fixed; inset: 0; background: rgba(15, 18, 24, .38); z-index: 60; }
-.ew-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); background: #fff; z-index: 61; display: flex; flex-direction: column; box-shadow: -12px 0 32px rgba(15, 18, 24, .18); }
+.ew-drawer-backdrop { position: fixed; inset: 0; background: rgba(15, 18, 24, .38); z-index: 1200; }
+.ew-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); background: #fff; z-index: 1201; display: flex; flex-direction: column; box-shadow: -12px 0 32px rgba(15, 18, 24, .18); }
 .ew-drawer.hidden, .ew-drawer-backdrop.hidden { display: none; }
 .ew-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border, #e6e9ee); }
 .ew-drawer-title h2 { margin: 0; font-size: 15px; word-break: break-all; }
@@ -656,3 +656,15 @@ body.ew-drawer-open { overflow: hidden; }
 .extract-workbench-page .extract-workbench-toolbar { justify-content: space-between; flex-wrap: wrap; row-gap: 8px; }
 .extract-workbench-page .ew-filters { flex-wrap: nowrap; }
 .extract-workbench-page .ew-filters select { flex: 0 0 auto; }
+
+/* 窄屏规则与桌面表格保持相同优先级，避免固定八列覆盖移动布局并裁掉操作。 */
+@media (max-width: 1120px) {
+  .extract-workbench-page .ew-head { display: none; }
+  .extract-workbench-page .ew-row { grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  .extract-workbench-page .ew-row { grid-template-columns: 24px minmax(0, 1fr); }
+  .extract-workbench-page .ew-filters,
+  .extract-workbench-page .ew-foot { flex-wrap: wrap; }
+}
+.extract-workbench-page .ew-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }

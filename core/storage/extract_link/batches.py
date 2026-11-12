@@ -317,12 +317,14 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
     """按每个逻辑任务的最新 Run 聚合，不载入账号令牌、任务配置或历史 Run。"""
     if not batch_ids:
         return {}
-    from core.storage.extract_link.jobs import _workbench_timestamp_sql
+    from core.storage.extract_link.jobs import _WORKBENCH_STATUS_SQL, _workbench_timestamp_sql
 
     operation.init()
     accounts = admin_repository._q(record_store.ACCOUNTS)
     checked_at_sql = _workbench_timestamp_sql("COALESCE(NULLIF(BTRIM(account.data->>'plan_checked_at'), ''), NULLIF(BTRIM(account.plan_last_success_at), ''), NULLIF(BTRIM(fallback.data->>'plan_checked_at'), ''), NULLIF(BTRIM(fallback.plan_last_success_at), ''))")
     payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
+    count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}"
+                     for name, condition in _WORKBENCH_STATUS_SQL.items()]
     with operation._connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""WITH raw AS (
@@ -373,23 +375,14 @@ def batch_task_counts(batch_ids: list[int]) -> dict[int, dict]:
                 FROM raw
             ), projected AS (
                 SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
+                    AND payment_status='paid'
                     AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
                     THEN 'confirmed'
                     ELSE plus END AS plus_status
                 FROM normalized
             )
             SELECT batch_id, COUNT(*) AS all,
-                COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')
-                    OR (mode='auto_payment' AND payment_status='pending_payment'
-                        AND task_status NOT IN ('attention_required','request_unknown','failed','cancelled','stopped','interrupted'))
-                    OR (payment_status='paid' AND plus_status IN ('unknown','pending','queued')))) AS processing,
-                COUNT(*) FILTER (WHERE NOT local_reconcile_halted AND task_status IN ('running','cancelling','settling','stopping')) AS running,
-                COUNT(*) FILTER (WHERE extraction_status='success') AS extraction_succeeded,
-                COUNT(*) FILTER (WHERE payment_status='paid') AS payment_succeeded,
-                COUNT(*) FILTER (WHERE plus_status='confirmed') AS plus_confirmed,
-                COUNT(*) FILTER (WHERE local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped','interrupted')
-                    OR extraction_status IN ('unknown','failed') OR payment_status IN ('request_unknown','failed')
-                    OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')) AS needs_attention,
+                {', '.join(count_columns)},
                 COUNT(*) FILTER (WHERE task_status='success') AS task_succeeded,
                 COUNT(*) FILTER (WHERE task_status='queued') AS task_queued
             FROM projected GROUP BY batch_id""",

@@ -514,8 +514,11 @@ _WORKBENCH_STATUS_SQL = {
     "extraction_succeeded": "extraction_status='success'",
     "payment_succeeded": "payment_status='paid'",
     "plus_confirmed": "plus_status='confirmed'",
-    "awaiting_payment": "NOT local_reconcile_halted AND payment_status='pending_payment' AND extraction_status='success'",
-    "needs_review": "local_reconcile_halted OR task_status IN ('request_unknown','attention_required') OR extraction_status='unknown'",
+    "awaiting_payment": """NOT local_reconcile_halted AND extraction_status='success'
+        AND (payment_status='pending_payment' OR (mode='manual_payment' AND payment_status='unpaid'))""",
+    "needs_review": """local_reconcile_halted OR task_status IN ('request_unknown','attention_required')
+        OR extraction_status='unknown' OR payment_status='request_unknown'
+        OR plus_status IN ('failed','not_confirmed') OR (payment_status='paid' AND plus_status='unknown')""",
     "failed": "task_status IN ('failed','interrupted') OR extraction_status='failed' OR payment_status='failed'",
     "cancelled": "task_status IN ('cancelled','stopped')",
     "needs_attention": """local_reconcile_halted OR task_status IN ('failed','request_unknown','cancelled','attention_required','partial_success','stopped','interrupted')
@@ -843,11 +846,9 @@ def workbench_summary() -> dict:
                     (SELECT COUNT(*) FROM today WHERE extraction_status='success') AS today_extracted,
                     (SELECT COUNT(*) FROM today WHERE plus_status='confirmed') AS today_plus_confirmed,
                     (SELECT COUNT(*) FROM projected
-                        WHERE NOT local_reconcile_halted AND payment_status='pending_payment'
-                          AND extraction_status='success') AS awaiting_payment,
+                        WHERE {_WORKBENCH_STATUS_SQL["awaiting_payment"]}) AS awaiting_payment,
                     (SELECT COUNT(*) FROM projected
-                        WHERE local_reconcile_halted OR task_status IN ('request_unknown','attention_required')
-                          OR extraction_status='unknown') AS needs_review,
+                        WHERE {_WORKBENCH_STATUS_SQL["needs_review"]}) AS needs_review,
                     (SELECT COUNT(*) FROM projected
                         WHERE NOT local_reconcile_halted
                           AND (task_status IN ('queued','running','waiting','cancelling','settling','stopping')

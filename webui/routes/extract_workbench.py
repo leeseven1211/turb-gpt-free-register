@@ -33,7 +33,7 @@ _PROMOTION_FILTERS = {"eligible", "free_trial", "half_price", "other_discount", 
 _NEVER_PROVIDERS = {"", "legacy", "lumen_flow", "huanguang", "anguang"}
 _BATCH_COUNT_FIELDS = (
     "all", "processing", "running", "extraction_succeeded", "payment_succeeded",
-    "plus_confirmed", "needs_attention",
+    "plus_confirmed", "needs_attention", "awaiting_payment", "needs_review", "failed", "cancelled",
 )
 _ITEM_FIELDS = (
     "task_id", "run_id", "account_id", "batch_id", "email", "provider_id", "mode", "link_type", "task_status",

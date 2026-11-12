@@ -86,7 +86,7 @@ _PLUS_CHECKING_RAW = {"checking", "waiting_for_payment"}
 def _payment_phase(payment: str, *, mode: str, extraction: str, summary: dict,
                    has_payment_entry: bool) -> str:
     """把平台各自的支付说法收敛成 7 个阶段，不再把待支付和结果未知混成一堆。"""
-    if mode == "extract_only" or payment == "unpaid":
+    if mode == "extract_only":
         return "not_started"
     if payment == "paid":
         return "paid"
@@ -101,6 +101,8 @@ def _payment_phase(payment: str, *, mode: str, extraction: str, summary: dict,
     if mode == "manual_payment" and has_payment_entry:
         # 手动支付：链接/二维码已经交出去，等我们这边的人付，直到真正收款前都算“待支付”。
         return "awaiting_payment"
+    if payment == "unpaid":
+        return "not_started"
     if extraction != "success" and not has_payment_entry:
         return "not_started"
     if any(token in raw for token in _PAYMENT_PROCESSING_HINTS) or summary.get("payment_order_id") or summary.get("payment_submitted_at"):
@@ -309,6 +311,23 @@ def workbench_status_matches(item: dict, status: str) -> bool:
         return payment == "paid"
     if status == "plus_confirmed":
         return plus == "confirmed"
+    if status == "awaiting_payment":
+        return (
+            not item.get("local_reconcile_halted")
+            and extraction == "success"
+            and (payment == "pending_payment" or (item.get("mode") == "manual_payment" and payment == "unpaid"))
+        )
+    if status == "needs_review":
+        return (
+            item.get("local_reconcile_halted") is True
+            or task_status in {"request_unknown", "attention_required"}
+            or extraction == "unknown" or payment == "request_unknown"
+            or plus in {"failed", "not_confirmed"} or (payment == "paid" and plus == "unknown")
+        )
+    if status == "failed":
+        return task_status in {"failed", "interrupted"} or extraction == "failed" or payment == "failed"
+    if status == "cancelled":
+        return task_status in {"cancelled", "stopped"}
     if status == "needs_attention":
         return (
             task_status in {"failed", "request_unknown", "cancelled", "attention_required", "partial_success", "stopped", "interrupted"}
@@ -357,15 +376,12 @@ def workbench_project_rows(rows: list[dict]) -> list[dict]:
 
 
 def workbench_counts(items: list[dict]) -> dict:
-    return {
-        "all": len(items),
-        "processing": sum(workbench_status_matches(item, "processing") for item in items),
-        "running": sum(workbench_status_matches(item, "running") for item in items),
-        "extraction_succeeded": sum(workbench_status_matches(item, "extraction_succeeded") for item in items),
-        "payment_succeeded": sum(workbench_status_matches(item, "payment_succeeded") for item in items),
-        "plus_confirmed": sum(workbench_status_matches(item, "plus_confirmed") for item in items),
-        "needs_attention": sum(workbench_status_matches(item, "needs_attention") for item in items),
-    }
+    from core.storage.extract_link.jobs import _WORKBENCH_STATUS_SQL
+
+    return {"all": len(items), **{
+        status: sum(workbench_status_matches(item, status) for item in items)
+        for status in _WORKBENCH_STATUS_SQL
+    }}
 
 
 def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 100) -> dict:
@@ -384,10 +400,10 @@ def preview_workbench_candidates(*, filters: dict | None = None, limit: int = 10
 
 
 def workbench_batch_summary(batch: dict, aggregate: dict) -> dict:
+    from core.storage.extract_link.jobs import _WORKBENCH_STATUS_SQL
+
     data = batch.get("data") if isinstance(batch.get("data"), dict) else {}
-    counts = {key: int(aggregate.get(key) or 0) for key in (
-        "all", "processing", "running", "extraction_succeeded", "payment_succeeded", "plus_confirmed", "needs_attention",
-    )}
+    counts = {key: int(aggregate.get(key) or 0) for key in ("all", *_WORKBENCH_STATUS_SQL)}
     requested = int(batch.get("requested_count") or 0)
     skipped = int(data.get("submission_skipped") or 0)
     failed = int(data.get("submission_failed") or 0)

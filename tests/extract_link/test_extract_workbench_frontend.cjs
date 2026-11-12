@@ -28,7 +28,7 @@ function createView({timers = null} = {}) {
       return Promise.resolve({ok: true, items: [], counts: {}, page: 1, page_size: 20, total: 0});
     },
   };
-  const context = {document, window, URL, URLSearchParams, setTimeout:timerApi.setTimeout, clearTimeout:timerApi.clearTimeout,
+  const context = {document, window, URL, URLSearchParams, fetch: (...args) => window.fetch(...args), setTimeout:timerApi.setTimeout, clearTimeout:timerApi.clearTimeout,
     LIST_FACET_LABELS:{source:{cloudflare_domain:'域名邮箱',email_butler:'Email Butler',remail:'Remail'}},
     navigator:{clipboard:{writeText:async value => copied.push(value)}}, showToast(message) { toasts.push(message); }};
   vm.createContext(context);
@@ -41,6 +41,12 @@ function createView({timers = null} = {}) {
     outcome: extractWorkbenchOutcome,
     renderTabs: extractWorkbenchRenderStatusTabs,
     renderTasks: extractWorkbenchRenderTasks,
+    bindEvents: extractWorkbenchBindEvents,
+    bulk: extractWorkbenchBulk,
+    exportTasks: extractWorkbenchExport,
+    openDrawer: extractWorkbenchOpenDrawer,
+    closeDrawer: extractWorkbenchCloseDrawer,
+    fillNodeA: extractWorkbenchFillNodeA,
     syncTasks: extractWorkbenchSyncTaskCards,
     openCreate: extractWorkbenchOpenCreate,
     copy: extractWorkbenchCopy,
@@ -1520,4 +1526,109 @@ test('静默轮询低频刷新批次导航，当前批次摘要每轮读取，�
   assert.equal(calls.filter(url => url === '/api/extract-workbench/batches/7').length, 1);
   assert.equal(view.api.state().batchDetail.counts.running, 0);
   assert.equal(writes, 0);
+});
+
+test('表格全选和清除选择立即更新行复选框，不等待任务状态变化', async () => {
+  const {api} = createView();
+  const tasks = {innerHTML: ''};
+  const all = {checked: false};
+  const count = {textContent: ''};
+  const bar = {classList: {toggle() {}}, querySelector: () => count};
+  const events = {};
+  const nodes = {'[data-workbench-tasks]': tasks, '[data-workbench-batchbar]': bar, '[data-workbench-select-all]': all};
+  api.setRoot({querySelector: selector => nodes[selector] || null, addEventListener(name, handler) { events[name] = handler; }});
+  api.setState({items: [{task_id: 42}, {task_id: 43}], total: 2});
+  api.renderTasks();
+  api.bindEvents();
+  events.change({target: {checked: true, matches: selector => selector === '[data-workbench-select-all]'}});
+  assert.match(tasks.innerHTML, /data-workbench-select="42"[^>]* checked/);
+  assert.match(tasks.innerHTML, /data-workbench-select="43"[^>]* checked/);
+  assert.equal(count.textContent, '已选 2 个');
+  await api.bulk('clear');
+  assert.doesNotMatch(tasks.innerHTML, /data-workbench-select="\d+"[^>]* checked/);
+  assert.equal(count.textContent, '已选 0 个');
+  assert.equal(all.checked, false);
+});
+
+test('详情抽屉保留失败任务重跑、自动支付查询和复制入口，执行中禁用操作', () => {
+  const {api} = createView();
+  const task = {task_id: 42, account_id: 9, mode: 'auto_payment', task_status: 'failed', has_extract_link: true};
+  const html = api.detailHtml({item: task});
+  for (const action of ['sync_status', 'retry', 'auto_payment']) {
+    assert.match(html, new RegExp(`data-workbench-action="${action}" data-task-id="42">`));
+    assert.match(api.detailHtml({item: {...task, task_status: 'running'}}), new RegExp(`data-workbench-action="${action}" data-task-id="42" disabled`));
+  }
+  assert.match(html, /data-workbench-copy-email="42"/);
+  assert.match(html, /data-workbench-copy-at="42"/);
+  assert.match(html, /data-workbench-link="extract" data-task-id="42"/);
+  assert.doesNotMatch(api.detailHtml({item: {...task, payment_status: 'paid'}}), /data-workbench-action="auto_payment"/);
+});
+
+test('当前筛选导出使用后端 provider_id 字段并保留其他筛选条件', async () => {
+  const {api, window, document} = createView({timers: createFakeTimers()});
+  const urls = [];
+  window.fetch = async url => { urls.push(url); return {ok: true, blob: async () => new Blob(['任务号'])}; };
+  document.createElement = () => ({click() {}, remove() {}});
+  document.body = {appendChild() {}};
+  api.setState({provider: 'huanguang', mode: 'manual_payment', status: 'failed', query: '示例', batch: '7'});
+  await api.exportTasks();
+  assert.equal(urls.length, 1);
+  const params = new URL(urls[0], 'http://localhost').searchParams;
+  assert.equal(params.get('provider_id'), 'huanguang');
+  assert.equal(params.has('provider'), false);
+  assert.equal(params.get('mode'), 'manual_payment');
+  assert.equal(params.get('status'), 'failed');
+  assert.equal(params.get('query'), '示例');
+  assert.equal(params.get('batch_id'), '7');
+});
+
+test('关闭抽屉或切换任务后迟到的详情响应不能覆盖当前任务', async () => {
+  const {api, window, document} = createView();
+  const body = {innerHTML: '', querySelector: () => null};
+  const drawer = {classList: {add() {}, remove() {}}, focus() {}};
+  const nodes = {'[data-workbench-drawer]': drawer, '[data-workbench-drawer-body]': body};
+  document.body = {classList: {add() {}, remove() {}}};
+  api.setRoot({querySelector: selector => nodes[selector] || null});
+  api.setState({items: [{task_id: 41}, {task_id: 42}, {task_id: 43}]});
+  const pending = {};
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => new Promise(resolve => { pending[endpoint] = resolve; });
+  const first = api.openDrawer('41');
+  const second = api.openDrawer('42');
+  pending['/api/extract-workbench/tasks/42']({item: {task_id: 42}});
+  await second;
+  const current = body.innerHTML;
+  assert.match(current, /任务 #42/);
+  pending['/api/extract-workbench/tasks/41']({item: {task_id: 41}});
+  await first;
+  assert.equal(body.innerHTML, current);
+  const third = api.openDrawer('43');
+  api.closeDrawer();
+  const closed = body.innerHTML;
+  pending['/api/extract-workbench/tasks/43']({item: {task_id: 43}});
+  await third;
+  assert.equal(body.innerHTML, closed);
+});
+
+test('节点 A 迟到的付款信息不能覆盖当前任务，复制二维码按钮可执行', async () => {
+  const {api, window, copied} = createView();
+  const content = {innerHTML: ''};
+  const state = {textContent: ''};
+  const root = {querySelector: selector => ({'[data-detail-node-a-body]': content, '[data-detail-node-a-state]': state})[selector] || null};
+  const pending = {};
+  window.__EXTRACT_WORKBENCH_DATA_SOURCE__ = endpoint => new Promise(resolve => { pending[endpoint] = resolve; });
+  const first = api.fillNodeA(root, {task_id: 41, has_payment_entry: true});
+  const second = api.fillNodeA(root, {task_id: 42, has_payment_entry: true});
+  pending['/api/extract-workbench/tasks/42/payment-entry']({entry: {qr_data: '当前任务二维码'}});
+  await second;
+  const current = content.innerHTML;
+  pending['/api/extract-workbench/tasks/41/payment-entry']({entry: {qr_data: '旧任务二维码'}});
+  await first;
+  assert.equal(content.innerHTML, current);
+  assert.match(current, /当前任务二维码/);
+  const events = {};
+  api.setRoot({querySelector: () => null, addEventListener(name, handler) { events[name] = handler; }});
+  api.bindEvents();
+  events.click({target: {closest: selector => selector === '[data-detail-copy]' ? {dataset: {detailCopy: '当前任务二维码'}} : null}});
+  await Promise.resolve();
+  assert.deepEqual(copied, ['当前任务二维码']);
 });

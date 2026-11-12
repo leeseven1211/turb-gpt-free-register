@@ -179,6 +179,32 @@ test('筛选选项的旧响应不能覆盖更新后的归档范围',async()=>{
   assert.equal(ctx.state.facetsCache.size,2);
 });
 
+test('切回缓存筛选时恢复对应匹配数，等待读取时清除旧数量',async()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  async function ensureFacets('),source.indexOf('  function scheduleFacets('));
+  const ctx=context();const seen=[];let calls=0;
+  ctx.state={draft:{query:{archived:'0'}},facetsCache:new Map()};
+  ctx.renderMatch=()=>seen.push(ctx.state.matched);
+  ctx.request=async url=>{calls++;const query=JSON.parse(decodeURIComponent(url.split('?query=')[1]));return {facets:{source:[]},matched:query.archived==='only'?3:42};};
+  vm.runInContext(helper,ctx);
+  await ctx.ensureFacets();assert.equal(ctx.state.matched,42);
+  ctx.state.draft.query={archived:'only'};await ctx.ensureFacets();assert.equal(ctx.state.matched,3);
+  ctx.state.draft.query={archived:'0'};await ctx.ensureFacets();assert.equal(ctx.state.matched,42);
+  assert.equal(calls,2);assert.deepEqual(seen,[null,42,null,3,42]);
+});
+
+test('固定账号名单不展示无关查询的匹配数与大批次提示',()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  function renderMatch('),source.indexOf('  function renderFilterChips('));
+  const nodes={'[data-bulk-match]':{hidden:true,classList:{toggle:()=>{}}},'[data-bulk-match-count]':{textContent:''},'[data-bulk-side-warning]':{hidden:true,textContent:''}};
+  const ctx={state:{draft:{source:null},matched:500},$b:selector=>nodes[selector]};vm.createContext(ctx);vm.runInContext(helper,ctx);
+  ctx.renderMatch();assert.equal(nodes['[data-bulk-match]'].hidden,false);assert.equal(nodes['[data-bulk-side-warning]'].hidden,false);
+  for(const source of [{kind:'ids',ids:['1','2']},{kind:'batch_targets',batch_id:'71'}]){
+    ctx.state.draft.source=source;ctx.renderMatch();
+    assert.equal(nodes['[data-bulk-match]'].hidden,true);assert.equal(nodes['[data-bulk-side-warning]'].hidden,true);
+  }
+});
+
 function queryFilterContext() {
   const ctx=context();
   ctx.facetLabel=(field,value)=>({none:'无优惠',free_trial:'免费试用',expired:'已过期',has:'有 Token'}[value]||value);
@@ -197,6 +223,23 @@ test('折叠筛选摘要保留日期、多选、归档及精确文本，不从�
   assert.ok(chips.some(([key,title])=>key==='id'&&title.includes('9007199254740993')));
   assert.ok(chips.some(([key])=>key==='archived'));
   assert.equal(JSON.stringify(query),before);
+});
+test('创建页折叠条件显示完整查询，固定名单时隐藏无关筛选摘要',()=>{
+  const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
+  const helper=source.slice(source.indexOf('  function renderFilterChips('),source.indexOf('  function renderSideSummary('));
+  const ctx=queryFilterContext();const host={hidden:false,innerHTML:''};const box={hidden:true};
+  const query=ctx.AccountQuery.normalize({date_from:'2026-10-01',date_to:'2026-10-31',archived:'only',q:'备注:"a/b"',
+    plan:['free','plus'],filters:{id:'71',email:'example.invalid',promotion:['none'],token:['expired']}});
+  const before=JSON.stringify(query);
+  Object.assign(ctx,{state:{draft:{query,source:null}},$b:selector=>selector==='[data-bulk-filter-chips]'?host:box,
+    filterSchema:()=>({fields:[]}),text:String});
+  vm.runInContext(helper,ctx);ctx.renderFilterChips();
+  for(const title of ['2026-10-01','2026-10-31','仅归档账号','备注:"a/b"','free、plus','71','example.invalid','无优惠','已过期','编辑条件'])assert.ok(host.innerHTML.includes(title),title);
+  assert.equal(host.innerHTML.includes('未加条件'),false);assert.equal(JSON.stringify(query),before);
+  ctx.state.draft.source={kind:'ids',ids:['1','2']};ctx.renderFilterChips();
+  assert.equal(host.hidden,true);assert.equal(host.innerHTML,'');
+  ctx.state.draft={query:ctx.AccountQuery.normalize(),source:null};ctx.renderFilterChips();
+  assert.equal(host.hidden,false);assert.ok(host.innerHTML.includes('全部未归档账号'));
 });
 test('动态选项保留正在操作的节点，收起后补入新来源并保留旧选择',()=>{
   const ctx=queryFilterContext();ctx.attrEsc=value=>String(value);ctx.esc=value=>String(value);
