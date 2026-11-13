@@ -639,6 +639,70 @@ class AdminRepositoryTests(PostgresTestCase):
 
         self.assertEqual(result["codex"], {"total": 2, "exported": 1, "pending": 1})
 
+    def test_codex_saved_upload_receipt_counts_as_exported_in_list_filters_and_summaries(self):
+        filename = "codex-user5.json"
+        db.save_codex_credential_record(
+            filename,
+            {"email": "user5@example.test", "type": "codex", "access_token": "synthetic-uploaded-token"},
+        )
+        db.mark_codex_sub2_uploaded(filename)
+
+        listing = repo.list_codex(repo.PageRequest(filters={"archived": "0"}))
+        uploaded = next(row for row in listing["accounts"] if row["filename"] == filename)
+        self.assertTrue(uploaded["exported"])
+        self.assertEqual(uploaded["exported_count"], 0)
+        self.assertIsNone(uploaded["exported_at"])
+        self.assertEqual(uploaded["sub2_uploaded_count"], 1)
+        self.assertTrue(uploaded["sub2_uploaded_at"])
+        self.assertIsNone(uploaded["sub2api_account_id"])
+        self.assertEqual(listing["summary"], {"total": 2, "exported": 1, "pending": 1})
+        self.assertEqual(
+            {item["value"]: item["count"] for item in listing["facets"]["status"]},
+            {"exported": 1, "unexported": 1},
+        )
+
+        exported = repo.list_codex(repo.PageRequest(filters={"status": "exported"}))
+        self.assertEqual(exported["total"], 1)
+        self.assertEqual([row["filename"] for row in exported["accounts"]], [filename])
+        unexported = repo.list_codex(repo.PageRequest(filters={"status": "unexported"}))
+        self.assertEqual(unexported["total"], 1)
+        self.assertEqual([row["filename"] for row in unexported["accounts"]], ["codex-user1.json"])
+        self.assertEqual(repo.dashboard_aggregates()["codex"], listing["summary"])
+
+    def test_codex_failed_upload_without_success_receipt_stays_unexported(self):
+        filename = "codex-user1.json"
+        db.mark_codex_sub2_sync_error(filename, "测试上传失败，尚未收到成功回执")
+
+        unexported = repo.list_codex(repo.PageRequest(filters={"status": "unexported"}))
+        self.assertEqual(unexported["total"], 1)
+        self.assertFalse(unexported["accounts"][0]["exported"])
+        self.assertEqual(unexported["accounts"][0]["sub2_uploaded_count"], 0)
+        self.assertEqual(unexported["summary"], {"total": 1, "exported": 0, "pending": 1})
+        self.assertEqual(
+            {item["value"]: item["count"] for item in unexported["facets"]["status"]},
+            {"unexported": 1},
+        )
+        exported = repo.list_codex(repo.PageRequest(filters={"status": "exported"}))
+        self.assertEqual(exported["total"], 0)
+        self.assertEqual(repo.dashboard_aggregates()["codex"], unexported["summary"])
+
+    def test_codex_reset_download_mark_keeps_saved_upload_fact(self):
+        filename = "codex-user1.json"
+        db.mark_codex_exported(filename)
+        receipt = db.mark_codex_sub2_uploaded(filename)
+        db.reset_codex_exported(filename)
+
+        exported = repo.list_codex(repo.PageRequest(filters={"status": "exported"}))
+        self.assertEqual(exported["total"], 1)
+        uploaded = exported["accounts"][0]
+        self.assertTrue(uploaded["exported"])
+        self.assertEqual(uploaded["exported_count"], 0)
+        self.assertIsNone(uploaded["exported_at"])
+        self.assertEqual(uploaded["sub2_uploaded_count"], 1)
+        self.assertEqual(uploaded["sub2_uploaded_at"], receipt["sub2_uploaded_at"])
+        self.assertEqual(exported["summary"], {"total": 1, "exported": 1, "pending": 0})
+        self.assertEqual(repo.list_codex(repo.PageRequest(filters={"status": "unexported"}))["total"], 0)
+
     def test_jobs_poll_skips_facets_without_changing_rows(self):
         request = repo.PageRequest(1, 10, {})
         before = repo.list_jobs(request, view="table")

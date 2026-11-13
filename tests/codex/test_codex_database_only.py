@@ -72,9 +72,26 @@ class CodexDatabaseOnlyTests(PostgresTestCase):
         self.assertEqual(stored["sub2_sync_error"], "测试同步失败")
         self.assertEqual(stored["oauth_refresh_error"], "测试刷新失败")
         self.assertFalse(stored["archived"])
+        self.assertEqual(db.codex_accounts_summary(), {"total": 1, "exported": 1, "pending": 0})
         self.assert_no_codex_snapshots()
         self.assertTrue(db.delete_codex_credential(self.filename))
         self.assertIsNone(record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", self.filename))
+        self.assert_no_codex_snapshots()
+
+    def test_summary_counts_upload_receipt_without_download_and_excludes_failed_or_archived(self):
+        db.save_codex_credential_record(self.filename, self.content)
+        db.mark_codex_sub2_sync_error(self.filename, "测试上传失败，尚未收到成功回执")
+        self.assertEqual(db.codex_accounts_summary(), {"total": 1, "exported": 0, "pending": 1})
+
+        db.mark_codex_sub2_uploaded(self.filename)
+        self.assertEqual(db.codex_accounts_summary(), {"total": 1, "exported": 1, "pending": 0})
+        stored = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(stored["exported_count"], 0)
+        self.assertEqual(stored["sub2_uploaded_count"], 1)
+        self.assertIsNone(stored["sub2_sync_error"])
+
+        db.archive_codex(self.filename, True)
+        self.assertEqual(db.codex_accounts_summary(), {"total": 0, "exported": 0, "pending": 0})
         self.assert_no_codex_snapshots()
 
     def test_legacy_files_do_not_change_database_or_get_rewritten_or_deleted(self):

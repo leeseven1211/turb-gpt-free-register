@@ -57,9 +57,11 @@ CASE
 END
 """
 
+# 沿用历史导出语义：下载、已确认上传或远端关联任一事实成立即计入。
 _CODEX_EXPORTED_SQL = f"""
 (
     c.exported_count > 0
+    OR COALESCE(NULLIF(c.data->>'sub2_uploaded_count', '')::BIGINT, 0) > 0
     OR NULLIF(BTRIM({_SUB2API_ID_SQL}), '') IS NOT NULL
 )
 """
@@ -1102,6 +1104,7 @@ def _codex_item(row: dict) -> dict:
     else:
         sub2api_account_id = None
     exported_count = int(merged.get("exported_count") or 0)
+    sub2_uploaded_count = int(merged.get("sub2_uploaded_count") or 0)
     return {
         "filename": merged.get("filename"),
         "email": merged.get("email") or "",
@@ -1118,9 +1121,9 @@ def _codex_item(row: dict) -> dict:
         "mtime": merged.get("mtime") or merged.get("updated_at"),
         "exported_at": merged.get("exported_at"),
         "exported_count": exported_count,
-        "exported": exported_count > 0 or sub2api_account_id is not None,
+        "exported": exported_count > 0 or sub2_uploaded_count > 0 or sub2api_account_id is not None,
         "sub2_uploaded_at": merged.get("sub2_uploaded_at"),
-        "sub2_uploaded_count": int(merged.get("sub2_uploaded_count") or 0),
+        "sub2_uploaded_count": sub2_uploaded_count,
         "sub2_sync_error": merged.get("sub2_sync_error"),
         "sub2api_status": merged.get("sub2api_status"),
         "sub2api_http_status": merged.get("sub2api_http_status"),

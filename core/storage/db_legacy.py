@@ -3246,7 +3246,10 @@ def codex_accounts_summary() -> dict:
     total = record_store.count_rows(record_store.CODEX_CREDENTIALS, where="archived IS FALSE")
     exported = record_store.count_rows(
         record_store.CODEX_CREDENTIALS,
-        where="archived IS FALSE AND exported_count > 0",
+        where=(
+            "archived IS FALSE AND (exported_count > 0 "
+            "OR COALESCE(NULLIF(data->>'sub2_uploaded_count', '')::BIGINT, 0) > 0)"
+        ),
     )
     return {"total": total, "exported": exported, "pending": total - exported}
 

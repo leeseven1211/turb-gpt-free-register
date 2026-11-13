@@ -82,8 +82,15 @@ function _codexUpdateSelectedHint() {
   });
 }
 function _codexStatusBadge(r) {
-  const exported = r.exported === true || (r.exported_count || 0) > 0;
-  const linkedOnly = exported && (r.exported_count || 0) <= 0 && r.sub2api_account_id != null && String(r.sub2api_account_id).trim() !== '';
+  const exportedCount = Number(r.exported_count || 0);
+  const uploadedCount = Number(r.sub2_uploaded_count || 0);
+  if (uploadedCount > 0) {
+    const details = [`Sub2API 已上传 ${uploadedCount} 次，最近 ${r.sub2_uploaded_at || '-'}`];
+    if (exportedCount > 0) details.push(`导出记录 ${exportedCount} 次，最近 ${r.exported_at || '-'}`);
+    return `<span class="pill status-used" title="${esc(details.join('；'))}">已导出</span>`;
+  }
+  const exported = r.exported === true || exportedCount > 0;
+  const linkedOnly = exported && exportedCount <= 0 && r.sub2api_account_id != null && String(r.sub2api_account_id).trim() !== '';
   if (linkedOnly) {
     return `<span class="pill status-used" title="Sub2API ID ${esc(r.sub2api_account_id)} 已有关联记录，本地下载 0 次">已关联</span>`;
   }
