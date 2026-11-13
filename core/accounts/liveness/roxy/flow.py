@@ -670,8 +670,9 @@ def _complete_otp(
         nonlocal after_ts, no_mail_resent, mailbox_read_retried, resend_receipt
         while True:
             try:
-                code = wait_for_otp(email, after_ts=after_ts, max_wait=max(1, int(email_config.OTP_MAX_WAIT)),
-                                    page_checkpoint=observe_page,
+                round_wait = max(1, int(email_config.OTP_MAX_WAIT))
+                code = wait_for_otp(email, after_ts=after_ts, max_wait=round_wait,
+                                    page_checkpoint=observe_page, page_request_timeout=round_wait,
                                     **({"budget": budget} if budget is not None else {}))
                 observe_page()
                 return code

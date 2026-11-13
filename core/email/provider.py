@@ -494,15 +494,17 @@ def wait_for_otp(
     force_service: bool | None = None,
     budget=None,
     page_checkpoint=None,
+    page_request_timeout: float = 2.0,
 ) -> str:
     """等待并返回该邮箱最新的 ChatGPT OTP（6 位数字字符串）。
 
     USE_EMAIL_SERVICE=False 时走手动验证码通道（WebUI 提交 / CLI 输入），
     不再强制要求 Outlook clientId/refreshToken。
+    page_request_timeout 仅控制显式页面协作检查的请求上限，不扩大供应商原超时或 budget。
     """
     if page_checkpoint is not None:
         from core.email.mailbox_wait import use_cooperative_wait
-        with use_cooperative_wait(page_checkpoint):
+        with use_cooperative_wait(page_checkpoint, request_timeout=page_request_timeout):
             return wait_for_otp(
                 email, after_ts=after_ts, max_wait=max_wait, poll_interval=poll_interval,
                 settle_seconds=settle_seconds, email_source=email_source,

@@ -66,6 +66,115 @@ class AtOtpWaitTests(unittest.TestCase):
         ):
             yield fetch
 
+    @contextmanager
+    def real_butler_transport(self, *, round_wait=80, on_request=None):
+        from config import email as email_config
+        from core.email import provider
+        from core.email.email_butler import client, lease_bindings, v2
+
+        base = "https://butler.example.test/v2"
+        account = client.EmailButlerAccount(EMAIL, "fixture-mailbox", lease_id="lse_original",
+                                           client_id="fixture-client", api_base=base, api_key="fixture-key")
+        lease = {"id": "lse_original", "email": EMAIL, "service": "openai", "provider": "icloud_hme",
+                 "client_id": "fixture-client", "status": "active", "created_at": "1970-01-01T00:00:00Z",
+                 "expires_at": None}
+        binding = {"lease_id": lease["id"], "client_id": lease["client_id"], "api_base": base}
+        requests = []
+
+        def request(method, url, **kwargs):
+            requests.append((method, url, kwargs["timeout"]))
+            if on_request is not None:
+                on_request(method, url)
+            if url.endswith("/me"):
+                data = {"client_id": "fixture-client", "permissions": ["codes.read"],
+                        "allowed_services": ["openai"], "limits": {}}
+            elif url.endswith("/leases/lse_original"):
+                data = lease
+            else:
+                self.assertEqual(base + "/leases/lse_original/code", url)
+                data = {"lease_id": "lse_original", "service": "openai", "status": "matched",
+                        "verification_code": "123456", "code_id": "code_fixture",
+                        "received_at": "1970-01-01T00:03:20Z"}
+            response = Mock(status_code=200)
+            response.json.return_value = {"data": data, "request_id": "request_fixture"}
+            return response
+
+        with (
+            patch.object(flow, "wait_for_otp", provider.wait_for_otp),
+            patch.multiple(email_config, USE_EMAIL_SERVICE=True, OTP_MAX_WAIT=round_wait, EMAIL_BUTLER_REQUEST_TIMEOUT=20),
+            patch.object(provider, "resolve_email_source", return_value="email_butler"),
+            patch("core.email.derivation.find_binding", return_value=None),
+            patch("core.auth.email_guard.current_session", return_value=None),
+            patch("core.auth.email_guard.begin_generation"),
+            patch.dict(client._CONTEXT_CACHE, {}, clear=True),
+            patch.object(client, "get_account_context", return_value=account),
+            patch.object(lease_bindings.records, "list_rows", return_value=[]),
+            patch.object(lease_bindings, "save", return_value=binding),
+            patch.object(v2.requests, "request", side_effect=request),
+        ):
+            yield requests
+
+    def test_real_butler_lease_preflight_preserves_original_http_timeout_when_it_takes_over_two_seconds(self):
+        now = [0.0]
+        budget = StageBudget.start(900, clock=lambda: now[0])
+
+        def slow_preflight(_method, url):
+            if not url.endswith("/code"):
+                now[0] += 3
+
+        with self.real_butler_transport(on_request=slow_preflight) as requests, execution_context(AuthExecutionContext(budget=budget)):
+            self.run_otp()
+        self.assertEqual([30.0, 30.0], [item[2] for item in requests[:2]])
+        self.assertTrue(requests[0][1].endswith("/me"))
+        self.assertTrue(requests[1][1].endswith("/leases/lse_original"))
+        self.assertEqual(20.0, requests[2][2])
+        self.assertEqual(6, now[0])
+        self.assertEqual(900, budget.deadline)
+        self.resend.assert_not_called()
+        self.submit.assert_called_once()
+
+    def test_real_butler_lease_preflight_still_clamps_to_round_or_original_total_budget(self):
+        for round_wait, total_wait, expected in ((5, 900, 5.0), (80, 9, 9.0)):
+            with self.subTest(round_wait=round_wait, total_wait=total_wait):
+                budget = StageBudget.start(total_wait, clock=lambda: 0.0)
+                with self.real_butler_transport(round_wait=round_wait) as requests, execution_context(AuthExecutionContext(budget=budget)):
+                    self.run_otp()
+                self.assertEqual([expected, expected], [item[2] for item in requests[:2]])
+                self.assertEqual(total_wait, budget.deadline)
+
+    def test_shared_provider_default_keeps_two_second_cooperative_http_cap(self):
+        from core.email import provider
+
+        with self.real_butler_transport() as requests:
+            self.assertEqual("123456", provider.wait_for_otp(EMAIL, after_ts=100.0, max_wait=80,
+                page_checkpoint=lambda: None, budget=StageBudget.start(900)))
+        self.assertEqual([2.0, 2.0, 2.0], [item[2] for item in requests])
+
+    def test_real_butler_lease_preflight_cancellation_and_total_expiry_interrupt_before_next_request(self):
+        for ending in ("cancelled", "budget_expired"):
+            with self.subTest(ending=ending):
+                now = [0.0]
+                budget = StageBudget.start(900, clock=lambda: now[0])
+                error = OperationCancelled("测试前置读取取消")
+
+                def end_after_first_request(_method, _url):
+                    if ending == "cancelled":
+                        self.cancel.side_effect = error
+                    else:
+                        now[0] = 901
+
+                try:
+                    with (self.assertRaises(OperationCancelled if ending == "cancelled" else StageTimeout),
+                          self.real_butler_transport(on_request=end_after_first_request) as requests,
+                          execution_context(AuthExecutionContext(budget=budget))):
+                        self.run_otp()
+                finally:
+                    self.cancel.side_effect = None
+                self.assertEqual(1, len(requests))
+                self.assertEqual(900, budget.deadline)
+        self.resend.assert_not_called()
+        self.submit.assert_not_called()
+
     def test_real_provider_keeps_eighty_second_rounds_with_a_nine_hundred_second_total(self):
         now = [0.0]
         rounds = []
