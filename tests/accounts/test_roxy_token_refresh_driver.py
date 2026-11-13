@@ -421,6 +421,44 @@ class RoxyRefreshHookTests(unittest.TestCase):
                 self.assertEqual(display, info["display_code"])
                 self.assertEqual(message, info["summary"])
 
+    def test_resend_http_failure_keeps_the_send_operation_in_the_final_result(self):
+        from core.auth.protocol.openai_auth import EmailOtpSendError
+        from core.operations.errors import classify_task_error
+
+        self._context()
+        with (
+            patch.object(roxy_liveness, "_enter_existing_account_otp", return_value="otp"),
+            patch.object(roxy_liveness, "_complete_otp", side_effect=EmailOtpSendError("http_error", 429)),
+        ):
+            result = roxy_liveness.refresh_access_token(EMAIL)
+        self.assertEqual("email_otp_send", result["auth_diagnostics"]["cause_operation"])
+        info = classify_task_error(result["error"], task_type="token_refresh", error_code=result["error_code"],
+            result_summary={**result, "cause_code": result["error_code"]})
+        self.assertEqual("OA-OTP-SEND-429", info["display_code"])
+
+    def test_password_login_after_leaving_otp_does_not_confirm_the_previous_email_challenge(self):
+        self._context()
+        page = {"url": "https://chatgpt.com/auth/login", "inputs": [{"type": "email"}], "text": "Log in"}
+
+        def wait(*_args, **kwargs):
+            kwargs["page_checkpoint"]()
+            self.fail("邮箱入口应交回已有账号登录")
+
+        with (
+            patch.object(roxy_liveness, "_login_existing_account_with_recovery", side_effect=["otp", "logged_in"]) as login,
+            patch.object(roxy_liveness, "_email_otp_page_state", return_value=page),
+            patch.object(roxy_liveness, "wait_for_otp", side_effect=wait),
+            patch.object(roxy_liveness, "_type_otp") as submit,
+            patch.object(roxy_liveness, "_click_resend_email_otp") as resend,
+        ):
+            result = roxy_liveness.refresh_access_token(EMAIL)
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, login.call_count)
+        self.assertTrue(result["auth_facts"]["session_acquired"])
+        self.assertEqual("failed", result["auth_facts"]["email_challenge"])
+        submit.assert_not_called()
+        resend.assert_not_called()
+
     def test_failure_only_capture_precedes_cleanup_without_retaining_browser(self):
         _, _, client, events, _, capture = self._context(mode="failure_only", failure=RuntimeError("fixture-failure"))
 

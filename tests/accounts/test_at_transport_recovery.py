@@ -412,9 +412,10 @@ class AtExistingRetryIntegrationTests(unittest.TestCase):
             with self.assertRaises(requests.ConnectionError):
                 recover_request(SimpleNamespace(), "POST", URL, Mock(side_effect=error))
             with (
+                patch.object(legacy, "_ensure_at_otp_sent", return_value=1),
                 patch.object(legacy, "wait_for_otp", return_value="654321"),
                 patch.object(legacy, "validate_email_otp", side_effect=error),
-                patch.object(legacy, "send_email_otp") as send,
+                patch.object(legacy, "_resend_at_otp") as send,
                 self.assertRaises(requests.ConnectionError),
             ):
                 legacy._validate_with_retry(object(), "fixture@example.test", 1)

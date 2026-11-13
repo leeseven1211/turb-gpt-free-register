@@ -16,7 +16,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 from core.accounts.credentials import account_email_is_invalid, get_account_login_credentials
 from core.accounts.plans.client import token_claims
-from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry
+from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry, _validate_with_retry
 from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
 from core.accounts.liveness.protocol.v2 import (
     ProtocolV2AuthError, _mfa_issue_challenge, _mfa_verify, _password_verify,
@@ -51,6 +51,9 @@ def _error(code, *, category="auth", retryable=False):
 
 def _reraise_control(exception: BaseException) -> None:
     """Recover cancellation/lease signals wrapped by compatibility primitives."""
+    from core.auth.state_machine import CancellationRequested, StageTimeout
+    from core.network.at_transport_recovery import AtRecoveryTimeout, current_scope
+
     pending, visited = [exception], set()
     while pending:
         current = pending.pop()
@@ -58,6 +61,8 @@ def _reraise_control(exception: BaseException) -> None:
             continue
         visited.add(id(current))
         if isinstance(current, (OperationCancelled, OperationLeaseLost)):
+            raise current
+        if current_scope() is not None and isinstance(current, (AtRecoveryTimeout, StageTimeout, CancellationRequested)):
             raise current
         pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
@@ -375,16 +380,37 @@ def _authenticate(session, initial_url, *, email, target, password, secret, prog
             if account_email_is_invalid(email):
                 raise _error("email_verification_required", category="email")
             requested_at = time.time()
-            send_email_otp(session)
-            try:
-                code = wait_for_otp(email, after_ts=requested_at)
-            except (OperationCancelled, OperationLeaseLost):
-                raise
-            except Exception as exc:
-                error = _error("email_otp_failed", category="email")
-                error.diagnostics = otp_failure_diagnostics(exc)
-                raise error from None
-            payload = _post_json(session, _AUTH + "/api/accounts/email-otp/validate", headers=session.get_auth_headers(referer=_AUTH + "/email-verification"), payload={"code": code}, operation="email_otp_validate")
+            from core.network.at_transport_recovery import current_scope
+
+            if current_scope() is not None:
+                def validate_current_code(code):
+                    # v3 保持原有 POST、禁止跳转及结构化提交回执，不切换到共享验证器。
+                    return _post_json(
+                        session, _AUTH + "/api/accounts/email-otp/validate",
+                        headers=session.get_auth_headers(referer=_AUTH + "/email-verification"),
+                        payload={"code": code}, operation="email_otp_validate",
+                    )
+
+                try:
+                    payload = _validate_with_retry(session, email, requested_at, at_validator=validate_current_code)
+                except (OperationCancelled, OperationLeaseLost, ProtocolV2AuthError):
+                    raise
+                except Exception as exc:
+                    _reraise_control(exc)
+                    error = _error("email_otp_failed", category="email")
+                    error.diagnostics = otp_failure_diagnostics(exc)
+                    raise error from exc
+            else:
+                send_email_otp(session)
+                try:
+                    code = wait_for_otp(email, after_ts=requested_at)
+                except (OperationCancelled, OperationLeaseLost):
+                    raise
+                except Exception as exc:
+                    error = _error("email_otp_failed", category="email")
+                    error.diagnostics = otp_failure_diagnostics(exc)
+                    raise error from None
+                payload = _post_json(session, _AUTH + "/api/accounts/email-otp/validate", headers=session.get_auth_headers(referer=_AUTH + "/email-verification"), payload={"code": code}, operation="email_otp_validate")
             methods.append("email_otp")
         elif stage == "mfa":
             if not secret:

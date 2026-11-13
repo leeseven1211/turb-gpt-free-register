@@ -19,7 +19,7 @@ from core.email.provider import wait_for_otp
 from core.email.email_butler.client import EmailButlerClientError
 from core.email.forward_imap import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.accounts.credentials import account_email_is_invalid
-from core.auth.protocol.openai_auth import AccountUnusableError, detect_account_unusable_text
+from core.auth.protocol.openai_auth import AccountUnusableError, EmailOtpSendError, detect_account_unusable_text
 from core.auth.challenge import AuthCancelledError
 from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS
 from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
@@ -167,7 +167,7 @@ def _refresh_failure_cause(exc: Exception, stage: str, browser_error: str = "") 
     if code in {"password_rejected", "password_result_unknown", "password_change_required", "password_page_error",
                 "mfa_secret_missing", "mfa_rejected", "email_submit_unconfirmed",
                 "auth_operation_timeout", "auth_context_missing", "password_entry_navigation_failed",
-                "profile_completion_required"}:
+                "profile_completion_required", "identity_mismatch"}:
         return code, "auth"
     if browser_error or any(marker in str(exc) for marker in _PROXY_BROWSER_ERRORS):
         return "roxy_proxy_tunnel_failed", "network"
@@ -205,6 +205,14 @@ class _RoxyOtpSubmissionUnknown(RuntimeError):
     """邮箱验证码的本次提交尚未确认，保留现场供同一账号手动重跑。"""
 
     code = "email_submit_unconfirmed"
+
+
+class _AtOtpPageChanged(RuntimeError):
+    """仅将 AT 等码期间的新页面交回当前浏览器认证流程。"""
+
+    def __init__(self, state: str):
+        self.state = state
+        super().__init__("等待验证码时页面已进入其他认证阶段")
 
 
 def _is_at_totp_login_page(snapshot) -> bool:
@@ -577,13 +585,175 @@ def _complete_otp(
     email: str,
     after_ts: float,
     *,
+    password: str = "",
     totp_secret: str = "",
     on_email_confirmed=None,
 ) -> None:
+    from core.auth.browser.auth_context import checkpoint, current_execution_context
+    from core.auth.browser.browser_submission import BrowserSubmissionReceipt
+    from core.auth.browser.email_otp import _email_otp_form_is_ready
+    from core.auth.page_errors import auth_page_error
+    from core.auth.state_machine import PageState, StageBudget, StageTimeout
+    from core.accounts.liveness.protocol.otp_diagnostics import BUTLER_TRANSPORT_ERROR_CODES
+    from config import email as email_config
+
+    context = current_execution_context()
+    budget = context.budget if context is not None else None
+    if context is not None and context.deadline is not None:
+        deadline = min(context.deadline, budget.deadline) if budget is not None else context.deadline
+        budget = StageBudget(deadline, clock=time.monotonic, cancellation=context.cancellation)
+    no_mail_resent = False
+    mailbox_read_retried = False
+    login_restarted = False
+    current_page = PageState.UNKNOWN
+    resend_receipt = None
+
+    def check_resend_receipt():
+        if resend_receipt is None:
+            return
+        status = resend_receipt.http_status
+        if type(status) is int and 400 <= status <= 599:
+            raise EmailOtpSendError("http_error", status)
+        if resend_receipt.phase == "rejected":
+            raise EmailOtpSendError("rejected", status or 0)
+
+    def observe_page():
+        nonlocal current_page
+        check_cancelled("用户手动停止刷新 AT")
+        checkpoint()
+        check_resend_receipt()
+        state = _email_otp_page_state(driver)
+        browser_error = _browser_proxy_error(driver, snapshot=state)
+        if browser_error:
+            raise RuntimeError(f"浏览器代理连接失败：{browser_error}")
+        location = urlparse(str(state.get("url") or ""))
+        if (location.scheme != "https" or location.hostname not in {"chatgpt.com", "auth.openai.com"}
+                or location.port not in (None, 443) or location.username or location.password):
+            current_page = PageState.UNKNOWN
+            return
+        error = auth_page_error(state)
+        if error is not None:
+            raise error
+        current_page = _classify_at_login_page(state)
+        if current_page in {PageState.OTP_EMAIL, PageState.MFA_TOTP}:
+            hints = re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}",
+                               str(state.get("text") or ""), flags=re.IGNORECASE)
+            if any(hint.casefold() != email.strip().casefold() for hint in hints):
+                error = RuntimeError("identity_mismatch: 当前认证页面的邮箱与任务账号不一致")
+                error.code = "identity_mismatch"
+                raise error
+        if current_page == PageState.MFA_TOTP:
+            raise _AtOtpPageChanged("totp_required")
+        if current_page in {PageState.AUTH_ERROR, PageState.LOGGED_OUT}:
+            raise _RoxyOtpSubmissionUnknown("email_submit_unconfirmed: 等码期间认证页面已失效")
+        if current_page == PageState.EMAIL_VERIFIED or state.get("emailVerified") is True:
+            raise _AtOtpPageChanged("email_verified")
+        if (location.hostname == "chatgpt.com" and not location.path.startswith(("/auth/", "/api/", "/login"))
+                and _has_access_token(driver, **({"budget": budget} if budget is not None else {}))):
+            raise _AtOtpPageChanged("logged_in")
+        email_input = any(isinstance(item, dict) and item.get("visible") is not False
+                          and (str(item.get("type") or "").lower() == "email"
+                               or str(item.get("name") or "").lower() in {"email", "username"})
+                          for item in state.get("inputs") or [])
+        if (email_input and (location.hostname, location.path.rstrip("/")) in {
+                ("chatgpt.com", "/auth/login"), ("auth.openai.com", "/log-in"),
+                ("auth.openai.com", "/log-in/email")}):
+            raise _AtOtpPageChanged("email_page")
+        if current_page == PageState.PROFILE:
+            _check_profile_handoff(driver)
+        if (current_page == PageState.OTP_EMAIL and (
+                location.hostname != "auth.openai.com" or location.path.rstrip("/") != "/email-verification"
+                or not _email_otp_form_is_ready(state))):
+            current_page = PageState.AUTH_TRANSIENT
+
+    def wait_current_otp():
+        nonlocal after_ts, no_mail_resent, mailbox_read_retried, resend_receipt
+        while True:
+            try:
+                code = wait_for_otp(email, after_ts=after_ts, max_wait=max(1, int(email_config.OTP_MAX_WAIT)),
+                                    page_checkpoint=observe_page,
+                                    **({"budget": budget} if budget is not None else {}))
+                observe_page()
+                return code
+            except (EmailButlerClientError, ForwardIMAPNoMailTimeout) as exc:
+                check_resend_receipt()
+                if (isinstance(exc, EmailButlerClientError) and exc.error_code in BUTLER_TRANSPORT_ERROR_CODES
+                        and getattr(exc, "retryable", False) is True and not mailbox_read_retried):
+                    observe_page()
+                    mailbox_read_retried = True
+                    logger.warning("[查活][Roxy] 收件前置读取发生临时连接故障，沿原时间窗只读恢复一次")
+                    continue
+                no_mail = (isinstance(exc, ForwardIMAPNoMailTimeout) or (
+                    exc.error_code == "inbound_code_timeout" and exc.status_code in (None, 408)))
+                if not no_mail or no_mail_resent:
+                    raise
+                observe_page()
+                if current_page != PageState.OTP_EMAIL:
+                    raise
+                no_mail_resent = True
+                logger.warning("[查活][Roxy] 首轮等待未收到验证码，在当前账号验证页重发一次")
+                requested_at = time.time()
+                try:
+                    resend = _click_resend_email_otp(driver, timeout=25,
+                                                   **({"budget": budget} if budget is not None else {}))
+                except (OperationCancelled, AuthCancelledError, OperationLeaseLost, StageTimeout, AtRecoveryTimeout):
+                    raise
+                except Exception as send_error:
+                    receipt = getattr(driver, "_otp_resend_receipt", None)
+                    if not isinstance(receipt, dict) or not receipt.get("clicked"):
+                        raise EmailOtpSendError("unconfirmed") from send_error
+                    resend = {"requested_after_ts": receipt.get("requested_after_ts"), "ui_ack": "unconfirmed"}
+                receipt = getattr(driver, "_browser_submission_receipt", None)
+                if isinstance(receipt, BrowserSubmissionReceipt) and receipt.stage == "otp_resend":
+                    resend_receipt = receipt
+                check_resend_receipt()
+                resend = resend if isinstance(resend, dict) else {}
+                after_ts = float(resend.get("requested_after_ts") or requested_at)
+                if resend.get("ui_ack") != "confirmed":
+                    logger.warning("[查活][Roxy] 重发已派发但页面回执未确认，继续等待本次邮件，不追加重发")
+                observe_page()
+
+    def complete_totp():
+        from core.codex.roxy.oauth import complete_openai_login_challenge
+
+        if callable(on_email_confirmed):
+            on_email_confirmed()
+        challenge_state = complete_openai_login_challenge(
+            driver, email, "", totp_secret, timeout=45, page_classifier=_classify_at_login_page,
+        )
+        if challenge_state != "advanced":
+            raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={challenge_state}")
+
     current_otp = None
     for attempt in range(1, 4):
-        if current_otp is None:
-            current_otp = wait_for_otp(email, after_ts=after_ts)
+        while current_otp is None:
+            try:
+                current_otp = wait_current_otp()
+            except _AtOtpPageChanged as change:
+                if change.state == "totp_required":
+                    complete_totp()
+                    return
+                if change.state in {"logged_in", "email_verified"}:
+                    if callable(on_email_confirmed):
+                        on_email_confirmed()
+                    return
+                if login_restarted:
+                    raise _RoxyOtpSubmissionUnknown("email_submit_unconfirmed: 恢复登录后再次返回邮箱入口")
+                login_restarted = True
+                logger.info("[查活][Roxy] 等码期间返回邮箱入口，交回已有账号登录流程")
+                after_ts = time.time()
+
+                def restart_boundary():
+                    nonlocal after_ts
+                    after_ts = time.time()
+
+                state = _login_existing_account_with_recovery(
+                    driver, email, password=password, totp_secret=totp_secret, on_restart=restart_boundary,
+                )
+                # 新登录只停止观察旧会话的重发结果；原回执事实和本次重发次数继续保留。
+                resend_receipt = None
+                if state == "logged_in":
+                    return
         baseline = _email_otp_page_state(driver)
         _clear_otp_inputs(driver)
         _type_otp(driver, current_otp)
@@ -598,24 +768,13 @@ def _complete_otp(
             driver, timeout=35, baseline_state=baseline, expected_email=email,
             page_classifier=_classify_at_login_page,
         )
-        if outcome in {"accepted", "email_verified", "totp_required"} and callable(on_email_confirmed):
+        if outcome in {"accepted", "email_verified"} and callable(on_email_confirmed):
             on_email_confirmed()
         if outcome in {"accepted", "email_verified"}:
             return
         if outcome == "totp_required":
-            from core.codex.roxy.oauth import complete_openai_login_challenge
-
-            challenge_state = complete_openai_login_challenge(
-                driver,
-                email,
-                "",
-                totp_secret,
-                timeout=45,
-                page_classifier=_classify_at_login_page,
-            )
-            if challenge_state == "advanced":
-                return
-            raise RuntimeError(f"邮箱验证码后 TOTP 登录链未完成：state={challenge_state}")
+            complete_totp()
+            return
         if outcome != "invalid":
             reason = "认证会话已失效" if outcome == "session_expired" else "验证码提交结果未确认"
             raise _RoxyOtpSubmissionUnknown(f"email_submit_unconfirmed: {reason}，state={outcome}")
@@ -935,10 +1094,9 @@ def refresh_access_token(
             email_challenge_started = True
             stage("email_otp")
             _complete_otp(
-                driver, email, otp_after_ts, totp_secret=totp_secret,
+                driver, email, otp_after_ts, password=password, totp_secret=totp_secret,
                 on_email_confirmed=email_confirmed,
             )
-            email_challenge_completed = True
         code = _page_account_unusable_code(driver)
         if code:
             refresh_result = {
@@ -1031,12 +1189,13 @@ def refresh_access_token(
                         else "runtime_exception")
         auth_diagnostics = {"operation": f"roxy_{failure_stage}", "failure_kind": failure_kind,
                             "exception_type": type(exc).__name__}
-        if failure_stage == "email_otp" and isinstance(exc, EmailButlerClientError):
+        if failure_stage == "email_otp" and isinstance(exc, (EmailButlerClientError, EmailOtpSendError)):
             from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
 
             # 沿用同次取码异常的真实原因，保留浏览器阶段与收件动作的对应关系。
-            auth_diagnostics = {**otp_failure_diagnostics(exc), "operation": "roxy_email_otp",
-                                "cause_operation": "email_otp"}
+            operation = "email_otp_send" if isinstance(exc, EmailOtpSendError) else "email_otp"
+            auth_diagnostics = {**otp_failure_diagnostics(exc, operation=operation), "operation": "roxy_email_otp",
+                                "cause_operation": operation}
         network_diagnostics = _at_network_diagnostics(exc, failure_stage, driver) if not session_acquired else {}
         network_recovery_failed = bool(network_diagnostics)
         try:

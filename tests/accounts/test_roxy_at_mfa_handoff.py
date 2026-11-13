@@ -181,7 +181,10 @@ class AtMfaHandoffTests(unittest.TestCase):
         confirmed = Mock()
         with self.assertLogs(oauth.logger.name, level="INFO") as logs:
             flow._complete_otp(driver, EMAIL, 50.0, totp_secret=TOTP_SECRET, on_email_confirmed=confirmed)
-        fetch.assert_called_once_with(EMAIL, after_ts=50.0)
+        fetch.assert_called_once()
+        self.assertEqual((EMAIL,), fetch.call_args.args)
+        self.assertEqual(50.0, fetch.call_args.kwargs["after_ts"])
+        self.assertTrue(callable(fetch.call_args.kwargs["page_checkpoint"]))
         submit.assert_called_once_with(driver, EMAIL, TOTP_SECRET)
         confirmed.assert_called_once()
         resend.assert_not_called()

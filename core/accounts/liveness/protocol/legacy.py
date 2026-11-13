@@ -18,6 +18,7 @@ from core.email.email_butler.client import EmailButlerClientError
 from core.email.provider import wait_for_otp
 from core.accounts.credentials import account_email_is_invalid
 from core.accounts.liveness.protocol.otp_diagnostics import mark_otp_failure
+from core.accounts.liveness.protocol.otp_delivery import ensure_initial_otp_sent as _ensure_at_otp_sent, resend_otp as _resend_at_otp
 from core.auth.humanize import delay as human_delay
 
 logger = logging.getLogger('core.account_liveness')
@@ -375,6 +376,8 @@ def _validate_with_retry(
     otp_after_ts: float,
     max_otp_attempts: int = 3,
     email_source: str | None = None,
+    *,
+    at_validator: Callable[[str], dict] | None = None,
 ) -> dict:
     from core.network.at_transport_recovery import current_scope
 
@@ -382,6 +385,11 @@ def _validate_with_retry(
     if at_scope is not None:
         # 独立 AT 刷新只等两轮；其他共享认证入口保留原有次数。
         max_otp_attempts = min(max_otp_attempts, 2)
+        try:
+            otp_after_ts = _ensure_at_otp_sent(session, email, otp_after_ts, checkpoint=at_scope.check)
+        except Exception as send_exc:
+            mark_otp_failure(send_exc, "email_otp_send")
+            raise
     current_otp = None
     last_exc: Exception | None = None
     for attempt in range(1, max_otp_attempts + 1):
@@ -397,7 +405,10 @@ def _validate_with_retry(
                     force_service=True if email_source else None,
                 )
             otp_operation = "email_otp_validate"
-            result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
+            if at_scope is not None and at_validator is not None:
+                result = at_validator(current_otp)
+            else:
+                result = validate_email_otp(session, current_otp, sentinel_header=None, so_header=None)
             return result
         except EmailOtpInvalidError as exc:
             mark_otp_failure(exc, otp_operation)
@@ -409,7 +420,10 @@ def _validate_with_retry(
                 at_scope.check()
             resend_started_at = time.time() if at_scope is not None else None
             try:
-                send_email_otp(session)
+                if at_scope is not None:
+                    _resend_at_otp(session, checkpoint=at_scope.check)
+                else:
+                    send_email_otp(session)
             except Exception as send_exc:
                 mark_otp_failure(send_exc, "email_otp_send")
                 raise
@@ -438,7 +452,10 @@ def _validate_with_retry(
                 logger.warning("[查活] 邮箱验证码阶段失败，重新发送后再取（%s/%s）：%s", attempt, max_otp_attempts, str(exc)[:180])
             resend_started_at = time.time() if at_scope is not None else None
             try:
-                send_email_otp(session)
+                if at_scope is not None:
+                    _resend_at_otp(session, checkpoint=at_scope.check)
+                else:
+                    send_email_otp(session)
             except Exception as send_exc:
                 mark_otp_failure(send_exc, "email_otp_send")
                 raise

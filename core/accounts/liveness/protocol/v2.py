@@ -66,7 +66,8 @@ def _callback_facts(context: dict | None) -> dict:
 
 def _reraise_control(exception: BaseException) -> None:
     """保留经过兼容辅助函数包装的取消与执行租约失效信号。"""
-    from core.auth.state_machine import CancellationRequested
+    from core.auth.state_machine import CancellationRequested, StageTimeout
+    from core.network.at_transport_recovery import AtRecoveryTimeout, current_scope
     from core.operations.runtime import OperationAccountDeactivated, OperationCancelled
     from core.operations.task_gateway import OperationLeaseLost
 
@@ -77,6 +78,8 @@ def _reraise_control(exception: BaseException) -> None:
             continue
         visited.add(id(current))
         if isinstance(current, (OperationCancelled, OperationLeaseLost, CancellationRequested, OperationAccountDeactivated)):
+            raise current
+        if current_scope() is not None and isinstance(current, (AtRecoveryTimeout, StageTimeout)):
             raise current
         pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
@@ -732,9 +735,10 @@ def _refresh_with_password(
         if final_host == "auth.openai.com" and final_path == "/email-verification":
             auth_method = "email_otp"
             password_auth_status = "skipped"
-            # 仅 AT 刷新保留跳转前时间窗，先读取 authorize 可能已发送的验证码。
-            # 补密码等共享调用继续使用既有显式发码，无效码重发仍由 OTP 状态机处理。
-            if _AT_CALLBACK_CONTEXT.get() is None:
+            from core.network.at_transport_recovery import current_scope
+
+            # AT 的初发和重发由独立 OTP 调度按会话状态确认；共享调用保留原行为。
+            if _AT_CALLBACK_CONTEXT.get() is None and current_scope() is None:
                 otp_after_ts = time.time()
                 try:
                     send_email_otp(session)
@@ -752,7 +756,7 @@ def _refresh_with_password(
                     }
                     raise error from exc
             else:
-                logger.info("[查活][Protocol v2] 已进入邮箱验证码页，沿授权前时间窗等待已有验证码，本次不追加重发")
+                logger.info("[查活][Protocol v2] 已进入邮箱验证码页，交由当前会话的验证码调度确认发码并等待")
             email_result, auth_method = _complete_email_otp(
                 session,
                 email,
@@ -1137,7 +1141,9 @@ def refresh_access_token(
             ).as_dict(),
         }
     except ProtocolV2AuthError as exc:
-        if context is not None:
+        from core.network.at_transport_recovery import current_scope
+
+        if context is not None or current_scope() is not None:
             _reraise_control(exc)
         if callable(on_network_failure):
             on_network_failure(exc)
@@ -1182,7 +1188,9 @@ def refresh_access_token(
             result["password_auth_status"] = "rejected"
         return result
     except Exception as exc:
-        if context is not None:
+        from core.network.at_transport_recovery import current_scope
+
+        if context is not None or current_scope() is not None:
             _reraise_control(exc)
         if callable(on_network_failure):
             on_network_failure(exc)
