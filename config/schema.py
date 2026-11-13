@@ -522,6 +522,7 @@ _DEFAULTS: dict[str, Any] = {
     "SUB2API_UPLOAD_MODELS": '',
     "SUB2API_SYNC_RETRY_ENABLED": False,
     "SUB2API_MONITOR_ENABLED": False,
+    "SUB2API_MONITOR_GROUP_IDS": '',
     "SUB2API_MONITOR_INTERVAL_SECONDS": 300,
     "SUB2API_MONITOR_COOLDOWN_SECONDS": 300,
     "SUB2API_MONITOR_MAX_PER_CYCLE": 20,
@@ -1759,7 +1760,7 @@ _FIELD_DEFINITIONS = [
         "key": "C2A_API_TIMEOUT", "file": "c2a.py", "type": "int", "group": "C2A",
         "label": "C2A 超时", "help": "C2A 查询账号及更新 AT 的单次 HTTP 超时秒数。",
     },
-    {"key": "SUB2API_UPLOAD_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "目标分组 ID", "help": "多个分组用逗号分隔；留空保留远端分组，巡检检查全部分组"},
+    {"key": "SUB2API_UPLOAD_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "目标分组 ID", "help": "多个分组用逗号分隔；留空保留远端分组。异常巡检范围在定时任务中单独配置"},
     {"key": "SUB2API_UPLOAD_PROXY_ID", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号代理 ID", "help": "填写 Sub2API 中的代理 ID；留空保留原代理"},
     {"key": "SUB2API_UPLOAD_CONCURRENCY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "远端账号调度并发属性", "help": "这是上传到 Sub2API 账号的远端调度属性，不控制 Turb 本地上传 worker；本地上传上限在并发控制的 Sub2API 上传与同步中维护。正整数；留空保留已有账号配置，新账号采用后端默认值。"},
     {"key": "SUB2API_UPLOAD_PRIORITY", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号优先级", "help": "不小于 0 的整数；留空保留原配置"},
@@ -1767,6 +1768,7 @@ _FIELD_DEFINITIONS = [
     {"key": "SUB2API_UPLOAD_MODELS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号允许模型", "help": "每行一个或逗号分隔；填写后更新模型映射，留空保留原映射"},
     {"key": "SUB2API_SYNC_RETRY_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动补传 sub2api 凭据", "help": "默认关闭；同步失败后仅重传已保存凭据、清错并恢复调度，不重复登录"},
     {"key": "SUB2API_MONITOR_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动巡检 sub2api 异常账号", "help": "默认关闭；先补传，再按明确认证错误刷新或调用现有 Codex 重授权；不会创建注册任务"},
+    {"key": "SUB2API_MONITOR_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "定时任务", "label": "sub2api 巡检分组", "help": "留空扫描全部账号；可查询分组后选择，或填写多个逗号分隔的分组 ID。只影响异常扫描范围"},
     {"key": "SUB2API_MONITOR_INTERVAL_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 巡检间隔（秒）", "help": "两轮检查的最短间隔，默认 300 秒"},
     {"key": "SUB2API_MONITOR_COOLDOWN_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 修复冷却（秒）", "help": "同账号两次自动修复之间的最短间隔，默认 300 秒"},
     {"key": "SUB2API_MONITOR_MAX_PER_CYCLE", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 每轮修复账号数", "help": "每轮最多调度的账号数量，默认 20"},
@@ -2534,8 +2536,8 @@ def _coerce(value: Any, field: ConfigField, *, strict: bool) -> Any:
 
 def _validate_value(field: ConfigField, value: Any, *, strict: bool) -> Any:
     result = _coerce(value, field, strict=strict)
-    if field.key.startswith("SUB2API_UPLOAD_") and result:
-        if field.key == "SUB2API_UPLOAD_GROUP_IDS":
+    if (field.key.startswith("SUB2API_UPLOAD_") or field.key == "SUB2API_MONITOR_GROUP_IDS") and result:
+        if field.key in {"SUB2API_UPLOAD_GROUP_IDS", "SUB2API_MONITOR_GROUP_IDS"}:
             parts = re.split(r"[,，\s]+", result)
             if any(not re.fullmatch(r"[1-9]\d*", item) for item in parts if item):
                 raise ValueError("分组 ID 必须是逗号分隔的正整数")

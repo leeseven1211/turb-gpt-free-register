@@ -38,6 +38,21 @@ def create_integrations_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("integrations", __name__)
     logger = context.logger
 
+    @bp.get("/api/sub2api/groups")
+    def api_sub2api_groups():
+        """使用已保存的连接配置查询 OpenAI 分组，供巡检选择范围。"""
+        from core.integrations.sub2api import client
+
+        try:
+            return jsonify({"ok": True, "groups": client.list_configured_groups()})
+        except client.Sub2ApiSyncError as exc:
+            logger.warning("查询 Sub2API 分组失败：%s", exc.code)
+            return jsonify({"ok": False, "error_code": exc.code, "error": exc.message}), 503
+        except Exception as exc:
+            logger.warning("查询 Sub2API 分组失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error_code": "sub2api_groups_query_failed",
+                            "error": "查询 Sub2API 分组失败，请检查连接配置后重试"}), 503
+
     @bp.get("/api/sub2api/automation")
     def api_sub2api_automation():
         """只返回同步和巡检计数，不返回账号凭据或管理员配置。"""

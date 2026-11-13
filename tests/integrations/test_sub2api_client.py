@@ -20,7 +20,7 @@ class Sub2ApiClientTests(unittest.TestCase):
             "extra": {"device": "existing-device"}, "concurrency": 9, "priority": 70, "group_ids": [8], "proxy_id": 2, "load_factor": 150,
         }
         self.config = patch.multiple(cfg, create=True, SUB2API_API_BASE="https://sub2.example/prefix/", SUB2API_API_URL="", SUB2API_API_KEY="synthetic-key", SUB2API_API_TIMEOUT=12,
-            SUB2API_UPLOAD_GROUP_IDS="", SUB2API_UPLOAD_PROXY_ID="", SUB2API_UPLOAD_CONCURRENCY="", SUB2API_UPLOAD_PRIORITY="", SUB2API_UPLOAD_LOAD_FACTOR="", SUB2API_UPLOAD_MODELS="")
+            SUB2API_MONITOR_GROUP_IDS="", SUB2API_UPLOAD_GROUP_IDS="", SUB2API_UPLOAD_PROXY_ID="", SUB2API_UPLOAD_CONCURRENCY="", SUB2API_UPLOAD_PRIORITY="", SUB2API_UPLOAD_LOAD_FACTOR="", SUB2API_UPLOAD_MODELS="")
         self.config.start()
         self.addCleanup(self.config.stop)
 
@@ -165,6 +165,67 @@ class Sub2ApiClientTests(unittest.TestCase):
         self.assertEqual([c.kwargs["params"]["page"] for c in get.call_args_list], [1, 2])
         self.assertEqual(get.call_args.kwargs["params"]["platform"], "openai")
         self.assertEqual(get.call_args.kwargs["params"]["status"], "error")
+
+    def test_monitor_group_configuration_is_independent_from_upload_groups(self):
+        with patch.object(cfg, "SUB2API_UPLOAD_GROUP_IDS", "9"):
+            self.assertEqual([], client.configured_monitor_group_ids())
+            with patch.object(cfg, "SUB2API_MONITOR_GROUP_IDS", " 8,3,8 "):
+                self.assertEqual([8, 3], client.configured_monitor_group_ids())
+        for value in ("0", "-1", "2,,3", "2,x", "1.5"):
+            with self.subTest(value=value), patch.object(cfg, "SUB2API_MONITOR_GROUP_IDS", value):
+                with self.assertRaises(client.Sub2ApiSyncError) as raised:
+                    client.configured_monitor_group_ids()
+                self.assertEqual("sub2api_config_invalid", raised.exception.code)
+
+    def test_group_query_returns_only_openai_group_identifiers_and_names(self):
+        groups = [
+            {"id": 8, "name": "Plus", "platform": "openai", "status": "active", "private_detail": "omitted"},
+            {"id": 9, "name": "其他平台", "platform": "anthropic"},
+        ]
+        with patch.object(client.requests, "get", return_value=self.response(groups)) as get:
+            result = client.list_configured_groups()
+        self.assertEqual([{"id": 8, "name": "Plus"}], result)
+        self.assertEqual("https://sub2.example/prefix/api/v1/admin/groups/all", get.call_args.args[0])
+        self.assertEqual({"platform": "openai"}, get.call_args.kwargs["params"])
+
+    def test_group_query_classifies_http_and_invalid_response_failures(self):
+        for response, expected in ((self.response({}, status=403), "sub2api_auth_rejected"),
+                                   (self.response({"items": []}), "sub2api_response_invalid")):
+            with self.subTest(expected=expected), patch.object(client.requests, "get", return_value=response):
+                with self.assertRaises(client.Sub2ApiSyncError) as raised:
+                    client.list_configured_groups()
+                self.assertEqual(expected, raised.exception.code)
+                self.assertEqual("list_groups", raised.exception.stage)
+
+    def test_error_scan_queries_each_group_and_deduplicates_overlapping_accounts(self):
+        overlap = {**self.remote, "id": 42, "group_ids": [8, 9]}
+        other = {**self.remote, "id": 43, "group_ids": [9]}
+        pages = {
+            (8, 1): {"items": [self.remote, overlap], "pages": 2},
+            (8, 2): {"items": [overlap], "pages": 2},
+            (9, 1): {"items": [overlap, other], "pages": 1},
+        }
+        def response_for_group(*args, **kwargs):
+            params = kwargs["params"]
+            return self.response(pages.get((params.get("group"), params["page"]), {"items": [], "pages": 1}))
+        with patch.object(client.requests, "get", side_effect=response_for_group) as get:
+            result = client.list_configured_error_accounts(group_ids=[8, 9])
+        self.assertEqual([41, 42, 43], [row["id"] for row in result])
+        self.assertEqual([(8, 1), (8, 2), (9, 1)],
+                         [(call.kwargs["params"]["group"], call.kwargs["params"]["page"]) for call in get.call_args_list])
+
+    def test_error_scan_checks_group_membership_when_backend_ignores_filter(self):
+        nested = {**self.remote, "id": 42, "group_ids": [], "groups": [{"id": 8}]}
+        outside = {**self.remote, "id": 43, "group_ids": [9]}
+        with patch.object(client.requests, "get", return_value=self.response({"items": [nested, outside], "pages": 1})):
+            result = client.list_configured_error_accounts(group_ids=[8])
+        self.assertEqual([42], [row["id"] for row in result])
+
+    def test_empty_monitor_scope_reads_all_groups_without_group_parameter(self):
+        with patch.object(cfg, "SUB2API_UPLOAD_GROUP_IDS", "9"), patch.object(client.requests, "get", return_value=self.response({"items": [self.remote], "pages": 1})) as get:
+            result = client.list_configured_error_accounts(group_ids=[])
+        self.assertEqual([41], [row["id"] for row in result])
+        self.assertNotIn("group", get.call_args.kwargs["params"])
 
     def test_configured_upload_updates_existing_id_without_import_defaults(self):
         get_responses = [self.response({"items": [self.remote], "pages": 1}), self.response(self.remote)]

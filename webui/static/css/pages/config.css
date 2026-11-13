@@ -491,6 +491,32 @@
   overflow: auto;
 }
 
+#tab-config .config-sub2api-groups-v2 {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+#tab-config .config-sub2api-groups-v2 > .btn { justify-self: start; }
+
+#tab-config .config-sub2api-groups-v2 > input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 11px;
+  border: 1px solid var(--ui-color-border, #d9e2ec);
+  border-radius: 7px;
+  background: var(--ui-color-surface, #fff);
+}
+
+#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 input { width: auto; margin: 0; }
+#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 span { overflow-wrap: anywhere; }
+#tab-config .config-sub2api-groups-v2 .config-multi-option-v2:focus-within {
+  outline: 2px solid var(--ui-color-primary, #315efb);
+  outline-offset: -2px;
+}
+
 #tab-config .config-multi-option-v2 {
   display: flex;
   align-items: center;

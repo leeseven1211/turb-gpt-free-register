@@ -35,3 +35,22 @@ class Sub2ApiAutomationApiTests(unittest.TestCase):
         self.assertEqual(503, response.status_code)
         self.assertFalse(response.json["ok"])
         self.assertEqual("remote_scan_failed", response.json["error_code"])
+
+    def test_groups_require_login_and_return_saved_backend_choices(self):
+        self.assertEqual(401, self.client.get("/api/sub2api/groups").status_code)
+        with patch("core.integrations.sub2api.client.list_configured_groups", create=True,
+                   return_value=[{"id": 17, "name": "Plus"}]) as query:
+            response = self.client.get("/api/sub2api/groups", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "groups": [{"id": 17, "name": "Plus"}]}, response.json)
+        query.assert_called_once_with()
+
+    def test_groups_preserve_classified_upstream_error(self):
+        from core.integrations.sub2api.client import Sub2ApiSyncError
+
+        with patch("core.integrations.sub2api.client.list_configured_groups", create=True,
+                   side_effect=Sub2ApiSyncError("list_groups", "sub2api_auth_rejected", "Sub2API 管理接口鉴权失败或权限不足")):
+            response = self.client.get("/api/sub2api/groups", headers=self.headers)
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("sub2api_auth_rejected", response.json["error_code"])
+        self.assertIn("鉴权", response.json["error"])

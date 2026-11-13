@@ -210,8 +210,14 @@ def _run_failure_code(run: dict, row: dict) -> str:
 def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], summary: dict) -> None:
     account_id = int(account["id"])
     state = repair_store.get_repair(backend, account_id) or {}
+    stage = str(state.get("stage") or "")
+    scoped_scan = bool(summary.get("group_ids"))
+    if scoped_scan and stage not in _CONTINUATION_STAGES and not remote:
+        return
     previous_targets = set(state.get("remote_account_ids") or [])
-    targets = sorted(previous_targets | {int(row["id"]) for row in remote if str(row.get("id") or "").isdigit() and int(row["id"]) > 0})
+    current_targets = {int(row["id"]) for row in remote if str(row.get("id") or "").isdigit() and int(row["id"]) > 0}
+    # 已提交修复保留原目标；新的分组巡检只使用本轮范围内的远端账号。
+    targets = sorted(current_targets if scoped_scan and stage not in _CONTINUATION_STAGES else previous_targets | current_targets)
     changes = {"remote_account_ids": targets}
     if set(targets) - previous_targets:
         # 同邮箱新增远端账号也需要同步；已成功的旧目标由补传队列幂等保留。
@@ -247,7 +253,6 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     except Exception:
         skip("local_credential_unreadable")
         return
-    stage = str(state.get("stage") or "")
     source = str(state.get("source_generation") or "")
     if stage in _WAIT_STAGES or stage == "waiting_manual":
         run_id = int(state.get("run_id") or 0)
@@ -364,12 +369,17 @@ def run_once(*, force: bool = False) -> dict:
 
 def _run_once(*, force: bool = False) -> dict:
     """先补传，再归并远端异常并推进持久阶段；返回不含身份或凭据的计数。"""
-    summary = {"enabled": _enabled(), "remote_errors": 0, "accounts": 0, "processed": 0,
+    summary = {"enabled": _enabled(), "group_ids": [], "remote_errors": 0, "accounts": 0, "processed": 0,
                "refresh_queued": 0, "reauth_queued": 0, "sync_queued": 0, "reasons": {}}
     try:
         jobs.enqueue_due()
     except Exception:
         _reason(summary, "sync_retry_scan_failed")
+    try:
+        summary["group_ids"] = client.configured_monitor_group_ids()
+    except client.Sub2ApiSyncError:
+        _reason(summary, "remote_scan_failed")
+        return summary
     continuation_only = not summary["enabled"] and not force
     try:
         backend = client.configured_backend_identity()
@@ -389,7 +399,7 @@ def _run_once(*, force: bool = False) -> dict:
     if not continuation_only:
         try:
             remote = client.list_configured_error_accounts(
-                group_ids=client.configured_upload_options().get("group_ids"), expected_backend=backend)
+                group_ids=summary["group_ids"], expected_backend=backend)
         except Exception:
             _reason(summary, "remote_scan_failed")
     summary["remote_errors"] = len(remote)
@@ -453,6 +463,7 @@ def status() -> dict:
     except Exception:
         pass
     return {"enabled": _enabled(), "running": bool(_THREAD and _THREAD.is_alive()),
+            "group_ids": client.configured_monitor_group_ids(),
             "interval_seconds": _interval(), "cooldown_seconds": _cooldown(),
             "max_per_cycle": max(1, int(getattr(_cfg, "SUB2API_MONITOR_MAX_PER_CYCLE", 20) or 20)),
             "repair_stages": states, **scheduler_state.describe(_TASK, _interval())}

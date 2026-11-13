@@ -36,7 +36,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.patch("_now", return_value=1000.0)
         for key, value in {"SUB2API_MONITOR_ENABLED": True, "SUB2API_MONITOR_INTERVAL_SECONDS": 300,
                            "SUB2API_MONITOR_COOLDOWN_SECONDS": 300, "SUB2API_MONITOR_MAX_PER_CYCLE": 20,
-                           "SUB2API_UPLOAD_GROUP_IDS": "3"}.items():
+                           "SUB2API_MONITOR_GROUP_IDS": "3", "SUB2API_UPLOAD_GROUP_IDS": "9"}.items():
             self.stack.enter_context(patch.object(self.monitor._cfg, key, value, create=True))
 
     def patch(self, name, **kwargs):
@@ -145,6 +145,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.drain.assert_called_once()
         self.fetch.assert_not_called()
         self.assertFalse(result["enabled"])
+        self.assertEqual([3], result["group_ids"])
         self.assertNotIn("monitor@example.test", json.dumps(self.monitor.status()))
 
     def test_missing_remote_id_never_uses_a_general_upload(self):
@@ -173,9 +174,32 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.refresh.assert_called_once()
 
     def test_comma_separated_group_filter_is_parsed_before_remote_scan(self):
-        with patch.object(self.monitor._cfg, "SUB2API_UPLOAD_GROUP_IDS", "2,5"):
-            self.monitor._run_once()
+        with patch.object(self.monitor._cfg, "SUB2API_MONITOR_GROUP_IDS", "2,5"):
+            result = self.monitor._run_once()
         self.fetch.assert_called_once_with(group_ids=[2, 5], expected_backend="test-backend")
+        self.assertEqual([2, 5], result["group_ids"])
+        self.assertEqual([3], self.monitor.status()["group_ids"])
+
+    def test_empty_scan_scope_does_not_fall_back_to_upload_group_configuration(self):
+        with patch.object(self.monitor._cfg, "SUB2API_MONITOR_GROUP_IDS", ""):
+            result = self.monitor._run_once()
+        self.fetch.assert_called_once_with(group_ids=[], expected_backend="test-backend")
+        self.assertEqual([], result["group_ids"])
+
+    def test_new_scan_drops_historical_targets_from_finished_repair(self):
+        self.store.save_repair("test-backend", 42, stage="cooldown", remote_account_ids=[99], next_attempt_at=0)
+        self.remote[0]["credentials"]["access_token"] = "older-access"
+        self.monitor._run_once()
+        self.sync.assert_called_once_with("monitor.json", remote_account_ids=[7], trigger="sub2api_monitor", expected_backend="test-backend")
+        self.assertEqual([7], self.store.get_repair("test-backend", 42)["remote_account_ids"])
+
+    def test_unmatched_historical_repair_does_not_start_a_new_sync(self):
+        self.store.save_repair("test-backend", 42, stage="waiting_manual", remote_account_ids=[99], source_generation="old-generation")
+        self.remote = []
+        self.monitor._run_once()
+        self.sync.assert_not_called()
+        self.refresh.assert_not_called()
+        self.oauth.assert_not_called()
 
     def test_backend_change_between_identity_and_scan_never_binds_foreign_ids(self):
         self.fetch.side_effect = self.monitor.client.Sub2ApiSyncError(

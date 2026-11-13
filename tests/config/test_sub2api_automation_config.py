@@ -36,3 +36,15 @@ class Sub2ApiAutomationConfigTests(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(schema.ConfigValidationError):
                     schema.validate_config_updates({key: value})
+
+    def test_monitor_groups_are_optional_and_normalized_independently(self):
+        fields = {field["key"]: field for field in config_editor.EDITABLE_FIELDS}
+        self.assertEqual("", fields["SUB2API_MONITOR_GROUP_IDS"]["default"])
+        self.assertEqual("定时任务", fields["SUB2API_MONITOR_GROUP_IDS"]["group"])
+        self.assertEqual({"SUB2API_MONITOR_GROUP_IDS": ""},
+                         schema.validate_config_updates({"SUB2API_MONITOR_GROUP_IDS": ""}))
+        self.assertEqual({"SUB2API_MONITOR_GROUP_IDS": "17,23"},
+                         schema.validate_config_updates({"SUB2API_MONITOR_GROUP_IDS": "17， 23,17"}))
+        for value in ("17,invalid", "0", "-1", "1.5"):
+            with self.subTest(value=value), self.assertRaises(schema.ConfigValidationError):
+                schema.validate_config_updates({"SUB2API_MONITOR_GROUP_IDS": value})

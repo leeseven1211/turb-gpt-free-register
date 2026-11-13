@@ -15,6 +15,7 @@ let CONFIG_HUANGUANG_XXSYUN_QUOTA_REQUEST_V2 = 0;
 const CONFIG_HUANGUANG_XXSYUN_QUOTA_V2 = {loading: false, text: ''};
 let CONFIG_XXSYUN_PAYMENT_BALANCE_REQUEST_V2 = 0;
 const CONFIG_XXSYUN_PAYMENT_BALANCE_V2 = {loading: false, text: ''};
+const CONFIG_SUB2API_GROUPS_V2 = {groups: null, loading: false, text: ''};
 const CONFIG_SENTINEL_MAINTENANCE_V2 = {
   snapshot: null, loading: false, posting: false, visible: false,
   request: 0, timer: null, observer: null, error: '', retryAction: 'status',
@@ -1235,7 +1236,9 @@ function renderConfigControlMarkupV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
   const driverChoices = configDriverChoices(f);
-  if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
+  if (f.key === 'SUB2API_MONITOR_GROUP_IDS') {
+    control = renderSub2ApiMonitorGroupsV2(f, fv);
+  } else if (['PROXY_POOL_COUNTRIES', 'PLAN_CHECK_COUNTRIES'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     control = renderConfigCountryControlV2(f, fv);
   } else if (['PROXY_POOL_DEFAULT_COUNTRY', 'REGISTRATION_COUNTRY', 'ACCOUNT_AT_REFRESH_COUNTRY'].includes(f.key) && Array.isArray(f.country_codes) && f.country_codes.length) {
     const current = String(fv ?? '').trim().toUpperCase();
@@ -2039,6 +2042,78 @@ function renderSub2ApiAutomationToolsV2() {
     <p class="config-setting-short-help-v2" data-sub2api-automation-status role="status" aria-live="polite">尚未查询</p>
   </div>`;
 }
+function sub2ApiMonitorGroupValuesV2(value) {
+  return [...new Set(String(value ?? '').split(/[,，\s]+/).filter(Boolean))];
+}
+function sub2ApiMonitorGroupOptionsV2(value) {
+  const groups = (CONFIG_SUB2API_GROUPS_V2.groups || []).map(group => ({id: String(group.id), name: group.name}));
+  sub2ApiMonitorGroupValuesV2(value).forEach(id => {
+    if (!groups.some(group => group.id === id)) groups.push({id, name: '已配置分组'});
+  });
+  return groups;
+}
+function renderSub2ApiMonitorGroupOptionsV2(value) {
+  const selected = new Set(sub2ApiMonitorGroupValuesV2(value));
+  return sub2ApiMonitorGroupOptionsV2(value).map(group => `<label class="config-multi-option-v2${selected.has(group.id) ? ' is-selected' : ''}"><input type="checkbox" data-sub2api-monitor-group-id="${attrEsc(group.id)}"${selected.has(group.id) ? ' checked' : ''}><span>${esc(group.name)}（ID ${esc(group.id)}）</span></label>`).join('');
+}
+function sub2ApiMonitorGroupStatusV2(value) {
+  const state = CONFIG_SUB2API_GROUPS_V2;
+  const values = sub2ApiMonitorGroupValuesV2(value);
+  const scope = values.length ? `当前选择分组 ID：${values.join('、')}` : '当前选择全部分组';
+  return `${state.text || (state.groups === null ? '可查询分组后勾选，也可直接填写 ID' : `已查询 ${state.groups.length} 个分组`)}；${scope}。`;
+}
+function renderSub2ApiMonitorGroupsV2(f, value) {
+  const state = CONFIG_SUB2API_GROUPS_V2;
+  return `<div class="config-sub2api-groups-v2" data-sub2api-monitor-groups aria-busy="${state.loading}">
+    <input id="cfg-SUB2API_MONITOR_GROUP_IDS" type="text" data-key="SUB2API_MONITOR_GROUP_IDS" value="${attrEsc(value ?? '')}" placeholder="例如：17,18；留空扫描全部" aria-label="${attrEsc(f.label)}" aria-describedby="sub2apiMonitorGroupsHelpV2 sub2apiMonitorGroupsStatusV2" autocomplete="off" spellcheck="false">
+    <button type="button" class="btn" data-query-sub2api-groups${state.loading ? ' disabled' : ''}>${state.loading ? '正在查询…' : '查询分组'}</button>
+    <p class="config-setting-short-help-v2" id="sub2apiMonitorGroupsHelpV2">使用已保存的 Sub2API 连接查询；可多选，不选时扫描全部分组，修改后点击保存生效。</p>
+    <div class="config-multi-options-v2" data-sub2api-monitor-group-options data-groups-signature="${attrEsc(JSON.stringify(sub2ApiMonitorGroupOptionsV2(value)))}" role="group" aria-label="选择异常巡检分组">${renderSub2ApiMonitorGroupOptionsV2(value)}</div>
+    <p class="config-setting-short-help-v2" id="sub2apiMonitorGroupsStatusV2" data-sub2api-monitor-groups-status role="status" aria-live="polite">${esc(sub2ApiMonitorGroupStatusV2(value))}</p>
+  </div>`;
+}
+function syncSub2ApiMonitorGroupsV2() {
+  document.querySelectorAll('#tab-config [data-sub2api-monitor-groups]').forEach(control => {
+    const state = CONFIG_SUB2API_GROUPS_V2;
+    const input = control.querySelector('[data-key="SUB2API_MONITOR_GROUP_IDS"]');
+    const value = input?.value ?? configFieldValueV2('SUB2API_MONITOR_GROUP_IDS');
+    control.setAttribute('aria-busy', String(state.loading));
+    const button = control.querySelector('[data-query-sub2api-groups]');
+    button.disabled = state.loading;
+    button.textContent = state.loading ? '正在查询…' : '查询分组';
+    control.querySelector('[data-sub2api-monitor-groups-status]').textContent = sub2ApiMonitorGroupStatusV2(value);
+    const options = control.querySelector('[data-sub2api-monitor-group-options]');
+    const signature = JSON.stringify(sub2ApiMonitorGroupOptionsV2(value));
+    // 分组不变时仅同步勾选状态，保留正在操作的复选框焦点。
+    if (options.dataset.groupsSignature !== signature) {
+      options.innerHTML = renderSub2ApiMonitorGroupOptionsV2(value);
+      options.dataset.groupsSignature = signature;
+    }
+    const selected = new Set(sub2ApiMonitorGroupValuesV2(value));
+    options.querySelectorAll('[data-sub2api-monitor-group-id]').forEach(checkbox => {
+      checkbox.checked = selected.has(checkbox.dataset.sub2apiMonitorGroupId);
+      checkbox.closest('label')?.classList.toggle('is-selected', checkbox.checked);
+    });
+  });
+}
+async function querySub2ApiGroupsV2() {
+  const state = CONFIG_SUB2API_GROUPS_V2;
+  if (state.loading) return;
+  Object.assign(state, {loading: true, text: '正在查询分组…'});
+  syncSub2ApiMonitorGroupsV2();
+  try {
+    const result = await api('/api/sub2api/groups');
+    if (result?.ok !== true) throw new Error(result?.error || '服务未能返回分组');
+    if (!Array.isArray(result.groups) || result.groups.some(group => !Number.isSafeInteger(group?.id) || group.id <= 0 || typeof group.name !== 'string')) throw new Error('分组响应格式无效，请重试');
+    state.groups = [...new Map(result.groups.map(group => [group.id, group])).values()];
+    state.text = `已查询 ${state.groups.length} 个分组`;
+  } catch (error) {
+    state.text = `查询分组失败：${error.message || error.error || '请检查已保存的连接配置后重试'}`;
+  } finally {
+    state.loading = false;
+    syncSub2ApiMonitorGroupsV2();
+  }
+}
 async function querySub2ApiAutomationV2(button) {
   const panel = button.closest('.config-tool-panel-v2');
   const status = panel.querySelector('[data-sub2api-automation-status]');
@@ -2066,7 +2141,9 @@ async function querySub2ApiAutomationV2(button) {
       const result = await api('/api/sub2api/automation');
       if (!result.ok) throw new Error(result.error || '状态读取失败');
       const counts = result.sync?.counts || {};
-      status.textContent = `自动补传${result.sync?.enabled ? '已开启' : '已关闭'}；异常巡检${result.monitor?.enabled ? '已开启' : '已关闭'}。待同步 ${counts.pending || 0}，排队 ${counts.queued || 0}，执行 ${counts.running || 0}。`;
+      const groupIds = result.monitor?.group_ids || [];
+      const scope = groupIds.length ? `分组 ID ${groupIds.join('、')}` : '全部分组';
+      status.textContent = `自动补传${result.sync?.enabled ? '已开启' : '已关闭'}；异常巡检${result.monitor?.enabled ? '已开启' : '已关闭'}；巡检范围：${scope}。待同步 ${counts.pending || 0}，排队 ${counts.queued || 0}，执行 ${counts.running || 0}。`;
     }
   } catch (error) {
     status.textContent = error.message || '查询未完成，请稍后重试';
@@ -2796,6 +2873,7 @@ function trackConfigFieldChange(e) {
     return;
   }
   const value = readConfigElementValue(el, f);
+  if (f.key === 'SUB2API_MONITOR_GROUP_IDS') syncSub2ApiMonitorGroupsV2();
   const explicitSecretClear = f.secret && el.dataset.secretClear === 'true' && String(el.value || '').trim() === '';
   const syncKeys = String(el.dataset.syncKeys || '').split(',').map(key => key.trim()).filter(Boolean);
   [f.key, ...syncKeys].filter((key, index, all) => all.indexOf(key) === index).forEach(key => {
@@ -2818,6 +2896,17 @@ function trackConfigFieldChange(e) {
 }
 $('#tab-config').addEventListener('input', trackConfigFieldChange);
 $('#tab-config').addEventListener('change', trackConfigFieldChange);
+$('#tab-config').addEventListener('change', event => {
+  const checkbox = event.target.closest('[data-sub2api-monitor-group-id]');
+  if (!checkbox) return;
+  const input = document.getElementById('cfg-SUB2API_MONITOR_GROUP_IDS');
+  if (!input) return;
+  const id = checkbox.dataset.sub2apiMonitorGroupId;
+  const selected = sub2ApiMonitorGroupValuesV2(input.value).filter(value => value !== id);
+  if (checkbox.checked) selected.push(id);
+  input.value = selected.join(',');
+  input.dispatchEvent(new Event('input', {bubbles: true}));
+});
 
 async function saveConfigUpdates(triggerBtn) {
   const updates = {...CONFIG_PENDING_UPDATES};
@@ -2931,6 +3020,11 @@ $('#tab-config').addEventListener('click', (e) => {
   if (sub2apiButton) {
     e.preventDefault();
     return querySub2ApiAutomationV2(sub2apiButton);
+  }
+  const sub2apiGroupsButton = e.target.closest('[data-query-sub2api-groups]');
+  if (sub2apiGroupsButton) {
+    e.preventDefault();
+    return querySub2ApiGroupsV2();
   }
   const balanceButton = e.target.closest('[data-query-xxsyun-payment-balance]');
   if (balanceButton) {

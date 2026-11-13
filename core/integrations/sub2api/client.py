@@ -128,6 +128,21 @@ def configured_upload_options() -> dict[str, Any]:
         return _configured_upload_options_locked()
 
 
+def configured_monitor_group_ids() -> list[int]:
+    """返回独立巡检范围；留空表示扫描全部分组。"""
+    import config
+    from config import sub2api as cfg
+
+    with config._RELOAD_LOCK:
+        groups = str(getattr(cfg, "SUB2API_MONITOR_GROUP_IDS", "") or "").strip()
+        if not groups:
+            return []
+        try:
+            return list(dict.fromkeys(_positive_id(item.strip()) for item in groups.split(",")))
+        except (ValueError, TypeError):
+            raise _config_invalid() from None
+
+
 def _configured_upload_options_locked() -> dict[str, Any]:
     from config import sub2api as cfg
 
@@ -249,7 +264,7 @@ def _remote_email(account: dict[str, Any]) -> str:
     return match.group(0).casefold() if match else ""
 
 
-def _list_accounts(config: _ClientConfig, *, status: str | None = None, email: str | None = None, checkpoint: Callable[[], None] | None = None) -> list[dict[str, Any]]:
+def _list_accounts(config: _ClientConfig, *, status: str | None = None, email: str | None = None, group_id: int | None = None, checkpoint: Callable[[], None] | None = None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[int] = set()
     page = 1
@@ -257,6 +272,8 @@ def _list_accounts(config: _ClientConfig, *, status: str | None = None, email: s
         params: dict[str, Any] = {"page": page, "page_size": 100, "platform": "openai"}
         if status:
             params["status"] = status
+        if group_id is not None:
+            params["group"] = group_id
         data = _request_json(config, "get", "/api/v1/admin/accounts", stage="list_accounts", checkpoint=checkpoint, params=params)
         items = data.get("items") if isinstance(data, dict) else None
         if not isinstance(items, list):
@@ -289,24 +306,63 @@ def _list_accounts(config: _ClientConfig, *, status: str | None = None, email: s
     raise Sub2ApiSyncError("list_accounts", "sub2api_pagination_limit", "Sub2API 账号列表超过单次巡检上限", backend_identity=config.backend_identity)
 
 
+def list_configured_groups() -> list[dict[str, Any]]:
+    """只读查询 OpenAI 分组，只公开选择范围需要的 ID 与名称。"""
+    config = _capture_config()
+    data = _request_json(config, "get", "/api/v1/admin/groups/all", stage="list_groups", params={"platform": "openai"})
+    if not isinstance(data, list):
+        raise Sub2ApiSyncError("list_groups", "sub2api_response_invalid", "Sub2API 分组列表格式无效", backend_identity=config.backend_identity)
+    result = []
+    seen: set[int] = set()
+    for group in data:
+        if not isinstance(group, dict) or str(group.get("platform") or "openai").lower() != "openai":
+            continue
+        try:
+            group_id = _positive_id(group.get("id"))
+        except ValueError:
+            continue
+        name = str(group.get("name") or "").strip()
+        if name and group_id not in seen:
+            result.append({"id": group_id, "name": name})
+            seen.add(group_id)
+    return result
+
+
+def _account_group_ids(account: dict[str, Any]) -> set[int]:
+    values = list(account.get("group_ids") or []) if isinstance(account.get("group_ids"), list) else []
+    for field, key in (("account_groups", "group_id"), ("groups", "id")):
+        rows = account.get(field)
+        if isinstance(rows, list):
+            values.extend(item.get(key) for item in rows if isinstance(item, dict))
+    result = set()
+    for value in values:
+        try:
+            result.add(_positive_id(value))
+        except ValueError:
+            continue
+    return result
+
+
 def list_configured_error_accounts(
     *, group_ids: list[int] | None = None, expected_backend: str | None = None,
 ) -> list[dict[str, Any]]:
     """分页读取 OpenAI 异常账号，并按指定分组筛选。"""
     config = _capture_config(expected_backend)
     try:
-        wanted = {_positive_id(value) for value in (group_ids or [])}
+        wanted = list(dict.fromkeys(_positive_id(value) for value in (group_ids or [])))
     except ValueError:
         raise _config_invalid() from None
-    accounts = _list_accounts(config, status="error")
     if not wanted:
-        return accounts
+        return _list_accounts(config, status="error")
     result = []
-    for account in accounts:
-        groups = list(account.get("group_ids") or [])
-        groups.extend(item.get("group_id") for item in account.get("account_groups", []) if isinstance(item, dict))
-        if any(str(value).isdigit() and int(value) in wanted for value in groups):
-            result.append(account)
+    seen: set[int] = set()
+    selected = set(wanted)
+    for group_id in wanted:
+        for account in _list_accounts(config, status="error", group_id=group_id):
+            # 远端忽略查询参数时仍按实际归属限制范围。
+            if account["id"] not in seen and _account_group_ids(account) & selected:
+                result.append(account)
+                seen.add(account["id"])
     return result
 
 
