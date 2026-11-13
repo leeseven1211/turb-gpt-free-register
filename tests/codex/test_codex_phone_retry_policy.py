@@ -93,6 +93,25 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
         self.assertEqual(1, flow.report_activation_failure.call_count)
         flow.complete.assert_called_once_with("accepted-activation", flow.http)
 
+    def test_phone_number_fraud_guard_rotates_when_message_identifies_number(self):
+        flow = self._phone_flow(responses=[
+            _response(400, {"error": {"code": "fraud_guard", "message": "We've detected suspicious behavior from phone numbers similar to yours."}}),
+            _response(204),
+            _response(200, {"continue_url": "/sign-in-with-chatgpt/codex/consent"}),
+        ])
+        flow.acquire.side_effect = [
+            ("risk-activation", "risk-number"),
+            ("accepted-activation", "accepted-number"),
+        ]
+
+        result = oauth._do_phone_verification(object())
+
+        self.assertEqual("/sign-in-with-chatgpt/codex/consent", result["continue_url"])
+        self.assertEqual(2, flow.acquire.call_count)
+        flow.cancel.assert_called_once_with("risk-activation", flow.http, background=True)
+        flow.report_activation_failure.assert_called_once_with("risk-activation", "number_risk")
+        flow.complete.assert_called_once_with("accepted-activation", flow.http)
+
     def test_validate_error_never_buys_another_number(self):
         for status, payload in (
             (400, {"error": {"code": "invalid_otp"}}),
