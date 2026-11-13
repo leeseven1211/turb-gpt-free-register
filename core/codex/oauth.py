@@ -25,6 +25,7 @@ from core.auth.protocol.session import BrowserSession
 from core.auth.humanize import delay as human_delay
 from core.auth.protocol.openai_auth import _is_transient_network_error, _extract_error_code, detect_account_unusable_response_body, AccountUnusableError, request_sentinel_token, build_sentinel_header, network_preflight, navigate_email_otp_send, _rotate_document_navigation_id
 from core.codex.phone_errors import CodexPhoneVerificationError, phone_failure_from_response
+from core.codex.auth_page import CodexAuthPageSession
 from core.sms import provider as sms_provider
 from core.operations.runtime import OperationCancelled, call_cancellable, check_cancelled, current_token, report_stage
 from curl_cffi import requests as curl_requests
@@ -773,15 +774,19 @@ def _decode_auth_session_metadata(value) -> dict:
 def _cache_auth_session_metadata(session: BrowserSession, resp) -> None:
     """缓存 Auth 响应携带的 session 元数据，供 cookie 尚未落地时恢复 workspace。"""
     try:
-        _cache_auth_session_payload(session, _resp_json(resp))
+        _cache_auth_session_payload(session, _resp_json(resp), base_url=getattr(resp, "url", None))
     except Exception:
         logger.debug("[Codex] 缓存 Auth session 元数据失败")
 
 
-def _cache_auth_session_payload(session: BrowserSession, payload: dict | None) -> None:
+def _cache_auth_session_payload(
+    session: BrowserSession, payload: dict | None, *, base_url: str | None = "https://auth.openai.com/",
+) -> None:
     """仅保留用于工作区选择的 ID，不保存响应中的其他字段。"""
     if not isinstance(payload, dict):
         return
+    if isinstance(session, CodexAuthPageSession):
+        session.observe_payload(payload, source="continue", base_url=base_url)
     value = payload.get("oai-client-auth-session")
     if value is None:
         value = payload.get("auth_session") or payload.get("authSession")
@@ -2076,7 +2081,7 @@ def run_codex_oauth(
     if otp_provider is None:
         from core.email.provider import wait_for_otp as otp_provider
 
-    session = BrowserSession(proxy=proxy)
+    session = CodexAuthPageSession(BrowserSession(proxy=proxy))
     try:
         check_cancelled()
         logger.info(f"[Codex] 开始授权（全新 session）：{email}")
