@@ -2176,7 +2176,7 @@ async function copySelectedAccountLines() {
   const ids = Array.from(ACCOUNT_SELECTED).map(Number);
   if (!ids.length) { showToast('请先选择账号'); return; }
   try {
-    const lines = await fetchAccountSecrets(ids, 'copy_line');
+    const lines = await fetchAccountSecrets(ids, 'account_credentials_line');
     if (!lines.length) { showToast('选中账号没有可复制整行'); return; }
     copyText(lines.join('\n'));
     showToast(`已复制 ${lines.length} 行`);
