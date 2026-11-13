@@ -29,6 +29,7 @@ class CodexPhoneErrorTests(unittest.TestCase):
         cases = [
             (400, "invalid_phone_number", "Invalid phone number", True),
             (409, "phone_number_already_used", "This phone number is already used", True),
+            (400, "fraud_guard", "We've detected suspicious behavior from phone numbers similar to yours.", True),
             (409, "invalid_state", "Invalid phone number in this session", False),
             (409, "account_limit", "Maximum verification attempts exceeded", False),
             (409, "", "Cannot send an SMS", False),
@@ -39,6 +40,11 @@ class CodexPhoneErrorTests(unittest.TestCase):
             with self.subTest(status=status, code=code):
                 failure = self.failure(status, {"error": {"code": code, "message": message}})
                 self.assertEqual(failure.number_retry_allowed, allowed)
+
+    def test_fraud_guard_without_phone_evidence_stays_non_retryable(self):
+        failure = self.failure(400, {"error": {"code": "fraud_guard", "message": "Suspicious activity detected"}})
+        self.assertFalse(failure.number_retry_allowed)
+        self.assertEqual(failure.diagnostics["failure_kind"], "send_rejected")
 
     def test_code_validation_never_authorizes_purchase_of_another_number(self):
         for code in ("invalid_otp", "otp_expired", "invalid_phone_number", "invalid_state"):

@@ -17,6 +17,7 @@ _OPERATIONS = {
 _REASONS = {
     "invalid_phone": "当前号码无效",
     "phone_number_used": "当前号码已被使用或达到绑定上限",
+    "number_risk": "当前号码触发风控",
     "session_conflict": "认证会话或验证步骤冲突",
     "send_limited": "请求受到限流",
     "delivery_refused": "短信发送被拒绝，未确认是号码问题",
@@ -36,6 +37,7 @@ _REASONS = {
 }
 _NUMBER_INVALID_CODES = {"invalid_phone", "invalid_phone_number", "phone_number_invalid", "invalid_number"}
 _NUMBER_USED_CODES = {"phone_number_already_used", "phone_number_already_in_use", "phone_number_usage_limit_exceeded"}
+_NUMBER_RISK_CODES = {"fraud_guard"}
 _SESSION_CODES = {"invalid_auth_step", "invalid_state", "missing_session", "session_expired", "session_not_found"}
 _RATE_CODES = {"rate_limit_exceeded", "too_many_requests", "too_many_attempts"}
 _OTP_CODES = {"invalid_otp", "otp_expired", "invalid_phone_code", "incorrect_code"}
@@ -174,6 +176,8 @@ def phone_failure_from_response(response, *, operation: str, attempt: int, max_a
         reason = "session_conflict"
     elif code in _OTP_CODES:
         reason = "code_rejected"
+    elif code in _NUMBER_RISK_CODES and any(text in low for text in ("phone number", "电话号码", "手机号")):
+        reason = "number_risk"
     elif code in _NUMBER_INVALID_CODES or (not code and any(text in low for text in (
         "invalid phone number", "phone number is not valid", "invalid_number", "手机号无效", "电话号码无效",
     ))):
@@ -190,7 +194,9 @@ def phone_failure_from_response(response, *, operation: str, attempt: int, max_a
         reason = "delivery_refused"
     else:
         reason = "code_rejected" if operation == "phone_validate" else "send_rejected"
-    may_rotate = operation == "phone_send" and 400 <= status < 500 and reason in {"invalid_phone", "phone_number_used"}
+    may_rotate = operation == "phone_send" and 400 <= status < 500 and reason in {
+        "invalid_phone", "phone_number_used", "number_risk",
+    }
     return CodexPhoneVerificationError(
         operation=operation, failure_kind=reason, http_status=status or None, attempt=attempt,
         max_attempts=max_attempts, server_code=code, server_type=error_type,
