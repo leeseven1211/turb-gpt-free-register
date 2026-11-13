@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """C2A 3.2.9 管理接口的最小 AT 同步客户端。
 
-本模块只定位既有 C2A 账号并调用 AT 更新接口：不会直接调用创建、删除、启用账号、
+本模块按邮箱定位账号，覆盖既有账号 AT 或创建缺失账号；不会直接调用删除、启用、
 清错、Refresh Token、分组或代理接口。C2A 通用更新接口仍可能按其自身规则处理
 凭据错误，因此远端异常状态可能随 AT 更新变化。所有异常使用固定错误码，避免把
 Token、管理 Key 或远端响应正文写入任务日志。
@@ -231,6 +231,8 @@ def _http_error(stage: str, status: int, *, remote_account_id: str | None = None
         return C2AError(stage, "c2a_server_error", "C2A 管理接口暂时不可用，请稍后重试", remote_account_id=remote_account_id)
     if 400 <= status <= 499 and stage == "update_account":
         return C2AError(stage, "c2a_update_rejected", f"C2A 管理接口拒绝更新（HTTP {status}）", remote_account_id=remote_account_id)
+    if 400 <= status <= 499 and stage == "create_account":
+        return C2AError(stage, "c2a_create_rejected", f"C2A 管理接口拒绝新建（HTTP {status}）", remote_account_id=remote_account_id)
     return C2AError(stage, "c2a_http_error", f"C2A 管理接口返回 HTTP {status}", remote_account_id=remote_account_id)
 
 
@@ -461,3 +463,71 @@ def update_account_access_token(
             remote_account_id=account_id,
         )
     return {"id": account_id, "updated": True, "backend_identity": config.backend_identity}
+
+
+def _confirmed_import(body: dict[str, Any], email: str) -> tuple[str, bool] | None:
+    """只接受单账号、未同步且身份一致的完整导入回执。"""
+    added, skipped, synced = (body.get(key) for key in ("added", "skipped", "synced"))
+    if any(type(count) is not int for count in (added, skipped, synced)):
+        return None
+    if (added, skipped) not in {(1, 0), (0, 1)} or synced != 0:
+        return None
+    updated_ids, removed_ids, errors, items = (
+        body.get(key) for key in ("updated_ids", "removed_ids", "errors", "items")
+    )
+    if any(not isinstance(value, list) for value in (updated_ids, removed_ids, errors, items)):
+        return None
+    if len(updated_ids) != 1 or len(items) != 1 or removed_ids or errors:
+        return None
+    try:
+        remote_id = _account_id(updated_ids[0])
+    except ValueError:
+        return None
+    item = items[0]
+    if (
+        not isinstance(item, dict)
+        or item.get("id") != remote_id
+        or str(item.get("email") or "").strip().casefold() != email
+    ):
+        return None
+    return remote_id, added == 1
+
+
+def create_account_access_token(
+    email: str,
+    access_token: str,
+    *,
+    expected_backend: str | None = None,
+    checkpoint: Callable[[], None] | None = None,
+    safe_mutation_policy: SafeMutationPolicy | None = None,
+) -> dict[str, Any]:
+    """新建缺失账号；去重跳过时返回管理 ID，由调用方另行覆盖 AT。"""
+    normalized_email = _normalized_email(email)
+    token = str(access_token or "").strip()
+    if not token:
+        raise C2AError("create_account", "c2a_local_access_token_missing", "本地账号缺少可同步的 Access Token")
+    config = _capture_config(expected_backend)
+    if (
+        not isinstance(safe_mutation_policy, SafeMutationPolicy)
+        or safe_mutation_policy.backend_identity != config.backend_identity
+    ):
+        raise C2AError(
+            "c2a_safety", "c2a_remote_policy_unverified",
+            "尚未确认 C2A 自动清理策略，未新建远端账号",
+            backend_identity=config.backend_identity,
+        )
+    body = _request_json(
+        config, "post", "/api/accounts", stage="create_account", checkpoint=checkpoint,
+        json={
+            "accounts": [{"email": normalized_email, "access_token": token}],
+            "sync_after_import": False,
+        },
+    )
+    confirmed = _confirmed_import(body, normalized_email)
+    if confirmed is None:
+        raise C2AError(
+            "create_account", "c2a_create_unconfirmed", "C2A 未返回可确认的账号导入回执",
+            backend_identity=config.backend_identity,
+        )
+    remote_id, created = confirmed
+    return {"id": remote_id, "created": created, "updated": False, "backend_identity": config.backend_identity}

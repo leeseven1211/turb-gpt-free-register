@@ -4,6 +4,7 @@
 from core.integrations.c2a.client import (
     C2AError,
     configured_backend_identity,
+    create_account_access_token,
     find_unique_account,
     update_account_access_token,
 )
@@ -11,6 +12,7 @@ from core.integrations.c2a.client import (
 __all__ = [
     "C2AError",
     "configured_backend_identity",
+    "create_account_access_token",
     "find_unique_account",
     "update_account_access_token",
 ]

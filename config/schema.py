@@ -577,7 +577,7 @@ _FIELD_DEFINITIONS = [
           ("CODEX_OAUTH_WORKERS", "Codex 授权", "独立 Codex OAuth 任务上限；注册页仅补 Codex 也归属此类型。"),
           ("CODEX_TOKEN_REFRESH_WORKERS", "刷新 Codex Token", "独立 Codex Token 刷新任务上限。"),
           ("SUB2API_SYNC_WORKERS", "Sub2API 上传与同步", "Turb 本地上传与同步执行上限；与上传到远端账号的调度属性 SUB2API_UPLOAD_CONCURRENCY 分开。"),
-          ("C2A_SYNC_WORKERS", "C2A 重新导入", "本地 AT 原位更新 C2A 既有账号的执行上限；只处理唯一同邮箱远端账号。"),
+          ("C2A_SYNC_WORKERS", "C2A 重新导入", "本地 AT 导入 C2A 的执行上限；唯一同邮箱账号覆盖，缺失账号新建。"),
           ("EXTRACT_LINK_WORKERS", "提链任务", "提链及同 Run 支付阶段的执行上限；同时受批次、平台和未结束远端订单名额约束。"),
           ("EMAIL_IMPORT_WORKERS", "邮箱导入", "按实际远端交接调用计数；一次最多 25 地址的批量交接算一份执行，兼容并行调用分别计数。"),
           ("SUB2API_SCAN_WORKERS", "Sub2API 异常扫描", "独立远端扫描执行上限；扫描发现的修复任务另行排队。"),
@@ -1749,7 +1749,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "C2A_API_BASE", "file": "c2a.py", "type": "str", "group": "C2A",
-        "label": "C2A API 基址", "help": "ChatGPT2API/C2A 管理服务地址，例如 https://c2a.example.com；仅用于定位同邮箱既有账号并更新 AT。C2A 会按自身规则处理凭据错误，异常账号可能恢复正常；更新前要求已关闭自动移除异常/限流账号。",
+        "label": "C2A API 基址", "help": "ChatGPT2API/C2A 管理服务地址，例如 https://c2a.example.com；按同邮箱匹配覆盖 AT，未找到时新建账号。C2A 会按自身规则处理凭据错误，异常账号可能恢复正常；导入前要求已关闭自动移除异常/限流账号。",
     },
     {
         "key": "C2A_API_KEY", "file": "c2a.py", "type": "str", "group": "C2A",

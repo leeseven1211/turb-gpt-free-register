@@ -1,4 +1,4 @@
-"""C2A 原位更新的固定错误码必须保留可操作的任务中心分类。"""
+"""C2A 导入的固定错误码必须保留可操作的任务中心分类。"""
 from __future__ import annotations
 
 import unittest
@@ -68,6 +68,67 @@ class C2AErrorClassificationTests(unittest.TestCase):
         self.assertEqual("C2A 更新请求超时，未收到更新回执", result["summary"])
         self.assertTrue(result["reconcile_required"])
         self.assertNotIn("未更新远端账号", result["summary"])
+
+    def test_create_rejected_has_specific_remote_rejection_category(self):
+        result = classify_task_error(
+            "远端拒绝新建", task_type="c2a_session_reimport",
+            result_summary={
+                "error_code": "c2a_create_rejected", "stage": "create_account",
+                "action": "create", "remote_update_started": True,
+            },
+            task_status="failed",
+        )
+        self.assertEqual("external.c2a.remote_rejected", result["code"])
+        self.assertEqual("C2A-REMOTE-003", result["display_code"])
+        self.assertEqual("create_account", result["stage"])
+        self.assertIn("拒绝新建", result["summary"])
+
+    def test_create_unconfirmed_keeps_confirmation_category_and_unknown_result(self):
+        result = classify_task_error(
+            "未返回有效创建回执", task_type="c2a_session_reimport",
+            result_summary={
+                "error_code": "c2a_create_unconfirmed", "stage": "c2a_update",
+                "action": "create", "remote_update_started": True,
+                "outcome": "request_unknown",
+            },
+            task_status="attention_required",
+        )
+        self.assertEqual("external.c2a.confirmation", result["code"])
+        self.assertEqual("C2A-CONFIRM-002", result["display_code"])
+        self.assertIn("创建回执", result["summary"])
+        self.assertTrue(result["reconcile_required"])
+        self.assertEqual("unknown", result["remote_state_impact"])
+
+    def test_create_timeout_describes_missing_receipt_without_claiming_no_write(self):
+        for stage, action in (("c2a_update", "create"), ("create_account", "")):
+            with self.subTest(stage=stage, action=action):
+                result = classify_task_error(
+                    "请求超时", task_type="c2a_session_reimport",
+                    result_summary={
+                        "error_code": "c2a_timeout", "stage": stage,
+                        "action": action, "remote_update_started": True,
+                        "outcome": "request_unknown",
+                    },
+                    task_status="attention_required",
+                )
+                self.assertEqual("external.c2a.transport", result["code"])
+                self.assertEqual("C2A 新建请求超时，未收到导入回执", result["summary"])
+                self.assertTrue(result["reconcile_required"])
+                self.assertNotIn("未更新远端账号", result["summary"])
+
+    def test_receipt_writeback_failure_covers_both_import_actions(self):
+        for action in ("create", "update"):
+            with self.subTest(action=action):
+                result = classify_task_error(
+                    "本地写回失败", task_type="c2a_session_reimport",
+                    result_summary={
+                        "error_code": "c2a_local_receipt_writeback_failed",
+                        "stage": "local_writeback", "action": action,
+                    },
+                    task_status="failed",
+                )
+                self.assertEqual("external.c2a.local_writeback", result["code"])
+                self.assertEqual("C2A 导入已确认，但本地回执写回失败", result["summary"])
 
     def test_arbitrary_remote_text_does_not_create_a_specific_c2a_cause(self):
         result = classify_task_error(

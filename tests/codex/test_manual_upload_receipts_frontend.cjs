@@ -174,8 +174,12 @@ test('账号与Codex上传提交202后不会显示上传成功或把未完成凭
     await context[name]();
     assert.match(toasts[0],/已入队 1/);
     assert.doesNotMatch(toasts[0],/已上传/);
-    assert.equal(tracked[0].items[0].task_id,17);
-    if (name === 'codexUploadSub2') assert.equal(tracked[0].options.navigate,false);
-    else assert.equal(tracked[0].options,undefined);
+    if (name === 'codexUploadSub2') {
+      assert.equal(tracked[0].items[0].task_id,17);
+      assert.equal(tracked[0].options.navigate,false);
+    } else {
+      assert.deepEqual(tracked,[]);
+      assert.match(toasts[0],/任务中心/);
+    }
   }
 });

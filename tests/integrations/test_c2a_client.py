@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""C2A AT 同步客户端只覆盖既有账号，且不泄露凭据。"""
+"""C2A AT 同步客户端按接口契约新建或覆盖账号，且不泄露凭据。"""
 from __future__ import annotations
 
 import hashlib
@@ -214,6 +214,117 @@ class C2AClientTests(unittest.TestCase):
         )
         self.assertNotIn(PRIVATE_TOKEN, str(result))
         self.assertNotIn(PRIVATE_KEY, str(result))
+
+    @staticmethod
+    def import_receipt(**overrides):
+        return {
+            "added": 1,
+            "skipped": 0,
+            "synced": 0,
+            "updated_ids": ["acct-new"],
+            "removed_ids": [],
+            "errors": [],
+            "events": [],
+            "items": [{"id": "acct-new", "email": "user@example.test"}],
+            **overrides,
+        }
+
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_create_sends_email_and_current_at_without_remote_sync(self, post):
+        post.return_value = self.response(self.import_receipt())
+
+        result = client.create_account_access_token(
+            " User@Example.test ", PRIVATE_TOKEN, safe_mutation_policy=self.safe_mutation_policy(),
+        )
+
+        self.assertEqual({
+            "id": "acct-new", "created": True, "updated": False,
+            "backend_identity": client.configured_backend_identity(),
+        }, result)
+        post.assert_called_once_with(
+            "https://c2a.example.test/prefix/api/accounts",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {PRIVATE_KEY}",
+                "User-Agent": "turb-gpt-free-register/c2a",
+                "Content-Type": "application/json",
+            },
+            timeout=17,
+            json={
+                "accounts": [{"email": "user@example.test", "access_token": PRIVATE_TOKEN}],
+                "sync_after_import": False,
+            },
+        )
+        self.assert_safe(result)
+
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_create_dedup_receipt_does_not_claim_token_was_overwritten(self, post):
+        post.return_value = self.response(self.import_receipt(added=0, skipped=1))
+
+        result = client.create_account_access_token(
+            "user@example.test", PRIVATE_TOKEN, safe_mutation_policy=self.safe_mutation_policy(),
+        )
+
+        self.assertFalse(result["created"])
+        self.assertFalse(result["updated"])
+        self.assertEqual("acct-new", result["id"])
+        post.assert_called_once()
+
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_create_rejects_unconfirmed_or_wrong_identity_receipt(self, post):
+        cases = (
+            self.import_receipt(added=True),
+            self.import_receipt(skipped=False),
+            self.import_receipt(synced=1),
+            self.import_receipt(added=0, skipped=0),
+            self.import_receipt(updated_ids=[]),
+            self.import_receipt(items=[{"id": "acct-other", "email": "user@example.test"}]),
+            self.import_receipt(items=[{"id": "acct-new", "email": "other@example.test"}]),
+            self.import_receipt(removed_ids=["acct-new"]),
+            self.import_receipt(errors=[{"error": PRIVATE_TOKEN}]),
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                post.reset_mock()
+                post.return_value = self.response(payload)
+                with self.assertRaises(client.C2AError) as raised:
+                    client.create_account_access_token(
+                        "user@example.test", PRIVATE_TOKEN, safe_mutation_policy=self.safe_mutation_policy(),
+                    )
+                self.assertEqual("c2a_create_unconfirmed", raised.exception.code)
+                self.assertEqual("create_account", raised.exception.stage)
+                self.assert_safe(raised.exception)
+                post.assert_called_once()
+
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_create_classifies_rejection_and_timeout_without_replaying_post(self, post):
+        for outcome, code in (
+            (self.response({}, status=400), "c2a_create_rejected"),
+            (requests.Timeout(PRIVATE_TOKEN), "c2a_timeout"),
+        ):
+            with self.subTest(code=code):
+                post.reset_mock()
+                post.side_effect = outcome if isinstance(outcome, Exception) else None
+                post.return_value = outcome
+                with self.assertRaises(client.C2AError) as raised:
+                    client.create_account_access_token(
+                        "user@example.test", PRIVATE_TOKEN, safe_mutation_policy=self.safe_mutation_policy(),
+                    )
+                self.assertEqual(code, raised.exception.code)
+                self.assert_safe(raised.exception)
+                post.assert_called_once()
+
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_create_requires_same_backend_and_verified_policy_before_post(self, post):
+        for kwargs, code in (
+            ({}, "c2a_remote_policy_unverified"),
+            ({"safe_mutation_policy": client.SafeMutationPolicy("other-backend")}, "c2a_remote_policy_unverified"),
+            ({"expected_backend": "other-backend"}, "c2a_backend_changed"),
+        ):
+            with self.subTest(code=code), self.assertRaises(client.C2AError) as raised:
+                client.create_account_access_token("user@example.test", PRIVATE_TOKEN, **kwargs)
+            self.assertEqual(code, raised.exception.code)
+        post.assert_not_called()
 
     @patch("core.integrations.c2a.client.requests.post")
     def test_update_rejects_unconfirmed_or_sensitive_remote_response(self, post):

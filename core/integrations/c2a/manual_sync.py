@@ -1,4 +1,4 @@
-"""把本地最新 AT 原位更新到既有 C2A 账号的持久化任务。"""
+"""把本地最新 AT 导入 C2A：同邮箱账号覆盖，缺失账号新建。"""
 from __future__ import annotations
 
 import logging
@@ -28,12 +28,14 @@ _TRANSIENT_CODES = frozenset({
 _REJECTED_REMOTE_CODES = frozenset({
     "c2a_auth_rejected",
     "c2a_update_rejected",
+    "c2a_create_rejected",
     "c2a_remote_account_missing",
 })
 _NOT_SUBMITTED_CODES = frozenset({
     "c2a_config_invalid",
     "c2a_backend_changed",
     "c2a_remote_account_id_invalid",
+    "c2a_account_identity_invalid",
     "c2a_local_access_token_missing",
     "c2a_remote_policy_unverified",
     "c2a_remote_auto_removal_enabled",
@@ -76,7 +78,7 @@ def queue_account(account: dict[str, Any]) -> dict[str, Any]:
     email = _normalized_email(
         account.get("email"),
         code="c2a_local_account_identity_invalid",
-        message="本地账号缺少有效邮箱，无法匹配 C2A 既有账号",
+        message="本地账号缺少有效邮箱，无法导入 C2A",
     )
     backend = client.configured_backend_identity()
     request_id = f"c2a-reimport:{uuid.uuid4().hex}"
@@ -154,7 +156,7 @@ def _wait_before_retry(context, *, stage: str, attempt: int, code: str) -> None:
     context.checkpoint()
 
 
-def _find_unique_account(context, email: str, backend: str) -> tuple[dict[str, str], int]:
+def _find_unique_account(context, email: str, backend: str) -> tuple[dict[str, str] | None, int]:
     for attempt in range(1, _MAX_REMOTE_ATTEMPTS + 1):
         try:
             result = client.find_unique_account(
@@ -164,6 +166,8 @@ def _find_unique_account(context, email: str, backend: str) -> tuple[dict[str, s
             )
             return result, attempt
         except client.C2AError as exc:
+            if exc.code == "c2a_account_missing":
+                return None, attempt
             if exc.code not in _TRANSIENT_CODES or attempt == _MAX_REMOTE_ATTEMPTS:
                 raise
             _wait_before_retry(context, stage="c2a_resolve", attempt=attempt, code=exc.code)
@@ -240,7 +244,7 @@ def _record_unknown_write_receipt(context, code: str) -> None:
 
 
 def _handle(context):
-    """执行同邮箱定位与 AT 原位覆盖，不直接调用其他 C2A 属性接口。
+    """执行同邮箱定位，有则覆盖 AT，无则新建账号。
 
     C2A 通用更新接口本身可能按自身规则清除凭据错误，因此 AT 更新确认后，
     远端异常状态可能恢复正常。
@@ -249,6 +253,8 @@ def _handle(context):
     stage = "preflight"
     remote_started = False
     remote_completed = False
+    remote_import_confirmed = False
+    action = "update"
     with context.lease(resource_family=RESOURCE_FAMILY):
         try:
             context.checkpoint()
@@ -265,6 +271,7 @@ def _handle(context):
                 detail={"mode": "manual_reimport"},
             )
             remote_account, resolve_attempts = _find_unique_account(context, context.email, backend)
+            action = "update" if remote_account is not None else "create"
 
             # 查询与写入之间再次读取，避免用队列期间已替换的身份或旧 AT 覆盖远端。
             _account, access_token = _read_current_account(context)
@@ -280,29 +287,57 @@ def _handle(context):
             stage = "c2a_update"
             context.report(
                 stage=stage,
-                message="正在原位更新 C2A 账号 AT",
-                detail={"mode": "manual_reimport", "resolve_attempts": resolve_attempts},
+                message="正在原位更新 C2A 账号 AT" if remote_account is not None else "正在新建 C2A 账号并导入 AT",
+                detail={"mode": "manual_reimport", "action": action, "resolve_attempts": resolve_attempts},
             )
-            request_id = f"c2a-update:{context.run_id}"
+            request_id = f"c2a-{action}:{context.run_id}"
             context.remote_request_started(
-                "c2a_update_access_token",
+                "c2a_update_access_token" if remote_account is not None else "c2a_create_account",
                 request_id=request_id,
-                detail={"backend_identity": backend, "remote_account_id": remote_account["id"]},
+                detail={
+                    "backend_identity": backend, "action": action,
+                    **({"remote_account_id": remote_account["id"]} if remote_account is not None else {}),
+                },
             )
             remote_started = True
-            update_result, update_attempts = _update_access_token(
-                context,
-                remote_account["id"],
-                access_token,
-                backend,
-                safe_mutation_policy,
-            )
+            if remote_account is not None:
+                update_result, update_attempts = _update_access_token(
+                    context, remote_account["id"], access_token, backend, safe_mutation_policy,
+                )
+                create_attempts = 0
+            else:
+                update_result = client.create_account_access_token(
+                    context.email, access_token, expected_backend=backend,
+                    checkpoint=context.checkpoint, safe_mutation_policy=safe_mutation_policy,
+                )
+                create_attempts = 1
+                update_attempts = 0
+                remote_import_confirmed = True
+                if not update_result.get("created"):
+                    # 导入可能仅命中历史 AT 指纹；保留这一步回执，再单独记录覆盖请求。
+                    context.remote_request_receipt(
+                        outcome="response_received", receipt_state="response_received", request_id=request_id,
+                        detail={
+                            "remote_account_id": update_result["id"],
+                            "remote_result_confirmed": True, "phase_complete": True,
+                        },
+                    )
+                    action = "update"
+                    request_id = f"c2a-update:{context.run_id}"
+                    context.remote_request_started(
+                        "c2a_update_access_token", request_id=request_id,
+                        detail={"backend_identity": backend, "remote_account_id": update_result["id"]},
+                    )
+                    update_result, update_attempts = _update_access_token(
+                        context, update_result["id"], access_token, backend, safe_mutation_policy,
+                    )
             remote_completed = True
             receipt = context.remote_request_receipt(
                 outcome="confirmed",
                 receipt_state="confirmed",
                 request_id=request_id,
                 detail={
+                    "remote_account_id": update_result["id"],
                     "remote_result_confirmed": True,
                     # 本任务不修改账号数据；持久化并读回本次确认回执就是本地业务写回。
                     "local_business_writeback_confirmed": True,
@@ -315,29 +350,40 @@ def _handle(context):
             if not isinstance(persisted, dict) or str(persisted.get("receipt_state") or "") != "confirmed":
                 raise C2AReimportError(
                     "c2a_local_receipt_writeback_failed",
-                    "C2A 已确认更新，但本地回执读回未确认",
+                    "C2A 已确认导入，但本地回执读回未确认",
                     stage="local_writeback",
                 )
             summary = {
                 "ok": True,
                 "mode": "manual_reimport",
+                "action": "create" if update_result.get("created") else "update",
+                "created": bool(update_result.get("created")),
+                "remote_import_confirmed": remote_import_confirmed,
                 "updated": bool(update_result.get("updated")),
-                "c2a_account_id": str(remote_account["id"]),
+                "c2a_account_id": str(update_result["id"]),
                 "backend_identity": backend,
                 "safety_attempts": safety_attempts,
                 "resolve_attempts": resolve_attempts,
                 "update_attempts": update_attempts,
+                "create_attempts": create_attempts,
             }
-            return task_gateway.OperationResult.success(summary, message="C2A AT 已从本地重新导入")
+            message = "C2A 账号已新建并导入本地 AT" if summary["created"] else "C2A AT 已从本地重新导入"
+            return task_gateway.OperationResult.success(summary, message=message)
         except (OperationCancelled, task_gateway.OperationLeaseLost):
             raise
         except (C2AReimportError, client.C2AError) as exc:
             code = str(exc.code)
             error_stage = str(getattr(exc, "stage", stage) or stage)
-            error_stage = {"find_account": "c2a_resolve", "update_account": "c2a_update"}.get(error_stage, error_stage)
+            if error_stage == "update_account":
+                action = "update"
+            error_stage = {
+                "find_account": "c2a_resolve", "update_account": "c2a_update", "create_account": "c2a_update",
+            }.get(error_stage, error_stage)
             summary = {
                 "ok": False,
                 "mode": "manual_reimport",
+                "action": action,
+                "remote_import_confirmed": remote_import_confirmed,
                 "error_code": code,
                 "stage": error_stage,
                 "remote_update_started": remote_started,
@@ -358,6 +404,8 @@ def _handle(context):
             summary = {
                 "ok": False,
                 "mode": "manual_reimport",
+                "action": action,
+                "remote_import_confirmed": remote_import_confirmed,
                 "error_code": code,
                 "stage": stage,
                 "remote_update_started": remote_started,

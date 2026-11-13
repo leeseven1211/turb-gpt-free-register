@@ -108,6 +108,145 @@ class C2AManualSyncTests(PostgresTestCase):
         self.assertTrue(run["data"]["remote_receipt"]["detail"]["remote_result_confirmed"])
         self.assertNotIn(self.local_token, str(run))
 
+    def test_missing_remote_account_creates_with_current_at_and_confirms_receipt(self):
+        queued = self.queue()
+        missing = client.C2AError("find_account", "c2a_account_missing", "未找到同邮箱账号")
+        with patch.object(client, "find_unique_account", side_effect=missing), patch.object(
+            client, "create_account_access_token",
+            return_value={"id": "c2a-account-new", "created": True, "backend_identity": "fixture-c2a-backend"},
+        ) as create, patch.object(client, "update_account_access_token") as update:
+            result = self.execute(queued)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("success", result["status"])
+        create.assert_called_once_with(
+            "manual-c2a@example.test", self.local_token,
+            expected_backend="fixture-c2a-backend",
+            checkpoint=create.call_args.kwargs["checkpoint"],
+            safe_mutation_policy=client.SafeMutationPolicy("fixture-c2a-backend"),
+        )
+        update.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertTrue(run["result_summary"]["created"])
+        self.assertFalse(run["result_summary"]["updated"])
+        self.assertEqual("c2a-account-new", run["result_summary"]["c2a_account_id"])
+        self.assertEqual("confirmed", run["data"]["remote_receipt"]["receipt_state"])
+        self.assertNotIn(self.local_token, str(run))
+
+    def test_ambiguous_remote_email_never_creates_or_updates(self):
+        queued = self.queue()
+        ambiguous = client.C2AError("find_account", "c2a_account_ambiguous", "同邮箱存在多条账号")
+        with patch.object(client, "find_unique_account", side_effect=ambiguous), patch.object(
+            client, "create_account_access_token",
+        ) as create, patch.object(client, "update_account_access_token") as update:
+            self.assertFalse(self.execute(queued)["ok"])
+
+        create.assert_not_called()
+        update.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("c2a_account_ambiguous", run["result_summary"]["error_code"])
+        self.assertNotIn("remote_intent", run["data"])
+
+    def test_create_timeout_can_be_retried_as_update_when_remote_account_now_exists(self):
+        queued = self.queue()
+        missing = client.C2AError("find_account", "c2a_account_missing", "未找到同邮箱账号")
+        timeout = client.C2AError("create_account", "c2a_timeout", "C2A 请求超时")
+        with patch.object(client, "find_unique_account", side_effect=missing), patch.object(
+            client, "create_account_access_token", side_effect=timeout,
+        ) as create, patch.object(manual_sync.time, "sleep") as sleep:
+            self.assertFalse(self.execute(queued)["ok"])
+
+        create.assert_called_once()
+        sleep.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("unknown", run["data"]["remote_receipt"]["receipt_state"])
+        task = operation.get_task(queued["task_id"])
+        retried = task_gateway.default_operation_retry(task)
+        self.assertTrue(retried["accepted"])
+        with patch.object(client, "find_unique_account", return_value=self.remote_account()), patch.object(
+            client, "create_account_access_token",
+        ) as create, patch.object(
+            client, "update_account_access_token", return_value={"id": "c2a-account-17", "updated": True},
+        ) as update:
+            result = self.execute(retried)
+
+        self.assertTrue(result["ok"])
+        create.assert_not_called()
+        update.assert_called_once()
+        self.assertEqual("unknown", operation.get_run(queued["run_id"])["data"]["remote_receipt"]["receipt_state"])
+
+    def test_lookup_failure_never_creates_an_account(self):
+        queued = self.queue()
+        failure = client.C2AError("find_account", "c2a_response_invalid", "账号列表格式无效")
+        with patch.object(client, "find_unique_account", side_effect=failure), patch.object(
+            client, "create_account_access_token",
+        ) as create, patch.object(client, "update_account_access_token") as update:
+            self.assertFalse(self.execute(queued)["ok"])
+
+        create.assert_not_called()
+        update.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("c2a_response_invalid", run["result_summary"]["error_code"])
+        self.assertNotIn("remote_intent", run["data"])
+
+    def test_deduplicated_import_records_separate_update_request_and_keeps_import_receipt(self):
+        missing = client.C2AError("find_account", "c2a_account_missing", "未找到同邮箱账号")
+        for failure_code in (None, "c2a_backend_changed", "c2a_update_rejected"):
+            with self.subTest(failure_code=failure_code):
+                queued = self.queue()
+                failure = (
+                    client.C2AError("update_account", failure_code, "后续 AT 覆盖失败")
+                    if failure_code else None
+                )
+                with patch.object(client, "find_unique_account", side_effect=missing), patch.object(
+                    client, "create_account_access_token",
+                    return_value={"id": "c2a-dedup", "created": False, "updated": False},
+                ), patch.object(
+                    client, "update_account_access_token", side_effect=failure,
+                    return_value={"id": "c2a-dedup", "updated": True},
+                ) as update:
+                    result = self.execute(queued)
+
+                update.assert_called_once()
+                self.assertEqual("c2a-dedup", update.call_args.args[0])
+                run = operation.get_run(queued["run_id"])
+                self.assertTrue(run["result_summary"]["remote_import_confirmed"])
+                self.assertEqual("c2a_update_access_token", run["data"]["remote_intent"]["action"])
+                self.assertEqual(f"c2a-update:{queued['run_id']}", run["data"]["remote_receipt"]["request_id"])
+                events = operation.get_task(queued["task_id"])["events"]
+                self.assertTrue(any(
+                    event["event_type"] == "remote.receipt_received"
+                    and event["detail"].get("request_id") == f"c2a-create:{queued['run_id']}"
+                    for event in events
+                ))
+                if failure_code:
+                    self.assertFalse(result["ok"])
+                    self.assertEqual("failed", run["status"])
+                else:
+                    self.assertTrue(result["ok"])
+                    self.assertTrue(run["result_summary"]["updated"])
+                    self.assertFalse(run["result_summary"]["created"])
+
+    def test_create_rejection_and_unconfirmed_receipt_keep_distinct_remote_states(self):
+        missing = client.C2AError("find_account", "c2a_account_missing", "未找到同邮箱账号")
+        for code, status, receipt in (
+            ("c2a_create_rejected", "failed", "rejected"),
+            ("c2a_create_unconfirmed", "attention_required", "unknown"),
+        ):
+            with self.subTest(code=code):
+                queued = self.queue()
+                failure = client.C2AError("create_account", code, "C2A 新建未完成")
+                with patch.object(client, "find_unique_account", side_effect=missing), patch.object(
+                    client, "create_account_access_token", side_effect=failure,
+                ):
+                    self.assertFalse(self.execute(queued)["ok"])
+                run = operation.get_run(queued["run_id"])
+                self.assertEqual(status, run["status"])
+                self.assertEqual(receipt, run["data"]["remote_receipt"]["receipt_state"])
+                self.assertEqual("create", run["result_summary"]["action"])
+                self.assertEqual("c2a_update", run["result_summary"]["stage"])
+
     def test_expired_or_missing_local_at_never_calls_c2a(self):
         cases = (
             ("expired", {"token_expired": True}, None, "c2a_local_at_expired"),
@@ -175,7 +314,9 @@ class C2AManualSyncTests(PostgresTestCase):
             task.get("error") or "C2A 请求超时", task_type=manual_sync.TASK_TYPE,
             result_summary=run["result_summary"], task_status=task["status"],
         )
-        self.assertIn("远端结果待确认", projection["summary"])
+        self.assertEqual("C2A 更新请求超时，未收到更新回执", projection["summary"])
+        self.assertTrue(projection["reconcile_required"])
+        self.assertEqual("unknown", projection["remote_state_impact"])
         self.assertNotIn("未更新远端账号", projection["summary"])
         retried = task_gateway.default_operation_retry(task)
         self.assertTrue(retried["accepted"])

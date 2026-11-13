@@ -32,9 +32,6 @@ function setup({request, confirmation = true} = {}) {
       focus() { calls.focuses.push(id); },
       querySelector(selector) {
         if (id === 'accountsMoreActionsV2' && selector === 'summary') return element('accountsMoreActionsSummaryV2');
-        if (id === 'accountC2aReimportResultV2' && selector === '[data-c2a-reimport-tasks]' && this.innerHTML.includes('data-c2a-reimport-tasks')) {
-          return element('c2aReimportResultOpenTasksV2');
-        }
         return null;
       },
       querySelectorAll() { return []; },
@@ -178,7 +175,7 @@ test('CPA 下载和 Codex 重跑确认使用跨页总数，不以当前页状态
   assert.equal(view.calls.requests.length, 0);
 });
 
-test('重新导入 C2A：弹窗说明更新边界，确认后追踪跨页账号的任务回执且留在账号页', async () => {
+test('重新导入 C2A：提交跨页账号后只短暂提示数量和未入队原因，留在账号页', async () => {
   const queued = [{accepted: true, task_id: 71, run_id: 72, status: 'queued'}];
   const skipped = [{id: 8, email: 'first-8@example.test', error_code: 'c2a_manual_queue_busy', reason: '该账号已有 C2A 重新导入任务', task_id: 88, run_id: 89}];
   const failed = [{id: 9, email: 'second-9@example.test', error_code: 'c2a_account_deactivated', error: '关联账号已确认停用，未向 C2A 更新 AT'}];
@@ -196,24 +193,62 @@ test('重新导入 C2A：弹窗说明更新边界，确认后追踪跨页账号�
   assert.equal(view.calls.requests[0].url, '/api/accounts/c2a/sync-bulk');
   assert.deepEqual(JSON.parse(view.calls.requests[0].options.body), {account_ids: [7, 8, 9, 10]});
   assert.equal(view.calls.confirmations.length, 0);
-  assert.equal(view.calls.receipts.length, 1);
-  assert.equal(view.calls.receipts[0][1], '重新导入 C2A');
-  assert.equal(view.calls.receipts[0][2].navigate, false);
-  assert.equal(view.calls.receipts[0][0].length, 2);
-  assert.equal(view.calls.receipts[0][0][0].task_id, 71);
-  assert.equal(view.calls.receipts[0][0][1].task_id, 88);
-  assert.match(view.calls.toasts.join(''), /C2A 重新导入已入队 1 个.*未入队 2 个.*已显示具体原因/);
-  assert.equal(view.element('accountC2aReimportResultV2').hidden, false);
-  assert.match(view.element('accountC2aReimportResultV2').innerHTML, /C2A 重新导入：已入队 1 个，未入队 2 个/);
-  assert.match(view.element('accountC2aReimportResultV2').innerHTML, /c2a_manual_queue_busy/);
-  assert.match(view.element('accountC2aReimportResultV2').innerHTML, /c2a_account_deactivated/);
-  assert.match(view.element('accountC2aReimportResultV2').innerHTML, /查看任务 #88/);
+  assert.deepEqual(view.calls.receipts, []);
+  assert.deepEqual(view.calls.tabs, []);
+  assert.match(view.calls.toasts.join(''), /C2A 重新导入已入队 1 个.*未入队 2 个.*任务中心/);
+  assert.match(view.calls.toasts.join(''), /该账号已有 C2A 重新导入任务/);
+  assert.match(view.calls.toasts.join(''), /关联账号已确认停用/);
+  assert.doesNotMatch(view.calls.toasts.join(''), /已显示具体原因|任务回执/);
+  assert.doesNotMatch(template, /id="accountC2aReimportResultV2"/);
+  assert.equal(view.element('c2aReimportConfirmModal').open, false);
   assert.match(source, /c2a_session_reimport: 'C2A 重新导入'/);
-  await view.click('c2aReimportResultOpenTasksV2');
-  assert.deepEqual(view.calls.tabs, ['tasks']);
-  assert.equal(view.element('accountTaskTypeFilterV2').value, 'c2a_session_reimport');
-  assert.equal(view.element('accountTaskTargetFilterV2').value, '');
-  assert.equal(view.context.PAGERS.accountTasks.page, 1);
+});
+
+test('上传 Sub2API：保留确认与跨页选择，入队后不显示回执或跳转', async () => {
+  const view = setup({request: async () => ({accepted: true, queued_count: 2, skipped_count: 1, failed_count: 1,
+    queued: [{accepted: true, task_id: 71, run_id: 72}],
+    skipped: [{reason: '尚未完成 Codex OAuth'}], failed: [{error: 'Codex 凭证不存在'}]})});
+  view.selectTwoPages();
+  await view.click('btnUploadSelectedCodexSub2V2');
+  assert.equal(view.calls.confirmations.length, 1);
+  assert.match(view.calls.confirmations[0], /4 个账号/);
+  assert.deepEqual(JSON.parse(view.calls.requests[0].options.body).account_ids, [7, 8, 9, 10]);
+  assert.deepEqual(view.calls.receipts, []);
+  assert.deepEqual(view.calls.tabs, []);
+  assert.match(view.calls.toasts.join(''), /手动上传已入队 2 个.*未入队 2 个.*任务中心/);
+  assert.match(view.calls.toasts.join(''), /尚未完成 Codex OAuth.*Codex 凭证不存在/);
+  assert.doesNotMatch(view.calls.toasts.join(''), /任务回执|已上传/);
+});
+
+test('C2A 与 Sub2API 全部未入队时仍说明数量和具体原因', async () => {
+  for (const button of ['btnReimportSelectedC2aV2', 'btnUploadSelectedCodexSub2V2']) {
+    const view = setup({request: async () => ({accepted: true, queued_count: 0, failed_count: 4,
+      failed: [7, 8, 9, 10].map(id => ({id, error_code: 'fixture_queue_failed', error: '服务暂不可用'}))})});
+    view.selectTwoPages();
+    await view.click(button);
+    if (button === 'btnReimportSelectedC2aV2') await view.click('btnConfirmC2aReimportV2');
+    assert.match(view.calls.toasts.join(''), /已入队 0 个.*未入队 4 个.*服务暂不可用/);
+    assert.deepEqual(view.calls.receipts, []);
+    assert.deepEqual(view.calls.tabs, []);
+  }
+});
+
+test('C2A 与 Sub2API 提交请求失败时保留原因和可重试入口', async () => {
+  for (const button of ['btnReimportSelectedC2aV2', 'btnUploadSelectedCodexSub2V2']) {
+    const view = setup({request: async () => { throw new Error('模拟网络请求失败'); }});
+    view.selectTwoPages();
+    await view.click(button);
+    if (button === 'btnReimportSelectedC2aV2') {
+      await view.click('btnConfirmC2aReimportV2');
+      assert.equal(view.element('c2aReimportConfirmModal').open, true);
+      assert.match(view.element('c2aReimportConfirmStatusV2').textContent, /模拟网络请求失败/);
+      assert.equal(view.element('btnConfirmC2aReimportV2').disabled, false);
+    }
+    assert.match(view.calls.toasts.join(''), /失败.*模拟网络请求失败/);
+    assert.equal(view.element(button).disabled, false);
+    assert.deepEqual(view.calls.receipts, []);
+    assert.deepEqual(view.calls.tabs, []);
+  }
 });
 
 test('重新导入 C2A：页面引用带版本的最新脚本资源', () => {
@@ -221,11 +256,15 @@ test('重新导入 C2A：页面引用带版本的最新脚本资源', () => {
   assert.match(template, /id="c2aReimportConfirmCountV2"/);
   assert.match(template, /id="btnCancelC2aReimportV2"/);
   assert.match(template, /id="btnConfirmC2aReimportV2"/);
-  assert.match(template, /只把本地当前 AT 更新到同邮箱唯一匹配的既有 C2A 账号/);
+  const dialog = template.slice(template.indexOf('<dialog id="c2aReimportConfirmModal"'), template.indexOf('</dialog>', template.indexOf('<dialog id="c2aReimportConfirmModal"')));
+  assert.match(dialog, /唯一.*同邮箱.*覆盖.*AT/);
+  assert.match(dialog, /未找到.*新建/);
+  assert.match(dialog, /同邮箱.*多.*不.*覆盖/);
+  assert.doesNotMatch(dialog, /不会创建|只按完整邮箱唯一匹配既有/);
   assert.match(template, /自动移除异常账号.*自动移除限流账号/);
   assert.match(template, /不会刷新本地 AT/);
   assert.match(template, /异常.*恢复正常/);
-  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261112-account-actions-c2a-01'/);
+  assert.match(template, /filename='js\/pages\/accounts\/page\.js', v='20261113-account-bulk-feedback-01'/);
 });
 
 test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', async () => {

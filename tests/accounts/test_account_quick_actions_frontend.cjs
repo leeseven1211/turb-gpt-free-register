@@ -75,13 +75,22 @@ function setup({saved = null, storageBlocked = false} = {}) {
   };
 }
 
-test('无使用记录时恰好展示五个默认操作，C2A 留在更多操作且节点不重复', () => {
+test('无使用记录时恰好展示五个默认操作，C2A 留在批量操作且节点不重复', () => {
   const view = setup();
   assert.deepEqual(view.ids(), defaults);
   assert.equal(view.group.contains(view.elements.get(c2aId)), true);
   const rendered = view.toolbar.querySelectorAll().map(node => node.id);
   assert.equal(rendered.length, 12);
   assert.equal(new Set(rendered).size, 12);
+});
+
+test('批量操作入口位于常用操作前，未选择账号时仍可展开查看', () => {
+  const toolbar = template.slice(template.indexOf('id="accountsToolbarV2"'), template.indexOf('<div class="list-toolbar-utilities">', template.indexOf('id="accountsToolbarV2"')));
+  const entry = toolbar.match(/<details\b[^>]*id="accountsMoreActionsV2"[^>]*>/)?.[0];
+  assert.ok(entry);
+  assert.doesNotMatch(entry, /selection-only|hidden|disabled/);
+  assert.match(toolbar, /id="accountsMoreActionsV2">\s*<summary>批量操作<\/summary>/);
+  assert.ok(toolbar.indexOf('id="accountsMoreActionsV2"') < toolbar.indexOf('id="accountsQuickActionsV2"'));
 });
 
 test('一次入口点击累计一次，退出菜单、弹窗和工具栏焦点后才更新前五', () => {

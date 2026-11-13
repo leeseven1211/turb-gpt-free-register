@@ -14,12 +14,12 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-workbench-search-inline-01') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_stats.css', v='20261112-workbench-stats-01') }}">
   <style>
-    #accountsPanelV2 > :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) { flex-wrap: wrap; overflow: visible; align-items: center; }
-    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) details { min-width: 0; max-width: 100%; font-size: 12px; }
-    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) summary { cursor: pointer; }
-    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) ul { max-height: 220px; overflow: auto; padding-left: 22px; margin: 8px 0 0; }
-    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) li { margin-bottom: 6px; overflow-wrap: anywhere; }
-    :is(#accountRegistrationRetryResultV2, #accountC2aReimportResultV2) :is(button, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
+    #accountsPanelV2 > #accountRegistrationRetryResultV2 { flex-wrap: wrap; overflow: visible; align-items: center; }
+    #accountRegistrationRetryResultV2 details { min-width: 0; max-width: 100%; font-size: 12px; }
+    #accountRegistrationRetryResultV2 summary { cursor: pointer; }
+    #accountRegistrationRetryResultV2 ul { max-height: 220px; overflow: auto; padding-left: 22px; margin: 8px 0 0; }
+    #accountRegistrationRetryResultV2 li { margin-bottom: 6px; overflow-wrap: anywhere; }
+    #accountRegistrationRetryResultV2 :is(button, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
     #c2aReimportConfirmModal { width: min(620px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); color: var(--ui-color-text); background: var(--ui-color-surface); box-shadow: var(--ui-shadow-md); }
     #c2aReimportConfirmModal::backdrop { background: rgb(12 20 37 / 52%); }
     #c2aReimportConfirmModal .c2a-reimport-confirm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px; border-bottom: 1px solid var(--ui-color-border); }
@@ -525,16 +525,15 @@
       <div class="accounts-command-deck" id="accountsCommandDeck">
       <div class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2">
         <span class="list-selection-hint" id="accountsSelectedHintV2">选择账号后批量操作</span>
-        <div class="acc-v2-btn-group account-quick-actions" id="accountsQuickActionsV2" role="group" aria-label="常用账号操作，按此浏览器使用次数排序" title="显示此浏览器使用次数最多的五项操作，批量操作一次算一次"></div>
         <details class="toolbar-overflow" id="accountsMoreActionsV2">
-          <summary>更多操作</summary>
+          <summary>批量操作</summary>
           <div class="toolbar-overflow-menu">
             <div class="toolbar-overflow-section toolbar-overflow-section--wide">
               <span class="toolbar-overflow-section-title">操作</span>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedLiveV2" onclick="checkSelectedLive()" disabled title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 免费试用或折扣优惠">查套餐</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshSelectedTokenV2" disabled title="按已保存的刷新驱动获取最新 AT">刷新 AT</button>
-              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="批量同步选中账号的本地当前 AT，支持跨页选择；只更新唯一同邮箱的 C2A 既有账号">批量同步到 C2A</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnReimportSelectedC2aV2" disabled title="批量同步选中账号的本地当前 AT，支持跨页选择；唯一同邮箱账号覆盖 AT，未找到时新建，同邮箱多条时不覆盖">批量同步到 C2A</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnEmailChangeSelectedV2" disabled title="为选中账号批量领取新邮箱并执行协议换绑">批量换绑邮箱</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedDeactivationMailV2" disabled title="扫描 Email Butler / Cloudflare / iCloud 转发邮箱中的 OpenAI 封号通知；不会刷新 AT">查封号邮件</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddPasswordSelectedAccountsV2" disabled title="只给选中账号补充登录密码">补密码</button>
@@ -577,6 +576,7 @@
             </div>
           </div>
         </details>
+        <div class="acc-v2-btn-group account-quick-actions" id="accountsQuickActionsV2" role="group" aria-label="常用账号操作，按此浏览器使用次数排序" title="显示此浏览器使用次数最多的五项操作，批量操作一次算一次"></div>
         <div class="list-toolbar-utilities">
           <label class="account-email-status-filter" for="accountEmailStatusFilterV2">邮箱状态<select id="accountEmailStatusFilterV2"><option value="">全部</option><option value="invalid">邮箱失效</option><option value="unmarked">未标记失效</option></select></label>
           <div class="account-search-control">
@@ -596,7 +596,6 @@
       <div class="column-filter-summary account-search-summary" id="accountSearchSummaryV2" aria-label="已生效的高级搜索条件" hidden></div>
       <div class="column-filter-summary" data-filter-summary="accounts" hidden></div>
       <div class="column-filter-summary account-search-summary" id="accountRegistrationRetryResultV2" role="status" aria-live="polite" hidden></div>
-      <div class="column-filter-summary account-search-summary" id="accountC2aReimportResultV2" role="status" aria-live="polite" hidden></div>
       <div class="accounts-table-v2-wrap">
         <table class="accounts-table-v2" data-resizable-table="accounts" data-filter-multiple="true">
           <colgroup>
@@ -644,9 +643,9 @@
     <dialog id="c2aReimportConfirmModal" aria-labelledby="c2aReimportConfirmTitle" aria-describedby="c2aReimportConfirmDescription">
       <div class="c2a-reimport-confirm-head">
         <div>
-          <p class="c2a-reimport-confirm-kicker">本地 AT · 远端账号更新</p>
+          <p class="c2a-reimport-confirm-kicker">本地 AT · 远端账号同步</p>
           <h3 id="c2aReimportConfirmTitle">批量同步到 C2A</h3>
-          <p id="c2aReimportConfirmDescription">只把本地当前 AT 更新到同邮箱唯一匹配的既有 C2A 账号。</p>
+          <p id="c2aReimportConfirmDescription">查到唯一的同邮箱 C2A 账号时覆盖 AT；未找到时新建账号。</p>
         </div>
         <button type="button" class="c2a-reimport-confirm-close" id="btnCloseC2aReimportV2" aria-label="关闭 C2A 同步确认窗口">×</button>
       </div>
@@ -656,7 +655,7 @@
           <h4 id="c2aReimportConfirmScopeTitle">更新范围</h4>
           <ul>
             <li>任务执行时读取本地保存的当前 AT；不会刷新本地 AT，也不会重新登录。</li>
-            <li>只按完整邮箱唯一匹配既有 C2A 账号，并更新该账号的 AT；不会创建、删除、分组、代理、启用或更新 refresh_token。</li>
+            <li>按完整邮箱匹配 C2A 账号：唯一匹配时覆盖 AT，未找到时新建；同邮箱存在多条账号时不执行覆盖。</li>
           </ul>
         </section>
         <section class="c2a-reimport-confirm-note" aria-labelledby="c2aReimportConfirmSafetyTitle">
@@ -1248,7 +1247,7 @@
 <script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261112-task-error-classification-01') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-create-v5') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261112-account-actions-c2a-01') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261113-account-bulk-feedback-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261112-task-error-classification-01') }}"></script>

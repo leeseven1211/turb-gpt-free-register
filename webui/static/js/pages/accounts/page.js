@@ -2540,6 +2540,19 @@ async function extractSelectedLinks() {
   }
 }
 
+function accountBulkUnqueuedReasons(result) {
+  const counts = new Map();
+  for (const items of [result.skipped, result.failed]) {
+    for (const item of Array.isArray(items) ? items : []) {
+      const reason = String(item?.reason || item?.error || item?.error_code || '服务端未返回原因，请重试');
+      counts.set(reason, (counts.get(reason) || 0) + 1);
+    }
+  }
+  if (!counts.size) return '；未入队原因：服务端未返回原因，请重试';
+  const reasons = [...counts].slice(0, 3).map(([reason, count]) => `${reason}${count > 1 ? `（${count} 个）` : ''}`);
+  return `；未入队原因：${reasons.join('；')}${counts.size > 3 ? `；另有 ${counts.size - 3} 类原因` : ''}`;
+}
+
 async function uploadSelectedCodexSub2() {
   const ids = Array.from(ACCOUNT_SELECTED);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
@@ -2554,12 +2567,12 @@ async function uploadSelectedCodexSub2() {
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({account_ids: ids}),
     });
-    const skipped = (r.skipped_count || 0) + (r.failed_count || 0);
+    const skipped = Number(r.skipped_count ?? r.skipped?.length ?? 0) + Number(r.failed_count ?? r.failed?.length ?? 0);
+    const reasons = skipped ? accountBulkUnqueuedReasons(r) : '';
     if (r.accepted) {
-      showToast(`手动上传已入队 ${r.queued_count || 0} 个${skipped ? `，跳过/未入队 ${skipped} 个` : ''}，最终结果在任务回执中更新`);
-      trackAcceptedOperationsV2(r.queued || [], '手动上传');
+      showToast(`手动上传已入队 ${r.queued_count ?? r.queued?.length ?? 0} 个，未入队 ${skipped} 个，请在任务中心查看结果${reasons}`);
     } else {
-      showToast(skipped ? `已上传 ${r.uploaded_count || 0} 个，跳过/失败 ${skipped} 个` : `已上传 ${r.uploaded_count || 0} 个`);
+      showToast(`已上传 ${r.uploaded_count || 0} 个${skipped ? `，跳过/失败 ${skipped} 个${reasons}` : ''}`);
       await pollAccountPlanStatuses();
     }
   } catch(err) {
@@ -2571,7 +2584,6 @@ async function uploadSelectedCodexSub2() {
   }
 }
 
-const C2A_REIMPORT_TASK_TYPE = 'c2a_session_reimport';
 const C2A_REIMPORT_DIALOG = {ids: [], trigger: null, submitting: false};
 
 function c2aReimportDialogElements() {
@@ -2669,15 +2681,12 @@ async function submitC2aReimport() {
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({account_ids: ids}),
     });
-    const skipped = Number(result.skipped_count || 0) + Number(result.failed_count || 0);
-    const queued = Array.isArray(result.queued) ? result.queued : [];
-    const receiptItems = c2aReimportTaskEntries(result).map(entry => entry.item);
-    showC2aReimportResult(result);
+    const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0) + Number(result.failed_count ?? result.failed?.length ?? 0);
+    const reasons = skipped ? accountBulkUnqueuedReasons(result) : '';
     if (result.accepted) {
-      showToast(`C2A 重新导入已入队 ${result.queued_count || 0} 个${skipped ? `，未入队 ${skipped} 个（已显示具体原因）` : ''}${queued.length ? '，最终结果在任务回执中更新' : ''}`);
-      if (receiptItems.length) trackAcceptedOperationsV2(receiptItems, '重新导入 C2A', {navigate: false});
+      showToast(`C2A 重新导入已入队 ${result.queued_count ?? result.queued?.length ?? 0} 个，未入队 ${skipped} 个，请在任务中心查看结果${reasons}`);
     } else {
-      showToast(skipped ? `C2A 已重新导入 ${result.updated_count || 0} 个，跳过/失败 ${skipped} 个` : `C2A 已重新导入 ${result.updated_count || 0} 个`);
+      showToast(`C2A 已重新导入 ${result.updated_count || 0} 个${skipped ? `，跳过/失败 ${skipped} 个${reasons}` : ''}`);
       await loadAccounts();
     }
     submitted = true;
@@ -2698,87 +2707,6 @@ async function submitC2aReimport() {
     if (submitted) closeC2aReimportConfirm('submitted', {force: true});
     else updateAccountSelectionUi();
   }
-}
-
-function c2aReimportSummary(result) {
-  const queued = Number(result.queued_count ?? result.queued?.length ?? 0);
-  const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0);
-  const failed = Number(result.failed_count ?? result.failed?.length ?? 0);
-  return `C2A 重新导入：已入队 ${queued} 个，未入队 ${skipped + failed} 个`;
-}
-
-function c2aReimportEntries(result) {
-  const queued = Array.isArray(result.queued) ? result.queued : [];
-  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
-  const failed = Array.isArray(result.failed) ? result.failed : [];
-  return [
-    ...queued.map(item => ({item, state: '已入队'})),
-    ...skipped.map(item => ({item, state: '未入队'})),
-    ...failed.map(item => ({item, state: '入队失败'})),
-  ];
-}
-
-function c2aReimportTaskEntries(result) {
-  return c2aReimportEntries(result).filter(entry => Number(entry.item?.task_id) > 0);
-}
-
-function openC2aReimportTasks(items = []) {
-  const single = items.length === 1 ? items[0] : null;
-  // 保留 C2A 任务分类，避免复用注册重跑入口后清空类型筛选。
-  for (const selector of [
-    '#accountTaskIdFilterV2', '#accountTaskStatusFilterV2', '#accountTaskTargetStatusFilterV2',
-    '#accountTaskBatchFilterV2', '#accountTaskRunCountFilterV2', '#accountTaskStageFilterV2',
-    '#accountTaskDateFromV2', '#accountTaskDateToV2', '#accountTaskResultFilterV2',
-  ]) {
-    const field = $(selector);
-    if (field) field.value = '';
-  }
-  const typeFilter = $('#accountTaskTypeFilterV2');
-  if (typeFilter) typeFilter.value = C2A_REIMPORT_TASK_TYPE;
-  const targetFilter = $('#accountTaskTargetFilterV2');
-  if (targetFilter) targetFilter.value = '';
-  PAGERS.accountTasks.page = 1;
-  activateTab('tasks');
-  const taskId = Number(single?.task_id);
-  if (taskId > 0) openAccountTaskLog(taskId, Number(single?.run_id) || null);
-}
-
-function renderC2aReimportResult(result) {
-  const entries = c2aReimportEntries(result);
-  const taskEntries = entries.filter(entry => Number(entry.item?.task_id) > 0);
-  const rows = entries.map((entry, index) => {
-    const item = entry.item || {};
-    const accountId = Number(item.id);
-    const subject = Number.isInteger(accountId) && accountId > 0
-      ? `账号 #${accountId}` : `提交项 #${Number(item.input_index) || index + 1}`;
-    const details = [item.email, item.error_code, item.reason || item.error].filter(Boolean).map(String);
-    const taskIndex = taskEntries.indexOf(entry);
-    const taskId = Number(item.task_id);
-    const taskButton = taskIndex >= 0
-      ? ` <button type="button" class="jobs-tb-btn" data-c2a-reimport-task="${taskIndex}">查看任务 #${esc(taskId)}</button>` : '';
-    return `<li>${esc(subject)} · ${esc(entry.state)}${details.length ? ` · ${esc(details.join(' · '))}` : ''}${taskButton}</li>`;
-  }).join('');
-  const hasUnqueued = entries.some(entry => entry.state !== '已入队');
-  return `<span class="column-filter-summary-label">${esc(c2aReimportSummary(result))}</span>
-    ${taskEntries.length ? '<button type="button" class="jobs-tb-btn" data-c2a-reimport-tasks>打开任务中心</button>' : ''}
-    ${rows ? `<details${hasUnqueued ? ' open' : ''}><summary>查看${hasUnqueued ? '任务与未入队原因' : '任务'}</summary><ul>${rows}</ul></details>` : ''}`;
-}
-
-function showC2aReimportResult(result) {
-  const panel = $('#accountC2aReimportResultV2');
-  if (!panel) return;
-  const taskEntries = c2aReimportTaskEntries(result);
-  panel.hidden = false;
-  panel.innerHTML = renderC2aReimportResult(result);
-  panel.querySelector('[data-c2a-reimport-tasks]')?.addEventListener('click', () => {
-    openC2aReimportTasks(taskEntries.map(entry => entry.item));
-  });
-  panel.querySelectorAll('[data-c2a-reimport-task]').forEach(button => {
-    button.addEventListener('click', () => {
-      const entry = taskEntries[Number(button.dataset.c2aReimportTask)];
-      if (entry) openC2aReimportTasks([entry.item]);
-    });
-  });
 }
 
 async function checkSelectedPlans() {
