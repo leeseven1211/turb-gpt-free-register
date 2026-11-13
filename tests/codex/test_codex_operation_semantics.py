@@ -11,6 +11,7 @@ from core.codex import oauth as codex_oauth
 from core.codex import operation_service as codex_operation_service
 from core import account_task_store
 from core.storage import records as record_store
+from core.storage.operations import store as operation_read_store
 from core.operations import run_log as task_run_log
 from core.codex.operation_service import classify_codex_operation_result
 from core.operations.runtime import CancellationToken, OperationCancelled
@@ -325,6 +326,113 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         audit = json.dumps({"summary": run["result_summary"], "events": detail["events"]}, ensure_ascii=False)
         audit += Path(run["log_file"]).read_text(encoding="utf-8")
         self.assertNotIn("synthetic-private-", audit)
+
+    def test_phone_409_details_survive_task_run_and_progress_and_allow_manual_retry(self):
+        code = "codex_phone_verification_failed"
+        diagnostics = {
+            "operation": "phone_send", "failure_kind": "session_conflict", "http_status": 409,
+            "server_code": "invalid_state", "server_type": "invalid_request_error",
+            "server_message": "The authentication flow is not in a valid state.",
+            "attempt": 1, "max_attempts": 5, "number_retry_allowed": False,
+            "response_received": True, "oauth_driver": "protocol",
+        }
+        returned, detail, run = self._execute_oauth_result({
+            "ok": False, "status": "failed", "message": "手机验证发送失败（HTTP 409）",
+            "cause_code": code, "error_category": "external", "http_status": 409,
+            "remote_write_rejected": True,
+            "auth_diagnostics": {
+                **diagnostics, "response_body": "synthetic-private-response",
+                "phone_number": "synthetic-private-phone", "order_id": "synthetic-private-order",
+                "access_token": "synthetic-private-access",
+            },
+        })
+
+        self.assertEqual("failed", returned["status"])
+        self.assertEqual("failed", detail["status"])
+        self.assertEqual("failed", run["status"])
+        for summary in (run["result_summary"], detail["result_summary"], detail["runs"][-1]["result_summary"]):
+            self.assertEqual(code, summary["cause_code"])
+            self.assertEqual("external", summary["error_category"])
+            self.assertEqual(diagnostics, summary["auth_diagnostics"])
+            self.assertNotIn("reconcile_required", summary)
+            self.assertNotEqual("request_unknown", summary.get("outcome"))
+            self.assertNotIn("synthetic-private-", json.dumps(summary))
+        projections = [classify_task_error(
+            row["error_message"], task_type="codex_retry", task_status=row["status"],
+            error_code=row["error_code"], result_summary=row["result_summary"],
+        ) for row in (detail, run)]
+        progress = operation_read_store.get_run_progress(detail["id"], run["id"])
+        projections.append(progress["failure"]["error_info"])
+        for projection in projections:
+            self.assertEqual(code, projection["code"])
+            self.assertEqual("OA-PHONE-SEND-409", projection["display_code"])
+            self.assertEqual("external", projection["source"])
+            self.assertEqual("conditional", projection["retryability"])
+            self.assertIn("invalid_state", projection["cause_summary"])
+            self.assertIn(diagnostics["server_message"], projection["cause_summary"])
+            self.assertNotIn("reconcile_required", projection)
+        with (
+            patch.object(codex_operation_service, "_config_snapshot", return_value={"oauth_driver": "protocol"}),
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch.object(codex_operation_service, "_dispatch"),
+        ):
+            retried = codex_operation_service.retry_task(detail["id"])
+        self.assertTrue(retried["accepted"])
+        self.assertEqual("queued", retried["status"])
+
+    def test_phone_server_failure_preserves_unknown_receipt_and_manual_retry(self):
+        code = "codex_phone_verification_failed"
+        _, detail, run = self._execute_oauth_result({
+            "ok": False, "status": "failed", "message": "手机验证发送失败（HTTP 503）",
+            "cause_code": code, "error_category": "external", "http_status": 503,
+            "auth_diagnostics": {
+                "operation": "phone_send", "failure_kind": "server_error", "http_status": 503,
+                "response_received": True, "number_retry_allowed": False,
+            },
+        })
+
+        self.assertEqual("attention_required", run["status"])
+        for summary in (run["result_summary"], detail["result_summary"]):
+            self.assertEqual(code, summary["cause_code"])
+            self.assertEqual("request_unknown", summary["outcome"])
+            self.assertTrue(summary["reconcile_required"])
+            self.assertNotEqual("rejected", summary["remote_receipt_state"])
+            self.assertNotIn("remote_write_rejected", summary)
+        projection = classify_task_error(
+            detail["error_message"], task_type="codex_retry", task_status=detail["status"],
+            error_code=detail["error_code"], result_summary=detail["result_summary"],
+        )
+        self.assertEqual("OA-PHONE-SEND-503", projection["display_code"])
+        self.assertTrue(projection["reconcile_required"])
+        self.assertEqual("manual_only", projection["retryability"])
+        with (
+            patch.object(codex_operation_service, "_config_snapshot", return_value={"oauth_driver": "protocol"}),
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch.object(codex_operation_service, "_dispatch"),
+        ):
+            retried = codex_operation_service.retry_task(detail["id"])
+        self.assertTrue(retried["accepted"])
+
+    def test_phone_diagnostics_reject_unknown_values_and_private_fields(self):
+        _, _, run = self._execute_oauth_result({
+            "ok": False, "status": "failed", "message": "手机验证失败",
+            "cause_code": "codex_phone_verification_failed", "error_category": "synthetic-private-category",
+            "auth_diagnostics": {
+                "operation": "synthetic-private-operation", "failure_kind": "synthetic-private-kind",
+                "server_code": "synthetic-private-code", "response_body": "synthetic-private-body",
+            },
+        })
+
+        summary = run["result_summary"]
+        self.assertEqual("codex_phone_verification_failed", summary["cause_code"])
+        self.assertNotIn("auth_diagnostics", summary)
+        self.assertNotIn("error_category", summary)
+        self.assertNotIn("synthetic-private-", json.dumps(summary))
+        projection = classify_task_error(
+            run["error_message"], task_type="codex_retry", task_status=run["status"], result_summary=summary,
+        )
+        self.assertEqual("OA-PHONE-DETAILS-MISSING", projection["display_code"])
+        self.assertEqual("手机验证失败，未保留有效响应详情", projection["cause_summary"])
 
     def test_consent_diagnostics_reject_unrecognized_values_in_allowlisted_fields(self):
         _, _, run = self._execute_failed_consent({

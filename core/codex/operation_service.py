@@ -88,6 +88,16 @@ def _is_confirmed_account_deactivation(result: Mapping[str, Any]) -> bool:
 def _safe_codex_failure_details(result: Mapping[str, Any]) -> dict[str, Any]:
     """只持久化已知原因和固定诊断值，不透传驱动返回的认证上下文。"""
     cause_code = result.get("cause_code")
+    if cause_code == "codex_phone_verification_failed":
+        from core.codex.phone_errors import safe_phone_diagnostics
+
+        safe: dict[str, Any] = {"cause_code": cause_code}
+        if result.get("error_category") == "external":
+            safe["error_category"] = "external"
+        diagnostics = safe_phone_diagnostics(result.get("auth_diagnostics"))
+        if diagnostics:
+            safe["auth_diagnostics"] = diagnostics
+        return safe
     if not isinstance(cause_code, str) or cause_code not in _CODEX_FAILURE_DIAGNOSTICS:
         return {}
     safe: dict[str, Any] = {"cause_code": cause_code}

@@ -1779,6 +1779,14 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
         setup_code = str(summary.get("error_code") or "").strip()
         if setup_code.startswith("password_setup_") and setup_code in _CAUSE_DETAILS:
             code = setup_code
+    if code == "codex_phone_verification_failed":
+        from core.codex.phone_errors import phone_failure_cause
+
+        return phone_failure_cause(diagnostics) or {
+            "cause_code": code,
+            "cause_display_code": "OA-PHONE-DETAILS-MISSING",
+            "cause_summary": "手机验证失败，未保留有效响应详情",
+        }
     if code in _OTP_PAGE_NETWORK_CAUSES:
         # OTP 页面已有明确传输细因时，不拼接其他认证请求的旧诊断。
         display_code, cause_summary = _OTP_PAGE_NETWORK_CAUSES[code]
@@ -2034,6 +2042,10 @@ _AUTH_OPERATION_STAGES = {
     "oauth_callback": "callback",
     "session_fetch": "token",
     "profile_submit": "profile",
+    "phone_send": "phone_otp",
+    "phone_validate": "phone_otp",
+    "phone_wait": "phone_otp",
+    "phone_provider": "phone_acquire",
 }
 _RESULT_STAGES = {"result", "complete", "queued", "interrupted"}
 
@@ -2174,6 +2186,19 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
     code = ""
+    if (task_key == "codex_retry"
+            and summary.get("cause_code") in (None, "")
+            and not summary.get("auth_diagnostics") and not summary.get("cause_diagnostics")
+            and str(error_code or "").strip() in {"", "external.openai", "request_unknown", "unknown.unclassified"}
+            and re.fullmatch(
+                r"(?:RuntimeError:\s*)?(?:\[Codex\]\s*)?手机号验证重试\s*[1-9]\d{0,3}\s*次仍失败"
+                r"(?:（provider=(?:grizzly|l|h)）)?", raw,
+            )):
+        return {
+            "cause_code": "codex_phone_retry_exhausted",
+            "cause_display_code": "OA-PHONE-RETRY-EXHAUSTED",
+            "cause_summary": "手机验证重试耗尽（历史响应详情未保留）",
+        }
     diagnostics = summary.get("auth_diagnostics")
     if (task_key == "token_refresh" and isinstance(diagnostics, dict)
             and set(diagnostics) == {"operation", "failure_kind", "exception_type"}

@@ -1550,6 +1550,102 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("注册任务未保留回执或失败细项", generic["summary"])
 
 
+class CodexPhoneFailureProjectionTests(unittest.TestCase):
+    def test_phone_failure_precedes_generic_auth_diagnostics_and_keeps_safe_server_detail(self):
+        original = {
+            "cause_code": "codex_phone_verification_failed",
+            "auth_diagnostics": {
+                "operation": "phone_send", "failure_kind": "session_conflict", "http_status": 409,
+                "server_code": "invalid_state",
+                "server_message": "The authentication flow is not in a valid state.",
+                "response_body": "synthetic-private-body",
+            },
+            "cause_diagnostics": {"operation": "password_verify", "http_status": 401},
+        }
+        info = classify_task_error(
+            "手机验证失败", stage="complete", task_type="codex_retry", task_status="failed",
+            result_summary=original,
+        )
+
+        self.assertEqual("codex_phone_verification_failed", info["code"])
+        self.assertEqual("OA-PHONE-SEND-409", info["display_code"])
+        self.assertEqual("phone_otp", info["stage"])
+        self.assertIn("invalid_state", info["cause_summary"])
+        self.assertIn("The authentication flow is not in a valid state.", info["cause_summary"])
+        self.assertNotIn("synthetic-private-", str(info))
+        self.assertNotIn("reconcile_required", info)
+        self.assertEqual("synthetic-private-body", original["auth_diagnostics"]["response_body"])
+
+    def test_phone_validate_stage_and_unknown_receipt_keep_explicit_failure(self):
+        info = classify_task_error(
+            "远端结果待确认", stage="complete", task_type="codex_retry", task_status="attention_required",
+            result_summary={
+                "cause_code": "codex_phone_verification_failed", "outcome": "request_unknown",
+                "auth_diagnostics": {
+                    "operation": "phone_validate", "failure_kind": "server_error", "http_status": 503,
+                },
+            },
+        )
+        self.assertEqual("OA-PHONE-VALIDATE-503", info["display_code"])
+        self.assertEqual("phone_otp", info["stage"])
+        self.assertTrue(info["reconcile_required"])
+        self.assertEqual("manual_only", info["retryability"])
+        self.assertEqual("unknown", info["remote_state_impact"])
+
+    def test_historical_exhaustion_only_projects_recorded_retry_fact(self):
+        for raw in ("手机号验证重试5次仍失败", "手机号验证重试 5 次仍失败"):
+            info = classify_task_error(raw, task_type="codex_retry", task_status="failed")
+            self.assertEqual("OA-PHONE-RETRY-EXHAUSTED", info["display_code"])
+            self.assertEqual("手机验证重试耗尽（历史响应详情未保留）", info["summary"])
+            self.assertNotIn("409", str(info))
+            self.assertNotIn("session_conflict", str(info))
+        unrelated = classify_task_error("手机号验证重试5次仍失败", task_type="registration", task_status="failed")
+        self.assertNotEqual("OA-PHONE-RETRY-EXHAUSTED", unrelated["display_code"])
+        structured = classify_task_error(
+            "手机号验证重试5次仍失败", task_type="codex_retry", task_status="failed",
+            result_summary={
+                "cause_code": "codex_phone_verification_failed",
+                "auth_diagnostics": {
+                    "operation": "phone_send", "failure_kind": "session_conflict", "http_status": 409,
+                },
+            },
+        )
+        self.assertEqual("OA-PHONE-SEND-409", structured["display_code"])
+
+    def test_historical_provider_exhaustion_reads_real_legacy_wrappers(self):
+        real_error = "RuntimeError: [Codex] 手机号验证重试 10 次仍失败（provider=grizzly）"
+        for raw in (
+            real_error,
+            "RuntimeError: [Codex] 手机号验证重试 10 次仍失败（provider=l）",
+            "RuntimeError: [Codex] 手机号验证重试 10 次仍失败（provider=h）",
+            "RuntimeError: 手机号验证重试 10 次仍失败",
+            "[Codex] 手机号验证重试 10 次仍失败",
+        ):
+            with self.subTest(raw=raw):
+                info = classify_task_error(
+                    raw, task_type="codex_retry", task_status="failed", error_code="external.openai",
+                )
+                self.assertEqual("OA-PHONE-RETRY-EXHAUSTED", info["display_code"])
+                self.assertEqual("手机验证重试耗尽（历史响应详情未保留）", info["summary"])
+                self.assertNotIn("409", str(info))
+                self.assertNotIn("session_conflict", str(info))
+        for raw in (
+            "RuntimeError: [Codex] 手机号验证重试 10 次仍失败（provider=unknown）",
+            real_error + "，号码无效",
+        ):
+            info = classify_task_error(raw, task_type="codex_retry", task_status="failed")
+            self.assertNotEqual("OA-PHONE-RETRY-EXHAUSTED", info["display_code"])
+        structured = classify_task_error(
+            real_error, task_type="codex_retry", task_status="failed", result_summary={
+                "cause_code": "codex_phone_verification_failed",
+                "auth_diagnostics": {
+                    "operation": "phone_send", "failure_kind": "session_conflict", "http_status": 409,
+                },
+            },
+        )
+        self.assertEqual("OA-PHONE-SEND-409", structured["display_code"])
+
+
 class RegistrationBrowserFailureCauseTests(unittest.TestCase):
     """真实阶段异常不能被通用网络或回执分类覆盖。"""
 

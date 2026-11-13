@@ -24,6 +24,7 @@ from core.auth.email_guard import bind_auth_observer, serialize_email_auth
 from core.auth.protocol.session import BrowserSession
 from core.auth.humanize import delay as human_delay
 from core.auth.protocol.openai_auth import _is_transient_network_error, _extract_error_code, detect_account_unusable_response_body, AccountUnusableError, request_sentinel_token, build_sentinel_header, network_preflight, navigate_email_otp_send, _rotate_document_navigation_id
+from core.codex.phone_errors import CodexPhoneVerificationError, phone_failure_from_response
 from core.sms import provider as sms_provider
 from core.operations.runtime import OperationCancelled, call_cancellable, check_cancelled, current_token, report_stage
 from curl_cffi import requests as curl_requests
@@ -793,51 +794,6 @@ def _cache_auth_session_payload(session: BrowserSession, payload: dict | None) -
         session._codex_auth_session_payload = {"workspaces": [{"id": item} for item in ids]}
 
 
-def _response_text(resp) -> str:
-    try:
-        data = resp.json()
-        if isinstance(data, dict):
-            parts = []
-            def walk(x):
-                if isinstance(x, dict):
-                    for v in x.values(): walk(v)
-                elif isinstance(x, list):
-                    for v in x: walk(v)
-                elif x is not None:
-                    parts.append(str(x))
-            walk(data)
-            return " ".join(parts)
-    except Exception:
-        pass
-    return str(getattr(resp, 'text', '') or '')
-
-
-def _phone_failure_reason(text: str, status_code: int | None = None) -> str:
-    low = str(text or '').lower()
-    if 'whatsapp' in low or 'whats app' in low:
-        return 'whatsapp_channel'
-    if any(k in low for k in (
-        'phone number is not valid', 'invalid phone number', 'invalid phone', 'not a valid phone',
-        '号码无效', '手机号无效', '电话号码无效', 'invalid_number', 'invalid_phone',
-    )):
-        return 'invalid_phone'
-    if any(k in low for k in (
-        'cannot send', "can't send", 'could not send', "couldn't send", 'unable to send',
-        'cannot deliver', 'unable to deliver', 'failed to send', 'send failed',
-        '无法发送', '不能发送', '无法向', '发送验证码', '发送短信',
-    )):
-        return 'delivery_refused'
-    if any(k in low for k in ('too many', 'rate limit', 'throttle', 'limited', '频繁', '限流')):
-        return 'send_limited'
-    if any(k in low for k in ('already used', 'used too many', 'maximum', '上限', '已被使用')):
-        return 'phone_used_or_max'
-    if status_code and status_code >= 500:
-        return 'server_error'
-    if status_code and status_code >= 400:
-        return 'send_rejected'
-    return ''
-
-
 # ============================================================
 # 步骤 0：用全新 session 跟随 Codex authorize URL，建立 auth.openai.com 会话
 # ============================================================
@@ -1191,7 +1147,8 @@ def _sleep_before_phone_retry(
 def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | None = None) -> dict:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
-    一个号收不到码或被 OpenAI 拒就取消换号，最多 SMS_MAX_RETRIES 次（热加载）。
+    只有发送响应明确拒绝当前号码时才换号，最多 SMS_MAX_RETRIES 次（热加载）。
+    预算耗尽仅停止后续尝试，不覆盖最后一次明确失败的响应证据。
 
     实际平台适配在 core.sms.provider：
         - SMS_PROVIDER="grizzly"：GrizzlySMS handler_api.php
@@ -1203,114 +1160,164 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
     provider = _sms_provider_name()
     total_budget = max(30, int(getattr(_cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
     deadline = time.monotonic() + total_budget
+    last_error = None
+    last_attempt = 0
+    failure_stage = "phone_acquire"
+    operation = "phone_provider"
     try:
-        last_err = None
         for attempt in range(1, max_retries + 1):
+            last_attempt = attempt
             remaining = max(0, int(deadline - time.monotonic()))
             if remaining <= 0:
-                break
+                if last_error:
+                    logger.info("[Codex] 手机验证预算已耗尽，保留最后一次失败原因并停止继续尝试")
+                    raise last_error
+                raise CodexPhoneVerificationError(
+                    operation=operation, failure_kind="budget_exhausted",
+                    attempt=attempt, max_attempts=max_retries,
+                )
             activation_id = None
+            completed = False
+            operation = "phone_provider"
             try:
                 check_cancelled()
+                failure_stage = "phone_acquire"
                 activation_id, phone = sms_provider.acquire_number(http)
+                failure_stage = "phone_otp"
                 logger.info(
                     "[Codex] 手机验证尝试 %s/%s，provider=%s",
                     attempt, max_retries, provider,
                 )
 
                 # 发短信
+                operation = "phone_send"
+                report_stage("phone_otp", "已申请号码，正在请求发送短信验证码")
                 send_resp = _post_json(
                     session,
                     "https://auth.openai.com/api/accounts/add-phone/send",
                     {"phone_number": f"+{phone}", "channel": "sms"},
                     referer="https://auth.openai.com/add-phone",
                 )
-                send_text = _response_text(send_resp)
-                send_reason = _phone_failure_reason(send_text, send_resp.status_code)
-                if send_resp.status_code not in (200, 204) or send_reason:
-                    # 号码无效 / 无法发送 / WhatsApp 通道 / 限流等 → 释放当前号并换号。
-                    logger.warning(
-                        f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
-                        f"status={send_resp.status_code}，换号重试"
-                    )
-                    sms_provider.report_activation_failure(activation_id, send_reason or "send_failed")
-                    sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
-                    continue
+                send_error = phone_failure_from_response(
+                    send_resp, operation=operation, attempt=attempt, max_attempts=max_retries,
+                    sensitive_values=(activation_id, phone, f"+{phone}"),
+                )
+                if send_error:
+                    raise send_error
 
                 # 通知平台短信已发出（status=1）
+                operation = "phone_provider"
                 sms_provider.set_status(activation_id, 1, http=http)
 
                 # 定时轮询接码平台获取短信；单号与整段手机验证均受硬预算限制。
-                try:
-                    logger.info(
-                        "[Codex] 短信已发送，开始轮询验证码 wait=%ss interval=%ss",
-                        _cfg.SMS_CODE_WAIT, _cfg.SMS_POLL_INTERVAL,
+                operation = "phone_wait"
+                report_stage("phone_otp", "短信发送请求已通过，正在等待短信验证码")
+                logger.info(
+                    "[Codex] 短信已发送，开始轮询验证码 wait=%ss interval=%ss",
+                    _cfg.SMS_CODE_WAIT, _cfg.SMS_POLL_INTERVAL,
+                )
+                remaining = max(0, int(deadline - time.monotonic()))
+                if remaining <= 0:
+                    raise CodexPhoneVerificationError(
+                        operation=operation, failure_kind="budget_exhausted",
+                        attempt=attempt, max_attempts=max_retries,
                     )
-                    remaining = max(0, int(deadline - time.monotonic()))
-                    if remaining <= 0:
-                        raise sms_provider.SmsCodeTimeout("手机验证整段预算已耗尽")
-                    sms_code = sms_provider.wait_for_sms_code(
-                        activation_id,
-                        http,
-                        max_wait=min(int(_cfg.SMS_CODE_WAIT), remaining),
-                    )
-                except sms_provider.SmsCodeTimeout:
-                    logger.warning("[Codex] 单号等待上限内未收到短信，后台取消后换号")
-                    sms_provider.report_activation_failure(activation_id, "sms_timeout")
-                    sms_provider.cancel(activation_id, http, background=True)
-                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
-                    continue
+                sms_code = sms_provider.wait_for_sms_code(
+                    activation_id,
+                    http,
+                    max_wait=min(int(_cfg.SMS_CODE_WAIT), remaining),
+                )
 
                 # 验手机码
+                operation = "phone_validate"
+                report_stage("phone_otp", "已收到短信验证码，正在提交验证")
                 val_resp = _post_json(
                     session,
                     "https://auth.openai.com/api/accounts/phone-otp/validate",
                     {"code": sms_code},
                     referer="https://auth.openai.com/phone-verification",
                 )
-                if val_resp.status_code != 200:
-                    val_text = _response_text(val_resp)
-                    val_reason = _phone_failure_reason(val_text, val_resp.status_code) or 'code_rejected'
-                    logger.warning(
-                        f"[Codex] phone-otp/validate 失败 reason={val_reason}, "
-                        f"status={val_resp.status_code}，换号重试"
-                    )
-                    sms_provider.report_activation_failure(activation_id, val_reason)
-                    sms_provider.cancel(activation_id, http)
-                    _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
-                    continue
+                validation_error = phone_failure_from_response(
+                    val_resp, operation=operation, attempt=attempt, max_attempts=max_retries,
+                    sensitive_values=(activation_id, phone, f"+{phone}", sms_code),
+                )
+                if validation_error:
+                    raise validation_error
 
                 # 成功
+                operation = "phone_provider"
                 sms_provider.complete(activation_id, http)
+                completed = True
                 logger.info("[Codex] 手机号验证通过")
                 return _resp_json(val_resp)
 
             except OperationCancelled:
-                if activation_id:
-                    sms_provider.cancel(activation_id, http, background=True)
                 raise
-            except (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError):
-                # 余额不足/价格上限不满足，重复相同请求无意义，直接抛。
-                raise
+            except CodexPhoneVerificationError as exc:
+                if operation != "phone_send" or not exc.number_retry_allowed:
+                    raise
+                last_error = exc
+                sms_provider.report_activation_failure(activation_id, exc.diagnostics["failure_kind"])
+                logger.warning("[Codex] 当前号码被明确拒绝，尝试 %s/%s", attempt, max_retries)
+            except sms_provider.SmsCodeTimeout:
+                raise CodexPhoneVerificationError(
+                    operation="phone_wait", failure_kind="sms_timeout",
+                    attempt=attempt, max_attempts=max_retries,
+                ) from None
             except sms_provider.SmsProviderError as exc:
-                last_err = type(exc).__name__
-                logger.warning("[Codex] 接码尝试 %s/%s 失败 reason=provider_error", attempt, max_retries)
-                if activation_id:
-                    sms_provider.report_activation_failure(activation_id, str(exc))
-                    sms_provider.cancel(activation_id, http)
-                _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
-                continue
+                failure_kind = "provider_error"
+                if isinstance(exc, sms_provider.SmsNoBalanceError):
+                    failure_kind = "provider_no_balance"
+                elif isinstance(exc, sms_provider.SmsPriceLimitError):
+                    failure_kind = "provider_price_limit"
+                elif isinstance(exc, sms_provider.SmsNoNumbersError):
+                    failure_kind = "provider_no_numbers"
+                error = CodexPhoneVerificationError(
+                    operation="phone_provider", failure_kind=failure_kind,
+                    attempt=attempt, max_attempts=max_retries,
+                )
+                if activation_id or isinstance(exc, (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError)):
+                    raise error from None
+                last_error = error
+                logger.warning("[Codex] 取号尝试 %s/%s 失败 reason=%s", attempt, max_retries, failure_kind)
+            except Exception as exc:
+                is_transport = isinstance(exc, OSError) or _is_transient_network_error(exc)
+                raise CodexPhoneVerificationError(
+                    operation=operation,
+                    failure_kind="transport_error" if is_transport else "unexpected_response",
+                    attempt=attempt, max_attempts=max_retries,
+                    server_message=type(exc).__name__,
+                ) from None
+            finally:
+                if activation_id and not completed:
+                    try:
+                        sms_provider.cancel(activation_id, http, background=True)
+                    except Exception as cleanup_exc:
+                        logger.warning("[Codex] 接码订单取消未确认 reason=%s", type(cleanup_exc).__name__)
 
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"[Codex] 手机验证超过整段预算 {total_budget} 秒，已停止继续买号"
-                + (f"，最后错误：{last_err}" if last_err else "")
+            _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
+
+        budget_exhausted = time.monotonic() >= deadline
+        if budget_exhausted:
+            logger.info("[Codex] 手机验证预算已耗尽，已停止继续尝试")
+        if last_error:
+            raise last_error
+        if budget_exhausted:
+            raise CodexPhoneVerificationError(
+                operation=operation, failure_kind="budget_exhausted",
+                attempt=last_attempt, max_attempts=max_retries,
             )
-        raise RuntimeError(
-            f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
-            + (f"，最后错误：{last_err}" if last_err else "")
+        raise CodexPhoneVerificationError(
+            operation=operation, failure_kind="retry_exhausted",
+            attempt=last_attempt, max_attempts=max_retries,
         )
+    except CodexPhoneVerificationError as exc:
+        report_stage(
+            failure_stage,
+            str(exc), state="failed", level="ERROR",
+            detail={"cause_code": "codex_phone_verification_failed", "auth_diagnostics": exc.diagnostics},
+        )
+        raise
     finally:
         http.close()
 
@@ -2284,6 +2291,12 @@ def run_codex_oauth(
     except CodexPhoneVerificationDisabled as exc:
         logger.warning("[Codex] %s", exc)
         return _phone_verification_disabled_result(email, exc)
+    except CodexPhoneVerificationError as exc:
+        logger.warning("[Codex] %s", exc)
+        return {
+            **_codex_result(status="failed", email=email, message=str(exc)),
+            **exc.as_result(),
+        }
     except CodexConsentUnverifiableError as exc:
         logger.warning("[Codex] 授权确认页无法确认单一工作区，需使用浏览器驱动")
         return {
