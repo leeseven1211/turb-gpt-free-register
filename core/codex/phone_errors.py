@@ -77,7 +77,7 @@ def safe_phone_diagnostics(value: object) -> dict[str, Any]:
         number = value.get(key)
         if type(number) is int and low <= number <= high:
             result[key] = number
-    for key in ("number_retry_allowed", "response_received"):
+    for key in ("number_retry_allowed", "response_received", "earlier_attempt_unconfirmed"):
         if type(value.get(key)) is bool:
             result[key] = value[key]
     for key in ("server_code", "server_type"):
@@ -104,6 +104,8 @@ def phone_failure_cause(value: object) -> dict[str, str] | None:
         summary += f"；服务端错误码：{code}"
     if message := diagnostics.get("server_message"):
         summary += f"；服务端说明：{message}"
+    if diagnostics.get("attempt") and diagnostics.get("max_attempts"):
+        summary += f"；尝试：{diagnostics['attempt']}/{diagnostics['max_attempts']}"
     return {
         "cause_code": PHONE_FAILURE_CAUSE,
         "cause_display_code": f"OA-PHONE-{short}-{status or reason.upper().replace('_', '-')}",
@@ -112,7 +114,7 @@ def phone_failure_cause(value: object) -> dict[str, str] | None:
 
 
 class CodexPhoneVerificationError(RuntimeError):
-    """带有限诊断的手机失败；换号许可必须由明确号码证据产生。"""
+    """保留实际失败证据；错误分类不收紧原有有界换号重试。"""
 
     def __init__(self, *, operation: str, failure_kind: str, http_status: int | None = None,
                  attempt: int = 1, max_attempts: int = 1, server_code: str = "",
@@ -132,7 +134,11 @@ class CodexPhoneVerificationError(RuntimeError):
 
     def as_result(self) -> dict[str, Any]:
         """只有明确收到 4xx 才记录拒绝；5xx、超时和断连仍保留不确定事实。"""
-        rejected = self.diagnostics.get("response_received") is True and 400 <= (self.http_status or 0) < 500
+        rejected = (
+            self.diagnostics.get("response_received") is True
+            and 400 <= (self.http_status or 0) < 500
+            and not self.diagnostics.get("earlier_attempt_unconfirmed")
+        )
         return {
             "ok": False, "status": "failed", "message": str(self),
             "cause_code": PHONE_FAILURE_CAUSE, "error_category": "external",
@@ -176,7 +182,7 @@ def phone_failure_from_response(response, *, operation: str, attempt: int, max_a
         reason = "session_conflict"
     elif code in _OTP_CODES:
         reason = "code_rejected"
-    elif code in _NUMBER_RISK_CODES and any(text in low for text in ("phone number", "电话号码", "手机号")):
+    elif code in _NUMBER_RISK_CODES:
         reason = "number_risk"
     elif code in _NUMBER_INVALID_CODES or (not code and any(text in low for text in (
         "invalid phone number", "phone number is not valid", "invalid_number", "手机号无效", "电话号码无效",
@@ -194,9 +200,9 @@ def phone_failure_from_response(response, *, operation: str, attempt: int, max_a
         reason = "delivery_refused"
     else:
         reason = "code_rejected" if operation == "phone_validate" else "send_rejected"
-    may_rotate = operation == "phone_send" and 400 <= status < 500 and reason in {
-        "invalid_phone", "phone_number_used", "number_risk",
-    }
+    # 恢复原手机循环：发送/验证码提交失败响应均可在既有预算内换号。
+    # 分类仅解释服务端证据，不能因未知错误码或不同语言提前结束重试。
+    may_rotate = operation in {"phone_send", "phone_validate"} and 100 <= status <= 599
     return CodexPhoneVerificationError(
         operation=operation, failure_kind=reason, http_status=status or None, attempt=attempt,
         max_attempts=max_attempts, server_code=code, server_type=error_type,

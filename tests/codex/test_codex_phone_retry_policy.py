@@ -1,4 +1,4 @@
-"""Codex 协议手机失败必须有明确号码证据才能继续购买号码。"""
+"""Codex 协议恢复有界换号重试，同时保留每次实际失败的详细证据。"""
 import json
 import unittest
 from contextlib import ExitStack
@@ -40,19 +40,19 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
         flow.stage = stack.enter_context(patch.object(oauth, "report_stage"))
         return flow
 
-    def test_unknown_send_409_stops_after_first_number(self):
+    def test_unknown_send_409_keeps_original_bounded_retries(self):
         flow = self._phone_flow(responses=[_response(409), _response(409), _response(409)])
 
         with self.assertRaises(RuntimeError):
             oauth._do_phone_verification(object())
 
-        self.assertEqual(1, flow.acquire.call_count)
-        flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
+        self.assertEqual(3, flow.acquire.call_count)
+        self.assertEqual(3, flow.cancel.call_count)
         flow.wait.assert_not_called()
-        flow.report_activation_failure.assert_not_called()
+        self.assertEqual(3, flow.report_activation_failure.call_count)
         flow.http.close.assert_called_once_with()
 
-    def test_non_number_send_failures_stop_without_country_penalty(self):
+    def test_http_send_failures_retry_without_error_code_or_language_whitelist(self):
         for status, payload in (
             (409, {"error": {"code": "invalid_state"}}),
             (400, {"error": {"message": "Unable to send SMS"}}),
@@ -60,17 +60,22 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
             (500, {}),
             (400, {"error": {"message": "WhatsApp is required"}}),
             (400, {"error": {"message": "Maximum verification attempts"}}),
+            (400, {"error": {"code": "phone_number_rate_limit_exceeded", "message": "Too many SMS sent to this phone number"}}),
+            (400, {"error": {"code": "fraud_guard", "message": "Không thể gửi mã xác minh đến số điện thoại này."}}),
+            (400, {"error": {"code": "phone_rejected", "message": "Ce numéro de téléphone ne peut pas recevoir de SMS."}}),
         ):
             with self.subTest(status=status, payload=payload):
                 flow = self._phone_flow(responses=[_response(status, payload)] * 3)
                 with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
                     oauth._do_phone_verification(object())
-                self.assertEqual(1, flow.acquire.call_count)
+                self.assertEqual(3, flow.acquire.call_count)
                 self.assertEqual(status, raised.exception.http_status)
                 self.assertEqual("phone_send", raised.exception.diagnostics["operation"])
-                flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
+                self.assertEqual(3, raised.exception.diagnostics["attempt"])
+                self.assertEqual(3, flow.cancel.call_count)
                 flow.wait.assert_not_called()
-                flow.report_activation_failure.assert_not_called()
+                self.assertEqual(3, flow.report_activation_failure.call_count)
+                self.assertEqual(status < 500, raised.exception.as_result()["remote_write_rejected"])
                 self.assertEqual("phone_otp", flow.stage.call_args.args[0])
                 self.assertEqual("failed", flow.stage.call_args.kwargs["state"])
 
@@ -112,7 +117,112 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
         flow.report_activation_failure.assert_called_once_with("risk-activation", "number_risk")
         flow.complete.assert_called_once_with("accepted-activation", flow.http)
 
-    def test_validate_error_never_buys_another_number(self):
+    def test_retry_records_original_server_error_and_next_number_can_complete(self):
+        message = "Your sign-in session is no longer valid. Please start over to continue."
+        flow = self._phone_flow(responses=[
+            _response(409, {"error": {"code": "invalid_state", "type": "invalid_request_error", "message": message}}),
+            _response(204),
+            _response(200, {"continue_url": "/sign-in-with-chatgpt/codex/consent"}),
+        ])
+        flow.acquire.side_effect = [
+            ("rejected-activation", "rejected-number"),
+            ("accepted-activation", "accepted-number"),
+        ]
+
+        result = oauth._do_phone_verification(object())
+
+        self.assertEqual("/sign-in-with-chatgpt/codex/consent", result["continue_url"])
+        self.assertEqual(2, flow.acquire.call_count)
+        warnings = [item for item in flow.stage.call_args_list if item.kwargs.get("level") == "WARNING"]
+        self.assertEqual(1, len(warnings))
+        detail = warnings[0].kwargs["detail"]["auth_diagnostics"]
+        self.assertEqual("phone_send", detail["operation"])
+        self.assertEqual(409, detail["http_status"])
+        self.assertEqual("invalid_state", detail["server_code"])
+        self.assertEqual("invalid_request_error", detail["server_type"])
+        self.assertEqual(message, detail["server_message"])
+        self.assertEqual(1, detail["attempt"])
+        self.assertEqual(3, detail["max_attempts"])
+        flow.cancel.assert_called_once_with("rejected-activation", flow.http, background=True)
+        flow.complete.assert_called_once_with("accepted-activation", flow.http)
+
+    def test_retries_exhausted_preserve_last_actual_failure(self):
+        last_message = "Không thể gửi mã xác minh đến số điện thoại này."
+        flow = self._phone_flow(responses=[
+            _response(409, {"error": {"code": "invalid_state", "message": "Session no longer valid"}}),
+            _response(429, {"error": {"code": "too_many_requests", "message": "Too many requests"}}),
+            _response(400, {"error": {"code": "phone_rejected", "message": last_message}}),
+        ])
+
+        with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
+            oauth._do_phone_verification(object())
+
+        self.assertEqual(3, flow.acquire.call_count)
+        detail = raised.exception.diagnostics
+        self.assertEqual(400, detail["http_status"])
+        self.assertEqual("phone_rejected", detail["server_code"])
+        self.assertEqual(last_message, detail["server_message"])
+        self.assertEqual(3, detail["attempt"])
+        self.assertNotEqual("retry_exhausted", detail["failure_kind"])
+        self.assertEqual(3, flow.cancel.call_count)
+
+    def test_later_rejection_keeps_uncertainty_from_earlier_server_failure(self):
+        flow = self._phone_flow(responses=[
+            _response(503, {"error": {"code": "server_error", "message": "Temporary service failure"}}),
+            _response(409, {"error": {"code": "invalid_state", "message": "Session no longer valid"}}),
+            _response(409, {"error": {"code": "invalid_state", "message": "Session no longer valid"}}),
+        ])
+
+        with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
+            oauth._do_phone_verification(object())
+
+        self.assertEqual(3, flow.acquire.call_count)
+        self.assertEqual(3, flow.cancel.call_count)
+        result = raised.exception.as_result()
+        self.assertEqual(409, result["http_status"])
+        self.assertEqual("invalid_state", result["auth_diagnostics"]["server_code"])
+        self.assertEqual("Session no longer valid", result["auth_diagnostics"]["server_message"])
+        self.assertFalse(result["remote_write_rejected"])
+        self.assertTrue(result["auth_diagnostics"]["earlier_attempt_unconfirmed"])
+
+    def test_success_after_server_failure_returns_confirmed_payload(self):
+        flow = self._phone_flow(responses=[
+            _response(503, {"error": {"code": "server_error", "message": "Temporary service failure"}}),
+            _response(204),
+            _response(200, {"continue_url": "/sign-in-with-chatgpt/codex/consent"}),
+        ])
+        flow.acquire.side_effect = [
+            ("uncertain-activation", "uncertain-number"),
+            ("accepted-activation", "accepted-number"),
+        ]
+
+        result = oauth._do_phone_verification(object())
+
+        self.assertEqual({"continue_url": "/sign-in-with-chatgpt/codex/consent"}, result)
+        self.assertEqual(2, flow.acquire.call_count)
+        flow.cancel.assert_called_once_with("uncertain-activation", flow.http, background=True)
+        flow.complete.assert_called_once_with("accepted-activation", flow.http)
+        self.assertNotIn("earlier_attempt_unconfirmed", result)
+        self.assertNotIn("reconcile_required", result)
+
+    def test_no_number_before_send_does_not_mark_later_rejections_unknown(self):
+        flow = self._phone_flow(responses=[_response(409, {"error": {"code": "invalid_state"}})] * 2)
+        flow.acquire.side_effect = [
+            oauth.sms_provider.SmsNoNumbersError("private-provider-context"),
+            ("rejected-activation", "rejected-number"),
+            ("last-activation", "last-number"),
+        ]
+
+        with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
+            oauth._do_phone_verification(object())
+
+        result = raised.exception.as_result()
+        self.assertEqual(3, flow.acquire.call_count)
+        self.assertEqual(2, flow.post.call_count)
+        self.assertTrue(result["remote_write_rejected"])
+        self.assertNotIn("earlier_attempt_unconfirmed", result["auth_diagnostics"])
+
+    def test_http_validate_failure_restores_bounded_number_retries(self):
         for status, payload in (
             (400, {"error": {"code": "invalid_otp"}}),
             (409, {"error": {"code": "invalid_state"}}),
@@ -123,22 +233,24 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
                 flow = self._phone_flow(responses=[_response(200), _response(status, payload)] * 3)
                 with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
                     oauth._do_phone_verification(object())
-                self.assertEqual(1, flow.acquire.call_count)
+                self.assertEqual(3, flow.acquire.call_count)
                 self.assertEqual("phone_validate", raised.exception.diagnostics["operation"])
-                flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
-                flow.report_activation_failure.assert_not_called()
+                self.assertEqual(3, raised.exception.diagnostics["attempt"])
+                self.assertEqual(3, flow.cancel.call_count)
+                self.assertEqual(3, flow.report_activation_failure.call_count)
                 flow.complete.assert_not_called()
 
-    def test_sms_timeout_cancels_without_buying_another_number(self):
+    def test_sms_timeout_cancels_and_restores_bounded_number_retries(self):
         flow = self._phone_flow(responses=[_response(200)] * 3, sms_error=oauth.sms_provider.SmsCodeTimeout("private-timeout"))
         with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
             oauth._do_phone_verification(object())
-        self.assertEqual(1, flow.acquire.call_count)
+        self.assertEqual(3, flow.acquire.call_count)
         self.assertEqual("phone_wait", raised.exception.diagnostics["operation"])
         self.assertEqual("sms_timeout", raised.exception.diagnostics["failure_kind"])
+        self.assertEqual(3, raised.exception.diagnostics["attempt"])
         self.assertNotIn("private-timeout", str(raised.exception))
-        flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
-        flow.report_activation_failure.assert_not_called()
+        self.assertEqual(3, flow.cancel.call_count)
+        self.assertEqual(3, flow.report_activation_failure.call_count)
 
     def test_send_transport_exception_cleans_order_and_preserves_uncertainty(self):
         flow = self._phone_flow(responses=OSError("private-network-context"))
@@ -163,7 +275,7 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
         flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
 
     def test_cancel_queue_failure_does_not_replace_primary_send_error(self):
-        flow = self._phone_flow(responses=[_response(409, {"error": {"code": "invalid_state"}})])
+        flow = self._phone_flow(responses=[_response(409, {"error": {"code": "invalid_state"}})] * 3)
         flow.cancel.side_effect = RuntimeError("private-cancel-context")
         with self.assertLogs(oauth.logger, level="WARNING") as logged:
             with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
@@ -173,21 +285,52 @@ class CodexPhoneRetryPolicyTests(unittest.TestCase):
         self.assertNotIn("private-cancel-context", str(raised.exception))
         self.assertIn("RuntimeError", " ".join(logged.output))
         self.assertNotIn("private-cancel-context", " ".join(logged.output))
-        self.assertEqual(1, flow.acquire.call_count)
+        self.assertEqual(3, flow.acquire.call_count)
         flow.http.close.assert_called_once_with()
 
-    def test_provider_error_after_acquisition_cleans_order_and_stops(self):
+    def test_provider_failure_reporting_does_not_replace_primary_send_error(self):
+        flow = self._phone_flow(responses=[_response(409, {"error": {"code": "invalid_state"}})] * 3)
+        flow.report_activation_failure.side_effect = RuntimeError("private-report-context")
+
+        with self.assertLogs(oauth.logger, level="WARNING") as logged:
+            with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
+                oauth._do_phone_verification(object())
+
+        self.assertEqual(3, flow.acquire.call_count)
+        self.assertEqual(3, flow.cancel.call_count)
+        self.assertEqual("invalid_state", raised.exception.diagnostics["server_code"])
+        self.assertEqual(409, raised.exception.http_status)
+        self.assertIn("RuntimeError", " ".join(logged.output))
+        self.assertNotIn("private-report-context", " ".join(logged.output))
+        self.assertNotIn("private-report-context", str(raised.exception))
+
+    def test_provider_balance_or_price_error_after_acquisition_does_not_retry(self):
+        for error, expected_kind in (
+            (oauth.sms_provider.SmsNoBalanceError("private-balance-context"), "provider_no_balance"),
+            (oauth.sms_provider.SmsPriceLimitError("private-price-context"), "provider_price_limit"),
+        ):
+            with self.subTest(kind=expected_kind):
+                flow = self._phone_flow(responses=[_response(200)] * 3)
+                flow.set_status.side_effect = error
+                with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
+                    oauth._do_phone_verification(object())
+                self.assertEqual(1, flow.acquire.call_count)
+                self.assertEqual(expected_kind, raised.exception.diagnostics["failure_kind"])
+                flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
+                flow.report_activation_failure.assert_not_called()
+
+    def test_provider_error_after_acquisition_cleans_order_and_retries(self):
         """拿号后的平台确认失败仍属于短信流程阶段。"""
         flow = self._phone_flow(responses=[_response(200)] * 3)
         flow.set_status.side_effect = oauth.sms_provider.SmsProviderError("private-provider-context")
         with self.assertRaises(oauth.CodexPhoneVerificationError) as raised:
             oauth._do_phone_verification(object())
-        self.assertEqual(1, flow.acquire.call_count)
+        self.assertEqual(3, flow.acquire.call_count)
         self.assertEqual("phone_provider", raised.exception.diagnostics["operation"])
         self.assertEqual("provider_error", raised.exception.diagnostics["failure_kind"])
         self.assertEqual("phone_otp", flow.stage.call_args.args[0])
-        flow.cancel.assert_called_once_with("synthetic-activation", flow.http, background=True)
-        flow.report_activation_failure.assert_not_called()
+        self.assertEqual(3, flow.cancel.call_count)
+        self.assertEqual(3, flow.report_activation_failure.call_count)
 
     def test_cancelled_after_acquisition_cleans_order_once(self):
         flow = self._phone_flow(responses=oauth.OperationCancelled("cancelled"))
