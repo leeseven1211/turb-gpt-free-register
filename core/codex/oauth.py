@@ -1161,7 +1161,7 @@ def _sleep_before_phone_retry(
 def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | None = None) -> dict:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
-    只有发送响应明确拒绝当前号码时才换号，最多 SMS_MAX_RETRIES 次（热加载）。
+    发送失败、收码超时、验证码提交失败按原逻辑取消换号，最多 SMS_MAX_RETRIES 次。
     预算耗尽仅停止后续尝试，不覆盖最后一次明确失败的响应证据。
 
     实际平台适配在 core.sms.provider：
@@ -1175,6 +1175,7 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
     total_budget = max(30, int(getattr(_cfg, "CODEX_PHONE_TOTAL_TIMEOUT", 300) or 300))
     deadline = time.monotonic() + total_budget
     last_error = None
+    unconfirmed_attempt_seen = False
     last_attempt = 0
     failure_stage = "phone_acquire"
     operation = "phone_provider"
@@ -1268,16 +1269,14 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
             except OperationCancelled:
                 raise
             except CodexPhoneVerificationError as exc:
-                if operation != "phone_send" or not exc.number_retry_allowed:
+                if not exc.number_retry_allowed:
                     raise
                 last_error = exc
-                sms_provider.report_activation_failure(activation_id, exc.diagnostics["failure_kind"])
-                logger.warning("[Codex] 当前号码被明确拒绝，尝试 %s/%s", attempt, max_retries)
             except sms_provider.SmsCodeTimeout:
-                raise CodexPhoneVerificationError(
+                last_error = CodexPhoneVerificationError(
                     operation="phone_wait", failure_kind="sms_timeout",
-                    attempt=attempt, max_attempts=max_retries,
-                ) from None
+                    attempt=attempt, max_attempts=max_retries, number_retry_allowed=True,
+                )
             except sms_provider.SmsProviderError as exc:
                 failure_kind = "provider_error"
                 if isinstance(exc, sms_provider.SmsNoBalanceError):
@@ -1289,11 +1288,13 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
                 error = CodexPhoneVerificationError(
                     operation="phone_provider", failure_kind=failure_kind,
                     attempt=attempt, max_attempts=max_retries,
+                    number_retry_allowed=not isinstance(
+                        exc, (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError),
+                    ),
                 )
-                if activation_id or isinstance(exc, (sms_provider.SmsNoBalanceError, sms_provider.SmsPriceLimitError)):
+                if not error.number_retry_allowed:
                     raise error from None
                 last_error = error
-                logger.warning("[Codex] 取号尝试 %s/%s 失败 reason=%s", attempt, max_retries, failure_kind)
             except Exception as exc:
                 is_transport = isinstance(exc, OSError) or _is_transient_network_error(exc)
                 raise CodexPhoneVerificationError(
@@ -1303,12 +1304,32 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
                     server_message=type(exc).__name__,
                 ) from None
             finally:
+                if activation_id and last_error and last_error.diagnostics.get("attempt") == attempt:
+                    try:
+                        sms_provider.report_activation_failure(activation_id, last_error.diagnostics["failure_kind"])
+                    except Exception as report_exc:
+                        logger.warning("[Codex] 接码失败统计写回未确认 reason=%s", type(report_exc).__name__)
                 if activation_id and not completed:
                     try:
                         sms_provider.cancel(activation_id, http, background=True)
                     except Exception as cleanup_exc:
                         logger.warning("[Codex] 接码订单取消未确认 reason=%s", type(cleanup_exc).__name__)
 
+            if unconfirmed_attempt_seen:
+                last_error.diagnostics["earlier_attempt_unconfirmed"] = True
+            if (
+                last_error.diagnostics.get("operation") in {"phone_send", "phone_validate"}
+                and last_error.diagnostics.get("response_received") is True
+                and not last_error.as_result()["remote_write_rejected"]
+            ):
+                unconfirmed_attempt_seen = True
+            logger.warning("[Codex] 手机验证尝试 %s/%s 失败：%s", attempt, max_retries, last_error)
+            report_stage(
+                failure_stage,
+                f"手机验证第 {attempt}/{max_retries} 次尝试失败：{last_error}",
+                state="running", level="WARNING",
+                detail={"cause_code": "codex_phone_verification_failed", "auth_diagnostics": last_error.diagnostics},
+            )
             _sleep_before_phone_retry(attempt, max_retries, deadline=deadline)
 
         budget_exhausted = time.monotonic() >= deadline
@@ -1326,6 +1347,8 @@ def _do_phone_verification(session: BrowserSession, *, phone_enabled: bool | Non
             attempt=last_attempt, max_attempts=max_retries,
         )
     except CodexPhoneVerificationError as exc:
+        if unconfirmed_attempt_seen:
+            exc.diagnostics["earlier_attempt_unconfirmed"] = True
         report_stage(
             failure_stage,
             str(exc), state="failed", level="ERROR",
