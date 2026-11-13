@@ -194,6 +194,13 @@ class CodexCredentialSemanticsTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         get_task.assert_not_called()
 
+    def test_retry_diagnostic_rejects_non_bool_without_storage_access(self):
+        for value in ("true", 1, None, {}):
+            with self.subTest(value=value), patch.object(codex_operation_service.operation_task_store, "get_task") as get_task:
+                result = codex_operation_service.retry_task(41, driver="protocol", diagnostic_after_mfa=value)
+                self.assertFalse(result["accepted"])
+                get_task.assert_not_called()
+
 
 class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
     def setUp(self):
@@ -207,15 +214,17 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         account_task_store.init()
 
-    def _execute_oauth_result(self, result, *, snapshot=None):
+    def _execute_oauth_result(self, result, *, snapshot=None, account_state=None):
+        email = "consent-valid@example.test" if account_state else "consent@example.test"
         account_id = record_store.insert_row(record_store.ACCOUNTS, {
-            "email": "consent@example.test",
+            "email": email,
             "codex_status": "failed",
             "account_status": "active",
+            **(account_state or {}),
         })
         store = codex_operation_service.operation_task_store
         task = store.create_runtime_task(
-            task_type="codex_retry", account_id=account_id, email="consent@example.test",
+            task_type="codex_retry", account_id=account_id, email=email,
             data={"config_snapshot": snapshot or {"oauth_driver": "protocol"}},
         )
         route = Mock(proxy_url=None, provider="test", mode="direct", region="")
@@ -231,6 +240,40 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         run = store.get_run(int(task["run"]["id"]))
         return returned, detail, run
 
+    def test_session_diagnostic_stops_without_changing_credential_or_syncing(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                with patch("core.codex.sub2api_sync.sync_confirmed_credential") as sync:
+                    returned, detail, run = self._execute_oauth_result({
+                        "status": "interrupted", "ok": False,
+                        "message": "MFA 会话诊断已完成，按计划停止",
+                        "diagnostic_complete": True,
+                        "session_diagnostics": {"mfa_verified": True, "dump_attempted": True, "dump_http_status": 200, "raw_private": "synthetic-private-response"},
+                    }, snapshot={"oauth_driver": "protocol", "diagnostic_after_mfa": True, "auto_upload_sub2api": True},
+                        account_state={"codex_credential_state": "valid", "codex_status": "success"} if existing else {})
+                sync.assert_not_called()
+                self.assertTrue(self.authorize_call.kwargs["diagnostic_after_mfa"])
+                self.assertEqual("interrupted", returned["status"])
+                self.assertEqual("interrupted", run["status"])
+                self.assertEqual("read", run["data"]["remote_intent"]["kind"])
+                summary = run["result_summary"]
+                self.assertFalse(summary["credential_confirmed"])
+                self.assertNotIn("reconcile_required", summary)
+                self.assertNotIn("synthetic-private-", json.dumps(summary))
+                self.assertTrue(summary["session_diagnostics"]["mfa_verified"])
+                account = codex_operation_service.db.get_account(detail["account_id"])
+                self.assertNotEqual("retrying", account["codex_status"])
+                self.assertNotEqual("pending_confirmation", account["codex_credential_state"])
+                if existing:
+                    self.assertEqual("valid", account["codex_credential_state"])
+                    self.assertEqual("success", account["codex_status"])
+                with patch.object(codex_operation_service, "_config_snapshot", return_value={"oauth_driver": "protocol"}), patch.object(
+                    codex_operation_service, "_feature_ready", return_value=(True, "")
+                ), patch.object(codex_operation_service, "_dispatch"):
+                    ordinary = codex_operation_service.retry_task(detail["id"])
+                next_run = codex_operation_service.operation_task_store.get_run(ordinary["run_id"])
+                self.assertNotIn("diagnostic_after_mfa", next_run["data"]["config_snapshot"])
+
     def _execute_failed_consent(self, diagnostics, *, cause_code="codex_consent_unverifiable", error_category="auth"):
         return self._execute_oauth_result({
             "ok": False,
@@ -241,6 +284,16 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
             "auth_diagnostics": diagnostics,
             "raw_response": "synthetic-private-response",
         })
+
+    def test_unknown_login_diagnostic_preserves_credential_asset(self):
+        returned, detail, run = self._execute_oauth_result({
+            "status": "attention_required", "ok": False, "message": "登录验证结果未知",
+            "outcome": "request_unknown", "reconcile_required": True,
+        }, snapshot={"oauth_driver": "protocol", "diagnostic_after_mfa": True})
+        account = codex_operation_service.db.get_account(detail["account_id"])
+        self.assertNotEqual("pending_confirmation", account["codex_credential_state"])
+        self.assertFalse(run["result_summary"]["credential_confirmed"])
+        self.assertEqual("attention_required", returned["status"])
 
     def test_disabled_phone_failure_is_classified_terminal_and_can_retry(self):
         code = "codex_phone_verification_disabled"

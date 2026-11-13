@@ -94,6 +94,7 @@ def create_operations_blueprint(context: WebUIContext):
         *,
         expected_status: str | None = None,
         driver_override: str | None = None,
+        diagnostic_after_mfa: bool = False,
     ):
         """执行统一任务中心的单条动作，供单条和批量入口共用。"""
         task = _get_operation_action_task(task_id, action)
@@ -106,16 +107,20 @@ def create_operations_blueprint(context: WebUIContext):
         if expected_status and current_status != expected_status:
             return {"ok": False, "error": "任务状态已变化，请刷新后重试"}, 409
         if action == "retry":
-            from core.bulk_operations.service import retry_managed_task
-            try:
-                retry_key = request.headers.get("Idempotency-Key")
-                if retry_key and len(retry_key) > 128:
-                    return {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
-                managed_retry = retry_managed_task(task_id, request_key=f"operations-retry:{retry_key}:{task_id}" if retry_key else None)
-            except ValueError as exc:
-                return {"ok": False, "error": str(exc), "error_code": getattr(exc, "code", "bulk_retry_failed")}, getattr(exc, "status", 409)
-            if managed_retry is not None:
-                return managed_retry, 202
+            if diagnostic_after_mfa:
+                if not codex_operation_service.session_diagnostic_target_supported(task, driver_override):
+                    return {"ok": False, "error": "MFA 诊断仅支持单条非批量原生 Codex protocol 补跑任务"}, 400
+            else:
+                from core.bulk_operations.service import retry_managed_task
+                try:
+                    retry_key = request.headers.get("Idempotency-Key")
+                    if retry_key and len(retry_key) > 128:
+                        return {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
+                    managed_retry = retry_managed_task(task_id, request_key=f"operations-retry:{retry_key}:{task_id}" if retry_key else None)
+                except ValueError as exc:
+                    return {"ok": False, "error": str(exc), "error_code": getattr(exc, "code", "bulk_retry_failed")}, getattr(exc, "status", 409)
+                if managed_retry is not None:
+                    return managed_retry, 202
             if driver_override is not None and not (
                 source_system == "native_operations" and task_type == "codex_retry"
             ):
@@ -128,8 +133,8 @@ def create_operations_blueprint(context: WebUIContext):
                 }, 409
             if task.get("status") in active_operation_statuses:
                 return {"ok": False, "error": "任务仍在执行"}, 409
-            # 显式指定驱动时必须走 Codex 服务，由它将驱动写入新 Run 的配置快照。
-            registered_action = None if driver_override is not None else task_gateway.operation_action(
+            # 驱动和本次诊断选项由 Codex 服务写入新 Run 的配置快照。
+            registered_action = None if driver_override is not None or diagnostic_after_mfa else task_gateway.operation_action(
                 task_type, "retry", source_system=source_system,
             )
             if registered_action is not None:
@@ -149,6 +154,8 @@ def create_operations_blueprint(context: WebUIContext):
                 retry_kwargs = {"trigger": "manual_retry"}
                 if driver_override is not None:
                     retry_kwargs["driver"] = driver_override
+                if diagnostic_after_mfa:
+                    retry_kwargs["diagnostic_after_mfa"] = True
                 queued = codex_operation_service.retry_task(int(task_id), **retry_kwargs)
                 if queued.get("busy"):
                     return {"ok": False, **queued}, 409
@@ -408,8 +415,17 @@ def create_operations_blueprint(context: WebUIContext):
             driver_override = data["driver"]
             if not isinstance(driver_override, str) or driver_override not in {"roxy", "protocol"}:
                 return jsonify({"ok": False, "error": "driver 只能是 roxy 或 protocol"}), 400
+        retry_options = {}
+        if isinstance(data, dict) and "diagnostic_after_mfa" in data:
+            diagnostic_after_mfa = data["diagnostic_after_mfa"]
+            if not isinstance(diagnostic_after_mfa, bool):
+                return jsonify({"ok": False, "error": "diagnostic_after_mfa 必须是布尔值"}), 400
+            if diagnostic_after_mfa:
+                if driver_override != "protocol":
+                    return jsonify({"ok": False, "error": "diagnostic_after_mfa=true 必须显式指定 driver=protocol"}), 400
+                retry_options["diagnostic_after_mfa"] = True
         payload, status = _perform_operation_action(
-            task_id, "retry", driver_override=driver_override,
+            task_id, "retry", driver_override=driver_override, **retry_options,
         )
         return jsonify(payload), status
 

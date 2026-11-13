@@ -26,6 +26,7 @@ from core.auth.humanize import delay as human_delay
 from core.auth.protocol.openai_auth import _is_transient_network_error, _extract_error_code, detect_account_unusable_response_body, AccountUnusableError, request_sentinel_token, build_sentinel_header, network_preflight, navigate_email_otp_send, _rotate_document_navigation_id
 from core.codex.phone_errors import CodexPhoneVerificationError, phone_failure_from_response
 from core.codex.auth_page import CodexAuthPageSession
+from core.codex.session_diagnostics import CodexDiagnosticSession, safe_session_diagnostics
 from core.sms import provider as sms_provider
 from core.operations.runtime import OperationCancelled, call_cancellable, check_cancelled, current_token, report_stage
 from curl_cffi import requests as curl_requests
@@ -110,6 +111,12 @@ def _with_net_retry(label: str, fn):
             )
             time.sleep(backoff)
     raise last_exc if last_exc else RuntimeError(f"[Codex] {label} 重试耗尽但无异常记录")
+
+
+class _CodexSessionDiagnosticComplete(Exception):
+    def __init__(self, detail):
+        self.detail = safe_session_diagnostics(detail)
+        super().__init__("MFA 会话诊断已停止；未申请号码或提交授权 callback")
 
 
 def _codex_result(
@@ -1077,6 +1084,8 @@ def _verify_saved_login_mfa(
     if step == "mfa":
         raise RuntimeError("[Codex] MFA 验证后仍停留在 MFA 挑战，已停止重复提交")
     report_stage("login_mfa", "Authenticator 2FA 已通过", state="success")
+    if isinstance(session, CodexDiagnosticSession):
+        raise _CodexSessionDiagnosticComplete(session.collect_after_mfa())
     return _confirm_email_step(
         session,
         step,
@@ -1991,6 +2000,7 @@ def run_codex_oauth(
     login_password: str | None = None,
     login_totp_secret: str | None = None,
     phone_enabled: bool | None = None,
+    diagnostic_after_mfa: bool = False,
 ) -> dict:
     """
     Codex OAuth 授权入口。Protocol 使用独立 BrowserSession，并根据服务端
@@ -2005,10 +2015,13 @@ def run_codex_oauth(
         login_password: 新注册本轮已知的 OpenAI 密码，仅在内存中传递。
         login_totp_secret: 新注册本轮启用的 TOTP secret，仅在内存中传递。
         phone_enabled: 入队时的手机接码开关；未传时读取当前配置。
+        diagnostic_after_mfa: 本次登录仅在 MFA 后查询一次会话并停止，不申请号码。
 
     Returns:
         结构化结果 dict。已提交验证但结果未知时返回 attention_required。
     """
+    if type(diagnostic_after_mfa) is not bool or (diagnostic_after_mfa and driver_override != "protocol"):
+        return _codex_result(status="failed", email=email, message="MFA 诊断仅支持显式 protocol 驱动及布尔选项")
     if not force and not _cfg.ENABLE_CODEX_AUTO:
         return _codex_result(status="skipped", message="ENABLE_CODEX_AUTO=False")
     if not email:
@@ -2046,6 +2059,7 @@ def run_codex_oauth(
                 login_password=login_password,
                 login_totp_secret=login_totp_secret,
                 phone_enabled=phone_enabled,
+                diagnostic_after_mfa=diagnostic_after_mfa,
             )
         finally:
             route.release(reason=f"codex-oauth-{email}")
@@ -2081,7 +2095,8 @@ def run_codex_oauth(
     if otp_provider is None:
         from core.email.provider import wait_for_otp as otp_provider
 
-    session = CodexAuthPageSession(BrowserSession(proxy=proxy))
+    session_type = CodexDiagnosticSession if diagnostic_after_mfa else CodexAuthPageSession
+    session = session_type(BrowserSession(proxy=proxy))
     try:
         check_cancelled()
         logger.info(f"[Codex] 开始授权（全新 session）：{email}")
@@ -2166,6 +2181,10 @@ def run_codex_oauth(
             report_stage("email_otp", "当前登录已进入后续授权，无需邮箱验证码", state="skipped")
         elif login_step != "phone":
             raise RuntimeError("[Codex] 登录下一步未知，已停止等待邮箱验证码")
+
+        if diagnostic_after_mfa:
+            # 没有 MFA 的登录也必须在任何手机、授权或凭据动作之前停止。
+            raise _CodexSessionDiagnosticComplete(session.snapshot())
 
         # 5-6. 仅按明确挑战处理手机、继续跳转和工作区选择。
         # 授权页须经 GET 确认且仅有一个一致的工作区，否则交给可交互驱动。
@@ -2275,6 +2294,13 @@ def run_codex_oauth(
             message=f"plan={id_claims.get('plan_type') or 'unknown'}",
             credential_confirmed=True,
         )
+    except _CodexSessionDiagnosticComplete as exc:
+        report_stage("login_mfa", str(exc), state="success" if exc.detail.get("mfa_verified") else "skipped", detail=exc.detail)
+        return {
+            **_codex_result(status="interrupted", email=email, message=str(exc)),
+            "diagnostic_complete": True,
+            "session_diagnostics": exc.detail,
+        }
     except OperationCancelled:
         raise
     except AccountUnusableError as exc:
@@ -2292,6 +2318,7 @@ def run_codex_oauth(
             **_codex_result(status="attention_required", email=email, message=str(exc)),
             "outcome": "request_unknown",
             "reconcile_required": True,
+            **({"session_diagnostics": session.snapshot()} if diagnostic_after_mfa else {}),
         }
     except CodexPhoneVerificationDisabled as exc:
         logger.warning("[Codex] %s", exc)
@@ -2316,7 +2343,7 @@ def run_codex_oauth(
             },
         }
     except Exception as exc:
-        if _is_cpa_callback_reauth_error(exc) and _cpa_reauth_round < 2:
+        if not diagnostic_after_mfa and _is_cpa_callback_reauth_error(exc) and _cpa_reauth_round < 2:
             logger.warning(
                 "[Codex][CPA] callback 返回 Timeout waiting for OAuth callback，重新开启第 %s/2 轮 Codex 授权：%s",
                 _cpa_reauth_round + 1, email,
@@ -2336,8 +2363,17 @@ def run_codex_oauth(
             )
         logger.warning(f"[Codex] 失败：{email}，{type(exc).__name__}: {str(exc)[:200]}")
         logger.debug("[Codex] 失败详情:", exc_info=True)
-        return _codex_result(
+        return {
+            **_codex_result(
             status="failed",
             email=email,
             message=f"{type(exc).__name__}: {str(exc)[:200]}",
-        )
+            ),
+            **({"session_diagnostics": session.snapshot()} if diagnostic_after_mfa else {}),
+        }
+    finally:
+        if diagnostic_after_mfa:
+            try:
+                session.close()
+            except Exception:
+                logger.warning("[Codex] 诊断会话关闭未获确认")

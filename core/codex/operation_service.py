@@ -664,21 +664,44 @@ def submit_bulk(
     }
 
 
+def session_diagnostic_target_supported(task: Mapping[str, Any], driver: str | None) -> bool:
+    """诊断只作用于手动选择的单个原生协议任务，不续接批量或父子任务。"""
+    if (task.get("source_system") != "native_operations" or task.get("task_type") != "codex_retry"
+            or driver != "protocol"):
+        return False
+    for item in (task, *(task.get("runs") or [])):
+        if not isinstance(item, Mapping):
+            continue
+        if any(item.get(key) for key in ("parent_task_id", "bulk_batch_id", "bulk_round_id", "bulk_target_id")):
+            return False
+        data = item.get("data")
+        if isinstance(data, Mapping) and data.get("bulk_target_round_id"):
+            return False
+    return True
+
+
 def retry_task(
     task_id: int,
     *,
     trigger: str = "manual_retry",
     driver: str | None = None,
+    diagnostic_after_mfa: bool = False,
 ) -> dict:
+    if type(diagnostic_after_mfa) is not bool:
+        return {"accepted": False, "error": "diagnostic_after_mfa 必须是布尔值"}
     if driver is not None and (not isinstance(driver, str) or driver not in {"roxy", "protocol"}):
         return {"accepted": False, "error": "driver 只能是 roxy 或 protocol"}
     task = operation_task_store.get_task(int(task_id))
     if not task:
         return {"accepted": False, "error": "任务不存在"}
-    from core.bulk_operations.execution import retry_managed
-    managed_retry = retry_managed(task)
-    if managed_retry is not None:
-        return managed_retry
+    if diagnostic_after_mfa:
+        if not session_diagnostic_target_supported(task, driver):
+            return {"accepted": False, "error": "MFA 诊断仅支持单条非批量原生 Codex protocol 补跑任务"}
+    else:
+        from core.bulk_operations.execution import retry_managed
+        managed_retry = retry_managed(task)
+        if managed_retry is not None:
+            return managed_retry
     if str(task.get("source_system") or "") != "native_operations":
         return {"accepted": False, "error": "该历史任务尚未迁移为原生运行任务"}
     if driver is not None and str(task.get("task_type") or "") != "codex_retry":
@@ -690,6 +713,8 @@ def retry_task(
     if operation_task_store.active_run_for_account(account_id):
         return _duplicate_result(account_id)
     snapshot = _config_snapshot(driver_override=driver)
+    if diagnostic_after_mfa:
+        snapshot = {**snapshot, "diagnostic_after_mfa": True}
     unavailable = _deployment_unavailable(snapshot)
     if unavailable:
         return unavailable
@@ -977,6 +1002,9 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
             token.checkpoint()
 
             driver = str(snapshot.get("oauth_driver") or "protocol")
+            diagnostic_mode = snapshot.get("diagnostic_after_mfa") is True
+            if diagnostic_mode and driver != "protocol":
+                raise RuntimeError("MFA 诊断仅支持 protocol 驱动")
             from core.proxy.account_routes import acquire_account_proxy
 
             network_open = True
@@ -1018,18 +1046,18 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                 report(stage="browser", message=f"启动 {driver} OAuth 驱动", state="running", detail={"oauth_driver": driver})
             from core.codex.oauth import run_codex_oauth
 
-            remote_intent_started = True
+            remote_intent_started = not diagnostic_mode
             operation_task_store.record_remote_intent(
                 run_id,
                 execution_id=execution_id,
                 lease_token=lease_token,
-                action="codex_oauth",
-                intent_kind="remote_write",
+                action="codex_mfa_session_diagnostic" if diagnostic_mode else "codex_oauth",
+                intent_kind="read" if diagnostic_mode else "remote_write",
                 request_id=f"codex-oauth:{run_id}",
                 detail={"checkpoint": "oauth_request_dispatched", "driver": driver},
             )
 
-            allow_password_reset = task_trigger == "manual_sub2api_repair"
+            allow_password_reset = not diagnostic_mode and task_trigger == "manual_sub2api_repair"
 
             def _checkpoint_password_reset(value: str) -> None:
                 if not db.update_account_login_password(email, value, source="password_reset"):
@@ -1050,6 +1078,7 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                     phone_enabled=snapshot.get("phone_enabled"),
                     allow_password_reset=allow_password_reset,
                     on_password_reset_submitted=(_checkpoint_password_reset if allow_password_reset else None),
+                    **({"diagnostic_after_mfa": True} if diagnostic_mode else {}),
                 )
             except (OperationCancelled, task_gateway.OperationLeaseLost):
                 raise
@@ -1067,6 +1096,32 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                     detail={"oauth_driver": driver, "protocol_flow": protocol_driver},
                 )
                 browser_open = False
+            if diagnostic_mode:
+                from core.codex.session_diagnostics import safe_session_diagnostics
+
+                if lease_guard is not None and lease_guard.lost:
+                    raise task_gateway.OperationLeaseLost("MFA 诊断期间账号 lease 心跳丢失")
+                token.checkpoint()
+                complete = result.get("diagnostic_complete") is True
+                final_status = "interrupted" if complete else str(result.get("status") or "failed")
+                if final_status not in {"interrupted", "failed", "attention_required", "deactivated"}:
+                    final_status = "failed"
+                message = (
+                    "MFA 会话诊断已停止；未申请号码或提交授权 callback" if complete
+                    else task_run_log.redact_text(result.get("message") or "MFA 会话诊断在登录阶段结束")
+                )
+                summary = {
+                    "ok": False, "status": final_status, "message": message,
+                    "diagnostic_complete": complete, "credential_confirmed": False, "callback_submitted": False,
+                    "oauth_driver": driver, "session_diagnostics": safe_session_diagnostics(result.get("session_diagnostics")),
+                }
+                if result.get("outcome") == "request_unknown":
+                    summary.update(outcome="request_unknown", reconcile_required=True)
+                db.update_account_codex_operation_state(
+                    email, execution_status="empty", last_run_status=final_status, active_run_id=0,
+                )
+                persisted = _finish_fenced(final_status, message=message, summary=summary)
+                return {**summary, "run_id": run_id, "task_persistence_confirmed": persisted}
             confirmed = bool(result.get("credential_confirmed"))
             callback_submitted = bool(result.get("callback_submitted"))
             if callback_submitted or result.get("remote_response_received"):

@@ -8,13 +8,18 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 
-from core.operations import task_gateway
+from core.operations import concurrency, task_gateway
 from core.storage.operations import store as operation
 from webui import runtime
 from webui.routes import operations
 
 
 class OperationRouteMigrationPhase2Tests(unittest.TestCase):
+    def setUp(self):
+        managed_retry = patch("core.bulk_operations.service.retry_managed_task", return_value=None)
+        managed_retry.start()
+        self.addCleanup(managed_retry.stop)
+
     def _client(self):
         app = Flask("operation-route-migration")
         context = runtime.WebUIContext(app, logging.getLogger("operation-route-migration"))
@@ -98,6 +103,147 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             response = client.post("/api/operations/41/retry", json={"driver": "api"})
         self.assertEqual(400, response.status_code)
         get_task.assert_not_called()
+        retry_task.assert_not_called()
+
+    def test_mfa_diagnostic_rejects_non_boolean_values_before_dispatch(self):
+        client = self._client()
+        for value in (None, 0, 1, "true", [], {}):
+            with (
+                self.subTest(value=value),
+                patch.object(operations.operation_task_store, "get_task", return_value=self._task()) as get_task,
+                patch("core.bulk_operations.service.retry_managed_task", return_value=None) as managed_retry,
+                patch.object(operations.codex_operation_service, "retry_task", return_value={"accepted": True}) as retry_task,
+            ):
+                response = client.post("/api/operations/41/retry", json={
+                    "driver": "protocol", "diagnostic_after_mfa": value,
+                })
+                self.assertEqual(400, response.status_code)
+                get_task.assert_not_called()
+                managed_retry.assert_not_called()
+                retry_task.assert_not_called()
+
+    def test_mfa_diagnostic_requires_explicit_protocol_driver(self):
+        client = self._client()
+        for body in ({"diagnostic_after_mfa": True}, {"diagnostic_after_mfa": True, "driver": "roxy"}):
+            with (
+                self.subTest(body=body),
+                patch.object(operations.operation_task_store, "get_task", return_value=self._task()) as get_task,
+                patch("core.bulk_operations.service.retry_managed_task", return_value=None) as managed_retry,
+                patch.object(operations.codex_operation_service, "retry_task", return_value={"accepted": True}) as retry_task,
+            ):
+                response = client.post("/api/operations/41/retry", json=body)
+                self.assertEqual(400, response.status_code)
+                get_task.assert_not_called()
+                managed_retry.assert_not_called()
+                retry_task.assert_not_called()
+
+    def test_mfa_diagnostic_rejects_other_sources_and_bulk_facts_before_dispatch(self):
+        client = self._client()
+        overrides = (
+            {"task_type": "live_check"},
+            {"source_system": "account_action_tasks"},
+            {"parent_task_id": 7},
+            {"bulk_batch_id": "7"},
+            {"bulk_round_id": "7"},
+            {"bulk_target_id": "7"},
+            {"data": {"bulk_target_round_id": 7}},
+            {"runs": [{"id": 50, "data": {"bulk_target_round_id": 7}}]},
+        )
+        for values in overrides:
+            with (
+                self.subTest(facts=values),
+                patch.object(operations.operation_task_store, "get_task", return_value=self._task(**values)),
+                patch("core.bulk_operations.service.retry_managed_task", return_value={"accepted": True}) as managed_retry,
+                patch.object(task_gateway, "operation_action") as action,
+                patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+            ):
+                response = client.post("/api/operations/41/retry", json={
+                    "driver": "protocol", "diagnostic_after_mfa": True,
+                })
+                self.assertEqual(400, response.status_code)
+                managed_retry.assert_not_called()
+                action.assert_not_called()
+                retry_task.assert_not_called()
+
+    def test_mfa_diagnostic_passes_only_to_single_codex_retry_service(self):
+        client = self._client()
+        queued = {"accepted": True, "task_id": 41, "run_id": 52, "status": "queued"}
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=self._task()),
+            patch("core.bulk_operations.service.retry_managed_task", return_value=None) as managed_retry,
+            patch.object(task_gateway, "operation_action") as action,
+            patch.object(operations.codex_operation_service, "retry_task", return_value=queued) as retry_task,
+        ):
+            response = client.post("/api/operations/41/retry", json={
+                "driver": "protocol", "diagnostic_after_mfa": True,
+            })
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(response.get_json()["ok"])
+        self.assertEqual(52, response.get_json()["run_id"])
+        retry_task.assert_called_once_with(
+            41, trigger="manual_retry", driver="protocol", diagnostic_after_mfa=True,
+        )
+        managed_retry.assert_not_called()
+        action.assert_not_called()
+
+    def test_mfa_diagnostic_allows_single_task_in_legacy_batch_without_managed_dispatch(self):
+        client = self._client()
+        queued = {"accepted": True, "task_id": 41, "run_id": 52, "status": "queued"}
+        for facts in (
+            {"batch_id": 7},
+            {"runs": [{"id": 50, "batch_id": 7, "data": {}}]},
+            {"batch_id": 7, "parent_task_id": None, "data": {},
+             "runs": [{"id": 50, "batch_id": 7, "data": {}}, {"id": 51, "batch_id": 7, "data": {}}]},
+        ):
+            with (
+                self.subTest(facts=facts),
+                patch.object(operations.operation_task_store, "get_task", return_value=self._task(**facts)),
+                patch("core.bulk_operations.service.retry_managed_task") as managed_retry,
+                patch.object(task_gateway, "operation_action") as action,
+                patch.object(operations.codex_operation_service, "retry_task", return_value=queued) as retry_task,
+            ):
+                response = client.post("/api/operations/41/retry", json={
+                    "driver": "protocol", "diagnostic_after_mfa": True,
+                })
+                self.assertEqual(202, response.status_code)
+                self.assertEqual(52, response.get_json()["run_id"])
+                retry_task.assert_called_once_with(
+                    41, trigger="manual_retry", driver="protocol", diagnostic_after_mfa=True,
+                )
+                managed_retry.assert_not_called()
+                action.assert_not_called()
+
+    def test_false_mfa_diagnostic_keeps_normal_retry_arguments_and_bulk_path(self):
+        client = self._client()
+        queued = {"accepted": True, "task_id": 41, "run_id": 52, "status": "queued"}
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=self._task()),
+            patch("core.bulk_operations.service.retry_managed_task", return_value=None) as managed_retry,
+            patch.object(operations.codex_operation_service, "retry_task", return_value=queued) as retry_task,
+        ):
+            response = client.post("/api/operations/41/retry", json={
+                "driver": "protocol", "diagnostic_after_mfa": False,
+            })
+        self.assertEqual(202, response.status_code)
+        retry_task.assert_called_once_with(41, trigger="manual_retry", driver="protocol")
+        managed_retry.assert_called_once_with(41, request_key=None)
+
+    def test_false_mfa_diagnostic_preserves_existing_managed_retry(self):
+        client = self._client()
+        queued = {"ok": True, "accepted": True, "round_id": "52"}
+        with (
+            patch.object(operations.operation_task_store, "get_task", return_value=self._task(
+                data={"bulk_target_round_id": 7},
+            )),
+            patch("core.bulk_operations.service.retry_managed_task", return_value=queued) as managed_retry,
+            patch.object(task_gateway, "operation_action") as action,
+            patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+        ):
+            response = client.post("/api/operations/41/retry", json={"diagnostic_after_mfa": False})
+        self.assertEqual(202, response.status_code)
+        self.assertEqual("52", response.get_json()["round_id"])
+        managed_retry.assert_called_once_with(41, request_key=None)
+        action.assert_not_called()
         retry_task.assert_not_called()
 
     def test_unregistered_native_maintenance_type_cannot_fall_through_to_oauth(self):
@@ -380,12 +526,13 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
     def test_bulk_operation_action_reuses_registered_handler_and_skips_active_task(self):
         task_type = "bulk_live_check"
         retry = Mock(return_value={"accepted": True, "busy": False, "run_id": 71})
-        task_gateway.register_operation_handler(
-            task_type,
-            lambda _context: task_gateway.OperationResult.success(),
-            source_systems=("native_operations",),
-            retry_handler=retry,
-        )
+        with patch.object(concurrency, "resolve_admission_class", return_value=concurrency.POLICIES["live_check"]):
+            task_gateway.register_operation_handler(
+                task_type,
+                lambda _context: task_gateway.OperationResult.success(),
+                source_systems=("native_operations",),
+                retry_handler=retry,
+            )
         tasks = {
             41: self._task(task_type=task_type, status="failed"),
             42: self._task(task_type=task_type, status="running"),
