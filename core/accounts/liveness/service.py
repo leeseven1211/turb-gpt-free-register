@@ -401,6 +401,23 @@ def _refresh_result_is_no_mail(result: dict | None) -> bool:
     )
 
 
+def _refresh_result_is_temporary_mailbox_failure(result: dict | None) -> bool:
+    """收件请求的明确临时故障可尝试浏览器登录，不计为 OpenAI 线路故障。"""
+    from core.accounts.liveness.protocol.otp_diagnostics import BUTLER_TRANSPORT_ERROR_CODES
+
+    value = result if isinstance(result, dict) else {}
+    diagnostics = value.get("auth_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    codes = {str(value.get(key) or "") for key in ("error", "error_code")}
+    return bool(
+        codes & {"email_otp_failed", "email_otp_no_mail"}
+        and not _refresh_result_is_rejected(value)
+        and (diagnostics.get("cause_operation") or diagnostics.get("operation")) == "email_otp"
+        and diagnostics.get("mailbox_error_code") in BUTLER_TRANSPORT_ERROR_CODES
+        and (diagnostics.get("cause_failure_kind") or diagnostics.get("failure_kind")) == "transport_error"
+    )
+
+
 def _is_proxy_transport_failure(result: dict | None) -> bool:
     """仅把明确的预检网络失败标记为代理故障。"""
     value = result if isinstance(result, dict) else {}
@@ -1729,11 +1746,16 @@ def _run_live_check(
             force_refresh and selected_refresh_driver in {"protocol_v2", "protocol_v3"}
             and _refresh_result_is_no_mail(result)
         )
+        mailbox_roxy_fallback = (
+            force_refresh and selected_refresh_driver in {"protocol_v2", "protocol_v3"}
+            and _refresh_result_is_temporary_mailbox_failure(result)
+        )
         if (
             not result.get("ok")
             and result.get("status") != "deactivated"
             and (
                 no_mail_roxy_fallback
+                or mailbox_roxy_fallback
                 or (
                     not _refresh_result_is_unknown(result)
                     and (refresh_boundary is None or refresh_boundary.get("receipt_outcome") == "rejected")
@@ -1760,9 +1782,13 @@ def _run_live_check(
                     stage="roxy_fallback",
                     level="WARNING",
                     message=("协议取码等待无邮件，按已启用的开关尝试 Roxy 浏览器兜底"
-                             if no_mail_roxy_fallback else "协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底"),
+                             if no_mail_roxy_fallback else
+                             "验证码收件请求发生临时网络故障，按已启用的开关尝试 Roxy 浏览器兜底"
+                             if mailbox_roxy_fallback else "协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底"),
                     detail={"protocol_error": result.get("error"),
-                            **({"no_mail_fallback": True, "previous_receipt_preserved": True} if no_mail_roxy_fallback else {})},
+                            **({"no_mail_fallback": True, "previous_receipt_preserved": True} if no_mail_roxy_fallback else {}),
+                            **({"mailbox_failure_fallback": True, "previous_receipt_preserved": True}
+                               if mailbox_roxy_fallback else {})},
                 )
                 _append_log(email, "[查活] 协议登录未通过，启用 Roxy 浏览器 NextAuth 兜底")
                 if proxy is None and account_route is not None:

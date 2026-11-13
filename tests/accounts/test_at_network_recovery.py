@@ -310,6 +310,49 @@ class AtNetworkRecoveryTests(unittest.TestCase):
                 self.assertFalse(any(item["outcome"] in {"not_submitted", "rejected", "confirmed"}
                                      for item in context.receipts))
 
+    def test_mailbox_transport_failure_uses_roxy_once_without_openai_network_retries(self):
+        from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
+        from core.email.email_butler.client import EmailButlerClientError
+
+        for driver in ("v2", "v3"):
+            for code in ("butler_transport_timeout", "butler_transport_connection", "butler_transport_failed"):
+                with self.subTest(driver=driver, code=code):
+                    candidate = self.no_mail_result()
+                    candidate["auth_diagnostics"] = otp_failure_diagnostics(
+                        EmailButlerClientError("测试收件请求故障", error_code=code))
+                    context = _Context()
+                    result, calls, routes, _, reporter = self.run_worker(
+                        [candidate, self.success()], driver=driver, context=context, roxy_fallback=True)
+                    self.assertTrue(result["ok"])
+                    self.assertTrue(result["fallback_used"])
+                    self.assertEqual("browser_roxy", result["live_check_driver"])
+                    self.assertEqual(2, len(calls))
+                    self.assertEqual(0, result["network_recovery"]["route_retries"])
+                    self.assertEqual(1, len(context.started))
+                    self.assertEqual("confirmed", context.state)
+                    self.assertNotEqual(True, routes[0].release.call_args.kwargs.get("fault"))
+                    self.assertEqual(1, sum(call.kwargs.get("detail", {}).get("mailbox_failure_fallback", False)
+                                            for call in reporter.note.call_args_list))
+
+    def test_mailbox_transport_fallback_respects_switch_and_preserves_unknown_when_roxy_fails(self):
+        candidate = self.no_mail_result()
+        candidate["auth_diagnostics"] = {"operation": "email_otp", "failure_kind": "transport_error",
+                                         "mailbox_error_code": "butler_transport_timeout"}
+        for enabled, available in ((False, True), (True, False)):
+            with self.subTest(enabled=enabled, available=available):
+                result, calls, _, _, _ = self.run_worker([candidate], context=_Context(),
+                    roxy_fallback=enabled, roxy_available=available)
+                self.assertFalse(result["ok"])
+                self.assertEqual(1, len(calls))
+                self.assertNotIn("fallback_used", result)
+        context = _Context()
+        result, calls, _, _, _ = self.run_worker(
+            [candidate, candidate], context=context, roxy_fallback=True)
+        self.assertEqual(2, len(calls))
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual("unknown", context.state)
+
     def test_no_mail_fallback_still_requires_enabled_and_available_roxy(self):
         for enabled, available in ((False, True), (True, False)):
             with self.subTest(enabled=enabled, available=available):

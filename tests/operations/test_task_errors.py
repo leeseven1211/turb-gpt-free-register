@@ -462,6 +462,37 @@ class TaskErrorClassificationTests(unittest.TestCase):
                 self.assertEqual("request_unknown", summary["outcome"])
                 self.assertEqual(mailbox_code, summary["auth_diagnostics"]["mailbox_error_code"])
 
+    def test_historical_roxy_no_mail_uses_exact_saved_receipt_without_rewriting_summary(self):
+        message = ("Roxy EmailButlerClientError: inbound_code_timeout: "
+                   "等待 Email Butler 验证码超时；尚未收到当前时间窗口内的验证码")
+        summary = {"cause_code": "email_otp_failed", "auth_diagnostics": {
+            "operation": "roxy_email_otp", "failure_kind": "runtime_exception",
+            "exception_type": "EmailButlerClientError"}}
+        info = classify_task_error(message, task_type="token_refresh", error_code="email_otp_failed",
+                                   result_summary=summary)
+        self.assertEqual("MAIL-OTP-002", info["display_code"])
+        self.assertEqual("未收到新的验证码邮件", info["summary"])
+        self.assertEqual("runtime_exception", summary["auth_diagnostics"]["failure_kind"])
+        self.assertNotIn("mailbox_error_code", summary["auth_diagnostics"])
+        for changed in (
+            {"http_status": 503}, {"mailbox_error_code": "source_authentication_failed"},
+            {"operation": "email_otp"}, {"exception_type": "RuntimeError"},
+        ):
+            with self.subTest(changed=changed):
+                candidate = {**summary, "auth_diagnostics": {**summary["auth_diagnostics"], **changed}}
+                actual = classify_task_error(message, task_type="token_refresh", error_code="email_otp_failed",
+                                             result_summary=candidate)
+                self.assertNotEqual("MAIL-OTP-002", actual["display_code"])
+        for secondary, expected in (
+            ({"operation": "email_otp", "failure_kind": "mailbox_error",
+              "mailbox_error_code": "source_authentication_failed"}, "MAIL-SOURCE-002"),
+            ({"operation": "email_otp", "failure_kind": "http_error", "http_status": 503}, "MAIL-OTP-HTTP-503"),
+        ):
+            with self.subTest(secondary=secondary):
+                actual = classify_task_error(message, task_type="token_refresh", error_code="email_otp_failed",
+                    result_summary={**summary, "cause_diagnostics": secondary})
+                self.assertEqual(expected, actual["display_code"])
+
     def test_at_otp_no_mail_does_not_hide_a_butler_service_failure(self):
         for status, expected in ((None, "MAIL-OTP-002"), (408, "MAIL-OTP-002"),
                                  (503, "MAIL-OTP-READ"), (524, "MAIL-OTP-READ"),

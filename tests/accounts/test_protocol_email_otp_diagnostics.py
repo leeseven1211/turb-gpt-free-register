@@ -60,6 +60,30 @@ class OtpFailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(503, diagnostics["http_status"])
         self.assert_private_values_absent(diagnostics)
 
+    def test_v2_mailbox_causes_survive_protocol_and_service_projection(self):
+        from core.accounts.liveness.service import _safe_refresh_auth_diagnostics
+        from core.operations.errors import classify_task_error
+
+        for code, kind, display in (
+            ("butler_transport_timeout", "transport_error", "MAIL-BUTLER-V2-TIMEOUT"),
+            ("butler_transport_connection", "transport_error", "MAIL-BUTLER-V2-CONNECT"),
+            ("butler_transport_failed", "transport_error", "MAIL-BUTLER-V2-NETWORK"),
+            ("lease_expired", "mailbox_error", "MAIL-BUTLER-V2-EXPIRED"),
+            ("invalid_api_key", "mailbox_error", "MAIL-BUTLER-V2-AUTH"),
+            ("provider_unavailable", "mailbox_error", "MAIL-BUTLER-V2-PROVIDER"),
+            ("butler_code_response_invalid", "mailbox_error", "MAIL-BUTLER-V2-CODE"),
+            ("butler_http_524", "mailbox_error", "MAIL-OTP-HTTP-524"),
+        ):
+            with self.subTest(code=code):
+                diagnostics = self.diagnostics(EmailButlerClientError(PRIVATE_DETAIL, error_code=code))
+                safe = _safe_refresh_auth_diagnostics(diagnostics)
+                self.assertEqual(code, safe["mailbox_error_code"])
+                self.assertEqual(kind, safe["failure_kind"])
+                info = classify_task_error("email_otp_failed", task_type="token_refresh",
+                    result_summary={"cause_code": "email_otp_failed", "auth_diagnostics": safe})
+                self.assertEqual(display, info["display_code"])
+                self.assert_private_values_absent(safe)
+
     def test_unknown_butler_code_cannot_become_persisted_private_data(self):
         diagnostics = self.diagnostics(EmailButlerClientError(
             PRIVATE_DETAIL, error_code=EMAIL + " " + PRIVATE_DETAIL,

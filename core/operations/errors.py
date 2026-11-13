@@ -1639,6 +1639,9 @@ def _email_otp_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) -> di
         if isinstance(mailbox_code, str):
             if mailbox_code in _BUTLER_RECIPIENT_CAUSES and mailbox_code != "inbound_code_timeout":
                 return cause(*_BUTLER_RECIPIENT_CAUSES[mailbox_code])
+            if re.fullmatch(r"butler_http_[45][0-9]{2}", mailbox_code):
+                status = int(mailbox_code.rsplit("_", 1)[1])
+                return cause(f"MAIL-OTP-HTTP-{status}", f"验证码收件服务请求返回 HTTP {status}")
             mailbox_detail = {
                 "invalid_key": ("MAIL-BUTLER-AUTH-001", "Email Butler API Key 校验失败"),
                 "service_not_authorized": ("MAIL-BUTLER-AUTH-002", "Email Butler 客户端无权使用 OpenAI 服务"),
@@ -2171,6 +2174,20 @@ def _stored_specific_error_cause(raw: str, task_type: str, summary: dict[str, An
     task_key = str(task_type or "").strip().lower()
     lower = raw.lower()
     code = ""
+    diagnostics = summary.get("auth_diagnostics")
+    if (task_key == "token_refresh" and isinstance(diagnostics, dict)
+            and set(diagnostics) == {"operation", "failure_kind", "exception_type"}
+            and not summary.get("cause_diagnostics")
+            and diagnostics.get("operation") == "roxy_email_otp"
+            and diagnostics.get("failure_kind") == "runtime_exception"
+            and diagnostics.get("exception_type") == "EmailButlerClientError"
+            and error_code in {"", "email_otp_failed"}
+            and summary.get("cause_code") in {None, "", "email_otp_failed"}
+            and raw == "Roxy EmailButlerClientError: inbound_code_timeout: "
+                       "等待 Email Butler 验证码超时；尚未收到当前时间窗口内的验证码"):
+        # 旧 Roxy 摘要丢失取码细因时，只识别原客户端生成的完整固定超时回执。
+        return {"cause_code": "email_otp_failed", "cause_display_code": "MAIL-OTP-002",
+                "cause_summary": "未收到新的验证码邮件"}
     mfa_network = re.fullmatch(
         r"(?:registration_failed:\s*)?(?:RuntimeError:\s*)?mfa_network_error:\s*net::"
         r"(ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|"

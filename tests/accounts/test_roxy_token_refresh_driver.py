@@ -384,6 +384,43 @@ class RoxyRefreshHookTests(unittest.TestCase):
         )
         self.assertEqual("MAIL-IMAP-001", info["display_code"])
 
+    def test_butler_email_wait_keeps_no_mail_and_service_failures_distinct(self):
+        from core.email.email_butler.client import EmailButlerClientError
+        from core.operations.errors import classify_task_error
+
+        self._context()
+        cases = (
+            ("inbound_code_timeout", None, "no_mail", "MAIL-OTP-002", "未收到新的验证码邮件"),
+            ("inbound_code_timeout", 408, "no_mail", "MAIL-OTP-002", "未收到新的验证码邮件"),
+            ("inbound_code_timeout", 503, "mailbox_error", "MAIL-OTP-READ", "验证码邮箱读取失败"),
+            ("source_authentication_failed", 408, "mailbox_error", "MAIL-SOURCE-002", "验证码邮件的 OpenAI 来源认证失败或矛盾"),
+            ("inbound_request_failed", 502, "mailbox_error", "MAIL-BUTLER-REQUEST-001", "Email Butler 入站取码请求失败"),
+        )
+        for code, status, kind, display, message in cases:
+            with self.subTest(code=code, status=status):
+                error = EmailButlerClientError("离线收件等待失败", error_code=code, status_code=status)
+                with (
+                    patch.object(roxy_liveness, "_enter_existing_account_otp", return_value="otp"),
+                    patch.object(roxy_liveness, "_complete_otp", side_effect=error) as complete,
+                ):
+                    result = roxy_liveness.refresh_access_token(EMAIL)
+
+                complete.assert_called_once()
+                self.assertEqual("email_otp_failed", result["error_code"])
+                diagnostics = service._safe_refresh_auth_diagnostics(result["auth_diagnostics"])
+                self.assertEqual("roxy_email_otp", diagnostics["operation"])
+                self.assertEqual("email_otp", diagnostics["cause_operation"])
+                self.assertEqual(kind, diagnostics["failure_kind"])
+                self.assertEqual(code, diagnostics["mailbox_error_code"])
+                self.assertEqual(status, diagnostics.get("http_status"))
+                info = classify_task_error(
+                    result["error"], task_type="token_refresh", error_code=result["error_code"],
+                    result_summary={**result, "cause_code": result["error_code"],
+                                    "auth_diagnostics": diagnostics},
+                )
+                self.assertEqual(display, info["display_code"])
+                self.assertEqual(message, info["summary"])
+
     def test_failure_only_capture_precedes_cleanup_without_retaining_browser(self):
         _, _, client, events, _, capture = self._context(mode="failure_only", failure=RuntimeError("fixture-failure"))
 

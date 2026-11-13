@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from config import roxybrowser as cfg
 from core.auth.email_guard import serialize_email_auth
 from core.email.provider import wait_for_otp
+from core.email.email_butler.client import EmailButlerClientError
 from core.email.forward_imap import ForwardIMAPError, ForwardIMAPNoMailTimeout
 from core.accounts.credentials import account_email_is_invalid
 from core.auth.protocol.openai_auth import AccountUnusableError, detect_account_unusable_text
@@ -1028,6 +1029,14 @@ def refresh_access_token(
         failure_kind = ("no_mail" if isinstance(exc, ForwardIMAPNoMailTimeout)
                         else "imap_error" if isinstance(exc, ForwardIMAPError)
                         else "runtime_exception")
+        auth_diagnostics = {"operation": f"roxy_{failure_stage}", "failure_kind": failure_kind,
+                            "exception_type": type(exc).__name__}
+        if failure_stage == "email_otp" and isinstance(exc, EmailButlerClientError):
+            from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
+
+            # 沿用同次取码异常的真实原因，保留浏览器阶段与收件动作的对应关系。
+            auth_diagnostics = {**otp_failure_diagnostics(exc), "operation": "roxy_email_otp",
+                                "cause_operation": "email_otp"}
         network_diagnostics = _at_network_diagnostics(exc, failure_stage, driver) if not session_acquired else {}
         network_recovery_failed = bool(network_diagnostics)
         try:
@@ -1055,8 +1064,7 @@ def refresh_access_token(
             "error_code": cause_code,
             "error_category": category,
             "failure_stage": failure_stage,
-            "auth_diagnostics": {"operation": f"roxy_{failure_stage}", "failure_kind": failure_kind,
-                                 "exception_type": type(exc).__name__, **network_diagnostics},
+            "auth_diagnostics": {**auth_diagnostics, **network_diagnostics},
             "validation_method": "roxy_email_otp",
         }
         if cause_code in {"password_change_required", "password_page_error"} and getattr(exc, "not_submitted", False):
