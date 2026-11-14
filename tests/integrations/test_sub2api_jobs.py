@@ -351,10 +351,30 @@ class Sub2ApiJobTests(PostgresTestCase):
             self.jobs.queue_sync(self.filename, remote_account_ids=[41], trigger="manual")
             self.assertEqual("queued", self.rows()[0]["status"])
 
-    def test_archived_account_is_blocked_before_dispatch_even_for_manual(self):
+    def test_archived_account_keeps_active_credential_dispatchable(self):
         records.patch_row(records.ACCOUNTS, self.account_id, {"archived": True})
         result = self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        self.assertEqual("queued", result["items"][0]["status"])
+        with patch.object(self.jobs.client, "update_and_enable_configured_account",
+                          return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 41}) as update:
+            self.assertTrue(self.execute(result["run_id"])["ok"])
+        self.assertEqual(41, update.call_args.args[1])
+        self.assertEqual("success", self.rows()[0]["status"])
+
+    def test_account_archived_after_dispatch_does_not_stop_worker(self):
+        result = self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        records.patch_row(records.ACCOUNTS, self.account_id, {"archived": True})
+        with patch.object(self.jobs.client, "update_and_enable_configured_account",
+                          return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 41}) as update:
+            self.assertTrue(self.execute(result["run_id"])["ok"])
+        self.assertEqual(41, update.call_args.args[1])
+        self.assertEqual("success", self.rows()[0]["status"])
+
+    def test_archived_credential_is_blocked_before_dispatch(self):
+        codex.archive_codex(self.filename, True)
+        result = self.jobs.queue_sync(self.filename, remote_account_ids=[41])
         self.assertEqual("blocked_archived", result["items"][0]["status"])
+        self.assertEqual("sub2api_target_archived", result["items"][0]["error_code"])
         self.assertIsNone(result["run_id"])
 
     def test_archived_credential_is_rechecked_by_worker(self):

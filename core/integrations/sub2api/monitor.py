@@ -233,12 +233,10 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     if db.account_is_deactivated(account):
         skip("account_deactivated")
         return
-    if account.get("archived"):
-        skip("account_archived")
-        return
-    available = [row for row in rows if str(row.get("email") or "").strip().lower() == str(account.get("email") or "").strip().lower() and not row.get("archived")]
+    credentials = [row for row in rows if str(row.get("email") or "").strip().lower() == str(account.get("email") or "").strip().lower()]
+    available = [row for row in credentials if not row.get("archived")]
     if not available:
-        skip("local_credential_missing")
+        skip("codex_credential_archived" if credentials else "local_credential_missing")
         return
     row = available[0]
     if str(row.get("oauth_account_status") or "").lower() == "deactivated":

@@ -43,9 +43,8 @@ def _checked_reference(row, *, conn=None):
             "sub2api_credential_missing",
             "本地 Codex 凭证已不存在，等待手动恢复后再次排队",
         )
-    account = records.get_row(records.ACCOUNTS, int(row["account_id"]), conn=conn) if row.get("account_id") else None
-    if credential.get("archived") or (account and account.get("archived")):
-        raise _Blocked("blocked_archived", "sub2api_target_archived", "账号或 Codex 凭证已归档，已停止补传")
+    if credential.get("archived"):
+        raise _Blocked("blocked_archived", "sub2api_target_archived", "Codex 凭证已归档，已停止补传")
     if str(credential["content"].get("email") or "").casefold() != str(row["email"]).casefold():
         raise _Blocked(
             "blocked_credential_identity", "sub2api_credential_identity_mismatch", "本地凭证身份发生变化，等待手动核对"

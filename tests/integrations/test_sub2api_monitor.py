@@ -84,14 +84,40 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
-    def test_deactivated_and_archived_accounts_never_refresh(self):
+    def test_deactivated_account_never_refreshes(self):
         self.account["account_status"] = "deactivated"
         self.assertEqual(self.monitor._run_once()["reasons"]["account_deactivated"], 1)
-        self.account.pop("account_status")
-        self.account["archived"] = True
-        self.assertEqual(self.monitor._run_once()["reasons"]["account_archived"], 1)
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
+
+    def test_archived_account_with_active_codex_credential_still_refreshes(self):
+        self.account["archived"] = True
+        result = self.monitor._run_once()
+        self.assertEqual(1, result["refresh_queued"])
+        self.assertNotIn("account_archived", result["reasons"])
+        self.assertEqual("refresh_wait", self.store.get_repair("test-backend", 42)["stage"])
+
+    def test_archived_account_still_syncs_a_newer_active_codex_credential(self):
+        self.account["archived"] = True
+        self.remote[0]["credentials"]["access_token"] = "older-access"
+        result = self.monitor._run_once()
+        self.assertEqual(1, result["sync_queued"])
+        self.assertEqual("sync_wait", self.store.get_repair("test-backend", 42)["stage"])
+        self.refresh.assert_not_called()
+
+    def test_archived_codex_credential_is_classified_without_submitting_repairs(self):
+        self.credential["archived"] = True
+        result = self.monitor._run_once()
+        self.assertEqual(1, result["reasons"]["codex_credential_archived"])
+        self.refresh.assert_not_called()
+        self.oauth.assert_not_called()
+        self.sync.assert_not_called()
+
+    def test_missing_codex_credential_remains_distinct_from_archived(self):
+        self.credential["email"] = "another@example.test"
+        result = self.monitor._run_once()
+        self.assertEqual(1, result["reasons"]["local_credential_missing"])
+        self.refresh.assert_not_called()
 
     def test_explicit_refresh_reauth_reuses_existing_oauth_entry(self):
         self.refresh.return_value = {"accepted": False, "error_code": "reauth_required"}

@@ -97,11 +97,11 @@ WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作�
 
 “系统设置 → 定时任务”提供 `SUB2API_SYNC_RETRY_ENABLED`（自动补传）和 `SUB2API_MONITOR_ENABLED`（异常巡检），新增开关默认关闭。授权和 Token 刷新后的同步统一包含上传、清错、恢复调度；同步失败保留有效 OAuth 凭据，并在 PostgreSQL 保存原后端摘要、远端 ID、凭证代际和失败阶段。开启自动补传后按退避继续，只请求 Sub2API，不重复登录；后端切换后旧目标暂停，恢复原后端后继续。多个远端目标分别记录状态。
 
-巡检默认每 300 秒执行，先补传，再按目标分组分页检查远端 OpenAI OAuth 异常账号，按邮箱归并。明确认证错误优先走已有 Token 刷新入口，明确需要重授权且自动登录资料可用时调用现有 Codex 授权入口，新凭据再写回原远端 ID。账号忙碌、冷却、归档、停用、资料缺失和无法识别的远端错误分别分类；不会因为任意远端 error 就重复登录或创建注册任务。上次请求结果未知时保留该事实，已有手动重跑入口继续可用。
+巡检默认每 300 秒执行，先补传，再按目标分组分页检查远端 OpenAI OAuth 异常账号，按邮箱归并。明确认证错误优先走已有 Token 刷新入口，明确需要重授权且自动登录资料可用时调用现有 Codex 授权入口，新凭据再写回原远端 ID。账号忙碌、冷却、Codex 凭证归档、停用、资料缺失和无法识别的远端错误分别分类；账号页归档与 Codex 凭证归档相互独立，账号页归档不会阻断未归档 Codex 凭证的巡检或补传。不会因为任意远端 error 就重复登录或创建注册任务。上次请求结果未知时保留该事实，已有手动重跑入口继续可用。
 
 “系统设置 → 定时任务”中的“sub2api 巡检分组”（`SUB2API_MONITOR_GROUP_IDS`）支持查询远端 OpenAI 分组后多选，也可填写逗号分隔的分组 ID；留空扫描全部账号，配置后只扫描所选分组。此范围与上传目标分组独立，手动与定时巡检均使用已保存的巡检分组，已经提交的修复继续完成。
 
-巡检间隔、同账号冷却和每轮上限分别由 `SUB2API_MONITOR_INTERVAL_SECONDS`、`SUB2API_MONITOR_COOLDOWN_SECONDS`、`SUB2API_MONITOR_MAX_PER_CYCLE` 控制。同步使用现有持久任务、账号租约和任务中心，重启后恢复待办，不保存 Token 副本。sub2api 配置页可查看状态或立即巡检；手动巡检只使用已保存配置，已提交的刷新、授权和多目标同步会继续到明确结果，不开启新的周期扫描。用户取消、归档或凭据删除会停止对应补传，恢复后可手动再次排队。分组查询接口为 `GET /api/sub2api/groups`，使用已保存的连接配置；自动化接口为 `GET /api/sub2api/automation`、`POST /api/sub2api/automation/check`，均沿用 WebUI 鉴权。
+巡检间隔、同账号冷却和每轮上限分别由 `SUB2API_MONITOR_INTERVAL_SECONDS`、`SUB2API_MONITOR_COOLDOWN_SECONDS`、`SUB2API_MONITOR_MAX_PER_CYCLE` 控制。同步使用现有持久任务、账号租约和任务中心，重启后恢复待办，不保存 Token 副本。sub2api 配置页可查看状态或立即巡检；手动巡检只使用已保存配置，已提交的刷新、授权和多目标同步会继续到明确结果，不开启新的周期扫描。用户取消、Codex 凭证归档或凭据删除会停止对应补传，恢复后可手动再次排队。分组查询接口为 `GET /api/sub2api/groups`，使用已保存的连接配置；自动化接口为 `GET /api/sub2api/automation`、`POST /api/sub2api/automation/check`，均沿用 WebUI 鉴权。
 
 ### WebUI
 
