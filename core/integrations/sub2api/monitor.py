@@ -23,8 +23,10 @@ from core.storage.operations import runtime as operation_runtime_store
 from core.operations import task_gateway
 
 _TASK = "sub2api_monitor"
+_CONTINUATION_TASK = "sub2api_monitor_continuation"
 _THREAD_LOCK = threading.Lock()
 _THREAD: threading.Thread | None = None
+_CONTINUATION_THREAD: threading.Thread | None = None
 _ACTIVE = {"queued", "running", "cancelling", "settling", "waiting", "retrying", "stopping"}
 _SUCCESS = {"success", "succeeded", "completed"}
 _WAIT_STAGES = {"refresh_wait", "reauth_wait", "refresh_submitting", "reauth_submitting"}
@@ -40,19 +42,36 @@ def _enabled() -> bool:
 
 
 def _periodic_enabled() -> bool:
+    """新异常发现只遵守自动巡检开关。"""
+    return _enabled()
+
+
+def _continuation_repairs(backend: str) -> list[dict]:
+    enabled = _enabled()
+    return [row for row in repair_store.list_repairs(backend, active_only=True)
+            if row.get("stage") in _CONTINUATION_STAGES and (enabled or row.get("manual_requested"))]
+
+
+def _continuation_ready() -> bool:
     """关闭自动巡检后，只接续曾明确手动请求的未完成修复。"""
-    if _enabled():
-        return True
     try:
         backend = client.configured_backend_identity()
-        return any(row.get("manual_requested") and row.get("stage") in _CONTINUATION_STAGES
-                   for row in repair_store.list_repairs(backend, active_only=True))
+        return bool(backend and _continuation_repairs(backend))
     except Exception:
         return False
 
 
+def _queue_continuation() -> dict:
+    """每轮只在存在待续阶段时入队，不创建空任务。"""
+    if not _continuation_ready():
+        return {"ok": True, "pending": False}
+    if operation_runtime_store.has_active_runtime_operations(task_types=["sub2api_scan"]):
+        return {"ok": True, "pending": True, "busy": True}
+    return run_once(continuation_only=True)
+
+
 def _periodic_interval() -> int:
-    return _interval() if _enabled() else 15
+    return _interval()
 
 
 def _interval() -> int:
@@ -163,9 +182,9 @@ def _queue_sync(backend: str, account_id: int, state: dict, filename: str, gener
     if complete:
         _save(backend, account_id, state, stage="idle", last_sync_generation=generation,
               last_sync_at=_now(), next_attempt_at=_now() + _cooldown(), last_code="sync_complete", manual_requested=False)
-    elif not _enabled() and any(item.get("status") in {"cancelled", "blocked_archived", "blocked_missing_credential"}
-                               or (item.get("status") == "pending" and item.get("error_code") and not item.get("dispatch_requested"))
-                               for item in items):
+    elif any(item.get("status") in {"cancelled", "blocked_archived", "blocked_missing_credential", "blocked_credential_identity"}
+             or (not _enabled() and item.get("status") == "pending" and item.get("error_code") and not item.get("dispatch_requested"))
+             for item in items):
         _cool(backend, account_id, state, "sync_requires_manual_review", stage="waiting_manual")
     if result.get("accepted") and newly_queued:
         summary["sync_queued"] += 1
@@ -224,7 +243,11 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         changes["last_sync_generation"] = ""
     state = _save(backend, account_id, state, **changes)
     def skip(code):
-        if state.get("manual_requested"):
+        if stage in _CONTINUATION_STAGES and code in {
+            "remote_account_id_missing", "account_deactivated", "codex_credential_archived", "local_credential_missing",
+        }:
+            _cool(backend, account_id, state, code, stage="waiting_manual")
+        elif stage not in _CONTINUATION_STAGES and state.get("manual_requested"):
             _save(backend, account_id, state, manual_requested=False, last_code=code)
         _reason(summary, code)
     if not targets:
@@ -346,28 +369,32 @@ def register_handler() -> None:
 
 def _handle_scan(context):
     context.checkpoint()
-    result = _run_once(force=bool((context.run.get("data") or {}).get("force")))
+    data = context.run.get("data") or {}
+    result = _run_once(force=bool(data.get("force")), continuation_only=bool(data.get("continuation_only")))
     reasons = result.get("reasons") or {}
     if any(reasons.get(code) for code in ("backend_not_configured", "local_state_unavailable", "remote_scan_failed")):
         return task_gateway.OperationResult.failed("Sub2API 异常扫描未完成", result)
-    return task_gateway.OperationResult.success(result, message="Sub2API 异常扫描完成，修复任务分别入队")
+    message = "Sub2API 待续修复已推进" if result.get("continuation_only") else "Sub2API 异常扫描完成，修复任务分别入队"
+    return task_gateway.OperationResult.success(result, message=message)
 
 
-def run_once(*, force: bool = False) -> dict:
+def run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
     """手动与定时扫描统一持久入队，子任务等待不占用扫描许可。"""
     register_handler()
     result = task_gateway.submit_durable_operation(
         task_type="sub2api_scan", account_id=None, email="",
-        trigger="manual" if force else "scheduled",
-        source_id=f"sub2api-scan:{uuid.uuid4().hex}", data={"force": bool(force)},
+        trigger="manual" if force else "scheduled_continuation" if continuation_only else "scheduled",
+        source_id=f"sub2api-scan:{uuid.uuid4().hex}", data={"force": bool(force), "continuation_only": bool(continuation_only)},
         resource_family="sub2api_scan",
     )
     return {"ok": bool(result.get("accepted")), **result}
 
 
-def _run_once(*, force: bool = False) -> dict:
+def _run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
     """先补传，再归并远端异常并推进持久阶段；返回不含身份或凭据的计数。"""
-    summary = {"enabled": _enabled(), "group_ids": [], "remote_errors": 0, "accounts": 0, "processed": 0,
+    enabled = _enabled()
+    continuation_only = bool(continuation_only or (not enabled and not force))
+    summary = {"enabled": enabled, "continuation_only": continuation_only, "group_ids": [], "remote_errors": 0, "accounts": 0, "processed": 0,
                "refresh_queued": 0, "reauth_queued": 0, "sync_queued": 0, "reasons": {}}
     try:
         jobs.enqueue_due()
@@ -378,16 +405,14 @@ def _run_once(*, force: bool = False) -> dict:
     except client.Sub2ApiSyncError:
         _reason(summary, "remote_scan_failed")
         return summary
-    continuation_only = not summary["enabled"] and not force
     try:
         backend = client.configured_backend_identity()
         if not backend:
             _reason(summary, "backend_not_configured")
             return summary
         rows = db.list_codex_accounts(archived="all")
-        repairs = repair_store.list_repairs(backend, active_only=True)
+        repairs = _continuation_repairs(backend) if continuation_only else repair_store.list_repairs(backend, active_only=True)
         if continuation_only:
-            repairs = [row for row in repairs if row.get("manual_requested") and row.get("stage") in _CONTINUATION_STAGES]
             if not repairs:
                 return summary
     except Exception:
@@ -422,6 +447,9 @@ def _run_once(*, force: bool = False) -> dict:
             account = db.get_account(account_id)
             if account:
                 by_account[account_id] = (account, [])
+            elif repair.get("stage") in _CONTINUATION_STAGES:
+                _cool(backend, account_id, repair, "local_account_missing", stage="waiting_manual")
+                _reason(summary, "local_account_missing")
             elif repair.get("manual_requested"):
                 _save(backend, account_id, repair, manual_requested=False, last_code="local_account_missing")
     summary["accounts"] = len(by_account)
@@ -468,15 +496,23 @@ def status() -> dict:
 
 
 def start_periodic_monitor() -> bool:
-    """启动可热加载开关的周期生产者；不在此线程执行远端修复请求。"""
-    global _THREAD
+    """分别恢复新异常发现和待续修复生产者，二者使用独立周期时钟。"""
+    global _THREAD, _CONTINUATION_THREAD
     register_handler()
     with _THREAD_LOCK:
-        if _THREAD and _THREAD.is_alive():
-            return False
-        _THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
-            "task": _TASK, "label": "Sub2API 异常巡检", "work": run_once,
-            "enabled": _periodic_enabled, "interval_seconds": _periodic_interval,
-        }, name="sub2api-monitor", daemon=True)
-        _THREAD.start()
-        return True
+        started = False
+        if not _THREAD or not _THREAD.is_alive():
+            _THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
+                "task": _TASK, "label": "Sub2API 异常巡检", "work": run_once,
+                "enabled": _periodic_enabled, "interval_seconds": _periodic_interval,
+            }, name="sub2api-monitor", daemon=True)
+            _THREAD.start()
+            started = True
+        if not _CONTINUATION_THREAD or not _CONTINUATION_THREAD.is_alive():
+            _CONTINUATION_THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
+                "task": _CONTINUATION_TASK, "label": "Sub2API 待续修复", "work": _queue_continuation,
+                "enabled": lambda: True, "interval_seconds": lambda: 15, "initial_delay_seconds": 0,
+            }, name="sub2api-monitor-continuation", daemon=True)
+            _CONTINUATION_THREAD.start()
+            started = True
+        return started
