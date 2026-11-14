@@ -259,7 +259,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.sync.assert_not_called()
         self.refresh.assert_not_called()
 
-    def test_permanent_continuation_block_is_persisted_and_no_longer_scheduled(self):
+    def test_legacy_continuation_permanent_block_is_persisted(self):
         self.seed_refresh_wait()
         for code in ("account_deactivated", "codex_credential_archived", "local_credential_missing"):
             with self.subTest(code=code):
@@ -275,14 +275,12 @@ class Sub2ApiMonitorTests(PostgresTestCase):
                 self.monitor._run_once(continuation_only=True)
                 state = self.store.get_repair("test-backend", 42)
                 self.assertEqual(("waiting_manual", code), (state["stage"], state["last_code"]))
-                self.assertFalse(self.monitor._continuation_ready())
 
-    def test_scan_and_continuation_producers_restore_independently_after_restart(self):
+    def test_restart_starts_only_configured_scan_scheduler_without_progress_polling(self):
         self.seed_refresh_wait()
         self.monitor.scheduler_state.mark_ran("sub2api_monitor")
         before = self.monitor.scheduler_state.last_run_at("sub2api_monitor")
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
-        self.fetch.reset_mock()
         self.monitor = importlib.reload(self.monitor)
         threads = []
         def thread_factory(**kwargs):
@@ -293,35 +291,20 @@ class Sub2ApiMonitorTests(PostgresTestCase):
             return thread
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_INTERVAL_SECONDS", 3600), patch.object(
             self.monitor.threading, "Thread", side_effect=thread_factory
-        ), patch.object(self.monitor.task_gateway, "submit_durable_operation", side_effect=lambda **kwargs: {
-            "accepted": True, "result": self.monitor._run_once(**kwargs["data"])
-        }):
+        ), patch.object(self.monitor.task_gateway, "submit_durable_operation") as submit:
             self.assertTrue(self.monitor.start_periodic_monitor())
             self.assertFalse(self.monitor.start_periodic_monitor())
-            self.assertEqual(2, len(threads))
-            for thread in threads:
-                stop = Mock()
-                stop.wait.side_effect = [False, True]
-                thread.options["target"](**thread.options["kwargs"], stop=stop)
-        self.oauth.assert_called_once()
+            self.assertEqual(1, len(threads))
+            options = threads[0].options["kwargs"]
+            self.assertEqual("sub2api_monitor", options["task"])
+            self.assertEqual(3600, options["interval_seconds"]())
+            stop = Mock()
+            stop.wait.side_effect = [False, True]
+            threads[0].options["target"](**options, stop=stop)
+            submit.assert_not_called()
+        self.oauth.assert_not_called()
         self.fetch.assert_not_called()
         self.assertEqual(before, self.monitor.scheduler_state.last_run_at("sub2api_monitor"))
-        self.assertIsNotNone(self.monitor.scheduler_state.last_run_at("sub2api_monitor_continuation"))
-
-    def test_continuation_producer_does_not_create_empty_tasks(self):
-        with patch.object(self.monitor.task_gateway, "submit_durable_operation") as submit:
-            self.monitor._queue_continuation()
-        submit.assert_not_called()
-
-    def test_continuation_producer_does_not_accumulate_queued_scans(self):
-        self.seed_refresh_wait()
-        with patch.object(self.monitor.task_gateway, "notify_dispatch"):
-            first = self.monitor._queue_continuation()
-            self.monitor._queue_continuation()
-            self.assertEqual([first["run_id"]], [row["id"] for row in operation.list_queued_runs()])
-            operation.finish_run(first["run_id"], status="success")
-            next_cycle = self.monitor._queue_continuation()
-        self.assertNotEqual(first["run_id"], next_cycle["run_id"])
 
     def test_temporary_credential_read_failure_keeps_continuation_retryable(self):
         self.seed_refresh_wait()
@@ -341,7 +324,6 @@ class Sub2ApiMonitorTests(PostgresTestCase):
                 self.monitor._run_once(continuation_only=True)
             state = self.store.get_repair("test-backend", 42)
             self.assertTrue(state["manual_requested"])
-            self.assertTrue(self.monitor._continuation_ready())
             self.monitor._run_once(continuation_only=True)
         self.oauth.assert_called_once()
 
@@ -520,7 +502,6 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.assertTrue(repair.get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
-        self.assertTrue(self.monitor._continuation_ready())
         self.content["access_token"] = "refreshed-access"
         codex.save_codex_credential_record(self.filename, self.content)
         operation.finish_run(repair["run_id"], status="success")
@@ -550,7 +531,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.content["access_token"] = "refreshed-access"
         codex.save_codex_credential_record(self.filename, self.content)
         operation.finish_run(repair["run_id"], status="success")
-        queued = self.monitor._queue_continuation()
+        queued = self.monitor.run_once(continuation_only=True)
         run = operation.get_run(queued["run_id"])
         self.assertTrue(run["data"]["continuation_only"])
         result = task_gateway._execute_operation_handler("sub2api_scan", queued["run_id"])
@@ -558,14 +539,6 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.assertEqual({71, 72}, {row["remote_account_id"] for row in self.store.list_jobs(filename=self.filename)})
         self.scan.assert_not_called()
         self.assertFalse(self.monitor._periodic_enabled())
-
-    def test_disabled_continuation_producer_leaves_automatic_repairs_paused(self):
-        self.store.save_repair("manual-backend", self.account_id, stage="refresh_wait", run_id=123,
-            remote_account_ids=[71], source_generation="old-generation", manual_requested=False)
-        with patch.object(task_gateway, "submit_durable_operation") as submit:
-            self.monitor._queue_continuation()
-        submit.assert_not_called()
-        self.scan.assert_not_called()
 
     def test_disabled_monitor_does_not_resume_unmarked_historical_repairs(self):
         self.store.save_repair("manual-backend", self.account_id, stage="refresh_wait", run_id=123,

@@ -23,10 +23,8 @@ from core.storage.operations import runtime as operation_runtime_store
 from core.operations import task_gateway
 
 _TASK = "sub2api_monitor"
-_CONTINUATION_TASK = "sub2api_monitor_continuation"
 _THREAD_LOCK = threading.Lock()
 _THREAD: threading.Thread | None = None
-_CONTINUATION_THREAD: threading.Thread | None = None
 _ACTIVE = {"queued", "running", "cancelling", "settling", "waiting", "retrying", "stopping"}
 _SUCCESS = {"success", "succeeded", "completed"}
 _WAIT_STAGES = {"refresh_wait", "reauth_wait", "refresh_submitting", "reauth_submitting"}
@@ -50,24 +48,6 @@ def _continuation_repairs(backend: str) -> list[dict]:
     enabled = _enabled()
     return [row for row in repair_store.list_repairs(backend, active_only=True)
             if row.get("stage") in _CONTINUATION_STAGES and (enabled or row.get("manual_requested"))]
-
-
-def _continuation_ready() -> bool:
-    """关闭自动巡检后，只接续曾明确手动请求的未完成修复。"""
-    try:
-        backend = client.configured_backend_identity()
-        return bool(backend and _continuation_repairs(backend))
-    except Exception:
-        return False
-
-
-def _queue_continuation() -> dict:
-    """每轮只在存在待续阶段时入队，不创建空任务。"""
-    if not _continuation_ready():
-        return {"ok": True, "pending": False}
-    if operation_runtime_store.has_active_runtime_operations(task_types=["sub2api_scan"]):
-        return {"ok": True, "pending": True, "busy": True}
-    return run_once(continuation_only=True)
 
 
 def _periodic_interval() -> int:
@@ -471,23 +451,15 @@ def status() -> dict:
 
 
 def start_periodic_monitor() -> bool:
-    """分别恢复新异常发现和待续修复生产者，二者使用独立周期时钟。"""
-    global _THREAD, _CONTINUATION_THREAD
+    """只恢复按配置周期运行的异常扫描，不另启修复进度轮询。"""
+    global _THREAD
     register_handler()
     with _THREAD_LOCK:
-        started = False
-        if not _THREAD or not _THREAD.is_alive():
-            _THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
-                "task": _TASK, "label": "Sub2API 异常巡检", "work": run_once,
-                "enabled": _periodic_enabled, "interval_seconds": _periodic_interval,
-            }, name="sub2api-monitor", daemon=True)
-            _THREAD.start()
-            started = True
-        if not _CONTINUATION_THREAD or not _CONTINUATION_THREAD.is_alive():
-            _CONTINUATION_THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
-                "task": _CONTINUATION_TASK, "label": "Sub2API 待续修复", "work": _queue_continuation,
-                "enabled": lambda: True, "interval_seconds": lambda: 15, "initial_delay_seconds": 0,
-            }, name="sub2api-monitor-continuation", daemon=True)
-            _CONTINUATION_THREAD.start()
-            started = True
-        return started
+        if _THREAD and _THREAD.is_alive():
+            return False
+        _THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
+            "task": _TASK, "label": "Sub2API 异常巡检", "work": run_once,
+            "enabled": _periodic_enabled, "interval_seconds": _periodic_interval,
+        }, name="sub2api-monitor", daemon=True)
+        _THREAD.start()
+        return True
