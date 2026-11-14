@@ -1767,7 +1767,7 @@ _FIELD_DEFINITIONS = [
     {"key": "SUB2API_UPLOAD_LOAD_FACTOR", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号负载因子", "help": "大于 0 的整数；留空保留原配置"},
     {"key": "SUB2API_UPLOAD_MODELS", "file": "sub2api.py", "type": "str", "group": "Codex", "label": "上传账号允许模型", "help": "每行一个或逗号分隔；填写后更新模型映射，留空保留原映射"},
     {"key": "SUB2API_SYNC_RETRY_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动补传 sub2api 凭据", "help": "默认关闭；同步失败后仅重传已保存凭据、清错并恢复调度，不重复登录"},
-    {"key": "SUB2API_MONITOR_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动巡检 sub2api 异常账号", "help": "默认关闭；先补传，再按明确认证错误刷新或调用现有 Codex 重授权；不会创建注册任务"},
+    {"key": "SUB2API_MONITOR_ENABLED", "file": "sub2api.py", "type": "bool", "group": "定时任务", "label": "自动巡检 sub2api 异常账号", "help": "默认关闭；发现所选分组的异常账号后直接进行 Codex 重授权，成功后同步回原远端账号；不会创建注册任务"},
     {"key": "SUB2API_MONITOR_GROUP_IDS", "file": "sub2api.py", "type": "str", "group": "定时任务", "label": "sub2api 巡检分组", "help": "留空扫描全部账号；可查询分组后选择，或填写多个逗号分隔的分组 ID。只影响异常扫描范围"},
     {"key": "SUB2API_MONITOR_INTERVAL_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 巡检间隔（秒）", "help": "两轮检查的最短间隔，默认 300 秒"},
     {"key": "SUB2API_MONITOR_COOLDOWN_SECONDS", "file": "sub2api.py", "type": "int", "group": "定时任务", "label": "sub2api 修复冷却（秒）", "help": "同账号两次自动修复之间的最短间隔，默认 300 秒"},

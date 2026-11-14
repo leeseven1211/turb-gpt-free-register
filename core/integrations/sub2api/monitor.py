@@ -107,10 +107,10 @@ def _remote_email(row: dict) -> str:
 def _remote_error(row: dict) -> str:
     """分类只用于选择修复动作，绝不据 401 推断账号停用。"""
     text = " ".join(str(row.get(key) or "") for key in ("error_message", "error", "error_code", "http_status", "last_error")).lower()
-    if re.search(r"\b(?:429|5\d\d)\b|rate.?limit|too many requests|timeout|timed out|connection|network", text):
-        return "remote_transient_error"
     if re.search(r"account[_ -]deactivated|account[_ -]disabled|user[_ -]deactivated", text):
         return "remote_account_deactivated"
+    if re.search(r"\b(?:429|5\d\d)\b|rate.?limit|too many requests|timeout|timed out|connection|network", text):
+        return "remote_transient_error"
     if re.search(r"\b401\b|unauthori[sz]ed|invalid_grant|invalid[_ -](?:access[_ -])?token|token.+(?:expired|revoked|invalidated)|(?:expired|revoked).+token", text):
         return "remote_oauth_error"
     return "unrecognized_remote_error"
@@ -185,7 +185,8 @@ def _queue_sync(backend: str, account_id: int, state: dict, filename: str, gener
     elif any(item.get("status") in {"cancelled", "blocked_archived", "blocked_missing_credential", "blocked_credential_identity"}
              or (not _enabled() and item.get("status") == "pending" and item.get("error_code") and not item.get("dispatch_requested"))
              for item in items):
-        _cool(backend, account_id, state, "sync_requires_manual_review", stage="waiting_manual")
+        code = "sub2api_sync_cancelled" if any(item.get("status") == "cancelled" for item in items) else "sync_requires_manual_review"
+        _cool(backend, account_id, state, code, stage="waiting_manual")
     if result.get("accepted") and newly_queued:
         summary["sync_queued"] += 1
     elif not result.get("accepted"):
@@ -231,7 +232,7 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     state = repair_store.get_repair(backend, account_id) or {}
     stage = str(state.get("stage") or "")
     scoped_scan = bool(summary.get("group_ids"))
-    if scoped_scan and stage not in _CONTINUATION_STAGES and not remote:
+    if stage not in _CONTINUATION_STAGES and not remote:
         return
     previous_targets = set(state.get("remote_account_ids") or [])
     current_targets = {int(row["id"]) for row in remote if str(row.get("id") or "").isdigit() and int(row["id"]) > 0}
@@ -275,21 +276,26 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         skip("local_credential_unreadable")
         return
     source = str(state.get("source_generation") or "")
-    if stage in _WAIT_STAGES or stage == "waiting_manual":
-        run_id = int(state.get("run_id") or 0)
-        run = operation_runtime_store.get_run(run_id) if run_id else None
-        sync_receipt = _object(_object((run or {}).get("result_summary")).get("sub2api_sync"))
-        if str(sync_receipt.get("status") or "").lower() == "cancelled":
-            # OAuth 已成功也可能被明确停止后续同步；取消回执优先于凭据代际变化。
-            _save(backend, account_id, state, stage="waiting_manual", source_generation=generation,
-                  manual_requested=False, last_code="sub2api_sync_cancelled")
-            _reason(summary, "sub2api_sync_cancelled")
-            return
+    run_id = int(state.get("run_id") or 0)
+    run = operation_runtime_store.get_run(run_id) if run_id else None
+    run_status = str((run or {}).get("status") or "").lower()
+    sync_receipt = _object(_object((run or {}).get("result_summary")).get("sub2api_sync"))
+    stopped_code = str(state.get("last_code") or "")
+    if str(sync_receipt.get("status") or "").lower() == "cancelled" or stopped_code == "sub2api_sync_cancelled":
+        stopped_code = "sub2api_sync_cancelled"
+    elif run_status in {"cancelled", "canceled", "cancelling", "stopping", "stopped", "terminated"} or (run or {}).get("cancel_requested_at") or stopped_code == "repair_cancelled":
+        stopped_code = "repair_cancelled"
+    else:
+        stopped_code = ""
+    if stopped_code:
+        # 用户停止请求优先于凭据代际变化及新一轮异常扫描。
+        _save(backend, account_id, state, stage="waiting_manual", source_generation=generation,
+              manual_requested=False, last_code=stopped_code)
+        _reason(summary, stopped_code)
+        return
+    if stage in _WAIT_STAGES:
         if source and source != generation:
             _queue_sync(backend, account_id, state, filename, generation, summary)
-            return
-        if stage == "waiting_manual":
-            _reason(summary, str(state.get("last_code") or "repair_requires_manual_review"))
             return
         if not run:
             active = operation_runtime_store.active_run_for_account(account_id)
@@ -299,10 +305,10 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
                 _cool(backend, account_id, state, "repair_submission_unconfirmed", stage="waiting_manual")
             _reason(summary, "repair_in_progress")
             return
-        if str(run.get("status") or "").lower() in _ACTIVE:
+        if run_status in _ACTIVE:
             _reason(summary, "repair_in_progress")
             return
-        if str(run.get("status") or "").lower() in _SUCCESS:
+        if run_status in _SUCCESS:
             _queue_sync(backend, account_id, state, filename, generation, summary)
             return
         code = _run_failure_code(run, row)
@@ -328,38 +334,7 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         _cool(backend, account_id, state, "remote_account_deactivated")
         _reason(summary, "remote_account_deactivated")
         return
-    if "remote_oauth_error" not in codes and "remote_transient_error" in codes:
-        _cool(backend, account_id, state, "remote_transient_error")
-        _reason(summary, "remote_transient_error")
-        return
-    if "remote_oauth_error" not in codes:
-        _reason(summary, "unrecognized_remote_error")
-        if state.get("last_sync_generation") != generation:
-            _queue_sync(backend, account_id, state, filename, generation, summary)
-        else:
-            _cool(backend, account_id, state, "unrecognized_remote_error")
-        return
-    # 已有不同于远端的本地新凭据时先补传，上传失败不触发重复授权。
-    remote_stale = any(_object(item.get("credentials")).get("access_token") and
-                       _object(item.get("credentials"))["access_token"] != content.get("access_token") for item in remote)
-    if remote_stale and state.get("last_sync_generation") != generation:
-        _queue_sync(backend, account_id, state, filename, generation, summary)
-        return
-    state = _save(backend, account_id, state, stage="refresh_submitting", source_generation=generation,
-                  run_id=None, task_id=None, last_code="refresh_submitting", next_attempt_at=_now() + _cooldown(),
-                  attempt_count=int(state.get("attempt_count") or 0) + 1)
-    refreshed = token_refresh_service.enqueue_refresh(filename, trigger=_TASK)
-    if refreshed.get("accepted") or refreshed.get("busy"):
-        _save(backend, account_id, state, stage="refresh_wait", run_id=refreshed.get("run_id"), task_id=refreshed.get("task_id"), last_code="refresh_pending")
-        summary["refresh_queued"] += int(bool(refreshed.get("accepted")))
-    elif refreshed.get("error_code") == "reauth_required":
-        _start_reauth(backend, account, state, generation, summary)
-    elif refreshed.get("error_code") in {"needs_reconciliation", "request_unknown", "request_pending"}:
-        _cool(backend, account_id, state, "needs_reconciliation", stage="waiting_manual")
-        _reason(summary, "needs_reconciliation")
-    else:
-        _cool(backend, account_id, state, "refresh_queue_failed")
-        _reason(summary, "refresh_queue_failed")
+    _start_reauth(backend, account, state, generation, summary)
 
 
 def register_handler() -> None:

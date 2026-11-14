@@ -42,16 +42,96 @@ class Sub2ApiMonitorTests(PostgresTestCase):
     def patch(self, name, **kwargs):
         return self.stack.enter_context(patch("core.integrations.sub2api.monitor." + name, **kwargs))
 
-    def test_merges_email_and_repairs_multiple_remote_ids_with_one_refresh(self):
+    def seed_refresh_wait(self, *, manual_requested=False, targets=None):
+        return self.store.save_repair("test-backend", 42, stage="refresh_wait", run_id=11,
+            remote_account_ids=targets or [7], source_generation=self.monitor.jobs.credential_generation(self.content),
+            manual_requested=manual_requested)
+
+    def test_merges_email_and_repairs_multiple_remote_ids_with_one_oauth(self):
         self.remote.append({**self.remote[0], "id": 8})
         result = self.monitor._run_once()
-        self.refresh.assert_called_once_with("monitor.json", trigger="sub2api_monitor")
+        self.oauth.assert_called_once_with(42, trigger="sub2api_monitor", remote_account_ids=[7, 8], backend_identity="test-backend")
         repair = self.store.get_repair("test-backend", 42)
-        self.assertEqual(repair["stage"], "refresh_wait")
+        self.assertEqual(repair["stage"], "reauth_wait")
         self.assertEqual(repair["remote_account_ids"], [7, 8])
-        self.assertEqual(result["refresh_queued"], 1)
+        self.assertEqual(result["reauth_queued"], 1)
+        self.refresh.assert_not_called()
         self.fetch.assert_called_once_with(group_ids=[3], expected_backend="test-backend")
         self.assertNotIn("monitor@example.test", json.dumps(result))
+
+    def test_new_remote_errors_all_start_oauth_even_with_newer_local_credentials(self):
+        for error in ("401 unauthorized", "HTTP 429 too many requests", "HTTP 503 upstream error",
+                      "network connection timeout", "unexpected upstream state"):
+            with self.subTest(error=error):
+                self.store.save_repair("test-backend", 42, stage="idle", remote_account_ids=[], next_attempt_at=0)
+                self.remote[0].update(error_message=error, credentials={"email": self.account["email"], "access_token": "older-access"})
+                self.oauth.reset_mock()
+                self.assertEqual(1, self.monitor._run_once()["reauth_queued"])
+                self.oauth.assert_called_once()
+        self.refresh.assert_not_called()
+        self.sync.assert_not_called()
+
+    def test_waiting_manual_oauth_failure_retries_only_after_real_scan_and_cooldown(self):
+        self.store.save_repair("test-backend", 42, stage="waiting_manual", run_id=21, remote_account_ids=[7],
+            source_generation="old-generation", next_attempt_at=1200, last_code="repair_failed")
+        self.run.return_value = {"id": 21, "status": "failed", "result_summary": {"error_code": "inbound_code_timeout"}}
+        self.monitor._run_once(continuation_only=True)
+        self.oauth.assert_not_called()
+        self.assertEqual(1, self.monitor._run_once()["reasons"]["cooldown"])
+        with patch.object(self.monitor, "_now", return_value=1400):
+            self.monitor._run_once()
+        self.oauth.assert_called_once()
+        self.sync.assert_not_called()
+        self.refresh.assert_not_called()
+
+    def test_waiting_manual_unknown_refresh_can_use_oauth_after_real_error_scan(self):
+        self.store.save_repair("test-backend", 42, stage="waiting_manual", run_id=11, remote_account_ids=[7],
+            source_generation="old-generation", next_attempt_at=0, last_code="needs_reconciliation")
+        self.run.return_value = {"id": 11, "status": "request_unknown", "result_summary": {"error_code": "request_unknown"}}
+        self.monitor._run_once()
+        self.oauth.assert_called_once()
+        self.refresh.assert_not_called()
+
+    def test_cancelled_runs_never_restart_even_after_credential_generation_changes(self):
+        for status in ("cancelled", "stopped", "terminated"):
+            with self.subTest(status=status):
+                self.store.save_repair("test-backend", 42, stage="waiting_manual", run_id=21, remote_account_ids=[7],
+                    source_generation="old-generation", next_attempt_at=0, last_code="")
+                self.run.return_value = {"id": 21, "status": status}
+                self.assertEqual(1, self.monitor._run_once()["reasons"]["repair_cancelled"])
+                self.assertEqual("waiting_manual", self.store.get_repair("test-backend", 42)["stage"])
+        self.oauth.assert_not_called()
+        self.refresh.assert_not_called()
+        self.sync.assert_not_called()
+
+    def test_pending_user_cancellation_precedes_new_credential_sync(self):
+        for run in ({"id": 21, "status": "cancelling"}, {"id": 21, "status": "stopping"},
+                    {"id": 21, "status": "running", "cancel_requested_at": "2026-11-14T23:00:00Z"}):
+            with self.subTest(status=run["status"], requested=bool(run.get("cancel_requested_at"))):
+                self.store.save_repair("test-backend", 42, stage="reauth_wait", run_id=21, remote_account_ids=[7],
+                    source_generation="old-generation", next_attempt_at=0, last_code="")
+                self.run.return_value = run
+                self.assertEqual(1, self.monitor._run_once(continuation_only=True)["reasons"]["repair_cancelled"])
+        self.oauth.assert_not_called()
+        self.refresh.assert_not_called()
+        self.sync.assert_not_called()
+
+    def test_explicit_remote_deactivation_precedes_network_error_classification(self):
+        self.remote[0]["error_message"] = "HTTP 503 network timeout: account_deactivated"
+        self.assertEqual(1, self.monitor._run_once()["reasons"]["remote_account_deactivated"])
+        self.oauth.assert_not_called()
+
+    def test_cancelled_sync_job_does_not_restart_oauth_on_next_error_scan(self):
+        self.store.save_repair("test-backend", 42, stage="sync_wait", remote_account_ids=[7],
+            source_generation=self.monitor.jobs.credential_generation(self.content))
+        self.sync.return_value = {"accepted": True, "items": [{"status": "cancelled", "error_code": "sub2api_sync_cancelled"}]}
+        self.monitor._run_once(continuation_only=True)
+        self.sync.reset_mock()
+        with patch.object(self.monitor, "_now", return_value=1400):
+            self.monitor._run_once()
+        self.oauth.assert_not_called()
+        self.refresh.assert_not_called()
+        self.sync.assert_not_called()
 
     def test_busy_and_persisted_cooldown_do_not_submit(self):
         self.active.return_value = {"id": 99, "status": "running"}
@@ -63,10 +143,10 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.oauth.assert_not_called()
 
     def test_restart_keeps_refresh_wait_then_syncs_new_generation_to_original_ids(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.monitor = importlib.reload(self.monitor)
         self.assertEqual(self.monitor._run_once()["reasons"]["repair_in_progress"], 1)
-        self.refresh.assert_called_once()
+        self.refresh.assert_not_called()
         self.content["access_token"] = "renewed-access"
         self.remote = []
         result = self.monitor._run_once()
@@ -75,7 +155,8 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.assertEqual(self.store.get_repair("test-backend", 42)["stage"], "sync_wait")
 
     def test_failed_sync_is_retried_before_scan_and_never_relogs(self):
-        self.remote[0]["credentials"]["access_token"] = "older-access"
+        self.store.save_repair("test-backend", 42, stage="sync_wait", remote_account_ids=[7],
+            source_generation=self.monitor.jobs.credential_generation(self.content))
         self.monitor._run_once()
         self.sync.return_value = {"accepted": True, "pending": True, "items": [{"status": "failed"}]}
         self.monitor._run_once()
@@ -90,19 +171,19 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
-    def test_archived_account_with_active_codex_credential_still_refreshes(self):
+    def test_archived_account_with_active_codex_credential_still_reauthorizes(self):
         self.account["archived"] = True
         result = self.monitor._run_once()
-        self.assertEqual(1, result["refresh_queued"])
+        self.assertEqual(1, result["reauth_queued"])
         self.assertNotIn("account_archived", result["reasons"])
-        self.assertEqual("refresh_wait", self.store.get_repair("test-backend", 42)["stage"])
+        self.assertEqual("reauth_wait", self.store.get_repair("test-backend", 42)["stage"])
 
-    def test_archived_account_still_syncs_a_newer_active_codex_credential(self):
+    def test_archived_account_with_newer_credential_also_reauthorizes(self):
         self.account["archived"] = True
         self.remote[0]["credentials"]["access_token"] = "older-access"
         result = self.monitor._run_once()
-        self.assertEqual(1, result["sync_queued"])
-        self.assertEqual("sync_wait", self.store.get_repair("test-backend", 42)["stage"])
+        self.assertEqual(1, result["reauth_queued"])
+        self.assertEqual("reauth_wait", self.store.get_repair("test-backend", 42)["stage"])
         self.refresh.assert_not_called()
 
     def test_archived_codex_credential_is_classified_without_submitting_repairs(self):
@@ -128,14 +209,14 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.oauth.assert_called_once()
 
     def test_completed_refresh_reauth_failure_advances_once_after_restart(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
         self.monitor._run_once()
         self.oauth.assert_called_once()
         self.assertEqual(self.store.get_repair("test-backend", 42)["run_id"], 21)
 
     def test_continuation_advances_refresh_failure_before_hourly_scan_is_due(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
         self.fetch.reset_mock()
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_INTERVAL_SECONDS", 3600):
@@ -150,7 +231,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def test_continuation_syncs_new_generation_to_original_targets_without_rescan(self):
         self.remote.append({**self.remote[0], "id": 8})
-        self.monitor._run_once()
+        self.seed_refresh_wait(targets=[7, 8])
         self.content["access_token"] = "fresh-access"
         self.run.return_value = {"id": 11, "status": "success"}
         self.fetch.reset_mock()
@@ -158,15 +239,15 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.monitor._run_once(continuation_only=True)
         self.fetch.assert_not_called()
         self.sync.assert_called_once_with("monitor.json", remote_account_ids=[7, 8], trigger="sub2api_monitor", expected_backend="test-backend")
-        self.refresh.assert_called_once()
+        self.refresh.assert_not_called()
 
     def test_continuation_does_not_dispatch_again_while_refresh_run_is_active(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.fetch.reset_mock()
         for _ in range(2):
             self.assertEqual(1, self.monitor._run_once(continuation_only=True)["reasons"]["repair_in_progress"])
         self.fetch.assert_not_called()
-        self.refresh.assert_called_once()
+        self.refresh.assert_not_called()
         self.oauth.assert_not_called()
         self.sync.assert_not_called()
 
@@ -179,7 +260,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.refresh.assert_not_called()
 
     def test_permanent_continuation_block_is_persisted_and_no_longer_scheduled(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         for code in ("account_deactivated", "codex_credential_archived", "local_credential_missing"):
             with self.subTest(code=code):
                 self.store.save_repair("test-backend", 42, stage="refresh_wait", remote_account_ids=[7], run_id=11)
@@ -197,7 +278,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
                 self.assertFalse(self.monitor._continuation_ready())
 
     def test_scan_and_continuation_producers_restore_independently_after_restart(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.monitor.scheduler_state.mark_ran("sub2api_monitor")
         before = self.monitor.scheduler_state.last_run_at("sub2api_monitor")
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
@@ -233,7 +314,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         submit.assert_not_called()
 
     def test_continuation_producer_does_not_accumulate_queued_scans(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         with patch.object(self.monitor.task_gateway, "notify_dispatch"):
             first = self.monitor._queue_continuation()
             self.monitor._queue_continuation()
@@ -243,7 +324,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.assertNotEqual(first["run_id"], next_cycle["run_id"])
 
     def test_temporary_credential_read_failure_keeps_continuation_retryable(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
         with patch.object(self.monitor.db, "read_codex_credential", side_effect=RuntimeError("模拟临时存储读取失败")):
             result = self.monitor._run_once(continuation_only=True)
@@ -253,7 +334,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.oauth.assert_called_once()
 
     def test_disabled_manual_continuation_survives_temporary_credential_read_failure(self):
-        self.monitor._run_once(force=True)
+        self.seed_refresh_wait(manual_requested=True)
         self.run.return_value = {"id": 11, "status": "failed", "result_summary": {"error_code": "reauth_required"}}
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_ENABLED", False):
             with patch.object(self.monitor.db, "read_codex_credential", side_effect=RuntimeError("模拟临时存储读取失败")):
@@ -272,28 +353,15 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "automatic_login_material_missing")
         self.assertGreater(self.store.get_repair("test-backend", 42)["next_attempt_at"], 1000)
 
-    def test_unrecognized_error_only_syncs_once_without_login(self):
+    def test_unrecognized_error_starts_oauth_once_while_repair_is_active(self):
         self.remote[0]["error_message"] = "unexpected upstream state"
         self.sync.return_value = {"accepted": True, "pending": False, "items": [{"status": "success"}]}
-        self.assertEqual(self.monitor._run_once()["reasons"]["unrecognized_remote_error"], 1)
+        self.assertEqual(1, self.monitor._run_once()["reauth_queued"])
         with patch("core.integrations.sub2api.monitor._now", return_value=1400):
             self.monitor._run_once()
-        self.sync.assert_called_once()
+        self.sync.assert_not_called()
         self.refresh.assert_not_called()
-        self.oauth.assert_not_called()
-
-    def test_remote_rate_limit_is_cooldown_and_refresh_unknown_is_not_replayed(self):
-        self.remote[0]["error_message"] = "HTTP 429 too many requests"
-        self.assertEqual(self.monitor._run_once()["reasons"]["remote_transient_error"], 1)
-        self.refresh.assert_not_called()
-        self.remote[0]["error_message"] = "401 unauthorized"
-        with patch("core.integrations.sub2api.monitor._now", return_value=1400):
-            self.refresh.return_value = {"accepted": False, "error_code": "needs_reconciliation"}
-            self.monitor._run_once()
-        with patch("core.integrations.sub2api.monitor._now", return_value=1800):
-            self.monitor._run_once()
-        self.refresh.assert_called_once()
-        self.oauth.assert_not_called()
+        self.oauth.assert_called_once()
 
     def test_disabled_monitor_still_drains_failed_uploads_and_status_is_safe(self):
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_ENABLED", False):
@@ -319,7 +387,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "automatic_login_material_missing")
 
     def test_cooldown_account_does_not_starve_another_account_at_cycle_limit(self):
-        second = {"id": 43, "email": "other@example.test"}
+        second = {"id": 43, "email": "other@example.test", "extra_json": {"account_password": "saved-password"}}
         self.remote.append({"id": 9, "credentials": {"email": second["email"]}, "error_message": "401 unauthorized"})
         self.credential["email"] = second["email"]
         self.content["email"] = second["email"]
@@ -327,7 +395,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.store.save_repair("test-backend", 42, stage="cooldown", next_attempt_at=1500)
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_MAX_PER_CYCLE", 1):
             self.monitor._run_once()
-        self.refresh.assert_called_once()
+        self.oauth.assert_called_once()
 
     def test_comma_separated_group_filter_is_parsed_before_remote_scan(self):
         with patch.object(self.monitor._cfg, "SUB2API_MONITOR_GROUP_IDS", "2,5"):
@@ -346,7 +414,7 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.store.save_repair("test-backend", 42, stage="cooldown", remote_account_ids=[99], next_attempt_at=0)
         self.remote[0]["credentials"]["access_token"] = "older-access"
         self.monitor._run_once()
-        self.sync.assert_called_once_with("monitor.json", remote_account_ids=[7], trigger="sub2api_monitor", expected_backend="test-backend")
+        self.oauth.assert_called_once_with(42, remote_account_ids=[7], trigger="sub2api_monitor", backend_identity="test-backend")
         self.assertEqual([7], self.store.get_repair("test-backend", 42)["remote_account_ids"])
 
     def test_unmatched_historical_repair_does_not_start_a_new_sync(self):
@@ -368,25 +436,26 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.oauth.assert_not_called()
         self.sync.assert_not_called()
 
-    def test_new_remote_target_receives_existing_generation_without_new_login(self):
+    def test_new_remote_error_target_reauthorizes_despite_previously_synced_generation(self):
         self.remote[0]["error_message"] = "unexpected upstream state"
         self.sync.return_value = {"accepted": True, "pending": False, "items": [{"status": "success"}]}
-        self.monitor._run_once()
+        self.store.save_repair("test-backend", 42, stage="idle", remote_account_ids=[7],
+            last_sync_generation=self.monitor.jobs.credential_generation(self.content), next_attempt_at=0)
         self.remote.append({**self.remote[0], "id": 8})
         with patch("core.integrations.sub2api.monitor._now", return_value=1400):
             self.monitor._run_once()
-        self.assertEqual(self.sync.call_count, 2)
-        self.assertEqual(self.sync.call_args.kwargs["remote_account_ids"], [7, 8])
-        self.oauth.assert_not_called()
+        self.assertEqual(1, self.oauth.call_count)
+        self.assertEqual(self.oauth.call_args.kwargs["remote_account_ids"], [7, 8])
+        self.sync.assert_not_called()
 
     def test_refresh_unknown_survives_restart_without_new_refresh_or_oauth(self):
-        self.monitor._run_once()
+        self.seed_refresh_wait()
         self.run.return_value = {"id": 11, "status": "request_unknown", "result_summary": {"error_code": "request_unknown", "error": "token endpoint HTTP 503"}}
-        self.monitor._run_once()
+        self.monitor._run_once(continuation_only=True)
         self.monitor = importlib.reload(self.monitor)
-        self.monitor._run_once()
+        self.monitor._run_once(continuation_only=True)
         self.assertEqual(self.store.get_repair("test-backend", 42)["last_code"], "needs_reconciliation")
-        self.refresh.assert_called_once()
+        self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_cancelled_oauth_sync_receipt_precedes_changed_credential_generation(self):
@@ -432,6 +501,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.stack.enter_context(patch.object(task_gateway, "notify_dispatch"))
         self.refresh = self.stack.enter_context(patch.object(monitor.token_refresh_service, "enqueue_refresh", side_effect=self.enqueue_refresh))
         self.oauth = self.stack.enter_context(patch.object(monitor.operation_service, "enqueue_oauth"))
+        self.stack.enter_context(patch.object(monitor, "_automatic_login_ready", return_value=True))
         for key in ("SUB2API_MONITOR_ENABLED", "SUB2API_SYNC_RETRY_ENABLED"):
             self.stack.enter_context(patch.object(monitor._cfg, key, False))
 
@@ -439,8 +509,14 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         return task_gateway.submit_durable_operation(task_type="codex_token_refresh", account_id=self.account_id,
             email=self.email, trigger="sub2api_monitor", dispatch=False)
 
+    def seed_legacy_refresh_wait(self):
+        run = self.enqueue_refresh(self.filename)
+        return self.store.save_repair("manual-backend", self.account_id, stage="refresh_wait",
+            run_id=run["run_id"], task_id=run["task_id"], manual_requested=True, remote_account_ids=[71, 72],
+            source_generation=self.monitor.jobs.credential_generation(self.content))
+
     def test_manual_refresh_chain_finishes_multiple_targets_without_enabling_new_scans(self):
-        self.monitor._run_once(force=True)
+        self.seed_legacy_refresh_wait()
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.assertTrue(repair.get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
@@ -464,12 +540,12 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.assertFalse(self.store.get_repair("manual-backend", self.account_id).get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
         self.monitor._run_once()
-        self.scan.assert_called_once()
-        self.refresh.assert_called_once()
+        self.scan.assert_not_called()
+        self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_durable_continuation_uses_saved_mode_without_new_remote_scan(self):
-        self.monitor._run_once(force=True)
+        self.seed_legacy_refresh_wait()
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.content["access_token"] = "refreshed-access"
         codex.save_codex_credential_record(self.filename, self.content)
@@ -480,7 +556,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         result = task_gateway._execute_operation_handler("sub2api_scan", queued["run_id"])
         self.assertTrue(result["ok"])
         self.assertEqual({71, 72}, {row["remote_account_id"] for row in self.store.list_jobs(filename=self.filename)})
-        self.scan.assert_called_once()
+        self.scan.assert_not_called()
         self.assertFalse(self.monitor._periodic_enabled())
 
     def test_disabled_continuation_producer_leaves_automatic_repairs_paused(self):
@@ -501,7 +577,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.assertEqual([], self.store.list_jobs(filename=self.filename))
 
     def test_manual_chain_stops_at_unknown_refresh_result_without_new_scan(self):
-        self.monitor._run_once(force=True)
+        self.seed_legacy_refresh_wait()
         repair = self.store.get_repair("manual-backend", self.account_id)
         operation.finish_run(repair["run_id"], status="attention_required", result_summary={"error_code": "request_unknown"})
         self.monitor._run_once()
@@ -510,8 +586,8 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.assertFalse(final.get("manual_requested"))
         self.assertFalse(self.monitor._periodic_enabled())
         self.monitor._run_once()
-        self.scan.assert_called_once()
-        self.refresh.assert_called_once()
+        self.scan.assert_not_called()
+        self.refresh.assert_not_called()
         self.oauth.assert_not_called()
 
     def test_manual_reauth_chain_preserves_original_targets_without_new_cycle(self):
@@ -533,7 +609,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.scan.assert_called_once()
 
     def test_manual_sync_failure_stops_continuation_without_enabling_retries(self):
-        self.monitor._run_once(force=True)
+        self.seed_legacy_refresh_wait()
         repair = self.store.get_repair("manual-backend", self.account_id)
         self.content["access_token"] = "refreshed-access"
         codex.save_codex_credential_record(self.filename, self.content)
@@ -548,5 +624,5 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.assertFalse(final["manual_requested"])
         self.assertEqual("waiting_manual", final["stage"])
         self.assertFalse(self.monitor._periodic_enabled())
-        self.refresh.assert_called_once()
+        self.refresh.assert_not_called()
         self.oauth.assert_not_called()

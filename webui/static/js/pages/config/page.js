@@ -2134,6 +2134,7 @@ async function querySub2ApiAutomationV2(button) {
         account_busy: '账号忙碌', cooldown: '冷却中', account_archived: '账号已归档', codex_credential_archived: 'Codex 凭证已归档', account_deactivated: '账号已停用',
         automatic_login_material_missing: '自动登录资料不足', unrecognized_remote_error: '远端错误原因未识别',
         remote_transient_error: '远端网络或限流错误', needs_reconciliation: '上次请求结果待核实', repair_in_progress: '修复进行中',
+        repair_cancelled: '修复已取消', sub2api_sync_cancelled: '后续同步已取消',
       };
       const reasons = Object.entries(summary.reasons || {}).map(([code, count]) => `${labels[code] || code} ${count}`).join('，');
       status.textContent = `本轮检查 ${summary.remote_errors || 0} 条异常记录，已调度同步 ${summary.sync_queued || 0}、刷新 ${summary.refresh_queued || 0}、重授权 ${summary.reauth_queued || 0}。${reasons ? `处理说明：${reasons}。` : ''}`;
