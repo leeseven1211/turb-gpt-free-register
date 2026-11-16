@@ -254,7 +254,7 @@ function accountTaskResultText(task, compact = false) {
   }
   if (task.task_type === 'c2a_session_reimport') return result.ok ? (result.message || 'C2A AT 已从本地重新导入') : result.error_code || result.message || 'C2A 重新导入失败，请查看任务日志';
   if (task.task_type === 'sub2api_manual_upload') return result.ok ? '手动上传 Sub2API 已完成' : result.error_code || result.message || '手动上传失败，请查看任务日志';
-  if (task.task_type === 'sub2api_scan') return result.ok ? 'Sub2API 异常扫描已完成' : result.error_code || result.message || '扫描未完成，请查看任务日志';
+  if (task.task_type === 'sub2api_scan') return status === 'success' ? 'Sub2API 异常扫描已完成' : result.error_code || result.message || '扫描未完成，请查看任务日志';
   return Object.keys(result).length ? JSON.stringify(result) : '-';
 }
 function normalizeAccountTaskStage(stage) {
