@@ -67,6 +67,7 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         "registration_password_unconfirmed": "注册认证已完成，强制密码尚未确认",
         "registration_auth_state_unrecognized": "注册认证返回未支持的页面状态",
         "registration_session_invalid_response": "注册认证未返回可核验的完整会话",
+        "registration_identity_verification_required": "资料已接受，OpenAI 仍要求身份验证，尚未取得登录会话",
         "identity_mismatch": "登录会话邮箱缺失或与原注册邮箱不匹配",
         "protocol_preauth_transport_failed": "协议认证前置请求发生传输错误",
         "protocol_post_otp_transport_failed": "已取得邮箱验证码，后续认证请求发生传输错误",

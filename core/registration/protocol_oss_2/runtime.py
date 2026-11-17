@@ -44,6 +44,12 @@ class ProtocolRegistrationContextError(RuntimeError):
     cause_code = "registration_checkpoint_failed"
 
 
+class ProtocolRegistrationVerificationRequiredError(RuntimeError):
+    """资料请求已接受，但远端仍要求身份验证，尚未交付登录会话。"""
+
+    cause_code = "registration_identity_verification_required"
+
+
 def _registration_intent_from_facts(facts: dict) -> str:
     """使用持久化 Run 判定执行意图，不从密码是否存在或页面落点推断。"""
     if not any(facts.values()):
@@ -394,6 +400,13 @@ def run_upstream_protocol(
                 context["profile_error"] = exc
                 raise
             progress("profile", "success", "上游已确认注册资料")
+            target = urlsplit(str(result or ""))
+            if (target.scheme == "https" and target.hostname == "auth.openai.com"
+                    and target.port in (None, 443) and not target.username and not target.password
+                    and target.path.rstrip("/") == "/verify-your-identity"):
+                raise ProtocolRegistrationVerificationRequiredError(
+                    "资料已接受，OpenAI 要求继续身份验证，当前协议尚未完成该步骤"
+                )
             # 仅补进度，不在原流程之外增加停止检查点。
             try:
                 report_job_progress("token", "running", "资料已确认，正在完成回调和登录态")
@@ -518,6 +531,7 @@ def run_upstream_protocol(
                 "identity_mismatch",
                 "registration_password_create_rejected", "registration_password_unconfirmed",
                 "registration_auth_state_unrecognized", "registration_session_invalid_response",
+                "registration_identity_verification_required",
             }:
                 unknown.cause_code = exc.cause_code
             if diagnostics is not None:

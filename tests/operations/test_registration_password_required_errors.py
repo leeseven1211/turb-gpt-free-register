@@ -8,7 +8,7 @@ from core.registration.errors import _safe_protocol_registration_error
 @pytest.mark.parametrize("code", [
     "registration_password_entry_unavailable", "registration_password_create_rejected",
     "registration_password_unconfirmed", "registration_auth_state_unrecognized",
-    "registration_session_invalid_response",
+    "registration_session_invalid_response", "registration_identity_verification_required",
 ])
 def test_required_registration_failure_keeps_fixed_cause_on_all_surfaces(code):
     assert code in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES

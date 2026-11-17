@@ -4203,6 +4203,8 @@ class AuthFlow:
                 try:
                     continue_url = self.create_account()
                 except Exception as e:
+                    if getattr(e, "cause_code", "") == "registration_identity_verification_required":
+                        raise
                     if self._is_registration_disallowed_error(e):
                         logger.warning("about-you create_account 被拒绝，尝试 reauthorize 兜底获取 session ...")
                         continue_url = self._reauthorize_for_session(auth_url) or ""
