@@ -1272,6 +1272,8 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "registration_password_entry_unavailable": ("FLOW-REG-PWD-001", "强制密码步骤未能进入创建或验证页面"),
     "registration_password_create_rejected": ("OA-REG-PWD-001", "远端拒绝了本轮强制密码创建请求"),
     "registration_password_unconfirmed": ("AUTH-REG-PWD-001", "注册认证已完成，强制密码步骤缺少有效回执"),
+    "registration_completion_dispatch_failed": ("FLOW-REG-COMPLETE-001", "注册认证已完成，自动补密码任务未能入队"),
+    "registration_completion_incomplete": ("FLOW-REG-COMPLETE-002", "注册认证已完成，自动补密码尚未完成"),
     "registration_auth_state_unrecognized": ("FLOW-REG-AUTH-001", "注册认证返回未支持的页面状态"),
     "registration_session_invalid_response": ("AUTH-REG-SESSION-001", "注册认证未返回可核验的完整会话"),
     "password_setup_result_unconfirmed": ("AUTH-PWD-SETUP-001", "密码已提交，尚未取得明确设置成功证据"),
