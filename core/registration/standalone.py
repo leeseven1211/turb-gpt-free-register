@@ -51,7 +51,11 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
     persisted_driver = normalize_registration_driver(driver_name)
     facts = service.registration_fact_context()
     if all(facts.get(key) for key in ("attempt_id", "run_id", "execution_id")):
-        return driver(**kwargs)
+        from core.registration.password_completion import after_registration
+
+        return after_registration(
+            driver(**kwargs), run_id=int(facts["run_id"]), options=kwargs.get("registration_options"),
+        )
     if any(facts.values()):
         raise RuntimeError("注册执行上下文不完整，拒绝创建第二条任务链")
 
@@ -125,6 +129,12 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
         if core_saved:
             status = "success" if result.get("postprocess_success") else "partial_success"
             service._mark_registration_result(result)
+            from core.registration.password_completion import after_registration
+
+            result = after_registration(
+                result, run_id=int(run["id"]), options=restored.get("registration_options"),
+            )
+            status = "success" if result.get("postprocess_success") else "partial_success"
         else:
             reported = str(result.get("status") or "")
             if result.get("request_unknown"):

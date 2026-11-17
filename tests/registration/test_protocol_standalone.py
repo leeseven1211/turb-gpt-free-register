@@ -13,6 +13,44 @@ from tests.support_pg import PostgresTestCase
 
 
 class ProtocolStandaloneTests(PostgresTestCase):
+    def test_cli_resume_with_token_queues_the_shared_password_completion(self):
+        from core import account_task_store
+        from core.storage.operations import store
+        from core.operations import task_gateway
+        from core.registration.standalone import run_registration_in_context
+
+        self.enterContext(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(account_task_store, "_READY_KEY", ""))
+        self.enterContext(patch.object(task_gateway, "notify_dispatch"))
+        account_task_store.init()
+        store.reset_ready()
+        store.init()
+
+        def disconnected(**kwargs):
+            self._save_password()
+            raise TimeoutError("合成注册提交后网络中断")
+
+        kwargs = {"email": self.email, "registration_options": {"password_enabled": True}}
+        with self.assertRaises(TimeoutError):
+            run_registration_in_context(disconnected, kwargs, driver_name="protocol_oss_2")
+
+        def resumed(**kwargs):
+            account_id = service.persist_registration_core(
+                email=self.email, access_token="fixture-cli-token",
+                extra={"account_password": "fixture-original-password", "account_password_state": "candidate"},
+            )
+            return {"success": True, "registration_success": True, "core_persisted": True,
+                    "postprocess_success": False, "partial_success": True, "account_id": account_id,
+                    "email": self.email, "access_token": "fixture-cli-token",
+                    "cause_code": "registration_password_unconfirmed", "error": "原密码尚未确认生效"}
+
+        result = run_registration_in_context(resumed, kwargs, driver_name="protocol_oss_2")
+        self.assertTrue(result["completion_handoff"]["accepted"])
+        task = store.get_task(result["completion_handoff"]["task_id"], include_events=False)
+        self.assertEqual("password_setup", task["task_type"])
+        self.assertEqual(["password"], task["runs"][-1]["data"]["steps"])
+        self.assertEqual("queued", task["status"])
+
     def test_protocol2_unknown_write_can_resume_same_attempt_with_original_password(self):
         from core.registration.standalone import run_registration_in_context
 

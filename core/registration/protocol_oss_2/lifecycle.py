@@ -438,6 +438,7 @@ def run_protocol_oss_2_lifecycle(
             "registration_password_create_rejected", "registration_password_unconfirmed",
             "registration_auth_state_unrecognized", "registration_session_invalid_response",
             "registration_route_close_failed",
+            "registration_identity_verification_required",
         }:
             cause_code = password_entry_cause
         missing_module = str(getattr(exc, "name", "") or "")

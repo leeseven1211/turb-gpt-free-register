@@ -1017,6 +1017,16 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
         steps = {
             "password", "plan_check", "twofa",
         }
+    if data.get("registration_completion"):
+        from core.storage import registration
+
+        source_run = registration.get_run(int(data.get("registration_run_id") or 0)) or {}
+        source_job = db.get_job(int(source_run.get("job_id") or 0)) if source_run.get("job_id") else {}
+        if (str(source_run.get("status") or "") in {"stopped", "cancelled"}
+                or str((source_job or {}).get("status") or "") in {"stopping", "stopped", "cancelled"}):
+            return _finish_native_context(context, task_gateway.OperationResult.cancelled(
+                "原注册续跑已停止，取消尚未执行的自动补密码",
+            ))
     settings = _completion_settings_from_snapshot(context.config_snapshot)
     task_trigger = str(data.get("task_trigger") or context.run.get("trigger") or "manual_account_setup")
     # 持久化脱敏会移除含 password 的键；改密任务仍须保留其明确操作意图。
@@ -1042,6 +1052,13 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
     )
     request_id = f"account-setup:{context.run_id}"
     with context.lease(resource_family="openai_interactive"):
+        if data.get("registration_completion") and steps == {"password"}:
+            from core.accounts.password_evidence import password_is_confirmed
+
+            if password_is_confirmed(db.get_account(int(context.account_id or 0))):
+                return _finish_native_context(context, task_gateway.OperationResult.success(
+                    {"already_confirmed": True}, message="账号密码已确认，自动补密码任务完成",
+                ))
         if data.get("completion_auth"):
             from core.accounts.completion import active_registration_job
 
@@ -1070,7 +1087,8 @@ def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) 
                 force_password_reset=force_password_reset,
                 force_twofa_change=force_twofa_change,
                 execution_fence=context.execution_fence,
-                **({"execution_settings": dict(settings)} if data.get("bulk_target_round_id") else {}),
+                **({"execution_settings": dict(settings)}
+                   if data.get("bulk_target_round_id") or data.get("registration_completion") else {}),
                 **({"proxy_country_override": country} if country is not None else {}),
             )
         except Exception as exc:

@@ -348,8 +348,10 @@ def _result(steps: list[dict[str, Any]], run: dict[str, Any], observations: dict
     assert item is not None
     complete = observations.get("result") or []
     run_status = str(run.get("status") or "").strip().lower()
+    handoff = (run.get("result_summary") or {}).get("completion_handoff") or {}
+    completion_waiting = run_status == "waiting" and bool(handoff)
     authoritative = {"success", "partial_success", "failed", "stopped", "cancelled", "canceled", "interrupted", "attention_required", "request_unknown", "unknown", "manual_reconcile", "password_confirmation_pending", "deactivated", "unsupported"}
-    if complete and run_status not in authoritative:
+    if complete and run_status not in authoritative and not completion_waiting:
         _state(item, complete[-1]["state"])
         item["reason"] = None
     else:
@@ -363,7 +365,7 @@ def _result(steps: list[dict[str, Any]], run: dict[str, Any], observations: dict
             children.append({key: _safe_message(child.get(key)) if key == "error_message" else child.get(key) for key in ("task_id", "run_id", "task_type", "status", "accepted", "busy", "failure_stage", "failure_event_id", "error_code", "error_message") if child.get(key) is not None})
         elif isinstance(child, (int, str)):
             children.append({"task_id": child})
-    outcome = {"status": item["display_status"], "state": item["state"], "message": _safe_message(run.get("message") or run.get("error_message")) or "", "child_tasks": children}
+    outcome = {"status": item["display_status"], "state": item["state"], "message": _safe_message(run.get("message") or run.get("error_message") or handoff.get("message")) or "", "child_tasks": children}
     if run_status not in authoritative and not complete:
         # 整体任务正在执行，不代表末尾的结果阶段已经开始。
         _state(item, "pending", reason="等待前序步骤结束")

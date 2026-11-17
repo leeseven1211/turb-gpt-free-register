@@ -157,6 +157,60 @@ def test_callback_403_uses_read_only_session_recovery_without_consuming_the_code
     ]
 
 
+def test_recovered_callback_403_does_not_override_a_later_identity_verification(upstream, monkeypatch):
+    from core.operations.errors import classify_task_error
+    from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
+
+    session, transport, _ = upstream
+    callback = "https://chatgpt.com/api/auth/callback/openai?code=once"
+    request = transport.request
+    facts = []
+    transport.session_payloads = [{}]
+    transport.profile_payload = {
+        "page": {"type": "identity_verification", "payload": {}},
+        "continue_url": "https://auth.openai.com/verify-your-identity",
+        "method": "GET",
+    }
+
+    def reject_callback(method, url, **kwargs):
+        if url == callback:
+            transport.requests.append((method, url, kwargs))
+            return Response(403)
+        return request(method, url, **kwargs)
+
+    transport.request = reject_callback
+    _scope(monkeypatch, lambda *_args: SimpleNamespace(proxy_url=NEW_PROXY, lease_id="new-lease"))
+    with (
+        registration_run_context(action_type="registration_resume", password="original-password"),
+        patch("core.auth.protocol.session.BrowserSession", return_value=session),
+        patch("core.email.provider.retain_email"),
+        patch("core.email.provider.mark_email_permanently_unusable"),
+        patch("core.registration.service.persist_registration_core") as persist,
+        patch("core.storage.registration.record_submission_fact", side_effect=lambda *args, **kw: facts.append(kw)),
+        patch.object(AuthFlow, "run_register", lambda flow, mailbox: flow.session.get(callback)),
+        patch.object(AuthFlow, "authorize_continue", return_value={
+            "page": {"type": "email_otp_verification"}, "continue_url": "/email-verification",
+        }),
+    ):
+        result = run_protocol_oss_2_registration(
+            email="protocol2@example.test", name="测试姓名", proxy=session.proxy,
+            email_source="icloud_hide", existing_password="original-password",
+        )
+
+    assert result["cause_code"] == "registration_identity_verification_required"
+    assert result["request_unknown"] is True
+    assert "route_failure" not in result
+    assert sum(url == callback for _, url, _ in transport.requests) == 1
+    assert sum(url.endswith("/create_account") for _, url, _ in transport.requests) == 1
+    assert [(fact["kind"], fact["phase"], fact["result"]) for fact in facts] == [
+        ("callback", "unknown", "unknown"),
+    ]
+    classified = classify_task_error(result["error"], task_type="registration", result_summary=result)
+    assert classified["cause_code"] == "registration_identity_verification_required"
+    assert classified["display_code"] == "AUTH-REG-IDENTITY-001"
+    persist.assert_not_called()
+
+
 @pytest.mark.parametrize("method,url", [
     ("POST", "https://auth.openai.com/api/accounts/user/register"),
     ("POST", "https://auth.openai.com/api/accounts/create_account"),
@@ -493,8 +547,7 @@ def test_failed_identity_login_keeps_original_unknown_action_and_current_run_fac
         )
     assert result["success"] is False
     assert result["request_unknown"] is True
-    assert result["route_failure"]["operation"] == operation
-    assert result["route_failure"]["transport_kind"] == "timeout"
+    assert "route_failure" not in result
     assert saved[0]["run_id"] == 71
     assert saved[0]["execution_id"] == "fixture-execution"
     assert saved[0]["phase"] == "unknown"

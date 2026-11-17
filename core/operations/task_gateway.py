@@ -1159,7 +1159,11 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
         try:
             from core.auth.email_guard import email_auth_session
 
-            auth_scope = email_auth_session(context.email) if context.resource_family == "openai_interactive" and context.email else nullcontext(None)
+            auth_scope = (
+                email_auth_session(context.email)
+                if context.resource_family in {"openai_interactive", "registration_completion"} and context.email
+                else nullcontext(None)
+            )
             with operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
                 context.checkpoint()
                 returned = handler(context)
@@ -1605,6 +1609,8 @@ def _operation_admission_arguments(run: Mapping[str, Any], capacity_handler=None
     extra_scopes = []
     if run.get("account_id"):
         extra_scopes.append({"kind": "account", "key": f"{int(run['account_id'])}:{run.get('resource_family') or 'openai_interactive'}", "limit": 1})
+        if data.get("registration_completion") and run.get("resource_family") == "registration_completion":
+            extra_scopes.append({"kind": "account", "key": f"{int(run['account_id'])}:openai_interactive", "limit": 1})
     if capacity_handler is None:
         with _DISPATCH_HANDLER_LOCK:
             capacity_handler = _DISPATCH_CAPACITY_HANDLERS.get(task_type)

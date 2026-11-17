@@ -743,6 +743,11 @@ def init() -> None:
             )
             for name, table, columns in indexes:
                 cur.execute(f"CREATE INDEX IF NOT EXISTS {_quote(name)} ON {_table(table)} ({columns})")
+            cur.execute(
+                f"CREATE INDEX IF NOT EXISTS {_quote('idx_operation_runs_completion_child')} "
+                f"ON {_table('operation_runs')} ((data->'completion_handoff'->>'task_id')) "
+                "WHERE data ? 'completion_handoff'"
+            )
             # Compatibility runs store the legacy identity as text.  These
             # expression indexes keep source-backed status reads bounded when
             # the task center contains thousands of historical rows.
@@ -932,11 +937,25 @@ def _compatibility_run_status_sql(
     """Read the source status for compatibility runs before trusting projection rows."""
     return (
         f"CASE "
+        f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} THEN {run_alias}.status "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN CASE WHEN {registration_alias}.status='pending' THEN 'queued' ELSE {registration_alias}.status END "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN CASE WHEN {account_alias}.status='pending' THEN 'queued' ELSE {account_alias}.status END "
         f"ELSE {run_alias}.status END"
+    )
+
+
+def _registration_completion_overlay_sql(run_alias: str, registration_alias: str) -> str:
+    """注册主体终态后，已关联子任务的执行汇总优先于旧 Job 状态。"""
+    return (
+        f"({run_alias}.source_system='registration_jobs' "
+        f"AND {registration_alias}.status IN ('success','partial_success') "
+        f"AND {run_alias}.data ? 'completion_handoff' "
+        f"AND {run_alias}.result_summary ? 'completion_handoff' "
+        f"AND NOT EXISTS (SELECT 1 FROM {_table('operation_runs')} completion_newer "
+        f"WHERE completion_newer.task_id={run_alias}.task_id "
+        f"AND (completion_newer.run_no,completion_newer.id)>({run_alias}.run_no,{run_alias}.id)))"
     )
 
 
@@ -994,6 +1013,8 @@ def _compatibility_run_projection_sql(
         f"THEN COALESCE(NULLIF({account_alias}.started_at, ''), {run_alias}.started_at::text) "
         f"ELSE {run_alias}.started_at::text END AS effective_started_at, "
         f"CASE "
+        f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} "
+        f"THEN {run_alias}.completed_at::text "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN NULLIF({registration_alias}.data->>'completed_at', '') "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
@@ -1001,6 +1022,8 @@ def _compatibility_run_projection_sql(
         f"ELSE {run_alias}.completed_at::text END AS effective_completed_at, "
         f"{created_at_sort_sql} AS effective_created_at_sort, "
         f"CASE "
+        f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} "
+        f"THEN {run_alias}.error_message "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN {registration_alias}.data->>'error_message' "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
@@ -1638,7 +1661,7 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     # Prefer any active run first, then fall back to the newest terminal run.
     cur.execute(
         f"""
-        SELECT id, run_no, source_id, status, progress_stage,
+        SELECT id, run_no, source_id, status, progress_stage, data,
                error_category, error_code, error_message, completed_at
         FROM {_table('operation_runs')}
         WHERE task_id=%s
@@ -1695,6 +1718,10 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
             _json(latest_next_actions), task_id,
         ),
     )
+    if task_type == "registration_resume" and (_decode(latest.get("data")) or {}).get("completion_handoff"):
+        from core.storage.operations import registration_completion
+
+        registration_completion.reconcile(cur, int(latest["id"]), enqueue_projection=False)
     return task_id
 
 
@@ -4079,6 +4106,18 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
     if not parent:
         return None
     observed_run_id = int(parent.get("last_run_id") or 0)
+    if str(parent.get("source_system") or "") == "registration_chains":
+        cur.execute(f"SELECT data FROM {_table('operation_runs')} WHERE id=%s", (observed_run_id,))
+        completion_parent = cur.fetchone() or {}
+        auto_child = False
+        if child_task_id:
+            cur.execute(f"SELECT data->>'registration_completion' AS automatic FROM {_table('operation_tasks')} WHERE id=%s",
+                        (int(child_task_id),))
+            auto_child = (cur.fetchone() or {}).get("automatic") == "true"
+        if auto_child or (_decode(completion_parent.get("data")) or {}).get("completion_handoff"):
+            from core.storage.operations import registration_completion
+
+            return registration_completion.reconcile(cur, observed_run_id)
     if observed_run_id:
         cur.execute(f"SELECT id FROM {_table('operation_runs')} WHERE id=%s FOR UPDATE", (observed_run_id,))
     cur.execute(f"SELECT * FROM {_table('operation_tasks')} WHERE id=%s FOR UPDATE", (int(parent_task_id),))
@@ -4781,6 +4820,10 @@ def retry_runtime_task(task_id: int, *, trigger: str = "manual_retry", data: dic
                 refreshed_batch_ids.add(int(parent_row["batch_id"]))
         if refreshed_batch_ids:
             _refresh_batches(cur, sorted(refreshed_batch_ids))
+        if task_type == "password_setup":
+            from core.storage.operations import registration_completion
+
+            registration_completion.reconcile_for_child(cur, int(task_id))
         return _row(run) or {}
 
 
@@ -5700,6 +5743,11 @@ def recover_interrupted_runtime_runs(*, stale_after_seconds: int = 15 * 60) -> i
                 )
                 for parent in cur.fetchall():
                     _reconcile_parent_task_cur(cur, int(parent["parent_task_id"]))
+                from core.storage.operations import registration_completion
+
+                for row in recovered:
+                    if str(row.get("task_type") or "") == "password_setup" and int(row["task_id"]) in current_task_ids:
+                        registration_completion.reconcile_for_child(cur, int(row["task_id"]))
                 # A dependency is keyed to the logical child task, but an old
                 # attempt must not wake it after a newer retry has become the
                 # task's last_run_id. Only tasks whose current attempt was
@@ -6552,7 +6600,7 @@ def acquire_account_lease(
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT status, account_id, resource_family
+            SELECT status, account_id, resource_family, data
             FROM {_table('operation_runs')}
             WHERE id=%s
             FOR UPDATE
@@ -6564,7 +6612,13 @@ def acquire_account_lease(
             return None
         if int(run.get("account_id") or 0) != int(account_id):
             return None
-        if str(run.get("resource_family") or "openai_interactive") != str(resource_family):
+        family = str(run.get("resource_family") or "openai_interactive")
+        data = _decode(run.get("data")) or {}
+        completion_lease = (
+            family == "registration_completion" and resource_family == "openai_interactive"
+            and data.get("registration_completion") is True and data.get("steps") == ["password"]
+        )
+        if family != str(resource_family) and not completion_lease:
             return None
         account = record_store.get_row(
             record_store.ACCOUNTS,
@@ -7202,6 +7256,10 @@ def finish_run(
             # Child terminal state is reflected in the same transaction.  The
             # helper is idempotent and also works when finish_run is retried.
             _reconcile_parent_task_cur(cur, parent_task_id, child_task_id=int(found["task_id"]))
+        if str(found.get("task_type") or "") == "password_setup":
+            from core.storage.operations import registration_completion
+
+            registration_completion.reconcile_for_child(cur, int(found["task_id"]))
     task_run_log.append(
         result.get("log_file"),
         level="INFO" if str(result.get("status") or status_value) == "success" else "WARNING",
