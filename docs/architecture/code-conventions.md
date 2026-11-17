@@ -55,7 +55,7 @@ CLI / Web routes
 
 代码首先按业务归入 `core/registration/`、`core/accounts/`、`core/email/`、`core/codex/`、`core/extract_link/` 等目录，再按具体驱动或提供方建立子目录。域内公共编排、状态和契约放在该业务根部，跨业务认证、浏览器、网络和任务能力分别归入 `auth/`、`browser/`、`network/`、`operations/`；不新增无职责边界的 `common/`、`utils/` 或 `misc/`。
 
-`registration/roxy/` 和 `registration/protocol/` 当前以完整 `__init__.py` 保留原模块身份，不能在目录整理时顺带拆分全局绑定。接码及代理混合模块也暂时保持整块实现，后续抽取需独立验证。`tools/` 按 `diagnostics/`、`benchmarks/`、`maintenance/`、`migrations/` 归类，旧工具脚本只保留原命令兼容入口；测试按被保护业务归组，共用隔离与读取帮助文件留在 `tests/` 根部。
+现行注册驱动位于 `registration/roxy/` 和 `registration/protocol_oss_2/`。Roxy 主要实现仍在 `__init__.py`，protocol-2 已按入口、`lifecycle.py` 和 `runtime.py` 分工；不能在目录整理时顺带改变全局绑定或注册行为。接码及代理混合模块也暂时保持整块实现，后续抽取需独立验证。`tools/` 按 `diagnostics/`、`benchmarks/`、`maintenance/`、`migrations/` 归类，旧工具脚本只保留原命令兼容入口；测试按被保护业务归组，共用隔离与读取帮助文件留在 `tests/` 根部。
 
 浏览器能力模块是注册、Codex 和查活之间的调用边界；新增调用方不得直接导入驱动私有函数。
 存储和任务服务只依赖领域入口，旧 façade 仅用于兼容期。

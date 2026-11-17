@@ -65,7 +65,7 @@ POST /api/jobs
   -> _run_one_job 的数据库条件抢占
   -> 网络租约、邮箱来源/邮箱领取或恢复
   -> core.registration.dispatcher.run_registration
-  -> 按配置选择五种注册驱动之一
+  -> 按冻结配置选择 protocol_oss_2 或 roxy 注册驱动
   -> 账号、资源与可选后置步骤收口
 ```
 

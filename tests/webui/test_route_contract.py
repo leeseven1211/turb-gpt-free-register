@@ -34,6 +34,30 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/extract-link/payments/xxsyun/balance\tPOST\tapi_xxsyun_payment_balance",  # e03c999
         "/api/extract-workbench/batches/<int:batch_id>/cancel\tPOST\tcancel_extract_workbench_batch",  # f5672de
         "/api/extract-workbench/tasks/<int:task_id>/payment-query-credential\tPOST\trestore_extract_workbench_payment_query_credential",  # 1119f6a
+        # 2026-11-17 对照 4e38812：原 163 条契约未变，以下 23 条既有新增项补入显式清单。
+        "/api/accounts/<int:acc_id>/c2a/sync\tPOST\tapi_account_c2a_sync",
+        "/api/accounts/c2a/sync-bulk\tPOST\tapi_accounts_c2a_sync_bulk",
+        "/api/bulk/batches\tGET\tbulk.list_batches",
+        "/api/bulk/batches\tPOST\tbulk.create_batch",
+        "/api/bulk/batches/<int:batch_id>\tGET\tbulk.get_batch",
+        "/api/bulk/batches/<int:batch_id>/control\tPOST\tbulk.control",
+        "/api/bulk/batches/<int:batch_id>/report\tGET\tbulk.get_task_report",
+        "/api/bulk/batches/<int:batch_id>/rounds\tGET\tbulk.rounds",
+        "/api/bulk/batches/<int:batch_id>/rounds\tPOST\tbulk.create_round",
+        "/api/bulk/batches/<int:batch_id>/targets\tGET\tbulk.targets",
+        "/api/bulk/catalog\tGET\tbulk.catalog",
+        "/api/bulk/query-facets\tGET\tbulk.query_facets",
+        "/api/bulk/selections\tPOST\tbulk.create_selection",
+        "/api/bulk/selections/<int:selection_id>\tGET\tbulk.get_selection",
+        "/api/bulk/selections/<int:selection_id>/targets\tGET\tbulk.get_selection",
+        "/api/config/concurrency-preview\tGET\tapi_concurrency_preview",
+        "/api/email-service-sync\tGET\tapi_email_service_sync",
+        "/api/email-service-sync/retry\tPOST\tapi_email_service_sync_retry",
+        "/api/extract-workbench/analytics\tGET\textract_workbench_analytics",
+        "/api/extract-workbench/export\tGET\texport_extract_workbench",
+        "/api/extract-workbench/summary\tGET\textract_workbench_summary",
+        "/api/operations/concurrency\tGET\tapi_concurrency_status",
+        "/api/sub2api/groups\tGET\tapi_sub2api_groups",
     }
     # Explicit additive maintenance/integration routes; the previous 163-route
     # baseline remains independently verified after removing only these rows.

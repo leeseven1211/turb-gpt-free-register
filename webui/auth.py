@@ -99,7 +99,8 @@ def _wants_json() -> bool:
 def _unauthorized_response():
     if _wants_json():
         return jsonify({"ok": False, "error": "未授权：请先登录或提供授权码"}), 401
-    return redirect(url_for("auth_login", next=request.path))
+    next_url = request.full_path if request.query_string else request.path
+    return redirect(url_for("auth_login", next=next_url))
 
 
 def register_auth_routes(app: Any) -> None:

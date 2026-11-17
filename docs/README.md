@@ -11,7 +11,7 @@
 | 功能入口、公共组件和测试选择 | [功能地图](architecture/functional-map.md)及其[结构化数据](architecture/functional-map.json) |
 | 代码、配置、API 和前端约定 | [代码规范](architecture/code-conventions.md) |
 | Run、线路、阶段、错误和日志关联 | [任务观测契约](architecture/task-observation.md) |
-| 五种注册驱动、核心账号、后处理与续跑 | [注册流程](workflows/registration.md) |
+| 现行注册驱动、核心账号、后处理与续跑 | [注册流程](workflows/registration.md) |
 | 查活、刷新 AT、密码和 2FA 的驱动支持 | [认证支持矩阵](workflows/account-auth-support-matrix.md) |
 | 账号任务、取消、恢复及账号解封 | [账号操作](workflows/account-operations.md) |
 | Codex OAuth 补跑、凭据和待确认结果 | [Codex OAuth](workflows/codex-oauth-operation.md) |

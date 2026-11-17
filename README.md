@@ -458,7 +458,7 @@ python tools/migrations/migrate_hme_inbox_to_butler.py --rollback logs/logs/run/
 python tools/migrations/migrate_hme_inbox_to_butler.py --apply --rollback logs/logs/run/hme-butler-cutover.json
 ```
 
-尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。母子地址隔离和固定收件契约见[邮箱资源与取码](docs/workflows/email-resources.md#固定收件连接与严格-otp)。
+尚无固定 profile、依赖全局配置的母资源可选加 `--include-unpinned-parents` 预览；执行时同样需要 `--apply --receipt`。扩展回执可精确恢复原字段缺失或 `null`，不会覆盖已有其他连接器。母子地址隔离和固定收件契约见[邮箱资源与取码](docs/workflows/email-resources.md#otp-与身份隔离)。
 
 迁移需按项目数据库保护规则在短暂停任务后执行，不能借测试放行生产库。预览后路由发生变化会明确报 `email_cutover_route_changed`，重新预览即可重跑。回滚时恢复原路由回执、关闭桥接开关并恢复原收件服务；仅关闭桥接不会撤销数据库中的 profile 迁移。固定 Butler profile 保存 API 地址、最终收件箱和版本化 Key 引用，后续全局配置变化不会改变历史取码目标。
 

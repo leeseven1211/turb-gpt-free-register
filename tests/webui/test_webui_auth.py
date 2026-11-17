@@ -124,28 +124,19 @@ class WebUiAuthTests(PostgresTestCase):
         acquire.assert_not_called()
 
     @patch("core.email.icloud_hide.client.test_connection")
-    def test_icloud_hme_test_endpoint(self, test_connection):
-        test_connection.return_value = {
-            "account_id": "acc-1",
-            "remote_aliases": 67,
-            "remote_active": 67,
-            "inbox_method": "imap",
-            "pool": {"available": 67, "used": 0, "total": 67},
-            "sync": {"inserted": 67, "updated": 0},
-        }
+    def test_retired_icloud_hme_endpoint_requires_authentication(self, test_connection):
+        unauthorized = self.client.post("/api/icloud-hme/test", json={})
+        self.assertEqual(unauthorized.status_code, 401)
         r = self.client.post(
             "/api/icloud-hme/test",
             json={"api_base": "http://127.0.0.1:8081", "account_id": "acc-1", "timeout": 35},
             headers={"X-Auth-Code": "test-auth"},
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 410)
         payload = r.get_json()
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["remote_aliases"], 67)
-        self.assertEqual(payload["inbox_method"], "imap")
-        test_connection.assert_called_once_with(
-            api_base="http://127.0.0.1:8081", account_id="acc-1", timeout=35
-        )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["reason_code"], "email_management_managed_by_service")
+        test_connection.assert_not_called()
 
 
 if __name__ == "__main__":
