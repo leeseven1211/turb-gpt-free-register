@@ -3722,7 +3722,10 @@ def read_task_run_log(
     return result
 
 
-def find_task_by_source(source_system: str, source_id: str) -> dict | None:
+def find_task_by_source(
+    source_system: str, source_id: str, *, include_runs: bool = False,
+) -> dict | None:
+    """按任务来源查找；显式兼容已迁到 Run 的执行来源。"""
     init()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -3730,7 +3733,43 @@ def find_task_by_source(source_system: str, source_id: str) -> dict | None:
             (str(source_system), str(source_id)),
         )
         raw = cur.fetchone()
+        if raw is None and include_runs:
+            cur.execute(
+                f"SELECT t.* FROM {_table('operation_tasks')} t "
+                f"JOIN {_table('operation_runs')} r ON r.task_id=t.id "
+                "WHERE r.source_system=%s AND r.source_id=%s ORDER BY r.id DESC LIMIT 1",
+                (str(source_system), str(source_id)),
+            )
+            raw = cur.fetchone()
         return _row(dict(raw)) if raw else None
+
+
+def link_registration_setup_parent(*, task_id: int, job_id: int, parent_task_id: int) -> None:
+    """仅在明确重跑原注册补全时，补齐该来源子任务的父关联。"""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""UPDATE {_table('operation_tasks')} child
+                SET parent_task_id=parent.id, root_task_id=COALESCE(parent.root_task_id,parent.id)
+                FROM {_table('operation_tasks')} parent
+                WHERE child.id=%s AND parent.id=%s AND child.id<>parent.id
+                  AND child.source_system='webui_runtime' AND child.source_id=%s
+                  AND child.task_type='account_setup_retry'
+                  AND (child.parent_task_id IS NULL OR child.parent_task_id=parent.id)
+                  AND (parent.account_id IS NULL OR parent.account_id=child.account_id)
+                  AND (
+                    EXISTS (SELECT 1 FROM {_table('operation_runs')} r
+                            WHERE r.task_id=parent.id AND r.source_system='registration_jobs'
+                              AND r.source_id=%s)
+                    OR (parent.source_system='registration_jobs' AND parent.source_id=%s)
+                  )
+                RETURNING child.id""",
+            (int(task_id), int(parent_task_id), f"registration-account-setup:{int(job_id)}",
+             str(int(job_id)), str(int(job_id))),
+        )
+        if cur.fetchone() is None:
+            raise ValueError("注册补全任务来源或父任务关联不匹配")
+        _reconcile_parent_task_cur(cur, int(parent_task_id), child_task_id=int(task_id))
 
 
 # ============================================================

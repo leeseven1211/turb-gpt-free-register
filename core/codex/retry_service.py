@@ -16,6 +16,8 @@ from core.operations import task_gateway as account_task_store
 from core.auth.challenge import PasswordSetupNotReadyError, PasswordSetupUnsupportedError, auth_result_for_operation
 from core.auth.protocol.openai_auth import AccountUnusableError
 from core.auth.browser.auth_context import AuthExecutionContext, execution_context
+from core.auth.state_machine import CancellationRequested
+from core.operations.task_gateway import OperationLeaseLost
 
 logger = logging.getLogger('core.codex_retry_service')
 
@@ -248,6 +250,8 @@ def _run_protocol_direct_twofa(
     task_id: int | None,
     *,
     protocol_reauth_enabled: bool = True,
+    route_recover=None,
+    on_route_failure=None,
 ) -> dict:
     """Use the Protocol-first path to enable 2FA without opening Roxy when possible.
 
@@ -256,6 +260,14 @@ def _run_protocol_direct_twofa(
     the caller decides whether a protocol failure may continue into the
     browser fallback.
     """
+    if (get_account_totp_secret_candidate(account)
+            and (_totp_setup_pending(account) or not str(account.get("totp_secret") or "").strip())):
+        from core.accounts.password_setup.route_recovery import AccountActionRouteError, AccountActionRouteFailure
+
+        raise AccountActionRouteError(
+            AccountActionRouteFailure("mfa_activate", "POST", request_unknown=True),
+            code="account_action_request_unknown",
+        )
     existing_secret = str(account.get("totp_secret") or "").strip()
     if existing_secret and not _totp_setup_pending(account):
         account_task_store.append_event(
@@ -312,6 +324,19 @@ def _run_protocol_direct_twofa(
     protocol_session = BrowserSession(
         proxy=str(getattr(account_route, "proxy_url", "") or ""),
     )
+    raw_session = protocol_session
+    if callable(route_recover):
+        from core.accounts.password_setup.route_recovery import AccountActionSession
+        from core.operations.runtime import check_cancelled
+
+        def check_protocol_stop():
+            check_cancelled()
+            check_stop_requested(email)
+
+        protocol_session = AccountActionSession(
+            protocol_session, recover=route_recover, check=check_protocol_stop,
+            observe=on_route_failure, signal_control=True,
+        )
     auth_source_used = "existing_at" if access_token else "protocol_reauth"
 
     def _protocol_reauth() -> str:
@@ -353,19 +378,53 @@ def _run_protocol_direct_twofa(
         auth_source_used = "protocol_reauth"
         return secret
 
-    if access_token:
-        try:
-            secret = setup_2fa_protocol(
-                protocol_session,
-                access_token,
-                on_secret=_checkpoint,
-            )
-        except AccountUnusableError:
-            raise
-        except TwofaEnrollmentAuthRequired:
+    from core.accounts.password_setup.route_recovery import AccountActionControlHalt, AccountActionRouteHalt
+
+    try:
+        if access_token:
+            try:
+                secret = setup_2fa_protocol(
+                    protocol_session,
+                    access_token,
+                    on_secret=_checkpoint,
+                )
+            except AccountUnusableError:
+                raise
+            except TwofaEnrollmentAuthRequired:
+                secret = _protocol_reauth()
+        else:
             secret = _protocol_reauth()
-    else:
-        secret = _protocol_reauth()
+    except AccountActionRouteHalt as halted:
+        raise halted.error from None
+    except AccountActionControlHalt as halted:
+        raise halted.reason
+    except (CodexRetryStopped, OperationCancelled, CancellationRequested, OperationLeaseLost):
+        raise
+    except Exception as exc:
+        from core.accounts.password_setup.route_recovery import AccountActionRouteError, AccountActionRouteFailure
+
+        # 远端明确停用属于已确认账号事实，不能被已保存的候选密钥降为未知回执。
+        if _account_deactivation_code(exc):
+            raise
+        receipt = getattr(protocol_session, "last_mfa_2xx", None)
+        if state["secret"] or isinstance(receipt, AccountActionRouteFailure):
+            # enroll 已返回但正文未能消费，或原密钥已保存却没有激活完成回执，
+            # 都不能重新 enrollment 或用远端 enabled 冒充候选密钥匹配。
+            failure = (
+                receipt if isinstance(receipt, AccountActionRouteFailure)
+                else AccountActionRouteFailure(
+                    "mfa_activate", "POST", http_status=getattr(exc, "status_code", None), request_unknown=True,
+                )
+            )
+            raise AccountActionRouteError(failure, code="account_action_request_unknown") from exc
+        raise
+    finally:
+        close = getattr(raw_session, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.warning("[账号配置] 关闭协议 2FA 会话失败，保留当前动作结果")
     if not state["secret"]:
         _checkpoint(secret)
     with _ACCOUNT_SETUP_DB_LOCK:
@@ -1303,6 +1362,10 @@ def run_twofa_worker(
     plan_result = None
     setup_step_results: dict = {}
     password_proxy_fault = False
+    protocol_failure = None
+    action_route_context = ExitStack()
+    action_route_no = 1
+    failed_exit_ips = set()
     key = (email or "").strip().lower()
     requested_steps = {"password", "plan_check", "twofa"} if steps is None else {
         str(item or "").strip().lower() for item in steps
@@ -1396,21 +1459,6 @@ def run_twofa_worker(
             getattr(account_cfg, "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", True)))
         protocol_reauth_enabled = bool((execution_settings or {}).get("twofa_protocol_reauth_enabled",
             getattr(account_cfg, "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", True)))
-        if (
-            "twofa" in requested_steps
-            and selected_twofa_mode != "browser"
-            and browser_fallback_enabled
-            and get_account_totp_secret_candidate(account)
-            and (not str(account.get("totp_secret") or "").strip() or _totp_setup_pending(account))
-        ):
-            # 激活回执不明时必须先核验远端状态，不能让协议 enroll 覆盖恢复候选。
-            selected_twofa_mode = "browser"
-            _report_account_setup_event(
-                task_id, stage="twofa", state="running",
-                message="已有待确认 Authenticator 密钥，先通过浏览器核验远端状态",
-                detail={"driver": "browser", "reason": "pending_totp_recovery"},
-            )
-
         # 账号密码和显式 browser 2FA 需要浏览器会话；这和 Codex OAuth
         # 的驱动是两个独立边界，不能拿 CODEX_OAUTH_DRIVER 误拦截账号配置。
         browser_session_required = ("password" in requested_steps and not protocol_password) or (
@@ -1491,6 +1539,12 @@ def run_twofa_worker(
             return result
 
         setup_proxy_purpose = "password-setup" if "password" in requested_steps else "twofa-setup"
+        from core.operations.runtime import check_cancelled
+
+        def check_account_action():
+            check_cancelled()
+            check_stop_requested(email)
+
         _report_account_setup_event(
             task_id, stage="network", state="running",
             message="正在分配账号配置线路",
@@ -1499,7 +1553,7 @@ def run_twofa_worker(
             account_id=int(account.get("id") or 0) or None,
             email=email,
             purpose=setup_proxy_purpose,
-            cancel=lambda: check_stop_requested(email),
+            cancel=check_account_action,
             **route_country,
         )
         route_summary = account_route.public_dict()
@@ -1516,58 +1570,106 @@ def run_twofa_worker(
             state="success",
         )
 
+        from core.accounts.password_setup.route_recovery import AccountActionRouteFailure
+        from core.accounts.password_setup.proxy import is_proxy_transport_failure
+        from core.network.protocol_traffic import correlation_context
+
+        operation_context = task_run_log.current_context()
+        native_operation = operation_context.get("identifier_namespace") == "operation"
+
+        def bind_account_route():
+            action_route_context.close()
+            lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
+            action_route_context.enter_context(correlation_context(
+                inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
+                account_id=account.get("id"), purpose=setup_proxy_purpose,
+                operation_task_id=operation_context.get("task_id") if native_operation else None,
+                operation_run_id=operation_context.get("run_id") if native_operation else None,
+                route_attempt_no=action_route_no,
+            ))
+
+        def observe_account_failure(error):
+            nonlocal password_proxy_fault
+            fault = error.proxy_fault if isinstance(error, AccountActionRouteFailure) else is_proxy_transport_failure(error)
+            password_proxy_fault = password_proxy_fault or fault
+
+        def rotate_account_route(*, failure=None, reason="account-action-route-rotate"):
+            nonlocal account_route, route_summary, password_proxy_fault, action_route_no
+            from core.operations.runtime import check_cancelled
+
+            check_cancelled()
+            check_stop_requested(email)
+            # 预检和步骤恢复共用现有四条线路额度，不因重新进入认证而重置。
+            if action_route_no >= 4 or account_route is None:
+                return None
+            previous = account_route
+            lease = getattr(previous, "lease", None)
+            old_ip = getattr(lease, "exit_ip", None)
+            country = getattr(previous, "region", None)
+            if not isinstance(old_ip, str) or not old_ip or not isinstance(country, str) or not country:
+                raise RuntimeError("account_action_route_unavailable: 原线路出口或国家无法核验")
+            failed_exit_ips.add(old_ip)
+            action_route_context.close()
+            account_route = None
+            previous.release(
+                reason=reason, fault=failure.proxy_fault if failure is not None else password_proxy_fault,
+            )
+            password_proxy_fault = False
+            action_route_no += 1
+            _report_account_setup_event(
+                task_id, stage="network", state="running",
+                message=f"账号动作线路失败，正在更换代理（第 {action_route_no}/4 条线路）",
+                detail={"route_attempt_no": action_route_no,
+                        **(failure.public_dict() if failure is not None else {})},
+            )
+            check_stop_requested(email)
+            check_cancelled()
+            replacement = acquire_account_proxy(
+                account_id=int(account.get("id") or 0) or None,
+                email=email, purpose=setup_proxy_purpose, rotation_index=action_route_no - 1,
+                region=country, excluded_exit_ips=tuple(sorted(failed_exit_ips)),
+                cancel=check_account_action,
+            )
+            try:
+                check_stop_requested(email)
+                new_ip = getattr(getattr(replacement, "lease", None), "exit_ip", None)
+                if (not isinstance(new_ip, str) or not new_ip or new_ip in failed_exit_ips
+                        or str(replacement.region or "").upper() != country.upper()):
+                    raise RuntimeError("account_action_route_unavailable: 新线路出口或国家未通过核验")
+                account_route = replacement
+                route_summary = replacement.public_dict()
+                bind_account_route()
+            except BaseException:
+                account_route = None
+                replacement.release(reason="account-action-route-not-delivered", fault=False)
+                raise
+            _report_account_setup_event(
+                task_id, stage="network", state="success",
+                message=f"账号动作已更换代理（第 {action_route_no}/4 条线路）",
+                detail={"route_attempt_no": action_route_no},
+            )
+            return account_route.proxy_url
+
+        def recover_account_request(failure, proxy):
+            if account_route is None or str(account_route.proxy_url) != str(proxy):
+                return None
+            return rotate_account_route(failure=failure)
+
+        bind_account_route()
         remaining_setup_steps = requested_steps & {"password", "twofa"}
         if protocol_password:
             from core.accounts.password_setup.service import run_protocol_password_setup
-            from core.accounts.password_setup.proxy import is_proxy_transport_failure
-            from core.network.protocol_traffic import correlation_context
-
-            operation_context = task_run_log.current_context()
-            native_operation = operation_context.get("identifier_namespace") == "operation"
 
             def network_failed(error):
-                nonlocal password_proxy_fault
-                password_proxy_fault = password_proxy_fault or is_proxy_transport_failure(error)
+                observe_account_failure(error)
 
             with ExitStack() as route_context:
                 def acquire_password_route(attempt):
-                    nonlocal account_route, route_summary, password_proxy_fault
                     check_stop_requested(email)
                     route_context.close()
                     if attempt > 1:
-                        previous = account_route
-                        account_route = None
-                        if previous is not None:
-                            previous.release(reason="password-preflight-rotate", fault=password_proxy_fault)
-                        password_proxy_fault = False
-                        _report_account_setup_event(
-                            task_id, stage="network", state="running",
-                            message=f"补密码网络预检失败，正在更换代理（第 {attempt}/4 条线路）",
-                        )
-                        account_route = acquire_account_proxy(
-                            account_id=int(account.get("id") or 0) or None,
-                            email=email, purpose=setup_proxy_purpose,
-                            rotation_index=attempt - 1,
-                            cancel=lambda: check_stop_requested(email), **route_country,
-                        )
-                        route_summary = account_route.public_dict()
-                    lease_id = getattr(getattr(account_route, "lease", None), "lease_id", None)
-                    route_context.enter_context(correlation_context(
-                        inherit=False, proxy_lease_id=lease_id if isinstance(lease_id, str) else None,
-                        account_id=account.get("id"), purpose=setup_proxy_purpose,
-                        operation_task_id=operation_context.get("task_id") if native_operation else None,
-                        operation_run_id=operation_context.get("run_id") if native_operation else None,
-                        route_attempt_no=attempt,
-                    ))
-                    if attempt > 1:
-                        _report_account_setup_event(
-                            task_id, stage="network", state="success",
-                            message=f"补密码已更换代理（第 {attempt}/4 条线路）",
-                            detail={**route_summary, "route_attempt_no": attempt},
-                        )
-                        _report_account_setup_event(
-                            task_id, stage="login", state="running", message="已换线，正在重新进行登录网络预检",
-                        )
+                        if rotate_account_route(reason="password-preflight-rotate") is None:
+                            raise RuntimeError("account_action_route_exhausted: 账号动作线路额度已耗尽")
                     return account_route.proxy_url
 
                 password_result = run_protocol_password_setup(
@@ -1575,6 +1677,7 @@ def run_twofa_worker(
                     checkpoint=lambda: check_stop_requested(email),
                     report=lambda **event: _report_account_setup_event(task_id, **event),
                     proxy_supplier=acquire_password_route, on_network_failure=network_failed,
+                    route_recover=recover_account_request,
                 )
             password_proxy_fault = password_proxy_fault or password_result.get("proxy_transport_failed") is True
             remaining_setup_steps.discard("password")
@@ -1596,6 +1699,20 @@ def run_twofa_worker(
                     result.update(ok=False, status="partial_success", message="账号密码已确认保存，已停止后续安全设置")
                 return result
 
+        if ("twofa" in remaining_setup_steps and not force_twofa_change
+                and get_account_totp_secret_candidate(account)
+                and (_totp_setup_pending(account) or not str(account.get("totp_secret") or "").strip())):
+            # 远端 enabled 不能证明原候选可用；本轮保留原密钥，不新 enroll。
+            pending_twofa = {
+                "ok": False, "status": "failed", "error_code": "account_action_request_unknown",
+                "message": "原 Authenticator 激活结果尚未确认，已保留原密钥",
+                "mutation_submitted": False, "remote_receipt_state": "unknown", "browser_opened": False,
+            }
+            setup_step_results["twofa"] = dict(pending_twofa)
+            result = {**pending_twofa,
+                      "status": "partial_success" if password_result and password_result.get("ok") else "failed"}
+            return result
+
         context_plan = plan_twofa_context(
             selected_twofa_mode,
             has_access_token=bool(str(account.get("access_token") or "").strip()),
@@ -1611,8 +1728,10 @@ def run_twofa_worker(
                     account_route,
                     task_id,
                     protocol_reauth_enabled=protocol_reauth_enabled,
+                    route_recover=recover_account_request,
+                    on_route_failure=observe_account_failure,
                 )
-            except CodexRetryStopped:
+            except (CodexRetryStopped, OperationCancelled, CancellationRequested, OperationLeaseLost):
                 raise
             except AccountUnusableError:
                 raise
@@ -1624,6 +1743,16 @@ def run_twofa_worker(
                     ) from exc
                 direct_protocol_failed = True
                 direct_error = f"{type(exc).__name__}: {str(exc)[:220]}"
+                failure = getattr(exc, "failure", None)
+                protocol_failure = {
+                    "cause_code": str(getattr(exc, "code", "") or "twofa_protocol_failed"),
+                    "error_type": type(exc).__name__,
+                    **(failure.public_dict() if isinstance(failure, AccountActionRouteFailure) else {
+                        "operation": str(getattr(exc, "operation", "") or ""),
+                        "transport_kind": str(getattr(exc, "cause_type", "") or ""),
+                        "http_status": getattr(exc, "status_code", None),
+                    }),
+                }
                 _report_account_setup_event(
                     task_id,
                     stage="twofa_result",
@@ -1638,9 +1767,17 @@ def run_twofa_worker(
                     },
                     state="failed",
                 )
-                if not browser_fallback_enabled or not _should_browser_fallback_after_protocol_error(exc):
+                if (account_route is None or getattr(exc, "request_unknown", False) or not browser_fallback_enabled
+                        or protocol_failure["cause_code"] in {"account_action_rate_limited", "account_action_http_rejected"}
+                        or not _should_browser_fallback_after_protocol_error(exc)):
                     db.update_account_twofa_status(email, "failed", direct_error)
-                    if browser_fallback_enabled:
+                    if getattr(exc, "request_unknown", False):
+                        message = "协议 2FA 请求结果未确认，已保留原密钥及当前事实"
+                    elif protocol_failure["cause_code"] in {"account_action_rate_limited", "account_action_http_rejected"}:
+                        message = "协议 2FA 已收到远端明确拒绝，保留原线路策略"
+                    elif account_route is None:
+                        message = "协议 2FA 未取得符合要求的新线路"
+                    elif browser_fallback_enabled:
                         message = "邮箱收件链路失败，跳过浏览器兜底，避免重复等待验证码"
                     else:
                         message = "协议 2FA 失败，且已关闭浏览器兜底"
@@ -1651,10 +1788,15 @@ def run_twofa_worker(
                         "twofa_driver": "protocol",
                         "auth_source": context_plan.auth_source,
                         "browser_opened": False,
-                        "proxy_provider": account_route.provider,
-                        "proxy_region": account_route.region,
-                        "proxy_mode": account_route.mode,
+                        "proxy_provider": getattr(account_route, "provider", None),
+                        "proxy_region": getattr(account_route, "region", None),
+                        "proxy_mode": getattr(account_route, "mode", None),
+                        "error_code": protocol_failure["cause_code"],
+                        "protocol_failure": protocol_failure,
+                        **({"mutation_submitted": True, "remote_receipt_state": "unknown"}
+                           if getattr(exc, "request_unknown", False) else {}),
                     }
+                    setup_step_results["twofa"] = dict(result)
                     return result
                 _report_account_setup_event(
                     task_id,
@@ -1893,9 +2035,10 @@ def run_twofa_worker(
             "auth_source": "browser_session" if direct_protocol_failed else context_plan.auth_source,
             "browser_opened": True,
             "browser_retry_attempts": browser_retry_attempts,
+            **({"protocol_failure": protocol_failure} if protocol_failure else {}),
         }
         return result
-    except (CodexRetryStopped, OperationCancelled) as exc:
+    except (CodexRetryStopped, OperationCancelled, CancellationRequested) as exc:
         if task_id and browser_stage_started and not browser_stage_finished:
             _report_account_setup_event(
                 task_id,
@@ -1906,6 +2049,8 @@ def run_twofa_worker(
             )
         result = {"status": "stopped", "ok": False, "message": str(exc) or "用户手动停止账号配置重试"}
         return result
+    except OperationLeaseLost:
+        raise
     except Exception as exc:
         unsupported = isinstance(exc, PasswordSetupUnsupportedError)
         if browser_stage_started and not browser_stage_finished and not unsupported:
@@ -1949,9 +2094,22 @@ def run_twofa_worker(
             "account_status_persisted": deactivated_persisted if deactivated else None,
             "browser_retry_attempts": browser_retry_attempts,
         }
+        if protocol_failure is not None:
+            from core.operations.errors import classify_task_error
+
+            fallback_projection = classify_task_error(
+                f"{type(exc).__name__}: {exc}", task_type="account_setup_retry", stage="browser",
+            ) or {}
+            result["protocol_failure"] = protocol_failure
+            result["fallback_failure"] = {
+                "cause_code": error_code or fallback_projection.get("code") or "account_setup_browser_fallback_failed",
+                "error_type": type(exc).__name__,
+            }
+            result["message"] = f"协议 2FA 失败：{protocol_failure['cause_code']}；浏览器兜底失败：{result['message']}"
         logger.exception("[账号配置重试] %s 异常", email)
         return result
     finally:
+        action_route_context.close()
         if password_result is not None:
             setup_step_results["password"] = dict(password_result)
             result["password_driver"] = "protocol"
@@ -2026,6 +2184,8 @@ def run_twofa_worker(
                         "twofa_driver": result.get("twofa_driver"),
                         "auth_source": result.get("auth_source"),
                         "browser_opened": result.get("browser_opened"),
+                        "protocol_failure": result.get("protocol_failure"),
+                        "fallback_failure": result.get("fallback_failure"),
                         "browser_retry_attempts": result.get("browser_retry_attempts", browser_retry_attempts),
                         "account_status_persisted": result.get("account_status_persisted"),
                     },

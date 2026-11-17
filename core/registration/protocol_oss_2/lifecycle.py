@@ -11,6 +11,7 @@ from core.auth.challenge import AuthCancelledError, auth_result_for_registration
 from core.auth.protocol.openai_auth import AccountUnusableError
 from core.auth.protocol.session import BrowserSession
 from core.registration.profile_utils import generate_random_birthday
+from core.registration.route_recovery import safe_registration_recovery_audit
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +440,8 @@ def run_protocol_oss_2_lifecycle(
             "registration_auth_state_unrecognized", "registration_session_invalid_response",
             "registration_route_close_failed",
             "registration_identity_verification_required",
+            "registration_profile_submission_unresolved",
+            "user_register_continue_url_missing",
         }:
             cause_code = password_entry_cause
         missing_module = str(getattr(exc, "name", "") or "")
@@ -484,6 +487,9 @@ def run_protocol_oss_2_lifecycle(
             **({"cause_diagnostics": exc.cause_diagnostics} if request_unknown and exc.cause_diagnostics else {}),
             **({"registration_diagnostics": registration_diagnostics} if registration_diagnostics else {}),
             **({"route_failure": asdict(exc.route_failure)} if getattr(exc, "route_failure", None) is not None else {}),
+            **({"route_recovery_blocked": True} if getattr(exc, "route_recovery_blocked", False) is True else {}),
+            **({"registration_recovery_audit": audit}
+               if (audit := safe_registration_recovery_audit(getattr(exc, "registration_recovery_audit", None))) else {}),
             "error": error,
         }
     finally:

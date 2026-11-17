@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from core.operations.runtime import OperationCancelled
 from core.proxy import pool as proxy_pool
+from core.proxy import account_routes
 from core.proxy.provider import ProxyLease, acquire_registration_proxy, release_proxy
 from core.storage import records as record_store
 from core.storage.proxy import leases as lease_store, pool as store
@@ -94,6 +95,54 @@ class ProxyExitExclusionTests(PostgresTestCase):
             self.assertEqual(next_anchor.exit_ip, replacement.exit_ip)
             self.assert_ready(old_slot)
             self.assert_ready(duplicate_slot)
+
+    def test_account_recovery_excludes_all_previous_exits_and_preserves_country(self):
+        with self.environment():
+            first_slot, first = self.seed_ready(1)
+            second_slot, second = self.seed_ready(2)
+            self.seed_ready(3, region="VN")
+            _, replacement = self.seed_ready(4)
+
+            route = account_routes.acquire_account_proxy(
+                account_id=7, purpose="password-setup", region="JP", timeout=1,
+                excluded_exit_ips=[first.exit_ip, second.exit_ip],
+            )
+
+            self.assertEqual(replacement.exit_ip, route.lease.exit_ip)
+            self.assertEqual("JP", route.region)
+            self.assert_ready(first_slot)
+            self.assert_ready(second_slot)
+
+    def test_multiple_exits_merge_legacy_exclusion_and_skip_unknown_locked_anchor(self):
+        with self.environment():
+            first_slot, first = self.seed_ready(1)
+            second_slot, second = self.seed_ready(2)
+            unknown_slot, unknown = self.seed_ready(3)
+            unknown_row = record_store.get_row_by(store.LEASES, "lease_id", unknown.lease_id)
+            record_store.patch_row(store.LEASES, unknown_row["id"], {"exit_ip": None})
+            _, replacement = self.seed_ready(4)
+            profile = proxy_pool._profile("proxy_pool", {"urls": self.urls})
+
+            lease = store.claim(
+                profile.key, min_ttl=300, max_age=60, correlation={"purpose": "password-setup"},
+                excluded_exit_ip=first.exit_ip,
+                excluded_exit_ips={f" {second.exit_ip} ", "", second.exit_ip},
+            )
+
+            self.assertEqual(replacement.exit_ip, lease.exit_ip)
+            for slot in (first_slot, second_slot, unknown_slot):
+                self.assert_ready(slot)
+
+    def test_explicit_proxy_cannot_bypass_requested_exit_exclusions(self):
+        with self.environment():
+            _, replacement = self.seed_ready(2)
+            route = account_routes.acquire_account_proxy(
+                purpose="password-setup", explicit_proxy="http://192.0.2.1:8080",
+                excluded_exit_ips=["198.51.100.1"], timeout=1,
+            )
+
+            self.assertIsNotNone(route.lease)
+            self.assertEqual(replacement.exit_ip, route.lease.exit_ip)
 
     def test_exclusion_uses_locked_anchor_exit_instead_of_resource_snapshot(self):
         with self.environment():

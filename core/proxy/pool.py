@@ -337,6 +337,7 @@ def acquire_proxy(
     allow_reuse: bool = False,
     reuse_limit: int | None = None,
     excluded_exit_ip: str | None = None,
+    excluded_exit_ips: tuple[str, ...] | list[str] | set[str] | None = None,
 ):
     """统一业务领取入口。
 
@@ -361,6 +362,7 @@ def acquire_proxy(
         "allow_reuse": allow_reuse,
         "reuse_limit": reuse_limit,
         "excluded_exit_ip": excluded_exit_ip,
+        "excluded_exit_ips": excluded_exit_ips,
     }
     if correlation is not None:
         common["job_id"] = correlation
@@ -378,6 +380,7 @@ def acquire_proxy(
 def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None, timeout: float | None = None,
             allow_reuse: bool = False, reuse_limit: int | None = None,
             excluded_exit_ip: str | None = None,
+            excluded_exit_ips: tuple[str, ...] | list[str] | set[str] | None = None,
             static_urls: list[str] | None = None, _source_resolver=None,
             _claim_scope: dict | None = None, **kwargs):
     """任务只等待已校验库存；默认持续等待，可显式限制领取期限。"""
@@ -467,6 +470,7 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
                 lease = store.claim(profile.key, min_ttl=policy["min_ttl"], max_age=policy["max_age"],
                                     correlation=correlation, allow_reuse=allow_reuse,
                                     **({"excluded_exit_ip": excluded_exit_ip} if excluded_exit_ip else {}),
+                                    **({"excluded_exit_ips": excluded_exit_ips} if excluded_exit_ips else {}),
                                     **claim_scope,
                                     **({"reuse_limit": reuse_limit} if allow_reuse else {}))
             except proxy_lease_store.ProxyReuseLimitError as exc:

@@ -361,7 +361,7 @@ def test_other_profile_rejections_do_not_invent_an_expired_session_cause(upstrea
 
 
 @pytest.mark.parametrize("second_profile_attempt", [False, True])
-def test_unresolved_profile_error_is_retained_until_a_new_profile_attempt(upstream, second_profile_attempt):
+def test_old_profile_rejection_is_audit_when_a_later_action_fails(upstream, second_profile_attempt):
     session, transport, _ = upstream
     transport.profile_status = 409
     transport.profile_payload = {"error": {"code": "invalid_state", "type": "invalid_request_error"}}
@@ -385,12 +385,11 @@ def test_unresolved_profile_error_is_retained_until_a_new_profile_attempt(upstre
             email="protocol2@example.test", name="测试姓名", birthday="1992-06-15",
             proxy=session.proxy, email_source="icloud_hide", existing_password="original-password",
         )
-    assert result["cause_code"] == ("protocol_failure_evidence_missing" if second_profile_attempt else "account_create_invalid_state")
+    assert result["cause_code"] == "protocol_failure_evidence_missing"
     assert result["request_unknown"] is True
-    if second_profile_attempt:
-        assert "cause_diagnostics" not in result
-    else:
-        assert result["cause_diagnostics"]["http_status"] == 409
+    assert "cause_diagnostics" not in result
+    assert result["route_recovery_blocked"] is True
+    assert result["registration_recovery_audit"][0]["registration_diagnostics"]["http_status"] == 409
 
 
 def test_confirmed_session_followed_by_core_storage_failure_is_a_local_checkpoint_failure(upstream):

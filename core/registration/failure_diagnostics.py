@@ -1,9 +1,8 @@
 """注册外围的安全失败事实；不参与请求、认证分支或重试决策。"""
 from __future__ import annotations
 
-from urllib.parse import urlsplit
-
 from core.network.response_diagnostics import auth_error_from_body
+from core.registration.route_recovery import registration_request_diagnostics, registration_request_operation
 
 
 _EXCEPTION_TYPES = frozenset({
@@ -34,46 +33,8 @@ def _exception_type(error: BaseException) -> str:
 
 def _operation(method: str, url: object) -> str:
     """URL 只用于匹配固定类别；地址、参数和凭据均不进入诊断。"""
-    try:
-        parsed = urlsplit(str(url or ""))
-        if (parsed.scheme != "https" or parsed.port not in (None, 443)
-                or parsed.username or parsed.password):
-            return "other"
-        route = (str(method).upper(), parsed.path)
-        if parsed.hostname in {"chatgpt.com", "chat.openai.com"}:
-            if route == ("GET", "/api/auth/session"):
-                return "session"
-            if route in {("GET", "/api/auth/callback/openai"), ("GET", "/api/auth/callback/auth0")}:
-                return "callback"
-            if route in {
-                ("GET", "/"), ("GET", "/api/auth/csrf"), ("GET", "/auth/login"),
-                ("GET", "/auth/login_with"), ("POST", "/api/auth/signin/openai"),
-                ("POST", "/api/auth/signin/auth0"),
-            }:
-                return "preauth"
-        if parsed.hostname == "sentinel.openai.com" and route == ("POST", "/backend-api/sentinel/req"):
-            return "preauth"
-        if parsed.hostname != "auth.openai.com":
-            return "other"
-        return {
-            ("POST", "/api/accounts/authorize"): "email_submit",
-            ("POST", "/api/accounts/authorize/continue"): "email_submit",
-            ("POST", "/api/accounts/user/register"): "password_submit",
-            ("POST", "/api/accounts/password/verify"): "password_submit",
-            ("POST", "/api/accounts/email-otp/validate"): "otp_validate",
-            ("POST", "/api/accounts/email-otp/verify"): "otp_validate",
-            ("GET", "/api/accounts/email-otp/send"): "otp_send",
-            ("POST", "/api/accounts/email-otp/send"): "otp_send",
-            ("POST", "/api/accounts/email-otp/resend"): "otp_send",
-            ("POST", "/api/accounts/passwordless/send-otp"): "otp_send",
-            ("POST", "/api/accounts/create_account"): "profile_submit",
-            ("GET", "/api/accounts/client_auth_session_dump"): "auth_session",
-            ("GET", "/authorize"): "preauth",
-            ("GET", "/log-in"): "preauth",
-            ("GET", "/create-account/password"): "preauth",
-        }.get(route, "other")
-    except (TypeError, ValueError):
-        return "other"
+    operation = registration_request_operation(method, url)
+    return "password_submit" if operation in {"password_create", "password_verify"} else operation or "other"
 
 
 class RegistrationFailureDiagnostics:
@@ -115,6 +76,7 @@ class RegistrationFailureDiagnostics:
         data = {
             "operation": operation, "http_status": status, "auth_error": auth_error,
             "failure_kind": "transport_error" if error is not None else "http_error" if status is not None and status >= 400 else "unknown",
+            **registration_request_diagnostics(method, url),
         }
         self.sequence += 1
         if status is not None:

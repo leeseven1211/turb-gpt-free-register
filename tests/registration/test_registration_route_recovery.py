@@ -7,6 +7,16 @@ from core.registration import service
 
 
 class RegistrationRoutePolicyRegressionTests(TestCase):
+    def test_explicit_terminal_block_does_not_fall_back_to_historical_proxy_text(self):
+        result = {
+            "success": False, "remote_identity": "unknown", "request_unknown": False,
+            "route_recovery_blocked": True, "error": "RuntimeError: ERR_TUNNEL_CONNECTION_FAILED",
+        }
+        with patch.object(service, "_registration_proxy_retry_limit", return_value=2):
+            self.assertFalse(service._should_retry_registration_with_new_proxy(
+                result, SimpleNamespace(provider="711proxy"), 0,
+            ))
+
     def test_structured_preauth_transport_rotates_for_every_supplier(self):
         result = {
             "error": "ProxyConnectionError",
@@ -93,6 +103,63 @@ class RegistrationRouteFailureContractTests(TestCase):
         )
         self.assertEqual(failure.operation, "preauth")
         self.assertTrue(failure.replay_safe)
+
+    def test_actual_authorize_navigation_can_recover_without_broadening_other_hosts(self):
+        for path in ("/api/accounts/authorize", "/oauth/authorize"):
+            with self.subTest(path=path):
+                failure = self.failure(
+                    "GET", "https://auth.openai.com" + path + "?state=synthetic",
+                    error=TimeoutError(),
+                )
+                self.assertIsNotNone(failure)
+                self.assertEqual(failure.operation, "preauth")
+                self.assertTrue(failure.replay_safe)
+        for method, url in (
+            ("POST", "https://auth.openai.com/oauth/authorize"),
+            ("GET", "https://mailbox.example.test/oauth/authorize"),
+            ("GET", "https://auth.openai.com/api/accounts/authorize/other"),
+            ("GET", "http://auth.openai.com/oauth/authorize"),
+            ("GET", "https://auth.openai.com:444/oauth/authorize"),
+        ):
+            with self.subTest(method=method, url=url):
+                self.assertIsNone(self.failure(method, url, error=TimeoutError()))
+
+    def test_request_diagnostics_only_expose_stable_method_host_and_path_classes(self):
+        from core.registration.route_recovery import registration_request_diagnostics
+        cases = (
+            ("get", "https://auth.openai.com/oauth/authorize?state=secret&login_hint=private@example.test",
+             {"request_method": "GET", "request_host_class": "auth", "request_path_class": "preauth"}),
+            ("POST", "https://chatgpt.com/backend-api/telemetry?token=secret",
+             {"request_method": "POST", "request_host_class": "chatgpt", "request_path_class": "unmapped"}),
+            ("GET", "https://mailbox.example.test/private/mailbox-id?token=secret",
+             {"request_method": "GET", "request_host_class": "other", "request_path_class": "unmapped"}),
+            ("GET", "https://user:secret@auth.openai.com/oauth/authorize",
+             {"request_method": "GET", "request_host_class": "invalid", "request_path_class": "invalid"}),
+            ("secret", "https://auth.openai.com:invalid/oauth/authorize",
+             {"request_method": "OTHER", "request_host_class": "invalid", "request_path_class": "invalid"}),
+        )
+        for method, url, expected in cases:
+            with self.subTest(method=method, url=url):
+                self.assertEqual(registration_request_diagnostics(method, url), expected)
+
+    def test_explicit_terminal_result_blocks_both_direct_and_historical_route_failures(self):
+        from core.registration.route_recovery import RegistrationRouteFailure, result_route_failure
+        for direct in (
+            None,
+            RegistrationRouteFailure("preauth", transport_kind="proxy", replay_safe=True),
+            {"operation": "preauth", "transport_kind": "proxy", "http_status": None,
+             "response_received": False, "replay_safe": True},
+        ):
+            with self.subTest(direct=direct):
+                result = {
+                    "route_recovery_blocked": True, "route_failure": direct,
+                    "cause_code": "registration_session_invalid_response",
+                    "registration_diagnostics": {
+                        "operation": "preauth", "failure_kind": "transport_error",
+                        "exception_type": "ProxyConnectionError",
+                    },
+                }
+                self.assertIsNone(result_route_failure(result))
 
     def test_callback_get_is_not_replayed_like_a_session_read(self):
         callback = self.failure(

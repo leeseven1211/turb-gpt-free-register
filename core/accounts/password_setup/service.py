@@ -9,6 +9,9 @@ from core.accounts.credentials import get_account_totp_secret_candidate
 from core.accounts.password_setup.auth import refresh_access_token
 from core.accounts.password_setup.protocol import ProtocolPasswordSetupError, add_password
 from core.accounts.password_setup.session import cache_authenticated_session, try_reuse_session
+from core.accounts.password_setup.route_recovery import (
+    AccountActionControlHalt, AccountActionRouteError, AccountActionRouteHalt, AccountActionSession,
+)
 from core.auth.browser.auth_context import (
     AuthExecutionContext, CancellationRequested, current_execution_context, execution_context,
 )
@@ -28,7 +31,8 @@ def _generate_password() -> str:
 
 @serialize_email_auth
 def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fence: dict | None,
-                                checkpoint=None, report=None, proxy_supplier=None, on_network_failure=None) -> dict:
+                                checkpoint=None, report=None, proxy_supplier=None, on_network_failure=None,
+                                route_recover=None) -> dict:
     """登录后按远端结果补密码；本地保存值只用于认证，不阻止再次补全。"""
     email = str(email or "").strip().casefold()
     cp = None
@@ -141,12 +145,22 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                 emit("set_password", "原密码有效，已验证", state="success")
                 return result(True, "原密码有效", status="success", receipt="confirmed")
             emit("set_password", "已登录，正在通过纯协议添加账号密码")
+            if callable(route_recover) and not isinstance(session, AccountActionSession):
+                session = AccountActionSession(
+                    session, recover=route_recover, check=check, observe=on_network_failure, signal_control=True,
+                )
             add_password(session, email, cp.password, checkpoint=check,
                          on_dispatched=mark_dispatched, on_confirmed=mark_confirmed,
                          totp_secret=get_account_totp_secret_candidate(db.get_account_by_email(email)))
             if not confirmed:
                 raise ProtocolPasswordSetupError("password_setup_unconfirmed", "密码提交结果尚未确认", dispatched)
             return result(True, "账号密码已通过纯协议补全", status="success", receipt="confirmed")
+        except AccountActionRouteHalt as halted:
+            callback_error = halted.error
+            return {"ok": False, "status": "failed"}
+        except AccountActionControlHalt as halted:
+            callback_error = halted
+            return {"ok": False, "status": "failed"}
         except Exception as exc:
             # 共享登录适配器会捕获回调异常；在本层保留后再抛，避免丢失取消和提交结果。
             callback_error = exc
@@ -188,7 +202,9 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
         with execution_context(auth_context):
             emit("login", "正在校验已有会话，准备添加账号密码")
             with try_reuse_session(account, email, proxy=proxy, checkpoint=check,
-                                   proxy_supplier=proxy_supplier) as reused:
+                                   proxy_supplier=proxy_supplier,
+                                   **({"route_recover": route_recover, "on_route_failure": on_network_failure}
+                                      if callable(route_recover) else {})) as reused:
                 if reused is not None:
                     auth_result = authenticated(*reused)
                     if checkpoint_error is not None:
@@ -206,7 +222,8 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
             auth_result = refresh_access_token(email, proxy=proxy, on_authenticated=authenticated,
                 allow_password_email_fallback=True,
                 **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
-                **({"on_network_failure": network_failed} if callable(on_network_failure) else {}))
+                **({"on_network_failure": network_failed} if callable(on_network_failure) else {}),
+                **({"route_recover": route_recover, "route_checkpoint": check} if callable(route_recover) else {}))
         if checkpoint_error is not None:
             raise checkpoint_error
         if callback_error is not None:
@@ -242,6 +259,20 @@ def run_protocol_password_setup(email: str, *, proxy: str | None, execution_fenc
                     "stop_requested": True}
         mark_unknown()
         raise
+    except AccountActionControlHalt as halted:
+        mark_unknown()
+        raise halted.reason
+    except (AccountActionRouteHalt, AccountActionRouteError) as exc:
+        error = exc.error if isinstance(exc, AccountActionRouteHalt) else exc
+        if error.request_unknown:
+            mark_unknown()
+        close_stage("failed", str(error))
+        return {
+            **result(False, str(error), error=error.code,
+                     receipt="unknown" if error.request_unknown else "rejected"),
+            "route_failure": error.failure.public_dict(),
+            **({"proxy_transport_failed": True} if error.proxy_transport_failed else {}),
+        }
     except ProtocolPasswordSetupError as exc:
         if exc.request_unknown:
             mark_unknown()

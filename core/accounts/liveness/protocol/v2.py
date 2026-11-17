@@ -531,7 +531,9 @@ def _complete_email_otp(session, email: str, after_ts: float, *, auth_method: st
         raise error from exc
 
 
-def _start_email_session(email: str, proxy: str | None, *, identity=None, context_recorder=None):
+def _start_email_session(
+    email: str, proxy: str | None, *, identity=None, context_recorder=None, session_adapter=None,
+):
     """Start one fresh auth session for a controlled email fallback."""
     session = None
     try:
@@ -542,6 +544,8 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
             identity=identity,
             context_recorder=context_recorder,
         )
+        if callable(session_adapter):
+            session = session_adapter(session)
         after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
         dead_code = detect_account_unusable_text(final_url)
@@ -568,7 +572,7 @@ def _start_email_session(email: str, proxy: str | None, *, identity=None, contex
             category="response",
             roxy_fallback_allowed=False,
         )
-    except Exception:
+    except BaseException:
         if context_recorder is not None and session is not None:
             context_recorder.finish_session(session, status="failed", result_code="email_session_start_failed")
         try:
@@ -661,6 +665,7 @@ def _refresh_with_password(
     on_authenticated=None,
     allow_password_email_fallback: bool | None = None,
     on_network_failure=None,
+    session_adapter=None,
 ) -> dict:
     def completed(*args, **kwargs):
         result = _success(*args, **kwargs)
@@ -712,6 +717,8 @@ def _refresh_with_password(
             context_recorder=context_recorder,
             **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}),
         )
+        if callable(session_adapter):
+            session = session_adapter(session)
         if callable(on_remote_request_started):
             on_remote_request_started()
         otp_after_ts = time.time()
@@ -838,6 +845,7 @@ def _refresh_with_password(
                 getattr(session, "proxy", proxy),
                 identity=identity,
                 context_recorder=context_recorder,
+                **({"session_adapter": session_adapter} if callable(session_adapter) else {}),
             )
             try:
                 email_result, auth_method = _complete_email_otp(
@@ -1060,6 +1068,7 @@ def refresh_access_token(
     on_network_failure=None,
     callback_recovery: bool = False,
     callback_checkpoint=None,
+    session_adapter=None,
 ) -> dict:
     """Run the opt-in Protocol v2 refresh flow and return a safe result."""
     checked_at = _now()
@@ -1088,6 +1097,7 @@ def refresh_access_token(
                 **({"allow_password_email_fallback": allow_password_email_fallback}
                    if allow_password_email_fallback is not None else {}),
                 **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
+                **({"session_adapter": session_adapter} if callable(session_adapter) else {}),
             )
         finally:
             _AT_CALLBACK_CONTEXT.reset(marker)

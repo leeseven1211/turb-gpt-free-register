@@ -44,6 +44,26 @@ class RegistrationServicePostprocessContractTests(unittest.TestCase):
         })
         self.assertNotIn("registration_diagnostics", facts)
 
+    def test_request_unknown_keeps_bounded_safe_recovery_audit_separate_from_current_failure(self):
+        audit = [{
+            "registration_diagnostics": {
+                "operation": "profile_submit", "failure_kind": "transport_error",
+                "exception_type": "ProxyError", "request_host_class": "auth",
+                "response_body": "fixture-private",
+            },
+            "raw_response": "fixture-private",
+        }] * 7
+        facts = registration_service._registration_request_unknown_facts({
+            "cause_code": "registration_profile_submission_unresolved",
+            "route_recovery_blocked": True, "registration_recovery_audit": audit,
+            "registration_diagnostics": {"operation": "other", "failure_kind": "unknown"},
+        })
+        self.assertTrue(facts["route_recovery_blocked"])
+        self.assertEqual(4, len(facts["registration_recovery_audit"]))
+        self.assertEqual("unknown", facts["registration_diagnostics"]["failure_kind"])
+        self.assertEqual("transport_error", facts["registration_recovery_audit"][0]["registration_diagnostics"]["failure_kind"])
+        self.assertNotIn("fixture-private", str(facts))
+
     def test_request_unknown_facts_only_keep_fixed_code_and_real_boolean(self):
         facts = registration_service._registration_request_unknown_facts({
             "cause_code": "registration_checkpoint_failed",

@@ -99,6 +99,53 @@ class PasswordSetupAuthTests(unittest.TestCase):
             allow_password_email_fallback=False, proxy_supplier=supplier, on_network_failure=network_failed)
         self.preflight.assert_not_called()
 
+    def test_password_login_installs_only_explicit_account_session_adapter(self):
+        from core.accounts.password_setup.route_recovery import AccountActionSession
+
+        self.credentials.return_value = ("fixture-password", "fixture-secret")
+        recover = Mock()
+        auth.refresh_access_token(EMAIL, proxy="fixture-route", route_recover=recover)
+        adapter = self.delegate.call_args.kwargs["session_adapter"]
+        self.assertIsInstance(adapter(Session()), AccountActionSession)
+
+    def test_email_login_authorize_403_rotates_in_place_before_otp(self):
+        from core.accounts.password_setup import route_recovery
+
+        session = Session()
+        session.session.timeout = 20
+        session.chrome_identity = {"impersonate": "chrome"}
+        session.protocol_traffic = None
+        authorize = AUTH + "/oauth/authorize"
+        session.routes[("GET", authorize)] = Response(status=302, location=AUTH + "/email-verification")
+        original = session.get
+
+        def get(url, **kwargs):
+            if url == authorize and session.proxy == "fixture-route":
+                session.calls.append(("GET", url, kwargs))
+                return Response(status=403)
+            return original(url, **kwargs)
+
+        session.get = get
+        recover = Mock(return_value="replacement-route")
+        self.preflight.return_value = (session, authorize)
+        with patch.object(route_recovery, "Session", return_value=SimpleNamespace(close=Mock())):
+            result = auth.refresh_access_token(EMAIL, proxy="fixture-route", route_recover=recover)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(2, sum(url == authorize for _, url, _ in session.calls))
+        self.assertEqual(1, sum(url.endswith("/email-otp/validate") for _, url, _ in session.calls))
+        self.assertEqual(403, recover.call_args.args[0].http_status)
+
+    def test_email_login_unknown_otp_post_is_not_replayed_by_shared_authentication(self):
+        from core.accounts.password_setup.route_recovery import AccountActionRouteHalt
+
+        session = Session(routes={("POST", AUTH + "/api/accounts/email-otp/validate"): TimeoutError("响应未返回")})
+        recover = Mock()
+        with self.assertRaises(AccountActionRouteHalt) as caught:
+            self.run_flow(session, route_recover=recover)
+        self.assertTrue(caught.exception.error.request_unknown)
+        self.assertEqual(1, sum(url.endswith("/email-otp/validate") for _, url, _ in session.calls))
+        recover.assert_not_called()
+
     def test_email_login_sends_new_code_before_waiting_and_completes_callback(self):
         session = Session()
         events = []

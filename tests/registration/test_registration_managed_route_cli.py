@@ -118,3 +118,40 @@ class ManagedRouteCliTests(PostgresTestCase):
         self.assertEqual(summary["route_failure"]["http_status"], 403)
         self.assertEqual(summary["route_failure"]["operation"], "preauth")
         self.assertEqual(summary["cause_code"], "protocol_auth_http_failed")
+
+    def test_cli_blocked_terminal_keeps_only_safe_history_without_recreating_old_route_failure(self):
+        from core.registration.standalone import run_registration_in_context
+        seen = []
+        old_failure = RegistrationRouteFailure("profile_submit", transport_kind="timeout")
+        old_audit = [{
+            "route_failure": old_failure,
+            "registration_diagnostics": {
+                "operation": "profile_submit", "failure_kind": "transport_error",
+                "exception_type": "TimeoutError", "response_body": "fixture-private",
+            },
+            "password": "fixture-private",
+        }] * 7
+
+        def driver(**kwargs):
+            seen.append(service.registration_fact_context())
+            return {
+                "success": False, "error": "原资料提交仍待确认",
+                "cause_code": "registration_profile_submission_unresolved",
+                "route_failure": old_failure, "route_recovery_blocked": True,
+                "registration_recovery_audit": old_audit,
+            }
+
+        with (
+            managed_registration_proxy(self.lease(1)),
+            patch.object(service, "_registration_proxy_retry_limit", return_value=0),
+        ):
+            run_registration_in_context(
+                driver, {"email": "blocked-cli@example.test", "name": "测试", "proxy": self.lease(1).proxy_url},
+                driver_name="protocol_oss_2",
+            )
+        summary = registration.get_run(seen[0]["run_id"])["result_summary"]
+        self.assertNotIn("route_failure", summary)
+        self.assertTrue(summary["route_recovery_blocked"])
+        self.assertEqual(len(summary["registration_recovery_audit"]), 4)
+        self.assertEqual(summary["registration_recovery_audit"][0]["route_failure"]["operation"], "profile_submit")
+        self.assertNotIn("fixture-private", str(summary))

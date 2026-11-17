@@ -1276,6 +1276,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "registration_completion_incomplete": ("FLOW-REG-COMPLETE-002", "注册认证已完成，自动补密码尚未完成"),
     "registration_auth_state_unrecognized": ("FLOW-REG-AUTH-001", "注册认证返回未支持的页面状态"),
     "registration_session_invalid_response": ("AUTH-REG-SESSION-001", "注册认证未返回可核验的完整会话"),
+    "registration_profile_submission_unresolved": ("FLOW-REG-PROFILE-001", "上次资料提交结果待确认，不能重复创建账号"),
     "registration_identity_verification_required": ("AUTH-REG-IDENTITY-001", "OpenAI 要求继续身份验证，尚未取得登录会话"),
     "password_setup_result_unconfirmed": ("AUTH-PWD-SETUP-001", "密码已提交，尚未取得明确设置成功证据"),
     "password_setup_already_set": ("AUTH-PWD-SETUP-002", "远端账号已有密码，添加密码请求被拒绝"),
@@ -1287,6 +1288,11 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "password_setup_input_invalid": ("FLOW-PWD-SETUP-002", "补密码输入不完整或格式无效"),
     "password_setup_csrf_missing": ("FLOW-PWD-SETUP-003", "补密码认证页面缺少 CSRF 状态"),
     "password_setup_network_failed": ("NET-PWD-SETUP-001", "补密码请求发生网络错误"),
+    "account_action_route_exhausted": ("NET-ACCOUNT-ROUTE-001", "账号操作换线次数已用完"),
+    "account_action_request_unknown": ("AUTH-ACCOUNT-UNKNOWN-001", "账号请求结果待确认，已停止重复提交"),
+    "account_action_route_unavailable": ("NET-ACCOUNT-ROUTE-002", "账号操作未取得可用的新线路"),
+    "account_action_rate_limited": ("OA-ACCOUNT-RATE-001", "账号操作受到远端限流，已停止继续提交"),
+    "account_action_http_rejected": ("OA-ACCOUNT-HTTP-001", "账号请求被远端拒绝，已停止重复提交"),
     "password_setup_sentinel_failed": ("NET-PWD-SETUP-002", "补密码前置安全检查未完成"),
     "password_setup_http_rejected": ("OA-PWD-SETUP-001", "远端拒绝了补密码请求"),
     "password_setup_security_check": ("OA-PWD-SETUP-002", "补密码请求未通过远端安全校验"),
@@ -1375,6 +1381,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_preauth_transport_failed": ("NET-REG-PREAUTH", "协议认证前置请求发生传输错误"),
     "protocol_post_otp_transport_failed": ("NET-REG-OTP", "已取得邮箱验证码，后续认证请求发生传输错误"),
     "protocol_auth_transport_failed": ("NET-REG-AUTH", "协议认证请求发生传输错误"),
+    "protocol_unmapped_request_transport_failed": ("NET-REG-UNMAPPED", "未映射的认证请求发生传输错误"),
     "protocol_auth_rejected_before_password": ("OA-REG-AUTH-PWD", "认证请求在取得密码验证回执前被拒绝"),
     "protocol_auth_http_failed": ("OA-REG-AUTH-HTTP", "协议认证请求返回 HTTP 错误"),
     "protocol_session_incomplete": ("FLOW-REG-SESSION", "注册资料已确认，后续登录态尚未取得"),
@@ -1417,6 +1424,7 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "registration_password_unconfirmed",
     "registration_auth_state_unrecognized",
     "registration_session_invalid_response",
+    "registration_profile_submission_unresolved",
     "registration_identity_verification_required",
     "identity_mismatch",
     *_BUTLER_RECIPIENT_CAUSES,
@@ -1425,6 +1433,7 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "protocol_preauth_transport_failed",
     "protocol_post_otp_transport_failed",
     "protocol_auth_transport_failed",
+    "protocol_unmapped_request_transport_failed",
     "protocol_auth_rejected_before_password",
     "protocol_auth_http_failed",
     "protocol_session_incomplete",
@@ -1441,6 +1450,13 @@ _REGISTRATION_DIAGNOSTIC_STAGES = frozenset({
 })
 _REGISTRATION_DIAGNOSTIC_FAILURE_KINDS = frozenset({
     "transport_error", "http_error", "invalid_response", "missing_session", "no_mail", "mailbox_error", "unknown",
+})
+_REGISTRATION_REQUEST_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "OTHER"})
+_REGISTRATION_REQUEST_HOST_CLASSES = frozenset({"auth", "chatgpt", "sentinel", "other", "invalid"})
+_REGISTRATION_REQUEST_PATH_CLASSES = frozenset({
+    "preauth", "email_submit", "password_create", "password_verify", "otp_send", "otp_validate",
+    "profile_submit", "callback", "session", "auth_session", "twofa_enroll", "twofa_activate",
+    "unmapped", "invalid",
 })
 _REGISTRATION_EXCEPTION_TYPES = frozenset({
     "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError", "JSONDecodeError",
@@ -1463,6 +1479,9 @@ def safe_registration_diagnostics(value: object) -> dict[str, Any]:
         ("failure_kind", _REGISTRATION_DIAGNOSTIC_FAILURE_KINDS),
         ("failure_stage", _REGISTRATION_DIAGNOSTIC_STAGES),
         ("last_confirmed_stage", _REGISTRATION_DIAGNOSTIC_STAGES | {""}),
+        ("request_method", _REGISTRATION_REQUEST_METHODS),
+        ("request_host_class", _REGISTRATION_REQUEST_HOST_CLASSES),
+        ("request_path_class", _REGISTRATION_REQUEST_PATH_CLASSES),
     ):
         item = value.get(key)
         if isinstance(item, str) and item in allowed:
@@ -1521,8 +1540,10 @@ def registration_diagnostic_cause_code(value: object) -> str:
             return "account_create_invalid_state"
         if status == 400 and code == "user_already_exists":
             return "account_create_user_already_exists"
-    if diagnostics.get("profile_confirmed") is True:
-        return "protocol_session_incomplete"
+    if (kind == "transport_error" and operation == "other"
+            and diagnostics.get("request_host_class") in {"auth", "chatgpt", "sentinel"}
+            and diagnostics.get("request_path_class") == "unmapped"):
+        return "protocol_unmapped_request_transport_failed"
     if kind == "transport_error" and operation not in {None, "other"}:
         if diagnostics.get("otp_received") is True:
             return "protocol_post_otp_transport_failed"
@@ -1535,6 +1556,8 @@ def registration_diagnostic_cause_code(value: object) -> str:
                 and diagnostics.get("failure_stage") in {"submit_email", "auth_redirect", "password", "login_password"}):
             return "protocol_auth_rejected_before_password"
         return "protocol_auth_http_failed"
+    if diagnostics.get("profile_confirmed") is True:
+        return "protocol_session_incomplete"
     return "protocol_failure_evidence_missing"
 
 

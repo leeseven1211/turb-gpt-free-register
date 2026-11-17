@@ -327,6 +327,92 @@ class PasswordSetupServiceTests(PasswordSetupFixture, PostgresTestCase):
         return ({"ok": True, "access_token": "fresh-token", "session": matching_session(self.email),
                  "session_reused": True, "auth_method": "session_cookie", "password_auth_status": "skipped"}, object())
 
+    def test_real_authorize_403_continues_on_new_route_with_same_private_candidate(self):
+        from http.cookiejar import CookieJar
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from core.accounts.password_setup import protocol, route_recovery
+        from tests.accounts.test_password_setup_protocol import FakeSession, Response, PASSWORD_PAGE, CALLBACK
+
+        pending = self.prepare()
+        session = FakeSession(
+            [Response({"csrfToken": "fixture-csrf"}), Response(status=403), Response(url=PASSWORD_PAGE)],
+            [Response({"url": "https://auth.openai.com/oauth/authorize?state=fixture"}),
+             Response({"page": {"type": "external_url"}, "continue_url": CALLBACK})],
+        )
+        session.proxy = "http://first.example:8080"
+        session.chrome_identity = {"impersonate": "chrome"}
+        session.session = SimpleNamespace(cookies=CookieJar(), timeout=20, close=Mock())
+        session.protocol_traffic = None
+        auth = {**self.reusable_session()[0], "access_token": "fresh-token"}
+        calls = []
+
+        def recover(failure, old_proxy):
+            self.assertEqual("prepared", store.resume_password_recovery(**self.owner).state)
+            self.assertEqual(pending.password, store.resume_password_recovery(**self.owner).password)
+            calls.append((failure.operation, failure.http_status, old_proxy))
+            return "http://second.example:8080"
+
+        with patch.object(route_recovery, "Session", return_value=SimpleNamespace(close=Mock())), \
+                patch.object(protocol, "_sentinel_headers", return_value={}):
+            result = self.run_service(protocol.add_password, reuse=(auth, session), route_recover=recover)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([("authorize", 403, "http://first.example:8080")], calls)
+        self.assertEqual(pending.password, self.extra()["account_password"])
+        self.assertEqual("confirmed", self.extra()["account_password_state"])
+        self.assertEqual(1, sum(url.endswith("/password/add") for _, url, _ in session.events))
+
+    def test_real_unknown_final_password_post_keeps_checkpoint_without_replay(self):
+        from http.cookiejar import CookieJar
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from core.accounts.password_setup import protocol
+        from tests.accounts.test_password_setup_protocol import FakeSession, Response, PASSWORD_PAGE
+
+        session = FakeSession(
+            [Response({"csrfToken": "fixture-csrf"}), Response(url=PASSWORD_PAGE)],
+            [Response({"url": "https://auth.openai.com/oauth/authorize?state=fixture"}), TimeoutError("可能已送达")],
+        )
+        session.proxy = "http://first.example:8080"
+        session.chrome_identity = {"impersonate": "chrome"}
+        session.session = SimpleNamespace(cookies=CookieJar(), timeout=20, close=Mock())
+        session.protocol_traffic = None
+        recover = Mock()
+        with patch.object(protocol, "_sentinel_headers", return_value={}):
+            result = self.run_service(
+                protocol.add_password, reuse=(self.reusable_session()[0], session), route_recover=recover,
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("unknown", result["remote_receipt_state"])
+        self.assertEqual("unknown", store.resume_password_recovery(**self.owner).state)
+        self.assertEqual(1, sum(url.endswith("/password/add") for _, url, _ in session.events))
+        recover.assert_not_called()
+
+    def test_explicit_final_403_exhaustion_keeps_rejected_result_without_inventing_unknown(self):
+        from http.cookiejar import CookieJar
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from core.accounts.password_setup import protocol
+        from tests.accounts.test_password_setup_protocol import FakeSession, Response, PASSWORD_PAGE
+
+        session = FakeSession(
+            [Response({"csrfToken": "fixture-csrf"}), Response(url=PASSWORD_PAGE)],
+            [Response({"url": "https://auth.openai.com/oauth/authorize?state=fixture"}), Response(status=403)],
+        )
+        session.proxy = "http://first.example:8080"
+        session.chrome_identity = {"impersonate": "chrome"}
+        session.session = SimpleNamespace(cookies=CookieJar(), timeout=20, close=Mock())
+        session.protocol_traffic = None
+        with patch.object(protocol, "_sentinel_headers", return_value={}):
+            result = self.run_service(
+                protocol.add_password, reuse=(self.reusable_session()[0], session),
+                route_recover=Mock(return_value=None),
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("rejected", result["remote_receipt_state"])
+        self.assertEqual("started", store.resume_password_recovery(**self.owner).state)
+        self.assertEqual("account_action_route_exhausted", result["error_code"])
+
     def test_reused_session_adds_password_without_login_or_password_verification(self):
         events = []
         reused = self.reusable_session()

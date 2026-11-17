@@ -9,6 +9,8 @@ from core.registration.errors import _safe_protocol_registration_error
     "registration_password_entry_unavailable", "registration_password_create_rejected",
     "registration_password_unconfirmed", "registration_auth_state_unrecognized",
     "registration_session_invalid_response", "registration_identity_verification_required",
+    "registration_profile_submission_unresolved",
+    "protocol_unmapped_request_transport_failed",
 ])
 def test_required_registration_failure_keeps_fixed_cause_on_all_surfaces(code):
     assert code in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
@@ -24,6 +26,8 @@ def test_required_registration_failure_keeps_fixed_cause_on_all_surfaces(code):
 @pytest.mark.parametrize("code", [
     "account_setup_step_not_executed", "account_setup_step_not_completed",
     "password_setup_unsupported", "password_setup_page_not_ready", "twofa_setup_failed",
+    "account_action_route_exhausted", "account_action_request_unknown", "account_action_route_unavailable",
+    "account_action_rate_limited", "account_action_http_rejected",
 ])
 def test_requested_setup_step_failure_has_a_specific_classification(code):
     info = classify_task_error(code, task_type="account_setup_retry", result_summary={"cause_code": code})

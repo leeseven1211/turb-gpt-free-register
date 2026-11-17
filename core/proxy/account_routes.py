@@ -251,12 +251,15 @@ def acquire_account_proxy(
     cancel: Callable[[], None] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     timeout: float | None = None,
+    excluded_exit_ip: str | None = None,
+    excluded_exit_ips: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> AccountProxyRoute:
     """为一次账号功能调用获取线路；调用方必须在 finally 中 release。"""
     selected = str(explicit_proxy or "").strip()
-    if selected and not str(region or "").strip():
+    if (selected and not str(region or "").strip()
+            and not excluded_exit_ip and not excluded_exit_ips):
         # 显式地址只复用同一链的线路，不能把调用方要求的国家写成实测国家。
-        # 有目标国家的业务必须重新从池领取并验证。
+        # 有目标国家或失败出口排除要求时，必须从池领取可核验租约。
         return AccountProxyRoute(
             proxy_url=selected,
             provider="request" if selected else "direct",
@@ -288,6 +291,7 @@ def acquire_account_proxy(
             pool_kwargs["reuse_limit"] = reuse_limit
         pool_kwargs.update({key: value for key, value in {
             "cancel": cancel, "progress_callback": progress_callback, "timeout": timeout,
+            "excluded_exit_ip": excluded_exit_ip, "excluded_exit_ips": excluded_exit_ips,
         }.items() if value is not None})
         if rotation_index:
             pool_kwargs["correlation_id"] = f"{purpose}-{account_id or email or 'account'}-rotation-{max(0, int(rotation_index))}"

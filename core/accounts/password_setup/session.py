@@ -109,7 +109,8 @@ def _session_sources(account, account_id, cached, checkpoint):
 
 
 @contextmanager
-def try_reuse_session(account: dict, email: str, *, proxy: str | None, checkpoint=None, proxy_supplier=None):
+def try_reuse_session(account: dict, email: str, *, proxy: str | None, checkpoint=None, proxy_supplier=None,
+                      route_recover=None, on_route_failure=None):
     """在线确认 Cookie 与目标身份后提供会话；缓存不可用时由调用方登录。"""
     _check(checkpoint)
     account_id = int(account.get("id") or 0)
@@ -151,6 +152,13 @@ def try_reuse_session(account: dict, email: str, *, proxy: str | None, checkpoin
                     identity = {"device_id": source["device_id"], "browser_profile": pick_browser_profile()}
                 session = BrowserSession(proxy=selected_proxy or "", detect_exit_geo=False,
                     **({"identity": identity} if identity is not None else {}))
+                if callable(route_recover):
+                    from core.accounts.password_setup.route_recovery import AccountActionSession
+
+                    session = AccountActionSession(
+                        session, recover=route_recover, check=lambda: _check(checkpoint), observe=on_route_failure,
+                        signal_control=True,
+                    )
                 if not private_cache:
                     source.update(device_id=session.device_id, browser_profile=session.browser_profile)
             except _CONTROL_ERRORS:

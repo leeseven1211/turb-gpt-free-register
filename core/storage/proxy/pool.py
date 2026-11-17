@@ -271,13 +271,18 @@ def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict
           allow_reuse: bool = False,
           reuse_limit: int = proxy_lease_store.REUSE_LIMIT_DEFAULT,
           profile_keys: list[str] | None = None, source_urls: list[str] | None = None,
-          required_region: str | None = None, excluded_exit_ip: str | None = None):
+          required_region: str | None = None, excluded_exit_ip: str | None = None,
+          excluded_exit_ips: tuple[str, ...] | list[str] | set[str] | None = None):
     """只领取已检查且寿命足够的库存；此路径不执行任何网络操作。"""
     if allow_reuse and correlation.get("purpose") != "plan-check":
         raise ValueError("只有套餐查询允许共享代理")
     if allow_reuse or correlation.get("purpose") == "plan-check":
         reuse_limit = proxy_lease_store.normalize_reuse_limit(reuse_limit)
-    excluded_exit_ip = str(excluded_exit_ip or "").strip()
+    excluded = {
+        str(value).strip()
+        for value in [excluded_exit_ip, *(excluded_exit_ips or ())]
+        if value is not None and str(value).strip()
+    }
     record_store.init()
     scope, scope_params = _inventory_scope(profile_key, profile_keys=profile_keys,
                                            source_urls=source_urls, required_region=required_region)
@@ -313,8 +318,8 @@ def claim(profile_key: str, *, min_ttl: float, max_age: float, correlation: dict
             if not allow_reuse and _children(conn, anchor["lease_id"]):
                 continue
             exit_ip = str(anchor.get("exit_ip") or "").strip()
-            # 换线必须能确认出口不同；只跳过锁内候选，不改变库存或额外探测。
-            if excluded_exit_ip and (not exit_ip or exit_ip == excluded_exit_ip):
+            # 排除本次动作全部已失败出口；只跳过锁内候选，不改变库存或额外探测。
+            if excluded and (not exit_ip or exit_ip in excluded):
                 continue
             if correlation.get("purpose") == "plan-check" and anchor.get("exit_ip"):
                 # 严格套餐查询也会计入后续共享上限；与共享领取共用同一出口锁，

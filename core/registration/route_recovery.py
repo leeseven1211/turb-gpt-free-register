@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import time
 from typing import Callable
 from urllib.parse import urlsplit
@@ -179,6 +179,8 @@ def registration_request_operation(method: str, url: object) -> str | None:
         return None
     return {
         ("GET", "/authorize"): "preauth",
+        ("GET", "/api/accounts/authorize"): "preauth",
+        ("GET", "/oauth/authorize"): "preauth",
         ("GET", "/log-in"): "preauth",
         ("GET", "/create-account/password"): "preauth",
         ("POST", "/api/accounts/authorize"): "email_submit",
@@ -194,6 +196,56 @@ def registration_request_operation(method: str, url: object) -> str | None:
         ("POST", "/api/accounts/create_account"): "profile_submit",
         ("GET", "/api/accounts/client_auth_session_dump"): "auth_session",
     }.get(action)
+
+
+def registration_request_diagnostics(method: str, url: object) -> dict[str, str]:
+    """仅输出稳定请求分类，未知域名、路径及查询参数不进入诊断。"""
+    normalized_method = str(method or "").upper()
+    if normalized_method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        normalized_method = "OTHER"
+    host_class = "invalid"
+    path_class = "invalid"
+    try:
+        parsed = urlsplit(str(url or ""))
+        if (parsed.scheme == "https" and parsed.hostname and parsed.port in (None, 443)
+                and not parsed.username and not parsed.password):
+            host_class = {
+                "auth.openai.com": "auth",
+                "chatgpt.com": "chatgpt",
+                "chat.openai.com": "chatgpt",
+                "sentinel.openai.com": "sentinel",
+            }.get(parsed.hostname, "other")
+            path_class = registration_request_operation(normalized_method, url) or "unmapped"
+    except (ValueError, TypeError):
+        pass
+    return {
+        "request_method": normalized_method,
+        "request_host_class": host_class,
+        "request_path_class": path_class,
+    }
+
+
+def safe_registration_recovery_audit(value) -> list[dict]:
+    """恢复历史只保留受控诊断与已验证的线路事实。"""
+    from core.operations.errors import safe_registration_diagnostics
+
+    result = []
+    for item in value[-4:] if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        entry = {}
+        diagnostics = safe_registration_diagnostics(item.get("registration_diagnostics"))
+        if diagnostics:
+            entry["registration_diagnostics"] = diagnostics
+        raw_failure = item.get("route_failure")
+        if isinstance(raw_failure, RegistrationRouteFailure):
+            raw_failure = asdict(raw_failure)
+        failure = result_route_failure({"route_failure": raw_failure})
+        if failure is not None:
+            entry["route_failure"] = asdict(failure)
+        if entry:
+            result.append(entry)
+    return result
 
 
 def _transport_kind(error: BaseException | None) -> str:
@@ -263,6 +315,7 @@ def registration_route_failure(
 def result_route_failure(result: object) -> RegistrationRouteFailure | None:
     """兼容单线路驱动结果；只消费本次结构化原因，不扫描历史错误文本。"""
     if (not isinstance(result, dict) or result.get("success")
+            or result.get("route_recovery_blocked") is True
             or result.get("cause_code") == "registration_route_close_failed"):
         return None
     direct = result.get("route_failure")

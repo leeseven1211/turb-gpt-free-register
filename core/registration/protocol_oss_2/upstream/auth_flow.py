@@ -52,6 +52,25 @@ class PasswordEntryError(RuntimeError):
         super().__init__(descriptions[self.cause_code])
 
 
+class RegistrationIdentityRecoveryError(RuntimeError):
+    """原身份恢复的本地限制使用固定原因，不借用历史网络故障。"""
+
+    def __init__(self, cause_code: str):
+        descriptions = {
+            "registration_profile_submission_unresolved": "原资料提交结果未知，保留原提交且不重复创建",
+            "registration_auth_state_unrecognized": "原身份登录返回未支持的后续步骤，已保留原任务",
+            "registration_password_unconfirmed": "原身份登录需要原候选密码，未生成或推测新密码",
+        }
+        self.cause_code = cause_code if cause_code in descriptions else "registration_auth_state_unrecognized"
+        super().__init__(descriptions[self.cause_code])
+
+
+class RegistrationProfileContinuationError(RuntimeError):
+    """资料响应缺少后续地址，不能仅按资料阶段猜测远端失败。"""
+
+    cause_code = "user_register_continue_url_missing"
+
+
 def _password_navigation_failure(exc: Exception) -> PasswordEntryError:
     timed_out = isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
     return PasswordEntryError("password_entry_navigation_timeout" if timed_out else "password_entry_navigation_failed")
@@ -3272,7 +3291,7 @@ class AuthFlow:
                 continue_url = self._workspace_select(workspace_id)
 
         if not continue_url:
-            raise RuntimeError("创建账户后未获取到 continue_url")
+            raise RegistrationProfileContinuationError("创建账户后未获取到 continue_url")
 
         logger.info("账户创建成功")
         return continue_url
@@ -4393,10 +4412,10 @@ class AuthFlow:
                     page_type not in {"login_password", "email_otp_verification", "about_you", "mfa_challenge", "external_url"}
                     and not self._is_chatgpt_callback_url(continue_url)
                 ):
-                    raise RuntimeError("原身份登录返回未支持的状态，禁止退回新注册")
+                    raise RegistrationIdentityRecoveryError("registration_auth_state_unrecognized")
                 if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
                     if strict_identity_resume and not login_password:
-                        raise RuntimeError("原身份登录需要原候选密码，禁止生成或推测新密码")
+                        raise RegistrationIdentityRecoveryError("registration_password_unconfirmed")
                     logger.info("登录分支: login_password -> password/verify")
                     # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
                     # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
@@ -4455,7 +4474,7 @@ class AuthFlow:
 
         if not continue_url and page_type not in ("login_password", "email_otp_verification"):
             if strict_identity_resume:
-                raise RuntimeError("原身份登录没有明确后续步骤，禁止退回新注册")
+                raise RegistrationIdentityRecoveryError("registration_auth_state_unrecognized")
             is_new = self.signup(email, sentinel)
             if is_new:
                 logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
@@ -4517,7 +4536,7 @@ class AuthFlow:
 
         if strict_identity_resume and (page_type == "about_you" or "/about-you" in (continue_url or "")):
             if not allow_profile_completion:
-                raise RuntimeError("原资料提交结果未知，禁止重复创建")
+                raise RegistrationIdentityRecoveryError("registration_profile_submission_unresolved")
             continue_url = self.create_account()
         continue_url = self._normalize_continue_url(continue_url)
         # 某些边缘态 OTP 后未返回 callback，回退 reauthorize
@@ -4525,6 +4544,7 @@ class AuthFlow:
             continue_url = self._reauthorize_for_session(auth_url) or ""
 
         refresh_only_mode = self._env_flag("OAUTH_REFRESH_ONLY", "0")
+        skip_exchange = strict_identity_resume and self._env_flag("SKIP_OAUTH_TOKEN_EXCHANGE", "0")
         callback_url = ""
         if continue_url:
             continue_url = self._normalize_continue_url(continue_url)
@@ -4532,7 +4552,7 @@ class AuthFlow:
                 self.oauth_codex_rt_exchange(mail_provider=mail_provider)
             pre_exchange_default = "1" if refresh_only_mode else "0"
             pre_exchange = self._env_flag("OAUTH_EXCHANGE_BEFORE_CALLBACK", pre_exchange_default)
-            if pre_exchange:
+            if pre_exchange and not skip_exchange:
                 self.oauth_token_exchange(continue_url, continue_url)
             callback_url, final_url = self.follow_redirect_chain(continue_url)
             if (not callback_url) and final_url and ("/workspace" in final_url):
@@ -4540,12 +4560,19 @@ class AuthFlow:
                 if normalized and normalized != final_url:
                     callback_url, final_url = self.follow_redirect_chain(normalized)
 
+        if strict_identity_resume and not refresh_only_mode and callback_url:
+            # 注册恢复沿用注册链路的顺序，让 NextAuth 先消费本轮回调并写入会话。
+            self._consume_callback_for_session(callback_url)
+
         if not refresh_only_mode:
             self.get_auth_session()
 
         if callback_url or continue_url:
             self.fetch_client_auth_session_dump("pre_oauth_exchange_protocol")
-            self.oauth_token_exchange(callback_url or "", continue_url or "")
+            if (not skip_exchange and (
+                not strict_identity_resume or self._env_flag("OAUTH_TOKEN_EXCHANGE_FROM_CALLBACK", "0")
+            )):
+                self.oauth_token_exchange(callback_url or "", continue_url or "")
             if (not self.result.refresh_token) and self._env_flag("OAUTH_CODEX_RT_EXCHANGE", "0"):
                 self.oauth_codex_rt_exchange(mail_provider=mail_provider)
             if (not self.result.refresh_token) and self._env_flag("OAUTH_SECONDARY_AUTHORIZE_EXCHANGE", "0"):

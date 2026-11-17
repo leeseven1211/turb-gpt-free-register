@@ -39,6 +39,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         password_behavior=None,
         routes=None,
         proxy_country=None,
+        route_behavior=None,
+        route_requests=None,
     ):
         actions = []
         account = {"id": 42, "email": "fixture@example.test", "access_token": "fixture-old-at"}
@@ -49,13 +51,15 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             mode="pool",
             region="JP",
             release=Mock(),
-            lease=SimpleNamespace(lease_id="fixture-proxy-lease"),
+            lease=SimpleNamespace(lease_id="fixture-proxy-lease", exit_ip="192.0.2.1"),
             public_dict=lambda: {"network_route": "proxy", "proxy_mode": "pool"},
         )
 
         def password_setup(email, *, proxy, execution_fence, checkpoint=None, report=None,
-                           proxy_supplier=None, on_network_failure=None):
+                           proxy_supplier=None, on_network_failure=None, route_recover=None):
             actions.append(("password", email, proxy, execution_fence))
+            if route_behavior is not None:
+                return route_behavior(proxy_supplier, on_network_failure, route_recover)
             if password_behavior is not None:
                 return password_behavior(proxy_supplier, on_network_failure)
             if log_records is not None:
@@ -148,7 +152,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                     ),
                 )
             )
-            stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy",
+            acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy",
                                      **({"side_effect": routes} if routes is not None else {"return_value": route})))
             stack.enter_context(
                 patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=browser_setup)
@@ -171,6 +175,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             )
             if log_records is not None:
                 log_records.extend(json.loads(line) for line in path.read_text().splitlines())
+            if route_requests is not None:
+                route_requests.extend(call.kwargs for call in acquire.call_args_list)
         return result, actions, account, fence
 
     def test_native_password_worker_writes_each_log_record_once(self):

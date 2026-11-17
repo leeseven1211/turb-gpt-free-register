@@ -95,6 +95,64 @@ class RegistrationNativeSetupTests(PostgresTestCase):
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertEqual(1, len(store.get_task(first["task_id"])["runs"]))
 
+    def create_source_job(self, *, resume=False):
+        root = db.create_job("outlook")
+        db.update_job(root["id"], status="partial_success", email=self.source["email"],
+                      account_id=self.account_id)
+        source = root
+        if resume:
+            source, _ = db.create_retry_job(
+                root["id"], job_type="registration_resume", email_source="outlook",
+                email=self.source["email"], account_id=self.account_id,
+            )
+            db.update_job(source["id"], status="partial_success")
+        self.source = db.get_job(source["id"])
+        kind = "registration_resume" if resume else "registration"
+        return store.find_task_by_source("registration_chains", f"{root['id']}:{kind}")
+
+    def test_manual_setup_links_registration_chain_parent_and_persists_child_id(self):
+        parent = self.create_source_job()
+        queued = self.submit()
+        child = store.get_task(queued["task_id"], include_events=False)
+        self.assertEqual(parent["id"], child["parent_task_id"])
+        self.assertEqual(parent["root_task_id"], child["root_task_id"])
+        self.assertEqual(queued["task_id"], db.get_job(self.source["id"])["registration_account_task_id"])
+
+    def test_resume_setup_links_source_run_parent_instead_of_registration_root(self):
+        parent = self.create_source_job(resume=True)
+        queued = self.submit()
+        child = store.get_task(queued["task_id"], include_events=False)
+        self.assertEqual(parent["id"], child["parent_task_id"])
+        self.assertEqual(parent["root_task_id"], child["root_task_id"])
+
+    def test_reused_and_retried_setup_keep_persistent_job_binding(self):
+        parent = self.create_source_job()
+        first = self.submit()
+        reused = self.submit()
+        store.finish_run(first["run_id"], status="failed", error="fixture-network")
+        retried = self.submit()
+        self.assertEqual(first["task_id"], reused["task_id"])
+        self.assertEqual(first["task_id"], retried["task_id"])
+        self.assertEqual(parent["id"], store.get_task(retried["task_id"])["parent_task_id"])
+        self.assertEqual(retried["task_id"], db.get_job(self.source["id"])["registration_account_task_id"])
+
+    def test_explicit_retry_links_previously_unparented_repair_without_replacing_run(self):
+        parent = self.create_source_job()
+        orphan = store.create_runtime_task(
+            task_type="account_setup_retry", account_id=self.account_id, email=self.source["email"],
+            source_system="webui_runtime", source_id=f"registration-account-setup:{self.source['id']}",
+            resource_family="openai_interactive",
+            data={"steps": ["password"], "config_snapshot": {
+                "password_driver": "protocol", "twofa_driver": "protocol",
+            }},
+        )
+        queued = self.submit()
+        self.assertTrue(queued["reused"], queued)
+        self.assertEqual(orphan["run"]["id"], queued["run_id"])
+        child = store.get_task(queued["task_id"], include_events=False)
+        self.assertEqual(parent["id"], child["parent_task_id"])
+        self.assertEqual(parent["root_task_id"], child["root_task_id"])
+
     def test_terminal_setup_retry_reports_an_unrelated_new_active_run_as_conflict(self):
         first = self.submit()
         store.finish_run(first["run_id"], status="failed", error="fixture-network")

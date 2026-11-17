@@ -573,6 +573,7 @@ def _advance_registration_checkpoint(stage: str, state: str, detail: str | None 
 def _registration_request_unknown_facts(result: dict | None) -> dict[str, object]:
     """只保存固定原因码、明确响应布尔值及安全的失败诊断。"""
     from core.operations.errors import safe_registration_diagnostics
+    from core.registration.route_recovery import safe_registration_recovery_audit
 
     facts: dict[str, object] = {"outcome": "request_unknown"}
     if not isinstance(result, dict):
@@ -585,6 +586,11 @@ def _registration_request_unknown_facts(result: dict | None) -> dict[str, object
     diagnostics = safe_registration_diagnostics(result.get("registration_diagnostics"))
     if diagnostics:
         facts["registration_diagnostics"] = diagnostics
+    if result.get("route_recovery_blocked") is True:
+        facts["route_recovery_blocked"] = True
+    audit = safe_registration_recovery_audit(result.get("registration_recovery_audit"))
+    if audit:
+        facts["registration_recovery_audit"] = audit
     return facts
 
 
@@ -1331,7 +1337,8 @@ def _is_pre_account_transport_failure(result: dict | None) -> bool:
     """识别认证页挂载前的线路失败，不把它升级成待人工对账。"""
     if not isinstance(result, dict):
         return False
-    if result.get("cause_code") == "registration_route_close_failed":
+    if (result.get("route_recovery_blocked") is True
+            or result.get("cause_code") == "registration_route_close_failed"):
         return False
     if _has_registration_safety_fence(result):
         return False
@@ -1506,7 +1513,8 @@ def _should_retry_registration_with_new_proxy(
         return False
     if not isinstance(result, dict):
         return False
-    if result.get("cause_code") == "registration_route_close_failed":
+    if (result.get("route_recovery_blocked") is True
+            or result.get("cause_code") == "registration_route_close_failed"):
         return False
     if "route_recovery_ready" in result:
         # 已参与保留现场的驱动必须由专门交接分支恢复，不能回退整段重注册。
@@ -2506,8 +2514,12 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     )
             if isinstance(result, dict):
                 from dataclasses import asdict
+                # 所有终态都保存当前诊断；是否未知仍由本次结果单独决定。
+                final_facts = _registration_request_unknown_facts(result)
+                final_facts.pop("outcome", None)
+                unknown_facts.update(final_facts)
                 # 原线路失败属于审计事实；关闭失败只撤销恢复许可，不抹掉原原因。
-                final_failure = result_route_failure({"route_failure": result.get("route_failure")}) or result_route_failure(result)
+                final_failure = result_route_failure(result)
                 if final_failure is not None:
                     unknown_facts["route_failure"] = asdict(final_failure)
                 cause = result.get("cause_code")
@@ -2958,6 +2970,9 @@ def _submit_registration_account_setup(
     }
     captured = task_gateway.normalize_config_snapshot(settings, allowlist=tuple(settings))
     existing = operation_task_store.find_task_by_source("webui_runtime", source_id)
+    parent = operation_task_store.find_task_by_source(
+        "registration_jobs", str(source["id"]), include_runs=True,
+    )
     if existing:
         existing = operation_task_store.get_task(int(existing["id"]), include_events=False) or existing
         if existing.get("status") in {"queued", "running", "cancelling", "settling", "waiting"}:
@@ -2988,7 +3003,6 @@ def _submit_registration_account_setup(
             task_gateway.notify_dispatch()
             queued = {"accepted": True, "task_id": existing["id"], "run_id": run["id"], "reused": False}
     else:
-        parent = operation_task_store.find_task_by_source("registration_jobs", str(source["id"]))
         queued = task_gateway.submit_durable_operation(
             task_type="account_setup_retry", account_id=int(account["id"]),
             email=str(account.get("email") or source.get("email") or ""),
@@ -3004,6 +3018,12 @@ def _submit_registration_account_setup(
                     "error": "账号已有其它操作正在执行，本次密码缺项尚未入队，可稍后重跑"}
     accepted = bool(queued.get("accepted"))
     busy = bool(queued.get("busy"))
+    if accepted and queued.get("task_id"):
+        if parent and existing and not existing.get("parent_task_id"):
+            operation_task_store.link_registration_setup_parent(
+                task_id=int(queued["task_id"]), job_id=int(source["id"]), parent_task_id=int(parent["id"]),
+            )
+        db._patch_job(int(source["id"]), {"registration_account_task_id": int(queued["task_id"])})
     return {
         **queued, "ok": accepted or busy, "status": 200 if accepted or busy else 409,
         "created": accepted and not bool(queued.get("reused")),
@@ -4185,7 +4205,9 @@ def retry_job(
         from core.codex import operation_service as codex_operation_service
         from core import operation_task_store
 
-        parent = operation_task_store.find_task_by_source("registration_jobs", str(job_id))
+        parent = operation_task_store.find_task_by_source(
+            "registration_jobs", str(job_id), include_runs=True,
+        )
         queued = codex_operation_service.submit(
             email,
             trigger="registration_job_retry",

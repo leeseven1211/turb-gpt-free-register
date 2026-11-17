@@ -5,6 +5,7 @@ import logging
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import asdict
 from urllib.parse import urlsplit
 
 from core.auth.challenge import AuthCancelledError
@@ -225,6 +226,9 @@ class _ObservedSession:
     def _request_once(self, method, url, **kwargs):
         _check_stop_requested()
         context = self._context
+        # 旧线路故障属于已保存的恢复审计，不能替代新请求的当前结果。
+        context.pop("route_failure", None)
+        context["last_request_operation"] = registration_request_operation(method, url)
         path = urlsplit(url).path
         if path.endswith("/api/auth/session"):
             context["session_response_incomplete"] = False
@@ -286,12 +290,6 @@ class _ObservedSession:
                         context["session_response_incomplete"] = True
                 else:
                     context["session_response_incomplete"] = True
-            status = getattr(response, "status_code", None)
-            if (type(status) is int and 200 <= status < 400
-                    and registration_request_operation(method, url) is not None):
-                # 新线路已有关键请求成功，旧线路故障不再作为最终失败。
-                # 原未知提交和诊断继续保留，不用线路故障替代后续业务原因。
-                context.pop("route_failure", None)
             return response
         except BaseException as exc:
             error = exc
@@ -301,6 +299,9 @@ class _ObservedSession:
                 context.setdefault("unknown_identity_operations", set()).add(operation)
             raise
         finally:
+            current_failure = registration_route_failure(method, url, response=response, error=error)
+            if current_failure is not None:
+                context["route_failure"] = current_failure
             diagnostics = context.get("registration_diagnostics")
             if diagnostics is not None:
                 try:
@@ -425,7 +426,7 @@ def run_upstream_protocol(
     from core.email.provider import wait_for_otp
     from config import email as email_cfg
     from core.registration.checkpoints import save_protocol_password_checkpoint
-    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
+    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow, RegistrationIdentityRecoveryError
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
@@ -455,6 +456,20 @@ def run_upstream_protocol(
         except Exception:
             # 诊断只观察，不授予认证分支、重试或取消控制权。
             return None
+
+    def record_recovery_audit(error=None, failure=None):
+        """只保存固定请求类别与诊断，不复制原异常正文。"""
+        from core.operations.errors import safe_registration_diagnostics
+
+        entry = {}
+        if error is not None:
+            diagnostics = safe_registration_diagnostics(observe("failure", error))
+            if diagnostics:
+                entry["registration_diagnostics"] = diagnostics
+        if failure is not None:
+            entry["route_failure"] = asdict(failure)
+        if entry:
+            context["recovery_audit"] = [*context.get("recovery_audit", []), entry][-4:]
 
     def observed_action(operation, callback, *args, **kwargs):
         try:
@@ -572,15 +587,15 @@ def run_upstream_protocol(
 
         def create_account(self):
             if context.get("identity_recovery") and "profile_submit" in context.get("unknown_identity_operations", set()):
-                raise ProtocolRegistrationContextError("原资料提交结果未知，禁止在原身份恢复中重复创建")
+                raise RegistrationIdentityRecoveryError("registration_profile_submission_unresolved")
             context.pop("profile_diagnostics", None)
-            context.pop("profile_error", None)
             progress("profile", "running", "正在提交上游注册资料")
             try:
                 result = observed_action("profile_submit", super().create_account)
             except Exception as exc:
-                # 上游可能吞掉资料异常后重认证；仅给最终仍传播的同一异常归因。
-                context["profile_error"] = exc
+                # 资料回执仅绑定此异常；后续认证失败另行按当前事实归因。
+                exc.protocol_profile_diagnostics = context.get("profile_diagnostics")
+                record_recovery_audit(exc)
                 raise
             progress("profile", "success", "上游已确认注册资料")
             target = urlsplit(str(result or ""))
@@ -699,6 +714,7 @@ def run_upstream_protocol(
             except _VendorRouteRecovery as interrupted:
                 failure = interrupted.failure
                 context["route_failure"] = failure
+                record_recovery_audit(interrupted.error, failure)
                 if not failure.replay_safe:
                     preserve_unknown_route_action(interrupted)
                 if not interrupted.switched:
@@ -711,10 +727,6 @@ def run_upstream_protocol(
                     operation = "password_submit" if failure.operation in {"password_create", "password_verify"} else failure.operation
                     observe("bind_failure", error, operation, context["registration_diagnostics"].sequence - 1)
                     raise error from interrupted.error
-                if interrupted.error is not None:
-                    context["route_unknown_error"] = interrupted.error
-                if failure.operation == "profile_submit" and interrupted.error is not None:
-                    context["profile_error"] = interrupted.error
                 action = lambda: flow.recover_identity(mailbox)
         check_stop_requested()
         access_token = str(result.access_token or "").strip()
@@ -761,15 +773,17 @@ def run_upstream_protocol(
         route_failure = getattr(exc, "route_failure", None) or context.get("route_failure")
         if route_failure is not None:
             exc.route_failure = route_failure
+        diagnostics = observe("failure", exc)
         if (context.get("session_response_incomplete") and not context.get("session_info")
-                and not context.get("profile_error") and not context.get("route_unknown_error")
+                and context.get("last_request_operation") == "session"
+                and (diagnostics or {}).get("failure_kind") in {"unknown", "missing_session"}
                 and not getattr(exc, "cause_code", "")):
             invalid = ProtocolSessionResponseError("本轮 Session 响应缺少完整身份或 Token，原任务可重跑")
             invalid.__cause__ = exc
             exc = invalid
-        # 有界恢复未完成时仍保留原资料提交的失败事实，避免变成泛化无凭证错误。
-        primary = context.get("profile_error") or context.get("route_unknown_error") or exc
-        diagnostics = observe("failure", primary)
+            diagnostics = observe("failure", exc)
+        exc.route_recovery_blocked = route_failure is None
+        exc.registration_recovery_audit = context.get("recovery_audit", [])
         if diagnostics is not None:
             try:
                 exc.registration_diagnostics = diagnostics
@@ -779,7 +793,7 @@ def run_upstream_protocol(
             unknown = ProtocolOssRequestUnknown(
                 "开源protocol-2 尚未取得完整会话，可重跑原任务继续",
                 register_response_confirmed=context["password_register_accepted"],
-                cause_diagnostics=context.get("profile_diagnostics"),
+                cause_diagnostics=getattr(exc, "protocol_profile_diagnostics", None),
             )
             if getattr(exc, "cause_code", "") in {
                 "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered",
@@ -788,12 +802,16 @@ def run_upstream_protocol(
                 "registration_auth_state_unrecognized", "registration_session_invalid_response",
                 "registration_route_close_failed",
                 "registration_identity_verification_required",
+                "registration_profile_submission_unresolved",
+                "user_register_continue_url_missing",
             }:
                 unknown.cause_code = exc.cause_code
             if diagnostics is not None:
                 unknown.registration_diagnostics = diagnostics
             if route_failure is not None:
                 unknown.route_failure = route_failure
+            unknown.route_recovery_blocked = exc.route_recovery_blocked
+            unknown.registration_recovery_audit = exc.registration_recovery_audit
             raise unknown from exc
         raise
     finally:

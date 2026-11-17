@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.accounts.password_setup.proxy import is_proxy_transport_failure
+from core.accounts.password_setup.route_recovery import AccountActionRouteFailure
 from core.network.protocol_traffic import current_correlation
 from tests.accounts import test_password_setup_integration as integration
 
@@ -11,7 +12,8 @@ from tests.accounts import test_password_setup_integration as integration
 def route(number):
     return SimpleNamespace(
         proxy_url=f"http://route-{number}.example:8080", provider=f"provider-{number}",
-        region="JP", mode="pool", release=Mock(), lease=SimpleNamespace(lease_id=f"lease-{number}"),
+        region="JP", mode="pool", release=Mock(),
+        lease=SimpleNamespace(lease_id=f"lease-{number}", exit_ip=f"192.0.2.{number}"),
         public_dict=lambda: {"network_route": "proxy", "proxy_mode": "pool", "proxy_provider": f"provider-{number}"},
     )
 
@@ -21,6 +23,111 @@ class PasswordProxyRotationTests(unittest.TestCase):
         return integration.PasswordSetupIntegrationTests().run_setup(
             password_behavior=behavior, routes=routes, **kwargs,
         )[0]
+
+    def test_step_403_and_preflight_share_four_routes_and_exclude_all_failed_exits(self):
+        routes = [route(n) for n in range(1, 5)]
+        requests = []
+        failure = AccountActionRouteFailure("authorize", "GET", http_status=403)
+        seen = []
+
+        def behavior(supplier, failed, recover):
+            self.assertEqual(routes[0].proxy_url, supplier(1))
+            self.assertEqual(routes[1].proxy_url, recover(failure, routes[0].proxy_url))
+            seen.append(current_correlation())
+            failed(TimeoutError("request timed out"))
+            self.assertEqual(routes[2].proxy_url, supplier(2))
+            self.assertEqual(routes[3].proxy_url, recover(failure, routes[2].proxy_url))
+            seen.append(current_correlation())
+            self.assertIsNone(recover(failure, routes[3].proxy_url))
+            return {"ok": False, "status": "failed", "error_code": "account_action_route_exhausted"}
+
+        result = integration.PasswordSetupIntegrationTests().run_setup(
+            routes=routes, route_behavior=behavior, proxy_country="JP", route_requests=requests,
+        )[0]
+        self.assertFalse(result["ok"])
+        self.assertEqual(4, len(requests))
+        self.assertEqual([{"192.0.2.1"}, {"192.0.2.1", "192.0.2.2"},
+                          {"192.0.2.1", "192.0.2.2", "192.0.2.3"}],
+                         [set(request["excluded_exit_ips"]) for request in requests[1:]])
+        self.assertTrue(all(request["region"] == "JP" for request in requests))
+        self.assertEqual([2, 4], [correlation["route_attempt_no"] for correlation in seen])
+        for current in routes:
+            current.release.assert_called_once()
+
+    def test_step_recovery_cancellation_releases_current_lease_without_reacquiring(self):
+        from core.operations.runtime import OperationCancelled
+
+        current = route(1)
+
+        def behavior(supplier, _failed, _recover):
+            supplier(1)
+            raise OperationCancelled("已取消")
+
+        result = integration.PasswordSetupIntegrationTests().run_setup(
+            routes=[current], route_behavior=behavior,
+        )[0]
+        self.assertEqual("stopped", result["status"])
+        current.release.assert_called_once()
+
+    def test_local_transport_init_failure_after_rotation_does_not_quarantine_new_lease(self):
+        from core.accounts.password_setup import route_recovery
+        from tests.accounts.test_account_action_route_session import session
+
+        first, second = route(1), route(2)
+
+        def behavior(supplier, failed, recover):
+            supplier(1)
+            current = session(RuntimeError("curl: (56) Proxy CONNECT aborted"))
+            current.proxy = first.proxy_url
+            client = route_recovery.AccountActionSession(
+                current, recover=recover, check=lambda: None, observe=failed,
+            )
+            with patch.object(route_recovery, "Session", side_effect=RuntimeError("local transport init failed")):
+                try:
+                    client.get("https://auth.openai.com/oauth/authorize")
+                except route_recovery.AccountActionRouteHalt as halted:
+                    error = halted.error
+                    return {
+                        "ok": False, "status": "failed", "error_code": error.code,
+                        "proxy_transport_failed": error.proxy_transport_failed,
+                    }
+            self.fail("本地 transport 初始化失败必须停止原请求")
+
+        result = integration.PasswordSetupIntegrationTests().run_setup(
+            routes=[first, second], route_behavior=behavior,
+        )[0]
+        self.assertEqual("account_action_route_unavailable", result["error_code"])
+        first.release.assert_called_once_with(reason="account-action-route-rotate", fault=True)
+        second.release.assert_called_once()
+        self.assertFalse(second.release.call_args.kwargs.get("fault", False))
+
+    def test_native_cancellation_during_replacement_pool_wait_stops_without_delivering_a_lease(self):
+        from core.operations.runtime import CancellationToken, operation_context
+
+        current = route(1)
+        token = CancellationToken(51, "fixture-token", lambda *_: False)
+        acquired = []
+
+        def acquire(**kwargs):
+            acquired.append(kwargs)
+            if len(acquired) == 1:
+                return current
+            token.request_local()
+            kwargs["cancel"]()
+            raise AssertionError("原生取消必须在代理池等待检查点传播")
+
+        def behavior(supplier, _failed, recover):
+            supplier(1)
+            recover(AccountActionRouteFailure("authorize", "GET", http_status=403), current.proxy_url)
+            self.fail("取消后不得继续返回线路")
+
+        with operation_context(token):
+            result = integration.PasswordSetupIntegrationTests().run_setup(
+                routes=acquire, route_behavior=behavior,
+            )[0]
+        self.assertEqual("stopped", result["status"])
+        self.assertEqual(2, len(acquired))
+        current.release.assert_called_once()
 
     def test_rotates_and_quarantines_only_failed_proxy_and_updates_traffic_owner(self):
         first, second = route(1), route(2)

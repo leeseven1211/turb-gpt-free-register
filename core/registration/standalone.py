@@ -180,17 +180,14 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
                     status = "request_unknown"
             try:
                 from dataclasses import asdict
-                from core.registration.route_recovery import result_route_failure
+                from core.registration.route_recovery import result_route_failure, safe_registration_recovery_audit
                 from core.operations.errors import safe_registration_diagnostics, REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
                 summary = {
                     "entrypoint": source, "driver": persisted_driver, "registration_success": core_saved,
                     "postprocess_success": bool(core_saved and isinstance(result, dict) and result.get("postprocess_success")),
                 }
-                route_failure = (
-                    result_route_failure({"route_failure": result.get("route_failure")})
-                    if isinstance(result, dict) else None
-                ) or result_route_failure(result)
+                route_failure = result_route_failure(result)
                 if route_failure is not None:
                     summary["route_failure"] = asdict(route_failure)
                 if isinstance(result, dict):
@@ -200,6 +197,11 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
                     diagnostics = safe_registration_diagnostics(result.get("registration_diagnostics"))
                     if diagnostics:
                         summary["registration_diagnostics"] = diagnostics
+                    if result.get("route_recovery_blocked") is True:
+                        summary["route_recovery_blocked"] = True
+                    audit = safe_registration_recovery_audit(result.get("registration_recovery_audit"))
+                    if audit:
+                        summary["registration_recovery_audit"] = audit
                 registration.finish_run(
                     int(run["id"]), status=status, error_code="request_unknown" if status == "request_unknown" else None,
                     result_summary=summary,

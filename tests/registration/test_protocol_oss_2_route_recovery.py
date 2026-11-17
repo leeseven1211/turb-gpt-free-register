@@ -553,8 +553,11 @@ def test_failed_identity_login_keeps_original_unknown_action_and_current_run_fac
     assert saved[0]["phase"] == "unknown"
     assert len(saved) == 1
     assert sum(url.endswith(path) for _, url, _ in transport.requests) == 1
-    assert result["registration_diagnostics"]["failure_kind"] == "transport_error"
-    assert result["registration_diagnostics"]["operation"] == (
+    assert result["registration_diagnostics"]["failure_kind"] == "unknown"
+    assert result["route_recovery_blocked"] is True
+    old = result["registration_recovery_audit"][-1]["registration_diagnostics"]
+    assert old["failure_kind"] == "transport_error"
+    assert old["operation"] == (
         "password_submit" if operation == "password_create" else "profile_submit"
     )
 

@@ -101,14 +101,23 @@ def _auth_error(error: Exception) -> ProtocolPasswordSetupError:
 
 
 def refresh_access_token(email: str, *, proxy=None, on_authenticated=None, allow_password_email_fallback=True,
-                         proxy_supplier=None, on_network_failure=None) -> dict:
+                         proxy_supplier=None, on_network_failure=None, route_recover=None, route_checkpoint=None) -> dict:
     """有密码沿用 v2；无密码只完成已有账号的邮箱、MFA 与回调。"""
+    def adapt_session(session):
+        from core.accounts.password_setup.route_recovery import AccountActionSession
+
+        return AccountActionSession(
+            session, recover=route_recover, check=route_checkpoint or checkpoint,
+            observe=on_network_failure, signal_control=True,
+        )
+
     password, secret = get_account_login_credentials(email)
     if password:
         return v2.refresh_access_token(email, proxy=proxy, on_authenticated=on_authenticated,
             allow_password_email_fallback=allow_password_email_fallback,
             **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
-            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}))
+            **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
+            **({"session_adapter": adapt_session} if callable(route_recover) else {}))
 
     session = None
     progress = {"methods": [], "attempted": ""}
@@ -119,6 +128,8 @@ def refresh_access_token(email: str, *, proxy=None, on_authenticated=None, allow
             session, authorize_url = legacy._network_preflight_with_retry(email, proxy or "",
                 **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
                 **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}))
+            if callable(route_recover):
+                session = adapt_session(session)
             checkpoint()
             # 此状态机只提交登录挑战；资料创建页面会明确拒绝。
             with use_cooperative_wait(checkpoint, poll_seconds=5, request_timeout=10):
