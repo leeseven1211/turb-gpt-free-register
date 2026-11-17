@@ -9,6 +9,26 @@ import pytest
 from core.registration.protocol_oss_2.runtime import _ObservedSession
 
 
+@pytest.mark.parametrize("header_type", [bytes, bytearray, memoryview])
+def test_wreq_bytes_like_headers_preserve_the_real_callback_location(header_type):
+    from core.registration.protocol_oss_2.upstream.auth_flow import AuthFlow
+    from core.registration.protocol_oss_2.upstream.http_client_wreq import _Headers
+
+    callback = "https://chatgpt.com/api/auth/callback/openai?code=fixture&state=fixture"
+
+    class HeaderMap:
+        def get(self, name):
+            return header_type(callback.encode()) if name.lower() == "location" else None
+
+        def __iter__(self):
+            return iter([(header_type(b"Location"), header_type(callback.encode()))])
+
+    headers = _Headers(HeaderMap())
+    assert headers.get("Location") == callback
+    assert dict(headers.items()) == {"Location": callback}
+    assert AuthFlow._is_chatgpt_callback_url(headers.get("Location"))
+
+
 @pytest.mark.parametrize("stream_navigation", [False, True])
 def test_observed_wreq_posts_json_and_preserves_cookies_through_the_allocated_proxy(stream_navigation):
     pytest.importorskip("wreq")

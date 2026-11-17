@@ -57,9 +57,10 @@ class RegistrationIdentityRecoveryError(RuntimeError):
 
     def __init__(self, cause_code: str):
         descriptions = {
-            "registration_profile_submission_unresolved": "原资料提交结果未知，保留原提交且不重复创建",
+            "registration_profile_submission_unresolved": "保留原资料提交，当前恢复不重复创建",
             "registration_auth_state_unrecognized": "原身份登录返回未支持的后续步骤，已保留原任务",
             "registration_password_unconfirmed": "原身份登录需要原候选密码，未生成或推测新密码",
+            "registration_session_invalid_response": "本轮未取得完整身份和 Token，已保留原任务",
         }
         self.cause_code = cause_code if cause_code in descriptions else "registration_auth_state_unrecognized"
         super().__init__(descriptions[self.cause_code])
@@ -3424,6 +3425,8 @@ class AuthFlow:
         out = continue_url.strip()
         if out.startswith("/"):
             out = urljoin("https://auth.openai.com", out)
+        if self._is_chatgpt_callback_url(out):
+            return out
         if "/workspace" in out:
             workspace_id = self._extract_workspace_id() or self._extract_query_first(out, ["workspace_id", "id"])
             if workspace_id:
@@ -4322,7 +4325,7 @@ class AuthFlow:
             if not (self.result.refresh_token or self.result.access_token):
                 raise RuntimeError("流程完成但未获取 refresh_token/access_token")
         elif not self.result.is_valid():
-            raise RuntimeError("注册完成但未获取有效凭证")
+            raise RegistrationIdentityRecoveryError("registration_session_invalid_response")
 
         logger.info("注册流程完成!")
         return self.result
@@ -4413,7 +4416,49 @@ class AuthFlow:
                     and not self._is_chatgpt_callback_url(continue_url)
                 ):
                     raise RegistrationIdentityRecoveryError("registration_auth_state_unrecognized")
-                if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
+                if strict_identity_resume:
+                    if self._is_chatgpt_callback_url(continue_url):
+                        # 当前认证已完成时先消费回调，不再切换密码或资料入口。
+                        page_type = self._existing_page_type = "external_url"
+                    else:
+                        if ("/log-in/password" in continue_url
+                                and self._landing_page_type(continue_url) != "login_password"):
+                            raise RegistrationIdentityRecoveryError("registration_auth_state_unrecognized")
+                        methods = payload.get("login_methods")
+                        offered_password = isinstance(methods, list) and any(
+                            isinstance(method, dict) and method.get("type") == "password"
+                            for method in methods
+                        )
+                        if (page_type == "email_otp_verification" and not offered_password
+                                and self._landing_page_type(continue_url) == "login_password"):
+                            raise RegistrationIdentityRecoveryError("registration_auth_state_unrecognized")
+                        if page_type == "email_otp_verification" and login_password and offered_password:
+                            # 只有本轮响应明确给出能力才切换；原候选不能提交给猜测入口。
+                            password_url = "https://auth.openai.com/log-in/password"
+                            headers = self._navigation_headers()
+                            headers.update({
+                                "Referer": "https://auth.openai.com/email-verification",
+                                "sec-fetch-site": "same-origin",
+                            })
+                            response = self.session.get(
+                                password_url, headers=headers, timeout=30, allow_redirects=True,
+                            )
+                            self._trace_http("password_entry", response)
+                            landed = str(getattr(response, "url", "") or "").strip()
+                            if (response.status_code != 200
+                                    or self._landing_page_type(landed) != "login_password"
+                                    or not urlparse(landed).netloc):
+                                raise PasswordEntryError("password_entry_navigation_failed")
+                            self._new_document_navigation()
+                            self._authorize_landing_url = landed
+                            self._authorize_landing_html = str(response.text or "")
+                            page_type = self._existing_page_type = "login_password"
+                            continue_url = landed
+                password_entry = (
+                    self._landing_page_type(continue_url) == "login_password" if strict_identity_resume
+                    else "/log-in/password" in (continue_url or "")
+                )
+                if page_type == "login_password" or password_entry:
                     if strict_identity_resume and not login_password:
                         raise RegistrationIdentityRecoveryError("registration_password_unconfirmed")
                     logger.info("登录分支: login_password -> password/verify")
@@ -4427,7 +4472,8 @@ class AuthFlow:
                     )
 
                     # mfa-challenge 分支（密码验证后需要 TOTP 2FA）
-                    if self._is_mfa_challenge_state(page_type, continue_url):
+                    if (not (strict_identity_resume and self._is_chatgpt_callback_url(continue_url))
+                            and self._is_mfa_challenge_state(page_type, continue_url)):
                         totp_secret = (self.result.totp_secret or "").strip()
                         if not totp_secret and self._account_callback:
                             # 从数据库加载凭证
@@ -4495,7 +4541,11 @@ class AuthFlow:
             page_type = (page_type or self._existing_page_type or "").lower()
             mode = (mode or self._existing_email_verification_mode or "").lower()
 
-        if not continue_url or "/email-verification" in continue_url:
+        needs_otp = not continue_url or (
+            self._landing_page_type(continue_url) == "email_otp_verification" if strict_identity_resume
+            else "/email-verification" in continue_url
+        )
+        if needs_otp:
             # 仍需 OTP：优先 resend 获取新码
             otp_sent_at = time.time()
             resend_ok = self.kickoff_otp_delivery("protocol_need_otp")
@@ -4529,12 +4579,14 @@ class AuthFlow:
             page_type = self._extract_page_type(otp_resp)
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
-            if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
+            if (not (strict_identity_resume and self._is_chatgpt_callback_url(continue_url))
+                    and self._is_add_phone_state(page_type=page_type, continue_url=continue_url)):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)
                 )
 
-        if strict_identity_resume and (page_type == "about_you" or "/about-you" in (continue_url or "")):
+        if (strict_identity_resume and not self._is_chatgpt_callback_url(continue_url)
+                and (page_type == "about_you" or self._landing_page_type(continue_url) == "about_you")):
             if not allow_profile_completion:
                 raise RegistrationIdentityRecoveryError("registration_profile_submission_unresolved")
             continue_url = self.create_account()

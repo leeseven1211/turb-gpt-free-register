@@ -106,11 +106,12 @@ def _registration_intent_from_facts(facts: dict) -> str:
 
 
 def _check_stop_requested():
+    from core.operations.task_gateway import OperationLeaseLost
     from core.registration.service import StopRequested, check_stop_requested
 
     try:
         check_stop_requested()
-    except (StopRequested, AuthCancelledError) as exc:
+    except (StopRequested, AuthCancelledError, OperationLeaseLost) as exc:
         if _CONTEXT.get() is None:
             raise
         raise _VendorCancelled(exc) from exc
@@ -143,6 +144,8 @@ class _ObservedSession:
         return getattr(self._transport, name)
 
     def request(self, method, url, **kwargs):
+        from core.operations.task_gateway import OperationLeaseLost
+
         while True:
             response = None
             error = None
@@ -151,7 +154,9 @@ class _ObservedSession:
             except Exception as exc:
                 from core.registration.service import StopRequested
 
-                if isinstance(exc, (StopRequested, AuthCancelledError)):
+                if isinstance(exc, (StopRequested, AuthCancelledError, OperationLeaseLost)):
+                    if _CONTEXT.get() is not None:
+                        raise _VendorCancelled(exc) from exc
                     raise
                 error = exc
             failure = registration_route_failure(method, url, response=response, error=error)
@@ -183,7 +188,7 @@ class _ObservedSession:
             except Exception as exc:
                 from core.registration.service import StopRequested
 
-                if isinstance(exc, (StopRequested, AuthCancelledError)):
+                if isinstance(exc, (StopRequested, AuthCancelledError, OperationLeaseLost)):
                     raise _VendorCancelled(exc) from exc
                 raise _VendorRouteRecovery(failure, error=exc, method=method) from exc
             if lease is None:
@@ -229,6 +234,8 @@ class _ObservedSession:
         # 旧线路故障属于已保存的恢复审计，不能替代新请求的当前结果。
         context.pop("route_failure", None)
         context["last_request_operation"] = registration_request_operation(method, url)
+        context["last_request_http_status"] = None
+        context["request_sequence"] = context.get("request_sequence", 0) + 1
         path = urlsplit(url).path
         if path.endswith("/api/auth/session"):
             context["session_response_incomplete"] = False
@@ -236,6 +243,9 @@ class _ObservedSession:
             context["profile_started"] = True
         profile_submit = method.upper() == "POST" and auth_submission_endpoint(url) == "profile_submit"
         password_create = method.upper() == "POST" and path == "/api/accounts/user/register"
+        otp_submit = context["last_request_operation"] == "otp_validate"
+        if otp_submit:
+            context.pop("otp_method_mismatch", None)
         if profile_submit:
             context.pop("profile_diagnostics", None)
         if password_create:
@@ -246,6 +256,15 @@ class _ObservedSession:
         try:
             response = self._transport.request(method, url, **kwargs)
             response._protocol2_streaming = bool(kwargs.get("stream"))
+            status = getattr(response, "status_code", None)
+            context["last_request_http_status"] = status if type(status) is int else None
+            if otp_submit and status == 400 and not kwargs.get("stream"):
+                try:
+                    context["otp_method_mismatch"] = (
+                        auth_error_from_body(response.text).get("code") == "identity_provider_mismatch"
+                    )
+                except Exception:
+                    pass
             if password_create:
                 try:
                     status = int(response.status_code)
@@ -276,15 +295,14 @@ class _ObservedSession:
                     access_token = str(payload.get("accessToken") or payload.get("access_token") or "").strip()
                     user = payload.get("user")
                     actual_email = str(user.get("email") or "").strip().casefold() if isinstance(user, dict) else ""
+                    expected = str(context.get("email") or "").strip().casefold()
+                    if ((actual_email and expected and actual_email != expected)
+                            or (payload.get("accessToken") and payload.get("access_token")
+                                and payload["accessToken"] != payload["access_token"])):
+                        context["session_identity_mismatch"] = True
                     if access_token and actual_email:
                         normalized = dict(payload, accessToken=access_token)
                         context["session_info"] = normalized
-                        expected = str(context.get("email") or "").strip().casefold()
-                        context["session_identity_mismatch"] = bool(
-                            (expected and expected != actual_email)
-                            or (payload.get("accessToken") and payload.get("access_token")
-                                and payload["accessToken"] != payload["access_token"])
-                        )
                     else:
                         # 后续空响应不能抹掉同一认证链已核验的完整 Session。
                         context["session_response_incomplete"] = True
@@ -294,6 +312,10 @@ class _ObservedSession:
         except BaseException as exc:
             error = exc
             operation = registration_request_operation(method, url)
+            if response is None and method.upper() == "POST" and operation in {
+                "password_create", "password_verify", "profile_submit", "email_submit", "otp_validate", "otp_send",
+            }:
+                context["auth_write_unknown"] = True
             if response is None and operation in {"password_create", "profile_submit"}:
                 context["write_unknown"] = True
                 context.setdefault("unknown_identity_operations", set()).add(operation)
@@ -430,6 +452,7 @@ def run_upstream_protocol(
     from core.registration.protocol_oss_2.upstream.config import Config
     from core.registration.protocol_oss_2.upstream.fingerprint import generate_fingerprint
     from core.registration.service import StopRequested, check_stop_requested, registration_fact_context, report_job_progress
+    from core.operations.task_gateway import OperationLeaseLost
 
     facts = registration_fact_context()
     registration_intent = _registration_intent_from_facts(facts)
@@ -570,7 +593,17 @@ def run_upstream_protocol(
             return result
 
         def verify_otp(self, code):
-            result = observed_action("otp_validate", super().verify_otp, code)
+            context.pop("resume_method_mismatch_error", None)
+            sequence = context.get("request_sequence", 0)
+            try:
+                result = observed_action("otp_validate", super().verify_otp, code)
+            except Exception as exc:
+                if (context.get("request_sequence", 0) > sequence
+                        and context.get("last_request_operation") == "otp_validate"
+                        and context.get("last_request_http_status") == 400
+                        and context.get("otp_method_mismatch") is True):
+                    context["resume_method_mismatch_error"] = exc
+                raise
             progress("email_otp", "success", "上游邮箱验证码已通过")
             return result
 
@@ -586,7 +619,11 @@ def run_upstream_protocol(
             return result
 
         def create_account(self):
-            if context.get("identity_recovery") and "profile_submit" in context.get("unknown_identity_operations", set()):
+            if context.get("identity_recovery") and (
+                context.get("profile_started")
+                or context.get("resume_auth_recovery_used")
+                or "profile_submit" in context.get("unknown_identity_operations", set())
+            ):
                 raise RegistrationIdentityRecoveryError("registration_profile_submission_unresolved")
             context.pop("profile_diagnostics", None)
             progress("profile", "running", "正在提交上游注册资料")
@@ -594,6 +631,7 @@ def run_upstream_protocol(
                 result = observed_action("profile_submit", super().create_account)
             except Exception as exc:
                 # 资料回执仅绑定此异常；后续认证失败另行按当前事实归因。
+                context["profile_error"] = True
                 exc.protocol_profile_diagnostics = context.get("profile_diagnostics")
                 record_recovery_audit(exc)
                 raise
@@ -635,6 +673,7 @@ def run_upstream_protocol(
         def recover_identity(self, mailbox):
             """先核验已有 Session，再走禁止创建兜底的原邮箱登录入口。"""
             context["identity_recovery"] = True
+            mailbox.code = None
             self._is_existing_account = True
             self.get_auth_session()
             if context.get("session_info"):
@@ -643,7 +682,11 @@ def run_upstream_protocol(
             return self.run_protocol_login(
                 mailbox, email, self.result.password or existing_password or "",
                 strict_identity_resume=True,
-                allow_profile_completion="profile_submit" not in context.get("unknown_identity_operations", set()),
+                allow_profile_completion=(
+                    not context.get("profile_started")
+                    and not context.get("resume_auth_recovery_used")
+                    and "profile_submit" not in context.get("unknown_identity_operations", set())
+                ),
             )
 
     def preserve_unknown_route_action(interrupted):
@@ -710,6 +753,8 @@ def run_upstream_protocol(
         while True:
             try:
                 result = action()
+                if context.get("session_response_incomplete") and not context.get("session_info"):
+                    raise ProtocolSessionResponseError("本轮 Session 响应缺少完整身份或 Token，原任务可重跑")
                 break
             except _VendorRouteRecovery as interrupted:
                 failure = interrupted.failure
@@ -727,6 +772,32 @@ def run_upstream_protocol(
                     operation = "password_submit" if failure.operation in {"password_create", "password_verify"} else failure.operation
                     observe("bind_failure", error, operation, context["registration_diagnostics"].sequence - 1)
                     raise error from interrupted.error
+                action = lambda: flow.recover_identity(mailbox)
+            except (StopRequested, AuthCancelledError, OperationLeaseLost):
+                raise
+            except Exception as exc:
+                current_mismatch = context.pop("resume_method_mismatch_error", None) is exc
+                empty_session = (
+                    context.get("last_request_operation") == "session"
+                    and context.get("last_request_http_status") == 200
+                    and context.get("session_response_incomplete")
+                    and not context.get("session_info")
+                    and not context.get("profile_error")
+                    and not context.get("profile_diagnostics")
+                    and getattr(exc, "cause_code", "") == "registration_session_invalid_response"
+                )
+                if (registration_intent != "resume" or not existing_password
+                        or context.get("identity_recovery") or context.get("resume_auth_recovery_used")
+                        or context.get("write_unknown") or context.get("session_identity_mismatch")
+                        or context.get("auth_write_unknown")
+                        or context.get("profile_error")
+                        or context.get("password_diagnostics")
+                        or context.get("route_failure") or not (current_mismatch or empty_session)):
+                    raise
+                context["resume_auth_recovery_used"] = True
+                record_recovery_audit(exc)
+                context["registration_diagnostics"] = RegistrationFailureDiagnostics()
+                progress("auth_redirect", "running", "当前认证未取得有效会话，正在沿原身份恢复登录一次")
                 action = lambda: flow.recover_identity(mailbox)
         check_stop_requested()
         access_token = str(result.access_token or "").strip()
@@ -767,7 +838,7 @@ def run_upstream_protocol(
         }
     except _VendorCancelled as exc:
         raise exc.reason
-    except (StopRequested, AuthCancelledError):
+    except (StopRequested, AuthCancelledError, OperationLeaseLost):
         raise
     except Exception as exc:
         route_failure = getattr(exc, "route_failure", None) or context.get("route_failure")

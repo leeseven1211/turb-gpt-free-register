@@ -313,6 +313,7 @@ def run_protocol_oss_2_lifecycle(
 
     from core.email.provider import mark_email_permanently_unusable, resolve_email_source, retain_email, validate_email_source
     from core.registration.service import StopRequested, persist_registration_core, report_job_progress
+    from core.operations.task_gateway import OperationLeaseLost
 
     options = dict(registration_options or {})
     selected_source = validate_email_source(email_source) if email_source else resolve_email_source(email)
@@ -403,7 +404,7 @@ def run_protocol_oss_2_lifecycle(
             **({"cause_code": local_result["cause_code"], "error_code": local_result["cause_code"]}
                if local_result.get("cause_code") else {}),
         }
-    except StopRequested:
+    except (StopRequested, OperationLeaseLost):
         raise
     except AuthCancelledError as exc:
         raise StopRequested("用户停止开源protocol-2 注册") from exc

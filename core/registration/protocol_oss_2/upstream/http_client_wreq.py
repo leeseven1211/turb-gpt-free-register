@@ -345,7 +345,7 @@ class _Headers:
     def _s(v):
         if v is None:
             return ""
-        if isinstance(v, (bytes, bytearray)):
+        if isinstance(v, (bytes, bytearray, memoryview)):
             return bytes(v).decode("utf-8", "replace")
         return str(v)
 

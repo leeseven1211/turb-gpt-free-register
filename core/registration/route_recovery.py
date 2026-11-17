@@ -182,6 +182,7 @@ def registration_request_operation(method: str, url: object) -> str | None:
         ("GET", "/api/accounts/authorize"): "preauth",
         ("GET", "/oauth/authorize"): "preauth",
         ("GET", "/log-in"): "preauth",
+        ("GET", "/log-in/password"): "preauth",
         ("GET", "/create-account/password"): "preauth",
         ("POST", "/api/accounts/authorize"): "email_submit",
         ("POST", "/api/accounts/authorize/continue"): "email_submit",

@@ -17,6 +17,7 @@ _HTTP_DATE = re.compile(r"[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\
 _AUTH_ERROR_LIMIT = 64 * 1024
 _AUTH_ERROR_CODES = {
     "invalid_auth_step": "auth_state", "invalid_state": "auth_state", "missing_session": "auth_state",
+    "identity_provider_mismatch": "auth_state",
     "session_expired": "auth_state", "session_not_found": "auth_state",
     "email_taken": "email_conflict", "email_exists": "email_conflict",
     "user_already_exists": "email_conflict", "account_exists": "email_conflict",
