@@ -50,6 +50,7 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         "account_create_user_already_exists": "远端提示账号已存在，完整登录态尚未确认",
         "user_register_result_unknown": "账号创建请求结果待确认，未保留失败细项",
         "registration_checkpoint_failed": "注册执行检查点读取或保存失败",
+        "registration_route_close_failed": "旧连接关闭失败，未交还当前线路",
         "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
         "email_otp_send_rejected": "验证码发送请求被拒绝",
         "email_otp_send_failed": "验证码发送请求失败",

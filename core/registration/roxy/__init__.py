@@ -12,6 +12,7 @@ import string
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from config import roxybrowser as _cfg
@@ -36,7 +37,13 @@ from core.registration.retained_browser import (
     recover_bound_failed_browser, retain_failed_browser, take_failed_browser,
 )
 from core.registration.retained_resume import (
-    _is_native_resume_start_page, has_rejected_existing_profile, prepare_retained_resume,
+    _is_native_resume_start_page, _page_state as _retained_page_state,
+    RetainedResumeState, has_rejected_existing_profile, prepare_retained_resume,
+)
+from core.registration.route_recovery import current_route_recovery as _route_recovery_callback
+from core.registration.roxy.route_recovery import (
+    RoxyRouteFailureObserver, RoxyRouteFailureSignal, make_recovery_state,
+    RegistrationTwofaSession, continue_browser_twofa, record_current_refusal, validated_recovery_state,
 )
 from core.auth.browser.password_auth import PasswordPageError, ProfileAccountAlreadyExistsError
 from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
@@ -363,7 +370,7 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                         and type(dispatched) in {int, float} and math.isfinite(dispatched)
                         and 0 < dispatched <= started <= time.time() + 1.0):
                     return
-            if endpoint_kind in {"profile_submit", "otp_resend", "password_submit"}:
+            if endpoint_kind in {"profile_submit", "otp_resend", "password_submit", "email_submit", "nextauth_signin"}:
                 # 一个资料、密码或重发动作只接一个请求；迟到请求不能替换已绑定动作。
                 if receipt.request_binding not in (None, request_key):
                     return
@@ -376,7 +383,9 @@ def _make_submission_observer(driver, *, monitor_otp_network: bool = False):
                 receipt._otp_network_request_unknown = True
                 receipt._otp_network_http_status = None
             submission_requests[request_key] = receipt
-        if (meta.get("response") and (endpoint_kind in {"profile_submit", "password_submit"} or (
+        if (meta.get("response") and (endpoint_kind in {
+                "profile_submit", "password_submit", "email_submit", "nextauth_signin",
+        } or (
                 monitor_otp_network and endpoint_kind == "otp_submit"
                 and receipt.endpoint_kind == "otp_submit" and receipt.request_binding == request_key))):
             from core.network.response_diagnostics import safe_auth_error
@@ -482,8 +491,17 @@ def _read_registration_resume_session(driver, email: str, *, budget: StageBudget
         timeout = min(30, budget.require("原浏览器会话核验")) if budget is not None else 30
         session = _read_chatgpt_session_once(driver, timeout=timeout, strict_read=True)
     except ChatGPTSessionUnavailable:
+        observer = getattr(driver, "_registration_route_observer", None)
+        diagnostic = getattr(driver, "_registration_session_diagnostic", None)
+        if (isinstance(observer, RoxyRouteFailureObserver) and _route_recovery_callback() is not None
+                and isinstance(diagnostic, dict) and diagnostic.get("status") == 403):
+            observer.call_response(driver, "GET", "https://chatgpt.com/api/auth/session", 403)
+            observer.raise_if_failed(driver)
         return None
     except Exception as exc:
+        observer = getattr(driver, "_registration_route_observer", None)
+        if isinstance(observer, RoxyRouteFailureObserver):
+            observer.call_failed(driver, "GET", "https://chatgpt.com/api/auth/session", exc)
         _check_manual_stop()
         try:
             native_start_page = _is_native_resume_start_page(getattr(driver, "current_url", ""))
@@ -955,8 +973,17 @@ def _call_shared_capability(name: str, *args, **kwargs):
         try:
             from core.registration.service import StopRequested, is_stop_requested
 
+            def cancellation():
+                if is_stop_requested():
+                    return True
+                driver = args[0] if args else None
+                observer = getattr(driver, "_registration_route_observer", None)
+                if isinstance(observer, RoxyRouteFailureObserver) and _route_recovery_callback() is not None:
+                    observer.raise_if_failed(driver)
+                return False
+
             kwargs["context"] = AuthExecutionContext(
-                cancellation=lambda: bool(is_stop_requested()),
+                cancellation=cancellation,
                 budget=kwargs.get("budget") if isinstance(kwargs.get("budget"), StageBudget) else None,
                 cancellation_error=lambda: StopRequested("认证能力收到注册任务停止请求"),
             )
@@ -1166,6 +1193,7 @@ def _open_roxy_profile_with_capacity_wait(
     progress_callback=None,
     data_saver_flow: str | None = None,
     prefer_existing_profile: bool = False,
+    preclosed_profile: bool = False,
 ) -> RoxyOpenResult:
     """仅在 /browser/open 遇到可恢复的窗口忙时等待，避免快速消费后续任务槽位。"""
     timeout = max(0, int(getattr(_cfg, "ROXY_WINDOW_WAIT_TIMEOUT", 900) or 0))
@@ -1195,6 +1223,8 @@ def _open_roxy_profile_with_capacity_wait(
                 open_kwargs["headless"] = debug_headless
             if prefer_existing_profile:
                 open_kwargs["prefer_existing_profile"] = True
+            if preclosed_profile:
+                open_kwargs["preclosed_profile"] = True
             if profile_id is None:
                 opened = client.open_profile(**open_kwargs)
             else:
@@ -1618,6 +1648,17 @@ def run_roxy_registration(
     from core.registration.service import registration_fact_context
 
     facts = registration_fact_context()
+    route_callback = _route_recovery_callback() if _browser_helpers is None else None
+    route_state = (
+        validated_recovery_state(options.get("_roxy_route_recovery"), facts=facts,
+                                 profile_id=profile_id, email=email)
+        if _browser_helpers is None else None
+    )
+    if route_state is not None:
+        profile_id = route_state.profile_id
+        if existing_password and route_state.password and existing_password != route_state.password:
+            raise RuntimeError("request_unknown: 换线密码与原候选不一致，保留原身份")
+        existing_password = route_state.password or existing_password
     retry_country = options.get("retry_proxy_country_override")
     explicit_retry_route = False
     if retry_country is not None and _browser_helpers is None:
@@ -1632,8 +1673,13 @@ def run_roxy_registration(
         _validated_roxy_cf_proxy_rotation(options, facts, profile_id) if _browser_helpers is None else {}
     )
     retained = None
-    reopened_retained = None
-    if not (rotation_context.get("reopen_profile_id") or cf_rotation_context.get('reopen_profile_id')
+    reopened_retained = (
+        SimpleNamespace(driver=SimpleNamespace(**route_state.driver_state),
+                        opened=SimpleNamespace(profile_id=route_state.profile_id),
+                        otp_after_ts=route_state.otp_after_ts)
+        if route_state is not None else None
+    )
+    if not (route_state is not None or rotation_context.get("reopen_profile_id") or cf_rotation_context.get('reopen_profile_id')
             or cf_rotation_context.get('previous_cf_temporary_profile_deleted') is True):
         retained = take_failed_browser(email=email, profile_id=profile_id, facts=facts)
         if retained is None:
@@ -1687,6 +1733,7 @@ def run_roxy_registration(
             progress_callback=report_job_progress,
             data_saver_flow="registration",
             **({"prefer_existing_profile": True} if explicit_retry_route and profile_id else {}),
+            **({"preclosed_profile": True} if route_state is not None else {}),
         )
     try:
         from core.browser import traffic as browser_traffic
@@ -1744,6 +1791,12 @@ def run_roxy_registration(
     existing_profile_reconciliation = False
     password_recovery = None
     native_signin_diagnostics = None
+    route_observer = None
+    route_failure = None
+    route_recovery_ready = False
+    route_recovery_state = None
+    route_close_attempted = False
+    route_close_failed = False
     email_entry_waiting = False
     try:
         try:
@@ -1760,6 +1813,8 @@ def run_roxy_registration(
                 if reopened_retained.driver is not None and hasattr(reopened_retained.driver, attr):
                     setattr(driver, attr, getattr(reopened_retained.driver, attr))
             driver._registration_otp_after_ts = reopened_retained.otp_after_ts
+            if route_state is not None:
+                route_state.restore(driver)
             if (getattr(opened, "created_by_run", False) is True
                     and str(opened.profile_id).strip() != str(reopened_retained.opened.profile_id).strip()):
                 # 本轮明确新建的替代环境尚无原认证页；仅清空本地启动页，
@@ -1798,6 +1853,13 @@ def run_roxy_registration(
                 )
             except Exception:
                 logger.exception("[Roxy注册] 校验 registration_resume Run 失败，关闭恢复提交范围")
+        if route_state is not None and existing_password:
+            # 普通 registration 同 Run 由业务层另行授予原候选登录派发许可；
+            # 仅 prepared 的候选仍用新邮箱前置认证，不改成原账号登录动作。
+            private = registration.get_private_resume_context(int(context["attempt_id"]), email=email)
+            resume_scope = not registration._route_preauth_authorized(
+                private, run_id=context.get("run_id"), execution_id=context.get("execution_id"),
+            )
         driver._registration_resume_login = resume_scope
         from core.auth.browser.password_auth import _install_auth_initialization_observer
         _install_auth_initialization_observer(driver)
@@ -1806,14 +1868,16 @@ def run_roxy_registration(
         from core.browser.data_saver import BrowserDataSaver
         data_saver = BrowserDataSaver(label="Roxy注册")
         data_saver.install_selenium(driver)
+        shared_diagnostics = diagnostics_for(driver)
+        if _browser_helpers is None:
+            native_signin_diagnostics = _NativeSigninFailureDiagnostics(shared_diagnostics, include_form_entry=True)
+            route_observer = RoxyRouteFailureObserver(driver, native_signin_diagnostics.observe_network)
+            driver._registration_route_observer = route_observer
         traffic_capture = getattr(opened, "traffic_capture", None)
         if traffic_capture is not None:
             diagnostic_observer = getattr(traffic_capture, "set_auth_diagnostic_observer", None)
             if callable(diagnostic_observer):
-                shared_diagnostics = diagnostics_for(driver)
-                if _browser_helpers is None:
-                    native_signin_diagnostics = _NativeSigninFailureDiagnostics(shared_diagnostics, include_form_entry=True)
-                diagnostic_observer((native_signin_diagnostics or shared_diagnostics).observe_network)
+                diagnostic_observer((route_observer or native_signin_diagnostics or shared_diagnostics).observe_network)
             setter = getattr(traffic_capture, "set_data_saver", None)
             if callable(setter):
                 setter(data_saver)
@@ -1836,7 +1900,7 @@ def run_roxy_registration(
         restart_login = False
         rejected_existing_profile = False
         password_recovered_before_resume = False
-        if resume_scope and _browser_helpers is None:
+        if resume_scope and _browser_helpers is None and route_state is None:
             password_recovery = _registration_password_recovery_session(email, context)
             if password_recovery is not None and password_recovery.resume():
                 report_job_progress("login_password", "running", "正在恢复原账号未完成的密码检查点")
@@ -1855,15 +1919,35 @@ def run_roxy_registration(
         if resume_metadata or (resume_scope and existing_password and profile_id and str(opened.profile_id) == str(profile_id)):
             report_job_progress("page", "running", "正在核验原浏览器环境的登录态")
             verified_resume_session = _read_registration_resume_session(driver, email)
+            if route_callback is not None and route_observer is not None:
+                route_observer.raise_if_failed(driver)
             if verified_resume_session:
                 existing_profile_unverified = False
-        if resume_metadata or password_recovered_before_resume:
+        if route_state is not None and verified_resume_session:
+            # 同邮箱完整 Session 证明当前账号可继续；不借此倒写任何旧提交事实。
+            retained_state = RetainedResumeState(PageState.AUTHENTICATED, existing_password)
+        elif route_state is not None and route_state.restart_identity_login:
+            if not existing_password:
+                raise RuntimeError("request_unknown: 原写入结果未明且没有可核验候选密码，保留原身份")
+            # 先核验来源及可见邮箱，再发起新的原身份登录。未知 profile 不可交给
+            # prepare_retained_resume 的页面进展规则推断为已经创建成功。
+            state = _retained_page_state(
+                driver, email, allow_restart=True,
+                allow_callback_restart=route_state.failed_operation == "callback",
+            )
+            retained_state = RetainedResumeState(state, existing_password, restart_login=True)
+        elif route_state is not None and route_state.preauth_restart:
+            # 当前认证入口已拒绝或传输失败；沿原 Cookie/Profile 重新进入入口，
+            # 不使用旧 callback，也不清除其他未决提交事实。
+            retained_state = RetainedResumeState(PageState.AUTH_TRANSIENT, existing_password, restart_login=True)
+        elif resume_metadata or password_recovered_before_resume:
             retained_state = prepare_retained_resume(
                 driver, email=email, existing_password=existing_password, facts=context,
                 verified_session=verified_resume_session,
                 otp_after_ts=(getattr(driver, "_registration_otp_after_ts", None)
                               if password_recovered_before_resume else resume_metadata.otp_after_ts),
             )
+        if retained_state is not None:
             existing_password = retained_state.password
             restart_login = bool(getattr(retained_state, "restart_login", False))
             if restart_login:
@@ -1895,6 +1979,8 @@ def run_roxy_registration(
             logger.info("[Roxy注册] 打开登录页：%s", entry_url)
             if native_signin_diagnostics is not None:
                 native_signin_diagnostics.begin_navigation(driver)
+            if route_observer is not None:
+                route_observer.begin_stage(driver, "preauth")
             try:
                 # 此调用点先于本 Run 的 submit_email、密码、OTP 和资料提交。
                 # 只依据这个明确的初始 GET 控制流给出换线许可，不从缺失网络日志
@@ -1907,6 +1993,8 @@ def run_roxy_registration(
                     accept_hosts=("chatgpt.com", "auth.openai.com"),
                 )
             except Exception as exc:
+                if route_observer is not None:
+                    route_observer.call_failed(driver, "GET", entry_url, exc)
                 resume_login_get_transport_failure = bool(
                     resume_scope and current_lease_route_verified
                     and _is_registration_proxy_transport_failure(exc)
@@ -1930,6 +2018,8 @@ def run_roxy_registration(
             report_job_progress("submit_email", "success", "邮箱认证已确认进入下一步")
 
         def _handoff_current_cf_challenge() -> None:
+            if route_callback is not None and route_observer is not None:
+                route_observer.raise_if_failed(driver)
             if native_signin_diagnostics.failure_diagnostic(driver):
                 raise _EmailSubmissionUnknown('email_submit_unconfirmed: 当前认证入口尚未进入下一步，交回服务层检查线路')
 
@@ -1959,7 +2049,7 @@ def run_roxy_registration(
                    if _browser_helpers is None else {}),
                 **({"recover_late_email_entry": True} if _browser_helpers is None else {}),
                 **({'on_before_recovery': _handoff_current_cf_challenge}
-                   if cf_rotation_context and current_lease_route_verified and retained is None
+                   if (cf_rotation_context or route_callback is not None) and current_lease_route_verified and retained is None
                    and native_signin_diagnostics is not None else {}),
             )
             email_entry_waiting = False
@@ -1990,10 +2080,18 @@ def run_roxy_registration(
         password_submitted_this_run = False
         password_prepared_this_run = False
         previous_password_receipts = password_receipt_ids(driver) if _browser_helpers is None else frozenset()
+        if route_observer is not None:
+            route_observer.begin_stage(driver, "password")
 
         def _checkpoint_prepared_password(password: str) -> None:
             """在异步密码点击前保存原密码，供同一 Attempt 续跑。"""
             nonlocal password_prepared_this_run
+            receipt = getattr(driver, "_browser_submission_receipt", None)
+            if (route_state is not None and route_state.has_unknown_identity_write
+                    and getattr(receipt, "stage", "") == "password_create"):
+                raise RuntimeError(
+                    "request_unknown: route_password_create_not_replayable: 原密码创建结果未确认，恢复只允许原候选登录"
+                )
             password_prepared_this_run = True
             try:
                 from core.registration.checkpoints import save_protocol_password_checkpoint
@@ -2177,6 +2275,8 @@ def run_roxy_registration(
         except Exception:
             otp_total_wait = 240
         otp_budget = StageBudget.start(otp_total_wait)
+        if route_observer is not None:
+            route_observer.begin_stage(driver, "otp")
         otp_wait_deadline = otp_budget.deadline
         otp_already_complete = (
             bool(verified_resume_session)
@@ -2442,6 +2542,27 @@ def run_roxy_registration(
         )
         # about-you / profile 信息页：必须完成或确认已有登录态，不能静默跳过。
         _check_manual_stop()
+        if (not verified_resume_session and route_state is not None
+                and route_state.has_unknown_identity_write
+                and (route_state.unknown_profile_write or route_state.failed_operation == "profile_submit")):
+            # 新认证链仍不能证明旧资料创建未发生；固定读取完整会话，禁止把
+            # “仍在资料页”解释为旧创建未发生，也不再提交资料表单。
+            if route_observer is not None:
+                route_observer.begin_stage(driver, "session")
+            session_url = "https://chatgpt.com/api/auth/session"
+            try:
+                _safe_get(driver, session_url, timeout=30, attempts=1, accept_hosts=("chatgpt.com",))
+            except Exception as exc:
+                if route_observer is not None:
+                    route_observer.call_failed(driver, "GET", session_url, exc)
+                raise
+            verified_resume_session = _read_registration_resume_session(driver, email)
+            if not verified_resume_session:
+                raise RuntimeError(
+                    "request_unknown: route_profile_result_unconfirmed: 原资料写入结果未明，原身份登录后仍无完整会话"
+                )
+        if route_observer is not None:
+            route_observer.begin_stage(driver, "profile")
         profile_submitted = False
         if not verified_resume_session:
             report_job_progress("profile", "running", "正在核验原账号登录态" if rejected_existing_profile else "正在填写账号资料")
@@ -2483,6 +2604,8 @@ def run_roxy_registration(
         logger.info("[Roxy注册] 等待 ChatGPT 跳转并写入 session/accessToken")
         _check_manual_stop()
         token_budget = StageBudget.start(120)
+        if route_observer is not None:
+            route_observer.begin_stage(driver, "session")
         lightweight_post_auth = bool(data_saver is not None and data_saver.enabled)
         session_info = verified_resume_session or _fetch_chatgpt_session(
             driver, timeout=120, budget=token_budget, prefer_homepage=not lightweight_post_auth,
@@ -2528,6 +2651,8 @@ def run_roxy_registration(
             },
         )
         core_persisted = True
+        if route_observer is not None:
+            route_observer.begin_stage(driver, "completed")
         opened.account_bound = True
         client.mark_profile_bound(opened.profile_id)
         logger.info("[Roxy注册] 注册主体已保存检查点：id=%s email=%s", account_id, email)
@@ -2615,8 +2740,105 @@ def run_roxy_registration(
 
         browser_twofa_prepared = False
 
+        def _rebind_twofa_route(current) -> None:
+            """2FA 同栈换线只替换连接，核心账号和已完成后处理均保留。"""
+            nonlocal driver, opened, proxy, route_observer, native_signin_diagnostics
+            nonlocal data_saver, public_asset_cache, postprocess_data_saver
+            nonlocal plan_check_session
+            if route_callback is None or route_observer is None:
+                raise RoxyRouteFailureSignal(current[0])
+            _check_manual_stop()
+            from core.registration.debug import current_session
+            debug_session = current_session()
+            if debug_session is not None:
+                debug_session.capture_page_snapshot(driver, "注册内 MFA 当前请求换线")
+            from core.browser.traffic import finish_roxy_capture, bind_roxy_capture
+            finish_roxy_capture(opened)
+            if route_observer.current(driver) != current:
+                raise RuntimeError("mfa_route_evidence_stale: MFA 请求已有新进展，撤销旧线路失败")
+            if not client.close_profile(opened.profile_id) or client.get_open_profile_connection(opened.profile_id) is not None:
+                raise RuntimeError("mfa_route_close_unconfirmed: 原 Profile 关闭未确认，保留账号与密钥检查点")
+            # 注册协议 MFA 与后续套餐曾共用这个会话；旧线路释放前销毁它，
+            # 后续套餐按新的 proxy 建连接，不能继承旧租约或旧线路熔断。
+            if plan_check_session is not None:
+                plan_check_session.close()
+                plan_check_session = None
+            route_observer.begin_stage(driver, "completed")
+            _check_manual_stop()
+            next_lease = route_callback(current[0], proxy)
+            if next_lease is None:
+                raise RuntimeError("mfa_route_budget_exhausted: 注册换线额度已耗尽，保留账号与密钥检查点")
+            from core.browser.asset_policy import stop_registration_asset_cache
+            stop_registration_asset_cache(public_asset_cache)
+            public_asset_cache = None
+            if data_saver is not None:
+                data_saver.stop()
+            data_saver = None
+            if postprocess_data_saver is not None:
+                postprocess_data_saver.stop()
+            postprocess_data_saver = None
+            old_driver = driver
+            _quit_driver(old_driver)
+            next_proxy = str(next_lease.proxy_url)
+            replacement = _open_roxy_profile_with_capacity_wait(
+                client, next_proxy, profile_id=opened.profile_id, preclosed_profile=True,
+                progress_callback=report_job_progress, data_saver_flow="registration",
+            )
+            if str(replacement.profile_id) != str(opened.profile_id):
+                raise RuntimeError("mfa_route_profile_changed: MFA 换线必须保留原 Profile")
+            opened = replacement
+            opened.account_bound = True
+            proxy = next_proxy
+            driver = _build_driver(opened)
+            driver._registration_local_roxy_password_entry = True
+            driver._registration_fact_context = dict(facts)
+            driver._registration_resume_login = resume_scope
+            shared = diagnostics_for(driver)
+            route_observer = RoxyRouteFailureObserver(driver, shared.observe_network)
+            driver._registration_route_observer = route_observer
+            native_signin_diagnostics = None
+            _check_manual_stop()
+            bind_roxy_capture(opened, purpose="registration", registration_job_id=facts.get("job_id"),
+                              operation_run_id=facts.get("run_id"))
+            capture = getattr(opened, "traffic_capture", None)
+            if capture is not None:
+                setter = getattr(capture, "set_auth_diagnostic_observer", None)
+                if callable(setter):
+                    setter(route_observer.observe_network)
+                setter = getattr(capture, "set_submission_observer", None)
+                if callable(setter):
+                    setter(_make_submission_observer(driver, monitor_otp_network=True))
+            from core.auth.browser.password_auth import _install_auth_initialization_observer
+            _install_auth_initialization_observer(driver)
+            driver.set_page_load_timeout(int(_cfg.ROXY_SELENIUM_TIMEOUT))
+            route_observer.begin_stage(driver, "twofa")
+            _prepare_browser_twofa()
+
+        def _run_browser_twofa_with_routes(action, checkpoint_secret) -> str:
+            pending_failure = None
+            while True:
+                _check_manual_stop()
+                if route_observer is not None:
+                    route_observer.begin_stage(driver, "twofa")
+                try:
+                    if pending_failure is None:
+                        return action()
+                    return continue_browser_twofa(
+                        driver, email, failure=pending_failure, existing_secret=totp_secret,
+                        action=action, on_secret=checkpoint_secret, check_stop=_check_manual_stop,
+                    )
+                except Exception:
+                    current = route_observer.current(driver) if route_observer is not None else None
+                    if (current is None or route_callback is None or not current_lease_route_verified
+                            or current[0].operation not in {"twofa_enroll", "twofa_activate", "otp_send", "otp_validate"}):
+                        raise
+                    pending_failure = current[0]
+                    _rebind_twofa_route(current)
+
         def _prepare_browser_twofa():
             nonlocal postprocess_data_saver, browser_twofa_prepared
+            if route_observer is not None and route_callback is not None:
+                route_observer.raise_if_failed(driver)
             # 只有实际进入浏览器设置时才恢复核心资源，协议成功不启动首页。
             browser_twofa_prepared = True
             postprocess_data_saver = _install_registration_postprocess_data_saver(
@@ -2685,14 +2907,34 @@ def run_roxy_registration(
                 if twofa_driver == "protocol":
                     protocol_session = BrowserSession(proxy=proxy or "")
                     plan_check_session = protocol_session
-                    totp_secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
-                        driver,
-                        email,
-                        protocol_session,
-                        access_token,
-                        before_browser=_prepare_browser_twofa,
-                        **twofa_kwargs,
-                    )
+                    fallback_used = False
+                    if _browser_helpers is None and route_callback is not None:
+                        first_protocol_call = True
+                        observed_protocol = RegistrationTwofaSession(protocol_session, driver_getter=lambda: driver)
+
+                        def run_protocol_then_original_browser():
+                            nonlocal first_protocol_call, fallback_used
+                            if first_protocol_call:
+                                first_protocol_call = False
+                                secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                                    driver, email, observed_protocol, access_token,
+                                    before_browser=_prepare_browser_twofa, **twofa_kwargs,
+                                )
+                                return secret
+                            # 已经换线后只续接原 MFA 动作；协议旧 Session 的熔断
+                            # 不套到新浏览器，也不重做已经提交过的 enrollment。
+                            fallback_used = True
+                            _prepare_browser_twofa()
+                            return setup_roxy_2fa(driver, email, **twofa_kwargs)
+
+                        totp_secret = _run_browser_twofa_with_routes(
+                            run_protocol_then_original_browser, _checkpoint_totp_secret,
+                        )
+                    else:
+                        totp_secret, fallback_used = setup_protocol_2fa_with_browser_fallback(
+                            driver, email, protocol_session, access_token,
+                            before_browser=_prepare_browser_twofa, **twofa_kwargs,
+                        )
                     twofa_result = {
                         "status": "success",
                         "ok": True,
@@ -2705,7 +2947,10 @@ def run_roxy_registration(
                     }
                 else:
                     _prepare_browser_twofa()
-                    totp_secret = setup_roxy_2fa(driver, email, **twofa_kwargs)
+                    totp_secret = _run_browser_twofa_with_routes(
+                        lambda: setup_roxy_2fa(driver, email, **twofa_kwargs),
+                        _checkpoint_totp_secret,
+                    ) if _browser_helpers is None else setup_roxy_2fa(driver, email, **twofa_kwargs)
                     twofa_result = {
                         "status": "success",
                         "ok": True,
@@ -2719,6 +2964,9 @@ def run_roxy_registration(
                 logger.error("[Roxy注册][2FA] 设置失败：%s", message)
                 logger.debug("[Roxy注册][2FA] 错误详情", exc_info=True)
                 report_job_progress("twofa", "failed", f"2FA 设置失败: {message}")
+            finally:
+                if route_observer is not None:
+                    route_observer.begin_stage(driver, "completed")
         else:
             report_job_progress("twofa", "skipped", "未启用 Authenticator 2FA")
 
@@ -2858,10 +3106,16 @@ def run_roxy_registration(
         }
     except Exception as exc:
         failed = True
+        route_current = (
+            route_observer.current(driver)
+            if route_observer is not None and current_lease_route_verified and not core_persisted
+            else None
+        )
+        route_failure = route_current[0] if route_current is not None else None
         native_failure_diagnostic = (
             native_signin_diagnostics.failure_diagnostic(driver)
             if native_signin_diagnostics is not None and email_entry_waiting
-            and isinstance(exc, (StageTimeout, _EmailSubmissionUnknown))
+            and isinstance(exc, (StageTimeout, _EmailSubmissionUnknown, RoxyRouteFailureSignal))
             else {}
         )
         failure_note = (
@@ -2880,7 +3134,35 @@ def run_roxy_registration(
                 if driver is not None:
                     log_submission_diagnostics(driver, diagnostics_for(driver).stage, "final_failure",
                                                receipt=getattr(driver, "_browser_submission_receipt", None))
-                if (native_failure_diagnostic and cf_rotation_context.get('retry_available') is True
+                if (route_current is not None and route_callback is not None
+                        and not (core_persisted or access_token)):
+                    from core.registration.debug import current_session
+                    debug_session = current_session()
+                    if debug_session is not None:
+                        debug_session.capture_page_snapshot(driver, f"{type(exc).__name__}: 当前注册请求换线")
+                    from core.browser.traffic import finish_roxy_capture
+                    finish_roxy_capture(opened)
+                    # 迟到成功、新请求或导航均撤销旧证据；关闭确认前绝不领取新线。
+                    if route_observer.current(driver) == route_current:
+                        # 先排空已接纳的响应回执，再记录明确拒绝与恢复现场；
+                        # 不能因旁路线程尚未写完 response_binding 就误判未知。
+                        record_current_refusal(driver, route_current)
+                        route_recovery_state = make_recovery_state(
+                            driver, opened, email=email, facts=facts,
+                            failure=route_failure, password=openai_password or existing_password,
+                        )
+                        route_close_attempted = True
+                        route_recovery_ready = client.close_profile(opened.profile_id) is True
+                        route_recovery_ready = (
+                            route_recovery_ready and client.get_open_profile_connection(opened.profile_id) is None
+                        )
+                        route_close_failed = not route_recovery_ready
+                    else:
+                        route_failure = None
+                        route_recovery_state = None
+                    if route_recovery_ready:
+                        logger.info("[Roxy注册] 当前关键请求线路失败，已关闭原环境并保留同身份恢复现场")
+                if (route_callback is None and native_failure_diagnostic and cf_rotation_context.get('retry_available') is True
                         and current_lease_route_verified and retained is None
                         and not (core_persisted or create_acknowledged or access_token)):
                     from core.registration.debug import current_session
@@ -2915,7 +3197,8 @@ def run_roxy_registration(
                             logger.info('[Roxy注册] 当前认证入口已确认 CF 挑战，环境已关闭，交回同身份换 IP 重试')
                     else:
                         native_failure_diagnostic = {}
-                if resume_login_get_transport_failure and rotation_context.get("retry_available") is True:
+                if (route_callback is None and resume_login_get_transport_failure
+                        and rotation_context.get("retry_available") is True):
                     from core.registration.debug import current_session
 
                     reason = f"{type(exc).__name__}: {str(exc)[:500]}"
@@ -2931,10 +3214,12 @@ def run_roxy_registration(
                     # Cookie 或旧未知事实。关闭未确认时不向服务层开放换线。
                     resume_proxy_rotation_ready = client.close_profile(opened.profile_id) is True
             except Exception:
+                if route_close_attempted and not route_recovery_ready:
+                    route_close_failed = True
                 logger.exception("[Roxy注册] 保存换线现场或关闭失败连接未完成，保留原窗口")
             if not native_failure_diagnostic:
                 failure_note = ''
-            if not (resume_proxy_rotation_ready or cf_proxy_rotation_ready):
+            if not (route_recovery_ready or resume_proxy_rotation_ready or cf_proxy_rotation_ready):
                 try:
                     from core.registration.debug import pause_current_failure
                     pause_current_failure(driver, f"{type(exc).__name__}: {str(exc)[:500]}{failure_note}")
@@ -2966,6 +3251,8 @@ def run_roxy_registration(
         request_unknown = (
             password_result_unknown or existing_profile_unverified or _is_registration_request_unknown(exc)
             or (isinstance(exc, PasswordPageError) and bool(existing_password))
+            or (route_recovery_state is not None and route_recovery_state.restart_identity_login
+                and route_failure is not None and not route_failure.response_received)
         ) and not pre_account_transport_failure
         remote_existing = (
             isinstance(exc, RemoteExistingAccountError) or remote_identity == "existing"
@@ -2995,7 +3282,10 @@ def run_roxy_registration(
             "没有可用 totp",
             "mfa_secret_missing",
         ))
-        disposable_proxy_failure = pre_account_transport_failure and not resume_login_get_transport_failure
+        disposable_proxy_failure = (
+            pre_account_transport_failure and not resume_login_get_transport_failure
+            and not (route_callback is not None and route_failure is not None)
+        )
         if disposable_proxy_failure and opened.created_by_run:
             try:
                 client.discard_profile(opened)
@@ -3057,6 +3347,10 @@ def run_roxy_registration(
         )
         return {
             "success": False,
+            "route_failure": route_failure,
+            "route_recovery_ready": route_recovery_ready,
+            "route_recovery_profile_id": str(opened.profile_id) if route_recovery_ready else "",
+            "route_recovery_state": route_recovery_state if route_recovery_ready else None,
             **native_failure_diagnostic,
             **({"cause_code": exc.code} if isinstance(exc, AuthPageError) else {}),
             **({"cause_code": exc.cause_code} if isinstance(exc, EmailOtpNetworkError) else {}),
@@ -3069,6 +3363,7 @@ def run_roxy_registration(
             )}} if native_failure_diagnostic and cf_rotation_context and current_lease_route_verified else {}),
             **({"cause_code": ProfileAccountAlreadyExistsError.error_type, "register_response_confirmed": True}
                if existing_profile_reconciliation else {}),
+            **({"cause_code": "registration_route_close_failed"} if route_close_failed else {}),
             # OTP页面识别只细化原因，不改变既有换线许可或代理故障惩罚。
             "proxy_transport_failure": not isinstance(exc, EmailOtpNetworkError) and _is_registration_proxy_transport_failure(exc),
             "current_lease_route_verified": current_lease_route_verified,
@@ -3103,7 +3398,11 @@ def run_roxy_registration(
                 remote_identity=auth_remote_identity,
                 challenge_chain=auth_challenge_chain,
             ).as_dict(),
-            "error": f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}{failure_note}",
+            "error": (
+                f"{error_prefix}{type(exc).__name__}: {str(exc)[:300]}{failure_note}"
+                + ("; registration_route_close_failed: 原 Profile 关闭未确认，未释放旧线路或领取新线路"
+                   if route_close_failed else "")
+            ),
         }
     finally:
         if postprocess_data_saver is not None:
@@ -3125,13 +3424,13 @@ def run_roxy_registration(
                 finish_roxy_capture(opened)
             except Exception:
                 logger.exception("[Roxy注册] 收口浏览器流量与执行覆盖率失败")
-        if driver and not profile_discarded and (resume_proxy_rotation_ready or cf_proxy_rotation_ready
+        if driver and not profile_discarded and (route_recovery_ready or resume_proxy_rotation_ready or cf_proxy_rotation_ready
                                                   or not bool(_cfg.ROXY_KEEP_BROWSER_OPEN)):
             try:
                 _quit_driver(driver)
             except Exception:
                 pass
-        if not profile_discarded and not (resume_proxy_rotation_ready or cf_proxy_rotation_ready):
+        if not profile_discarded and not (route_recovery_ready or resume_proxy_rotation_ready or cf_proxy_rotation_ready):
             try:
                 client.cleanup_profile(opened)
             finally:
@@ -3141,6 +3440,8 @@ def run_roxy_registration(
                     except Exception:
                         logger.error("[Roxy注册] 原窗口恢复关联保存失败，仍保留当前进程连接")
                     retain_failed_browser(driver, opened, email=email, facts=facts)
+        if driver is not None and _browser_helpers is None:
+            driver._registration_route_observer = None
         if plan_check_session is not None:
             try:
                 plan_check_session.session.close()

@@ -1119,7 +1119,7 @@ def acquire_1024_proxy(**kwargs) -> ProxyLease:
         "purpose", "country", "region", "timeout", "budget",
         "progress_callback", "cancel", "account_id", "operation_task_id",
         "operation_run_id", "registration_job_id", "route_attempt_no",
-        "correlation_id", "job_id", "allow_reuse", "reuse_limit",
+        "correlation_id", "job_id", "allow_reuse", "reuse_limit", "excluded_exit_ip",
     }
     forwarded = {key: value for key, value in kwargs.items() if key in public_keys}
     # rotation_index 仅保留为链路关联信息，绝不作为供应商/线路选择参数。
@@ -1145,6 +1145,7 @@ def acquire_registration_proxy(
     region: str | None = None,
     cancel=None,
     timeout: float | None = None,
+    excluded_exit_ip: str | None = None,
 ) -> ProxyLease:
     from core.proxy.pool import acquire_proxy
 
@@ -1171,6 +1172,7 @@ def acquire_registration_proxy(
         country=selected_country,
         cancel=cancel,
         timeout=timeout,
+        excluded_exit_ip=excluded_exit_ip,
     )
 
 

@@ -9,6 +9,7 @@ table remains the execution compatibility table and is linked by ``attempt_id``.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import uuid
 from contextlib import nullcontext
@@ -1421,6 +1422,160 @@ def save_password_checkpoint(attempt_id: int, *, email: str, password: str, stat
         return {"account_id": account_id, "state": state}
 
 
+def _route_resume_authorized(private: dict, *, run_id: int | None, execution_id: str | None) -> bool:
+    authorization = private.get("route_resume_authorization")
+    password = private.get("password")
+    return bool(
+        isinstance(authorization, dict) and run_id is not None and execution_id
+        and authorization.get("run_id") == int(run_id)
+        and authorization.get("execution_id") == str(execution_id)
+        and authorization.get("mode") == "identity_login"
+        and isinstance(password, str) and password
+        and authorization.get("candidate_digest") == hashlib.sha256(password.encode()).hexdigest()
+    )
+
+
+def _route_preauth_authorized(private: dict, *, run_id: int | None, execution_id: str | None) -> bool:
+    authorization = private.get("route_resume_authorization")
+    password = private.get("password")
+    digest = hashlib.sha256(password.encode()).hexdigest() if isinstance(password, str) and password else ""
+    return bool(
+        isinstance(authorization, dict) and run_id is not None and execution_id
+        and authorization.get("run_id") == int(run_id)
+        and authorization.get("execution_id") == str(execution_id)
+        and authorization.get("mode") == "preauth"
+        and authorization.get("candidate_digest", "") == digest
+    )
+
+
+def _route_preauth_email_confirmed(authorization: dict, facts: list, *, run_id: int | None) -> bool:
+    return any(
+        isinstance(item, dict)
+        and item.get("submission_id") == authorization.get("confirmed_email_submission_id")
+        and item.get("phase") == "confirmed" and item.get("result") == "success"
+        and item.get("kind") == "email" and item.get("stage") == "submit_email"
+        and item.get("run_id") == run_id
+        for item in facts
+    )
+
+
+def _route_first_profile_allowed(fact: dict, facts: list, unresolved_items: list,
+                                 authorization: dict, *, run_id: int | None) -> bool:
+    """新认证已成功且资料从未派发时补资料，不把旧密码/验码未知倒写成功。"""
+    from core.auth.browser.browser_submission import _PHASE_PRIORITY
+
+    if not (fact["kind"] == "profile" and fact["stage"] == "profile"
+            and fact["endpoint_kind"] == "profile_submit" and fact["http_method"] == "POST"):
+        return False
+    prior = set(authorization.get("prior_submission_ids") or [])
+    if any(item.get("submission_id") not in prior for item in unresolved_items):
+        return False
+    history: dict[str, list] = {}
+    for item in facts:
+        if isinstance(item, dict):
+            history.setdefault(str(item.get("submission_id") or ""), []).append(item)
+    for items in history.values():
+        latest = max(items, key=lambda item: _PHASE_PRIORITY.get(item.get("phase"), 0))
+        if latest.get("kind") == "profile" and latest.get("phase") not in {"prepared", "not_dispatched", "rejected"}:
+            return False
+    for items in history.values():
+        latest = max(items, key=lambda item: _PHASE_PRIORITY.get(item.get("phase"), 0))
+        if not (
+            latest.get("run_id") == run_id and latest.get("kind") == "resume_login"
+            and latest.get("stage") in {"login_password", "email_otp"}
+            and latest.get("phase") == "confirmed" and latest.get("result") == "success"
+        ):
+            continue
+        if (any(item.get("phase") == "request_observed" for item in items)
+                and any(item.get("phase") == "response_observed"
+                        and type(item.get("http_status")) is int and 200 <= item["http_status"] < 300
+                        for item in items)
+                and not any(type(item.get("http_status")) is int and item["http_status"] >= 300 for item in items)):
+            return True
+    return False
+
+
+def authorize_route_resume(
+    attempt_id: int, *, email: str, run_id: int, execution_id: str,
+    previous_route_no: int, route_attempt_no: int,
+) -> bool:
+    """新线路只授权当前执行用原候选登录；旧提交事实不被替换或追认。"""
+    if (type(previous_route_no) is not int or type(route_attempt_no) is not int
+            or previous_route_no < 1 or route_attempt_no != previous_route_no + 1):
+        raise ValueError("恢复授权必须绑定紧接原线路的新线路")
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=%s FOR UPDATE", (int(attempt_id),))
+        raw = cur.fetchone()
+        attempt = _row(raw)
+        if attempt is None:
+            raise LookupError("注册 Attempt 不存在")
+        _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
+        cur.execute(f"SELECT action_type, status FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
+        run = _row(cur.fetchone()) or {}
+        if run.get("action_type") not in {"registration", "registration_resume"} or run.get("status") != "running":
+            raise ValueError("换线恢复只允许当前运行的注册执行")
+        private = dict(_decode(raw.get("private_context")) or {})
+        password = private.get("password")
+        has_candidate = isinstance(password, str) and bool(password)
+        from core.auth.browser.browser_submission import _PHASE_PRIORITY, unresolved_submission_ids
+        submission_facts = private.get("submission_facts") or []
+        unresolved = unresolved_submission_ids(submission_facts)
+        effective: dict[str, dict] = {}
+        for item in submission_facts:
+            if not isinstance(item, dict):
+                continue
+            identifier = str(item.get("submission_id") or "")
+            prior_fact = effective.get(identifier, {})
+            if _PHASE_PRIORITY.get(item.get("phase"), 0) >= _PHASE_PRIORITY.get(prior_fact.get("phase"), -1):
+                effective[identifier] = item
+        # prepared 只证明本地候选已保存；必须同时确认从未派发身份写入，
+        # 避免仅凭密码字段把前置换线当作原账号登录，或把旧未知写入降级。
+        prepared_preauth = bool(
+            has_candidate and private.get("password_state") == "prepared"
+            and attempt.get("checkpoint") in {"created", "email_claimed", "auth_started", "failed"}
+            and not attempt.get("account_id")
+            and not any(
+                (item.get("kind") in {"password", "otp", "profile"} or item.get("endpoint_kind") in {
+                    "password_submit", "profile_submit", "otp_submit", "otp_resend",
+                }) and item.get("phase") not in {"prepared", "not_dispatched"}
+                for item in effective.values()
+            )
+        )
+        unresolved_items = [
+            item for item in private.get("submission_facts") or []
+            if item.get("submission_id") in unresolved
+            and str(item.get("run_id") or "") == str(int(run_id))
+        ]
+        if not has_candidate and (
+            not unresolved_items or any(item.get("kind") != "email" or item.get("stage") not in {
+                "nextauth", "submit_email",
+            } for item in unresolved_items)
+        ):
+            return False
+        prior = private.get("route_resume_authorization") or {}
+        if (prior.get("run_id") == int(run_id)
+                and int(prior.get("route_attempt_no") or 0) > route_attempt_no):
+            raise ValueError("旧线路不能覆盖新的恢复授权")
+        private["route_resume_authorization"] = {
+            "run_id": int(run_id), "execution_id": str(execution_id),
+            "previous_route_no": previous_route_no, "route_attempt_no": route_attempt_no,
+            "mode": "identity_login" if has_candidate and not prepared_preauth else "preauth",
+            "candidate_digest": hashlib.sha256(password.encode()).hexdigest() if has_candidate else "",
+            "prior_submission_ids": sorted(unresolved),
+        }
+        cur.execute(f"UPDATE {_table('registration_attempts')} SET private_context=%s::jsonb, updated_at=%s WHERE id=%s",
+                    (json.dumps(private, ensure_ascii=False), _now(), int(attempt_id)))
+        _insert_event(
+            cur, attempt_id=int(attempt_id), run_id=int(run_id), job_id=attempt.get("job_id"),
+            checkpoint=str(attempt.get("checkpoint") or "created"), event_type="route_resume_authorized",
+            level="INFO", message="新线路已授权原身份登录，保留原始未决提交",
+            detail={"previous_route_no": previous_route_no, "route_attempt_no": route_attempt_no},
+            execution_id=execution_id, event_uuid=None,
+        )
+        return True
+
+
 def record_submission_fact(
     attempt_id: int,
     *,
@@ -1467,6 +1622,21 @@ def record_submission_fact(
         private = dict(_decode(raw.get("private_context")) or {})
         facts = private.get("submission_facts")
         facts = list(facts) if isinstance(facts, list) else []
+        route_authorization = private.get("route_resume_authorization") or {}
+        password = private.get("password")
+        if (
+            route_authorization.get("mode") == "preauth"
+            and route_authorization.get("run_id") == run_id
+            and route_authorization.get("execution_id") == execution_id
+            and not route_authorization.get("candidate_digest")
+            and isinstance(password, str) and password
+            and _route_preauth_email_confirmed(route_authorization, facts, run_id=run_id)
+        ):
+            # 原来无候选的认证链确认后可首次生成候选；在本次事务绑定摘要，
+            # 后续派发仍核对同一候选，不能把有候选时的摘要保护变成通配许可。
+            route_authorization = {**route_authorization,
+                                   "candidate_digest": hashlib.sha256(password.encode()).hexdigest()}
+            private["route_resume_authorization"] = route_authorization
         key = (fact["submission_id"], fact["phase"])
         # 每个 Run 内的未决动作仍阻止本 Run 重复派发；旧 Run 的未知结果保留记录，
         # 但显式重试会创建新 Run，因此不作为新 Run 的派发门槛。
@@ -1498,12 +1668,36 @@ def record_submission_fact(
                     and str(run_row.get("status") or "") in {"queued", "running"}
                     and (execution_id is None or str(run_row.get("execution_id") or "") == str(execution_id))
                 )
+            route_resume = _route_resume_authorized(private, run_id=run_id, execution_id=execution_id)
+            preauth_authorized = _route_preauth_authorized(private, run_id=run_id, execution_id=execution_id)
+            route_preauth = private.get("route_resume_authorization") or {}
+            same_route_authorization = (
+                route_preauth.get("run_id") == run_id
+                and route_preauth.get("execution_id") == execution_id
+            )
+            prior_ids = set(route_preauth.get("prior_submission_ids") or []) if same_route_authorization else set()
+            # 新认证链确认之后只豁免已绑定的旧前置请求；旧 unknown 仍留在历史。
+            preauth_continued = (
+                preauth_authorized
+                and _route_preauth_email_confirmed(route_preauth, facts, run_id=run_id)
+            )
+            if preauth_continued:
+                unresolved_items = [item for item in unresolved_items if item.get("submission_id") not in prior_ids]
+            preauth_allowed = bool(
+                preauth_authorized
+                and fact["kind"] == "email" and fact["stage"] in {"nextauth", "submit_email"}
+                and fact["endpoint_kind"] in {"email_submit", "nextauth_csrf", "nextauth_signin"}
+                and all(item.get("kind") == "email" and item.get("stage") in {"nextauth", "submit_email"}
+                        and item.get("submission_id") in prior_ids for item in unresolved_items)
+            )
             resume_login = (
                 fact["kind"] == "resume_login"
-                and explicit_resume_run
+                and (explicit_resume_run or route_resume)
                 and fact["stage"] in {
                     "submit_email", "nextauth", "login_password", "password_create", "email_otp", "otp_resend",
                 }
+                and (explicit_resume_run or fact["stage"] != "password_create")
+                and (explicit_resume_run or all(item.get("submission_id") in prior_ids for item in unresolved_items))
                 and bool((attempt.get("data") or {}).get("has_password"))
                 and bool(private.get("password"))
                 and str(attempt.get("checkpoint") or "") in {
@@ -1512,22 +1706,36 @@ def record_submission_fact(
                     "token_obtained", "postprocessing", "manual_reconcile", "failed",
                 }
             )
+            profile_completion = route_resume and _route_first_profile_allowed(
+                fact, facts, unresolved_items, route_preauth, run_id=run_id,
+            )
             # 只有 registration_resume Run 可以用 resume_login 标记登录请求。
             # 普通注册重跑使用自己的初始注册流程，不能伪装成登录续跑。
-            if fact["kind"] == "resume_login" and not explicit_resume_run:
+            if fact["kind"] == "resume_login" and not (explicit_resume_run or route_resume):
                 raise ValueError("resume_login 提交必须使用显式 registration_resume Run")
             # 同一 Run 中 OTP 重发结果未知时，不允许再次点击重发。
             if resume_login and fact["stage"] == "otp_resend" and any(
                 str(item.get("stage") or "") == "otp_resend" for item in unresolved_items
             ):
                 resume_login = False
-            if unresolved_items and not resume_login:
+            if unresolved_items and not (resume_login or preauth_allowed or profile_completion):
                 raise ValueError("当前 Run 仍有未决浏览器提交，拒绝重复派发请求")
         if not any((item.get("submission_id"), item.get("phase")) == key for item in facts if isinstance(item, dict)):
             stored_fact = dict(fact)
             if run_id is not None:
                 stored_fact["run_id"] = int(run_id)
             facts.append(stored_fact)
+        route_authorization = private.get("route_resume_authorization") or {}
+        if (fact["phase"] == "confirmed" and fact["kind"] == "email"
+                and fact["stage"] == "submit_email" and fact["result"] == "success"
+                and route_authorization.get("mode") == "preauth"
+                and route_authorization.get("run_id") == run_id
+                and route_authorization.get("execution_id") == execution_id
+                and fact["submission_id"] not in set(route_authorization.get("prior_submission_ids") or [])
+                and any(item.get("submission_id") == fact["submission_id"]
+                        and item.get("phase") == "dispatch_intent" for item in facts)):
+            route_authorization["confirmed_email_submission_id"] = fact["submission_id"]
+            private["route_resume_authorization"] = route_authorization
         # 只保留最近事实，避免一个 Attempt 的浏览器恢复历史无限增长；每个仍未收口的
         # submission 继续保留最高阶段，方便后续核对其跨 Run 的完整历史。
         recent_facts = facts[-128:]
@@ -1610,9 +1818,10 @@ def _complete_saved_password_login_submission(
     _require_current_execution(cur, attempt, run_id=run_id, execution_id=execution_id, email=email)
     cur.execute(f"SELECT action_type, job_id FROM {_table('registration_runs')} WHERE id=%s", (int(run_id),))
     run = _row(cur.fetchone()) or {}
-    if run.get("action_type") != "registration_resume" or run.get("job_id") != job_id:
-        raise ValueError("已保存密码重登录必须使用原任务的显式续跑")
     private = dict(_decode(attempt.get("private_context")) or {})
+    if (run.get("action_type") != "registration_resume"
+            and not _route_resume_authorized(private, run_id=run_id, execution_id=execution_id)) or run.get("job_id") != job_id:
+        raise ValueError("已保存密码重登录必须使用原任务的显式续跑")
     if not password or private.get("password") != password:
         raise ValueError("已保存密码重登录的原密码不匹配")
     facts = list(private.get("submission_facts") or [])

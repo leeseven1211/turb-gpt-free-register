@@ -6,6 +6,7 @@ import logging
 import socket
 import sys
 from datetime import datetime, timezone
+from contextlib import ExitStack
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
             inherit=False,
             purpose="registration", registration_attempt_id=int(attempt["id"]), registration_run_id=int(run["id"]),
         ):
-            result = driver(**restored)
+            result = _run_managed_registration_driver(driver, restored, driver_name=persisted_driver)
         if not isinstance(result, dict):
             raise RuntimeError("注册驱动未返回有效注册结果")
         # CLI 与 WebUI 共用明确落库事实；旧调用继续使用既有结果契约。
@@ -168,10 +169,30 @@ def _run_registration_with_facts(driver, kwargs: dict, *, entrypoint: str, drive
                     # 无法读取持久事实时，不把中断当成已确认的远端失败。
                     status = "request_unknown"
             try:
+                from dataclasses import asdict
+                from core.registration.route_recovery import result_route_failure
+                from core.operations.errors import safe_registration_diagnostics, REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
+
+                summary = {
+                    "entrypoint": source, "driver": persisted_driver, "registration_success": core_saved,
+                    "postprocess_success": bool(core_saved and isinstance(result, dict) and result.get("postprocess_success")),
+                }
+                route_failure = (
+                    result_route_failure({"route_failure": result.get("route_failure")})
+                    if isinstance(result, dict) else None
+                ) or result_route_failure(result)
+                if route_failure is not None:
+                    summary["route_failure"] = asdict(route_failure)
+                if isinstance(result, dict):
+                    cause = result.get("cause_code")
+                    if isinstance(cause, str) and cause in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES:
+                        summary["cause_code"] = cause
+                    diagnostics = safe_registration_diagnostics(result.get("registration_diagnostics"))
+                    if diagnostics:
+                        summary["registration_diagnostics"] = diagnostics
                 registration.finish_run(
                     int(run["id"]), status=status, error_code="request_unknown" if status == "request_unknown" else None,
-                    result_summary={"entrypoint": source, "driver": persisted_driver, "registration_success": core_saved,
-                        "postprocess_success": bool(core_saved and isinstance(result, dict) and result.get("postprocess_success"))},
+                    result_summary=summary,
                 )
             except Exception as exc:
                 if not driver_raised:
@@ -193,3 +214,88 @@ def run_protocol_in_context(driver, kwargs: dict):
     return run_registration_in_context(
         driver, kwargs, entrypoint="protocol_cli", driver_name="protocol_oss_2",
     )
+
+
+def _run_managed_registration_driver(driver, kwargs: dict, *, driver_name: str = ""):
+    """受管 CLI 与 worker 复用业务协调器；直传代理只执行原有驱动。"""
+    from core.registration.route_recovery import (
+        RegistrationRouteCoordinator, current_managed_registration_owner,
+        current_route_recovery, registration_route_recovery, result_route_failure,
+    )
+    from core.registration import service
+    from core.storage import registration
+    from core.proxy.provider import acquire_registration_proxy, release_proxy
+    from core.network.protocol_traffic import correlation_context
+
+    owner = current_managed_registration_owner()
+    if (current_route_recovery() is not None or owner is None or owner.lease is None
+            or owner.lease.proxy_url != kwargs.get("proxy")):
+        return driver(**kwargs)
+    facts = service.registration_fact_context()
+    route_no = 1
+    country = owner.lease.region
+    options = dict(kwargs.get("registration_options") or {})
+    with ExitStack() as scopes:
+        scopes.enter_context(correlation_context(proxy_lease_id=owner.lease.lease_id, route_attempt_no=route_no))
+
+        def begin_route(reason):
+            nonlocal route_no
+            route_no += 1
+            service._bind_progress_route_context(route_no)
+            attempt = registration.get_attempt(int(facts["attempt_id"])) or {}
+            registration.advance_checkpoint(
+                int(facts["attempt_id"]), attempt.get("checkpoint") or "auth_started",
+                run_id=facts["run_id"], execution_id=facts["execution_id"],
+                event_type="proxy_rotation", message=reason,
+                detail={"route_attempt_no": route_no},
+            )
+            return route_no
+
+        def on_lease(lease, number):
+            registration.authorize_route_resume(
+                int(facts["attempt_id"]), email=kwargs["email"], run_id=int(facts["run_id"]),
+                execution_id=facts["execution_id"], previous_route_no=number - 1,
+                route_attempt_no=number,
+            )
+            scopes.enter_context(correlation_context(proxy_lease_id=lease.lease_id, route_attempt_no=number))
+
+        coordinator = RegistrationRouteCoordinator(
+            owner.lease, limit=service._registration_proxy_retry_limit(),
+            delay=service._registration_proxy_retry_delay(),
+            acquire=lambda **values: acquire_registration_proxy(
+                country=country, purpose="registration", cancel=service.check_stop_requested, **values,
+            ),
+            release=release_proxy, check_stop=service.check_stop_requested,
+            begin_route=begin_route, on_lease=on_lease,
+        )
+
+        def recover(failure, current_proxy):
+            try:
+                return coordinator(failure, current_proxy)
+            finally:
+                owner.lease = coordinator.lease
+
+        call = dict(kwargs)
+        try:
+            while True:
+                available = coordinator.used < coordinator.limit
+                is_roxy = (driver_name or options.get("registration_driver")) == "roxy"
+                with registration_route_recovery(recover if available or not is_roxy else None):
+                    result = driver(**call)
+                coordinator.observe_result(result)
+                failure = result_route_failure(result)
+                if not (failure and result.get("route_recovery_ready") is True
+                        and result.get("route_recovery_state") is not None):
+                    return result
+                lease = recover(failure, call["proxy"])
+                if lease is None:
+                    return result
+                options["_roxy_route_recovery"] = result["route_recovery_state"]
+                call["registration_options"] = options
+                call["profile_id"] = result.get("route_recovery_profile_id") or None
+                call["proxy"] = lease.proxy_url
+                private = registration.get_private_resume_context(int(facts["attempt_id"]), email=kwargs["email"])
+                call["existing_password"] = private.get("password") or call.get("existing_password")
+        finally:
+            owner.lease = coordinator.lease
+            owner.fault = coordinator.current_lease_transport_failure

@@ -280,6 +280,7 @@ def _run_one_batch_item(
     """执行批量注册中的一个任务，返回结构化结果。"""
     logger.info(f"[批量] 开始第 {index + 1}/{total} 个注册")
     proxy_lease = None
+    proxy_fault = False
     from core.sms import provider as sms_provider
 
     if batch_id:
@@ -303,14 +304,16 @@ def _run_one_batch_item(
             owner_id=stable_acquisition_id,
             acquisition_id=stable_acquisition_id,
         )
-        return run_registration(
-            email=email,
-            name=name,
-            birthday=birthday,
-            proxy=proxy_lease.proxy_url,
-            email_source=email_source,
-            registration_options=registration_options,
-        )
+        from core.registration.route_recovery import managed_registration_proxy
+        with managed_registration_proxy(proxy_lease) as route_owner:
+            try:
+                return run_registration(
+                    email=email, name=name, birthday=birthday, proxy=proxy_lease.proxy_url,
+                    email_source=email_source, registration_options=registration_options,
+                )
+            finally:
+                proxy_lease = route_owner.lease
+                proxy_fault = route_owner.fault
     except Exception as exc:
         logger.error(f"[批量] 第 {index + 1} 个注册准备阶段失败: {type(exc).__name__}: {exc}")
         logger.debug("准备阶段错误详情:", exc_info=True)
@@ -321,7 +324,10 @@ def _run_one_batch_item(
         if proxy_lease is not None:
             from core.proxy.provider import release_proxy
 
-            release_proxy(proxy_lease, reason="cli_task_finished")
+            if proxy_fault:
+                release_proxy(proxy_lease, reason="transport_failure", fault=True)
+            else:
+                release_proxy(proxy_lease, reason="cli_task_finished")
         if batch_id and total > 1:
             from core.proxy.provider import finalize_registration_proxy_batch
 

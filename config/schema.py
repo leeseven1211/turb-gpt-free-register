@@ -1484,11 +1484,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理与网络",
-        "label": "注册代理换线重试次数", "help": "只对隧道、连接重置等明确代理传输错误换线重试；不改变并发数，也不重试密码入口缺失",
+        "label": "注册代理换线重试次数", "help": "注册与续跑关键请求的 HTTP 403 或明确传输故障共用这份换线额度，与供应商无关；保留原身份和已完成步骤，未知写入先恢复认证，不直接重发。",
     },
     {
         "key": "REGISTRATION_PROXY_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理与网络",
-        "label": "注册换线重试间隔(秒)", "help": "换线前的短暂间隔，避免连续请求同一代理平台窗口",
+        "label": "注册换线重试间隔(秒)", "help": "同一注册执行更换线路前的等待时间；新线路保持原国家并排除上一实际出口。",
     },
     {
         "key": "ACCOUNT_ACTION_PROXY_RETRIES", "file": "proxy.py", "type": "int", "group": "代理与网络",

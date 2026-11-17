@@ -7,6 +7,7 @@ from unittest.mock import patch
 from core import db, operation_task_store
 from core.storage import records as record_store
 from core.registration import service as service
+from core.registration import admission
 from core.auth.browser.browser_submission import unresolved_submission_ids
 from core.registration import roxy
 from core.storage import registration
@@ -156,7 +157,7 @@ class CloudflareWorkerRotationTests(PostgresTestCase):
             release_email = stack.enter_context(patch("core.email.provider.release_email"))
             stack.enter_context(patch("core.email.provider.retain_email"))
             prepare = stack.enter_context(patch.object(service, "_prepare_registration_args"))
-            service._run_one_job(child_id, "/tmp/offline-cf-service.log")
+            admission.run_job(child_id, lambda: service._run_one_job(child_id, "/tmp/offline-cf-service.log"))
         self.assertEqual(len(calls), 1 if repeated_ip or missing_ip or initial_missing_ip or limit == 0 else 2)
         for call, context in zip(calls, contexts):
             self.assertEqual(call["email"], address)
@@ -267,7 +268,7 @@ class CloudflareWorkerRotationTests(PostgresTestCase):
             stack.enter_context(patch("core.registration.debug.capture_current_failure"))
             stack.enter_context(patch("core.email.provider.retain_email"))
             release_email = stack.enter_context(patch("core.email.provider.release_email"))
-            service._run_one_job(child_id, "/tmp/offline-mixed-cf-service.log")
+            admission.run_job(child_id, lambda: service._run_one_job(child_id, "/tmp/offline-mixed-cf-service.log"))
         self.assertEqual(acquire.call_count, 3)
         self.assertEqual(len(calls), 2 if unverified_after_transport else 3)
         self.assertEqual({context["attempt_id"] for context in contexts}, {attempt_id})

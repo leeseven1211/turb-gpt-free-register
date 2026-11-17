@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from urllib.parse import urlsplit
 
@@ -10,6 +11,11 @@ from core.auth.challenge import AuthCancelledError
 from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint
 from core.registration.failure_diagnostics import RegistrationFailureDiagnostics
 from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown
+from core.registration.route_recovery import (
+    current_route_recovery,
+    registration_request_operation,
+    registration_route_failure,
+)
 
 _CONTEXT: ContextVar[dict | None] = ContextVar("protocol_oss_2_context", default=None)
 
@@ -24,6 +30,28 @@ class _VendorCancelled(BaseException):
 
     def __init__(self, reason: BaseException):
         self.reason = reason
+
+
+class _VendorRouteRecovery(BaseException):
+    """让换线边界穿过上游宽泛重试，回到原身份恢复入口。"""
+
+    def __init__(self, failure, *, switched=False, error=None, method="", stage=""):
+        self.failure = failure
+        self.switched = switched
+        self.error = error
+        self.method = str(method).upper()
+        self.stage = stage
+
+
+class ProtocolRegistrationRouteError(RuntimeError):
+    """当前注册请求的线路恢复未完成，保留结构化失败事实。"""
+
+    def __init__(self, failure, message="当前注册请求换线恢复未完成", *, cause_code=""):
+        super().__init__(message)
+        self.route_failure = failure
+        self.http_status = failure.http_status
+        if cause_code:
+            self.cause_code = cause_code
 
 
 class ProtocolSessionIdentityError(RuntimeError):
@@ -98,7 +126,7 @@ class _HeaderOnlyResponse:
 
 
 class _ObservedSession:
-    """会话重建仍沿用同一代理、停止信号和本地流量关联。"""
+    """当前动作在业务统一预算内换线，保留会话与停止信号。"""
 
     def __init__(self, transport, context: dict):
         self._transport = transport
@@ -108,6 +136,87 @@ class _ObservedSession:
         return getattr(self._transport, name)
 
     def request(self, method, url, **kwargs):
+        while True:
+            response = None
+            error = None
+            try:
+                response = self._request_once(method, url, **kwargs)
+            except Exception as exc:
+                from core.registration.service import StopRequested
+
+                if isinstance(exc, (StopRequested, AuthCancelledError)):
+                    raise
+                error = exc
+            failure = registration_route_failure(method, url, response=response, error=error)
+            context = self._context
+            allowed = context.get("route_recovery_operations")
+            enabled = context.get("route_recovery_enabled", True)
+            callback = current_route_recovery() if enabled else None
+            if failure is None or (allowed is not None and failure.operation not in allowed) or callback is None:
+                if error is not None:
+                    raise error
+                return response
+            if response is not None:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            try:
+                pause = getattr(self._transport, "pause_for_route_recovery", None)
+                if callable(pause):
+                    pause()
+            except Exception as exc:
+                raise _VendorRouteRecovery(
+                    failure, error=exc, method=method, stage="close_previous_connection",
+                ) from exc
+            try:
+                lease = callback(failure, context.get("proxy"))
+            except Exception as exc:
+                from core.registration.service import StopRequested
+
+                if isinstance(exc, (StopRequested, AuthCancelledError)):
+                    raise _VendorCancelled(exc) from exc
+                raise _VendorRouteRecovery(failure, error=exc, method=method) from exc
+            if lease is None:
+                raise _VendorRouteRecovery(failure, error=error, method=method) from error
+            try:
+                self._replace_route(lease)
+            except Exception as exc:
+                raise _VendorRouteRecovery(failure, error=exc, method=method) from exc
+            if not failure.replay_safe:
+                raise _VendorRouteRecovery(failure, switched=True, error=error, method=method) from error
+
+    def _replace_route(self, lease):
+        """只替换连接和租约关联，Cookie Jar、画像和认证栈保持不变。"""
+        from core.network.protocol_traffic import ProtocolTrafficCapture, current_correlation
+
+        context = self._context
+        proxy = str(getattr(lease, "proxy_url", "") or "").strip()
+        if not proxy:
+            raise RuntimeError("换线未返回可用代理，已停止当前注册动作")
+        capture = context.get("capture")
+        correlation = dict(getattr(capture, "correlation", {}) or {})
+        if capture is not None:
+            capture.flush()
+        self._transport.proxies = {"http": proxy, "https": proxy}
+        context["proxy"] = proxy
+        flow = context.get("flow")
+        if flow is not None:
+            flow.config.proxy = proxy
+            flow._proxy_pool = [proxy]
+            flow._proxy_idx = -1
+        parent = context.get("parent_session")
+        if parent is not None:
+            parent.proxy = proxy
+        correlation.update(current_correlation())
+        correlation["proxy_lease_id"] = getattr(lease, "lease_id", None)
+        context["capture"] = ProtocolTrafficCapture(correlation) if capture is not None or correlation.get("proxy_lease_id") else None
+        if parent is not None:
+            parent.protocol_traffic = None if context.get("exclusive_traffic_capture") else context["capture"]
+
+    def _request_once(self, method, url, **kwargs):
         _check_stop_requested()
         context = self._context
         path = urlsplit(url).path
@@ -174,8 +283,10 @@ class _ObservedSession:
             return response
         except BaseException as exc:
             error = exc
-            if method.upper() == "POST":
+            operation = registration_request_operation(method, url)
+            if response is None and operation in {"password_create", "profile_submit"}:
                 context["write_unknown"] = True
+                context.setdefault("unknown_identity_operations", set()).add(operation)
             raise
         finally:
             diagnostics = context.get("registration_diagnostics")
@@ -212,6 +323,62 @@ class _ObservedSession:
         return self.request("POST", url, **kwargs)
 
 
+@contextmanager
+def registration_twofa_route_recovery(session, *, access_token=""):
+    """只给当前注册的 2FA 动作开通恢复，不向套餐、AT 或 Codex 传播。"""
+    observed = getattr(session, "session", None)
+    if not isinstance(observed, _ObservedSession) or current_route_recovery() is None:
+        yield
+        return
+    context = observed._context
+    previous = {key: context.get(key) for key in (
+        "route_recovery_enabled", "route_recovery_operations", "observing", "exclusive_traffic_capture",
+    )}
+    context.update({
+        "route_recovery_enabled": True, "route_recovery_operations": {"twofa_enroll", "twofa_activate"},
+        "observing": True, "exclusive_traffic_capture": True,
+    })
+    # 当前请求由观察器逐次计量，避免父 BrowserSession 重复记录最后一次响应。
+    session.protocol_traffic = None
+    try:
+        yield
+    except _VendorCancelled as interrupted:
+        raise interrupted.reason
+    except _VendorRouteRecovery as interrupted:
+        error = ProtocolRegistrationRouteError(
+            interrupted.failure, "注册 2FA 当前动作结果待确认，保留已有密钥与账号",
+            cause_code="registration_route_close_failed" if interrupted.stage == "close_previous_connection" else "",
+        )
+        state = {"operation": interrupted.failure.operation, "http_status": None, "state": "unknown"}
+        if interrupted.switched and access_token:
+            try:
+                response = session.get(
+                    "https://chatgpt.com/backend-api/accounts/mfa_info",
+                    headers={"accept": "application/json", "authorization": f"Bearer {access_token}"},
+                    timeout=30, allow_redirects=False,
+                )
+                status = int(response.status_code)
+                state["http_status"] = status
+                payload = response.json() if status == 200 else None
+                if isinstance(payload, dict):
+                    if payload.get("mfa_enabled") is True and payload.get("mfa_enabled_v2") is True:
+                        state["state"] = "enabled_candidate_unverified"
+                    elif payload.get("mfa_enabled") is False and payload.get("mfa_enabled_v2") is False:
+                        state["state"] = "not_enabled"
+            except Exception as exc:
+                from core.registration.service import StopRequested
+
+                if isinstance(exc, (StopRequested, AuthCancelledError)):
+                    raise
+                # 只读核验失败仍保留原设置动作待确认，不能重发或确认候选。
+                pass
+        error.twofa_recovery = state
+        raise error from interrupted.error
+    finally:
+        context.update(previous)
+        session.protocol_traffic = context.get("capture")
+
+
 def create_http_session(**kwargs):
     """只为当前驱动创建 wreq，会话工厂不修改其他驱动或全局模块。"""
     from core.registration.protocol_oss_2.upstream.http_client_wreq import _HAS_WREQ, create_http_session as create
@@ -223,6 +390,9 @@ def create_http_session(**kwargs):
     if context is None:
         raise RuntimeError("开源protocol-2 缺少注册执行上下文")
     _check_stop_requested()
+    if context.get("identity_recovery") and context["sessions"]:
+        # 原身份恢复只允许沿用当前认证现场，不能重建空会话或更换画像。
+        return context["sessions"][-1]
     kwargs["proxy"] = context["proxy"]
     transport = _ObservedSession(create(**kwargs), context)
     if context["sessions"]:
@@ -261,6 +431,7 @@ def run_upstream_protocol(
 
     context = {
         "proxy": session.proxy, "capture": session.protocol_traffic, "sessions": [], "email": email,
+        "parent_session": session, "route_recovery_enabled": True,
         "password_started": False, "password_register_accepted": False, "password_verified": False,
         "profile_started": False, "write_unknown": False, "session_info": {},
         "registration_diagnostics": RegistrationFailureDiagnostics(),
@@ -322,6 +493,8 @@ def run_upstream_protocol(
 
     class LocalAuthFlow(AuthFlow):
         def register_password(self, address):
+            if context.get("identity_recovery"):
+                raise ProtocolRegistrationContextError("原身份换线恢复禁止重新创建密码")
             accepted = observed_action("password_submit", super().register_password, address)
             if not accepted:
                 diagnostic = context.get("password_diagnostics") or {}
@@ -361,6 +534,8 @@ def run_upstream_protocol(
             progress("password", "running", "密码创建请求已接受，候选密码已保存；等待邮箱验证和 Token")
 
         def signup(self, *args, **kwargs):
+            if context.get("identity_recovery"):
+                raise ProtocolRegistrationContextError("原身份换线恢复禁止退回新注册")
             progress("submit_email", "running", "正在建立上游邮箱认证状态")
             result = observed_action("email_submit", super().signup, *args, **kwargs)
             progress("submit_email", "success", "上游邮箱认证状态已建立")
@@ -384,6 +559,8 @@ def run_upstream_protocol(
             return result
 
         def create_account(self):
+            if context.get("identity_recovery") and "profile_submit" in context.get("unknown_identity_operations", set()):
+                raise ProtocolRegistrationContextError("原资料提交结果未知，禁止在原身份恢复中重复创建")
             context.pop("profile_diagnostics", None)
             context.pop("profile_error", None)
             progress("profile", "running", "正在提交上游注册资料")
@@ -421,6 +598,46 @@ def run_upstream_protocol(
                 raise RuntimeError("已有账号需要原密码，请使用原任务重跑补全凭据")
             return password, True
 
+        def recover_identity(self, mailbox):
+            """先核验已有 Session，再走禁止创建兜底的原邮箱登录入口。"""
+            context["identity_recovery"] = True
+            self._is_existing_account = True
+            self.get_auth_session()
+            if context.get("session_info"):
+                return self.result
+            progress("auth_redirect", "running", "已保留原提交结果，正在通过原邮箱恢复登录态")
+            return self.run_protocol_login(
+                mailbox, email, self.result.password or existing_password or "",
+                strict_identity_resume=True,
+                allow_profile_completion="profile_submit" not in context.get("unknown_identity_operations", set()),
+            )
+
+    def preserve_unknown_route_action(interrupted):
+        """只追加已派发动作的未知事实，后续登录成功也不改写原创建结果。"""
+        import uuid
+
+        failure = interrupted.failure
+        context.setdefault("route_unknown_operations", set()).add(failure.operation)
+        if facts.get("attempt_id") is None:
+            return
+        from core.storage import registration
+
+        kind, stage, endpoint = {
+            "password_create": ("password", "password_create", "password_submit"),
+            "password_verify": ("password", "login_password", "password_submit"),
+            "profile_submit": ("profile", "profile", "profile_submit"),
+            "email_submit": ("email", "submit_email", "email_submit"),
+            "otp_validate": ("otp", "email_otp", "otp_submit"),
+            "otp_send": ("otp", "otp_resend", "otp_resend"),
+            "callback": ("callback", "auth_redirect", "auth_redirect"),
+        }[failure.operation]
+        registration.record_submission_fact(
+            int(facts["attempt_id"]), submission_id=uuid.uuid4().hex,
+            kind=kind, stage=stage, phase="unknown", endpoint_kind=endpoint,
+            http_method=interrupted.method, http_status=failure.http_status, result="unknown",
+            run_id=facts.get("run_id"), execution_id=facts.get("execution_id"), job_id=facts.get("job_id"),
+        )
+
     token = _CONTEXT.set(context)
     flow = None
     try:
@@ -445,6 +662,7 @@ def run_upstream_protocol(
                 "password": existing_password or "", "totp_secret": existing_totp_secret or "",
             } if str(address).strip().lower() == str(email).strip().lower() else {},
         )
+        context["flow"] = flow
         flow.registration_name = name
         flow.registration_birthday = birthday
         flow.registration_intent = registration_intent
@@ -453,7 +671,32 @@ def run_upstream_protocol(
         flow.result.password = existing_password or ""
         flow.result.totp_secret = existing_totp_secret or ""
         progress("browser", "success", "开源protocol-2 会话已初始化")
-        result = flow.run_register(LocalMailbox())
+        mailbox = LocalMailbox()
+        action = lambda: flow.run_register(mailbox)
+        while True:
+            try:
+                result = action()
+                break
+            except _VendorRouteRecovery as interrupted:
+                failure = interrupted.failure
+                context["route_failure"] = failure
+                if not failure.replay_safe:
+                    preserve_unknown_route_action(interrupted)
+                if not interrupted.switched:
+                    close_failed = interrupted.stage == "close_previous_connection"
+                    error = ProtocolRegistrationRouteError(
+                        failure, "旧连接关闭失败，未交还当前线路" if close_failed else "当前注册请求换线恢复未完成",
+                        cause_code="registration_route_close_failed" if close_failed else "",
+                    )
+                    # 把当前错误响应绑定到逃出上游后的同一异常，不借用历史事件。
+                    operation = "password_submit" if failure.operation in {"password_create", "password_verify"} else failure.operation
+                    observe("bind_failure", error, operation, context["registration_diagnostics"].sequence - 1)
+                    raise error from interrupted.error
+                if interrupted.error is not None:
+                    context["route_unknown_error"] = interrupted.error
+                if failure.operation == "profile_submit" and interrupted.error is not None:
+                    context["profile_error"] = interrupted.error
+                action = lambda: flow.recover_identity(mailbox)
         check_stop_requested()
         access_token = str(result.access_token or "").strip()
         if not access_token:
@@ -480,6 +723,7 @@ def run_upstream_protocol(
         session.browser_profile["navigator_language"] = fingerprint.get("lang", "en-US")
         # 后处理通过 BrowserSession 自身计量，避免对同一请求重复记账。
         context["observing"] = False
+        context["route_recovery_enabled"] = False
         return {
             "access_token": access_token, "session_info": session_info,
             "registration_password": result.password or existing_password or None,
@@ -488,19 +732,24 @@ def run_upstream_protocol(
             "password_diagnostics": context.get("password_diagnostics"),
             "remote_identity": "existing" if flow._is_existing_account else "new",
             "challenge_chain": (["password"] if password_validated else []) + ["email_otp"],
+            "route_unknown_operations": sorted(context.get("route_unknown_operations", set())),
         }
     except _VendorCancelled as exc:
         raise exc.reason
     except (StopRequested, AuthCancelledError):
         raise
     except Exception as exc:
+        route_failure = getattr(exc, "route_failure", None) or context.get("route_failure")
+        if route_failure is not None:
+            exc.route_failure = route_failure
         if (context.get("session_response_incomplete") and not context.get("session_info")
-                and not context.get("profile_error") and not getattr(exc, "cause_code", "")):
+                and not context.get("profile_error") and not context.get("route_unknown_error")
+                and not getattr(exc, "cause_code", "")):
             invalid = ProtocolSessionResponseError("本轮 Session 响应缺少完整身份或 Token，原任务可重跑")
             invalid.__cause__ = exc
             exc = invalid
         # 有界恢复未完成时仍保留原资料提交的失败事实，避免变成泛化无凭证错误。
-        primary = context.get("profile_error") or exc
+        primary = context.get("profile_error") or context.get("route_unknown_error") or exc
         diagnostics = observe("failure", primary)
         if diagnostics is not None:
             try:
@@ -518,10 +767,13 @@ def run_upstream_protocol(
                 "identity_mismatch",
                 "registration_password_create_rejected", "registration_password_unconfirmed",
                 "registration_auth_state_unrecognized", "registration_session_invalid_response",
+                "registration_route_close_failed",
             }:
                 unknown.cause_code = exc.cause_code
             if diagnostics is not None:
                 unknown.registration_diagnostics = diagnostics
+            if route_failure is not None:
+                unknown.route_failure = route_failure
             raise unknown from exc
         raise
     finally:

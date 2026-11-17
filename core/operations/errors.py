@@ -1365,6 +1365,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "twofa_setup_failed": ("AUTH-MFA-SETUP-001", "本轮 Authenticator 2FA 设置未完成"),
     "remote_response_missing": ("REQ-RESPONSE-001", "远端响应缺失"),
     "registration_checkpoint_failed": ("OA-REG-CHECKPOINT-001", "注册检查点本地写入失败"),
+    "registration_route_close_failed": ("FLOW-REG-ROUTE-CLOSE", "旧连接关闭失败，线路切换未完成"),
     "user_register_continue_url_missing": ("OA-REG-RESPONSE-001", "账号创建响应缺少后续验证地址"),
     "user_register_result_unknown": ("OA-REG-REQUEST-001", "账号创建请求缺少有效响应和失败细项"),
     "account_create_user_already_exists": ("OA-REG-EXISTS-001", "远端提示账号已存在，本次未取得完整登录会话"),
@@ -1393,6 +1394,7 @@ REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
     "account_create_user_already_exists",
     "user_register_result_unknown",
     "registration_checkpoint_failed",
+    "registration_route_close_failed",
     "user_register_continue_url_missing",
     "email_otp_send_rejected",
     "email_otp_send_failed",
@@ -2643,6 +2645,23 @@ def classify_task_error(
             })
         return recovery_projection
     cause = _stored_specific_error_cause(raw, task_type, summary_data, error_code=error_code) or _specific_error_cause(summary_data)
+    if str(task_type or "").strip().lower() in {"registration", "registration_resume"}:
+        from core.registration.route_recovery import result_route_failure
+
+        route_failure = result_route_failure(summary_data)
+        if route_failure is not None and route_failure.http_status == 403:
+            labels = {
+                "preauth": "认证准备", "email_submit": "邮箱认证", "password_create": "密码创建",
+                "password_verify": "密码校验", "password_submit": "密码提交", "otp_send": "验证码发送",
+                "otp_validate": "验证码校验", "profile_submit": "资料提交", "callback": "认证回调",
+                "session": "登录态读取", "auth_session": "认证状态读取",
+                "twofa_enroll": "2FA 登记", "twofa_activate": "2FA 激活",
+            }
+            cause = {
+                **(cause or {"cause_code": "protocol_auth_http_failed"}),
+                "cause_display_code": "NET-REG-403",
+                "cause_summary": f"{labels.get(route_failure.operation, '注册认证')}返回 HTTP 403，线路恢复未完成",
+            }
     if cause is None and str(error_code or "").strip() in _CAUSE_DETAILS:
         cause = _specific_error_cause({**summary_data, "cause_code": str(error_code).strip()})
     if cause and cause["cause_code"] == "email_otp_evidence_missing":

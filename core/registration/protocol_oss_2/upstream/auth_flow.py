@@ -4307,7 +4307,10 @@ class AuthFlow:
         return self.result
 
     # ── 纯协议已有账号登录流程（目标：拿 callback/session/refresh） ──
-    def run_protocol_login(self, mail_provider: MailProvider, email: str, password: str = "") -> AuthResult:
+    def run_protocol_login(
+        self, mail_provider: MailProvider, email: str, password: str = "", *,
+        strict_identity_resume: bool = False, allow_profile_completion: bool = False,
+    ) -> AuthResult:
         """
         纯协议登录（不创建随机邮箱）：
         - 适配 passwordless / login_password 两类已有账号入口
@@ -4340,7 +4343,7 @@ class AuthFlow:
         login_password = (password or "").strip()
         if login_password:
             self.result.password = login_password
-        else:
+        elif not strict_identity_resume:
             login_password, pw_is_real = self._resolve_login_password(email)
             if pw_is_real:
                 self.result.password = login_password
@@ -4360,7 +4363,7 @@ class AuthFlow:
 
         page_type = ""
         mode = ""
-        prefer_login_screen_first = str(
+        prefer_login_screen_first = strict_identity_resume or str(
             os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
         ).lower() in ("1", "true", "yes", "on")
 
@@ -4384,7 +4387,14 @@ class AuthFlow:
                 self._existing_page_type = page_type
                 self._existing_email_verification_mode = mode
 
+                if strict_identity_resume and (
+                    page_type not in {"login_password", "email_otp_verification", "about_you", "mfa_challenge", "external_url"}
+                    and not self._is_chatgpt_callback_url(continue_url)
+                ):
+                    raise RuntimeError("原身份登录返回未支持的状态，禁止退回新注册")
                 if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
+                    if strict_identity_resume and not login_password:
+                        raise RuntimeError("原身份登录需要原候选密码，禁止生成或推测新密码")
                     logger.info("登录分支: login_password -> password/verify")
                     # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
                     # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
@@ -4434,12 +4444,16 @@ class AuthFlow:
                         (continue_url or "")[:180] or "(empty)",
                     )
             except Exception as e:
+                if strict_identity_resume:
+                    raise
                 logger.warning(f"login screen_hint 探测失败，回退 signup 探测: {e}")
                 continue_url = ""
                 page_type = ""
                 mode = ""
 
         if not continue_url and page_type not in ("login_password", "email_otp_verification"):
+            if strict_identity_resume:
+                raise RuntimeError("原身份登录没有明确后续步骤，禁止退回新注册")
             is_new = self.signup(email, sentinel)
             if is_new:
                 logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
@@ -4491,6 +4505,7 @@ class AuthFlow:
                     self.fetch_client_auth_session_dump("post_verify_otp_retry_protocol")
                 else:
                     raise
+            page_type = self._extract_page_type(otp_resp)
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
@@ -4498,6 +4513,10 @@ class AuthFlow:
                     self._handle_add_phone_verification(continue_url=continue_url)
                 )
 
+        if strict_identity_resume and (page_type == "about_you" or "/about-you" in (continue_url or "")):
+            if not allow_profile_completion:
+                raise RuntimeError("原资料提交结果未知，禁止重复创建")
+            continue_url = self.create_account()
         continue_url = self._normalize_continue_url(continue_url)
         # 某些边缘态 OTP 后未返回 callback，回退 reauthorize
         if not continue_url:

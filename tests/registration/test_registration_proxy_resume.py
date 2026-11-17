@@ -7,6 +7,7 @@ from unittest.mock import patch
 from core import db, operation_task_store
 from core.storage import records as record_store
 from core.registration import service as service
+from core.registration import admission
 from core.auth.browser.browser_submission import unresolved_submission_ids
 from core.registration import roxy
 from core.storage import registration
@@ -93,7 +94,7 @@ class RegistrationProxyResumeTests(PostgresTestCase):
             stack.enter_context(patch("core.email.provider.retain_email"))
             unconsumed = stack.enter_context(patch.object(service, "_release_unconsumed_job_email"))
             prepare = stack.enter_context(patch.object(service, "_prepare_registration_args"))
-            service._run_one_job(child_id, "/tmp/offline-resume-route.log")
+            admission.run_job(child_id, lambda: service._run_one_job(child_id, "/tmp/offline-resume-route.log"))
         self.assertEqual(len(calls), len(results))
         for call, context in zip(calls, contexts):
             self.assertEqual(call["email"], address)

@@ -60,6 +60,8 @@ import time
 from typing import Any, Optional
 from urllib.parse import urlencode
 
+from core.registration.route_recovery import registration_route_failure
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -555,11 +557,13 @@ class WreqSession:
         self.trust_env = False
         self._client = None
         self._proxy_obj = None
+        self._route_cookie_provider = None
+        self._route_suspended = False
         self.cookies = WreqCookies(self)
         self._build()
 
     # -- 构建 / 重建 --------------------------------------------------------
-    def _build(self) -> None:
+    def _build(self, *, cookie_provider=None) -> None:
         kw = {
             "emulation": self._emulation,
             "timeout": _td(self._timeout),
@@ -568,6 +572,9 @@ class WreqSession:
         }
         if self._headers:
             kw["headers"] = dict(self._headers)
+        if cookie_provider is not None:
+            # 原生 Jar 保留同名跨域 Cookie 及 path/secure/HttpOnly/SameSite/expiry。
+            kw["cookie_provider"] = cookie_provider
         # ⛔ 千万别在这里给 proxy=：wreq 的 Client 构造期**静默忽略** proxy/proxies，
         #    实测 Client(proxy=Proxy.all(...)) 打 httpbin.org/ip 回的还是本机出口 IP
         #    （223.104.151.162 = 直连），只有逐请求传才真的走代理
@@ -595,13 +602,25 @@ class WreqSession:
         elif isinstance(value, str):
             new = value or None
         new = _normalize_proxy(new)
-        if new != self._proxy_url:
+        if new != self._proxy_url or self._route_suspended:
+            jar = self._route_cookie_provider if self._route_suspended else self._jar()
             self._proxy_url = new
             try:
                 self._client.close()
             except Exception:
                 pass
-            self._build()
+            self._build(cookie_provider=jar)
+            self._route_cookie_provider = None
+            self._route_suspended = False
+
+    def pause_for_route_recovery(self):
+        """先保留原生 Cookie Jar 并停止旧连接，再把旧租约交还业务层。"""
+        if not self._route_suspended:
+            jar = self._jar()
+            # 换线必须证明旧连接已停；普通收口的宽容 close 不能授予释放租约。
+            self._client.close()
+            self._route_cookie_provider = jar
+            self._route_suspended = True
 
     @property
     def headers(self):
@@ -722,7 +741,10 @@ class WreqSession:
                 return resp
             except Exception as exc:
                 last = exc
-                if not _is_retryable(exc) or attempt >= self._retries:
+                route_failure = registration_route_failure(method, url, error=exc)
+                if ((route_failure is not None and not route_failure.replay_safe)
+                        or not _is_retryable(exc) or attempt >= self._retries):
+                    # 未知写入和一次性回调交还原身份恢复，不能在传输层先重复派发。
                     raise
                 wait = _BACKOFF * (attempt + 1)
                 logger.warning("链路瞬断，%.1fs 后原会话重试 (%d/%d): %s | %s",

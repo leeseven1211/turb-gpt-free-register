@@ -65,7 +65,8 @@ def _is_native_resume_start_page(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"chrome-error://chromewebdata/", "about:blank"}
 
 
-def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> PageState:
+def _page_state(driver: Any, email: str, *, allow_restart: bool = False,
+                allow_callback_restart: bool = False) -> PageState:
     """来源、可见身份及当前页面必须同时可核验。"""
     _check_manual_stop()
     try:
@@ -107,6 +108,11 @@ def _page_state(driver: Any, email: str, *, allow_restart: bool = False) -> Page
     # OAuth 回调失败不代表原密码被拒绝；显式续跑可以离开错误页重新登录。
     # 邮箱冲突、异常账号和来源检查已在上面完成，不能据错误页确认旧提交。
     if allow_restart and path in _LOGIN_RESTART_ROUTES.get(url.hostname, set()):
+        return PageState.AUTH_TRANSIENT
+    if (allow_restart and allow_callback_restart and url.hostname == "chatgpt.com"
+            and path in {"/api/auth/callback/openai", "/api/auth/callback/auth0"}):
+        # 只有已绑定当前换线恢复的调用方可离开旧授权码回调；来源和可见邮箱
+        # 已核验，下一步必须建立新登录链，不能重新打开带旧 code 的地址。
         return PageState.AUTH_TRANSIENT
     known_route = path in _LOGIN_ENTRY_ROUTES.get(url.hostname, set()) or (
         url.hostname == "auth.openai.com" and any(path in routes for routes in _ROUTES.values())

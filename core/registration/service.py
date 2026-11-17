@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1330,6 +1331,8 @@ def _is_pre_account_transport_failure(result: dict | None) -> bool:
     """识别认证页挂载前的线路失败，不把它升级成待人工对账。"""
     if not isinstance(result, dict):
         return False
+    if result.get("cause_code") == "registration_route_close_failed":
+        return False
     if _has_registration_safety_fence(result):
         return False
     error_text = str(result.get("error") or "").strip().lower()
@@ -1503,6 +1506,11 @@ def _should_retry_registration_with_new_proxy(
         return False
     if not isinstance(result, dict):
         return False
+    if result.get("cause_code") == "registration_route_close_failed":
+        return False
+    if "route_recovery_ready" in result:
+        # 已参与保留现场的驱动必须由专门交接分支恢复，不能回退整段重注册。
+        return False
     # 已落库的账号、待邮箱验证检查点或 access token 都不能再从头注册。
     # 明确的资料页拒绝也只做分类和人工对账，不自动新建第二个账号。
     if result.get("account_id") is not None or result.get("registration_pending"):
@@ -1513,8 +1521,12 @@ def _should_retry_registration_with_new_proxy(
     # checkpoint 已推进，就必须先走恢复/对账，禁止从头注册同一邮箱。
     if _has_registration_safety_fence(result):
         return False
-    if str(getattr(proxy_lease, "provider", "") or "").strip().lower() != "1024proxy":
-        return False
+    from core.registration.route_recovery import result_route_failure
+
+    failure = result_route_failure(result)
+    if failure is not None:
+        # 外层只能重建未发生身份写入的认证；其余动作由驱动保留现场续接。
+        return failure.operation == "preauth" and failure.replay_safe
     # Auth authorize 在密码、OTP 和账号持久化之前被当前边缘路由拒绝时，
     # Protocol 会明确标记 retry_as_new_route。此时可释放 1024Proxy 租约后
     # 继续使用同一原邮箱重跑；任何未带该结构化标记的 HTTP 4xx 仍不自动重试。
@@ -1633,6 +1645,7 @@ def _acquire_registration_proxy_with_retries(
     route_attempt_no: int | None = None,
     country: str | None = None,
     retry_kind: str = "proxy_acquisition",
+    excluded_exit_ip: str | None = None,
 ):
     """兼容调用入口；供应商重试由独立池维护，任务只等待一次领取。"""
     check_stop_requested()
@@ -1650,6 +1663,8 @@ def _acquire_registration_proxy_with_retries(
     }
     if country:
         acquire_kwargs["country"] = country
+    if excluded_exit_ip:
+        acquire_kwargs["excluded_exit_ip"] = excluded_exit_ip
     return acquire_proxy(**acquire_kwargs)
 
 
@@ -2182,6 +2197,69 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     _persist_job_progress(job_id, "email", state="success", detail=f"已从 {selected_source} 领取邮箱")
             check_stop_requested()
             retry_attempt = 0
+            from core.network.protocol_traffic import correlation_context
+            from core.registration.route_recovery import (
+                RegistrationRouteCoordinator, registration_route_recovery, result_route_failure,
+            )
+
+            route_scopes = None
+            roxy_route_state = None
+            roxy_route_profile = ""
+
+            def _begin_recovery_route(reason):
+                next_route_no = db.begin_job_route_attempt(
+                    job_id, retry_kind="proxy_rotation", retry_reason=reason,
+                )
+                proxy_correlation["route_attempt_no"] = int(next_route_no)
+                _bind_progress_route_context(next_route_no)
+                db.update_job(job_id, proxy_status="acquiring", error=f"线路恢复：{reason}")
+                _persist_job_progress(job_id, "network", state="running", detail=f"{reason}，正在更换线路")
+                return next_route_no
+
+            def _acquire_recovery_route(*, excluded_exit_ip, route_attempt_no):
+                return _acquire_registration_proxy_with_retries(
+                    acquire_proxy=acquire_registration_proxy, job_id=job_id, batch_id=None,
+                    batch_size=1, batch_workers=1, country=registration_country,
+                    progress_callback=lambda detail: _persist_job_progress(
+                        job_id, "network", state="running", detail=detail,
+                        route_attempt_no=route_attempt_no,
+                    ),
+                    log_logger=log_logger, excluded_exit_ip=excluded_exit_ip,
+                    **proxy_correlation,
+                )
+
+            def _recovery_lease_ready(lease, route_no):
+                _bind_proxy_lease(lease)
+                facts = registration_fact_context()
+                from core.storage import registration
+
+                registration.authorize_route_resume(
+                    int(facts["attempt_id"]), email=email, run_id=int(facts["run_id"]),
+                    execution_id=facts["execution_id"],
+                    previous_route_no=int(route_no) - 1, route_attempt_no=int(route_no),
+                )
+                if route_scopes is not None:
+                    route_scopes.enter_context(correlation_context(
+                        **proxy_correlation, proxy_lease_id=lease.lease_id,
+                        registration_attempt_id=facts["attempt_id"], registration_run_id=facts["run_id"],
+                    ))
+
+            route_coordinator = RegistrationRouteCoordinator(
+                proxy_lease, limit=_registration_proxy_retry_limit(), delay=_registration_proxy_retry_delay(),
+                acquire=_acquire_recovery_route, release=release_proxy, check_stop=check_stop_requested,
+                begin_route=_begin_recovery_route, on_lease=_recovery_lease_ready,
+            )
+
+            def _rotate_current_route(failure, current_proxy):
+                nonlocal proxy_lease, retry_attempt, proxy_transport_failure, proxy_cf_failure
+                try:
+                    return route_coordinator(failure, current_proxy)
+                finally:
+                    proxy_lease = route_coordinator.lease
+                    retry_attempt = route_coordinator.used
+                    proxy_transport_failure = route_coordinator.current_lease_transport_failure
+                    proxy_cf_failure = False
+
             while True:
                 check_stop_requested()
                 # A missing bound Profile may be replaced during the previous
@@ -2197,42 +2275,70 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     if bound_profile_id and str(bound_profile_id) != cf_rotation_profile_id:
                         raise RuntimeError("request_unknown: CF换线后的账号环境绑定已变化，保留原 Attempt")
                     bound_profile_id = cf_rotation_profile_id
+                if roxy_route_profile:
+                    bound_profile_id = roxy_route_profile
                 call_options = dict(registration_options_for_job(current))
                 # 仅本轮调用使用；不能写回任务快照或全局配置，也不能继承用户输入。
                 call_options.pop("_resume_proxy_rotation", None)
                 call_options.pop("_roxy_cf_proxy_rotation", None)
+                call_options.pop("_roxy_route_recovery", None)
+                if roxy_route_state is not None:
+                    call_options["_roxy_route_recovery"] = roxy_route_state
+                    from core.storage import registration
+                    private = registration.get_private_resume_context(
+                        int(registration_fact_context()["attempt_id"]), email=email,
+                    )
+                    existing_password = private.get("password") or existing_password
                 if str(current.get("job_type") or "") == "registration_resume":
                     call_options["_resume_proxy_rotation"] = {
                         **registration_fact_context(),
-                        "retry_available": retry_attempt < _registration_proxy_retry_limit(),
+                        "retry_available": retry_attempt < route_coordinator.limit,
                         "reopen_profile_id": resume_rotation_profile_id,
                     }
                 if (_job_uses_local_roxy_snapshot(current)
                         and str(current.get("job_type") or "") in {"registration", "registration_resume"}):
                     call_options["_roxy_cf_proxy_rotation"] = {
                         **registration_fact_context(),
-                        "retry_available": retry_attempt < _registration_proxy_retry_limit(),
+                        "retry_available": retry_attempt < route_coordinator.limit,
                         "reopen_profile_id": cf_rotation_profile_id,
                         "previous_cf_temporary_profile_deleted": previous_cf_temporary_profile_deleted,
                     }
-                from core.network.protocol_traffic import correlation_context
                 with correlation_context(**{**proxy_correlation,
                         "proxy_lease_id": getattr(proxy_lease, "lease_id", None),
                         "route_attempt_no": proxy_correlation["route_attempt_no"],
                         "registration_attempt_id": getattr(_THREAD_CTX, "attempt_id", None),
-                        "registration_run_id": getattr(_THREAD_CTX, "run_id", None)}):
-                    result = run_registration(
-                        email=email,
-                        name=name,
-                        birthday=birthday,
-                        proxy=proxy_lease.proxy_url,
-                        existing_password=existing_password or None,
-                        existing_totp_secret=existing_totp_secret or None,
-                        profile_id=bound_profile_id or None,
-                        registration_options=call_options,
-                        email_source=selected_source,
-                    )
-                proxy_transport_failure = _confirmed_registration_proxy_transport_failure(result)
+                        "registration_run_id": getattr(_THREAD_CTX, "run_id", None)}), ExitStack() as active_scopes:
+                    route_scopes = active_scopes
+                    try:
+                        roxy_budget_exhausted = (
+                            call_options.get("registration_driver") == "roxy"
+                            and route_coordinator.used >= route_coordinator.limit
+                        )
+                        with registration_route_recovery(None if roxy_budget_exhausted else _rotate_current_route):
+                            result = run_registration(
+                                email=email, name=name, birthday=birthday, proxy=proxy_lease.proxy_url,
+                                existing_password=existing_password or None,
+                                existing_totp_secret=existing_totp_secret or None,
+                                profile_id=bound_profile_id or None,
+                                registration_options=call_options, email_source=selected_source,
+                            )
+                    finally:
+                        route_scopes = None
+                route_coordinator.observe_result(result)
+                current_failure = result_route_failure(result)
+                if (current_failure is not None and isinstance(result, dict)
+                        and result.get("route_recovery_ready") is True
+                        and result.get("route_recovery_state") is not None):
+                    recovered_lease = _rotate_current_route(current_failure, proxy_lease.proxy_url)
+                    if recovered_lease is None:
+                        break
+                    roxy_route_state = result["route_recovery_state"]
+                    roxy_route_profile = str(result.get("route_recovery_profile_id") or "")
+                    continue
+                proxy_transport_failure = (
+                    _confirmed_registration_proxy_transport_failure(result)
+                    or route_coordinator.current_lease_transport_failure
+                )
                 proxy_cf_failure = _confirmed_registration_cf_proxy_failure(
                     result, current, email=email, fact_context=registration_fact_context(),
                 )
@@ -2250,7 +2356,18 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     )
                 else:
                     retry_with_new_proxy = _should_retry_registration_with_new_proxy(result, proxy_lease, retry_attempt)
+                retry_with_new_proxy = retry_with_new_proxy and retry_attempt < route_coordinator.limit
                 if not retry_with_new_proxy:
+                    if isinstance(result, dict):
+                        from dataclasses import asdict
+                        failure = result_route_failure(result)
+                        if failure is not None:
+                            unknown_facts.update({
+                                "route_failure": asdict(failure),
+                                **({"cause_code": result["cause_code"]}
+                                   if isinstance(result.get("cause_code"), str)
+                                   and result["cause_code"] in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES else {}),
+                            })
                     break
 
                 if proxy_cf_failure:
@@ -2277,6 +2394,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         resume_rotation_profile_id = result["resume_proxy_rotation_profile_id"].strip()
 
                 retry_attempt += 1
+                route_coordinator.used = retry_attempt
                 retry_label = "Cloudflare挑战" if proxy_cf_failure else "代理线路瞬时失败"
                 retry_error = "auth_cloudflare_challenge: 邮箱认证入口遭Cloudflare挑战" if proxy_cf_failure else str((result or {}).get("error") or "代理线路瞬时失败")[:220]
                 log_logger.warning(
@@ -2287,11 +2405,13 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     _registration_proxy_retry_limit(),
                     retry_error,
                 )
+                previous_exit_ip = str(getattr(proxy_lease, "exit_ip", "") or "").strip()
                 release_proxy(
                     proxy_lease, reason="auth_cloudflare_challenge" if proxy_cf_failure else f"registration_proxy_retry_{retry_attempt}",
                     fault=proxy_cf_failure or proxy_transport_failure,
                 )
                 proxy_lease = None
+                route_coordinator.lease = None
                 proxy_transport_failure = False
                 proxy_cf_failure = False
                 db.update_job(
@@ -2346,6 +2466,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                     log_logger=log_logger,
                     retry_kind="proxy_rotation_acquisition",
                     country=registration_country,
+                    excluded_exit_ip=previous_exit_ip,
                     **retry_proxy_correlation,
                 )
                 if cf_failed_exit_ips:
@@ -2362,6 +2483,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         log_logger.warning("[Job %s] CF换线未获得可核验的新出口IP，停止本轮内部换线", job_id)
                         break
                 _bind_proxy_lease(proxy_lease)
+                route_coordinator.lease = proxy_lease
                 _persist_job_progress(
                     job_id,
                     "email",
@@ -2382,6 +2504,15 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                         state="success",
                         detail="换线重试继续使用已保存账号邮箱",
                     )
+            if isinstance(result, dict):
+                from dataclasses import asdict
+                # 原线路失败属于审计事实；关闭失败只撤销恢复许可，不抹掉原原因。
+                final_failure = result_route_failure({"route_failure": result.get("route_failure")}) or result_route_failure(result)
+                if final_failure is not None:
+                    unknown_facts["route_failure"] = asdict(final_failure)
+                cause = result.get("cause_code")
+                if isinstance(cause, str) and cause in REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES:
+                    unknown_facts["cause_code"] = cause
             # Codex 失败时注册账号可能已经创建并保存。代理地区属于账号注册事实，
             # 不能只在整项任务 success 时落库，否则后续补跑/查套餐无法稳定沿用地区。
             if isinstance(result, dict) and result.get("account_id") and proxy_lease is not None:
@@ -2520,7 +2651,7 @@ def _run_one_job(job_id: int, log_file: str) -> None:
                 pre_account_transport_failure = _is_pre_account_transport_failure(result)
                 email_submission_unconfirmed = bool(result_is_dict and result.get("email_submission_unconfirmed"))
                 if request_unknown and not pre_account_transport_failure and not email_submission_unconfirmed:
-                    unknown_facts = _registration_request_unknown_facts(result)
+                    unknown_facts.update(_registration_request_unknown_facts(result))
                     _mark_registration_request_unknown(
                         str(err or "密码提交结果待确认"), facts=unknown_facts,
                     )

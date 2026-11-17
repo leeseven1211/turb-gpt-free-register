@@ -1031,10 +1031,13 @@ class RoxyBrowserClient:
         progress_callback: Callable[[str, str, str], object] | None = None,
         stop_checker: Callable[[], object] | None = None,
         prefer_existing_profile: bool = False,
+        preclosed_profile: bool = False,
     ) -> RoxyOpenResult:
         """复用账号绑定环境，明确不存在时替代；显式优先复用可覆盖全局开关。"""
         normalized_profile = self._normalize_profile_id(profile_id)
         reuse_enabled = bool(getattr(_cfg, "ROXY_REUSE_ACCOUNT_PROFILE", True))
+        if preclosed_profile and (not normalized_profile or not str(proxy_url or "").strip()):
+            raise RuntimeError("原 Profile 换线重开缺少环境身份或当前代理")
 
         def open_with(**kwargs):
             if headless is not None:
@@ -1082,7 +1085,7 @@ class RoxyBrowserClient:
                 )
             return open_with(profile_id="", proxy_url=proxy_url)
 
-        if normalized_profile and (reuse_enabled or prefer_existing_profile):
+        if normalized_profile and (reuse_enabled or prefer_existing_profile or preclosed_profile):
             try:
                 # Roxy may keep a deleted Profile in its recycle-bin view while
                 # still returning a generic window-quota error from /browser/open.
@@ -1090,6 +1093,8 @@ class RoxyBrowserClient:
                 # instead of waiting for capacity on an unusable Profile.
                 active_profile = self._find_active_profile_by_id(normalized_profile)
                 if active_profile is None:
+                    if preclosed_profile:
+                        raise RuntimeError("原 Profile 已不在活动环境列表，保留原身份并停止换线重开")
                     logger.warning(
                         "[Roxy] 账号绑定 Profile 不在当前活动环境列表，创建替代环境并回写绑定"
                     )
@@ -1097,10 +1102,11 @@ class RoxyBrowserClient:
                 if str(proxy_url or "").strip():
                     # 列表可能把仍可连接的 Chrome 标为关闭；不能据此跳过 close。
                     # 换线前始终确认关闭，再更新配置并重开，避免旧窗口沿用已停中继。
-                    if not self.close_profile(normalized_profile):
-                        raise RuntimeError(
-                            "Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开"
-                        )
+                    if preclosed_profile:
+                        if self.get_open_profile_connection(normalized_profile) is not None:
+                            raise RuntimeError("原 Profile 仍存在打开连接，不能更新代理")
+                    elif not self.close_profile(normalized_profile):
+                        raise RuntimeError("Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开")
                 # 绑定 Profile 仍复用其 cookies/指纹，但每次动作必须把新租约
                 # 写入 Roxy，否则 /browser/open 会继续使用旧代理。
                 update_bound_profile_proxy()
@@ -1112,6 +1118,8 @@ class RoxyBrowserClient:
                 _mark_profile_bound(normalized_profile)
                 return opened
             except Exception as exc:
+                if preclosed_profile:
+                    raise RuntimeError("原 Profile 换线重开未完成，保留原环境与提交事实") from exc
                 if not _is_profile_not_found_error(exc):
                     raise
                 _close_profile_relay(normalized_profile)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import asdict
 from typing import Any
 
 from config import openai_protocol as _upstream_config
@@ -54,6 +55,19 @@ def _safe_twofa_failure_detail(exc: BaseException) -> str:
     type_name = type(exc).__name__
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", type_name):
         type_name = "Exception"
+    route = getattr(exc, "route_failure", None)
+    if route is not None:
+        if getattr(exc, "cause_code", "") == "registration_route_close_failed":
+            return "旧连接关闭失败，未交还当前线路"
+        detail = f"{route.operation} HTTP {route.http_status}" if route.http_status else f"{route.operation} 传输失败"
+        state = getattr(exc, "twofa_recovery", {}).get("state")
+        if state == "enabled_candidate_unverified":
+            detail += "，远端已启用 MFA，候选密钥尚未核验"
+        elif state == "not_enabled":
+            detail += "，远端尚未启用 MFA，原提交结果仍待确认"
+        else:
+            detail += "，原提交结果与远端状态仍待确认"
+        return detail
     operation = getattr(exc, "operation", "")
     operation = operation if isinstance(operation, str) and operation in {"enroll", "activate", "reauth"} else "mfa"
     if isinstance(exc, TwofaProtocolTransportError):
@@ -142,6 +156,7 @@ def _run_local_postprocessing(
 
     totp_secret = existing_totp_secret or None
     twofa_error = None
+    twofa_route_recovery = None
     if twofa_enabled and totp_secret:
         report_job_progress("twofa", "success", "已复用原任务确认的 Authenticator 2FA")
     elif twofa_enabled:
@@ -150,22 +165,25 @@ def _run_local_postprocessing(
             if twofa_cfg.get_twofa_driver_for_options(options) != "protocol":
                 raise RuntimeError("开源协议注册只支持 protocol 2FA；browser 模式请切换到 RoxyBrowser")
             from core.accounts.export import setup_2fa_protocol
+            from core.registration.protocol_oss_2.runtime import registration_twofa_route_recovery
 
-            candidate_secret = setup_2fa_protocol(
-                session,
-                access_token,
-                on_secret=lambda secret: save_protocol_totp_checkpoint(
-                    email=email,
-                    secret=secret,
-                    confirmed=False,
-                ),
-            )
+            with registration_twofa_route_recovery(session, access_token=access_token):
+                candidate_secret = setup_2fa_protocol(
+                    session,
+                    access_token,
+                    on_secret=lambda secret: save_protocol_totp_checkpoint(
+                        email=email,
+                        secret=secret,
+                        confirmed=False,
+                    ),
+                )
             save_protocol_totp_checkpoint(email=email, secret=candidate_secret, confirmed=True)
             totp_secret = candidate_secret
             report_job_progress("twofa", "success", "协议 2FA 已启用")
         except (AuthCancelledError, StopRequested):
             raise
         except Exception as exc:
+            twofa_route_recovery = getattr(exc, "twofa_recovery", None)
             twofa_error = f"2FA 未完成：{_safe_twofa_failure_detail(exc)}"
             logger.error("开源 Protocol %s", twofa_error)
             report_job_progress("twofa", "failed", twofa_error)
@@ -266,7 +284,8 @@ def _run_local_postprocessing(
         "account_readiness": readiness.account_readiness,
         "warnings": [bootstrap_error] if bootstrap_error else [],
         "error": "; ".join(item for item in error_parts if item) or None,
-        "cause_code": password_cause,
+        "cause_code": password_cause or ("twofa_setup_failed" if twofa_route_recovery else None),
+        **({"twofa_route_recovery": twofa_route_recovery} if twofa_route_recovery else {}),
     }
 
 
@@ -369,6 +388,7 @@ def run_protocol_oss_2_lifecycle(
             "postprocess_warnings": local_result.get("warnings") or [],
             "next_actions": local_result.get("next_actions") or [],
             "account_readiness": local_result.get("account_readiness"),
+            **({"twofa_route_recovery": local_result["twofa_route_recovery"]} if local_result.get("twofa_route_recovery") else {}),
             "remote_identity": flow_result.get("remote_identity") or "new",
             "remote_identity_state": "confirmed",
             "registration_intent": "reconcile" if flow_result.get("remote_identity") == "existing" else "new",
@@ -417,6 +437,7 @@ def run_protocol_oss_2_lifecycle(
             "password_entry_navigation_failed", "password_entry_navigation_timeout", "password_entry_not_offered", "identity_mismatch",
             "registration_password_create_rejected", "registration_password_unconfirmed",
             "registration_auth_state_unrecognized", "registration_session_invalid_response",
+            "registration_route_close_failed",
         }:
             cause_code = password_entry_cause
         missing_module = str(getattr(exc, "name", "") or "")
@@ -461,6 +482,7 @@ def run_protocol_oss_2_lifecycle(
             "cause_code": "remote_identity_existing" if manual_reconcile else cause_code,
             **({"cause_diagnostics": exc.cause_diagnostics} if request_unknown and exc.cause_diagnostics else {}),
             **({"registration_diagnostics": registration_diagnostics} if registration_diagnostics else {}),
+            **({"route_failure": asdict(exc.route_failure)} if getattr(exc, "route_failure", None) is not None else {}),
             "error": error,
         }
     finally:
