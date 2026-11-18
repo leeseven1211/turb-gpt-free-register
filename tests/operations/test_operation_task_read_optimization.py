@@ -126,7 +126,7 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                 self.assertEqual([[item.get(key) for key in keys] for item in expected["items"]],
                                  [[item.get(key) for key in keys] for item in actual["items"]])
 
-    def test_facets_scan_the_task_relation_once(self):
+    def test_unfiltered_facets_scan_the_task_relation_once(self):
         # Identify the actual facet query by its result columns, so this checks
         # the PostgreSQL plan used by list_tasks regardless of SQL formatting.
         import psycopg
@@ -143,14 +143,61 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
             return result
 
         with patch.object(psycopg.Cursor, "execute", trace):
-            operation_task_store.list_tasks(public_status=True)
-        self.assertEqual(1, len(plans))
-        scans = 0
-        while plans:
-            node = plans.pop()
-            scans += node.get("Relation Name") == "operation_tasks"
-            plans.extend(node.get("Plans", ()))
-        self.assertEqual(1, scans)
+            for public in (False, True):
+                with self.subTest(public_status=public):
+                    operation_task_store.list_tasks(public_status=public, page=2, page_size=3)
+                    self.assertEqual(1, len(plans))
+                    scans = 0
+                    while plans:
+                        node = plans.pop()
+                        scans += node.get("Relation Name") == "operation_tasks"
+                        plans.extend(node.get("Plans", ()))
+                    self.assertEqual(1, scans)
+
+    def test_each_business_filter_uses_union_facets_with_ordered_parameters(self):
+        import psycopg
+
+        filters = dict(task_type="type-a,type-b", status="failed", source="native_operations",
+                       batch_id=17, q="search", task_id="#23", target="target", target_status="ready",
+                       batch="batch", run_count="4+", stage="STAGE", created_from="2026-09-01",
+                       created_to="2026-10-01", result="result")
+        facets = ("task_type", "status", "target_status", "stage", "run_count")
+        queries = []
+        execute = psycopg.Cursor.execute
+
+        def trace(cursor, statement, params=None, **kwargs):
+            result = execute(cursor, statement, params, **kwargs)
+            if [column.name for column in cursor.description or ()] == ["facet", "value", "count"]:
+                queries.append((statement, params))
+            return result
+
+        with patch.object(psycopg.Cursor, "execute", trace):
+            for name, value in filters.items():
+                with self.subTest(filter=name):
+                    queries.clear()
+                    operation_task_store.list_tasks(**{name: value})
+                    self.assertEqual(1, len(queries))
+                    self.assertEqual(4, queries[0][0].count(" UNION ALL SELECT "))
+            queries.clear()
+            operation_task_store.list_tasks(public_status=True, **filters)
+            self.assertEqual(1, len(queries))
+            statement, params = queries.pop()
+            expected_groups = (
+                ("task_type", [["type-a", "type-b"]]), ("status", ["failed"]),
+                ("source", ["native_operations"]), ("batch_id", [17]), ("q", ["%search%"] * 10),
+                ("task_id", ["%23%"]), ("target", ["%target%"] * 4), ("target_status", ["ready"]),
+                ("batch", ["%batch%"] * 3), ("run_count", [4]), ("stage", ["stage"]),
+                ("created_from", ["2026-09-01"]), ("created_to", ["2026-10-01"]),
+                ("result", ["%result%"] * 3),
+            )
+            branches = statement.split(" UNION ALL SELECT ")
+            self.assertEqual(len(facets), len(branches))
+            for branch, facet in zip(branches, facets):
+                self.assertIn(f"'{facet}' AS facet", branch)
+            self.assertEqual([value for facet in facets for name, group in expected_groups
+                              if name != facet for value in group], params)
+            operation_task_store.list_tasks(include_facets=False, **filters)
+            self.assertEqual([], queries)
 
     def test_public_facets_follow_the_winning_historical_run(self):
         table = operation_task_store._table

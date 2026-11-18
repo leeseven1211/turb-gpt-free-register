@@ -3109,21 +3109,26 @@ def list_tasks(
     init()
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
-    where, params = _operation_task_where(
+    filters = dict(
         task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
         task_id=task_id, target=target, target_status=target_status, batch=batch,
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
-        run_count_expression="COALESCE(run_counts.run_count, 0)",
-        public_status=public_status,
+    )
+    run_count_expression = "COALESCE(run_counts.run_count, 0)"
+    where, params = _operation_task_where(
+        **filters, run_count_expression=run_count_expression, public_status=public_status,
     )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
 
-    uses_current_run = bool(q or result or status or stage or (public_status and target_status))
+    def uses_current_run(facet: str = "") -> bool:
+        return bool(
+            q or result or status or stage or facet in {"status", "stage"}
+            or (public_status and (target_status or facet == "target_status"))
+        )
 
-    run_count_expression = "COALESCE(run_counts.run_count, 0)"
     count_from_sql = _operation_task_query_base(
-        include_current_run=uses_current_run,
+        include_current_run=uses_current_run(),
         include_run_count=bool(run_count),
     )
     page_from_sql = _operation_task_query_base(include_current_run=True, include_run_count=bool(run_count))
@@ -3131,7 +3136,7 @@ def list_tasks(
     page_clause = clause
     page_params = (*params, page_size, (page - 1) * page_size)
     page_order = "COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"
-    if not uses_current_run and not run_count:
+    if not uses_current_run() and not run_count:
         # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
         # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
         candidate_from = (f"FROM {_table('operation_tasks')} t "
@@ -3211,63 +3216,67 @@ def list_tasks(
         public_status_expression = public_result_status_sql("COALESCE(r.effective_status, t.status)", "r.result_summary")
         public_target_expression = public_result_status_sql("t.target_status", "r.result_summary")
         facet_specs = (
-            ("task_type", "t.task_type", "task_type"),
-            ("status", public_status_expression if public_status else "COALESCE(r.effective_status, t.status)", "status"),
-            ("target_status", public_target_expression if public_status else "t.target_status", "target_status"),
+            ("task_type", "t.task_type"),
+            ("status", public_status_expression if public_status else "COALESCE(r.effective_status, t.status)"),
+            ("target_status", public_target_expression if public_status else "t.target_status"),
             (
                 "stage",
                 "LOWER(COALESCE(r.effective_progress_stage, CASE WHEN r.effective_status='queued' THEN 'queued' ELSE t.current_stage END, ''))",
-                "stage",
             ),
             (
                 "run_count",
                 f"CASE WHEN {run_count_expression} >= 4 "
                 f"THEN '4+' ELSE CAST({run_count_expression} AS TEXT) END",
-                "run_count",
             ),
         )
         facets: dict[str, list[dict[str, Any]]] = {}
-        facet_columns = []
-        facet_rows = []
-        facet_query_params = []
-        for facet_name, expression, exclude in (facet_specs if include_facets else ()):
-            facet_where, facet_params = _operation_task_where(
-                task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
-                task_id=task_id, target=target, target_status=target_status, batch=batch,
-                run_count=run_count, stage=stage, created_from=created_from,
-                created_to=created_to, result=result, exclude=exclude,
-                run_count_expression=run_count_expression,
-                public_status=public_status,
-            )
-            facet_columns.extend((
-                f"{expression} AS value_{facet_name}",
-                f"({' AND '.join(facet_where)}) AS matches_{facet_name}",
-            ))
-            facet_rows.append(
-                f"('{facet_name}', candidate.value_{facet_name}, candidate.matches_{facet_name})"
-            )
-            facet_query_params.extend(facet_params)
-            facets[facet_name] = []
-        if facet_rows:
-            # Join each task to its winning run and run count once. Each facet
-            # still sees the active filters on all the other columns.
-            candidate_from = _operation_task_query_base(
-                include_current_run=True, include_run_count=True, facet_cte=True,
-            )
-            error_column = ",effective_error_message" if q or result else ""
-            summary_column = ",result_summary" if q or result or public_status else ""
+        if include_facets:
+            facets = {name: [] for name, _ in facet_specs}
+            facet_query_params = []
+            if any(filters.values()):
+                # Each facet can apply the other filters before grouping and skip unused joins.
+                facet_queries = []
+                for name, expression in facet_specs:
+                    facet_where, facet_params = _operation_task_where(
+                        **filters, exclude=name, run_count_expression=run_count_expression, public_status=public_status,
+                    )
+                    facet_where.append(f"NULLIF({expression}, '') IS NOT NULL")
+                    facet_from = _operation_task_query_base(
+                        include_current_run=uses_current_run(name),
+                        include_run_count=bool(run_count) or name == "run_count", facet_cte=True,
+                    )
+                    facet_queries.append(
+                        f"SELECT {name!r} AS facet, {expression} AS value, COUNT(*) AS count "
+                        f"{facet_from} WHERE {' AND '.join(facet_where)} GROUP BY 2"
+                    )
+                    facet_query_params.extend(facet_params)
+                run_columns = (",effective_error_message,result_summary" if q or result or public_status
+                               else ",NULL::text AS effective_error_message,NULL::jsonb AS result_summary")
+                facet_sql = " " + " UNION ALL ".join(facet_queries) + " ORDER BY 1,2"
+            else:
+                # With no business filters, share the task/run join across all five facets.
+                candidate_from = _operation_task_query_base(
+                    include_current_run=True, include_run_count=True, facet_cte=True,
+                )
+                facet_columns = ", ".join(f"{expr} AS value_{name}, ({' AND '.join(where)}) AS matches_{name}"
+                                          for name, expr in facet_specs)
+                facet_rows = ", ".join(f"('{name}', candidate.value_{name}, candidate.matches_{name})"
+                                       for name, _ in facet_specs)
+                run_columns = ",result_summary" if public_status else ""
+                facet_sql = (
+                    f", facet_candidates AS MATERIALIZED (SELECT {facet_columns} {candidate_from}) "
+                    f"SELECT expanded.facet,expanded.value,COUNT(*) AS count "
+                    f"FROM facet_candidates candidate CROSS JOIN LATERAL "
+                    f"(VALUES {facet_rows}) expanded(facet,value,matches) "
+                    f"WHERE expanded.matches AND NULLIF(expanded.value,'') IS NOT NULL "
+                    f"GROUP BY 1,2 ORDER BY 1,2"
+                )
             cur.execute(
                 f"WITH facet_current_runs AS MATERIALIZED ("
-                f"SELECT task_id,effective_status,effective_progress_stage{error_column}{summary_column} "
+                f"SELECT task_id,effective_status,effective_progress_stage{run_columns} "
                 f"FROM ({_operation_task_current_run_relation_sql()}) projected), "
                 f"facet_run_counts AS MATERIALIZED (SELECT task_id,COUNT(*) AS run_count "
-                f"FROM {_table('operation_runs')} GROUP BY task_id), "
-                f"facet_candidates AS MATERIALIZED (SELECT {', '.join(facet_columns)} {candidate_from}) "
-                f"SELECT expanded.facet,expanded.value,COUNT(*) AS count "
-                f"FROM facet_candidates candidate CROSS JOIN LATERAL "
-                f"(VALUES {', '.join(facet_rows)}) expanded(facet,value,matches) "
-                f"WHERE expanded.matches AND NULLIF(expanded.value,'') IS NOT NULL "
-                f"GROUP BY 1,2 ORDER BY 1,2", facet_query_params)
+                f"FROM {_table('operation_runs')} GROUP BY task_id){facet_sql}", facet_query_params)
             for row in cur.fetchall():
                 name = str(row["facet"])
                 facets[name].append({"value": str(row["value"] or ""), "count": int(row["count"] or 0),
