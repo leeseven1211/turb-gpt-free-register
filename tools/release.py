@@ -52,6 +52,10 @@ ACCOUNT_SOURCE_SUFFIXES = {
 LOCK_NAMES = ("requirements.txt", "requirements-dev.txt")
 FRONTEND_PACKAGE = "frontend/package.json"
 FRONTEND_LOCK = "frontend/package-lock.json"
+# This archived candidate used the multi-page layout and listed its npm lock
+# under files. Identify its complete contents for offline inspection.
+PRE_DASHBOARD_COMMIT = "59795268e2226015fd97b6f76bbbfc09ed6805b0"
+PRE_DASHBOARD_CONTENT_SHA256 = "024c1528d1ea811aab70ebeaeb770a917f27edd67c1835ec15df60860a03cb83"
 DASHBOARD_ASSETS = (
     "webui/static/dashboard/dashboard.js",
     "webui/static/dashboard/dashboard.css",
@@ -189,14 +193,14 @@ def _lock_checker():
     return validate_locks
 
 
-def _validate_project_files(root: Path) -> dict[str, int]:
+def _validate_project_files(root: Path, *, pre_dashboard_release: bool = False) -> dict[str, int]:
     pyproject = root / "pyproject.toml"
     if not pyproject.is_file():
         raise ReleaseError("缺少 pyproject.toml")
     text = pyproject.read_text(encoding="utf-8")
     if not re.search(r"(?m)^\s*requires-python\s*=\s*[\"']>=3\.10[\"']\s*$", text):
         raise ReleaseError("pyproject.toml 必须声明 Python >=3.10")
-    if (root / FRONTEND_PACKAGE).is_file():
+    if not pre_dashboard_release and (root / FRONTEND_PACKAGE).is_file():
         for name in (FRONTEND_LOCK, *DASHBOARD_ASSETS):
             if not (root / name).is_file():
                 raise ReleaseError(f"总览前端发布文件缺失: {name}")
@@ -219,6 +223,16 @@ def _validate_project_files(root: Path) -> dict[str, int]:
 def _project_lock_names(root: Path) -> tuple[str, ...]:
     """Older releases without the dashboard package retain their original locks."""
     return (*LOCK_NAMES, FRONTEND_LOCK) if (root / FRONTEND_PACKAGE).is_file() else LOCK_NAMES
+
+
+def _verified_pre_dashboard_release(manifest: dict[str, Any]) -> bool:
+    if manifest["source_commit"] != PRE_DASHBOARD_COMMIT:
+        return False
+    content = {"files": sorted(manifest["files"], key=lambda item: item["path"]), "locks": manifest.get("locks")}
+    encoded = json.dumps(content, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if hashlib.sha256(encoded).hexdigest() != PRE_DASHBOARD_CONTENT_SHA256:
+        raise ReleaseError("历史 release 文件清单或依赖锁与已知版本不一致")
+    return True
 
 
 def _manifest_for(release_id: str, source_commit: str, files: list[dict[str, Any]], locks: dict[str, str]) -> dict[str, Any]:
@@ -296,6 +310,7 @@ def check_release(
     *,
     expected_release_id: str | None = None,
     validate_project: bool = True,
+    allow_archived_layout: bool = True,
 ) -> dict[str, Any]:
     """Validate manifest, hashes, private-file boundaries, and dependency locks."""
     raw_root = Path(os.path.abspath(os.fspath(release_dir)))
@@ -351,15 +366,16 @@ def check_release(
         missing = sorted(recorded - actual)
         raise ReleaseError(f"release 文件清单不一致: extras={extras[:5]} missing={missing[:5]}")
 
+    pre_dashboard = allow_archived_layout and _verified_pre_dashboard_release(manifest)
     locks = manifest.get("locks")
-    lock_names = _project_lock_names(root)
+    lock_names = LOCK_NAMES if pre_dashboard else _project_lock_names(root)
     if not isinstance(locks, dict) or any(name not in locks for name in lock_names):
         raise ReleaseError("manifest 必须记录项目的运行、开发与前端依赖锁")
     for name in lock_names:
         lock_path = root / name
         if not lock_path.is_file() or locks.get(name) != _sha256(lock_path):
             raise ReleaseError(f"manifest lock 校验失败: {name}")
-    lock_report = _validate_project_files(root) if validate_project else {}
+    lock_report = _validate_project_files(root, pre_dashboard_release=pre_dashboard) if validate_project else {}
     return {
         "ok": True,
         "release_id": release_id,
@@ -428,7 +444,7 @@ def switch_release(
     target = raw_target.resolve()
     if target.parent != releases_root:
         raise ReleaseError("release target 必须是 releases_dir 的直接子目录")
-    report = check_release(target, expected_release_id=safe_id)
+    report = check_release(target, expected_release_id=safe_id, allow_archived_layout=False)
     # ``Path.resolve()`` follows an existing current symlink and would make
     # the target look like a regular directory. Keep the link pathname itself.
     link = Path(os.path.abspath(os.fspath(current_link)))
@@ -470,7 +486,7 @@ def rollback_release(
     target = raw_target.resolve()
     if target.parent != releases_root:
         raise ReleaseError("rollback target 必须是 releases_dir 的直接子目录")
-    report = check_release(target, expected_release_id=safe_id)
+    report = check_release(target, expected_release_id=safe_id, allow_archived_layout=False)
     link = Path(os.path.abspath(os.fspath(current_link)))
     previous = _current_target(link, releases_root)
     _atomic_link(link, target)

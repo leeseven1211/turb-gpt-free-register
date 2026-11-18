@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import ast
+import hashlib
 import json
 import shutil
 import subprocess
@@ -482,4 +483,36 @@ def test_check_dashboard_requires_frontend_lock_manifest_hash(tmp_path, lock_has
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ReleaseError, match="lock|依赖锁"):
+        check_release(release)
+
+
+def test_check_pre_dashboard_release_verifies_original_package(tmp_path):
+    revision = "59795268e2226015fd97b6f76bbbfc09ed6805b0"
+    repo = Path(__file__).resolve().parents[2]
+    if subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{revision}^{{commit}}"],
+                      capture_output=True).returncode:
+        pytest.skip("历史发布集成用例需要本地 Git 对象")
+    source = tmp_path / "old-source"
+    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(repo), str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "checkout", "--quiet", "--detach", revision], check=True)
+    releases = tmp_path / "releases"
+    subprocess.run(
+        [sys.executable, "-I", "-B", str(source / "tools/release.py"), "prepare",
+         "--source", str(source), "--releases-dir", str(releases), "--release-id", "original"],
+        check=True, capture_output=True, text=True,
+    )
+    release = releases / "original"
+    assert check_release(release)["source_commit"] == revision
+    with pytest.raises(ReleaseError, match="依赖锁"):
+        check_release(release, allow_archived_layout=False)
+
+    # A self-consistent replacement file must still be rejected.
+    manifest_path = release / MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text())
+    changed = b"replacement\n"
+    (release / "README.md").write_bytes(changed)
+    readme = next(item for item in manifest["files"] if item["path"] == "README.md")
+    readme.update(size=len(changed), sha256=hashlib.sha256(changed).hexdigest())
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ReleaseError):
         check_release(release)
