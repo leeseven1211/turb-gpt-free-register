@@ -18,6 +18,23 @@ function scan(status, result_summary = {}, extra = {}) {
   return context.accountTaskResultText({task_type: 'sub2api_scan', status, result_summary, ...extra});
 }
 
+const listSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/operations/list-display.js'), 'utf8');
+const listResult = vm.runInNewContext(`${listSource}\ntaskListDisplay.result`);
+
+for (const [status, result_summary, expected, extra] of [
+  ['success', {processed: 0}, '异常扫描完成'],
+  ['success', {ok: false}, '异常扫描完成'],
+  ['unsupported', {ok: true}, '扫描未完成'],
+  ['partial_success', {ok: false}, '部分完成'],
+  ['request_unknown', {ok: true}, '结果待确认'],
+  ['cancelled', {ok: true}, '已取消'],
+  ['failed', {ok: true}, '集成接口异常', {error_info: {code: 'external.sub2api.http'}}],
+]) {
+  test(`扫描列表在 ${status}、摘要 ${JSON.stringify(result_summary)} 时显示${expected}`, () => {
+    assert.deepEqual([...listResult({task_type: 'sub2api_scan', status, result_summary, ...extra})], [expected]);
+  });
+}
+
 test('成功扫描的真实摘要没有 ok 字段时仍显示完成', () => {
   for (const summary of [
     {group_ids: [16], remote_errors: 0, accounts: 0, processed: 0, reasons: {}},

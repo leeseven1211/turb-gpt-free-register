@@ -236,10 +236,13 @@ const taskListDisplay = (() => {
           return summary('结果待确认', 'warning');
       if (['deactivated', 'account_deactivated'].includes(text(task.target_status)) || status === 'deactivated')
           return summary('账号已停用', 'danger');
-      if (task.error_message || task.error_info || r.ok === false || failed.has(status))
+      // 扫描摘要里的旧 ok 字段不能代表整次扫描的执行结果。
+      if (task.error_message || task.error_info || failed.has(status) || (kind !== 'sub2api_scan' && r.ok === false))
           return summary(error, 'danger');
       if (status === 'partial_success')
           return summary('部分完成', 'warning');
+      if (kind === 'sub2api_scan')
+          return status === 'success' ? summary(taskCompletionLabels[kind], 'success') : summary('扫描未完成', 'warning');
       if (kind === 'registration' || kind === 'registration_resume') {
           const target = { account_available: '账号可用', email_verification_pending: '邮箱待验证', credential_valid: '凭证有效', credential_pending_confirmation: '凭证待确认', not_created: '账号未创建', in_progress: '账号处理中' }[text(task.target_status)];
           if (target)
