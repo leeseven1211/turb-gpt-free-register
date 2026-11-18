@@ -1371,8 +1371,6 @@ function closePageDialogsForNavigation() {
 function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
   if (tab !== ACTIVE_TAB) closePageDialogsForNavigation();
-  const proxyTrafficDialog = document.getElementById('proxyTrafficDetailDialog');
-  if (tab !== 'proxy-traffic' && proxyTrafficDialog?.open) proxyTrafficDialog.close();
   ACTIVE_TAB = tab;
   $$('.sidebar-nav button[data-tab]').forEach(x => {
     const active = x.dataset.tab === tab;
@@ -1420,7 +1418,8 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
     else if (view === 'derivations') loadEmailDerivationResources();
     else ensureViewLoaded('outlook:list', loadOutlook);
   }
-  if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);
+  if (tab === 'proxy-traffic') window.ProxyTraffic?.setView(currentView || 'pool');
+  window.ProxyTraffic?.setVisible(tab === 'proxy-traffic');
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
   if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
   if (tab === 'extract-stats') ensureViewLoaded('extract-stats', loadExtractStats, 0);
@@ -1476,9 +1475,7 @@ function setModuleView(module, view, persist=true, historyMode='push') {
     else ensureViewLoaded('outlook:list', loadOutlook);
   }
   if (module === 'proxy-traffic') {
-    const dialog = document.getElementById('proxyTrafficDetailDialog');
-    if (view === 'pool' && dialog?.open) dialog.close();
-    ensureViewLoaded('proxy-traffic', loadProxyTraffic);
+    window.ProxyTraffic?.setView(view);
   }
   closeMobileSidebar();
   if (historyMode === 'push') recordNavigationHistory();

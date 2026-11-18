@@ -35,6 +35,9 @@ class PageAssetTemplateTests(unittest.TestCase):
         paths = {urlsplit(url).path for url in parser.urls}
         self.assertIn("/static/dashboard/dashboard.js", paths)
         self.assertIn("/static/dashboard/dashboard.css", paths)
+        self.assertIn("/static/proxy/proxy.js", paths)
+        self.assertIn("/static/proxy/proxy.css", paths)
+        self.assertIn("/static/js/pages/proxy/traffic.js", paths)
         self.assertIn("/static/js/shared/common.js", paths)
         self.assertIn("/static/js/pages/config/page.js", paths)
         versions = {tuple(parse_qs(urlsplit(url).query).get("v", [])) for url in parser.urls}
@@ -165,6 +168,24 @@ class PageAssetVersionTests(unittest.TestCase):
         self.assertNotEqual(self.version(), version)
         chunk.unlink()
         self.assertEqual(self.version(), version)
+
+    def test_proxy_styles_scripts_and_later_chunks_change_the_version(self):
+        bundle = self.static / "proxy"
+        bundle.mkdir()
+        other = self.static / "unlinked-page"
+        other.mkdir()
+        previous = self.version()
+        (other / "page.js").write_bytes(b"another page")
+        (bundle / "proxy.js.map").write_bytes(b"source map")
+        self.assertEqual(self.version(), previous)
+        for name in ("proxy.js", "proxy.css", "shared-hash.js"):
+            asset = bundle / name
+            asset.write_bytes(b"initial")
+            initial = self.version()
+            self.assertNotEqual(initial, previous)
+            asset.write_bytes(b"changed")
+            previous = self.version()
+            self.assertNotEqual(previous, initial)
 
     def test_linked_favicon_content_updates_page_version(self):
         icon = self.static / "favicon.svg"

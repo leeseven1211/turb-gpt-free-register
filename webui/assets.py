@@ -48,10 +48,11 @@ def page_asset_version(app: Any) -> str:
     template_stamp = _stamp(template_root / "index.html")
     template_digest, links = _template_info(template_stamp)
     names = set(links)
-    bundle = static_root / "dashboard"
-    if bundle.is_dir():
-        names.update(path.relative_to(static_root).as_posix() for path in bundle.iterdir()
-                     if path.is_file() and path.suffix in _ASSET_SUFFIXES)
+    for name in ("dashboard", "proxy"):
+        bundle = static_root / name
+        if bundle.is_dir():
+            names.update(path.relative_to(static_root).as_posix() for path in bundle.iterdir()
+                         if path.is_file() and path.suffix in _ASSET_SUFFIXES)
     assets = [(name, _stamp(static_root / name)) for name in sorted(names)]
     if len(template_stamp) == 1 and not any(len(stamp) > 1 for _, stamp in assets):
         return "development"

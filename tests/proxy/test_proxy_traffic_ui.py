@@ -1,118 +1,89 @@
-"""Focused contracts for the independent proxy and traffic workspace."""
-
+"""Exercise the real shell and the checked-in proxy bundle on synthetic HTTP data."""
+from collections import Counter
 from pathlib import Path
-import unittest
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+from jinja2 import Environment, FileSystemLoader
+
+WEBUI = Path(__file__).resolve().parents[2] / 'webui'
 
 
-ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = (ROOT / "webui/templates/index.html").read_text(encoding="utf-8")
-MODERN_COMMON = (ROOT / "webui/static/js/shared/common.js").read_text(encoding="utf-8")
-PROXY_JS_PATH = ROOT / "webui/static/js/pages/proxy/traffic.js"
-PROXY_JS = PROXY_JS_PATH.read_text(encoding="utf-8") if PROXY_JS_PATH.exists() else ""
-FOUNDATION_CSS = (ROOT / "webui/static/css/shared/ui-foundation.css").read_text(encoding="utf-8")
+def test_sidebar_inventory_records_filters_and_paging_use_only_monitoring_reads():
+    api = pytest.importorskip('playwright.sync_api')
+    html = Environment(loader=FileSystemLoader(WEBUI / 'templates')).get_template('index.html').render(
+        url_for=lambda _, filename, **options: '/static/' + filename)
+    reads = []
+    static_reads = []
+    unexpected = []
 
+    def respond(route):
+        url = urlsplit(route.request.url)
+        if url.hostname != 'console.test' or route.request.method != 'GET':
+            unexpected.append((route.request.method, url.path))
+            return route.abort()
+        if url.path == '/':
+            return route.fulfill(content_type='text/html', body=html)
+        if url.path.startswith('/static/'):
+            static_reads.append(url.path)
+            return route.fulfill(path=WEBUI / url.path.lstrip('/'))
+        query = parse_qs(url.query)
+        if url.path == '/api/proxy-pool':
+            payload = {'ok': True, 'policy': {'max_size': 7}, 'counts': {'ready': 3},
+                       'items': [{'resource_id': 'sample-resource', 'exit_ip': '192.0.2.0/24', 'password': 'PRIVATE_SAMPLE'}]}
+        elif url.path == '/api/proxy-traffic/summary':
+            payload = {'ok': True, 'total_bytes': 2048, 'today_bytes': 500, 'today_request_count': 0,
+                       'today_browser_count': 4, 'today_route_count': 1, 'lease_states': ['released']}
+        elif url.path in {f'/api/proxy-traffic/{view}' for view in ('current', 'history', 'traffic')}:
+            view = url.path.split('/')[-1]
+            offset = int(query['offset'][0])
+            row = {'id': offset + 1, 'lease_id': f'lease-{offset}', 'state': 'released', 'source': 'protocol_http',
+                   'availability': 'available', 'total_bytes': 12, 'operation_task_id': 9007199254740997}
+            payload = {'ok': True, 'view': view, 'items': [row], 'total': 21, 'limit': 20, 'offset': offset, 'count': 1}
+        else:
+            # The legacy shell bootstraps its own overview/settings. Stub every such request locally.
+            if url.path.startswith('/api/proxy'):
+                unexpected.append((route.request.method, url.path))
+            return route.fulfill(json={'ok': True, 'accounts': 0, 'features': {}, 'email_sources': {}})
+        reads.append((url.path, query))
+        return route.fulfill(json=payload)
 
-class ProxyTrafficUiContractTest(unittest.TestCase):
-    def test_template_exposes_an_independent_three_view_workspace(self):
-        required_views = (
-            'data-proxy-view="current"',
-            'data-proxy-view="history"',
-            'data-proxy-view="traffic"',
-        )
-        self.assertIn('data-tab="proxy-traffic"', TEMPLATE)
-        self.assertIn('id="tab-proxy-traffic"', TEMPLATE)
-        for view in required_views:
-            self.assertIn(view, TEMPLATE)
-        self.assertIn('id="proxyTrafficCurrentBody"', TEMPLATE)
-        self.assertIn('id="proxyTrafficHistoryBody"', TEMPLATE)
-        self.assertIn('id="proxyTrafficTrafficBody"', TEMPLATE)
-        self.assertIn('js/pages/proxy/traffic.js', TEMPLATE)
-
-    def test_template_removes_the_manual_refresh_row_and_top_filter_card(self):
-        self.assertNotIn('Network operations', TEMPLATE)
-        self.assertNotIn('<h2>代理与流量</h2>', TEMPLATE)
-        self.assertNotIn('查看持久化线路租约与 Roxy/CDP 可观测的浏览器字节；协议任务显示为未采集。', TEMPLATE)
-        self.assertNotIn('class="proxy-traffic-head"', TEMPLATE)
-        self.assertNotIn('id="proxyTrafficLastUpdated"', TEMPLATE)
-        self.assertNotIn('id="btnRefreshProxyTraffic"', TEMPLATE)
-        self.assertNotIn('class="proxy-traffic-toolbar"', TEMPLATE)
-
-    def test_template_puts_existing_filters_in_relevant_table_headers(self):
-        filter_contracts = {
-            "search": ("proxyTrafficSearchCurrent", "proxyTrafficSearchHistory", "proxyTrafficSearchTraffic"),
-            "state": ("proxyTrafficStateCurrent", "proxyTrafficStateHistory", "proxyTrafficStateTraffic"),
-            "window": ("proxyTrafficWindowCurrent", "proxyTrafficWindowHistory", "proxyTrafficWindowTraffic"),
-            "purpose": ("proxyTrafficPurposeCurrent", "proxyTrafficPurposeHistory"),
-        }
-        for key, control_ids in filter_contracts.items():
-            self.assertGreaterEqual(TEMPLATE.count(f'data-proxy-filter-key="{key}"'), len(control_ids))
-            for control_id in control_ids:
-                self.assertIn(f'data-column-filter="{control_id}"', TEMPLATE)
-        self.assertIn('id="btnClearProxyTrafficFilters"', TEMPLATE)
-        self.assertIn('class="proxy-traffic-view-bar"', TEMPLATE)
-
-    def test_proxy_filter_script_synchronizes_header_controls_without_manual_refresh_ui(self):
-        self.assertIn("[data-proxy-filter-key]", PROXY_JS)
-        self.assertIn("proxyTrafficSyncFilterControls", PROXY_JS)
-        self.assertIn("proxyTrafficBindFilterControls", PROXY_JS)
-        self.assertNotIn("btnRefreshProxyTraffic", PROXY_JS)
-        self.assertNotIn("proxyTrafficLastUpdated", PROXY_JS)
-
-    def test_navigation_allows_proxy_traffic_and_loads_its_page(self):
-        self.assertIn("'proxy-traffic': { title: '代理与流量'", MODERN_COMMON)
-        self.assertIn("'proxy-traffic'", MODERN_COMMON)
-        self.assertIn("if (tab === 'proxy-traffic') ensureViewLoaded('proxy-traffic', loadProxyTraffic);", MODERN_COMMON)
-
-    def test_frontend_uses_only_the_proxy_traffic_contract_and_never_renders_secrets(self):
-        self.assertNotIn("const PROXY_TRAFFIC_API = '/api/proxy-traffic';", PROXY_JS)
-        for endpoint in (
-            "'/api/proxy-traffic/current'",
-            "'/api/proxy-traffic/history'",
-            "'/api/proxy-traffic/traffic'",
-            "'/api/proxy-traffic/summary'",
-        ):
-            self.assertIn(endpoint, PROXY_JS)
-        self.assertIn("Promise.all", PROXY_JS)
-        self.assertIn("payload.view != null", PROXY_JS)
-        self.assertIn("Array.isArray(payload.items)", PROXY_JS)
-        for page_field in ("count", "total", "limit", "offset"):
-            self.assertIn(f"payload.{page_field}", PROXY_JS)
-        for field in ("current_leases", "lease_history", "browser_traffic"):
-            self.assertIn(field, PROXY_JS)
-        for secret_field in ("proxy_url", "username", "password"):
-            self.assertNotIn(secret_field, PROXY_JS)
-        self.assertIn("exit_ip", PROXY_JS)
-        self.assertNotIn("proxyTrafficNormalize(await proxyTrafficRequest())", PROXY_JS)
-        self.assertIn("'/api/proxy-pool'", PROXY_JS)
-        self.assertIn("poolCapacity", PROXY_JS)
-        self.assertIn("poolReady", PROXY_JS)
-        self.assertIn("poolFetching", PROXY_JS)
-        self.assertIn("poolShared", PROXY_JS)
-        self.assertIn("route_attempt_no", PROXY_JS)
-        self.assertIn("availability", PROXY_JS)
-        self.assertIn("ended_at", PROXY_JS)
-        self.assertNotIn("finished_at", PROXY_JS)
-        self.assertNotIn("proxyTrafficValue(row, 'status')", PROXY_JS)
-
-    def test_template_exposes_proxy_pool_capacity_summary_without_inventory_secrets(self):
-        for key in ("poolCapacity", "poolReady", "poolFetching", "poolChecking", "poolLeased", "poolShared"):
-            self.assertIn(f'data-proxy-summary="{key}"', TEMPLATE)
-        for label in ("proxyPoolBody", "脱敏端点", "脱敏出口", "最近错误"):
-            self.assertIn(label, TEMPLATE)
-        self.assertIn("独立代理池", MODERN_COMMON + PROXY_JS + TEMPLATE)
-        for secret_field in ("proxy_url", "username", "password"):
-            self.assertNotIn(secret_field, PROXY_JS)
-
-    def test_proxy_traffic_css_is_responsive_and_keeps_long_values_readable(self):
-        self.assertIn(".proxy-traffic-table-wrap", FOUNDATION_CSS)
-        self.assertIn("overflow-wrap: anywhere", FOUNDATION_CSS)
-        self.assertIn("table-layout: fixed", FOUNDATION_CSS)
-        self.assertIn("@media (max-width: 860px)", FOUNDATION_CSS)
-        self.assertIn(".proxy-traffic-table", FOUNDATION_CSS)
-        self.assertIn(".proxy-traffic-view-bar", FOUNDATION_CSS)
-        self.assertIn(".proxy-traffic-page .column-filter-header", FOUNDATION_CSS)
-        self.assertIn(".proxy-traffic-page .column-filter-trigger:focus-visible", FOUNDATION_CSS)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    with api.sync_playwright() as runtime:
+        if not Path(runtime.chromium.executable_path).exists():
+            pytest.skip('本机未安装隔离 Chromium 测试运行时')
+        browser = runtime.chromium.launch()
+        page = browser.new_page(viewport={'width': 1400, 'height': 900})
+        page.set_default_timeout(5000)
+        page.route('**/*', respond)
+        page.goto('http://console.test/')
+        assert not reads
+        assert not any(url.startswith('/static/proxy/') for url in static_reads)
+        page.locator('[data-tab="proxy-traffic"]').click()
+        page.get_by_text('sample-resource', exact=True).wait_for()
+        assert page.locator('[data-proxy-summary="poolCapacity"]').inner_text() == '3 / 7'
+        counts = Counter(path for path, _ in reads)
+        assert counts == {path: 1 for path in ('/api/proxy-pool', '/api/proxy-traffic/summary',
+                                               '/api/proxy-traffic/current', '/api/proxy-traffic/history', '/api/proxy-traffic/traffic')}
+        nav = page.locator('[data-module-subnav="proxy-traffic"]')
+        nav.get_by_role('button', name='租约与流量').click()
+        assert page.locator('[data-proxy-summary="todayRequestCount"]').inner_text() == '0'
+        page.get_by_role('tab', name='线路历史').click()
+        panel = page.locator('[data-proxy-panel="history"]')
+        panel.get_by_role('button', name='筛选状态').click()
+        page.locator('[data-proxy-filter-option="released"]').click()
+        panel.get_by_role('button', name='下一页').click()
+        panel.get_by_text('lease-20', exact=True).wait_for()
+        assert any(path.endswith('/history') and query['offset'] == ['20'] and query['state'] == ['released'] for path, query in reads)
+        panel.locator('[data-proxy-detail]').click()
+        dialog = page.get_by_role('dialog', name='线路历史详情')
+        assert '9007199254740997' in dialog.inner_text()
+        assert 'PRIVATE_SAMPLE' not in page.locator('#proxy-page-root').text_content()
+        page.keyboard.press('Escape')
+        nav.get_by_role('button', name='代理池库存').click()
+        assert page.locator('[data-proxy-module-panel="pool"]').is_visible()
+        assert not page.locator('[data-proxy-module-panel="records"]').is_visible()
+        page.go_back()
+        assert page.locator('[data-proxy-module-panel="records"]').is_visible()
+        assert page.locator('[data-proxy-view="history"]').get_attribute('aria-selected') == 'true'
+        assert not unexpected
+        browser.close()

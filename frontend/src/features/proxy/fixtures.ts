@@ -1,0 +1,137 @@
+import type {
+  ProxyPage,
+  ProxyPoolSnapshot,
+  ProxyRecordView,
+  ProxyRow,
+  ProxySummary,
+  ProxyTrafficApi,
+} from './contracts';
+export const fixtureLease: ProxyRow = {
+  id: 17,
+  lease_id: 'lease-public-17',
+  provider: '1024proxy',
+  endpoint: 'proxy.test:8080',
+  exit_ip: '203.0.113.20',
+  state: 'released',
+  account_id: 91,
+  purpose: 'plan-check',
+  operation_task_id: '9007199254740995',
+  operation_run_id: 35,
+  registration_job_id: 28,
+  route_attempt_no: 2,
+  acquired_at: '2026-11-16T01:00:00Z',
+  expires_at: '2026-11-16T03:00:00Z',
+  released_at: '2026-11-16T02:00:00Z',
+};
+export const fixtureTraffic: ProxyRow = {
+  id: 18,
+  source: 'protocol_http',
+  method: 'POST',
+  availability: 'available',
+  upload_bytes: 12,
+  download_bytes: 34,
+  total_bytes: 46,
+  request_count: 9,
+  failed_count: 2,
+  unfinished_count: 1,
+  unknown_count: 3,
+  purpose: 'plan_check',
+  operation_task_type: 'plan_check',
+  operation_task_id: '9007199254740995',
+  operation_run_id: 35,
+  registration_job_id: 28,
+  proxy_lease_id: 'lease-public-17',
+  account_id: 91,
+  started_at: '2026-11-16T01:00:00Z',
+  ended_at: '2026-11-16T02:00:00Z',
+  duration_ms: 540,
+  status_families: { '2xx': 7, '4xx': 2 },
+  redirect_count: 2,
+  decoded_response_bytes: 70,
+  byte_unknown_count: 1,
+  registration_attempt_id: 5,
+  registration_run_id: 6,
+  proxy_transport: {
+    available: true,
+    total_bytes: 100,
+    blocked_connection_count: 2,
+    destinations: [
+      {
+        host: 'static.test',
+        port: 443,
+        total_bytes: 100,
+        connection_count: 3,
+        failed_connection_count: 1,
+        blocked_connection_count: 2,
+        connect_retry_count: 1,
+        recovered_connection_count: 1,
+      },
+    ],
+  },
+  resource_details: [{ url: 'https://static.test/public.js', resource_type: 'script', total_bytes: 4 }],
+  js_coverage: {
+    enabled: true,
+    target_count: 2,
+    collected_target_count: 1,
+    unsupported_target_count: 1,
+    scripts: [{ url: 'https://static.test/public.js', function_count: 4, executed_function_count: 2 }],
+  },
+};
+export const fixtureSummary: ProxySummary = {
+  ok: true,
+  total_bytes: 2048,
+  today_bytes: 1024,
+  today_request_count: 0,
+  today_browser_count: 7,
+  today_route_count: 3,
+  purposes: ['plan-check'],
+  lease_states: ['leased', 'released'],
+  browser_states: ['available'],
+};
+export const fixturePool: ProxyPoolSnapshot = {
+  ok: true,
+  policy: { max_size: 20, min_ready: 3 },
+  counts: { ready: 3, fetching: 1, checking: 2, leased: 4, shared: 5, rotation_wait: 2 },
+  waiting_local: 4,
+  workers_local: 2,
+  capacity_warning: '各国及来源空闲底数合计 30，超过全池容量 20',
+  country_pools: [
+    {
+      provider: '1024proxy',
+      region: 'JP',
+      counts: { ready: 2, fetching: 1, checking: 1, leased: 2, shared: 1, rotation_wait: 2, quarantine: 1 },
+      waiting_local: 3,
+      target_ready: 6,
+      last_supply_error: 'supply_candidates_duplicate',
+      retry_after_seconds: 7,
+    },
+  ],
+  items: [
+    {
+      resource_id: 'resource-1',
+      provider: '1024proxy',
+      state: 'rotation_wait',
+      region: 'JP',
+      endpoint: 'proxy.test:8080',
+      exit_ip: '203.0.113.0/24',
+      checked_at: '2026-11-16T01:00:00Z',
+      expires_at: '2026-11-16T03:00:00Z',
+      last_error_code: 'supply_candidates_duplicate',
+    },
+  ],
+};
+export function fixturePage(view: ProxyRecordView, items?: ProxyRow[]): ProxyPage {
+  const rows = items ?? [
+    view === 'traffic'
+      ? { ...fixtureTraffic }
+      : { ...fixtureLease, state: view === 'current' ? 'leased' : 'released' },
+  ];
+  return { items: rows, count: rows.length, total: rows.length, limit: 20, offset: 0, has_more: false };
+}
+export function fixtureApi(): ProxyTrafficApi {
+  return {
+    page: async (view) => fixturePage(view),
+    summary: async () => fixtureSummary,
+    pool: async () => fixturePool,
+  };
+}

@@ -48,7 +48,7 @@ jobs:
         run: python -m ruff check .
       - name: Run isolated tests
         run: python tools/test_isolated.py --profile default -- -q
-      - name: Verify release contents, dashboard assets and list statistics
+      - name: Verify release contents, page assets and list statistics
         run: >-
           python tools/test_isolated.py --profile all --
           tests/tools/test_release_checks.py tests/webui/test_page_assets.py
@@ -69,11 +69,11 @@ jobs:
       - run: >-
           node --test tests/webui/test_dashboard_vue_bridge.cjs
           tests/webui/test_dashboard_vue_contracts.cjs tests/email/test_email_supply_frontend.cjs
-          tests/operations/test_task_dialog_lifecycle.cjs
+          tests/operations/test_task_dialog_lifecycle.cjs tests/proxy/test_proxy_traffic_frontend.cjs
           tests/webui/test_offset_pager.cjs tests/accounts/test_account_row_actions_frontend.cjs
           tests/accounts/test_account_promotions_frontend.cjs tests/accounts/test_account_script_initialization.cjs
       - run: npm --prefix frontend run build
-      - name: Verify checked-in dashboard assets
+      - name: Verify checked-in dashboard and proxy assets
         run: |
-          git diff --exit-code -- webui/static/dashboard/
-          test -z "$(git ls-files --others --exclude-standard -- webui/static/dashboard/)"
+          git diff --exit-code -- webui/static/dashboard/ webui/static/proxy/
+          test -z "$(git ls-files --others --exclude-standard -- webui/static/dashboard/ webui/static/proxy/)"
