@@ -297,19 +297,42 @@ function accountTaskProgressStepLabel(step) {
 function accountTaskProgressStepEvidence(step) {
   const fields = [];
   if (Array.isArray(step?.raw_stages) && step.raw_stages.length) fields.push(`原始阶段：${step.raw_stages.join('、')}`);
-  if (step?.observed_order != null) fields.push(`实际顺序：第 ${step.observed_order} 步`);
   if (step?.started_at || step?.completed_at) fields.push(`${formatDateTime(step.started_at)} → ${formatDateTime(step.completed_at)}`);
   if (step?.duration_ms != null) fields.push(`耗时 ${formatTaskDuration(step.duration_ms)}`);
   return fields;
+}
+function accountTaskStepRelations(step, siblings) {
+  const rows = [];
+  const dependencies = Array.isArray(step.depends_on) ? step.depends_on.filter(id => typeof id === 'string' && id.trim()) : [];
+  if (dependencies.length) {
+    const labels = [...new Set(dependencies)].map(id => {
+      const dependency = siblings.find(other => accountTaskProgressStepId(other) === id);
+      return dependency ? accountTaskProgressStepLabel(dependency) : id;
+    });
+    rows.push(['前置步骤', labels.join('、')]);
+  }
+  if (Number.isSafeInteger(step.observed_order) && step.observed_order >= 0) {
+    rows.push(['首次记录序号', String(step.observed_order)]);
+  }
+  const children = new Set();
+  for (const event of Array.isArray(step.attempts) ? step.attempts : []) {
+    const ids = [];
+    if (/^[1-9]\d*$/.test(event?.child_task_id)) ids.push(`任务 #${event.child_task_id}`);
+    if (/^[1-9]\d*$/.test(event?.child_run_id)) ids.push(`运行 #${event.child_run_id}`);
+    if (ids.length) children.add(ids.join(' · '));
+  }
+  if (children.size) rows.push(['关联子任务', [...children].join('、')]);
+  return rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
 }
 function accountTaskStepAttempts(step) {
   const attempts = Array.isArray(step?.attempts) ? step.attempts : [];
   return attempts.length ? `<details class="account-task-stage-attempts" data-account-task-detail="attempts"><summary>查看阶段事件（${attempts.length}）</summary><pre>${esc(JSON.stringify(attempts, null, 2))}</pre></details>` : '';
 }
-function accountTaskStepDetails(step) {
+function accountTaskStepDetails(step, siblings) {
   const rawDetail = step?.reason || step?.message || '';
   const evidence = accountTaskProgressStepEvidence(step);
-  const evidenceHtml = evidence.length ? `<details class="account-task-stage-technical" data-account-task-detail="technical"><summary>阶段与时间</summary><div class="account-task-stage-evidence">${evidence.map(item => `<span>${esc(item)}</span>`).join('')}</div></details>` : '';
+  const relations = accountTaskStepRelations(step, siblings);
+  const evidenceHtml = evidence.length || relations ? `<details class="account-task-stage-technical" data-account-task-detail="technical"><summary>阶段与时间</summary>${relations ? `<dl>${relations}</dl>` : ''}<div class="account-task-stage-evidence">${evidence.map(item => `<span>${esc(item)}</span>`).join('')}</div></details>` : '';
   return `${rawDetail ? `<div class="account-task-stage-reason">${esc(rawDetail)}</div>` : ''}${evidenceHtml}${accountTaskStepAttempts(step)}`;
 }
 function accountTaskFailureLocation(failure) {
@@ -408,7 +431,7 @@ function accountTaskStepAttemptMarkup(attempt, index) {
   const label = ACCOUNT_TASK_PROGRESS_STATUS_LABELS[state] || TASK_PROGRESS_STATUS_LABELS[state] || state;
   return `<li class="account-task-attempt"><div><strong>记录 ${index + 1} · ${esc(label)}</strong><time>${esc(formatDateTime(attempt.created_at))}</time></div><p>${esc(attempt.message || '无补充说明')}</p><small>${esc(attempt.raw_stage || '')}${attempt.event_id ? ` · 事件 ${esc(attempt.event_id)}` : ''}</small><details data-step-dialog-detail="attempt-${index}"><summary>技术字段</summary><pre>${esc(JSON.stringify(attempt, null, 2))}</pre></details></li>`;
 }
-function accountTaskStepDialogBody(step, tab) {
+function accountTaskStepDialogBody(step, tab, relations) {
   if (!step) return tab === 'children' ? accountTaskChildRuns(accountTaskProgressSnapshot) || '<p>当前 Run 没有独立子任务。</p>' : accountTaskFailureSummary(accountTaskProgressSnapshot, accountTaskDetailExecution()) || '<p>当前 Run 没有失败记录。</p>';
   if (tab === 'attempts') {
     const attempts = Array.isArray(step.attempts) ? step.attempts : [];
@@ -416,10 +439,16 @@ function accountTaskStepDialogBody(step, tab) {
   }
   if (tab === 'children') {
     const children = taskProgressVisibleSteps(step.children);
-    return children.map(child => `<section class="account-task-step-child is-${attrEsc(child.display_status || taskProgressStepStatus(child))}"><h4>${esc(accountTaskProgressStepLabel(child))}<span>${esc(accountTaskProgressStateLabel(child))}</span></h4>${accountTaskStepDetails(child)}</section>`).join('') || '<p>此步骤没有子步骤。</p>';
+    return children.map(child => `<section class="account-task-step-child is-${attrEsc(child.display_status || taskProgressStepStatus(child))}"><h4>${esc(accountTaskProgressStepLabel(child))}<span>${esc(accountTaskProgressStateLabel(child))}</span></h4>${accountTaskStepDetails(child, step.children)}</section>`).join('') || '<p>此步骤没有子步骤。</p>';
   }
-  const evidence = accountTaskProgressStepEvidence(step);
-  return `<div class="account-task-step-time"><p>${esc(step.reason || step.message || '无补充说明')}</p><dl><dt>状态</dt><dd>${esc(accountTaskProgressStateLabel(step))}</dd><dt>开始时间</dt><dd>${esc(formatDateTime(step.started_at))}</dd><dt>结束时间</dt><dd>${esc(formatDateTime(step.completed_at))}</dd><dt>耗时</dt><dd>${esc(formatTaskDuration(step.duration_ms))}</dd></dl><div class="account-task-stage-evidence">${evidence.map(item => `<span>${esc(item)}</span>`).join('')}</div></div>`;
+  const rawStages = Array.isArray(step.raw_stages) ? step.raw_stages.join('、') : '';
+  return `<div class="account-task-step-time">${step.reason || step.message ? `<p>${esc(step.reason || step.message)}</p>` : ''}<dl>
+    <dt>状态</dt><dd>${esc(accountTaskProgressStateLabel(step))}</dd>
+    <dt>开始时间</dt><dd>${esc(formatDateTime(step.started_at))}</dd>
+    <dt>结束时间</dt><dd>${esc(formatDateTime(step.completed_at))}</dd>
+    <dt>耗时</dt><dd>${esc(taskProgressStepDuration(step))}</dd>
+    ${relations}${rawStages ? `<dt>原始阶段</dt><dd>${esc(rawStages)}</dd>` : ''}
+  </dl></div>`;
 }
 function renderAccountTaskStepDialog() {
   if (!accountTaskStepDetailState) return;
@@ -428,7 +457,8 @@ function renderAccountTaskStepDialog() {
   const step = state.stepId ? (accountTaskProgressSnapshot?.main_steps || []).find(item => accountTaskProgressStepId(item) === state.stepId) : null;
   if (state.stepId && (!step || taskProgressStepStatus(step) === 'skipped')) { closeAccountTaskStepDialog(); return; }
   const execution = !step && state.tab === 'failure' ? accountTaskDetailExecution() : null;
-  const signature = JSON.stringify({state, step, failure: !step && accountTaskProgressSnapshot?.failure, executionError: execution?.error_message, executionInfo: execution?.error_info, children: !step && accountTaskProgressSnapshot?.outcome?.child_tasks});
+  const relations = step && state.tab === 'time' ? accountTaskStepRelations(step, accountTaskProgressSnapshot.main_steps) : '';
+  const signature = JSON.stringify({state, step, relations, failure: !step && accountTaskProgressSnapshot?.failure, executionError: execution?.error_message, executionInfo: execution?.error_info, children: !step && accountTaskProgressSnapshot?.outcome?.child_tasks});
   if (signature === accountTaskStepDetailSignature) return;
   accountTaskStepDetailSignature = signature;
   const title = $('#accountTaskStepDetailTitle');
@@ -440,7 +470,7 @@ function renderAccountTaskStepDialog() {
   $('#accountTaskStepDetailTabs').innerHTML = tabs.map(([id, label]) => `<button type="button" role="tab" data-step-dialog-tab="${id}" aria-selected="${state.tab === id}" class="${state.tab === id ? 'is-active' : ''}" aria-controls="accountTaskStepDetailContent">${esc(label)}</button>`).join('');
   const scrollTop = content.scrollTop;
   const opened = new Set(Array.from(content.querySelectorAll('details[open]')).map(item => item.dataset.stepDialogDetail).filter(Boolean));
-  content.innerHTML = accountTaskStepDialogBody(step, state.tab);
+  content.innerHTML = accountTaskStepDialogBody(step, state.tab, relations);
   content.querySelectorAll('details[data-step-dialog-detail]').forEach(item => { item.open = opened.has(item.dataset.stepDialogDetail); });
   content.scrollTop = scrollTop;
   if (focusedTab) Array.from($('#accountTaskStepDetailTabs').querySelectorAll('button')).find(item => item.dataset.stepDialogTab === focusedTab)?.focus({preventScroll:true});
@@ -470,7 +500,7 @@ function closeAccountTaskStepDialog(restoreFocus = true) {
   accountTaskStepDetailSignature = '';
   if (restoreFocus && state) {
     const oldTrigger = accountTaskStepDetailReturnFocus;
-    const replacement = Array.from($('#accountTaskStageProgress')?.querySelectorAll('button') || []).find(item => state.stepId ? item.dataset.accountTaskStepDetails === state.stepId && item.dataset.stepDetailTab === state.tab : state.tab === 'children' ? item.hasAttribute('data-account-task-child-details') : item.hasAttribute('data-account-task-failure-details'));
+    const replacement = state.stepId ? $('#accountTaskProgressFilter [data-account-task-step-details]') : $('#accountTaskStageProgress')?.querySelector(state.tab === 'children' ? '[data-account-task-child-details]' : '[data-account-task-failure-details]');
     (oldTrigger?.isConnected ? oldTrigger : replacement || $('#btnCloseAccountTaskLog'))?.focus({preventScroll:true});
   }
   accountTaskStepDetailReturnFocus = null;
@@ -558,7 +588,7 @@ function renderAccountTaskProgressSnapshot(progress) {
   const pager = page.pages > 1
     ? `<span>共 ${stages.length} 步 · ${page.start + 1}–${page.start + page.steps.length}</span><div><button type="button" data-account-task-step-page="${page.page - 1}"${page.page === 0 ? ' disabled' : ''} aria-label="上一页步骤">上一页</button><span aria-live="polite">${page.page + 1} / ${page.pages}</span><button type="button" data-account-task-step-page="${page.page + 1}"${page.page + 1 === page.pages ? ' disabled' : ''} aria-label="下一页步骤">下一页</button></div>`
     : '';
-  const order = sourceText || '按实际执行记录排列';
+  const order = sourceText || '有记录的步骤按首次记录排列';
   const brief = accountTaskProgressBrief(progress, accountTaskDetailExecution());
   panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(order)}">${esc(order)} · 共 ${stages.length} 步</small></div>${brief}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div>${pager ? `<div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>` : ''}`;
   panel.classList.remove('hidden');
@@ -855,7 +885,14 @@ function renderAccountTaskFilterBar() {
   if (!host) return;
   const selectedStep = accountTaskStepFilter && accountTaskSelectedStep(accountTaskStepIndex(accountTaskProgressSnapshot?.main_steps));
   const label = selectedStep ? accountTaskProgressStepLabel(selectedStep) : accountTaskStepFilter || '全流程';
-  host.innerHTML = `<span class="account-task-filter-label">当前查看：<strong>${esc(label)}</strong></span>${accountTaskStepFilter ? '<button type="button" class="account-task-filter-clear" data-account-task-filter-clear>清除筛选 · 查看全流程</button>' : ''}${selectedStep ? `<span class="account-task-selected-timing">开始 ${esc(selectedStep.started_at ? formatDateTime(selectedStep.started_at) : '—')} · 结束 ${esc(selectedStep.completed_at ? formatDateTime(selectedStep.completed_at) : '—')} · 耗时 ${esc(taskProgressStepDuration(selectedStep))}</span>` : ''}`;
+  const details = selectedStep ? `<button type="button" class="account-task-filter-clear" data-account-task-step-details="${attrEsc(accountTaskProgressStepId(selectedStep))}" aria-haspopup="dialog">步骤详情</button>` : '';
+  const markup = `<span class="account-task-filter-label">当前查看：<strong>${esc(label)}</strong></span>${details}${accountTaskStepFilter ? '<button type="button" class="account-task-filter-clear" data-account-task-filter-clear>清除筛选 · 查看全流程</button>' : ''}${selectedStep ? `<span class="account-task-selected-timing">开始 ${esc(selectedStep.started_at ? formatDateTime(selectedStep.started_at) : '—')} · 结束 ${esc(selectedStep.completed_at ? formatDateTime(selectedStep.completed_at) : '—')} · 耗时 ${esc(taskProgressStepDuration(selectedStep))}</span>` : ''}`;
+  if (markup !== host._filterMarkup) {
+    const focused = host.contains(document.activeElement) ? document.activeElement : null;
+    host.innerHTML = markup;
+    host._filterMarkup = markup;
+    if (focused) host.querySelector(focused.hasAttribute('data-account-task-step-details') ? '[data-account-task-step-details]' : '[data-account-task-filter-clear]')?.focus({preventScroll:true});
+  }
 }
 function setAccountTaskStepFilter(stepId) {
   accountTaskStepFilter = stepId ? String(stepId) : null;
@@ -1215,6 +1252,8 @@ if (typeof ResizeObserver !== 'undefined' && $('#accountTaskStageProgress')) {
   }).observe($('#accountTaskStageProgress'));
 }
 $('#accountTaskProgressFilter')?.addEventListener('click', event => {
+  const details = event.target.closest('[data-account-task-step-details]');
+  if (details) { openAccountTaskStepDialog(details.dataset.accountTaskStepDetails, 'time', details); return; }
   if (event.target.closest('[data-account-task-filter-clear]') || event.target.closest('[data-account-task-filter-all]')) setAccountTaskStepFilter(null);
 });
 document.querySelectorAll('[data-account-task-detail-tab]').forEach(button => button.addEventListener('click', () => setAccountTaskDetailView(button.dataset.accountTaskDetailTab)));

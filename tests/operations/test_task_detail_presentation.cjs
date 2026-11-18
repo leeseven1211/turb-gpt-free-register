@@ -139,3 +139,33 @@ test('首次读取进度即合并同一失败，切换运行不会引用上一�
   assert.match(query('#accountTaskLogErrorSummary summary').textContent, /合成库只读/);
   assert.doesNotMatch(query('#accountTaskLogErrorSummary').textContent, /合成缺页/);
 });
+
+test('选中阶段后可读声明的依赖、首次记录序号和本阶段明确关联的子任务', t => {
+  const steps = [
+    {id: 'read', label: '读取样稿'},
+    {id: 'merge', label: '合并样稿', observed_order: 5, depends_on: ['read', 'old<source>'],
+      attempts: [{child_task_id: 801, child_run_id: 802}, {child_task_id: 801, child_run_id: 802}, {child_run_id: 810}]},
+    {id: 'empty', label: '历史样稿', depends_on: [], observed_order: null, attempts: [{}, {}]},
+  ];
+  const {query, run} = display(t, {run: {}, progress: {main_steps: steps, outcome: {child_tasks:[{task_id: 999}]}}});
+  Object.defineProperty(query('#accountTaskStageProgress'), 'clientWidth', {value: 920});
+  run('renderAccountTaskProgressSnapshot(fixture.progress)');
+  const opener = '#accountTaskProgressFilter [data-account-task-step-details]';
+  assert.equal(query(opener), null);
+  query('[data-account-task-step-filter="merge"]').click();
+  query(opener).click();
+  const relations = () => query('#accountTaskStepDetailContent').textContent;
+  assert.match(relations(), /前置步骤读取样稿、old<source>/);
+  assert.match(relations(), /首次记录序号5/);
+  assert.equal((relations().match(/任务 #801 · 运行 #802/g) || []).length, 1);
+  assert.doesNotMatch(relations(), /#999|并行|重试/);
+  assert.equal(query('#accountTaskStepDetailContent source'), null);
+  run("fixture.progress.main_steps[0].label='读取新版样稿'; renderAccountTaskProgressSnapshot(fixture.progress);");
+  assert.match(relations(), /前置步骤读取新版样稿/);
+  query('[data-step-dialog-tab="attempts"]').click();
+  query('#btnCloseAccountTaskStepDetail').click();
+  assert.equal(query(opener).ownerDocument.activeElement, query(opener));
+  query('[data-account-task-step-filter="empty"]').click();
+  query(opener).click();
+  assert.doesNotMatch(relations(), /前置步骤|首次记录序号|关联子任务|并行|重试/);
+});
