@@ -41,6 +41,8 @@ class PageAssetTemplateTests(unittest.TestCase):
         self.assertIn("/static/proxy/proxy.css", paths)
         self.assertIn("/static/extractStats/extractStats.js", paths)
         self.assertIn("/static/extractStats/extractStats.css", paths)
+        self.assertIn("/static/bulk/bulk.js", paths)
+        self.assertIn("/static/bulk/bulk.css", paths)
         self.assertIn("/static/js/pages/proxy/traffic.js", paths)
         self.assertIn("/static/js/shared/common.js", paths)
         self.assertIn("/static/js/pages/config/page.js", paths)
@@ -173,23 +175,25 @@ class PageAssetVersionTests(unittest.TestCase):
         chunk.unlink()
         self.assertEqual(self.version(), version)
 
-    def test_proxy_styles_scripts_and_later_chunks_change_the_version(self):
-        bundle = self.static / "proxy"
-        bundle.mkdir()
+    def test_proxy_and_bulk_styles_scripts_and_later_chunks_change_the_version(self):
         other = self.static / "unlinked-page"
         other.mkdir()
         previous = self.version()
         (other / "page.js").write_bytes(b"another page")
-        (bundle / "proxy.js.map").write_bytes(b"source map")
-        self.assertEqual(self.version(), previous)
-        for name in ("proxy.js", "proxy.css", "shared-hash.js"):
-            asset = bundle / name
-            asset.write_bytes(b"initial")
-            initial = self.version()
-            self.assertNotEqual(initial, previous)
-            asset.write_bytes(b"changed")
-            previous = self.version()
-            self.assertNotEqual(previous, initial)
+        for page in ("proxy", "bulk"):
+            bundle = self.static / page
+            bundle.mkdir()
+            (bundle / f"{page}.js.map").write_bytes(b"source map")
+            self.assertEqual(self.version(), previous)
+            for name in (f"{page}.js", f"{page}.css", "shared-hash.js"):
+                with self.subTest(page=page, name=name):
+                    asset = bundle / name
+                    asset.write_bytes(b"initial")
+                    initial = self.version()
+                    self.assertNotEqual(initial, previous)
+                    asset.write_bytes(b"changed")
+                    previous = self.version()
+                    self.assertNotEqual(previous, initial)
 
     def test_linked_favicon_content_updates_page_version(self):
         icon = self.static / "favicon.svg"

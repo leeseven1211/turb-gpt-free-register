@@ -436,14 +436,11 @@ test('清空条件和退出固定名单后重新加载对应范围的可选项',
   }
   assert.equal(scheduled,2);
 });
-test('列表日期筛选保留关闭入口，账号明细直接衔接状态标签与表格',()=>{
+test('账号明细直接衔接状态标签与表格',()=>{
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
-  const helper=source.slice(source.indexOf('  function popoverHeader('),source.indexOf('  function renderListShell('));
-  const list=source.slice(source.indexOf('  function renderListShell('),source.indexOf('  async function loadList('));
   const detail=source.slice(source.indexOf('  function renderDetailShell('),source.indexOf('  function detailParams('));
   const host={innerHTML:''};const ctx={state:{nav:{}},host,$b:()=>host,operationNames:{},labels:{},terminal:[],
-    optionsMarkup:()=>'',text:String,attrEsc:String,label:String};vm.createContext(ctx);vm.runInContext(helper+list+detail,ctx);
-  ctx.renderListShell();assert.ok(host.innerHTML.includes('aria-label="关闭创建日期筛选"'));
+    optionsMarkup:()=>'',text:String,attrEsc:String,label:String};vm.createContext(ctx);vm.runInContext(detail,ctx);
   ctx.renderDetailShell();assert.ok(!host.innerHTML.includes('data-bulk-results-form'));
   assert.ok(host.innerHTML.includes('bulk-state-strip"></div><div data-bulk-targets'));
 });

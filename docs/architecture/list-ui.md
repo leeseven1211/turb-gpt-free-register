@@ -32,11 +32,11 @@
 | --- | --- |
 | 任务中心、注册任务详情 | 任务中心由 `#accountTasksPanel` 和 `renderAccountTasks()` 渲染，表头提供 ID 等筛选，数量旁可逐项清除条件。结果短语由 `list-display.js` 生成。注册任务和任务中心共用 `#accountTaskLogPanel`。 |
 | 注册任务、账号、邮箱库存、Codex 和任务中心的页码列表 | 这些分页状态在 `common.js` 的 `PAGERS` 中登记，使用 `_renderPager`。账号和 Codex 等表格已使用模板的列名筛选。各页仍由原页面脚本渲染。 |
-| 批量任务 | 批次列表和目标列表由批量页面脚本维护游标及上一页历史。 |
+| 批量任务 | 批次列表使用 Vue 表头筛选和游标分页，筛选标签与批次数量同栏。可从一行打开详情、对应结果或报告。创建、详情、目标列表、轮次和报告沿用批量页面脚本。 |
 | 历史子邮箱 | 邮箱子菜单和母邮箱行都进入同一个 Vue 列表，复用表头筛选、两行单元格和跳页控件。 |
 | 总览、代理与流量、提链统计 | 左栏按需加载这三个 Vue 页面。代理页包含库存、租约和流量记录，支持表头筛选及分页。提链统计按北京时间、日期范围和平台展示历史数据。 |
 | 注册 Live、提链工作台和配置 | 这些入口沿用现有模板和页面脚本。 |
 
-Vue 页面接入时可复用 `ListCell`、`ListResult`、`FilterPopover`、`ListFilterSummary`、`ListPagination` 和 `CursorPagination`。组件负责排版、交互和分页事件，具体页面负责请求、筛选值和记录身份。当前模板筛选由 `common.js` 处理。[Vue 公共组件](../../frontend/src/components/) · [模板筛选与分页](../../webui/static/js/shared/common.js) · [批次游标实现](../../webui/static/js/pages/bulk/page.js)
+Vue 页面接入时可复用 `ListCell`、`ListResult`、`FilterPopover`、`ListFilterSummary`、`ListPagination` 和 `CursorPagination`。组件负责排版、交互和分页事件，具体页面负责请求、筛选值和记录身份。当前模板筛选由 `common.js` 处理。[Vue 公共组件](../../frontend/src/components/) · [模板筛选与分页](../../webui/static/js/shared/common.js) · [批次列表游标](../../frontend/src/features/bulk/useBulkList.ts) · [批次列表浏览器回归](../../tests/bulk/test_list_navigation_browser.py)
 
 核对任务列表布局时，现有用例覆盖 1440 和 375 像素下的表头筛选、两行行高、提示全文和展开等待原因。页码边界与跳页另有独立用例。[任务行布局用例](../../tests/operations/test_task_list_row_layout.py) · [分页用例](../../tests/webui/test_offset_pager.cjs)

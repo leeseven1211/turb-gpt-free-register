@@ -64,6 +64,7 @@ OPTIONAL_VUE_PAGES = (
     ("proxy", "webui/templates/index.html", "代理流量页"),
     ("emailHistory", "webui/templates/index.html", "历史子邮箱页"),
     ("extractStats", "webui/templates/partials/extract_stats.html", "提链统计页"),
+    ("bulk", "webui/templates/index.html", "批次列表页"),
 )
 
 

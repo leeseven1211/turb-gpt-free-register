@@ -1397,6 +1397,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   window.DashboardPage?.setVisible(tab === 'overview');
   if (tab === 'overview' && !window.DashboardPage) ensureViewLoaded('overview', loadDashboard);
   if (tab === 'bulk' && window.BulkTasks) void BulkTasks.activate();
+  else window.BulkTasks?.deactivate?.();
   if (tab === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';

@@ -1,6 +1,6 @@
 # 控制台前端
 
-总览、代理与流量、提链历史统计和历史子邮箱使用 Vue 3、TypeScript 和 Vite，沿用现有导航外壳、样式和同域 API。
+总览、代理与流量、提链历史统计、历史子邮箱和批次列表使用 Vue 3、TypeScript 和 Vite，沿用现有导航外壳、样式和同域 API。
 
 ## 安装与验证
 
@@ -14,7 +14,7 @@ npm run build
 
 `check` 执行 TypeScript 检查与 `src/**/*.test.ts` 行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。
 
-`build` 从 `src/dashboard.ts`、`src/proxy.ts`、`src/extractStats.ts` 和 `src/emailHistory.ts` 分别生成页面模块。
+`build` 从 `src/dashboard.ts`、`src/proxy.ts`、`src/extractStats.ts`、`src/emailHistory.ts` 和 `src/bulk.ts` 分别生成页面模块。
 
 - `webui/static/dashboard/dashboard.js`
 - `webui/static/dashboard/dashboard.css`
@@ -24,8 +24,10 @@ npm run build
 - `webui/static/extractStats/extractStats.css`
 - `webui/static/emailHistory/emailHistory.js`
 - `webui/static/emailHistory/emailHistory.css`
+- `webui/static/bulk/bulk.js`
+- `webui/static/bulk/bulk.css`
 
-源码、锁文件和这八个产物一同发布。在相同工具链下重复构建，产物应保持一致。
+源码、锁文件和各页面的 JS、CSS 产物一同发布。在相同工具链下重复构建，产物应保持一致。
 
 ## 外壳接口
 

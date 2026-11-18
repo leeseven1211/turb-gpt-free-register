@@ -491,7 +491,12 @@
   </section>
 
   <!-- ============ 账号 ============ -->
-  <section id="tab-bulk" class="hidden" aria-label="批量任务"></section>
+  <section id="tab-bulk" class="hidden" aria-label="批量任务">
+    <div id="bulk-shell"></div>
+    <div id="bulk-list-root" hidden
+         data-module-url="{{ url_for('static', filename='bulk/bulk.js', v=asset_version) }}"
+         data-style-url="{{ url_for('static', filename='bulk/bulk.css', v=asset_version) }}"></div>
+  </section>
   <div id="tab-accounts" class="hidden" data-module-view="active">
     <h1 class="register-title">账号</h1>
     <section class="accounts-panel-v2" id="accountsPanelV2" aria-label="账号列表">

@@ -1,5 +1,6 @@
 /* 批量任务与现有控制台共用字体、颜色和控件。 */
 #tab-bulk { min-width: 0; }
+#bulk-list-root { margin-block-start: 16px; }
 .bulk-page { display: grid; gap: 16px; min-width: 0; }
 .bulk-page > [data-bulk-content] { min-width: 0; }
 .bulk-page *, .bulk-page *::before, .bulk-page *::after { box-sizing: border-box; }
