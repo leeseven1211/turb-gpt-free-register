@@ -126,6 +126,74 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                 self.assertEqual([[item.get(key) for key in keys] for item in expected["items"]],
                                  [[item.get(key) for key in keys] for item in actual["items"]])
 
+    def test_facets_scan_the_task_relation_once(self):
+        # Identify the actual facet query by its result columns, so this checks
+        # the PostgreSQL plan used by list_tasks regardless of SQL formatting.
+        import psycopg
+
+        plans = []
+        execute = psycopg.Cursor.execute
+
+        def trace(cursor, statement, params=None, **kwargs):
+            result = execute(cursor, statement, params, **kwargs)
+            if [column.name for column in cursor.description or ()] == ["facet", "value", "count"]:
+                with cursor.connection.cursor() as probe:
+                    execute(probe, "EXPLAIN (FORMAT JSON) " + statement, params)
+                    plans.append(probe.fetchone()["QUERY PLAN"][0]["Plan"])
+            return result
+
+        with patch.object(psycopg.Cursor, "execute", trace):
+            operation_task_store.list_tasks(public_status=True)
+        self.assertEqual(1, len(plans))
+        scans = 0
+        while plans:
+            node = plans.pop()
+            scans += node.get("Relation Name") == "operation_tasks"
+            plans.extend(node.get("Plans", ()))
+        self.assertEqual(1, scans)
+
+    def test_public_facets_follow_the_winning_historical_run(self):
+        table = operation_task_store._table
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            # The two independent historical sources deliberately share ID 77.
+            cur.execute(f"""INSERT INTO {table('account_action_tasks')}
+                (id,task_uuid,task_type,trigger,status,queued_at)
+                VALUES (77,'account-77','imported','test','pending','2026-10-01T01:00:00Z')""")
+            cur.execute(f"""INSERT INTO {table('registration_jobs')}
+                (id,job_uuid,status,created_at,updated_at,data) VALUES
+                (77,'job-77','success','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z','{{}}')""")
+            cur.execute(f"""INSERT INTO {table('operation_tasks')}
+                (id,task_uuid,source_system,source_id,task_type,target_type,requested_action,
+                 status,target_status,created_at,data) VALUES
+                (1,'account','account_action_tasks','77','imported','none','read','failed','ready','2020-01-01Z','{{}}'),
+                (2,'job','registration_chains','77','imported','none','read','failed','attention_required','2020-01-01Z','{{}}'),
+                (3,'empty','native_operations','3','native','none','read','running','','2030-01-01Z','{{}}'),
+                (4,'hidden','native_operations','4','hidden','none','read','stopped','ready',
+                 '2030-01-01Z','{{"deleted_by_user":true}}')""")
+            cur.execute(f"""INSERT INTO {table('operation_runs')}
+                (id,run_uuid,task_id,run_no,source_system,source_id,status,data,result_summary) VALUES
+                (11,'account-old',1,1,'account_action_tasks','77','failed','{{}}',NULL),
+                (12,'account-new',1,2,'native_operations','12','failed','{{}}',NULL),
+                (21,'job-overlay',2,1,'registration_jobs','77','attention_required',
+                 '{{"completion_handoff":true}}','{{"completion_handoff":true,"requested_status":"partial_success"}}')""")
+            cur.execute(f"UPDATE {table('operation_tasks')} SET last_run_id=12 WHERE id=1")
+
+        response = operation_task_store.list_tasks(public_status=True, task_type="imported", status="queued")
+        self.assertEqual(1, response["total"])
+        self.assertEqual([(1, 11)], [(row["id"], row["last_run_id"]) for row in response["items"]])
+        self.assertEqual([{"value": "partial_success", "count": 1}, {"value": "queued", "count": 1}],
+                         response["facets"]["status"])
+        self.assertEqual([{"value": "2", "count": 1}], response["facets"]["run_count"])
+        self.assertEqual([{"value": "ready", "count": 1}], response["facets"]["target_status"])
+
+        all_rows = operation_task_store.list_tasks(public_status=True, page_size=1, page=2)
+        self.assertEqual(3, all_rows["total"])
+        self.assertEqual([1], [row["id"] for row in all_rows["items"]])
+        self.assertEqual([{"value": value, "count": 1} for value in ("0", "1", "2")],
+                         all_rows["facets"]["run_count"])
+        self.assertEqual([{"value": "partial_success", "count": 1}, {"value": "ready", "count": 1}],
+                         all_rows["facets"]["target_status"])
+
     def _reference_list(self, filters):
         """独立按旧全集合SQL计算预期，测试不依赖Git历史或当前页快捷分支。"""
         query = operation_task_store._operation_task_query_base(include_current_run=True, include_run_count=True)

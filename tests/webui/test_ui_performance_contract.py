@@ -24,9 +24,10 @@ class UiPerformanceContractTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(
             set(body),
-            {"account_batch_workers", "account_live_check_driver", "config_revision"},
+            {"account_batch_workers", "global_task_workers", "account_live_check_driver", "config_revision"},
         )
         self.assertIsInstance(body["account_batch_workers"], int)
+        self.assertEqual(body["account_batch_workers"], body["global_task_workers"])
         self.assertNotIn("WEBUI_AUTH_CODE", body)
         self.assertLess(len(json.dumps(body)), 1000)
 
@@ -199,11 +200,27 @@ if (accountTaskCanRetry({
         self.assertIn('data-account-task-delete', source)
         self.assertIn('/api/operations/bulk', source)
 
-    def test_task_center_localizes_unknown_execution_status_and_colors_it_as_attention(self):
+    def test_task_center_uses_public_failure_label_for_an_unconfirmed_result(self):
         source = (PROJECT_ROOT / 'webui/static/js/shared/common.js').read_text(encoding='utf-8')
         css = (PROJECT_ROOT / 'webui/static/css/shell.css').read_text(encoding='utf-8')
-        self.assertIn("request_unknown:'待确认'", source)
-        self.assertIn("s === 'request_unknown'", source)
+        harness = r'''
+const {createRequire} = require('node:module');
+const {resolve} = require('node:path');
+const {JSDOM} = createRequire(resolve('frontend/package.json'))('jsdom');
+const dom = new JSDOM('', {runScripts: 'outside-only', url: 'http://localhost/'});
+try {
+  dom.window.eval(require('node:fs').readFileSync('webui/static/js/shared/common.js', 'utf8'));
+  const panel = dom.window.document.body;
+  panel.innerHTML = dom.window.pillV2('request_unknown');
+  const badge = panel.querySelector('.jobs-v2-pill--failed');
+  require('node:assert/strict').equal(badge?.textContent, '失败');
+} finally {
+  dom.window.close();
+}
+'''
+        result = subprocess.run(["node", "-e", harness], cwd=PROJECT_ROOT,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('data-filter-status', source)
         self.assertIn('.account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }', css)
 

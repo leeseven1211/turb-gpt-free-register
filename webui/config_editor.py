@@ -425,7 +425,7 @@ def update_config(updates: dict) -> dict:
             # load_env 遵守 PYTHON_DOTENV_DISABLED，隔离测试不会被工作区 dotenv 污染。
             load_env(override=True)
             environment_expected = dict(os.environ)
-            with config_package.deferred_publication(), runtime.persistence_transaction():
+            with config_package.deferred_publication() as publication, runtime.persistence_transaction():
                 # 等待跨进程配置锁期间可能有其他进程提交，校验必须使用锁内最新值。
                 load_env(override=True)
                 environment_expected = dict(os.environ)
@@ -487,5 +487,5 @@ def update_config(updates: dict) -> dict:
         "reloaded": True,
         "reload_modules": reload_modules,
         "restart_required": [key for key in updated if key in RESTART_REQUIRED_KEYS],
-        "config_revision": config_revision(),
+        "config_revision": publication.get("published", old_configuration["snapshot"]).revision,
     }

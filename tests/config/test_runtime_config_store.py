@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
 from concurrent.futures import ThreadPoolExecutor
+from itertools import count
 from unittest.mock import patch
 
+import psycopg
 from cryptography.fernet import Fernet
 
 from core.storage import postgres as postgres_store, runtime_config as store
@@ -19,6 +21,7 @@ class RuntimeConfigStoreTests(PostgresTestCase):
     def test_missing_tables_are_read_only_and_inactive(self):
         schema = temporary_schema_name("config_empty")
         with patch.dict(os.environ, {"TURB_DB_SCHEMA": schema}):
+            self.assertEqual((None, 0), store.read_snapshot())
             self.assertIsNone(store.read_values())
             self.assertFalse(store.is_active())
             self.assertEqual(0, store.current_revision())
@@ -54,10 +57,47 @@ class RuntimeConfigStoreTests(PostgresTestCase):
 
     def test_unactivated_values_stay_inactive_until_explicit_activation(self):
         self.assertEqual(["A"], store.write_values({"A": "value"}))
+        with patch.object(store, "_cipher", side_effect=AssertionError("未激活不应解密")):
+            self.assertEqual((None, 1), store.read_snapshot())
         self.assertIsNone(store.read_values())
         self.assertFalse(store.is_active())
         self.assertEqual([], store.write_values({}, activate=True))
         self.assertEqual({"A": "value"}, store.read_values())
+        self.assertEqual(2, store.current_revision())
+
+    def test_snapshot_pairs_selected_values_and_revision_across_concurrent_commits(self):
+        store.write_values({"A": "version-1", "OTHER": "unrequested"}, activate=True)
+        versions = count(2)
+
+        class CommitAfterRead(psycopg.Cursor):
+            def execute(self, *args, **kwargs):
+                result = super().execute(*args, **kwargs)
+                # At READ COMMITTED, each statement sees all commits preceding it.
+                # Advance the real database after each read of either config field.
+                columns = {column.name for column in self.description or ()}
+                if columns.intersection({"revision", "value_encrypted"}):
+                    store.write_values({"A": f"version-{next(versions)}"})
+                return result
+
+        with psycopg.connect(postgres_store.database_url(), cursor_factory=CommitAfterRead) as reader:
+            values, revision = store.read_snapshot(conn=reader, keys=iter(["A", "A", "MISSING"]))
+        self.assertEqual({"A": f"version-{revision}"}, values)
+        self.assertGreater(store.current_revision(), revision)
+
+    def test_policy_reports_revision_of_returned_limits_when_another_writer_commits(self):
+        from core.operations.concurrency import _policy
+
+        store.write_values({"GLOBAL_TASK_WORKERS": "7", "CONCURRENCY_POLICY_REVISION": "1"}, activate=True)
+        read_snapshot = store.read_snapshot
+
+        def read_then_commit(**kwargs):
+            snapshot = read_snapshot(**kwargs)
+            store.write_values({"GLOBAL_TASK_WORKERS": "11"})
+            return snapshot
+
+        with postgres_store.connect() as conn, patch.object(store, "read_snapshot", side_effect=read_then_commit):
+            values, revision, migration_required = _policy(conn)
+        self.assertEqual((7, 1, False), (values["GLOBAL_TASK_WORKERS"], revision, migration_required))
         self.assertEqual(2, store.current_revision())
 
     def test_selected_keys_preserve_values_and_ignore_missing_or_duplicate_keys(self):
@@ -90,6 +130,7 @@ class RuntimeConfigStoreTests(PostgresTestCase):
             self.assertIsNone(store.read_values(keys=()))
         store.write_values({}, activate=True)
         with patch.object(store, "_cipher", side_effect=AssertionError("空键集合不应读取密钥")):
+            self.assertEqual(({}, 2), store.read_snapshot(keys=()))
             self.assertEqual({}, store.read_values(keys=()))
 
     def test_same_values_do_not_add_revision_or_history(self):

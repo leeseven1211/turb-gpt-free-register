@@ -7,6 +7,9 @@ let CONFIG_EXTRACT_LINK_ACTIVE_SECTION_V2 = '通用配置';
 let CONFIG_ACTIVE_GROUP_V2 = '';
 let CONFIG_NAV_QUERY_V2 = '';
 const CONFIG_PENDING_UPDATES = {};
+let CONFIG_SAVE_IN_FLIGHT = null;
+let CONFIG_SCHEMA_REVISION = 0;
+let CONFIG_SCHEMA_REQUEST = 0;
 const CONFIG_FIELD_ERRORS_V2 = {};
 const CONFIG_COMPOSITE_MODES_V2 = {};
 const CONFIG_ACTIVE_DOMAIN_V2 = {};
@@ -180,8 +183,10 @@ function configValuesEqual(a, b) {
 
 function setPendingConfigValue(key, value, options = {}) {
   resetHuanguangQuotaForKeyV2(key);
+  CONFIG_SAVE_IN_FLIGHT?.edited.add(key);
   const field = CONFIG.find(item => item.key === key);
-  if (!options.force && field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
+  // 提交中的字段即便改回原值，也要保留这次编辑：回执会改变原值。
+  if (!options.force && !CONFIG_SAVE_IN_FLIGHT?.submitted.has(key) && field && configValuesEqual(value, field.value)) delete CONFIG_PENDING_UPDATES[key];
   else CONFIG_PENDING_UPDATES[key] = value;
 }
 
@@ -202,12 +207,12 @@ function renderConfigSaveActions() {
   `;
 }
 
-function updateConfigSaveUi(mode = 'idle') {
+function updateConfigSaveUi(mode = CONFIG_SAVE_IN_FLIGHT ? 'saving' : 'idle') {
   const count = configPendingCount();
   const saveBar = document.getElementById('configSaveBarV2');
   if (saveBar) saveBar.hidden = count === 0;
   let copy = count ? `${count} 项更改未保存` : '所有更改已保存';
-  if (mode === 'saving') copy = `正在保存 ${count} 项更改…`;
+  if (mode === 'saving') copy = `正在保存 ${CONFIG_SAVE_IN_FLIGHT.submitted.size} 项更改…`;
   if (mode === 'validation_error') copy = '请检查标记的配置项';
   if (mode === 'error') copy = '保存失败，请重试';
   document.querySelectorAll('#tab-config [data-config-save-state]').forEach(state => {
@@ -1233,7 +1238,8 @@ function bindConfigCountryPickersV2() {
 }
 
 function renderConfigControlMarkupV2(f) {
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
+  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key)
+    ? CONFIG_PENDING_UPDATES[f.key] : (f.secret ? '' : f.value);
   let control = '';
   const driverChoices = configDriverChoices(f);
   if (f.key === 'SUB2API_MONITOR_GROUP_IDS') {
@@ -2591,6 +2597,7 @@ function renderConfigLayoutV2() {
 }
 
 function resetPendingConfigUpdates() {
+  if (CONFIG_SAVE_IN_FLIGHT) return;
   const keys = Object.keys(CONFIG_PENDING_UPDATES);
   if (!keys.length) return;
   if (!window.confirm(`撤销 ${keys.length} 项未保存更改？`)) return;
@@ -2734,18 +2741,46 @@ function bindConfigLayoutV2() {
   }
 }
 
+function renderConfigAfterRead() {
+  const active = document.activeElement;
+  const keyAttr = CONFIG_SAVE_IN_FLIGHT && active?.closest('#tab-config')
+    && ['data-key', 'data-wait-seconds-key', 'data-price-key'].find(name => active.hasAttribute(name));
+  const selection = keyAttr && typeof active.selectionStart === 'number'
+    ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+  renderConfigLayoutV2();
+  if (!keyAttr || active.isConnected) return;
+  const controls = document.querySelectorAll(`#tab-config [${keyAttr}]`);
+  const replacement = Array.from(controls).find(el => el.getAttribute(keyAttr) === active.getAttribute(keyAttr)
+    && el.type === active.type);
+  if (!replacement) return;
+  replacement.focus({preventScroll: true});
+  if (selection) replacement.setSelectionRange(...selection);
+}
+
 async function loadConfig() {
+  const request = ++CONFIG_SCHEMA_REQUEST;
+  // 提交前的 GET 可能仍在共享缓存中进行。按提交版本区分，保证刷新读取新值。
+  const url = CONFIG_SCHEMA_REVISION ? `/api/config?revision=${CONFIG_SCHEMA_REVISION}` : '/api/config';
   try {
-    CONFIG = await apiCached('/api/config', {}, 30000);
+    const fields = await apiCached(url, {}, 30000);
+    if (request !== CONFIG_SCHEMA_REQUEST) return;
+    CONFIG = fields.map(field => {
+      if (!field.secret) return field;
+      const safe = {...field, value: '', configured_value: '', published_effective_value: ''};
+      delete safe.default;
+      return safe;
+    });
     resetXxsyunPaymentBalanceV2();
     resetHuanguangXxsyunQuotaV2();
     resetHuanguangQuotaForKeyV2('EXTRACT_LINK_HUANGUANG_API_BASE');
-    renderConfigLayoutV2();
+    renderConfigAfterRead();
     bindConfigLayoutV2();
     loadExtractLinkTypesV2();
     markViewReady('config');
   } catch(e) {
-    showToast('加载配置失败: ' + e.message);
+    if (request !== CONFIG_SCHEMA_REQUEST) return;
+    if (!CONFIG_SAVE_IN_FLIGHT) showToast('加载配置失败: ' + e.message);
+    return false;
   }
 }
 
@@ -2869,6 +2904,7 @@ function trackConfigFieldChange(e) {
   // 向后端提交空字符串，避免重绘或误删导致凭据丢失。
   if (f.secret && el.dataset.secretClear !== 'true' && String(el.value || '').trim() === '') {
     resetHuanguangQuotaForKeyV2(f.key);
+    CONFIG_SAVE_IN_FLIGHT?.edited.add(f.key);
     delete CONFIG_PENDING_UPDATES[f.key];
     updateConfigSaveUi();
     return;
@@ -2909,13 +2945,45 @@ $('#tab-config').addEventListener('change', event => {
   input.dispatchEvent(new Event('input', {bubbles: true}));
 });
 
-async function saveConfigUpdates(triggerBtn) {
+function applyConfigSaveReceipt(updates, savedKeys, edited) {
+  for (const key of savedKeys) {
+    const field = configSchemaField(key);
+    const value = updates[key];
+    if (field?.secret) {
+      field.value = field.configured_value = field.published_effective_value = '';
+      field.configured = Array.isArray(value) ? value.length > 0 : Boolean(value);
+    } else if (field) {
+      field.value = field.configured_value = value;
+    }
+    if (edited.has(key)) continue;
+    delete CONFIG_PENDING_UPDATES[key];
+    delete CONFIG_COMPOSITE_MODES_V2[key];
+    delete CONFIG_FIELD_ERRORS_V2[key];
+    resetHuanguangQuotaForKeyV2(key);
+  }
+  // 即使重新读取配置失败，已保存的密钥也不应再留在输入框中。
+  document.querySelectorAll('#tab-config [data-secret-input]').forEach(input => {
+    const key = input.dataset.key;
+    if (savedKeys.has(key) && !Object.hasOwn(CONFIG_PENDING_UPDATES, key)) {
+      input.value = '';
+      input.defaultValue = '';
+      delete input.dataset.secretClear;
+    }
+  });
+}
+
+async function saveConfigUpdates() {
+  if (CONFIG_SAVE_IN_FLIGHT) return;
   const updates = {...CONFIG_PENDING_UPDATES};
-  if (!Object.keys(updates).length) {
+  const submitted = new Set(Object.keys(updates));
+  if (!submitted.size) {
     updateConfigSaveUi();
     return;
   }
-  updateConfigSaveUi('saving');
+  const edited = new Set();
+  CONFIG_SAVE_IN_FLIGHT = {submitted, edited};
+  let mode = 'idle';
+  updateConfigSaveUi();
   try {
     const concurrencyErrors = {};
     for (const [key, value] of Object.entries(updates)) {
@@ -2956,29 +3024,42 @@ async function saveConfigUpdates(triggerBtn) {
       }
     });
     const r = await api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({updates}) });
-    if (Object.keys(updates).some(key => concurrencyFieldV2(configSchemaField(key)))) {
+    const accepted = r?.updated ?? (typeof r?.reloaded === 'boolean' ? [...submitted] : null);
+    if (r?.ok === false || !Array.isArray(accepted) || !accepted.every(key => typeof key === 'string')) {
+      throw new Error('未收到有效的保存回执，草稿已保留');
+    }
+    const ignored = new Set(Array.isArray(r.ignored) ? r.ignored : []);
+    const savedKeys = new Set(accepted.filter(key => submitted.has(key) && !ignored.has(key)));
+    if ([...savedKeys].some(key => concurrencyFieldV2(configSchemaField(key)))) {
       CONFIG_CONCURRENCY_V2.preview = null;
       CONFIG_CONCURRENCY_V2.visible = false;
     }
-    Object.keys(updates).forEach(resetHuanguangQuotaForKeyV2);
-    Object.keys(CONFIG_FIELD_ERRORS_V2).forEach(key => delete CONFIG_FIELD_ERRORS_V2[key]);
-    Object.keys(CONFIG_COMPOSITE_MODES_V2).forEach(key => delete CONFIG_COMPOSITE_MODES_V2[key]);
+    CONFIG_SCHEMA_REVISION++;
+    applyConfigSaveReceipt(updates, savedKeys, edited);
     invalidateApiCache('/api/config');
     invalidateApiCache('/api/ui-settings');
-    for (const k of Object.keys(updates)) delete CONFIG_PENDING_UPDATES[k];
-    await loadConfig();
-    await loadCapabilities();
-    await loadRegistrationEmailSources();
+    let refreshFailed;
+    try {
+      const refreshed = await loadConfig();
+      refreshFailed = refreshed === false;
+      await loadCapabilities();
+      await loadRegistrationEmailSources();
+    } catch {
+      refreshFailed = true;
+    }
     const restartRequired = Array.isArray(r.restart_required) ? r.restart_required : [];
-    showToast(!r.reloaded
-      ? '配置已保存（热加载失败，需重启）'
-      : restartRequired.length
-        ? `配置已热加载；${restartRequired.join('、')}需重启后完整生效`
-        : '配置已生效');
+    let notice = '配置已保存并生效';
+    if (!savedKeys.size) notice = '本次更改未保存';
+    else if (!r.reloaded) notice = '配置已保存（热加载失败，需重启）';
+    else if (restartRequired.length) notice = `配置已保存并热加载；${restartRequired.join('、')}需重启后完整生效`;
+    if (savedKeys.size && savedKeys.size < submitted.size) notice += `，另有 ${submitted.size - savedKeys.size} 项未保存`;
+    if (refreshFailed) notice += '，页面刷新失败，请重新加载';
+    showToast(notice);
   } catch(e) {
-    const errors = Object.entries(e.fields || {});
+    const reported = Object.entries(e.fields || {});
+    const errors = reported.filter(([key]) => !edited.has(key));
     if (errors.length) {
-      Object.assign(CONFIG_FIELD_ERRORS_V2, e.fields);
+      Object.assign(CONFIG_FIELD_ERRORS_V2, Object.fromEntries(errors));
       const field = CONFIG.find(item => item.key === errors[0][0]);
       if (field) {
         const concurrency = concurrencyFieldV2(field);
@@ -2992,8 +3073,15 @@ async function saveConfigUpdates(triggerBtn) {
         else document.querySelector(`#tab-config [data-key="${field.key}"]`)?.focus();
       }
     }
-    updateConfigSaveUi(errors.length ? 'validation_error' : 'error');
-    showToast('保存失败: ' + (errors.length ? errors.map(([key, reason]) => `${CONFIG.find(item => item.key === key)?.label || key}：${reason}`).join('；') : e.message));
+    if (errors.length || !reported.length) {
+      mode = errors.length ? 'validation_error' : 'error';
+      showToast('保存失败: ' + (errors.length ? errors.map(([key, reason]) => `${CONFIG.find(item => item.key === key)?.label || key}：${reason}`).join('；') : e.message));
+    } else {
+      showToast('上次提交未通过校验，当前草稿已保留');
+    }
+  } finally {
+    CONFIG_SAVE_IN_FLIGHT = null;
+    updateConfigSaveUi(mode);
   }
 }
 $('#tab-config').addEventListener('click', (e) => {
@@ -3061,7 +3149,7 @@ $('#tab-config').addEventListener('click', (e) => {
   }
   const btn = e.target.closest('[data-save-config-v2]');
   if (!btn) return;
-  saveConfigUpdates(btn);
+  saveConfigUpdates();
 });
 
 window.addEventListener('beforeunload', (e) => {

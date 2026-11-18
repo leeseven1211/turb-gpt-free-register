@@ -320,13 +320,27 @@ function accountTaskFailureLocation(failure) {
     ? (typeof facetLabel === 'function' ? facetLabel('stage', correctedStage) : correctedStage)
     : [failure.label || failure.step_id || '阶段记录缺失', failure.stage].filter(Boolean).join(' · ');
 }
-function accountTaskCountryFailures(progress) {
+function accountTaskCountryFailureRows(progress) {
   const rows = Array.isArray(progress?.failure?.country_failures) ? progress.failure.country_failures : [];
-  const items = rows.filter(row => row && typeof row === 'object' && String(row.country || '').trim());
+  return rows.filter(row => row && typeof row === 'object' && String(row.country || '').trim());
+}
+function accountTaskCountryFailures(progress) {
+  const items = accountTaskCountryFailureRows(progress);
   if (!items.length) return '';
   return `<ul class="account-task-country-failures">${items.map(row => `<li>${esc(String(row.country).trim())}：${esc(String(row.summary || '').trim() || '诊断记录不完整')}</li>`).join('')}</ul>`;
 }
-function accountTaskFailureSummary(progress) {
+function accountTaskSameFailure(failure, run) {
+  if (!failure || !run) return false;
+  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const stepRaw = normalize(failure.message), runRaw = normalize(run.error_message);
+  const stepCause = normalize(failure.error_info?.cause_summary), runCause = normalize(run.error_info?.cause_summary);
+  if (stepRaw && runRaw && stepRaw !== runRaw) return false;
+  if (stepCause && runCause) return stepCause === runCause;
+  if (stepRaw && runRaw) return true;
+  const stepText = stepCause || normalize(failure.error_info?.summary) || stepRaw;
+  return Boolean(stepText) && stepText === (runCause || normalize(run.error_info?.summary) || runRaw);
+}
+function accountTaskFailureSummary(progress, execution = null) {
   const failure = progress?.failure && typeof progress.failure === 'object' ? progress.failure : null;
   if (!failure) return '';
   const location = accountTaskFailureLocation(failure);
@@ -342,8 +356,13 @@ function accountTaskFailureSummary(progress) {
   const cause = String(failure.error_info?.cause_summary || '').trim();
   const causeHtml = cause && !String(errorSummary).includes(cause) && !String(message).includes(cause)
     ? `<span>原因：${esc(cause)}</span>` : '';
-  const technical = failure.error_info || (failure.evidence && typeof failure.evidence === 'object')
-    ? `<details><summary>查看技术详情</summary><pre>${esc(JSON.stringify({error_info: failure.error_info || null, evidence: failure.evidence || null}, null, 2))}</pre></details>`
+  const evidence = {error_info: failure.error_info || null, evidence: failure.evidence || null};
+  if (accountTaskSameFailure(failure, execution)) {
+    evidence.message = failure.message;
+    evidence.execution = {error_message: execution.error_message, error_info: execution.error_info};
+  }
+  const technical = evidence.error_info || evidence.execution || (evidence.evidence && typeof evidence.evidence === 'object')
+    ? `<details data-step-dialog-detail="failure"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(evidence, null, 2))}</pre></details>`
     : '';
   const primary = !countries || failure.error_info?.auto_refresh_at_failed ? `<span>${esc(message)}</span>` : '';
   return `<div class="account-task-progress-failure" role="status"><strong>${esc(locationTitle)}：${esc(location)}</strong>${primary}${countries}${errorSummary && errorSummary !== message ? `<span>错误：${esc(errorSummary)}</span>` : ''}${causeHtml}${event}${reconcile ? '<span class="account-task-progress-flag">原请求证据已保留</span>' : ''}${technical}</div>`;
@@ -355,10 +374,10 @@ function accountTaskStepTooltipText(step) {
 function hideAccountTaskStepTooltip() {
   if (typeof _accountsTooltipTarget !== 'undefined' && _accountsTooltipTarget?.closest?.('#accountTaskStageProgress')) _hideAccountsTooltip();
 }
-function accountTaskProgressStepMarkup(step, index, compact = false) {
+function accountTaskProgressStepMarkup(step, index, selectedStep) {
   const id = accountTaskProgressStepId(step) || `step-${index + 1}`;
   const state = String(step?.display_status || taskProgressStepStatus(step));
-  const selected = accountTaskStepFilter === id || (Array.isArray(step?.raw_stages) && step.raw_stages.includes(accountTaskStepFilter));
+  const selected = selectedStep === step;
   const label = taskProgressCompactLabel(step);
   const tooltip = attrEsc(accountTaskStepTooltipText(step));
   const duration = taskProgressStepDuration(step);
@@ -390,7 +409,7 @@ function accountTaskStepAttemptMarkup(attempt, index) {
   return `<li class="account-task-attempt"><div><strong>记录 ${index + 1} · ${esc(label)}</strong><time>${esc(formatDateTime(attempt.created_at))}</time></div><p>${esc(attempt.message || '无补充说明')}</p><small>${esc(attempt.raw_stage || '')}${attempt.event_id ? ` · 事件 ${esc(attempt.event_id)}` : ''}</small><details data-step-dialog-detail="attempt-${index}"><summary>技术字段</summary><pre>${esc(JSON.stringify(attempt, null, 2))}</pre></details></li>`;
 }
 function accountTaskStepDialogBody(step, tab) {
-  if (!step) return tab === 'children' ? accountTaskChildRuns(accountTaskProgressSnapshot) || '<p>当前 Run 没有独立子任务。</p>' : accountTaskFailureSummary(accountTaskProgressSnapshot) || '<p>当前 Run 没有失败记录。</p>';
+  if (!step) return tab === 'children' ? accountTaskChildRuns(accountTaskProgressSnapshot) || '<p>当前 Run 没有独立子任务。</p>' : accountTaskFailureSummary(accountTaskProgressSnapshot, accountTaskDetailExecution()) || '<p>当前 Run 没有失败记录。</p>';
   if (tab === 'attempts') {
     const attempts = Array.isArray(step.attempts) ? step.attempts : [];
     return attempts.length ? `<ol class="account-task-attempt-list">${attempts.map(accountTaskStepAttemptMarkup).join('')}</ol>` : '<p>此步骤暂无阶段事件。</p>';
@@ -408,7 +427,8 @@ function renderAccountTaskStepDialog() {
   const state = accountTaskStepDetailState;
   const step = state.stepId ? (accountTaskProgressSnapshot?.main_steps || []).find(item => accountTaskProgressStepId(item) === state.stepId) : null;
   if (state.stepId && (!step || taskProgressStepStatus(step) === 'skipped')) { closeAccountTaskStepDialog(); return; }
-  const signature = JSON.stringify({state, step, failure: !step && accountTaskProgressSnapshot?.failure, children: !step && accountTaskProgressSnapshot?.outcome?.child_tasks});
+  const execution = !step && state.tab === 'failure' ? accountTaskDetailExecution() : null;
+  const signature = JSON.stringify({state, step, failure: !step && accountTaskProgressSnapshot?.failure, executionError: execution?.error_message, executionInfo: execution?.error_info, children: !step && accountTaskProgressSnapshot?.outcome?.child_tasks});
   if (signature === accountTaskStepDetailSignature) return;
   accountTaskStepDetailSignature = signature;
   const title = $('#accountTaskStepDetailTitle');
@@ -459,9 +479,11 @@ function scrollAccountTaskDialogFromWheel(event) {
   if (event.defaultPrevented || event.ctrlKey || event.shiftKey || !event.deltaY) return;
   const overlay = $('#accountTaskStepDetailOverlay');
   const stepDialogOpen = overlay && !overlay.classList.contains('hidden');
+  const panel = $('#accountTaskLogPanel');
+  if (!stepDialogOpen && panel && panel.scrollHeight > panel.clientHeight + 1) return;
   const content = stepDialogOpen
     ? $('#accountTaskStepDetailContent')
-    : $('#accountTaskLogPanel')?.querySelector('.account-task-detail-content');
+    : panel?.querySelector('.account-task-detail-content');
   // 正文及其内部代码块沿用浏览器滚动；标题、步骤与页签滚动当前弹窗正文。
   if (!content || content.contains(event.target) || content.scrollHeight <= content.clientHeight) return;
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? content.clientHeight : 1;
@@ -469,13 +491,17 @@ function scrollAccountTaskDialogFromWheel(event) {
   hideAccountTaskStepTooltip();
   content.scrollTop += event.deltaY * unit;
 }
-function accountTaskProgressBrief(progress) {
+function accountTaskProgressBrief(progress, execution = null) {
   const failure = progress?.failure;
   const children = (progress?.outcome?.child_tasks || []).filter(child => Number(child.task_id) > 0);
   const location = failure ? accountTaskFailureLocation(failure) : '';
-  const message = failure?.error_info?.cause_summary || failure?.error_info?.summary || failure?.message || '';
+  const countries = accountTaskCountryFailureRows(progress);
+  const message = countries.length && !failure.error_info?.auto_refresh_at_failed
+    ? `${countries.length} 个国家查询失败，查看具体原因`
+    : failure?.error_info?.cause_summary || failure?.error_info?.summary || failure?.message || '';
   const inferred = failure?.inferred === true || failure?.evidence?.inferred === true || ['inferred', 'legacy', 'unobserved'].includes(failure?.evidence) || ['inferred'].includes(failure?.evidence?.source || failure?.evidence?.kind);
-  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '历史失败位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span></button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
+  const code = failure?.error_info?.display_code || (accountTaskSameFailure(failure, execution) && execution.error_info?.display_code);
+  return `<div class="account-task-stage-brief">${failure ? `<button type="button" class="account-task-failure-brief" data-account-task-failure-details aria-haspopup="dialog" title="${attrEsc(`${location}：${message}`)}"><strong>${inferred ? '历史失败位置' : '失败'}：${esc(location)}</strong><span>${esc(message || '查看定位与证据')}</span>${code ? `<small>${esc(code)}</small>` : ''}</button>` : '<span class="account-task-stage-brief-hint">悬浮查看时间与阶段事件，点击步骤筛选日志。</span>'}${children.length ? `<button type="button" class="account-task-child-brief" data-account-task-child-details aria-haspopup="dialog">子任务 ${children.length}</button>` : ''}</div>`;
 }
 function renderAccountTaskProgressSnapshot(progress) {
   const panel = $('#accountTaskStageProgress');
@@ -490,9 +516,15 @@ function renderAccountTaskProgressSnapshot(progress) {
   if (!stages.length) {
     accountTaskStepPage = 0;
     accountTaskStepPageSize = 0;
-    panel.classList.add('hidden');
-    panel.innerHTML = '';
-    closeAccountTaskStepDialog();
+    if (progress?.failure || progress?.outcome?.child_tasks?.length) {
+      panel.innerHTML = accountTaskProgressBrief(progress, accountTaskDetailExecution());
+      panel.classList.remove('hidden');
+      renderAccountTaskStepDialog();
+    } else {
+      panel.classList.add('hidden');
+      panel.innerHTML = '';
+      closeAccountTaskStepDialog();
+    }
     renderAccountTaskFilterBar();
     return;
   }
@@ -513,21 +545,22 @@ function renderAccountTaskProgressSnapshot(progress) {
   const compact = size >= 6 || width / size < 180;
   panel.classList.toggle('is-compact', compact);
   panel.classList.toggle('is-dense', size >= 9);
+  const selected = accountTaskSelectedStep(accountTaskStepIndex(progress.main_steps));
   if (!accountTaskStepPageSize && accountTaskStepFilter) {
-    const selectedIndex = stages.findIndex(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
+    const selectedIndex = stages.indexOf(selected);
     if (selectedIndex >= 0) accountTaskStepPage = Math.floor(selectedIndex / size);
   }
   if (accountTaskStepPageSize && size !== accountTaskStepPageSize) accountTaskStepPage = Math.floor(accountTaskStepPage * accountTaskStepPageSize / size);
   accountTaskStepPageSize = size;
   const page = accountTaskProgressPage(stages, accountTaskStepPage, size);
   accountTaskStepPage = page.page;
-  const track = page.steps.map((step, index) => accountTaskProgressStepMarkup(step, page.start + index, compact)).join('');
+  const track = page.steps.map((step, index) => accountTaskProgressStepMarkup(step, page.start + index, selected)).join('');
   const pager = page.pages > 1
     ? `<span>共 ${stages.length} 步 · ${page.start + 1}–${page.start + page.steps.length}</span><div><button type="button" data-account-task-step-page="${page.page - 1}"${page.page === 0 ? ' disabled' : ''} aria-label="上一页步骤">上一页</button><span aria-live="polite">${page.page + 1} / ${page.pages}</span><button type="button" data-account-task-step-page="${page.page + 1}"${page.page + 1 === page.pages ? ' disabled' : ''} aria-label="下一页步骤">下一页</button></div>`
-    : `<span>共 ${stages.length} 步</span><span>已全部显示</span>`;
-  const countryFailures = accountTaskCountryFailures(progress);
-  panel.classList.toggle('has-country-failures', Boolean(countryFailures));
-  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(sourceText || '按实际执行记录排列，未执行步骤在后')}">${esc(sourceText || '按实际执行记录排列')}</small></div>${accountTaskProgressBrief(progress)}${countryFailures}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div><div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>`;
+    : '';
+  const order = sourceText || '按实际执行记录排列';
+  const brief = accountTaskProgressBrief(progress, accountTaskDetailExecution());
+  panel.innerHTML = `<div class="account-task-stage-current"><strong>${esc(currentText)}</strong><small title="${attrEsc(order)}">${esc(order)} · 共 ${stages.length} 步</small></div>${brief}<div class="account-task-stage-track" style="--task-step-columns:${size}">${track}</div>${pager ? `<div class="account-task-stage-pager" aria-label="步骤翻页">${pager}</div>` : ''}`;
   panel.classList.remove('hidden');
   const restore = Array.from(panel.querySelectorAll('button')).find(item => focusedFilter ? item.getAttribute('data-account-task-step-filter') === focusedFilter : focusedDetails ? item.getAttribute('data-account-task-step-details') === focusedDetails && item.getAttribute('data-step-detail-tab') === focusedTab : focusedPage != null && item.getAttribute('data-account-task-step-page') === focusedPage);
   if (restore) restore.focus({preventScroll:true});
@@ -775,60 +808,67 @@ function restoreTaskLogDetails(panel, attribute, opened) {
     if (opened.has(item.closest(`[${attribute}]`)?.getAttribute(attribute))) item.open = true;
   });
 }
-function accountTaskEventStepId(event) {
-  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
-  return String(event?.main_step_id || detail.main_step_id || '').trim();
+function accountTaskStepIndex(steps) {
+  const ids = new Map(), stages = new Map(), events = new Map();
+  function add(map, key, step) {
+    if (key == null || key === '') return;
+    const value = String(key);
+    // null 表示有多个步骤使用同一条线索。
+    if (!map.has(value)) map.set(value, step);
+    else if (map.get(value) !== step) map.set(value, null);
+  }
+  for (const step of steps || []) {
+    add(ids, accountTaskProgressStepId(step), step);
+    for (const stage of step.raw_stages || []) add(stages, stage, step);
+    for (const id of step.event_ids || []) add(events, id, step);
+  }
+  return {ids, stages, events};
 }
-function accountTaskEventStage(event) {
-  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
-  return String(event?.stage || detail.stage || event?.stage_label || '').trim();
+function accountTaskRecordAssociation(item, index, isLog = false) {
+  const fields = (isLog ? item.fields : item.detail) || {};
+  const stepId = String(item.main_step_id || fields.main_step_id || '').trim();
+  const eventId = String(item.event_id || fields.event_id || (!isLog && item.id) || '');
+  const rawStages = item.raw_stages || fields.raw_stages;
+  const stages = [item.raw_stage || fields.raw_stage, item.stage || fields.stage,
+    item.stage_label || fields.stage_label, ...(Array.isArray(rawStages) ? rawStages : [])].filter(Boolean).map(String);
+  let step;
+  if (stepId) step = index.ids.get(stepId);
+  else if (index.events.has(eventId)) step = index.events.get(eventId);
+  else {
+    const matches = new Set(stages.filter(stage => index.stages.has(stage)).map(stage => index.stages.get(stage)));
+    if (matches.size === 1) step = matches.values().next().value;
+  }
+  return {step, stepId, eventId, stages};
 }
-function accountTaskFilterRawStages() {
-  const progress = Array.isArray(accountTaskProgressSnapshot?.main_steps) ? accountTaskProgressSnapshot.main_steps : [];
-  const step = progress.find(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
-  return Array.isArray(step?.raw_stages) ? step.raw_stages.map(String) : [];
+function accountTaskSelectedStep(index) {
+  return index.ids.get(accountTaskStepFilter) || index.stages.get(accountTaskStepFilter);
 }
-function accountTaskEventMatchesFilter(event) {
-  if (!accountTaskStepFilter) return true;
-  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
-  const stepId = accountTaskEventStepId(event);
-  const stage = accountTaskEventStage(event);
-  const eventId = String(event?.event_id || event?.id || '');
-  const rawStages = Array.isArray(event?.raw_stages)
-    ? event.raw_stages.map(String)
-    : Array.isArray(detail.raw_stages) ? detail.raw_stages.map(String) : [];
-  const stageLabel = String(event?.stage_label || detail.stage_label || '').trim();
-  const selectedRawStages = accountTaskFilterRawStages();
-  return stepId === accountTaskStepFilter || stage === accountTaskStepFilter || stageLabel === accountTaskStepFilter || rawStages.includes(accountTaskStepFilter) || eventId === accountTaskStepFilter || selectedRawStages.includes(stage) || selectedRawStages.includes(stageLabel) || rawStages.some(item => selectedRawStages.includes(item));
-}
-function accountTaskLogItemMatchesFilter(item) {
-  if (!accountTaskStepFilter) return true;
-  const fields = item?.fields && typeof item.fields === 'object' ? item.fields : {};
-  const stepId = String(item?.main_step_id || fields.main_step_id || '').trim();
-  const stage = String(item?.stage || fields.stage || '').trim();
-  const eventId = String(item?.event_id || fields.event_id || '');
-  const rawStages = Array.isArray(item?.raw_stages) ? item.raw_stages.map(String) : Array.isArray(fields.raw_stages) ? fields.raw_stages.map(String) : [];
-  const selectedRawStages = accountTaskFilterRawStages();
-  return stepId === accountTaskStepFilter || stage === accountTaskStepFilter || rawStages.includes(accountTaskStepFilter) || eventId === accountTaskStepFilter || selectedRawStages.includes(stage) || rawStages.some(item => selectedRawStages.includes(item));
-}
-function accountTaskFilterLabel() {
-  if (!accountTaskStepFilter) return '全流程';
-  const progress = accountTaskProgressSnapshot?.main_steps || [];
-  const step = progress.find(item => accountTaskProgressStepId(item) === accountTaskStepFilter || (item.raw_stages || []).includes(accountTaskStepFilter));
-  return step ? accountTaskProgressStepLabel(step) : accountTaskStepFilter;
+function accountTaskRecordMatchesFilter(association, index) {
+  const filter = accountTaskStepFilter;
+  if (!filter || association.eventId === filter) return true;
+  const selected = accountTaskSelectedStep(index);
+  if (selected) return association.step === selected;
+  return association.stepId === filter || association.stages.includes(filter);
 }
 function renderAccountTaskFilterBar() {
   const host = $('#accountTaskProgressFilter');
   if (!host) return;
-  const selectedStep = taskProgressVisibleSteps(accountTaskProgressSnapshot?.main_steps).find(step => accountTaskProgressStepId(step) === accountTaskStepFilter || step.raw_stages?.includes(accountTaskStepFilter));
-  host.innerHTML = `<span class="account-task-filter-label">当前查看：<strong>${esc(accountTaskFilterLabel())}</strong></span>${accountTaskStepFilter ? '<button type="button" class="account-task-filter-clear" data-account-task-filter-clear>清除筛选 · 查看全流程</button>' : ''}${selectedStep ? `<span class="account-task-selected-timing">开始 ${esc(selectedStep.started_at ? formatDateTime(selectedStep.started_at) : '—')} · 结束 ${esc(selectedStep.completed_at ? formatDateTime(selectedStep.completed_at) : '—')} · 耗时 ${esc(taskProgressStepDuration(selectedStep))}</span>` : ''}`;
+  const selectedStep = accountTaskStepFilter && accountTaskSelectedStep(accountTaskStepIndex(accountTaskProgressSnapshot?.main_steps));
+  const label = selectedStep ? accountTaskProgressStepLabel(selectedStep) : accountTaskStepFilter || '全流程';
+  host.innerHTML = `<span class="account-task-filter-label">当前查看：<strong>${esc(label)}</strong></span>${accountTaskStepFilter ? '<button type="button" class="account-task-filter-clear" data-account-task-filter-clear>清除筛选 · 查看全流程</button>' : ''}${selectedStep ? `<span class="account-task-selected-timing">开始 ${esc(selectedStep.started_at ? formatDateTime(selectedStep.started_at) : '—')} · 结束 ${esc(selectedStep.completed_at ? formatDateTime(selectedStep.completed_at) : '—')} · 耗时 ${esc(taskProgressStepDuration(selectedStep))}</span>` : ''}`;
 }
 function setAccountTaskStepFilter(stepId) {
   accountTaskStepFilter = stepId ? String(stepId) : null;
-  renderAccountTaskProgressSnapshot(accountTaskProgressSnapshot);
+  // 保留原按钮及焦点，避免筛选后在指针下重建按钮、再次弹出悬浮提示。
+  const selectedStep = accountTaskSelectedStep(accountTaskStepIndex(accountTaskProgressSnapshot?.main_steps));
+  const selectedId = selectedStep ? accountTaskProgressStepId(selectedStep) : null;
+  for (const button of document.querySelectorAll('#accountTaskStageProgress [data-account-task-step-filter]')) {
+    const selected = button.dataset.accountTaskStepFilter === selectedId;
+    button.setAttribute('aria-pressed', String(selected));
+    button.closest('[data-account-task-step]').classList.toggle('is-selected', selected);
+  }
   renderAccountTaskEvents();
   renderAccountTaskRunLog();
-  renderAccountTaskFilterBar();
 }
 
 function renderAccountTaskEvents() {
@@ -836,24 +876,23 @@ function renderAccountTaskEvents() {
   if (!content) return;
   // 展示顺序按校正后的时间排列，保留缓存和接口游标的 ID 顺序。
   const opened = rememberTaskLogDetails(content, 'data-event-id');
-  const events = [...accountTaskEventCache].filter(accountTaskEventMatchesFilter).sort((left, right) => {
+  const index = accountTaskStepIndex(accountTaskProgressSnapshot?.main_steps);
+  const events = accountTaskEventCache.map(event => ({event, association: accountTaskRecordAssociation(event, index)}))
+    .filter(row => accountTaskRecordMatchesFilter(row.association, index)).sort(({event: left}, {event: right}) => {
     const leftTime = Date.parse(left.created_at);
     const rightTime = Date.parse(right.created_at);
     return (Number.isNaN(leftTime) ? 0 : leftTime) - (Number.isNaN(rightTime) ? 0 : rightTime)
       || Number(left.id) - Number(right.id);
   });
-  content.innerHTML = events.map(event => {
+  content.innerHTML = events.map(({event, association}) => {
     const level = String(event.level || 'INFO').toUpperCase();
     const state = accountTaskEventStepState(event);
     const detail = meaningfulTaskDetail(event.detail);
     const css = level === 'ERROR' || state === 'failed' ? ' is-error' : level === 'WARNING' ? ' is-warning' : state === 'success' ? ' is-success' : '';
-    const stepId = accountTaskEventStepId(event);
     const stageLabel = event.stage_label || ACCOUNT_TASK_STAGE_LABELS[normalizeAccountTaskStage(event.stage)] || event.stage || '事件';
-    const mainSteps = accountTaskProgressSnapshot?.main_steps || [];
-    const mainStep = mainSteps.find(item => item.id === stepId || (item.raw_stages || []).includes(event.raw_stage || event.stage));
-    const association = mainStep ? ` · ${mainStep.label}` : stepId ? '' : ' · 未关联步骤';
+    const stepLabel = association.step ? accountTaskProgressStepLabel(association.step) : association.stepId || '未关联步骤';
     return `<div class="account-task-event${css}" data-event-id="${attrEsc(event.id)}">
-      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(level)}</span><span>${esc(stageLabel)}${esc(association)}</span><span class="account-task-event-type">${esc(state ? ACCOUNT_TASK_STEP_STATE_LABELS[state] : '记录')}</span>${event.event_id ? `<span class="account-task-event-id">事件 ${esc(event.event_id)}</span>` : ''}</div>
+      <div class="account-task-event-head"><span>${esc(formatDateTime(event.created_at))}</span><span>${esc(level)}</span><span>${esc(stageLabel)}${stepLabel !== stageLabel ? ` · ${esc(stepLabel)}` : ''}</span><span class="account-task-event-type">${esc(state ? ACCOUNT_TASK_STEP_STATE_LABELS[state] : '记录')}</span>${event.event_id ? `<span class="account-task-event-id">事件 ${esc(event.event_id)}</span>` : ''}</div>
       <div class="account-task-event-message">${esc(event.message || '-')}</div>
       ${detail ? `<details class="account-task-event-detail"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(detail, null, 2))}</pre></details>` : ''}
     </div>`;
@@ -866,14 +905,15 @@ function renderAccountTaskRunLog() {
   const panel = $('#accountTaskRunLogContent');
   if (!panel) return;
   const opened = rememberTaskLogDetails(panel, 'data-log-key');
-  const lines = accountTaskRunLogLines.filter(accountTaskLogItemMatchesFilter);
-  panel.innerHTML = lines.map(item => {
+  const index = accountTaskStepIndex(accountTaskProgressSnapshot?.main_steps);
+  const lines = accountTaskRunLogLines.map(item => ({item, association: accountTaskRecordAssociation(item, index, true)}))
+    .filter(row => accountTaskRecordMatchesFilter(row.association, index));
+  panel.innerHTML = lines.map(({item, association}) => {
     const fields = meaningfulTaskDetail(item.fields);
     const formattedTimestamp = formatDateTime(item.ts);
     const timestamp = formattedTimestamp === '-' ? '时间缺失' : formattedTimestamp;
-    const rawStages = Array.isArray(item?.raw_stages) ? item.raw_stages : Array.isArray(item?.fields?.raw_stages) ? item.fields.raw_stages : [];
-    const stepId = item?.main_step_id || item?.fields?.main_step_id || '';
-    const label = stepId || rawStages.length ? (item.stage_label || item.stage || '未关联步骤') : '未关联步骤';
+    const label = association.step ? accountTaskProgressStepLabel(association.step)
+      : association.stepId ? item.stage_label || item.stage || association.stepId : '未关联步骤';
     const detail = fields
       ? `<details class="account-task-log-detail"><summary>查看技术详情</summary><pre>${esc(JSON.stringify(fields, null, 2))}</pre></details>`
       : '';
@@ -1030,13 +1070,24 @@ function openAccountTaskLog(taskId, runId = null, stepId = null) {
   accountTaskLogTimer = setInterval(pollAccountTaskLog, 2000);
 }
 
-function renderAccountTaskSelectedRunError(run) {
+function accountTaskDetailExecution() {
+  if (!activeAccountTaskRunId) return accountTaskSnapshot;
+  return accountTaskSnapshot?.runs?.find(run => String(run.id) === String(activeAccountTaskRunId));
+}
+function renderAccountTaskSelectedRunError(run, progress = accountTaskProgressSnapshot) {
+  const panel = $('#accountTaskLogErrorSummary');
+  if (!panel) return;
   const error = run?.error_message || '';
   const info = run?.error_info || null;
-  renderTaskLogErrorSummary('accountTaskLogErrorSummary', {
-    error_message: error,
-    error_info: info ? {...info, summary: accountTaskErrorDisplayText(info, error)} : null,
-  });
+  if ((!error && !info) || accountTaskSameFailure(progress?.failure, run)) {
+    renderTaskLogErrorSummary('accountTaskLogErrorSummary', null);
+    return;
+  }
+  const evidence = JSON.stringify({error_message: error, error_info: info}, null, 2);
+  const previous = panel.querySelector('pre');
+  if (previous?.textContent === evidence) return;
+  panel.innerHTML = `<details><summary>${taskErrorBadge(info)}<span>${esc(accountTaskErrorDisplayText(info, error))}</span></summary><pre>${esc(evidence)}</pre></details>`;
+  panel.classList.remove('hidden');
 }
 
 async function pollAccountTaskLog() {
@@ -1052,14 +1103,20 @@ async function pollAccountTaskLog() {
     const previousRunId = activeAccountTaskRunId;
     syncAccountTaskRunPicker(task);
     if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
-    const selectedRun = (task.runs || []).find(run => String(run.id) === String(activeAccountTaskRunId)) || {};
-    renderAccountTaskSelectedRunError(selectedRun.id ? selectedRun : task);
-    const waitReasons = accountTaskAdmissionReasons(selectedRun.id ? selectedRun : task);
+    const selectedRunId = activeAccountTaskRunId;
+    const execution = accountTaskDetailExecution();
+    const selectedRun = execution || {};
+    renderAccountTaskSelectedRunError(execution);
+    const waitReasons = accountTaskAdmissionReasons(selectedRun);
     const waitText = (selectedRun.status || task.status) === 'queued' && waitReasons.length
       ? ` · ${waitReasons.map(accountTaskAdmissionReasonText).join('；')}` : '';
-    $('#accountTaskDetailSummary').textContent = `${facetLabel('task_type', task.task_type)} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}${waitText}`}`;
+    const target = task.email_snapshot || task.email || (task.account_id ? `账号 #${task.account_id}` : task.target_id);
+    const summary = $('#accountTaskDetailSummary');
+    summary.textContent = `${facetLabel('task_type', task.task_type)}${target ? ` · ${target}` : ''} · ${selectedRun.debug_pause ? taskDebugPauseSummary(selectedRun.debug_pause) : `${facetLabel('status', selectedRun.status || task.status)} · ${formatTaskDuration(selectedRun.duration_ms)}${waitText}`}`;
+    summary.title = summary.textContent;
     await pollAccountTaskProgress();
-    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId)) return;
+    if (requestId !== accountTaskRequestId || taskId !== String(activeAccountTaskId) || selectedRunId !== activeAccountTaskRunId) return;
+    renderAccountTaskSelectedRunError(execution);
     if (previousRunId !== activeAccountTaskRunId || accountTaskEventCursor == null) {
       await pollAccountTaskEvents(true);
       if (activeAccountTaskDetailView === 'logs') await pollAccountTaskRunLog(true);
@@ -1085,6 +1142,7 @@ async function pollAccountTaskLog() {
 
 $('#accountTaskRunSelect')?.addEventListener('change', event => {
   resetAccountTaskRunData(String(event.target.value || '') || null);
+  renderAccountTaskSelectedRunError(accountTaskDetailExecution());
   pollAccountTaskLog();
 });
 $('#accountTaskLogPanel')?.addEventListener('wheel', scrollAccountTaskDialogFromWheel, {passive:false});

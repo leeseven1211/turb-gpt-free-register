@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {createRequire} = require('node:module');
+const {JSDOM} = createRequire(path.resolve(__dirname, '../../frontend/package.json'))('jsdom');
 
 const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/config/page.js'), 'utf8');
 const field = (key, value = 3) => ({key, value, type: 'int', label: key, group: '并发控制', help: '填写正整数', range: {min: 1}});
@@ -77,18 +79,52 @@ test('并发输入使用明确标签、正整数下限与可定位错误，策�
   assert.match(markup, /aria-describedby="concurrency-GLOBAL_TASK_WORKERS-help concurrency-GLOBAL_TASK_WORKERS-error"/);
 });
 
-test('状态轮询保持草稿、DOM输入与焦点，并清楚显示缩容中的占用分项', async () => {
-  const {view, context, textNodes} = harness();
-  const input = {value: '9'};
-  context.document.activeElement = input;
-  view.pending.GLOBAL_TASK_WORKERS = '9';
-  view.state.visible = true;
-  await view.query();
-  assert.equal(view.pending.GLOBAL_TASK_WORKERS, '9');
+test('状态轮询保持草稿、DOM输入与焦点，并清楚显示缩容中的占用分项', async t => {
+  const dom = new JSDOM('<section id="tab-config"><div id="configSectionsV2"></div></section>', {
+    runScripts: 'outside-only', pretendToBeVisual: true,
+  });
+  t.after(() => dom.window.close());
+  const {window} = dom;
+  const {document} = window;
+  const status = Promise.withResolvers();
+  const requests = [];
+  Object.assign(window, {
+    CONFIG: [field('GLOBAL_TASK_WORKERS')],
+    $: selector => document.querySelector(selector),
+    esc: String, attrEsc: String,
+    api(url) {
+      requests.push(url);
+      if (url === '/api/operations/concurrency') return status.promise;
+      if (url === '/api/config/concurrency-preview') return Promise.resolve({ok: true, migration_required: false});
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  window.eval(`${source}
+    document.getElementById('configSectionsV2').innerHTML = renderConcurrencyConfigSectionV2(CONFIG);
+    CONFIG_CONCURRENCY_V2.visible = true;
+    window.getDraft = () => CONFIG_PENDING_UPDATES.GLOBAL_TASK_WORKERS;
+  `);
+  const refresh = window.queryConcurrencyStatusV2();
+  const input = document.getElementById('concurrency-GLOBAL_TASK_WORKERS');
+  input.focus();
+  input.value = '9';
+  input.dispatchEvent(new window.Event('input', {bubbles: true}));
+  assert.equal(window.getDraft(), '9');
+  assert.equal(document.querySelector('[data-save-config-v2]').disabled, false);
+  status.resolve({
+    ok: true,
+    global: {limit: 4, occupied: 10, reserved: 1, executing: 7, cleaning: 1, debug_hold: 1, draining: true},
+    types: [],
+  });
+  await refresh;
+  assert.deepEqual(requests, ['/api/operations/concurrency', '/api/config/concurrency-preview']);
+  assert.equal(document.getElementById('concurrency-GLOBAL_TASK_WORKERS'), input);
+  assert.equal(document.activeElement, input);
   assert.equal(input.value, '9');
-  assert.equal(context.document.activeElement, input);
-  assert.match(textNodes.get('[data-concurrency-summary]').textContent, /10 \/ 4，等待现有任务结束/);
-  assert.match(textNodes.get('[data-concurrency-summary]').textContent, /预约 1 · 执行 7 · 清理 1 · 调试保留 1/);
+  assert.equal(window.getDraft(), '9');
+  const summary = document.querySelector('[data-concurrency-summary]').textContent;
+  assert.match(summary, /10 \/ 4，等待现有任务结束/);
+  assert.match(summary, /预约 1 · 执行 7 · 清理 1 · 调试保留 1/);
 });
 
 test('部署范围明确标注，观察时间复用项目浏览器时区格式', async () => {

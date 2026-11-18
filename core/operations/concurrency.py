@@ -148,12 +148,12 @@ def _policy(conn) -> tuple[dict[str, int], int, bool]:
     from config.concurrency import POLICY_KEYS, policy_values
     from core.storage import runtime_config
 
-    raw = runtime_config.read_values(conn=conn, keys=POLICY_KEYS)
+    raw, revision = runtime_config.read_snapshot(conn=conn, keys=POLICY_KEYS)
     try:
         values = policy_values(raw if raw is not None else {})
     except (TypeError, ValueError) as exc:
         raise ConcurrencyPolicyError("concurrency_policy_invalid", str(exc)) from exc
-    return values, runtime_config.current_revision(conn=conn), raw is not None and "CONCURRENCY_POLICY_REVISION" not in raw
+    return values, revision, raw is not None and "CONCURRENCY_POLICY_REVISION" not in raw
 
 
 def _scope_policy(classification, *, batch_key=None,batch_limit=None,provider_key=None,provider_limit=None,extra_scopes=None):

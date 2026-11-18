@@ -1,6 +1,7 @@
 """公开失败状态、历史结果筛选与内部执行事实隔离的回归。"""
 
 import logging
+from copy import deepcopy
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -53,8 +54,10 @@ class PublicResultRoutesTests(TestCase):
                "result_summary": {"cause_code": "email_otp_failed"},
                "runs": [{"id": 51, "status": "attention_required", "result_summary": {
                    "cause_code": "email_otp_failed", "requested_status": "partial_success"}}]}
+        observed = []
         with patch.object(operations.operation_task_store, "get_task", return_value=raw), \
-                patch.object(operations.svc, "attach_registration_resume_retry_info") as retry_info:
+                patch.object(operations.svc, "attach_registration_resume_retry_info",
+                             side_effect=lambda rows: observed.append(deepcopy(rows))):
             response = _client().get("/api/operations/41?include_events=0")
         self.assertEqual(200, response.status_code)
         task = response.get_json()["task"]
@@ -64,7 +67,7 @@ class PublicResultRoutesTests(TestCase):
         self.assertEqual("partial_success", task["runs"][0]["status"])
         self.assertEqual("request_unknown", raw["status"])
         self.assertEqual("attention_required", raw["runs"][0]["status"])
-        retry_info.assert_called_once_with([raw])
+        self.assertEqual([[raw]], observed)
 
     def test_list_requests_public_sql_and_checks_registration_actions_with_raw_state(self):
         row = {"id": 41, "task_type": "registration", "source_system": "registration_chains",

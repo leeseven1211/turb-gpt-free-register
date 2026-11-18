@@ -89,11 +89,15 @@ def decrypt_private_text(encrypted: str) -> str:
     return _decrypt(_cipher(), encrypted)
 
 
+def _metadata_table_exists(cur, table: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) AS relation", (table,))
+    return cur.fetchone()["relation"] is not None
+
+
 def _metadata(conn) -> dict | None:
     table = postgres_store.qualified("runtime_config_meta")
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute("SELECT to_regclass(%s) AS relation", (table,))
-        if cur.fetchone()["relation"] is None:
+        if not _metadata_table_exists(cur, table):
             return None
         cur.execute(f"SELECT active, revision FROM {table} WHERE id = 1")
         return cur.fetchone()
@@ -113,26 +117,38 @@ def current_revision(*, conn=None) -> int:
         return int(metadata["revision"]) if metadata else 0
 
 
+def read_snapshot(*, conn=None, keys: Iterable[str] | None = None) -> tuple[dict[str, str] | None, int]:
+    """在同一条 SELECT 中读取配置值和数据库版本，沿用调用方的事务。"""
+    meta_table = postgres_store.qualified("runtime_config_meta")
+    values_table = postgres_store.qualified("runtime_config_values")
+    with _connection(conn) as current, current.cursor(row_factory=dict_row) as cur:
+        if not _metadata_table_exists(cur, meta_table):
+            return None, 0
+        selected = list(dict.fromkeys(keys)) if keys is not None else None
+        # 把键限制放在 JOIN 上，选中零行时仍然保留激活标记和版本。
+        key_filter = "" if selected is None else " AND v.key = ANY(%s)"
+        cur.execute(
+            f"SELECT m.active, m.revision, v.key, v.value_encrypted FROM {meta_table} AS m "
+            f"LEFT JOIN {values_table} AS v ON m.active{key_filter} WHERE m.id = 1 ORDER BY v.key",
+            None if selected is None else (selected,),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return None, 0
+    revision = int(rows[0]["revision"])
+    if not rows[0]["active"]:
+        return None, revision
+    if selected == []:
+        return {}, revision
+    cipher = _cipher()
+    values = {row["key"]: _decrypt(cipher, row["value_encrypted"]) for row in rows if row["key"] is not None}
+    return values, revision
+
+
 def read_values(*, conn=None, keys: Iterable[str] | None = None) -> dict[str, str] | None:
     """未激活返回 None；可按键读取，避免无关配置的查询和解密成本。"""
-    with _connection(conn) as current:
-        metadata = _metadata(current)
-        if not metadata or not metadata["active"]:
-            return None
-        selected_keys = list(dict.fromkeys(keys)) if keys is not None else None
-        if selected_keys == []:
-            return {}
-        cipher = _cipher()
-        table = postgres_store.qualified("runtime_config_values")
-        with current.cursor(row_factory=dict_row) as cur:
-            if selected_keys is None:
-                cur.execute(f"SELECT key, value_encrypted FROM {table} ORDER BY key")
-            else:
-                cur.execute(
-                    f"SELECT key, value_encrypted FROM {table} WHERE key = ANY(%s) ORDER BY key",
-                    (selected_keys,),
-                )
-            return {row["key"]: _decrypt(cipher, row["value_encrypted"]) for row in cur.fetchall()}
+    values, _ = read_snapshot(conn=conn, keys=keys)
+    return values
 
 
 def _require_transaction(conn) -> None:

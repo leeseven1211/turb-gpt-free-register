@@ -151,6 +151,25 @@ class ConcurrencyConfigRouteTests(unittest.TestCase):
         app.register_blueprint(create_config_blueprint(SimpleNamespace(logger=logging.getLogger(__name__))))
         self.client = app.test_client()
 
+    def test_settings_report_revision_of_selected_snapshot_during_republication(self):
+        first = schema.ConfigSnapshot({"GLOBAL_TASK_WORKERS": 7}, {}, 41)
+        second = schema.ConfigSnapshot({"GLOBAL_TASK_WORKERS": 11}, {}, 42)
+        with patch.object(schema, "_PUBLISHED_SNAPSHOT", second), patch.object(
+            config_editor, "get_config_snapshot", return_value=first
+        ):
+            response = self.client.get("/api/ui-settings")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual((7, 41), (response.json["global_task_workers"], response.json["config_revision"]))
+
+    def test_save_route_relays_own_revision_after_next_publication(self):
+        receipt = {"updated": ["TASK_CENTER_RETENTION_DAYS"], "ignored": [], "reloaded": True, "config_revision": 41}
+        with patch.object(schema, "_PUBLISHED_SNAPSHOT", schema.ConfigSnapshot({}, {}, 42)), patch.object(
+            config_editor, "update_config", return_value=receipt
+        ):
+            response = self.client.post("/api/config", json={"updates": {"TASK_CENTER_RETENTION_DAYS": 27}})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(41, response.json["config_revision"])
+
     def test_old_client_gets_explicit_migration_code_and_field(self):
         with patch("webui.config_editor.update_config", side_effect=schema.ConfigValidationError({
             "ACCOUNT_BATCH_WORKERS": "请迁移并发策略",

@@ -16,9 +16,6 @@ const stepFunctions = commonSource.slice(commonSource.indexOf('function taskProg
 const detailStart = accountsSource.indexOf('function meaningfulTaskDetail(detail)');
 const detailEnd = accountsSource.indexOf('\nfunction renderAccountTaskEvents', detailStart);
 const detailFunction = accountsSource.slice(detailStart, detailEnd);
-const logFilterStart = accountsSource.indexOf('function accountTaskFilterRawStages');
-const logFilterEnd = accountsSource.indexOf('\nfunction accountTaskFilterLabel', logFilterStart);
-const logFilterFunction = accountsSource.slice(logFilterStart, logFilterEnd);
 const eventHelperStart = accountsSource.indexOf('function rememberTaskLogDetails');
 const eventHelperEnd = accountsSource.indexOf('\nfunction renderAccountTaskEvents', eventHelperStart);
 const eventHelpers = accountsSource.slice(eventHelperStart, eventHelperEnd);
@@ -80,11 +77,12 @@ function renderLogInTimeZone(timeZone, lines) {
       Intl, Date, lines: ${JSON.stringify(lines)}, panel,
       $: () => panel,
       esc: escapeHtml,
-    browserTimeZoneName: () => '${timeZone}',
-    document: {querySelectorAll: () => []},
+      browserTimeZoneName: () => '${timeZone}',
+      document: {querySelectorAll: () => []},
+      accountTaskProgressSnapshot: null,
       accountTaskProgressStepId: step => String(step?.id || step?.step_id || ''),
     };
-    vm.runInNewContext(${JSON.stringify(`${dateFunctions}\n${detailFunction}\n${logFilterFunction}\nlet accountTaskStepFilter = null;\n${logRenderer}\nlet accountTaskRunLogLines = lines;\nrenderAccountTaskRunLog();`)}, context);
+    vm.runInNewContext(${JSON.stringify(`${dateFunctions}\n${detailFunction}\nlet accountTaskStepFilter = null;\n${logRenderer}\nlet accountTaskRunLogLines = lines;\nrenderAccountTaskRunLog();`)}, context);
     process.stdout.write(panel.innerHTML);
   `;
   return execFileSync(process.execPath, ['-e', script], {
@@ -203,7 +201,7 @@ test('flow_version2 失败摘要显示具体原因和结果状态，并折叠技
   assert.match(sandbox.result.failure, /事件 evt-9/);
   assert.match(sandbox.result.failure, /远端结果待确认/);
   assert.match(sandbox.result.failure, /<span>密码验证请求返回 HTTP 401<\/span>/);
-  assert.doesNotMatch(sandbox.result.failure.split('<details>')[0], /待确认|未确认/);
+  assert.doesNotMatch(sandbox.result.failure.split('<details')[0], /待确认|未确认/);
   assert.match(sandbox.result.failure, /远端结果待确认/);
   assert.doesNotMatch(sandbox.result.failure, /需要对账/);
   assert.match(sandbox.result.failure, /查看技术详情/);
@@ -314,6 +312,7 @@ test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全�
       ACCOUNT_TASK_STAGE_LABELS: {},
       normalizeAccountTaskStage: () => '',
       accountTaskProgressStepId: step => String(step?.id || step?.step_id || ''),
+      accountTaskProgressStepLabel: step => step.label || step.id,
       panel,
     });
     return sandbox.panel.innerHTML;
@@ -328,7 +327,6 @@ test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全�
   const panel = {textContent: '', innerHTML: ''};
   const sandbox = runVm(`${dateFunctions}
     ${detailFunction}
-    ${logFilterFunction}
     ${logRenderer}
     let accountTaskStepFilter = 'step-auth';
     let accountTaskRunLogLines = lines;
@@ -345,6 +343,7 @@ test('步骤筛选同时支持 main_step_id 和 raw_stages，并能清除回全�
     attrEsc: htmlEscape,
     accountTaskProgressSnapshot: {main_steps: [{id: 'step-auth', raw_stages: ['authenticate', 'page']}]},
     accountTaskProgressStepId: step => String(step?.id || step?.step_id || ''),
+    accountTaskProgressStepLabel: step => step.label || step.id,
   });
   assert.match(sandbox.result.filtered, /主步骤/);
   assert.match(sandbox.result.filtered, /旧日志阶段/);

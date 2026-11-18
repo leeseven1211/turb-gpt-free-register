@@ -13,8 +13,10 @@ from unittest.mock import patch
 import pytest
 
 from tools.release import (
+    MANIFEST_NAME,
     ReleaseError,
     check_release,
+    main as release_main,
     prepare_release,
     rollback_release,
     switch_release,
@@ -267,6 +269,11 @@ def test_release_keeps_account_modules_without_copying_private_account_data(tmp_
         "tests/accounts/test_search.py": "def test_search(): pass\n",
         "tests/accounts/test_search.cjs": "console.log('ok');\n",
         "webui/static/js/pages/accounts/page.js": "const value = 1;\n",
+        "frontend/src/features/accounts/AccountsList.vue": "<style src='./accounts.css' />\n",
+        "frontend/src/features/accounts/accounts.css": ".accounts { display: block; }\n",
+        "frontend/src/features/accounts/actions.ts": "export const action = true;\n",
+        "frontend/src/features/accounts/private.json": '{"private": true}\n',
+        "frontend/src/features/accounts/logs/private.ts": "export const value = 'private';\n",
         "accounts/private.py": "PRIVATE = True\n",
         "core/accounts/private.json": '{"private": true}\n',
         "core/storage/accounts/private.json": '{"private": true}\n',
@@ -289,6 +296,8 @@ def test_release_keeps_account_modules_without_copying_private_account_data(tmp_
     assert (release / "tests/accounts/test_search.py").is_file()
     assert (release / "tests/accounts/test_search.cjs").is_file()
     assert (release / "webui/static/js/pages/accounts/page.js").is_file()
+    for name in ("AccountsList.vue", "accounts.css", "actions.ts"):
+        assert (release / "frontend/src/features/accounts" / name).is_file()
     for relative in files:
         if "private" in relative or relative.endswith(".env"):
             assert not (release / relative).exists()
@@ -328,6 +337,52 @@ def _commit_fixture_paths(source: Path, paths: list[str]) -> None:
          "commit", "-qm", "test: dashboard release fixture"],
         cwd=source, check=True,
     )
+
+
+@pytest.mark.parametrize(("selector", "damage"), [
+    ("--release-dir", "missing"),
+    ("--release-dir", "directory"),
+    ("--release-dir", "broken_symlink"),
+    ("--root", "directory"),
+    ("--root", "broken_symlink"),
+])
+def test_cli_rejects_invalid_release_manifest(tmp_path, capsys, selector, damage):
+    source = _git_source(tmp_path)
+    if damage == "directory":
+        (source / MANIFEST_NAME).mkdir()
+    elif damage == "broken_symlink":
+        (source / MANIFEST_NAME).symlink_to(source / "absent.json")
+    assert release_main(["check", selector, str(source), "--json"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "缺少 release manifest" in output.err
+
+
+def test_cli_identifies_source_checkout_and_standalone_release(tmp_path, capsys):
+    source = _git_source(tmp_path)
+    assert release_main(["check", "--root", str(source), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == str(source.resolve())
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    release = prepare_release(source, tmp_path / "releases", "standalone")
+    assert not (release / ".git").exists()
+    assert release_main(["check", "--release-dir", str(release), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["source_commit"] == revision
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_check_nested_manifest_like_any_other_file(tmp_path, recorded):
+    source = _git_source(tmp_path)
+    relative = Path("docs") / MANIFEST_NAME
+    if recorded:
+        (source / relative).parent.mkdir()
+        (source / relative).write_text("{}\n", encoding="utf-8")
+        _commit_fixture_paths(source, [relative.as_posix()])
+    release = prepare_release(source, tmp_path / "releases", "nested")
+    assert check_release(release)["ok"] is True
+    (release / relative).parent.mkdir(exist_ok=True)
+    (release / relative).write_text("[]\n", encoding="utf-8")
+    with pytest.raises(ReleaseError, match="文件校验失败" if recorded else "文件清单不一致"):
+        check_release(release)
 
 
 def test_release_keeps_dashboard_sources_and_assets_without_frontend_private_files(tmp_path):

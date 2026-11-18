@@ -328,7 +328,7 @@ def deferred_publication():
         yield holder
         if "candidate" in holder:
             from config.schema import publish_config_snapshot
-            publish_config_snapshot(holder["candidate"])
+            holder["published"] = publish_config_snapshot(holder["candidate"])
     finally:
         _DEFERRED_PUBLICATION.reset(token)
 

@@ -146,6 +146,17 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["storage"])
         self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["source"])
 
+    def test_save_reports_its_own_publication_after_another_save(self):
+        before = schema.non_sensitive_snapshot().revision
+
+        def save_again():
+            config_editor.update_config({"TASK_CENTER_RETENTION_DAYS": 27})
+
+        with patch("core.operations.task_gateway.notify_dispatch", side_effect=save_again):
+            first = config_editor.update_config({"GLOBAL_TASK_WORKERS": 7})
+        self.assertEqual(before + 2, schema.non_sensitive_snapshot().revision)
+        self.assertEqual(before + 1, first["config_revision"])
+
     def test_commit_failure_restores_database_environment_modules_snapshot_and_bootstrap(self):
         self.runtime.load_values(force=True)
         config.reload_all()

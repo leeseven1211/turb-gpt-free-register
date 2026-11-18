@@ -87,6 +87,17 @@ def test_explicit_environment_override_remains_supported(monkeypatch):
     assert openai_protocol.OPENAI_PROTOCOL_VERSION == "v1"
 
 
+def test_isolated_runner_removes_runtime_identity_and_shared_directory():
+    keys = ("TURB_RUNTIME_MODE", "TURB_RUNTIME_DIR", "TURB_INSTANCE_ID")
+    environment = build_isolated_environment(
+        dict.fromkeys(keys, "synthetic-private-runtime"),
+        database_url="postgresql://test:test@127.0.0.1:55432/turb_opt_20260914",
+        schema="test_runtime_bootstrap_isolation",
+        project_root=Path(__file__).resolve().parents[2],
+    )
+    assert set(keys).isdisjoint(environment)
+
+
 def test_locked_runner_ignores_decoy_dotenv(monkeypatch, tmp_path):
     decoy = tmp_path / ".env"
     decoy.write_text(

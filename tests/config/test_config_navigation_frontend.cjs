@@ -3,10 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {createRequire} = require('node:module');
+const {JSDOM} = createRequire(path.resolve(__dirname, '../../frontend/package.json'))('jsdom');
 
 const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/config/page.js'), 'utf8');
 
-function createConfigView(fields = []) {
+function createConfigView(fields = [], {loadSchema = false} = {}) {
   const storage = new Map();
   const nodes = new Map();
   const domErrors = [];
@@ -29,7 +31,7 @@ function createConfigView(fields = []) {
     CONFIG: fields,
     layoutListeners,
     rootListeners,
-    domErrors, saveCopy, saveHint,
+    domErrors, saveCopy, saveHint, saveButton, loadSchema,
     document: {
       getElementById(id) { return nodes.get(id) || null; },
       querySelector(selector) {
@@ -55,19 +57,19 @@ function createConfigView(fields = []) {
     esc: value => String(value ?? ''),
     attrEsc: value => String(value ?? ''),
     isPlaceholderEmpty: value => value === null || value === undefined || value === '',
-    activateTab() {}, showToast() {}, invalidateApiCache() {},
+    activateTab() {}, showToast() {}, invalidateApiCache() {}, markViewReady() {},
     loadCapabilities: async () => {}, loadRegistrationEmailSources: async () => {},
   };
   vm.createContext(context);
   vm.runInContext(`${source}
-    loadConfig = async () => {};
+    if (!loadSchema) loadConfig = async () => {};
     globalThis.view = {
       groups: configGroups, names: getConfigGroupNames,
       renderNav: renderConfigNavV2,
       filterNav: applyConfigNavFilter,
       destination: setConfigDestinationV2, open: openConfigGroup,
       render: renderConfigSectionV2, renderDomain: renderConfigDomainSectionV2,
-      bind: bindConfigLayoutV2, save: saveConfigUpdates,
+      bind: bindConfigLayoutV2, save: saveConfigUpdates, load: loadConfig,
       stubLayoutRender(callback = () => {}) { renderConfigLayoutV2 = callback; },
       clickExtractLinkTab(section) {
         const button = {dataset: {extractLinkTab: section}};
@@ -80,7 +82,7 @@ function createConfigView(fields = []) {
       forcePending: (key, value) => setPendingConfigValue(key, value, {force: true}),
       errors: CONFIG_FIELD_ERRORS_V2, compositeModes: CONFIG_COMPOSITE_MODES_V2,
       read: readConfigElementValue, track: trackConfigFieldChange,
-      saveUi: updateConfigSaveUi, domErrors, ui: {saveCopy, saveHint},
+      saveUi: updateConfigSaveUi, domErrors, ui: {saveCopy, saveHint, saveButton},
       proxySection: key => proxyConfigSectionForKey(key)[0],
       emailVisible: emailSectionEnabledV2,
       hmeTools: renderICloudHMEToolsV2,
@@ -838,6 +840,154 @@ test('跨菜单草稿统一保存，失败时保留待保存值', async () => {
   await view.save();
   assert.deepEqual(payload.updates, {ROXY_API_BASE: 'http://127.0.0.1:5888', TASK_CENTER_RETENTION_DAYS: 60});
   assert.equal(Object.keys(view.pending).length, 0);
+});
+
+test('保存中可以跨菜单继续编辑，重复点击只提交一次，回到原值也能再次保存', async () => {
+  const fields = [field('TITLE', '通用配置', {value: '原值'}), field('LABEL', '任务中心'), field('OPTION', '浏览器画像')];
+  const {view, context} = createConfigView(fields);
+  const receipt = Promise.withResolvers();
+  const posts = [];
+  context.api = (_url, options) => { posts.push(JSON.parse(options.body).updates); return receipt.promise; };
+  view.setPending('TITLE', '第一版');
+  view.setPending('LABEL', '标签');
+  const saving = view.save();
+  view.setPending('TITLE', '原值');
+  view.open('浏览器画像');
+  view.setPending('OPTION', '新选项');
+  view.saveUi();
+  assert.equal(view.ui.saveButton.disabled, true);
+  const duplicate = view.save();
+  receipt.resolve({reloaded: true, updated: ['TITLE', 'LABEL']});
+  await Promise.all([saving, duplicate]);
+  assert.deepEqual(posts, [{TITLE: '第一版', LABEL: '标签'}]);
+  assert.deepEqual({...view.pending}, {TITLE: '原值', OPTION: '新选项'});
+  assert.equal(context.CONFIG[0].value, '第一版');
+  assert.equal(view.ui.saveButton.disabled, false);
+  context.api = async (_url, options) => { posts.push(JSON.parse(options.body).updates); return {reloaded: true}; };
+  await view.save();
+  assert.deepEqual(posts[1], {TITLE: '原值', OPTION: '新选项'});
+  assert.deepEqual({...view.pending}, {});
+});
+
+test('旧请求的字段校验结果只标记仍是同一版的输入', async () => {
+  const {view, context} = createConfigView([field('TITLE', '通用配置'), field('LABEL', '任务中心')]);
+  view.setPending('TITLE', '旧标题');
+  view.setPending('LABEL', '标签');
+  const request = Promise.withResolvers();
+  context.api = () => request.promise;
+  const saving = view.save();
+  view.setPending('TITLE', '新标题');
+  request.reject(Object.assign(new Error('校验失败'), {fields: {TITLE: '旧标题无效', LABEL: '标签无效'}}));
+  await saving;
+  assert.deepEqual({...view.errors}, {LABEL: '标签无效'});
+  assert.deepEqual({...view.pending}, {TITLE: '新标题', LABEL: '标签'});
+});
+
+test('缺少有效保存回执时保留草稿', async () => {
+  const {view, context} = createConfigView([field('TITLE', '通用配置')]);
+  view.setPending('TITLE', '标题');
+  context.api = async () => ({});
+  await view.save();
+  assert.deepEqual({...view.pending}, {TITLE: '标题'});
+  assert.equal(view.ui.saveCopy.textContent, '保存失败，请重试');
+});
+
+test('回执只清已保存项，私密值不回显，刷新失败仍说明哪些更改已保存', async () => {
+  const fields = [
+    field('PRIVATE', '通用配置', {value: 'stored-private', secret: true, configured: true}),
+    field('PRIVATE_LIST', '通用配置', {type: 'list_str_multiline', value: ['stored-private'], secret: true}),
+    field('TITLE', '通用配置'),
+  ];
+  const {view, context} = createConfigView(fields);
+  const toasts = [];
+  context.showToast = text => toasts.push(text);
+  for (const item of fields.slice(0, 2)) assert.doesNotMatch(view.control(item), /stored-private/);
+  const input = {value: 'new-private', dataset: {key: 'PRIVATE'}};
+  const queryAll = context.document.querySelectorAll;
+  context.document.querySelectorAll = selector => selector.includes('[data-secret-input]') ? [input] : queryAll(selector);
+  view.setPending('PRIVATE', input.value);
+  view.setPending('TITLE', '新标题');
+  context.api = async () => ({reloaded: true, updated: ['PRIVATE'], ignored: ['TITLE']});
+  context.loadCapabilities = async () => { throw new Error('模拟刷新失败'); };
+  await view.save();
+  assert.deepEqual({...view.pending}, {TITLE: '新标题'});
+  assert.equal(context.CONFIG[0].configured, true);
+  assert.equal(context.CONFIG[0].value, '');
+  assert.equal(input.value, '');
+  assert.doesNotMatch(view.control(context.CONFIG[0]), /stored-private|new-private/);
+  assert.match(toasts.at(-1), /已保存.*刷新/);
+  assert.doesNotMatch(toasts.at(-1), /保存失败/);
+});
+
+test('保存前发出的读取晚返回时不会覆盖新配置或新草稿', async () => {
+  const {view, context} = createConfigView([field('TITLE', '通用配置', {value: '旧标题'})], {loadSchema: true});
+  const reads = new Map();
+  context.apiCached = url => {
+    if (!reads.has(url)) reads.set(url, Promise.withResolvers());
+    return reads.get(url).promise;
+  };
+  context.api = async (_url, options) => options?.method === 'POST'
+    ? {updated: ['TITLE'], reloaded: true} : {items: [{type: 'fixture'}]};
+  view.stubLayoutRender();
+  const oldRead = view.load();
+  view.setPending('TITLE', '已提交');
+  const saving = view.save();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads.size, 2, '提交后必须读取新配置，即使旧请求仍在进行');
+  view.setPending('TITLE', '继续编辑');
+  const [oldSchema, newSchema] = reads.values();
+  newSchema.resolve([field('TITLE', '通用配置', {value: '已提交'}), field('PRIVATE', '通用配置', {
+    secret: true, configured: true, value: 'stored-private', configured_value: 'stored-private', published_effective_value: 'stored-private', default: 'stored-private',
+  })]);
+  await saving;
+  oldSchema.resolve([field('TITLE', '通用配置', {value: '旧标题'})]);
+  await oldRead;
+  assert.equal(context.CONFIG[0].value, '已提交');
+  assert.equal(view.pending.TITLE, '继续编辑');
+  assert.doesNotMatch(JSON.stringify(context.CONFIG[1]), /stored-private/);
+});
+
+test('保存刷新重绘时保留正在编辑的密钥、焦点和光标位置', async t => {
+  const dom = new JSDOM('<section id="tab-config"><div id="editor"></div></section>', {runScripts: 'outside-only'});
+  t.after(() => dom.window.close());
+  const {window} = dom;
+  const {document} = window;
+  const schema = [field('PRIVATE', '通用配置', {secret: true})];
+  const receipt = Promise.withResolvers();
+  const posted = [];
+  Object.assign(window, {
+    CONFIG: schema, $: selector => document.querySelector(selector),
+    esc: String, attrEsc: String, isPlaceholderEmpty: value => !value,
+    markViewReady() {}, showToast() {}, invalidateApiCache() {},
+    loadCapabilities: async () => {}, loadRegistrationEmailSources: async () => {},
+    api(_url, options) {
+      if (options?.method !== 'POST') return Promise.resolve({items: [{type: 'fixture'}]});
+      posted.push(JSON.parse(options.body).updates);
+      return receipt.promise;
+    },
+    apiCached: async () => [{...schema[0], configured: true}],
+  });
+  window.eval(`${source}
+    renderConfigLayoutV2 = () => document.getElementById('editor').innerHTML = renderConfigControlMarkupV2(CONFIG[0]);
+    renderConfigLayoutV2();
+  `);
+  const input = document.querySelector('[data-secret-input]');
+  input.value = 'first-fixture';
+  input.dispatchEvent(new window.Event('input', {bubbles: true}));
+  const saving = window.saveConfigUpdates();
+  input.focus();
+  input.value = 'second-fixture';
+  input.dispatchEvent(new window.Event('input', {bubbles: true}));
+  input.setSelectionRange(1, 4, 'backward');
+  receipt.resolve({updated: ['PRIVATE'], reloaded: true});
+  await saving;
+  const edited = document.querySelector('[data-secret-input]');
+  assert.equal(edited.value, 'second-fixture');
+  assert.equal(document.activeElement, edited);
+  assert.deepEqual([edited.selectionStart, edited.selectionEnd, edited.selectionDirection], [1, 4, 'backward']);
+  await window.saveConfigUpdates();
+  assert.deepEqual(posted, [{PRIVATE: 'first-fixture'}, {PRIVATE: 'second-fixture'}]);
+  assert.equal(document.querySelector('[data-secret-input]').value, '');
 });
 
 test('字段校验错误定位到投影菜单并保留草稿，成功保存后清除错误', async () => {

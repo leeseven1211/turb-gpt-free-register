@@ -27,7 +27,7 @@ from core.accounts.plans import service as plan_check_service
 from core.registration import service as svc
 from core.operations.errors import classify_task_error
 from config import codex as codex_config
-from config.schema import ConfigValidationError, config_revision
+from config.schema import ConfigValidationError
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -105,13 +105,13 @@ def create_config_blueprint(context: WebUIContext):
         列表页和注册页只需要这两个值；不要在启动阶段为了读取它们
         下载完整的配置编辑器元数据（其中包含大量字段说明和选项）。
         """
-        snapshot = config_editor.get_config_snapshot().as_dict()
+        snapshot = config_editor.get_config_snapshot()
         return jsonify({
             # 旧字段保留响应兼容；仅作为批量界面的展示默认，不构成账号公共预算。
             "account_batch_workers": snapshot.get("GLOBAL_TASK_WORKERS", 3),
             "global_task_workers": snapshot.get("GLOBAL_TASK_WORKERS", 3),
             "account_live_check_driver": snapshot.get("ACCOUNT_LIVE_CHECK_DRIVER", ""),
-            "config_revision": config_revision(),
+            "config_revision": snapshot.revision,
         })
 
     @bp.post("/api/cloudmail/gen-token")
@@ -163,7 +163,7 @@ def create_config_blueprint(context: WebUIContext):
             "ignored": result["ignored"],
             "restart_required": restart_required,
             "reloaded": reload_ok,
-            "config_revision": config_revision(),
+            "config_revision": result["config_revision"],
             "note": note,
         })
 
