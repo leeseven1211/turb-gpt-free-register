@@ -45,20 +45,23 @@ def page_asset_version(app: Any) -> str:
     template_root = Path(app.template_folder or "templates")
     if not template_root.is_absolute():
         template_root = Path(app.root_path) / template_root
-    template_stamp = _stamp(template_root / "index.html")
-    template_digest, links = _template_info(template_stamp)
-    names = set(links)
-    for name in ("dashboard", "proxy"):
+    templates = {}
+    names = set()
+    for name in ("index.html", "partials/extract_stats.html"):
+        stamp = _stamp(template_root / name)
+        if len(stamp) > 1:
+            templates[name], links = _template_info(stamp)
+            names.update(links)
+    for name in ("dashboard", "proxy", "extractStats"):
         bundle = static_root / name
         if bundle.is_dir():
             names.update(path.relative_to(static_root).as_posix() for path in bundle.iterdir()
                          if path.is_file() and path.suffix in _ASSET_SUFFIXES)
     assets = [(name, _stamp(static_root / name)) for name in sorted(names)]
-    if len(template_stamp) == 1 and not any(len(stamp) > 1 for _, stamp in assets):
+    if not templates and not any(len(stamp) > 1 for _, stamp in assets):
         return "development"
     digest = hashlib.sha256()
-    for name, content in [("index.html", template_digest),
-                          *((name, _content_digest(stamp)) for name, stamp in assets)]:
+    for name, content in [*templates.items(), *((name, _content_digest(stamp)) for name, stamp in assets)]:
         encoded = name.encode("utf-8")
         digest.update(len(encoded).to_bytes(4, "big"))
         digest.update(encoded)

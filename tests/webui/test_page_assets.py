@@ -37,6 +37,8 @@ class PageAssetTemplateTests(unittest.TestCase):
         self.assertIn("/static/dashboard/dashboard.css", paths)
         self.assertIn("/static/proxy/proxy.js", paths)
         self.assertIn("/static/proxy/proxy.css", paths)
+        self.assertIn("/static/extractStats/extractStats.js", paths)
+        self.assertIn("/static/extractStats/extractStats.css", paths)
         self.assertIn("/static/js/pages/proxy/traffic.js", paths)
         self.assertIn("/static/js/shared/common.js", paths)
         self.assertIn("/static/js/pages/config/page.js", paths)
@@ -197,6 +199,18 @@ class PageAssetVersionTests(unittest.TestCase):
         version = self.version()
         icon.write_text("<svg>two</svg>", encoding="utf-8")
         self.assertNotEqual(self.version(), version)
+
+    def test_statistics_template_and_bundle_invalidate_cached_page(self):
+        partial = self.template.parent / "partials/extract_stats.html"
+        partial.parent.mkdir()
+        bundle = self.static / "extractStats"
+        bundle.mkdir()
+        previous = self.version()
+        for path in (partial, bundle / "extractStats.js", bundle / "extractStats.css"):
+            path.write_text("updated", encoding="utf-8")
+            current = self.version()
+            self.assertNotEqual(current, previous)
+            previous = current
 
     def test_absolute_template_folder_and_empty_development_tree(self):
         absolute = SimpleNamespace(root_path="ignored", static_folder=str(self.static), template_folder=str(self.template.parent))

@@ -56,6 +56,10 @@ DASHBOARD_ASSETS = (
     "webui/static/dashboard/dashboard.js",
     "webui/static/dashboard/dashboard.css",
 )
+OPTIONAL_VUE_PAGES = (
+    ("proxy", "webui/templates/index.html", "代理流量页"),
+    ("extractStats", "webui/templates/partials/extract_stats.html", "提链统计页"),
+)
 
 
 class ReleaseError(ValueError):
@@ -196,6 +200,16 @@ def _validate_project_files(root: Path) -> dict[str, int]:
         for name in (FRONTEND_LOCK, *DASHBOARD_ASSETS):
             if not (root / name).is_file():
                 raise ReleaseError(f"总览前端发布文件缺失: {name}")
+        for page, template_name, label in OPTIONAL_VUE_PAGES:
+            asset = f"{page}/{page}"
+            files = (f"frontend/src/{page}.ts", f"webui/static/{asset}.js", f"webui/static/{asset}.css")
+            template = root / template_name
+            linked = template.is_file() and f"{asset}.js" in template.read_text(encoding="utf-8")
+            if not linked and not any((root / name).exists() for name in files):
+                continue
+            for name in files:
+                if not (root / name).is_file():
+                    raise ReleaseError(f"{label}发布文件缺失: {name}")
     try:
         return _lock_checker()(root)
     except Exception as exc:

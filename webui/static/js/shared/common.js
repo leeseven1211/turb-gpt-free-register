@@ -1422,7 +1422,7 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   window.ProxyTraffic?.setVisible(tab === 'proxy-traffic');
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
   if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
-  if (tab === 'extract-stats') ensureViewLoaded('extract-stats', loadExtractStats, 0);
+  window.ExtractStats?.setVisible(tab === 'extract-stats');
   if (tab === 'register') refreshJobs({coalesce: true});
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();

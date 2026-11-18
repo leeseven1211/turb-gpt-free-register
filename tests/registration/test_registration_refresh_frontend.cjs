@@ -376,6 +376,7 @@ test('实际导航入口初始化同一注册视图只发一个 GET，终态重�
   h.context.document.querySelector = selector => tabs.get(selector.slice(1)) || null;
   h.context.document.querySelectorAll = () => [];
   h.context.document.getElementById = id => tabs.get(id) || null;
+  h.context.window = h.context;
   Object.assign(h.context, {
     NAV_ALLOWED_TABS: ['register'], ACTIVE_TAB: 'register',
     TAB_META: {register: {title: '注册机', description: '发起注册'}},

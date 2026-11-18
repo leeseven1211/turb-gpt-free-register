@@ -432,6 +432,42 @@ def test_prepare_dashboard_rejects_missing_lock_or_built_assets(tmp_path, missin
         prepare_release(source, tmp_path / "releases", "dashboard")
 
 
+@pytest.mark.parametrize("page", ["proxy", "extractStats"])
+@pytest.mark.parametrize("omitted", ["source", "script", "style"])
+def test_prepare_rejects_incomplete_optional_page(tmp_path, page, omitted):
+    source = _git_source(tmp_path)
+    files = _dashboard_source(source)
+    paths = {
+        "source": f"frontend/src/{page}.ts",
+        "script": f"webui/static/{page}/{page}.js",
+        "style": f"webui/static/{page}/{page}.css",
+    }
+    missing = paths.pop(omitted)
+    for relative in paths.values():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        files[relative] = "/* page fixture */\n"
+        path.write_text(files[relative], encoding="utf-8")
+    _commit_fixture_paths(source, list(files))
+    with pytest.raises(ReleaseError, match=missing.replace(".", r"\.")):
+        prepare_release(source, tmp_path / "releases", page)
+
+
+@pytest.mark.parametrize(("page", "template_name"), [
+    ("proxy", "webui/templates/index.html"),
+    ("extractStats", "webui/templates/partials/extract_stats.html"),
+])
+def test_prepare_rejects_template_pointing_to_absent_bundle(tmp_path, page, template_name):
+    source = _git_source(tmp_path)
+    files = _dashboard_source(source)
+    template = source / template_name
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(f'<div data-module-url="{page}/{page}.js"></div>\n', encoding="utf-8")
+    _commit_fixture_paths(source, [*files, template_name])
+    with pytest.raises(ReleaseError, match=f"frontend/src/{page}"):
+        prepare_release(source, tmp_path / "releases", "missing-page")
+
+
 @pytest.mark.parametrize("lock_hash", [None, "0" * 64])
 def test_check_dashboard_requires_frontend_lock_manifest_hash(tmp_path, lock_hash):
     source = _git_source(tmp_path)

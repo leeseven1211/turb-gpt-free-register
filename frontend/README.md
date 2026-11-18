@@ -1,6 +1,6 @@
 # 控制台前端
 
-只读总览页和代理页使用 Vue 3、TypeScript 和 Vite，沿用现有导航外壳、样式和同域 API。
+总览、代理与流量、提链历史统计使用 Vue 3、TypeScript 和 Vite，沿用现有导航外壳、样式和同域 API。
 
 ## 安装与验证
 
@@ -14,14 +14,16 @@ npm run build
 
 `check` 执行 TypeScript 检查与 `src/**/*.test.ts` 行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。
 
-`build` 从 `src/dashboard.ts` 和 `src/proxy.ts` 分别生成两个独立的页面模块。
+`build` 从 `src/dashboard.ts`、`src/proxy.ts` 和 `src/extractStats.ts` 分别生成页面模块。
 
 - `webui/static/dashboard/dashboard.js`
 - `webui/static/dashboard/dashboard.css`
 - `webui/static/proxy/proxy.js`
 - `webui/static/proxy/proxy.css`
+- `webui/static/extractStats/extractStats.js`
+- `webui/static/extractStats/extractStats.css`
 
-源码、锁文件和四个产物一同发布。在相同工具链下重复构建，产物应保持一致。
+源码、锁文件和这六个产物一同发布。在相同工具链下重复构建，产物应保持一致。
 
 ## 外壳接口
 
@@ -30,6 +32,8 @@ npm run build
 总览页读取 `/api/dashboard` 和 `/api/capabilities`。卡片按钮调用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。
 
 代理模块导出 `mountProxyTraffic(element, dependencies)`。左栏在库存与记录间切换时调用 `setView('pool' | 'records')`。页面通过 GET 读取 `/api/proxy-pool` 和 `/api/proxy-traffic/` 下的 `current`、`history`、`traffic`、`summary`。两个页面隐藏或卸载时均会停止轮询并丢弃未完成响应。
+
+历史统计模块导出 `mountExtractStats`。打开「提链统计」按选定的平台和时间范围读取报表，统计时间使用北京时间。
 
 页面沿用现有 `shell.css` 与基础样式；产物 CSS 包含总览 Vue 的局部样式及原生弹窗必需的背景滚动锁。
 
