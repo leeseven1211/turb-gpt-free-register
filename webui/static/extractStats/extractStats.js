@@ -2910,78 +2910,89 @@ function xo(e, t) {
 	let n = new URLSearchParams({ days: String(e) });
 	return t && n.set("provider_id", t), `/api/extract-workbench/analytics?${n}`;
 }
-async function So(e, t) {
-	let n = await yo(e, {
-		method: "GET",
-		signal: t
-	});
-	if (!n?.totals || typeof n.totals != "object" || Array.isArray(n.totals) || !Array.isArray(n.daily)) throw Error("统计响应格式不完整");
-	return n;
+function So(e) {
+	return typeof e == "object" && !!e && !Array.isArray(e);
 }
-var Co = /* @__PURE__ */ new Map([
+function Co(e) {
+	return Array.isArray(e) ? e.filter(So) : [];
+}
+async function wo(e, t, n) {
+	let r = await yo(xo(e, t), {
+		method: "GET",
+		signal: n
+	});
+	if (!So(r?.totals) || !Array.isArray(r.daily) || !r.daily.every(So)) throw Error("统计响应格式不完整");
+	return {
+		...r,
+		providers: Co(r.providers),
+		failures: Co(r.failures),
+		modes: Co(r.modes)
+	};
+}
+var To = /* @__PURE__ */ new Map([
 	["legacy", "虾扯蛋链"],
 	["lumen_flow", "Lumen Flow"],
 	["huanguang", "幻光提链"],
 	["anguang", "暗光（XXSYUN 一条龙）"]
 ]);
-function wo(e) {
-	return Co.get(e === "lumen" ? "lumen_flow" : e) ?? (e || "未记录平台");
+function Eo(e) {
+	return To.get(e === "lumen" ? "lumen_flow" : e) ?? (e || "未记录平台");
 }
-var To = /* @__PURE__ */ new Map([
+var Do = /* @__PURE__ */ new Map([
 	["extract_only", "仅提链"],
 	["manual_payment", "手动支付"],
 	["auto_payment", "自动支付"]
 ]);
-function Eo(e) {
-	return To.get(e) ?? (e || "未记录模式");
+function Oo(e) {
+	return Do.get(e) ?? (e || "未记录模式");
 }
-function Do(e) {
+function ko(e) {
 	let t = Number(e);
 	return Number.isFinite(t) && t >= 0 ? Math.floor(t) : 0;
 }
-var Oo = new Intl.NumberFormat("zh-CN");
+var Ao = new Intl.NumberFormat("zh-CN");
 function $(e) {
-	return Oo.format(Do(e));
-}
-function ko(e) {
-	return e != null && e !== "" && Number.isFinite(Number(e)) && Number(e) >= 0;
-}
-function Ao(e) {
-	return ko(e) && Number(e) <= 1 ? `${(Number(e) * 100).toFixed(1)}%` : "—";
+	return Ao.format(ko(e));
 }
 function jo(e) {
-	if (!ko(e)) return "—";
+	return e != null && e !== "" && Number.isFinite(Number(e)) && Number(e) >= 0;
+}
+function Mo(e) {
+	return jo(e) && Number(e) <= 1 ? `${(Number(e) * 100).toFixed(1)}%` : "—";
+}
+function No(e) {
+	if (!jo(e)) return "—";
 	let t = Math.round(Number(e));
 	return t < 60 ? `${t} 秒` : t < 3600 ? `${Math.floor(t / 60)} 分 ${t % 60} 秒` : `${Math.floor(t / 3600)} 小时 ${Math.floor(t % 3600 / 60)} 分`;
 }
-var Mo = new Intl.DateTimeFormat("zh-CN", {
+var Po = new Intl.DateTimeFormat("zh-CN", {
 	timeZone: "Asia/Shanghai",
 	hour: "2-digit",
 	minute: "2-digit",
 	second: "2-digit",
 	hourCycle: "h23"
 });
-function No(e) {
+function Fo(e) {
 	let t = Date.parse(e ?? "");
-	return Number.isFinite(t) ? `更新于 ${Mo.format(t)}` : "统计已更新";
+	return Number.isFinite(t) ? `更新于 ${Po.format(t)}` : "统计已更新";
 }
 // src/features/extractStats/DailyTrend.vue?vue&type=script&setup=true&lang.ts
-var Po = {
+var Io = {
 	class: "es-panel es-trend",
 	"aria-labelledby": "extractStatsDailyTitle"
-}, Fo = {
+}, Lo = {
 	key: 0,
 	class: "es-empty"
-}, Io = { class: "es-chart-legend" }, Lo = { class: "es-chart-scroll" }, Ro = {
+}, Ro = { class: "es-chart-legend" }, zo = { class: "es-chart-scroll" }, Bo = {
 	class: "es-chart",
 	viewBox: "0 0 880 242",
 	role: "img",
 	"aria-labelledby": "extractStatsTrendTitle extractStatsTrendDescription"
-}, zo = { id: "extractStatsTrendDescription" }, Bo = ["y1", "y2"], Vo = ["y"], Ho = ["x"], Uo = ["d"], Wo = [
+}, Vo = { id: "extractStatsTrendDescription" }, Ho = ["y1", "y2"], Uo = ["y"], Wo = ["x"], Go = ["d"], Ko = [
 	"cx",
 	"cy",
 	"r"
-], Go = { class: "es-daily-details" }, Ko = { class: "es-table-scroll" }, qo = { scope: "row" }, Jo = /* @__PURE__ */ Kn({
+], qo = { class: "es-daily-details" }, Jo = { class: "es-table-scroll" }, Yo = { scope: "row" }, Xo = /* @__PURE__ */ Kn({
 	__name: "DailyTrend",
 	props: { daily: {} },
 	setup(e) {
@@ -2993,8 +3004,8 @@ var Po = {
 			...n,
 			["plus_confirmed", "Plus 已确认"],
 			["failed", "失败"]
-		], i = va(() => t.daily.some((e) => Do(e.total) > 0)), a = va(() => {
-			let e = Math.max(1, ...t.daily.flatMap((e) => n.map(([t]) => Do(e[t]))));
+		], i = va(() => t.daily.some((e) => ko(e.total) > 0)), a = va(() => {
+			let e = Math.max(1, ...t.daily.flatMap((e) => n.map(([t]) => ko(e[t]))));
 			return Math.ceil(e / 4) * 4;
 		}), o = va(() => {
 			let e = Math.max(1, Math.ceil(t.daily.length / 7));
@@ -3004,19 +3015,19 @@ var Po = {
 			return 48 + (t.daily.length === 1 ? 406 : e * 812 / (t.daily.length - 1));
 		}
 		function c(e) {
-			return 22 + 184 * (1 - Do(e) / a.value);
+			return 22 + 184 * (1 - ko(e) / a.value);
 		}
 		function l(e) {
 			return t.daily.map((t, n) => `${n ? "L" : "M"}${s(n).toFixed(2)},${c(t[e]).toFixed(2)}`).join(" ");
 		}
-		return (t, u) => (J(), Y("section", Po, [u[5] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsDailyTitle" }, "每日趋势"), X("span", null, "按北京时间任务创建日归属")], -1), i.value ? (J(), Y(G, { key: 1 }, [
-			X("div", Io, [(J(), Y(G, null, H(n, ([e, t]) => X("span", { key: e }, [X("i", {
+		return (t, u) => (J(), Y("section", Io, [u[5] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsDailyTitle" }, "每日趋势"), X("span", null, "按北京时间任务创建日归属")], -1), i.value ? (J(), Y(G, { key: 1 }, [
+			X("div", Ro, [(J(), Y(G, null, H(n, ([e, t]) => X("span", { key: e }, [X("i", {
 				class: O(["es-legend-dot", `es-legend-dot--${e}`]),
 				"aria-hidden": "true"
 			}, null, 2), Gi(A(t), 1)])), 64))]),
-			X("div", Lo, [(J(), Y("svg", Ro, [
+			X("div", zo, [(J(), Y("svg", Bo, [
 				u[1] ||= X("title", { id: "extractStatsTrendTitle" }, "每日提链与支付趋势", -1),
-				X("desc", zo, A(e.daily.length) + " 天的任务总数、已出链与已支付数量。完整数值以及 Plus 到账、失败数量可在下方每日明细中查看。", 1),
+				X("desc", Vo, A(e.daily.length) + " 天的任务总数、已出链与已支付数量。完整数值以及 Plus 到账、失败数量可在下方每日明细中查看。", 1),
 				(J(), Y(G, null, H([
 					0,
 					1,
@@ -3029,95 +3040,95 @@ var Po = {
 					y1: c(a.value * e / 4),
 					y2: c(a.value * e / 4),
 					class: "es-chart-gridline"
-				}, null, 8, Bo), X("text", {
+				}, null, 8, Ho), X("text", {
 					x: "38",
 					y: c(a.value * e / 4) + 4,
 					"text-anchor": "end",
 					class: "es-chart-label"
-				}, A(R($)(a.value * e / 4)), 9, Vo)])), 64)),
+				}, A(R($)(a.value * e / 4)), 9, Uo)])), 64)),
 				(J(!0), Y(G, null, H(o.value, (t) => (J(), Y("text", {
 					key: t,
 					x: s(t),
 					y: "232",
 					"text-anchor": "middle",
 					class: "es-chart-label"
-				}, A(e.daily[t].date.slice(5)), 9, Ho))), 128)),
+				}, A(String(e.daily[t].date || "").slice(5)), 9, Wo))), 128)),
 				(J(), Y(G, null, H(n, ([t, n]) => X("g", { key: t }, [X("path", {
 					class: O(["es-chart-line", `es-chart-line--${t}`]),
 					d: l(t)
-				}, null, 10, Uo), (J(!0), Y(G, null, H(e.daily, (r, i) => (J(), Y("circle", {
+				}, null, 10, Go), (J(!0), Y(G, null, H(e.daily, (r, i) => (J(), Y("circle", {
 					key: r.date,
 					class: O(["es-chart-point", `es-chart-point--${t}`]),
 					cx: s(i),
 					cy: c(r[t]),
 					r: e.daily.length <= 31 ? 3 : 2
-				}, [X("title", null, A(r.date) + " " + A(n) + " " + A(R($)(r[t])), 1)], 10, Wo))), 128))])), 64))
+				}, [X("title", null, A(r.date) + " " + A(n) + " " + A(R($)(r[t])), 1)], 10, Ko))), 128))])), 64))
 			]))]),
-			X("details", Go, [u[4] ||= X("summary", null, "查看每日明细", -1), X("div", Ko, [X("table", null, [
+			X("details", qo, [u[4] ||= X("summary", null, "查看每日明细", -1), X("div", Jo, [X("table", null, [
 				u[3] ||= X("caption", { class: "es-sr-only" }, "每日任务统计，按北京时间任务创建日归属", -1),
 				X("thead", null, [X("tr", null, [u[2] ||= X("th", { scope: "col" }, "日期", -1), (J(), Y(G, null, H(r, ([e, t]) => X("th", {
 					key: e,
 					scope: "col"
 				}, A(t), 1)), 64))])]),
-				X("tbody", null, [(J(!0), Y(G, null, H(e.daily, (e) => (J(), Y("tr", { key: e.date }, [X("th", qo, A(e.date), 1), (J(), Y(G, null, H(r, ([t]) => X("td", { key: t }, A(R($)(e[t])), 1)), 64))]))), 128))])
+				X("tbody", null, [(J(!0), Y(G, null, H(e.daily, (e) => (J(), Y("tr", { key: e.date }, [X("th", Yo, A(e.date), 1), (J(), Y(G, null, H(r, ([t]) => X("td", { key: t }, A(R($)(e[t])), 1)), 64))]))), 128))])
 			])])])
-		], 64)) : (J(), Y("div", Fo, [...u[0] ||= [X("strong", null, "这个时间段还没有提链任务", -1), X("p", null, "可选择其他时间范围。", -1)]]))]));
+		], 64)) : (J(), Y("div", Lo, [...u[0] ||= [X("strong", null, "这个时间段还没有提链任务", -1), X("p", null, "可选择其他时间范围。", -1)]]))]));
 	}
-}), Yo = { class: "es-chart-grid" }, Xo = {
+}), Zo = { class: "es-chart-grid" }, Qo = {
 	class: "es-panel",
 	"aria-labelledby": "extractStatsFailureTitle"
-}, Zo = { class: "es-panel-header" }, Qo = {
+}, $o = { class: "es-panel-header" }, es = {
 	key: 0,
 	class: "es-failures"
-}, $o = { class: "es-failure-heading" }, es = {
+}, ts = { class: "es-failure-heading" }, ns = {
 	class: "es-failure-track",
 	"aria-hidden": "true"
-}, ts = {
+}, rs = {
 	key: 1,
 	class: "es-empty es-empty--compact"
-}, ns = {
+}, is = {
 	class: "es-panel es-platforms",
 	"aria-labelledby": "extractStatsProvidersTitle"
-}, rs = {
+}, as = {
 	key: 0,
 	class: "es-table-scroll",
 	tabindex: "0",
 	"aria-label": "平台统计，可左右滚动"
-}, is = { class: "es-provider-table" }, as = { scope: "row" }, os = { class: "es-number-extracted" }, ss = ["title"], cs = { class: "es-number-paid" }, ls = ["title"], us = { class: "es-nowrap" }, ds = {
+}, os = { class: "es-provider-table" }, ss = { scope: "row" }, cs = { class: "es-number-extracted" }, ls = ["title"], us = { class: "es-number-paid" }, ds = ["title"], fs = { class: "es-nowrap" }, ps = {
 	key: 1,
 	class: "es-empty es-empty--compact"
-}, fs = {
+}, ms = {
 	class: "es-panel es-mode-panel",
 	"aria-labelledby": "extractStatsModesTitle"
-}, ps = {
+}, hs = {
 	key: 0,
 	class: "es-modes"
-}, ms = { class: "es-mode-heading" }, hs = { class: "es-mode-total" }, gs = {
+}, gs = { class: "es-mode-heading" }, _s = { class: "es-mode-total" }, vs = {
 	class: "es-mode-track",
 	"aria-hidden": "true"
-}, _s = {
+}, ys = {
 	key: 1,
 	class: "es-empty es-empty--compact"
-}, vs = /* @__PURE__ */ Kn({
+}, bs = /* @__PURE__ */ Kn({
 	__name: "StatsBreakdown",
 	props: { data: {} },
 	setup(e) {
-		let t = e, n = va(() => (t.data.failures ?? []).filter((e) => Do(e.count) > 0).sort((e, t) => Do(t.count) - Do(e.count))), r = [
+		let t = e, n = va(() => (t.data.failures ?? []).filter((e) => ko(e.count) > 0).sort((e, t) => ko(t.count) - ko(e.count))), r = [
 			["extracted", "出链"],
 			["paid", "支付"],
 			["plus_confirmed", "Plus"],
 			["failed", "失败"]
 		];
 		function i(e) {
-			let n = Do(t.data.totals.total);
-			return n > 0 ? Math.min(1, Do(e.total) / n) : null;
+			let n = ko(t.data.totals.total);
+			return n > 0 ? Math.min(1, ko(e.total) / n) : null;
 		}
 		return (t, a) => (J(), Y(G, null, [
-			X("div", Yo, [Z(Jo, { daily: e.data.daily }, null, 8, ["daily"]), X("section", Xo, [X("div", Zo, [a[0] ||= X("h2", { id: "extractStatsFailureTitle" }, "失败分类", -1), X("span", null, A(R($)(e.data.totals.failed)) + " 个失败任务", 1)]), n.value.length ? (J(), Y("ol", Qo, [(J(!0), Y(G, null, H(n.value, (e) => (J(), Y("li", { key: e.code || e.label }, [
-				X("div", $o, [X("span", null, A(e.label || e.code || "原因未记录"), 1), X("strong", null, A(R($)(e.count)), 1)]),
-				X("div", es, [X("span", { style: de({ width: `${R(Do)(e.count) / R(Do)(n.value[0].count) * 100}%` }) }, null, 4)]),
+			X("div", Zo, [Z(Xo, { daily: e.data.daily }, null, 8, ["daily"]), X("section", Qo, [X("div", $o, [a[0] ||= X("h2", { id: "extractStatsFailureTitle" }, "失败分类", -1), X("span", null, A(R($)(e.data.totals.failed)) + " 个失败任务", 1)]), n.value.length ? (J(), Y("ol", es, [(J(!0), Y(G, null, H(n.value, (e) => (J(), Y("li", { key: e.code || e.label }, [
+				X("div", ts, [X("span", null, A(e.label || e.code || "原因未记录"), 1), X("strong", null, A(R($)(e.count)), 1)]),
+				X("div", ns, [X("span", { style: de({ width: `${R(ko)(e.count) / R(ko)(n.value[0].count) * 100}%` }) }, null, 4)]),
 				X("code", null, A(e.code || "未记录错误码"), 1)
-			]))), 128))])) : (J(), Y("div", ts, [...a[1] ||= [
+			]))), 128))])) : (J(), Y("div", rs, [...a[1] ||= [
 				X("span", {
 					class: "es-empty-success",
 					"aria-hidden": "true"
@@ -3125,7 +3136,7 @@ var Po = {
 				X("strong", null, "暂无失败记录", -1),
 				X("p", null, "所选范围没有失败任务。", -1)
 			]]))])]),
-			X("section", ns, [a[5] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsProvidersTitle" }, "平台对比"), X("span", null, "支付成功与 Plus 到账分别统计")], -1), e.data.providers?.length ? (J(), Y("div", rs, [X("table", is, [
+			X("section", is, [a[5] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsProvidersTitle" }, "平台对比"), X("span", null, "支付成功与 Plus 到账分别统计")], -1), e.data.providers?.length ? (J(), Y("div", as, [X("table", os, [
 				a[2] ||= X("caption", { class: "es-sr-only" }, "各提链平台的任务产出与转化", -1),
 				a[3] ||= X("thead", null, [X("tr", null, [
 					X("th", { scope: "col" }, "平台"),
@@ -3149,39 +3160,39 @@ var Po = {
 					}, "平均耗时")
 				])], -1),
 				X("tbody", null, [(J(!0), Y(G, null, H(e.data.providers, (e) => (J(), Y("tr", { key: e.provider_id }, [
-					X("th", as, A(R(wo)(e.provider_id)), 1),
+					X("th", ss, A(R(Eo)(e.provider_id)), 1),
 					X("td", null, A(R($)(e.total)), 1),
-					X("td", os, A(R($)(e.extracted)), 1),
-					X("td", { title: `已出链 ${R($)(e.extracted)}，提链失败 ${R($)(e.extraction_failed)}` }, A(R(Ao)(e.extraction_rate)), 9, ss),
-					X("td", cs, A(R($)(e.paid)), 1),
-					X("td", { title: `已支付 ${R($)(e.paid)}，支付失败 ${R($)(e.payment_failed)}` }, A(R(Ao)(e.payment_rate)), 9, ls),
+					X("td", cs, A(R($)(e.extracted)), 1),
+					X("td", { title: `已出链 ${R($)(e.extracted)}，提链失败 ${R($)(e.extraction_failed)}` }, A(R(Mo)(e.extraction_rate)), 9, ls),
+					X("td", us, A(R($)(e.paid)), 1),
+					X("td", { title: `已支付 ${R($)(e.paid)}，支付失败 ${R($)(e.payment_failed)}` }, A(R(Mo)(e.payment_rate)), 9, ds),
 					X("td", null, A(R($)(e.plus_confirmed)), 1),
 					X("td", null, A(R($)(e.failed)), 1),
 					X("td", null, A(R($)(e.processing)), 1),
-					X("td", us, A(R(jo)(e.avg_seconds)), 1)
+					X("td", fs, A(R(No)(e.avg_seconds)), 1)
 				]))), 128))])
-			])])) : (J(), Y("div", ds, [...a[4] ||= [X("strong", null, "暂无平台数据", -1), X("p", null, "所选范围没有提链任务。", -1)]]))]),
-			X("section", fs, [a[8] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsModesTitle" }, "模式分布"), X("span", null, "所选范围内的任务组成")], -1), e.data.modes?.length ? (J(), Y("div", ps, [(J(!0), Y(G, null, H(e.data.modes, (e) => (J(), Y("article", {
+			])])) : (J(), Y("div", ps, [...a[4] ||= [X("strong", null, "暂无平台数据", -1), X("p", null, "所选范围没有提链任务。", -1)]]))]),
+			X("section", ms, [a[8] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsModesTitle" }, "模式分布"), X("span", null, "所选范围内的任务组成")], -1), e.data.modes?.length ? (J(), Y("div", hs, [(J(!0), Y(G, null, H(e.data.modes, (e) => (J(), Y("article", {
 				key: e.mode,
 				class: "es-mode"
 			}, [
-				X("div", ms, [X("h3", null, A(R(Eo)(e.mode)), 1), X("span", null, A(R(Ao)(i(e))), 1)]),
-				X("strong", hs, [Gi(A(R($)(e.total)), 1), a[6] ||= X("small", null, " 个任务", -1)]),
-				X("div", gs, [X("span", { style: de({ width: `${(i(e) ?? 0) * 100}%` }) }, null, 4)]),
+				X("div", gs, [X("h3", null, A(R(Oo)(e.mode)), 1), X("span", null, A(R(Mo)(i(e))), 1)]),
+				X("strong", _s, [Gi(A(R($)(e.total)), 1), a[6] ||= X("small", null, " 个任务", -1)]),
+				X("div", vs, [X("span", { style: de({ width: `${(i(e) ?? 0) * 100}%` }) }, null, 4)]),
 				X("dl", null, [(J(), Y(G, null, H(r, ([t, n]) => X("div", { key: t }, [X("dt", null, A(n), 1), X("dd", null, A(R($)(e[t])), 1)])), 64))])
-			]))), 128))])) : (J(), Y("div", _s, [...a[7] ||= [X("strong", null, "暂无模式数据", -1)]]))])
+			]))), 128))])) : (J(), Y("div", ys, [...a[7] ||= [X("strong", null, "暂无模式数据", -1)]]))])
 		], 64));
 	}
-}), ys = {
+}), xs = {
 	class: "es-today",
 	"aria-labelledby": "extractStatsTodayTitle"
-}, bs = { class: "es-scope" }, xs = { class: "es-metrics" }, Ss = { class: "es-metric-label" }, Cs = { class: "es-metric-hint" }, ws = { class: "es-summary-grid" }, Ts = {
+}, Ss = { class: "es-scope" }, Cs = { class: "es-metrics" }, ws = { class: "es-metric-label" }, Ts = { class: "es-metric-hint" }, Es = { class: "es-summary-grid" }, Ds = {
 	class: "es-panel es-conversion",
 	"aria-labelledby": "extractStatsConversionTitle"
-}, Es = { class: "es-duration" }, Ds = {
+}, Os = { class: "es-duration" }, ks = {
 	class: "es-panel es-task-states",
 	"aria-labelledby": "extractStatsStatesTitle"
-}, Os = { class: "es-current" }, ks = /* @__PURE__ */ Kn({
+}, As = { class: "es-current" }, js = /* @__PURE__ */ Kn({
 	__name: "StatsSummary",
 	props: {
 		data: {},
@@ -3236,82 +3247,82 @@ var Po = {
 			]
 		];
 		return (t, s) => (J(), Y(G, null, [
-			X("section", ys, [s[4] ||= X("div", { class: "es-today-heading" }, [X("h2", { id: "extractStatsTodayTitle" }, "今日与当前"), X("span", null, "今日任务按北京时间创建日归属")], -1), X("dl", null, [
+			X("section", xs, [s[4] ||= X("div", { class: "es-today-heading" }, [X("h2", { id: "extractStatsTodayTitle" }, "今日与当前"), X("span", null, "今日任务按北京时间创建日归属")], -1), X("dl", null, [
 				X("div", null, [s[0] ||= X("dt", null, "今日任务出链", -1), X("dd", null, A(R($)(i.value.extracted)), 1)]),
 				X("div", null, [s[1] ||= X("dt", null, "今日任务 Plus", -1), X("dd", null, A(R($)(i.value.plus_confirmed)), 1)]),
 				X("div", null, [s[2] ||= X("dt", null, [Gi("当前待支付"), X("small", null, "全部日期")], -1), X("dd", null, A(R($)(r.value.awaiting_payment)), 1)]),
 				X("div", null, [s[3] ||= X("dt", null, [Gi("当前待核对"), X("small", null, "全部日期")], -1), X("dd", null, A(R($)(r.value.needs_review)), 1)])
 			])]),
-			X("div", bs, [X("span", null, A(e.data.date_from || "—") + " — " + A(e.data.date_to || "—"), 1), s[5] ||= X("span", null, "按任务创建日统计 · 同一任务仅计一次", -1)]),
-			X("div", xs, [(J(), Y(G, null, H(a, ([e, t, r, i]) => X("article", {
+			X("div", Ss, [X("span", null, A(e.data.date_from || "—") + " — " + A(e.data.date_to || "—"), 1), s[5] ||= X("span", null, "按任务创建日统计 · 同一任务仅计一次", -1)]),
+			X("div", Cs, [(J(), Y(G, null, H(a, ([e, t, r, i]) => X("article", {
 				key: e,
 				class: O(["es-metric", i && `es-metric--${i}`])
 			}, [
-				X("span", Ss, A(t), 1),
+				X("span", ws, A(t), 1),
 				X("strong", null, A(R($)(n.value[e])), 1),
-				X("span", Cs, A(r), 1)
+				X("span", Ts, A(r), 1)
 			], 2)), 64))]),
-			X("div", ws, [X("section", Ts, [s[12] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsConversionTitle" }, "转化与耗时"), X("span", null, "未结束任务不进入成功率分母")], -1), X("dl", null, [
+			X("div", Es, [X("section", Ds, [s[12] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsConversionTitle" }, "转化与耗时"), X("span", null, "未结束任务不进入成功率分母")], -1), X("dl", null, [
 				X("div", null, [
 					s[6] ||= X("dt", null, "提链成功率", -1),
-					X("dd", null, A(R(Ao)(n.value.extraction_rate)), 1),
+					X("dd", null, A(R(Mo)(n.value.extraction_rate)), 1),
 					s[7] ||= X("span", null, "已出链 /（已出链 + 提链失败）", -1),
 					X("small", null, "出链 " + A(R($)(n.value.extracted)) + " · 失败 " + A(R($)(n.value.extraction_failed)), 1)
 				]),
 				X("div", null, [
 					s[8] ||= X("dt", null, "支付成功率", -1),
-					X("dd", null, A(R(Ao)(n.value.payment_rate)), 1),
+					X("dd", null, A(R(Mo)(n.value.payment_rate)), 1),
 					s[9] ||= X("span", null, "已支付 /（已支付 + 支付失败）", -1),
 					X("small", null, "支付 " + A(R($)(n.value.paid)) + " · 失败 " + A(R($)(n.value.payment_failed)), 1)
 				]),
 				X("div", null, [
 					s[10] ||= X("dt", null, "平均耗时", -1),
-					X("dd", Es, A(R(jo)(n.value.avg_seconds)), 1),
+					X("dd", Os, A(R(No)(n.value.avg_seconds)), 1),
 					s[11] ||= X("span", null, "最新成功运行的总耗时", -1)
 				])
-			])]), X("section", Ds, [
+			])]), X("section", ks, [
 				s[13] ||= X("div", { class: "es-panel-header" }, [X("h2", { id: "extractStatsStatesTitle" }, "区间任务状态"), X("span", null, "所选范围的最新结果")], -1),
 				X("dl", null, [(J(), Y(G, null, H(o, ([e, t, r]) => X("div", { key: e }, [X("dt", null, [X("i", {
 					class: O(["es-state-dot", `es-state-dot--${r}`]),
 					"aria-hidden": "true"
 				}, null, 2), Gi(A(t), 1)]), X("dd", null, A(R($)(n.value[e])), 1)])), 64))]),
-				X("p", Os, A(e.filtered ? "当前所选平台" : "当前全部平台") + "，全部日期：处理中 " + A(R($)(r.value.processing)) + " · 待支付 " + A(R($)(r.value.awaiting_payment)) + " · 待核对 " + A(R($)(r.value.needs_review)), 1)
+				X("p", As, A(e.filtered ? "当前所选平台" : "当前全部平台") + "，全部日期：处理中 " + A(R($)(r.value.processing)) + " · 待支付 " + A(R($)(r.value.awaiting_payment)) + " · 待核对 " + A(R($)(r.value.needs_review)), 1)
 			])])
 		], 64));
 	}
 });
 // src/features/extractStats/useExtractStats.ts
-function As(e) {
-	let t = /* @__PURE__ */ Gt(30), n = /* @__PURE__ */ Gt(""), r = /* @__PURE__ */ Gt(new Map(Co)), i = va(() => xo(t.value, n.value)), a = /* @__PURE__ */ Kt(null), o = va(() => a.value?.scope === i.value ? a.value.data : null), s = /* @__PURE__ */ Gt(!1), c = /* @__PURE__ */ Gt(""), l = !1, u = !1, d = null, f = va(() => s.value ? o.value ? "正在刷新统计…" : "正在加载统计…" : c.value ? "统计加载失败" : o.value ? No(o.value.generated_at) : "准备加载统计");
+function Ms(e) {
+	let t = /* @__PURE__ */ Gt(30), n = /* @__PURE__ */ Gt(""), r = /* @__PURE__ */ Gt(new Map(To)), i = va(() => xo(t.value, n.value)), a = /* @__PURE__ */ Kt(null), o = va(() => a.value?.scope === i.value ? a.value.data : null), s = /* @__PURE__ */ Gt(!1), c = /* @__PURE__ */ Gt(""), l = !1, u = !1, d = null, f = va(() => s.value ? o.value ? "正在刷新统计…" : "正在加载统计…" : c.value ? "统计加载失败" : o.value ? Fo(o.value.generated_at) : "准备加载统计");
 	function p() {
 		d?.controller.abort(), d = null, s.value = !1;
 	}
 	function m() {
 		if (u || !l || document.hidden) return Promise.resolve();
-		let t = i.value;
-		if (d?.scope === t) return d.promise;
+		let o = i.value;
+		if (d?.scope === o) return d.promise;
 		p();
-		let n = new AbortController();
+		let f = new AbortController();
 		s.value = !0, c.value = "";
-		let o = So(t, n.signal).then((i) => {
-			if (!n.signal.aborted) {
+		let m = wo(t.value, n.value, f.signal).then((t) => {
+			if (!f.signal.aborted) {
 				a.value = {
-					scope: t,
-					data: i
+					scope: o,
+					data: t
 				};
-				for (let { provider_id: e } of i.providers ?? []) e && e !== "lumen" && r.value.set(e, wo(e));
+				for (let { provider_id: e } of t.providers ?? []) e && e !== "lumen" && r.value.set(e, Eo(e));
 				e.onReady?.();
 			}
 		}).catch((e) => {
-			n.signal.aborted || (c.value = e instanceof Error && e.message || "请稍后重试");
+			f.signal.aborted || (c.value = e instanceof Error && e.message || "请稍后重试");
 		}).finally(() => {
-			d?.controller === n && (d = null, s.value = !1);
+			d?.controller === f && (d = null, s.value = !1);
 		});
 		return d = {
-			scope: t,
-			controller: n,
-			promise: o
-		}, o;
+			scope: o,
+			controller: f,
+			promise: m
+		}, m;
 	}
 	function h(e) {
 		t.value !== e && (t.value = e, m());
@@ -3340,40 +3351,40 @@ function As(e) {
 	};
 }
 // src/features/extractStats/ExtractStatsPage.vue?vue&type=script&setup=true&lang.ts
-var js = ["aria-busy"], Ms = {
+var Ns = ["aria-busy"], Ps = {
 	class: "es-toolbar",
 	role: "group",
 	"aria-label": "筛选提链统计"
-}, Ns = {
+}, Fs = {
 	class: "es-periods",
 	role: "group",
 	"aria-label": "统计时间范围"
-}, Ps = [
+}, Is = [
 	"data-extract-stats-days",
 	"aria-pressed",
 	"onClick"
-], Fs = { class: "es-provider-label" }, Is = ["value"], Ls = ["disabled", "aria-busy"], Rs = {
+], Ls = { class: "es-provider-label" }, Rs = ["value"], zs = ["disabled", "aria-busy"], Bs = {
 	class: "es-load-status",
 	"data-extract-stats-status": "",
 	role: "status",
 	"aria-live": "polite"
-}, zs = {
+}, Vs = {
 	key: 0,
 	class: "es-notice",
 	"data-extract-stats-notice": "",
 	role: "alert"
-}, Bs = { "data-extract-stats-content": "" }, Vs = {
+}, Hs = { "data-extract-stats-content": "" }, Us = {
 	key: 1,
 	class: "es-loading",
 	role: "status"
-}, Hs = {
+}, Ws = {
 	key: 2,
 	class: "es-loading es-loading--failed"
-}, Us = /* @__PURE__ */ Kn({
+}, Gs = /* @__PURE__ */ Kn({
 	__name: "ExtractStatsPage",
 	props: { deps: {} },
 	setup(e, { expose: t }) {
-		let { days: n, provider: r, providers: i, data: a, busy: o, error: s, status: c, load: l, setDays: u, setVisible: d } = As(e.deps ?? {});
+		let { days: n, provider: r, providers: i, data: a, busy: o, error: s, status: c, load: l, setDays: u, setVisible: d } = Ms(e.deps ?? {});
 		return t({
 			load: l,
 			setVisible: d
@@ -3383,15 +3394,15 @@ var js = ["aria-busy"], Ms = {
 			"aria-labelledby": "extractStatsTitle"
 		}, [
 			t[8] ||= X("header", { class: "es-page-header" }, [X("div", null, [X("h1", { id: "extractStatsTitle" }, "提链统计"), X("p", null, "查看任务产出、支付转化与失败原因")]), X("span", { class: "es-timezone" }, "北京时间 · 每个任务的最新结果")], -1),
-			X("div", Ms, [
-				X("div", Ns, [(J(!0), Y(G, null, H(R(bo), (e) => (J(), Y("button", {
+			X("div", Ps, [
+				X("div", Fs, [(J(!0), Y(G, null, H(R(bo), (e) => (J(), Y("button", {
 					key: e,
 					type: "button",
 					"data-extract-stats-days": e,
 					"aria-pressed": e === R(n),
 					onClick: (t) => R(u)(e)
-				}, "近 " + A(e) + " 天", 9, Ps))), 128))]),
-				X("label", Fs, [t[5] ||= Gi("平台", -1), kn(X("select", {
+				}, "近 " + A(e) + " 天", 9, Is))), 128))]),
+				X("label", Ls, [t[5] ||= Gi("平台", -1), kn(X("select", {
 					"onUpdate:modelValue": t[0] ||= (e) => /* @__PURE__ */ L(r) ? r.value = e : null,
 					"data-extract-stats-provider": "",
 					"aria-label": "按提链平台筛选",
@@ -3399,7 +3410,7 @@ var js = ["aria-busy"], Ms = {
 				}, [t[4] ||= X("option", { value: "" }, "全部平台", -1), (J(!0), Y(G, null, H(R(i), ([e, t]) => (J(), Y("option", {
 					key: e,
 					value: e
-				}, A(t), 9, Is))), 128))], 544), [[so, R(r)]])]),
+				}, A(t), 9, Rs))), 128))], 544), [[so, R(r)]])]),
 				X("button", {
 					type: "button",
 					class: "es-refresh",
@@ -3410,31 +3421,31 @@ var js = ["aria-busy"], Ms = {
 				}, [...t[6] ||= [X("svg", {
 					viewBox: "0 0 24 24",
 					"aria-hidden": "true"
-				}, [X("path", { d: "M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17" })], -1), X("span", null, "刷新", -1)]], 8, Ls),
-				X("span", Rs, A(R(c)), 1)
+				}, [X("path", { d: "M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17" })], -1), X("span", null, "刷新", -1)]], 8, zs),
+				X("span", Bs, A(R(c)), 1)
 			]),
-			R(s) ? (J(), Y("div", zs, [X("span", null, A(R(a) ? "刷新失败，以下保留上次统计。" : "统计暂时无法加载。") + A(R(s)), 1), X("button", {
+			R(s) ? (J(), Y("div", Vs, [X("span", null, A(R(a) ? "刷新失败，以下保留上次统计。" : "统计暂时无法加载。") + A(R(s)), 1), X("button", {
 				type: "button",
 				"data-extract-stats-retry": "",
 				onClick: t[3] ||= (e) => R(l)()
 			}, "重试")])) : Ki("", !0),
-			X("div", Bs, [R(a) ? (J(), Y(G, { key: 0 }, [Z(ks, {
+			X("div", Hs, [R(a) ? (J(), Y(G, { key: 0 }, [Z(js, {
 				data: R(a),
 				filtered: !!R(r)
-			}, null, 8, ["data", "filtered"]), Z(vs, { data: R(a) }, null, 8, ["data"])], 64)) : R(o) ? (J(), Y("div", Vs, [...t[7] ||= [X("span", {
+			}, null, 8, ["data", "filtered"]), Z(bs, { data: R(a) }, null, 8, ["data"])], 64)) : R(o) ? (J(), Y("div", Us, [...t[7] ||= [X("span", {
 				class: "es-loading-dot",
 				"aria-hidden": "true"
-			}, null, -1), Gi("正在汇总提链任务…", -1)]])) : R(s) ? (J(), Y("div", Hs, "未取得所选范围的统计，请重试。")) : Ki("", !0)])
-		], 8, js));
+			}, null, -1), Gi("正在汇总提链任务…", -1)]])) : R(s) ? (J(), Y("div", Ws, "未取得所选范围的统计，请重试。")) : Ki("", !0)])
+		], 8, Ns));
 	}
 });
 // src/extractStats.ts
-function Ws(e, t = {}) {
-	let n = ho(Us, { deps: t }), r = n.mount(e);
+function Ks(e, t = {}) {
+	let n = ho(Gs, { deps: t }), r = n.mount(e);
 	return {
 		load: r.load,
 		setVisible: r.setVisible,
 		destroy: () => n.unmount()
 	};
 }
-export { Ws as mountExtractStats };
+export { Ks as mountExtractStats };
