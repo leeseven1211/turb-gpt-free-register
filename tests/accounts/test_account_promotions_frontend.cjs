@@ -27,6 +27,7 @@ const view = {
   facetLabel: (_group, value) => value || '',
 };
 vm.createContext(view);
+vm.runInContext(require('../frontend_script_sources.cjs').readAccountScript('task-list-display.js'), view);
 vm.runInContext([
   promotionSource,
   functionSource('_quotaWindowLabel'),
@@ -42,7 +43,7 @@ vm.runInContext([
   functionSource('_accountDetailMarkup'),
   functionSource('accountTaskResultText'),
   functionSource('accountTaskResultTooltipText'),
-  functionSource('accountTaskPlanResultMarkup'),
+  functionSource('accountTaskListResultMarkup'),
 ].join('\n'), view);
 
 const goTrial = {plan: 'go', kind: 'free_trial', eligible: true, duration_num_periods: 1, duration_period: 'month', campaign_id: 'go-free-one'};
@@ -718,14 +719,14 @@ test('任务套餐精简入口使用可聚焦按钮且浮窗保留全部详情�
       {country: 'VN', status: 'failed', error: '错误 " <img src=x> & \'失败\''},
     ],
   }};
-  const html = view.accountTaskPlanResultMarkup(task);
+  const html = view.accountTaskListResultMarkup(task);
   assert.match(html, /^<button\b/);
   assert.match(html, /type="button"/);
   assert.match(html, /class="account-task-result-summary"/);
   assert.match(html, /data-account-task-result-tooltip(?:\s|=|>)/);
   assert.match(html, /data-accounts-tooltip="[^"]*JP[^"]*VN/);
   assert.match(html, /aria-label="[^"]*查看套餐查询详情/);
-  assert.match(html, /free · [^<]*免费 1个月/);
+  assert.equal(html.replace(/<[^>]*>/g, ''), '部分失败');
   assert.doesNotMatch(html, /\stitle=/);
   assert.doesNotMatch(html, /<img\b/);
   assert.match(html, /&quot; &lt;img src=x&gt; &amp; &#39;失败&#39;/);

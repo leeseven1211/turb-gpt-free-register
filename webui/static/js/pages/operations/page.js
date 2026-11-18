@@ -168,8 +168,8 @@ function accountTaskAdmissionReasonText(reason) {
 function accountTaskAdmissionWaitMarkup(task) {
   const reasons = accountTaskAdmissionReasons(task);
   if (task?.status !== 'queued' || !reasons.length) return '';
-  if (reasons.length === 1) return `<div class="sub-cell">${esc(accountTaskAdmissionReasonText(reasons[0]))}</div>`;
-  return `<details class="sub-cell"><summary>${esc(accountTaskAdmissionReasonText(reasons[0]))}</summary><div>${reasons.map(reason => esc(accountTaskAdmissionReasonText(reason))).join('<br>')}</div></details>`;
+  const labels = reasons.map(reason => esc(accountTaskAdmissionReasonText(reason)));
+  return `<details class="sub-cell task-wait-reasons" name="task-list-wait"><summary>${labels[0]}</summary><div>${labels.join('<br>')}</div></details>`;
 }
 function accountTaskResultText(task, compact = false) {
   const status = String(task.status || '');
@@ -612,10 +612,12 @@ function renderAccountTasks() {
   const tooltipView = tooltipTaskId ? rememberTaskTooltipView() : null;
   const restoreTooltipFocus = tooltipTaskId && document.activeElement === tooltipTarget;
   if (tooltipTaskId) _hideAccountsTooltip();
+  // 复用任务列表已有的点击、键盘与刷新后恢复提示，每个单元格有独立标识。
+  const cellHint = (id, column, text) =>
+    `tabindex="0" data-account-task-result-tooltip="${esc(id)}-${column}" data-accounts-tooltip="${esc(text)}"`;
   const pageIds = new Set(ACCOUNT_TASKS.map(task => Number(task.id)));
   ACCOUNT_TASK_SELECTED.forEach(id => { if (!pageIds.has(Number(id))) ACCOUNT_TASK_SELECTED.delete(id); });
   body.innerHTML = ACCOUNT_TASKS.map(task => {
-    const result = accountTaskResultText(task);
     const active = accountTaskIsActive(task);
     const retryable = accountTaskCanRetry(task);
     const terminable = accountTaskCanTerminate(task);
@@ -626,7 +628,6 @@ function renderAccountTasks() {
     const batch = task.batch_title || (task.batch_uuid ? short(task.batch_uuid, 12) : '单任务');
     const trigger = facetLabel('trigger', task.trigger);
     const stage = task.current_stage_label || facetLabel('stage', normalizeAccountTaskStage(task.current_stage));
-    const error = task.error_message || '';
     const errorInfo = task.error_info || null;
     const reportedFailureStage = task.failure_stage || task.result_summary?.failure_stage;
     const classifiedStage = String(errorInfo?.stage || '').trim();
@@ -641,25 +642,31 @@ function renderAccountTasks() {
     const failureLabel = failureStage === reportedFailureStage && task.failure_stage_label
       ? task.failure_stage_label : facetLabel('stage', normalizeAccountTaskStage(failureStage));
     const failureLocation = failureStage && !active ? `失败于 ${failureLabel}` : '';
-    const errorText = accountTaskErrorDisplayText(errorInfo, error);
-    const extractionSucceeded = task.task_type === 'extract_link' && (
-      ['succeeded', 'success'].includes(String(task.result_summary?.extraction_status || '').toLowerCase())
-      || (!task.result_summary?.extraction_status && task.result_summary?.ok === true && task.result_summary?.has_link === true)
-    );
-    const resultErrorText = extractionSucceeded ? result : errorText;
-    const compactPlanResult = task.task_type === 'plan_check' && !active && !error;
+    const duration = formatTaskDuration(task.duration_ms);
+    const stepDescription = [stage, failureLocation, duration].filter(Boolean).join(' · ');
+    const typeLabel = facetLabel('task_type', task.task_type);
+    const created = formatDateTime(task.created_at);
+    const completed = formatDateTime(task.completed_at);
+    const targetStatus = taskListDisplay.targetStatus(task);
+    const targetLabel = targetStatus.original ? facetLabel('target_status', task.target_status)
+      : targetStatus.label || facetLabel('target_status', task.target_status);
+    const targetStatusText = `目标状态：${targetLabel}${task.target_status ? `（${task.target_status}）` : ''}${targetStatus.original}`;
+    const targetStatusMarkup = targetStatus.duplicate ? '—' : targetStatus.label
+      ? `<span class="jobs-v2-pill jobs-v2-pill--muted">${esc(targetStatus.label)}</span>` : pillV2(task.target_status, 'target_status');
+    const executionStatusText = task.internal_status && task.internal_status !== task.status
+      ? `${task.status} · 原始状态：${task.internal_status}` : task.status || '';
     return `<tr class="${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'is-selected' : ''}">
       <td class="task-col-check col-check"><input type="checkbox" data-account-task-select="${esc(task.id)}" ${ACCOUNT_TASK_SELECTED.has(Number(task.id)) ? 'checked' : ''} aria-label="选择任务 #${esc(task.id)}"></td>
-      <td>#${esc(task.id)}</td>
-      <td title="${esc(task.task_type || '')}">${esc(facetLabel('task_type', task.task_type))}</td>
-      <td title="${esc(task.email_snapshot)}"><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
-      <td title="${esc(task.status || '')}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : accountTaskAdmissionWaitMarkup(task)}</td>
-      <td title="${esc(task.target_status || '')}">${pillV2(task.target_status, 'target_status')}</td>
-      <td title="${esc(batch)} · ${esc(trigger)}">${managedBatchId ? `<button type="button" class="bulk-link" data-account-bulk-batch="${attrEsc(managedBatchId)}" data-account-bulk-round="${attrEsc(task.bulk_round_id || task.bulk_context?.round_id || '')}">${esc(short(batch, 26))}</button>` : esc(short(batch, 26))}<div class="sub-cell">${esc(trigger)}</div></td>
+      <td ${cellHint(task.id, 'id', `#${task.id}`)}>#${esc(task.id)}</td>
+      <td ${cellHint(task.id, 'type', typeLabel)}><span class="task-cell-two-lines">${esc(typeLabel)}</span></td>
+      <td ${cellHint(task.id, 'target', [target, task.email_snapshot].filter(Boolean).join(' · '))}><strong>${esc(target)}</strong><div class="sub-cell">${esc(task.email_snapshot || '-')}</div></td>
+      <td title="${esc(executionStatusText)}">${pillV2(task.debug_pause ? 'debug_paused' : task.status, 'status')}${task.debug_pause ? '<div class="sub-cell">等待结束调试</div>' : accountTaskAdmissionWaitMarkup(task)}</td>
+      <td ${cellHint(task.id, 'target-status', targetStatusText)} aria-label="${esc(targetStatusText)}">${targetStatusMarkup}</td>
+      <td title="${esc(batch)} · ${esc(trigger)}">${managedBatchId ? `<button type="button" class="bulk-link" data-account-bulk-batch="${attrEsc(managedBatchId)}" data-account-bulk-round="${attrEsc(task.bulk_round_id || task.bulk_context?.round_id || '')}">${esc(short(batch, 26))}</button>` : esc(short(batch, 26))}<div class="sub-cell" ${cellHint(task.id, 'batch', [task.batch_title || task.batch_uuid || batch, trigger].join(' · '))}>${esc(trigger)}</div></td>
       <td>${esc(task.run_count || 0)} 次<div class="sub-cell">最近 #${esc(task.last_run_no || '-')}</div></td>
-      <td>${esc(stage)}${failureLocation ? `<div class="sub-cell">${esc(failureLocation)}</div>` : ''}<div class="sub-cell">${esc(formatTaskDuration(task.duration_ms))}</div></td>
-      <td title="${esc(formatDateTime(task.created_at))} → ${esc(formatDateTime(task.completed_at))}">${esc(formatDateTime(task.created_at))}<div class="sub-cell">${esc(formatDateTime(task.completed_at))}</div></td>
-      <td class="task-error"${compactPlanResult ? '' : ` title="${esc(error ? accountTaskErrorDisplayTitle(errorInfo, error) : result)}"`}>${compactPlanResult ? accountTaskPlanResultMarkup(task) : error ? `${taskErrorBadge(errorInfo)}<span class="task-error-cell-text">${esc(short(resultErrorText, 90))}</span>${extractionSucceeded && errorText && errorText !== result ? `<span class="task-error-cell-text">原因：${esc(short(errorText, 90))}</span>` : ''}` : esc(short(result, 90))}</td>
+      <td ${cellHint(task.id, 'step', stepDescription)}>${esc(failureLocation || stage)}<div class="sub-cell">${esc(duration)}</div></td>
+      <td ${cellHint(task.id, 'time', `${created} → ${completed}`)}>${esc(created)}<div class="sub-cell">${esc(completed)}</div></td>
+      <td class="task-error">${accountTaskListResultMarkup(task)}</td>
       <td><div class="task-row-actions"><button type="button" class="task-row-action" data-account-task-log="${esc(task.id)}">日志</button>${stoppable ? `<button type="button" class="task-row-action task-row-action--terminate" data-account-task-terminate="${esc(task.id)}" aria-label="${terminationLabel}任务 #${esc(task.id)}">${terminationLabel}</button>` : ''}${retryable ? `<button type="button" class="task-row-action task-row-action--retry" data-account-task-retry="${esc(task.id)}">重跑</button>` : ''}${!active ? `<button type="button" class="task-row-action task-row-action--delete" data-account-task-delete="${esc(task.id)}">删除</button>` : ''}</div></td>
     </tr>`;
   }).join('') || renderTableStateRow(12, '暂无任务记录', '调整搜索或筛选条件后再试。');
@@ -1375,7 +1382,19 @@ function accountTaskResultTooltipText(task) {
   }
   return details.filter(Boolean).join('\n');
 }
-function accountTaskPlanResultMarkup(task) {
-  const summary = accountTaskResultText(task, true);
-  return `<button type="button" class="account-task-result-summary" data-account-task-result-tooltip="${esc(task.id || '')}" data-accounts-tooltip="${esc(accountTaskResultTooltipText(task))}" aria-label="${esc(`查看套餐查询详情：${summary}`)}">${esc(summary)}</button>`;
+function accountTaskListResultMarkup(task) {
+  const [label, secondary] = taskListDisplay.result(task);
+  const plan = task.task_type === 'plan_check';
+  const error = task.error_message || '';
+  const info = task.error_info;
+  const details = [...new Set([
+    accountTaskResultText(task),
+    task.result_summary?.message,
+    plan ? accountTaskResultTooltipText(task) : '',
+    info || error ? accountTaskErrorDisplayTitle(info, error) : '',
+    info?.display_code, info?.cause_display_code, info?.cause_summary,
+    task.error_code, info?.code, info?.cause_code, error,
+  ].filter(Boolean))].join('\n');
+  const accessibleLabel = `${plan ? '查看套餐查询详情' : '查看任务结果详情'}：${[label, secondary].filter(Boolean).join('，')}`;
+  return `<button type="button" class="account-task-result-summary" data-account-task-result-tooltip="${esc(task.id || '')}" data-accounts-tooltip="${esc(details)}" aria-label="${esc(accessibleLabel)}">${esc(label)}${secondary ? `<span class="sub-cell">${esc(secondary)}</span>` : ''}</button>`;
 }

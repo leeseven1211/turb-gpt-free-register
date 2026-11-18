@@ -261,9 +261,12 @@ const PAGERS = {
   codex:    { page: 1, size: 20 },
   accountTasks: { page: 1, size: 20 },
 };
+const PAGER_LAYOUTS = new WeakMap();
 
 function _renderPager(id, total) {
   const p = PAGERS[id];
+  total = Math.max(0, Math.floor(Number(total)) || 0);
+  p.total = total;
   const totalPages = Math.max(1, Math.ceil(total / p.size));
   if (p.page > totalPages) p.page = Math.max(1, totalPages);
   const start = total > 0 ? (p.page - 1) * p.size + 1 : 0;
@@ -279,99 +282,79 @@ function _renderPager(id, total) {
   const el = document.getElementById('pager-' + id);
   if (el) el.innerHTML = html;
 
-  if (id === 'jobs' || id === 'accounts' || id === 'codex' || id === 'outlook' || id === 'accountTasks' || id === 'derivations') {
-    const elV2 = document.getElementById(
-      id === 'jobs' ? 'pager-jobs-v2'
-        : id === 'accounts' ? 'pager-accounts-v2'
-        : id === 'codex' ? 'pager-codex-v2'
-        : id === 'accountTasks' ? 'pager-accountTasks-v2'
-        : id === 'derivations' ? 'pager-derivations-v2'
-        : 'pager-outlook-v2'
-    );
-    if (elV2) {
-      const sizeWrapId = id === 'jobs' ? 'jobsPagerSize'
-        : id === 'accounts' ? 'accountsPagerSize'
-        : id === 'codex' ? 'codexPagerSize'
-        : id === 'accountTasks' ? 'accountTasksPagerSize'
-        : id === 'derivations' ? 'derivationsPagerSize'
-        : 'outlookPagerSize';
-      const v2Sizes = [10, 20, 30, 50, 100];
-      const pages = [];
-      let from = Math.max(1, p.page - 2);
-      let to = Math.min(totalPages, from + 4);
-      from = Math.max(1, to - 4);
-      for (let i = from; i <= to; i++) {
-        pages.push(i === p.page
-          ? `<span class="pager-page">${i}</span>`
-          : `<button type="button" onclick="pagerGoTo('${id}',${i})">${i}</button>`);
-      }
-      elV2.innerHTML = `
-        <span class="pager-total">共 ${total} 条</span>
-        <button type="button" onclick="pagerGo('${id}',-1)"${p.page <= 1 ? ' disabled' : ''} title="上一页">‹</button>
-        ${pages.join('')}
-        <button type="button" onclick="pagerGo('${id}',1)"${p.page >= totalPages ? ' disabled' : ''} title="下一页">›</button>
-        <div class="pager-size" id="${sizeWrapId}">
-          <button type="button" class="pager-size-btn" onclick="toggleV2PagerSize(event,'${sizeWrapId}')">${p.size}条/页</button>
-          <div class="pager-size-menu" role="listbox">
-            ${v2Sizes.map(s =>
-              `<button type="button" class="pager-size-item${p.size === s ? ' is-active' : ''}" role="option" onclick="pickV2PagerSize('${id}','${sizeWrapId}',${s})">${s}条/页</button>`
-            ).join('')}
-          </div>
-        </div>
-        <label class="pager-goto">前往
-          <input type="number" min="1" max="${totalPages}" value="${p.page}" inputmode="numeric"
-            onkeydown="if(event.key==='Enter'){pagerJump('${id}',this.value);event.preventDefault();}"
-            onchange="pagerJump('${id}',this.value)">
-          页
-        </label>`;
-    }
+  const elV2 = document.getElementById(`pager-${id}-v2`);
+  if (!elV2) return;
+  const range = `${total ? `${start.toLocaleString()}–${end.toLocaleString()} / ` : ''}共 ${total.toLocaleString()} 条`;
+  const previous = PAGER_LAYOUTS.get(elV2);
+  const samePage = previous?.page === p.page && previous.size === p.size;
+  PAGER_LAYOUTS.set(elV2, {page: p.page, size: p.size, totalPages, range});
+  if (samePage) {
+    if (previous.range !== range) elV2.querySelector('.pager-total').textContent = range;
+    if (previous.totalPages === totalPages) return;
   }
-}
-function toggleV2PagerSize(e, wrapId) {
-  e.stopPropagation();
-  const wrap = document.getElementById(wrapId);
-  if (!wrap) return;
-  const open = wrap.classList.toggle('open');
-  if (open) {
-    const closer = (ev) => {
-      if (wrap.contains(ev.target)) return;
-      wrap.classList.remove('open');
-      document.removeEventListener('click', closer);
-    };
-    setTimeout(() => document.addEventListener('click', closer), 0);
+  const pages = [];
+  const from = Math.max(1, Math.min(p.page - 2, totalPages - 4));
+  const to = Math.min(totalPages, from + 4);
+  const addPage = i => pages.push(i === p.page
+    ? `<span class="pager-page" aria-current="page">${i}</span>`
+    : `<button type="button" aria-label="第 ${i} 页" onclick="pagerGoTo('${id}',${i})">${i}</button>`);
+  if (from > 1) addPage(1);
+  if (from > 2) pages.push('<span aria-hidden="true">…</span>');
+  for (let i = from; i <= to; i++) addPage(i);
+  if (to < totalPages - 1) pages.push('<span aria-hidden="true">…</span>');
+  if (to < totalPages) addPage(totalPages);
+  const jumpDisabled = totalPages <= 1 ? ' disabled' : '';
+  const jumpTitle = `输入 1 至 ${totalPages} 的整数页码`;
+  const navigation = `
+    <button type="button" onclick="pagerGo('${id}',-1)"${p.page <= 1 ? ' disabled' : ''} title="上一页" aria-label="上一页">‹</button>
+    <span class="pager-numbers">${pages.join('')}</span><span class="pager-mobile-page">${p.page} / ${totalPages}</span>
+    <button type="button" onclick="pagerGo('${id}',1)"${p.page >= totalPages ? ' disabled' : ''} title="下一页" aria-label="下一页">›</button>`;
+  if (samePage) {
+    // 轮询新增或移除最后一页时，保留跳页框及其正在输入的内容。
+    elV2.querySelector('.pager-nav').innerHTML = navigation;
+    const input = elV2.querySelector('.pager-goto input');
+    input.title = jumpTitle;
+    input.disabled = totalPages <= 1;
+    if (input.disabled) input.value = String(p.page);
+    elV2.querySelector('.pager-goto button').disabled = input.disabled;
+    return;
   }
+  elV2.innerHTML = `<nav class="pager-layout" aria-label="列表分页">
+    <div class="pager-controls">
+      <div class="pager-nav">${navigation}</div>
+      <form class="pager-goto" onsubmit="pagerJump('${id}',this.elements.page.value,this.elements.page);return false">
+        <label>跳至 <input type="text" name="page" inputmode="numeric" pattern="[0-9]+" required autocomplete="off" aria-label="跳转页码" title="${jumpTitle}" value="${p.page}"${jumpDisabled}> 页</label>
+        <button type="submit"${jumpDisabled}>跳转</button>
+      </form>
+    </div>
+    <div class="pager-meta">
+      <span class="pager-total" aria-live="polite">${range}</span>
+      <label class="pager-size">每页 <select aria-label="每页条数" onchange="pagerSetSize('${id}',this.value)">
+        ${[10,20,30,50,100].map(s => `<option value="${s}"${p.size === s ? ' selected' : ''}>${s}条/页</option>`).join('')}
+      </select></label>
+    </div>
+  </nav>`;
 }
-function pickV2PagerSize(id, wrapId, size) {
-  const wrap = document.getElementById(wrapId);
-  if (wrap) wrap.classList.remove('open');
-  pagerSetSize(id, size);
-}
-function toggleJobsPagerSize(e) { toggleV2PagerSize(e, 'jobsPagerSize'); }
-function pickJobsPagerSize(size) { pickV2PagerSize('jobs', 'jobsPagerSize', size); }
 function pagerGoTo(id, page) {
   const p = PAGERS[id];
-  if (!p) return;
-  const total = id === 'jobs' ? JOBS_TOTAL
-    : id === 'accounts' ? ACCOUNTS_TOTAL
-    : id === 'outlook' ? OUTLOOK_TOTAL
-    : id === 'codex' ? CODEX_TOTAL
-    : id === 'accountTasks' ? ACCOUNT_TASKS_TOTAL
-    : id === 'derivations' ? EMAIL_DERIVATION_VIEW.total
-    : (p.size || 20);
-  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / p.size) || 1);
-  p.page = Math.max(1, Math.min(parseInt(page, 10) || 1, totalPages));
+  if (!p?.total || !Number.isSafeInteger(page)) return;
+  const next = Math.max(1, Math.min(page, Math.ceil(p.total / p.size)));
+  if (next === p.page) return;
+  p.page = next;
   _reloadPagedList(id);
 }
-function pagerJump(id, val) {
-  pagerGoTo(id, val);
+function pagerJump(id, val, input) {
+  const value = String(val).trim();
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) return;
+  pagerGoTo(id, Number(value));
+  if (input) input.value = String(PAGERS[id].page);
 }
 
 function _reloadPagedList(id) {
   ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks, derivations: loadEmailDerivationResources })[id]?.();
 }
 function pagerGo(id, dir) {
-  PAGERS[id].page = Math.max(1, PAGERS[id].page + dir);
-  _reloadPagedList(id);
+  pagerGoTo(id, PAGERS[id].page + dir);
 }
 function pagerSetSize(id, val) {
   const pager = PAGERS[id];
@@ -779,6 +762,10 @@ function renderColumnFilterSummaryForTable(table) {
     label: header.dataset.filterTitle || '',
     value: columnFilterDisplayValue(header),
   })).filter(item => item.value);
+  // A search input emits change on blur. Keep the chip receiving that click in the DOM.
+  const state = JSON.stringify(active);
+  if (summary.dataset.filterState === state) return;
+  summary.dataset.filterState = state;
   summary.hidden = active.length === 0;
   if (!active.length) {
     summary.innerHTML = '';

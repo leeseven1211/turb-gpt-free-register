@@ -113,9 +113,9 @@ test('旧提链摘要继续识别成功、失败和已有消息', () => {
   }
 });
 
-test('任务列表支付异常仍显示提链成功并保留错误徽标和详细提示，其他错误不变', () => {
+test('任务列表结果不超过十个字符，完整诊断可通过提示读取，相同失败只显示一次', () => {
   const body = {innerHTML: ''};
-  const context = loadFunctions(['accountTaskResultText', 'renderAccountTasks'], {
+  const context = loadFunctions(['accountTaskResultText', 'accountTaskListResultMarkup', 'renderAccountTasks'], {
     $: selector => selector === '#accountTasksBody' ? body : null,
     ACCOUNT_TASKS: [], ACCOUNT_TASK_SELECTED: new Set(), ACCOUNT_TASKS_TOTAL: 1,
     document: {querySelector: () => null},
@@ -123,28 +123,55 @@ test('任务列表支付异常仍显示提链成功并保留错误徽标和详�
     accountTaskCanTerminate: () => false, accountTaskCanStop: () => false,
     accountTaskErrorDisplayText: (_info, error) => error,
     accountTaskErrorDisplayTitle: (_info, error) => error,
-    taskErrorBadge: () => '<span class="error-badge">PAYMENT</span>',
     esc: value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char])),
     short: (value, length) => String(value || '').slice(0, length),
     facetLabel: (_group, value) => value || '', normalizeAccountTaskStage: value => value,
-    pillV2: () => '', formatTaskDuration: () => '-', formatDateTime: () => '-',
+    pillV2: value => `<span>${value}</span>`, formatTaskDuration: () => '-', formatDateTime: () => '-',
     updateAccountTaskSelectionUi() {}, autoSizeResizableTableColumns() {}, _renderPager() {},
   });
-  for (const [task_type, result_summary, expected] of [
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功 · 支付失败'],
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功 · 支付响应缺失'],
-    ['extract_link', {extraction_status: 'failed'}, '支付&lt;失败&gt;'],
-    ['live_check', {}, '支付&lt;失败&gt;'],
+  vm.runInContext(require('../frontend_script_sources.cjs').readAccountScript('task-list-display.js'), context);
+  const rawError = `支付<失败> ${'诊断记录'.repeat(45)}末尾`;
+  for (const [task_type, result_summary, expected, error_info] of [
+    ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功支付失败'],
+    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功支付待确认'],
+    ['extract_link', {extraction_status: 'failed'}, '原因未分类'],
+    ['live_check', {}, '验证码等待超时', {cause_code: 'email_otp_no_mail', display_code: 'SYN-000'}],
+    ['example', {status: 'request_unknown'}, '结果待确认', {code: 'unknown.unclassified'}],
   ]) {
-    context.ACCOUNT_TASKS = [{id: 1, task_type, status: 'failed', error_message: '支付<失败>', result_summary}];
+    context.ACCOUNT_TASKS = [{id: 1, task_type, status: 'failed', target_status: 'failed', error_code: 'synthetic_task_error', error_message: rawError, result_summary, error_info}];
     context.renderAccountTasks();
     const cell = body.innerHTML.match(/<td class="task-error"[^>]*>.*?<\/td>/s)?.[0] || '';
-    assert.match(cell, /title="支付&lt;失败&gt;"/);
-    assert.match(cell, /class="error-badge">PAYMENT<\/span>/);
-    assert.ok(cell.includes(`<span class="task-error-cell-text">${expected}</span>`));
-    if (task_type === 'extract_link' && result_summary.extraction_status === 'succeeded') {
-      assert.match(cell, /<span class="task-error-cell-text">原因：支付&lt;失败&gt;<\/span>/);
-    }
+    const visible = cell.replace(/<[^>]*>/g, '').trim();
+    assert.equal(visible, expected);
+    assert.ok([...visible].length <= 10);
+    assert.match(cell, /data-accounts-tooltip="[^"]*支付&lt;失败&gt;[^"]*末尾/);
+    assert.match(cell, /data-accounts-tooltip="[^"]*synthetic_task_error/);
+    if (error_info?.cause_code) assert.ok(cell.includes(error_info.cause_code));
+    if (error_info?.display_code) assert.match(cell, /data-accounts-tooltip="[^"]*SYN-000/);
+    assert.equal((body.innerHTML.match(/>failed<\/span>/g) || []).length, 1);
+  }
+  for (const [status, target_status] of [['running', 'failed'], ['failed', 'credential_valid']]) {
+    context.ACCOUNT_TASKS = [{id: 2, task_type: 'registration', status, target_status}];
+    context.renderAccountTasks();
+    assert.ok(body.innerHTML.includes(`>${status}</span>`));
+    assert.ok(body.innerHTML.includes(`>${target_status}</span>`));
+  }
+  for (const [target_status, extra, expected] of [
+    ['failed', {}, '—'],
+    ['manual_reconcile', {}, '待人工核验'],
+    ['failed', {internal_target_status: 'manual_reconcile'}, '待人工核验'],
+    ['failed', {internal_target_status: 'request_unknown'}, '结果待确认'],
+    ['failed', {internal_target_status: 'attention_required'}, '需处理'],
+    ['failed', {internal_target_status: 'credential_pending_confirmation'}, '凭证待核验'],
+    ['password_confirmation_pending', {}, '密码待核验'],
+    ['failed', {internal_status: 'request_unknown'}, 'failed'],
+    ['partial_success', {internal_target_status: 'request_unknown'}, 'partial_success'],
+  ]) {
+    context.ACCOUNT_TASKS = [{id: 2, task_type: 'registration', status: 'failed', target_status, ...extra}];
+    context.renderAccountTasks();
+    const cell = body.innerHTML.match(/<td [^>]*data-account-task-result-tooltip="2-target-status"[^>]*>(.*?)<\/td>/s);
+    assert.equal(cell?.[1].replace(/<[^>]*>/g, ''), expected, JSON.stringify({target_status, ...extra}));
+    assert.ok(cell[0].includes(extra.internal_target_status || target_status));
   }
   context.ACCOUNT_TASKS = [{id: 258741, task_type:'extract_link', status:'attention_required',
     error_message:'原单查询 HTTP 404', failure_stage:'access_token', failure_stage_label:'校验 Token',

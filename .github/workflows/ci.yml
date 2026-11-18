@@ -70,6 +70,8 @@ jobs:
           node --test tests/webui/test_dashboard_vue_bridge.cjs
           tests/webui/test_dashboard_vue_contracts.cjs tests/email/test_email_supply_frontend.cjs
           tests/operations/test_task_dialog_lifecycle.cjs
+          tests/webui/test_offset_pager.cjs tests/accounts/test_account_row_actions_frontend.cjs
+          tests/accounts/test_account_promotions_frontend.cjs tests/accounts/test_account_script_initialization.cjs
       - run: npm --prefix frontend run build
       - name: Verify checked-in dashboard assets
         run: |

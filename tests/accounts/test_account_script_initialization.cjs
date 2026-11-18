@@ -8,6 +8,7 @@ test('账号脚本按模板顺序初始化且关键事件只绑定一次', () =>
   const captureKeydowns = [];
   const node = id => ({
     id, value: '', classList: {contains: () => true},
+    querySelectorAll: () => [],
     addEventListener(name, listener) {
       const key = `${id}:${name}`;
       listeners.set(key, [...(listeners.get(key) || []), listener]);
@@ -38,7 +39,7 @@ test('账号脚本按模板顺序初始化且关键事件只绑定一次', () =>
   });
 
   assert.deepEqual(loadedFiles, [
-    'accounts.js', 'account-tasks.js', 'account-email-change.js', 'account-inspection.js',
+    'accounts.js', 'task-list-display.js', 'account-tasks.js', 'account-email-change.js', 'account-inspection.js',
   ]);
   for (const file of loadedFiles) {
     vm.runInContext(readAccountScript(file), context, {filename: file});

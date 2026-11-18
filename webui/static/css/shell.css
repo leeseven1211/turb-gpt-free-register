@@ -851,15 +851,33 @@
       gap: 8px; padding: 12px 16px 16px; color: #606266; font-size: 14px;
       border-top: 1px solid #ebeef5; background: #fff;
     }
-    .jobs-v2-pager .pager-total { color: #606266; margin-right: 4px; white-space: nowrap; }
-    .jobs-v2-pager .pager-goto { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: #606266; }
-    .jobs-v2-pager .pager-goto input {
+    .jobs-v2-pager[id] { container: offset-pager / inline-size; }
+    .jobs-v2-pager .pager-layout {
+      width: 100%; min-width: 0; display: grid; align-items: center;
+      grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 8px 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .jobs-v2-pager .pager-controls,
+    .jobs-v2-pager .pager-nav,
+    .jobs-v2-pager .pager-numbers,
+    .jobs-v2-pager .pager-meta,
+    .jobs-v2-pager .pager-goto,
+    .jobs-v2-pager .pager-goto label,
+    .jobs-v2-pager .pager-size { display: flex; align-items: center; gap: 6px; }
+    .jobs-v2-pager .pager-controls { grid-column: 2; justify-content: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+    .jobs-v2-pager .pager-meta { grid-column: 3; justify-content: flex-end; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
+    .jobs-v2-pager .pager-total { color: #606266; overflow-wrap: anywhere; text-align: right; }
+    .jobs-v2-pager .pager-goto { margin: 0; }
+    .jobs-v2-pager .pager-mobile-page { display: none; }
+    .jobs-v2-pager .pager-goto input,
+    .jobs-v2-pager .pager-size select {
       width: 48px; height: 32px; margin: 0; padding: 0 4px; text-align: center;
       border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
       color: #606266; font: inherit; font-size: 14px; box-sizing: border-box;
       min-height: 32px !important; min-width: 0 !important; max-width: 48px;
     }
-    .jobs-v2-pager .pager-goto input:focus { outline: none; border-color: #377DFF; }
+    .jobs-v2-pager .pager-size select { width: auto; max-width: none; }
+    .jobs-v2-pager :is(input, select, button):focus-visible { outline: 2px solid #377DFF; outline-offset: 2px; }
     .jobs-v2-pager button {
       min-height: 32px; height: 32px; border: 1px solid #dcdfe6; border-radius: 4px;
       background: #fff; color: #606266; font: inherit; font-size: 14px;
@@ -874,48 +892,14 @@
       align-items: center; justify-content: center; font-weight: 500;
       box-sizing: border-box; cursor: default;
     }
-    .jobs-v2-pager .pager-size {
-      position: relative; display: inline-flex; vertical-align: middle;
+    @container offset-pager (max-width: 1120px) {
+      .jobs-v2-pager .pager-layout { grid-template-columns: minmax(0,1fr); }
+      .jobs-v2-pager .pager-controls, .jobs-v2-pager .pager-meta { grid-column: 1; }
     }
-    .jobs-v2-pager .pager-size-btn {
-      width: 110px; min-width: 110px; height: 32px; margin: 0; padding: 0 28px 0 12px;
-      border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
-      color: #606266; font: inherit; font-size: 14px; cursor: pointer;
-      display: inline-flex; align-items: center; justify-content: flex-start;
-      box-sizing: border-box; position: relative; text-align: left;
+    @container offset-pager (max-width: 680px) {
+      .jobs-v2-pager .pager-numbers { display: none; }
+      .jobs-v2-pager .pager-mobile-page { display: inline; white-space: nowrap; }
     }
-    .jobs-v2-pager .pager-size-btn:hover,
-    .jobs-v2-pager .pager-size-btn:focus,
-    .jobs-v2-pager .pager-size-btn:active,
-    .jobs-v2-pager .pager-size.open .pager-size-btn {
-      color: #606266 !important; border-color: #dcdfe6 !important; background: #fff !important;
-    }
-    .jobs-v2-pager .pager-size-btn::after {
-      content: ""; position: absolute; right: 10px; top: 50%;
-      width: 0; height: 0; margin-top: -2px;
-      border-left: 4px solid transparent; border-right: 4px solid transparent;
-      border-top: 5px solid #909399;
-    }
-    .jobs-v2-pager .pager-size.open .pager-size-btn::after {
-      margin-top: -3px; border-top: none; border-bottom: 5px solid #909399;
-    }
-    .jobs-v2-pager .pager-size-menu {
-      display: none; position: absolute; left: 50%; bottom: calc(100% + 8px);
-      transform: translateX(-50%); min-width: 128px; padding: 6px;
-      border-radius: 8px; background: #fff;
-      box-shadow: 0 8px 24px rgba(15,23,42,.12), 0 0 0 1px rgba(15,23,42,.04);
-      z-index: 20; box-sizing: border-box;
-    }
-    .jobs-v2-pager .pager-size.open .pager-size-menu { display: block; }
-    .jobs-v2-pager .pager-size-item {
-      width: 100%; min-height: 34px; height: auto; margin: 0; padding: 8px 12px;
-      border: none; border-radius: 6px; background: transparent;
-      color: #606266; font: inherit; font-size: 14px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      box-sizing: border-box;
-    }
-    .jobs-v2-pager .pager-size-item:hover { background: #f5f7fa; color: #377DFF; }
-    .jobs-v2-pager .pager-size-item.is-active { background: #f0f2f5; color: #303133; font-weight: 500; }
 
     /* ---- 当前注册批次：每个邮箱一张阶段进度卡 ---- */
     .batch-progress-v2 {
@@ -1095,6 +1079,14 @@
       background: rgba(255,255,255,.98); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     }
     .account-tasks-toolbar { border-bottom:1px solid #e7eaf0; }
+    .account-tasks-toolbar .list-toolbar-utilities { min-width: 0; max-width: 100%; flex-shrink: 1; }
+    .task-count-and-filters { display: flex; align-items: center; min-width: 0; gap: 6px; }
+    .task-count-and-filters > .account-task-refresh-meta { flex: none; }
+    .task-count-and-filters > .column-filter-summary {
+      min-width: 0; flex-wrap: nowrap; overflow-x: auto; padding: 0; border: 0; background: none;
+    }
+    .task-count-and-filters > .column-filter-summary > * { flex: none; white-space: nowrap; }
+    .task-count-and-filters .column-filter-summary-label { display: none; }
     .account-tasks-toolbar .jobs-tb-field { min-width: 156px; }
     .account-tasks-toolbar .account-task-search-field { flex: 1 1 270px; max-width: 390px; }
     .account-tasks-toolbar input, .account-tasks-toolbar select { width:100%; min-width:0; margin:0; }
@@ -1103,6 +1095,32 @@
     .account-tasks-table-wrap { overflow-x:hidden; }
     .account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }
     .account-tasks-table th, .account-tasks-table td { overflow:hidden; text-overflow:clip; }
+    .account-tasks-table tbody tr:not(.list-state-row) > td {
+      vertical-align:middle; padding-block:6px; line-height:18px; white-space:nowrap; text-overflow:ellipsis;
+    }
+    .account-tasks-table .task-cell-two-lines {
+      display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+      max-height:36px; overflow:hidden; white-space:normal; overflow-wrap:anywhere;
+    }
+    .account-tasks-table :is(.sub-cell, .bulk-link) {
+      display:block; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+      line-height:18px;
+    }
+    .account-tasks-table .bulk-link { min-height:0; }
+    .account-tasks-table [data-account-task-result-tooltip]:focus-visible {
+      outline:2px solid var(--ui-color-brand); outline-offset:-2px;
+    }
+    .account-tasks-table .task-wait-reasons summary {
+      overflow:hidden; text-overflow:ellipsis; list-style-position:inside; cursor:pointer;
+    }
+    .account-tasks-table td:has(.task-wait-reasons[open]) { overflow:visible; }
+    .account-tasks-table .task-wait-reasons[open] { position:relative; overflow:visible; }
+    .account-tasks-table .task-wait-reasons[open] > div {
+      position:absolute; z-index:2; top:100%; left:0; width:max-content; max-width:min(260px, 70vw);
+      max-height:30vh; overflow:auto; white-space:normal; overflow-wrap:anywhere;
+      padding:6px 8px; background:var(--ui-color-surface); border:1px solid var(--ui-color-border);
+      border-radius:var(--ui-radius-sm); box-shadow:var(--ui-shadow-sm);
+    }
     .account-tasks-table .task-col-check { width:38px; text-align:center; }
     .account-tasks-table tbody tr.is-selected { background:#f6f6ff; }
     .account-tasks-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 0 #6264e8; }
@@ -3771,7 +3789,7 @@
   }
 }
 
-/* 移动端分页：只保留总数 + 上一页/当前页/下一页，隐藏每页条数、跳转和中间页码。 */
+/* 手机端分页保留跳页和每页条数，收起完整页码列。 */
 @media (max-width: 560px) {
   .jobs-v2-pager {
     flex-wrap: wrap;
@@ -3781,17 +3799,8 @@
     padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
     font-size: 12px;
   }
-  .jobs-v2-pager .pager-total {
-    flex: 1 0 100%;
-    margin-right: 0;
-    text-align: center;
-    font-size: 12px;
-  }
-  .jobs-v2-pager .pager-goto,
-  .jobs-v2-pager .pager-size,
-  .jobs-v2-pager > button:not([title]) {
-    display: none;
-  }
+  .jobs-v2-pager .pager-goto input,
+  .jobs-v2-pager .pager-size select { height: 44px; font-size: 16px; }
   .jobs-v2-pager button,
   .jobs-v2-pager .pager-page {
     min-width: 44px;
@@ -3926,6 +3935,7 @@
     font-size: 10px;
     line-height: 1.4;
   }
+  .account-tasks-toolbar .task-count-and-filters { grid-column: 1 / -1; }
   .account-tasks-toolbar #btnResetAccountTaskColumnsV2,
   .account-tasks-toolbar #btnRefreshAccountTasks {
     width: 100%;
@@ -4214,21 +4224,21 @@
 .codex-table-v2 .acc-v2-more-menu button.danger:hover:not(:disabled) { background: #fdf2f1; color: #a52a1f; }
 
 @media (max-width: 860px) {
-  .accounts-table-v2-wrap,
+  .accounts-table-v2-wrap:not(.account-tasks-table-wrap),
   .codex-table-v2-wrap { overflow: visible; padding: 0; }
 
-  .accounts-table-v2,
+  .accounts-table-v2:not(.account-tasks-table),
   .codex-table-v2 { display: block; width: 100%; min-width: 0; }
 
-  .accounts-table-v2 colgroup,
-  .accounts-table-v2 thead,
+  .accounts-table-v2:not(.account-tasks-table) colgroup,
+  .accounts-table-v2:not(.account-tasks-table) thead,
   .codex-table-v2 colgroup,
   .codex-table-v2 thead { display: none; }
 
-  .accounts-table-v2 tbody,
+  .accounts-table-v2:not(.account-tasks-table) tbody,
   .codex-table-v2 tbody { display: block; padding: 8px 10px 4px; }
 
-  .accounts-table-v2 tbody tr,
+  .accounts-table-v2:not(.account-tasks-table) tbody tr,
   .codex-table-v2 tbody tr {
     display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px;
     margin: 0 0 9px; padding: 11px 12px 10px;
@@ -4236,14 +4246,14 @@
     background: #fff; box-shadow: 0 1px 2px rgb(23 32 51 / 4%);
   }
 
-  .accounts-table-v2 tbody td,
+  .accounts-table-v2:not(.account-tasks-table) tbody td,
   .codex-table-v2 tbody td {
     display: block; height: auto; min-height: 0; padding: 0;
     border: 0; white-space: normal; overflow: visible;
     color: #5b6472; font-size: 12px; line-height: 1.4;
   }
 
-  .accounts-table-v2 tbody td[data-label]::before,
+  .accounts-table-v2:not(.account-tasks-table) tbody td[data-label]::before,
   .codex-table-v2 tbody td[data-label]::before {
     content: attr(data-label); display: block; margin-bottom: 2px;
     font-size: 10px; line-height: 1.2; font-weight: 500; color: #98a0ae;

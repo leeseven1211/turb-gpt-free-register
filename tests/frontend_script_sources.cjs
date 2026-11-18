@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const template = fs.readFileSync(path.join(root, 'webui/templates/index.html'), 'utf8');
 const accountFiles = new Map([
   ['accounts.js', 'js/pages/accounts/page.js'],
+  ['task-list-display.js', 'js/pages/operations/list-display.js'],
   ['account-tasks.js', 'js/pages/operations/page.js'],
   ['account-email-change.js', 'js/pages/accounts/email-change.js'],
   ['account-inspection.js', 'js/pages/accounts/inspection.js'],
