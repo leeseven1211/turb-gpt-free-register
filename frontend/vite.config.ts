@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig(({ mode }) => {
-  const page = ['proxy', 'extractStats'].includes(mode) ? mode : 'dashboard';
+  const page = ['proxy', 'extractStats', 'emailHistory'].includes(mode) ? mode : 'dashboard';
   return {
     plugins: [vue()],
     define: { 'process.env.NODE_ENV': JSON.stringify('production') },

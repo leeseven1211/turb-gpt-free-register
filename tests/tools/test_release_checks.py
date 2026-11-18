@@ -433,7 +433,7 @@ def test_prepare_dashboard_rejects_missing_lock_or_built_assets(tmp_path, missin
         prepare_release(source, tmp_path / "releases", "dashboard")
 
 
-@pytest.mark.parametrize("page", ["proxy", "extractStats"])
+@pytest.mark.parametrize("page", ["proxy", "extractStats", "emailHistory"])
 @pytest.mark.parametrize("omitted", ["source", "script", "style"])
 def test_prepare_rejects_incomplete_optional_page(tmp_path, page, omitted):
     source = _git_source(tmp_path)
@@ -456,6 +456,7 @@ def test_prepare_rejects_incomplete_optional_page(tmp_path, page, omitted):
 
 @pytest.mark.parametrize(("page", "template_name"), [
     ("proxy", "webui/templates/index.html"),
+    ("emailHistory", "webui/templates/index.html"),
     ("extractStats", "webui/templates/partials/extract_stats.html"),
 ])
 def test_prepare_rejects_template_pointing_to_absent_bundle(tmp_path, page, template_name):

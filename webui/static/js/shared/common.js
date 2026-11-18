@@ -257,7 +257,6 @@ const PAGERS = {
   jobs:     { page: 1, size: 20 },
   accounts: { page: 1, size: 10 },
   outlook:  { page: 1, size: 20 },
-  derivations: { page: 1, size: 50 },
   codex:    { page: 1, size: 20 },
   accountTasks: { page: 1, size: 20 },
 };
@@ -351,7 +350,7 @@ function pagerJump(id, val, input) {
 }
 
 function _reloadPagedList(id) {
-  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks, derivations: loadEmailDerivationResources })[id]?.();
+  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks })[id]?.();
 }
 function pagerGo(id, dir) {
   pagerGoTo(id, PAGERS[id].page + dir);
@@ -379,7 +378,6 @@ const TABLE_DEFAULT_WIDTHS = {
   accounts: [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
   codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
   outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
-  derivations: [4, 23, 20, 10, 10, 15, 10, 12],
   accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
   proxyCurrent: [145, 144, 108, 156, 126, 220, 88, 188],
   proxyHistory: [145, 144, 108, 156, 126, 220, 188, 92],
@@ -598,7 +596,6 @@ function initResizableTables() {
     btnResetAccountsColumnsV2: 'accounts',
     btnResetCodexColumnsV2: 'codex',
     btnResetOutlookColumnsV2: 'outlook',
-    btnResetEmailDerivationColumns: 'derivations',
     btnResetAccountTaskColumnsV2: 'accountTasks',
   };
   Object.entries(resetButtons).forEach(([id, key]) => {
@@ -627,7 +624,6 @@ const COLUMN_FILTER_RESET_IDS = {
   accounts: 'btnResetAccountFiltersV2',
   codex: 'btnResetCodexFiltersV2',
   outlook: 'btnResetOutlookFiltersV2',
-  derivations: 'btnResetEmailDerivationFilters',
   accountTasks: 'btnResetAccountTaskFiltersV2',
 };
 
@@ -1415,9 +1411,9 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'outlook') {
     const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
     if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
-    else if (view === 'derivations') loadEmailDerivationResources();
-    else ensureViewLoaded('outlook:list', loadOutlook);
+    else if (view === 'list') ensureViewLoaded('outlook:list', loadOutlook);
   }
+  window.EmailHistory?.setVisible(tab === 'outlook' && currentView === 'derivations');
   if (tab === 'proxy-traffic') window.ProxyTraffic?.setView(currentView || 'pool');
   window.ProxyTraffic?.setVisible(tab === 'proxy-traffic');
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
@@ -1470,9 +1466,9 @@ function setModuleView(module, view, persist=true, historyMode='push') {
     else if (!codexLoading) ensureViewLoaded('codex', loadCodex);
   }
   if (module === 'outlook') {
+    window.EmailHistory?.setVisible(ACTIVE_TAB === 'outlook' && view === 'derivations');
     if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
-    else if (view === 'derivations') loadEmailDerivationResources();
-    else ensureViewLoaded('outlook:list', loadOutlook);
+    else if (view === 'list') ensureViewLoaded('outlook:list', loadOutlook);
   }
   if (module === 'proxy-traffic') {
     window.ProxyTraffic?.setView(view);

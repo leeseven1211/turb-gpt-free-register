@@ -52,7 +52,7 @@ def page_asset_version(app: Any) -> str:
         if len(stamp) > 1:
             templates[name], links = _template_info(stamp)
             names.update(links)
-    for name in ("dashboard", "proxy", "extractStats"):
+    for name in ("dashboard", "proxy", "extractStats", "emailHistory"):
         bundle = static_root / name
         if bundle.is_dir():
             names.update(path.relative_to(static_root).as_posix() for path in bundle.iterdir()

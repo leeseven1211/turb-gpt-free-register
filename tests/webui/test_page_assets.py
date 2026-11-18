@@ -35,6 +35,8 @@ class PageAssetTemplateTests(unittest.TestCase):
         paths = {urlsplit(url).path for url in parser.urls}
         self.assertIn("/static/dashboard/dashboard.js", paths)
         self.assertIn("/static/dashboard/dashboard.css", paths)
+        self.assertIn("/static/emailHistory/emailHistory.js", paths)
+        self.assertIn("/static/emailHistory/emailHistory.css", paths)
         self.assertIn("/static/proxy/proxy.js", paths)
         self.assertIn("/static/proxy/proxy.css", paths)
         self.assertIn("/static/extractStats/extractStats.js", paths)

@@ -71,11 +71,11 @@ jobs:
           tests/webui/test_dashboard_vue_contracts.cjs tests/email/test_email_supply_frontend.cjs
           tests/operations/test_task_dialog_lifecycle.cjs tests/proxy/test_proxy_traffic_frontend.cjs
           tests/extract_link/test_extract_stats_frontend.cjs tests/registration/test_registration_refresh_frontend.cjs
-          tests/webui/test_offset_pager.cjs tests/accounts/test_account_row_actions_frontend.cjs
+          tests/email/test_email_derivation_frontend.cjs tests/webui/test_offset_pager.cjs tests/accounts/test_account_row_actions_frontend.cjs
           tests/accounts/test_account_promotions_frontend.cjs tests/accounts/test_account_script_initialization.cjs
       - run: npm --prefix frontend run build
       - name: Verify checked-in page assets
         run: |
-          pages=(webui/static/dashboard/ webui/static/proxy/ webui/static/extractStats/)
+          pages=(webui/static/dashboard/ webui/static/proxy/ webui/static/extractStats/ webui/static/emailHistory/)
           git diff --exit-code -- "${pages[@]}"
           test -z "$(git ls-files --others --exclude-standard -- "${pages[@]}")"

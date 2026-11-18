@@ -10,7 +10,7 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "build": "npm run typecheck && vite build && vite build --mode proxy && vite build --mode extractStats",
+    "build": "npm run typecheck && vite build && vite build --mode proxy && vite build --mode extractStats && vite build --mode emailHistory",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
