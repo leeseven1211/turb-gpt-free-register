@@ -80,6 +80,8 @@ POST /api/jobs
   -> 账号资源族租约、取消检查点、终态收口
 ```
 
+`/api/operations` 和旧 `/api/account-tasks` 的列表、详情共用 `core.operations.query_service`。应用层负责公开状态和错误投影，存储层负责筛选、计数和分页。进度与事件按所选 Run 查询。[列表与任务详情](list-ui.md)
+
 新原生 operation 与 `account_action_*` 兼容来源并存；后者会按来源投影到 operation 表，
 不能把“统一列表”误解成旧表已经删除。详见[账号操作](../workflows/account-operations.md)。
 

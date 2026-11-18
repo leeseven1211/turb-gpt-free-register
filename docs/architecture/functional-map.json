@@ -87,9 +87,9 @@
       "id": "account_task_center",
       "name": "账号任务中心",
       "entrypoints": ["webui/routes/operations.py", "webui/static/js/pages/operations/page.js"],
-      "shared_components": ["core/storage/operations/store.py", "core/storage/operations/projection.py", "core/storage/operations/runtime.py", "core/operations/task_gateway.py", "core/operation_task_store.py", "core/account_task_store.py", "core/storage/operations/legacy_task_store.py"],
+      "shared_components": ["core/operations/query_service.py", "core/storage/operations/store.py", "core/storage/operations/projection.py", "core/storage/operations/runtime.py", "core/operations/task_gateway.py", "core/operation_task_store.py", "core/account_task_store.py", "core/storage/operations/legacy_task_store.py"],
       "config_keys": ["ACCOUNT_BATCH_WORKERS"],
-      "tests": ["tests/operations/test_account_tasks.py", "tests/operations/test_account_task_cancel_ui.py", "tests/webui/test_route_contract.py"],
+      "tests": ["tests/operations/test_task_center_queries.py", "tests/operations/test_account_tasks.py", "tests/operations/test_account_task_cancel_ui.py", "tests/webui/test_route_contract.py"],
       "acceptance": ["README.md", "docs/development/release-verification.md", "docs/architecture/storage-architecture.md"]
     }
   ]
